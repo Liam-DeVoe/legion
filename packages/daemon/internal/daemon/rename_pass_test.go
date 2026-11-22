@@ -417,7 +417,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	}
 	rig.rt.beforeAuthorize = func() {
 		if atTeardown.err = rig.pool.QueryRow(ctx, "select repo from issues where key = $1", key).Scan(&atTeardown.repo); atTeardown.err == nil {
-			_, atTeardown.bundled, atTeardown.err = rig.st.WorkspaceBundleSize(ctx, key)
+			_, atTeardown.bundled, _, atTeardown.err = rig.st.WorkspaceBundleSize(ctx, key)
 		}
 	}
 

@@ -285,9 +285,10 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     nothing: the operator's suspension and the daemon's stand above the hold's.
 //
 // Each stop names the version that closed the gate (record.SuperviseRequest.HoldVersion), and is
-// one log line naming the issue, the role and the version. Each message is marked as a close
-// message (record.RoleMessage.Close), so the outbox publishes none of them once the gate opened
-// again.
+// one log line naming the issue, the role and the version. The stop a message carries names the
+// step too (record.HoldStop.Step). Each message is marked as a close message
+// (record.RoleMessage.Close), so the outbox publishes none of them once the gate opened again, or
+// once a newer close of the gate stands.
 func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, document string, version int) error {
 	hold := record.WorkHold{Project: root.Project, Tree: root.Tree, RootGeneration: root.Generation, Step: step,
 		ArtifactID: document, Version: version, ClosedAt: e.now()}
@@ -300,8 +301,9 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 	}
 	reason, workerClose, architectClose := holdReason(hold), workCloseMessage(hold, false), workCloseMessage(hold, true)
 	stopOf := func(c treeClaim) record.HoldStop {
-		return record.HoldStop{Tree: c.issue.Tree, Role: c.role, Generation: c.issue.Generation, Reason: reason, HoldVersion: hold.Version}
+		return record.HoldStop{Tree: c.issue.Tree, Role: c.role, Generation: c.issue.Generation, Step: hold.Step, Reason: reason, HoldVersion: hold.Version}
 	}
+	deadline := hold.ClosedAt.Add(HoldStopGrace)
 	told, stopped := 0, 0
 	for _, c := range claims {
 		var how string
@@ -333,14 +335,12 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 				return err
 			}
 			told++
-		case c.state().Released():
-			how = "held over its release at once"
-			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend(e.now().UTC().Add(HoldStopGrace), time.Time{})); err != nil {
-				return err
-			}
-		case underWay:
+		case c.state().Released() || underWay:
 			how = "held at the ready of a start under way"
-			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend(e.now().UTC().Add(HoldStopGrace), time.Time{})); err != nil {
+			if c.state().Released() {
+				how = "held over its release at once"
+			}
+			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend(deadline, time.Time{})); err != nil {
 				return err
 			}
 		default:

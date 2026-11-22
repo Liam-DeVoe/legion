@@ -42,7 +42,7 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 var ErrWorkspaceBundleSpent = errors.New("the issue holds a saved bundle whose one restore attempt is spent, the one copy of that work")
 
 // PutRoundWorkspaceBundle saves issue's workspace bundle for the pod that a pod update round is
-// about to replace (internal/daemon's saveHeldWork), and answers the id it saved the bundle
+// about to replace (internal/daemon's saveRoundWorkspace), and answers the id it saved the bundle
 // under. The round's replacement takes the pod's disk, as a release's teardown takes it, so the
 // round saves the work of a claim the work hold stopped in the row a release saves into
 // (PutWorkspaceBundle). The next pod restores it through the same take
@@ -206,22 +206,26 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 	return b, runtime.WorkspaceBundleSend, nil
 }
 
-// WorkspaceBundleSize is the size in bytes of the bundle issue's last release saved, and false
-// when the issue has none. The release's teardown wants the size alone, and a bundle runs to
-// tens of megabytes: reading the row's size_bytes rather than its bundle keeps those bytes out
-// of the pool and out of the daemon's memory. A pod update round reads whether the issue holds a
-// bundle, so that no earlier bundle outlasts the round's replacement (internal/daemon's
-// saveHeldWork).
-func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error) {
+// WorkspaceBundleSize is the size in bytes of the bundle issue's last release saved, whether the
+// issue holds one, and whether a pod has had the bundle's one restore attempt (attempt_pod_uid is
+// set). It answers false twice when the issue has none. The release's teardown wants the size
+// alone, and a bundle runs to tens of megabytes: reading the row's size_bytes rather than its
+// bundle keeps those bytes out of the pool and out of the daemon's memory. A pod update round
+// reads whether the issue holds a bundle, so that no earlier bundle outlasts the round's
+// replacement. It reads whether the attempt is spent too, since a round's save never replaces such
+// a bundle (PutRoundWorkspaceBundle), so the round builds no bundle for it (internal/daemon's
+// saveRoundWorkspace).
+func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, bool, error) {
 	var size int
-	err := s.pool.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
+	var spent bool
+	err := s.pool.QueryRow(ctx, `select size_bytes, attempt_pod_uid is not null from workspace_bundles where issue = $1`, issue).Scan(&size, &spent)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read the size of the workspace bundle of %s: %w", issue, err)
+		return 0, false, false, fmt.Errorf("read the size of the workspace bundle of %s: %w", issue, err)
 	}
-	return size, true, nil
+	return size, true, spent, nil
 }
 
 // DeleteWorkspaceBundle drops issue's bundle whatever release saved it, once the issue's work is

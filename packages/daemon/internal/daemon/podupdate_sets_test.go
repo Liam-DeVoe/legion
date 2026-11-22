@@ -341,7 +341,7 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 
 	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch. The
 	// claim is the one role the pause owes a launch, so the typed hold names it.
-	keepsForThePause := func(keep podKeep, _ string) bool {
+	keepsForThePause := func(keep podKeep) bool {
 		return keep == keptForOwedLaunch
 	}
 	isClaim := func(of supervise.Claim) bool { return of.Token == token }
@@ -375,10 +375,12 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 							keep = row.located
 						}
 						keep = keep && !answered
-						if got := keepsForThePause(roundPodEnds(group, round, clock)); got != keep {
+						swept, _ := roundPodEnds(group, round, clock)
+						if got := keepsForThePause(swept); got != keep {
 							t.Errorf("the sweep's reading keeps the pod for the claim's owed launch: %t, want %t", got, keep)
 						}
-						if got := keepsForThePause(launchRoundPodEnds(group, c, round, clock)); got != keep {
+						launched, _ := launchRoundPodEnds(group, c, round, clock)
+						if got := keepsForThePause(launched); got != keep {
 							t.Errorf("the reading at the claim's own launch keeps the pod for its owed launch: %t, want %t", got, keep)
 						}
 						wantAsks, wantWaits := session && row.sets, session && row.sets

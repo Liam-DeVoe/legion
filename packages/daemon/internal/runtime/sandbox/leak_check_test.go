@@ -150,7 +150,7 @@ func TestALauncherNamingItsPinIsSentTheLeakCheckBeforeTheBundleAndTheStart(t *te
 	}
 	// The bundle went over as it does with no check at all, and the launcher's report of its
 	// restore dropped it.
-	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+	if _, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
 		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted (%d bytes saved)", held, err, len(saved.Bundle))
 	}
 }

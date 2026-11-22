@@ -298,7 +298,7 @@ type IssueVolumeReader interface {
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
 // the workspace on it go. A pod update round keeps it the same way before it replaces the pod of a
-// claim the work hold stopped (internal/daemon's saveHeldWork). A kept volume does not go: the
+// claim the work hold stopped (internal/daemon's saveRoundWorkspace). A kept volume does not go: the
 // release keeps the Sandbox that owns it (IssueReleaser), and the pod after the release takes no
 // saved work that volume holds (HeldWorkspaceBundleDrop). The save is still made, because a reset
 // replaces a kept volume, and the save is then the one copy of the unpushed work. The role named

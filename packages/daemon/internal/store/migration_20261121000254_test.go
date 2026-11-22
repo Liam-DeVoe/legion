@@ -68,7 +68,7 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 	daemonStop := `{"op":"suspend","tree":"LEGION-208","role":"planner","generation":4,"reason":"the tree closed"}`
 	opening := `{"op":"start","tree":"LEGION-208","role":"reviewer","generation":4,"task":"The work hold stopped your turn.\n\nThe issue's other roles may ask you questions.","opening":"The work hold stopped your turn."}`
 	held := `{"role":"legion-LEGION-208-merger","body":"End your turn now.","close":true,"wake":true,` +
-		`"stop":{"tree":"LEGION-208","role":"merger","generation":4,"reason":"the work hold","holdVersion":4}}`
+		`"stop":{"tree":"LEGION-208","role":"merger","generation":4,"step":"spec","reason":"the work hold","holdVersion":4}}`
 	architect := `{"role":"legion-LEGION-208-architect","body":"The design gate of LEGION-208 closed.","close":true}`
 	plain := `{"role":"legion-LEGION-208-architect","body":"The design gate of LEGION-208 opened."}`
 	for _, row := range [][2]string{{"supervise", stop}, {"supervise", timed}, {"supervise", daemonStop}, {"supervise", opening},

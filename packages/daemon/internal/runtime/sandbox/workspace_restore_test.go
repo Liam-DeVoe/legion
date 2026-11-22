@@ -140,7 +140,7 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)
 	}
 	// The launcher restored it and said so, so the daemon's copy has done its work.
-	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+	if _, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
 		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
 }
@@ -176,7 +176,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 	if start := slices.IndexFunc(sent, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }); start < 1 {
 		t.Fatalf("the launcher was sent %v, want the bundle's slices and then the role's start", frameTypes(sent))
 	}
-	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
+	size, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
-	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
+	if size, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the restart the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
 }
@@ -292,7 +292,7 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
-	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
+	if size, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept until a launcher reports the restore", size, held, err, len(saved.Bundle))
 	}
 }
@@ -340,7 +340,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: later[0].ID, Release: second.Release, OK: true})
-	if _, held, err := st.WorkspaceBundleSize(ctx, testTree); err != nil || held {
+	if _, held, _, err := st.WorkspaceBundleSize(ctx, testTree); err != nil || held {
 		t.Fatalf("after the second release's report the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
 }
@@ -385,7 +385,7 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 	if bundleSlices != 1 {
 		t.Fatalf("the launcher was sent %v, want one slice and no more after its refusal", frameTypes(frames))
 	}
-	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
+	size, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 	}
 	// The work is kept whole, for a person to carry out of the database, and it holds the
 	// issue's pod until the issue's work is over (workflow.IdleHoldBundleUnrestored).
-	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
+	if size, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
 }
@@ -586,7 +586,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 		if got := drops(); len(got) != 1 || got[0].release != testRelease || !got[0].keptSince.Equal(s.CreationTimestamp.Time) {
 			t.Fatalf("the store dropped %+v, want release %d once, for the kept Sandbox made %s", got, testRelease, s.CreationTimestamp)
 		}
-		if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+		if _, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
 			t.Fatalf("after the drop the store holds a bundle for %s = %t (%v), want none", testTree, held, err)
 		}
 		lines := linesHolding(logs.String(), "kept volume holds")

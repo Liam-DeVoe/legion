@@ -6724,7 +6724,8 @@ nothing is suspended, the round stays open, and the next sweep decides again.
 A claim that has not answered is a claim the round asks that has not answered it, or a claim of the issue whose role a project's pause still owes a launch (`podHolds.owes`, below), whether or not that claim records a session (`unansweredClaims`): a launch that forgot the role's lost session records none until its new agent registers, and the pause kept the pod for that role's work.
 
 A role's own push is what keeps its work: the replacement pushes and saves nothing of the disk, and work not pushed when the pod goes, a failed claim's and a passed-over claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
-The one exception is the work of a claim that the work hold stopped: before the replacement, the daemon saves the issue workspace as a bundle, and the next pod restores it (below).
+The one exception is the replacement through a role process where the round passed over a claim that the work hold stopped, or where the issue holds a stored bundle whose one restore attempt is not spent.
+Before that replacement, the daemon saves the issue workspace as a bundle, and the next pod restores it (below).
 On a kept volume that the issue's next pod mounts, that work stays on the volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 An earlier release checked the disk first, from the shim, and pushed what the remote lacked; that check and the frame that asked for it are gone.
 A daemon of an earlier release that sends that frame still sends it to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
@@ -6747,7 +6748,7 @@ The read is bounded by one sweep interval, and a read that runs out of it has fa
 A shim built before the read passes the frame to its agent, which refuses it, and the daemon reads that refusal as a read that failed.
 
 The daemon keeps the pod of a claim that the work hold stopped, so that the worker's unpushed work stays (`workflow.IdleHoldUnownedWorkHeld`), and the round keeps that work as an idle release keeps it ([Idle release](#idle-release)).
-Where the round passed over a claim that the work hold stopped (`supervise.SuspendedByHold`), the replacement saves the issue workspace as a bundle after the read and before it replaces the pod (`saveHeldWork`).
+Where the round passed over a claim that the work hold stopped (`supervise.SuspendedByHold`), the replacement saves the issue workspace as a bundle after the read and before it replaces the pod (`saveRoundWorkspace`).
 The round still does not ask that claim or wait for it.
 The shim of the role whose process the pod is replaced through builds the bundle, as it builds the bundle of an idle release (`runtime.WorkspaceBundler`).
 The daemon saves the bundle in the table that holds a release's bundle (`workspace_bundles`, `store.PutRoundWorkspaceBundle`), under an id from the sequence of the release ids, so no release's restore report or cancel deletes it.
@@ -6757,11 +6758,14 @@ The daemon saves the bundle on a kept volume too: the replacement can mark the v
 Where the volume stays, the next pod drops the bundle, because the volume holds the work.
 A workspace with no unpushed work gives an empty bundle.
 The daemon then stores nothing, and it deletes a stored bundle that no pod has tried to restore, as an idle release deletes it.
-Where the round passed over no claim that the work hold stopped but the issue has a stored bundle, the replacement saves too.
+Where the round passed over no claim that the work hold stopped but the issue has a stored bundle, the replacement through a role process saves too.
+The replacement by issue and the replacement at a launch save nothing, since no role process runs in the pod to build a bundle, so an earlier save outlives them.
 A daemon restart or a failed `ReplacePod` can leave an earlier save of the round, and the hold can end before the next sweep.
 The new save replaces that bundle with the workspace as it is now, or deletes it where the workspace holds no unpushed work, so the next pod restores no earlier work.
-A release's bundle that is still in flight on that pod is replaced the same way, which is safe: the new save is of the same workspace, taken later.
-A bundle whose one restore attempt is spent stays, since no pod is sent it again, and the round replaces the pod.
+A release's bundle that is still in flight on that pod is replaced the same way: the new save is of the same workspace, taken later.
+That case is rare, since the idle rule releases no pod while an update round of it is open on a live claim (`workflow.IdleHoldUpdateRound`).
+One window is left: where the last word then refuses the replacement, the daemon deletes the new save, and the work of the release's bundle that the new save replaced goes with it.
+A bundle whose one restore attempt is spent stays, since no pod is sent it again, and the round builds no bundle over it and replaces the pod.
 A save that fails holds the replacement: nothing is replaced, the round stays open, and the next sweep saves again.
 A bundle above 40 MiB is a save that fails, and so is a save for a held claim over a bundle whose one restore attempt is spent, since that bundle is the one copy of earlier work.
 The daemon logs `supervise: the issue workspace could not be saved as a bundle before this update round's replacement; nothing was replaced and the round stays open`, with the issue, the held claims and the error.

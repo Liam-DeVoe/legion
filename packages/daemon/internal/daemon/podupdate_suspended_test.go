@@ -315,9 +315,9 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	}
 }
 
-// heldWorkUnsavedLine is the line of a replacement that a save of the issue workspace held back
+// workspaceUnsavedLine is the line of a replacement that a save of the issue workspace held back
 // (workspaceNotSaved).
-const heldWorkUnsavedLine = "supervise: the issue workspace could not be saved as a bundle before this update round's replacement; nothing was replaced and the round stays open"
+const workspaceUnsavedLine = "supervise: the issue workspace could not be saved as a bundle before this update round's replacement; nothing was replaced and the round stays open"
 
 // bundlingRuntime is the pod-update rig's runtime with the workspace bundle that a role's shim
 // builds (runtime.WorkspaceBundler). It asks the role's agent connection, as the Sandbox runtime
@@ -419,12 +419,12 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped(t *testing.T) {
 
 	testwait.Eventually(t, "a sweep to reach the replacement and fail to save the held claim's work", func() bool {
 		rig.tick()
-		return len(loggedLines(t, rig.logs.String(), heldWorkUnsavedLine)) > 0
+		return len(loggedLines(t, rig.logs.String(), workspaceUnsavedLine)) > 0
 	})
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times though the save of the held claim's work failed, want none", len(calls))
 	}
-	unsaved := loggedLines(t, rig.logs.String(), heldWorkUnsavedLine)[0]
+	unsaved := loggedLines(t, rig.logs.String(), workspaceUnsavedLine)[0]
 	if unsaved["issue"] != podUpdateIssue || !strings.Contains(fmt.Sprint(unsaved["error"]), refused.Error()) {
 		t.Fatalf("the failed save logged %+v, want a line naming %s and the error %q", unsaved, podUpdateIssue, refused)
 	}
@@ -491,7 +491,7 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped(t *testing.T) {
 }
 
 // heldWorkNoProcessError is what the line of a held replacement names where no role process runs
-// in the round's pod to build the bundle (saveHeldWork's rule for such a pod).
+// in the round's pod to build the bundle (saveRoundWorkspace's rule for such a pod).
 const heldWorkNoProcessError = "no role process runs in the pod"
 
 // A round whose pod no role process runs in, where the work hold stopped a claim of the round.
@@ -515,7 +515,7 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
 	rig.wantPodKept("a role process runs in the pod to save the held claim's work")
-	unsaved := loggedLines(t, rig.logs.String(), heldWorkUnsavedLine)
+	unsaved := loggedLines(t, rig.logs.String(), workspaceUnsavedLine)
 	if len(unsaved) == 0 || unsaved[0]["issue"] != podUpdateIssue || !strings.Contains(fmt.Sprint(unsaved[0]["error"]), heldWorkNoProcessError) {
 		t.Fatalf("the held replacement logged %+v, want a line naming %s and that %s", unsaved, podUpdateIssue, heldWorkNoProcessError)
 	}
@@ -760,7 +760,7 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopsBeforeTheLastWord(
 // the round saved the planner's work leaves that save in the store: only a refusal of the last
 // word deletes it (dropRoundSave). The hold then ends, and the planner runs in the pod again and
 // answers the round. So the next sweep holds no claim that the hold stopped, and the earlier save
-// still stands. The replacement saves again (saveHeldWork): a workspace with nothing unpushed
+// still stands. The replacement saves again (saveRoundWorkspace): a workspace with nothing unpushed
 // deletes the earlier save, and a workspace with work replaces it with the workspace as it is now.
 // Either way the next pod restores no earlier work over the work done since.
 func TestWorkHoldAnUpdateRoundLeavesNoEarlierSaveForTheNextPod(t *testing.T) {
@@ -831,8 +831,10 @@ func TestWorkHoldAnUpdateRoundLeavesNoEarlierSaveForTheNextPod(t *testing.T) {
 // A bundle whose one restore attempt is spent is never sent to a pod again, so no earlier work can
 // come of it, and it stays for a person to recover. A round that passed over no claim the hold
 // stopped replaces the pod over such a bundle as it replaces a pod with no bundle, though the
-// workspace holds unpushed work. The store refuses the save over the spent bundle
-// (store.ErrWorkspaceBundleSpent), and with no held claim that refusal holds nothing.
+// workspace holds unpushed work. The store's read of the bundle says that its attempt is spent
+// (store.WorkspaceBundleSize), and a round's save never replaces such a bundle
+// (store.ErrWorkspaceBundleSpent). So the round asks no shim to bundle the workspace: the bundle
+// would run to tens of megabytes, and the store would refuse it.
 func TestWorkHoldAnUpdateRoundReplacesThePodOverASpentBundle(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.bundling()
@@ -860,14 +862,14 @@ func TestWorkHoldAnUpdateRoundReplacesThePodOverASpentBundle(t *testing.T) {
 	replaced := rig.awaitReplacement(1, "over the spent bundle")
 
 	through, _ := replaced[0].Pod.Claim.Role()
-	if asked := rig.workers[through].Bundlings(); len(asked) == 0 {
-		t.Errorf("the %s's shim was asked to bundle nothing, want the workspace bundled over the bundle that stands", through)
+	if asked := rig.workers[through].Bundlings(); len(asked) != 0 {
+		t.Errorf("the %s's shim was asked to bundle the workspace %d times, want none: a round that holds no claim builds no bundle over a spent one", through, len(asked))
 	}
-	if size, held, err := rig.st.WorkspaceBundleSize(rig.ctx, podUpdateIssue); err != nil || !held || size != len(spent.Bundle) {
-		t.Errorf("after the replacement the store holds %d bytes (held=%t, %v), want the %d of the spent bundle kept", size, held, err, len(spent.Bundle))
+	if size, held, attempted, err := rig.st.WorkspaceBundleSize(rig.ctx, podUpdateIssue); err != nil || !held || !attempted || size != len(spent.Bundle) {
+		t.Errorf("after the replacement the store holds %d bytes (held=%t, spent=%t, %v), want the %d of the spent bundle kept", size, held, attempted, err, len(spent.Bundle))
 	}
-	if lines := loggedLines(t, rig.logs.String(), heldWorkUnsavedLine); len(lines) != 0 {
-		t.Errorf("the round logged %d failed saves, want none: the refusal over a spent bundle holds nothing", len(lines))
+	if lines := loggedLines(t, rig.logs.String(), workspaceUnsavedLine); len(lines) != 0 {
+		t.Errorf("the round logged %d failed saves, want none: a spent bundle holds nothing", len(lines))
 	}
 }
 

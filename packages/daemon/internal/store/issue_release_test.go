@@ -626,14 +626,14 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
 	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || !held {
+	if _, held, _, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || !held {
 		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", held, err)
 	}
 
 	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
+	if _, held, _, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
 		t.Fatalf("after the cancel the store holds the bundle = %t (%v), want it deleted with the mark", held, err)
 	}
 }

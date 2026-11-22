@@ -127,7 +127,7 @@ func (w holdWords) stop(role claim.Role, generation uint64, version int, closedA
 // messageStop is the same stop as a close message carries it (record.RoleMessage.Stop), for the
 // outbox to post once the message reached the claim, with the deadline it names then.
 func (w holdWords) messageStop(role claim.Role, generation uint64, version int) *record.HoldStop {
-	return &record.HoldStop{Tree: w.tree, Role: role, Generation: generation, HoldVersion: version,
+	return &record.HoldStop{Tree: w.tree, Role: role, Generation: generation, Step: w.step, HoldVersion: version,
 		Reason: fmt.Sprintf("the work hold: version %d of the %s document (%s) of %s closed the design gate", version, w.step, w.document, w.tree)}
 }
 

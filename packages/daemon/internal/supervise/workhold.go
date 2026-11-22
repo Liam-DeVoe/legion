@@ -94,7 +94,7 @@ func (m *Machine) workHoldWaits(ev Event) error {
 func (m *Machine) EndHold(ctx context.Context, task *RequestDeliver) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	if err := m.repairBeforeTheHold(ctx, "work hold's end"); err != nil {
+	if err := m.repairBeforeTheHold(ctx); err != nil {
 		return false, err
 	}
 	if dropped, err := m.dropHoldStop(ctx); dropped || err != nil {
@@ -136,14 +136,13 @@ var errClaimWriteOwed = errors.New("a claim write the database has not taken is 
 // Handle. A write the database refused for good drops the mark, as the repair's rule does, and
 // the caller goes on. A write still owed (Machine.owedWrite) means the store does not hold the
 // claim the machine holds, and a fact the caller applies would read the claim the store holds. So
-// it answers errClaimWriteOwed, and the caller changes nothing. request names what the caller was
-// asked to do, for the error.
-func (m *Machine) repairBeforeTheHold(ctx context.Context, request string) error {
+// it answers errClaimWriteOwed, and the caller changes nothing.
+func (m *Machine) repairBeforeTheHold(ctx context.Context) error {
 	m.repair(ctx)
 	if m.owedWrite == nil {
 		return nil
 	}
-	return fmt.Errorf("supervise: the %s of %s waits: %w", request, m.claim.Token, errClaimWriteOwed)
+	return fmt.Errorf("supervise: the work hold's end of %s waits: %w", m.claim.Token, errClaimWriteOwed)
 }
 
 // dropHoldStop drops a stop the work hold asked for and has not made — held for a turn, a

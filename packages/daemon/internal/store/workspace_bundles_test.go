@@ -193,7 +193,7 @@ func TestABundleIsTakenForOneRestoreAttemptAndThenKept(t *testing.T) {
 		}
 	}
 	// The work is kept, and it holds the issue's pod until the issue's work is over.
-	size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
+	size, held, _, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
 	if err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the attempt the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
@@ -227,6 +227,8 @@ func TestABundleIsTakenForOneRestoreAttemptAndThenKept(t *testing.T) {
 // bundle, and a late confirmation of a release deletes nothing of it. A second save of the round
 // replaces a bundle no pod has had its attempt of, under a new id. A bundle whose one attempt is
 // spent is the one copy of that work, so a save over it is refused and the row stays as it was.
+// The read of the bundle's size says whether its attempt is spent (WorkspaceBundleSize), since a
+// round builds no bundle over a spent one where it holds no claim.
 func TestARoundSavesItsWorkspaceBundleUnderAnIdNoReleaseHas(t *testing.T) {
 	ctx := context.Background()
 	const issue, project = "LEGION-945", "legion"
@@ -254,9 +256,9 @@ func TestARoundSavesItsWorkspaceBundleUnderAnIdNoReleaseHas(t *testing.T) {
 	if err := s.DeleteRestoredWorkspaceBundle(ctx, issue, next); err != nil {
 		t.Fatal(err)
 	}
-	if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after a confirmation of the release id %d the store holds %d bytes (held=%t, %v), want the %d of the round's save kept",
-			next, size, held, err, len(saved.Bundle))
+	if size, held, spent, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || spent || size != len(saved.Bundle) {
+		t.Fatalf("after a confirmation of the release id %d the store holds %d bytes (held=%t, spent=%t, %v), want the %d of the round's save kept, its attempt not spent",
+			next, size, held, spent, err, len(saved.Bundle))
 	}
 	second := saved
 	second.Bundle = []byte("PACK the held worker's work, saved again")
@@ -279,8 +281,9 @@ func TestARoundSavesItsWorkspaceBundleUnderAnIdNoReleaseHas(t *testing.T) {
 	if id, err := s.PutRoundWorkspaceBundle(ctx, issue, refused); err == nil {
 		t.Fatalf("a save over a bundle whose one attempt is spent was accepted under the id %d", id)
 	}
-	if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(second.Bundle) {
-		t.Fatalf("after the refused save the store holds %d bytes (held=%t, %v), want the %d of the spent bundle kept", size, held, err, len(second.Bundle))
+	if size, held, spent, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || !spent || size != len(second.Bundle) {
+		t.Fatalf("after the refused save the store holds %d bytes (held=%t, spent=%t, %v), want the %d of the spent bundle kept, its attempt spent",
+			size, held, spent, err, len(second.Bundle))
 	}
 	noPod := saved
 	noPod.PodUID = ""
@@ -301,7 +304,7 @@ func TestAnEmptySaveDeletesTheBundleItWouldReplace(t *testing.T) {
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK earlier work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
 	held := func() bool {
 		t.Helper()
-		_, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
+		_, held, _, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -509,7 +512,7 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 	}
 	// The work is kept whole for a person to carry out of the database, and the row goes on
 	// holding the issue's pod.
-	size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
+	size, held, _, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
 	if err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
@@ -567,7 +570,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", time.Time{}); err == nil || dropped {
 		t.Fatalf("a drop that named no creation of the Sandbox was answered %t, %v; want it refused", dropped, err)
 	}
-	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
+	if size, held, _, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the drops that held nothing the store holds %d bytes (held=%t, %v), want the %d saved", size, held, err, len(saved.Bundle))
 	}
 
@@ -583,7 +586,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	if len(held.Bundle) != 0 {
 		t.Fatalf("the drop read %d bytes of the bundle, want none", len(held.Bundle))
 	}
-	if _, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || held {
+	if _, held, _, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || held {
 		t.Fatalf("after the drop the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
 	if again, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", at.Add(-time.Hour)); err != nil || dropped {
@@ -600,7 +603,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	if spent, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-reset", at.Add(-time.Hour)); err != nil || dropped {
 		t.Fatalf("a bundle whose attempt was spent was dropped as release %d (%t, %v); want it kept", spent.Release, dropped, err)
 	}
-	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
+	if size, held, _, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the spent attempt the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
 
@@ -619,7 +622,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 		if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, issue, "pod-of-infras-spawn", at.Add(-time.Hour)); err != nil || dropped {
 			t.Fatalf("INFRA's pod of %s dropped release %d (%t, %v); want nothing: INFRA does not record %s", issue, held.Release, dropped, err, issue)
 		}
-		if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(others.Bundle) {
+		if size, held, _, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(others.Bundle) {
 			t.Fatalf("after INFRA's drop the store holds %d bytes of %s (held=%t, %v), want the %d saved kept", size, issue, held, err, len(others.Bundle))
 		}
 	}

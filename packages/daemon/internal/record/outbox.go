@@ -1409,10 +1409,10 @@ type RoleMessage struct {
 	// Close marks a design gate's close message, under either hold: every message of the gate's
 	// close (workflow's tellGateMoved and workHoldClose), the architect's among them. The outbox
 	// reads the tree's standing gate before it wakes a merger for such a row or publishes it, and
-	// finishes the row unpublished where the gate no longer stands closed, or where the work hold
-	// the row's stop names has ended (internal/daemon's closeOutrun): a role message runs as it
-	// comes due, and a close whose publish failed retries on its backoff, so it can come due after
-	// the open message that followed it. Every other message carries none.
+	// finishes the row unpublished where the gate no longer stands closed, or where a newer close
+	// of the gate stands than the one the row's stop names (internal/daemon's closeOutrun): a role
+	// message runs as it comes due, and a close whose publish failed retries on its backoff, so it
+	// can come due after the open message that followed it. Every other message carries none.
 	Close bool `json:"close,omitempty"`
 	// Wake marks the design gate's close message to a merger whose claim was released when the
 	// gate closed, under either hold: the outbox wakes the released merger for the message rather
@@ -1442,13 +1442,17 @@ type RoleMessage struct {
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
 
 // HoldStop is the work hold's stop a close message carries (RoleMessage.Stop): the tree and the
-// role it stops, at the issue's generation, the reason the stop logs, and the version of the
-// gated document that closed the gate (SuperviseRequest.HoldVersion). It names no deadline and no
-// turn: the outbox names both once the message reached the claim.
+// role it stops, at the issue's generation, the reason the stop logs, and the close that made it:
+// the step of the gated document and the version of that document that closed the gate
+// (SuperviseRequest.HoldVersion). Each step numbers the versions of its own document, so the
+// outbox reads the step and the version together to tell a newer close (internal/daemon's
+// closeOutrun). It names no deadline and no turn: the outbox names both once the message reached
+// the claim.
 type HoldStop struct {
 	Tree        string     `json:"tree"`
 	Role        claim.Role `json:"role"`
 	Generation  uint64     `json:"generation"`
+	Step        DesignStep `json:"step"`
 	Reason      string     `json:"reason,omitempty"`
 	HoldVersion int        `json:"holdVersion,omitempty"`
 }
@@ -2470,8 +2474,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a role message marked to wake its role or carrying a stop is a design gate's close message, and is marked close too")
 		}
 		if stop := value.Stop; stop != nil {
-			if stop.Tree == "" || !claim.IsRole(stop.Role) {
-				return fmt.Errorf("a role message's stop is the work hold's stop of a role of a tree; it is %q of %q", stop.Role, stop.Tree)
+			if stop.Tree == "" || !claim.IsRole(stop.Role) || !stop.Step.Valid() {
+				return fmt.Errorf("a role message's stop is the work hold's stop of a role of a tree at a gated step; it is %q of %q at %q", stop.Role, stop.Tree, stop.Step)
 			}
 			if err := validateWorkHoldRequest(stop.Suspend(time.Time{}, time.Time{})); err != nil {
 				return fmt.Errorf("a role message's stop of the %s of %s: %w", stop.Role, stop.Tree, err)

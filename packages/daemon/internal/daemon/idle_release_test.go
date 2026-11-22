@@ -357,7 +357,7 @@ func (r *idleRig) marked(t *testing.T) bool {
 
 func (r *idleRig) bundled(t *testing.T) bool {
 	t.Helper()
-	_, held, err := r.st.WorkspaceBundleSize(context.Background(), r.issue.Key)
+	_, held, _, err := r.st.WorkspaceBundleSize(context.Background(), r.issue.Key)
 	if err != nil {
 		t.Fatalf("read the saved bundle: %v", err)
 	}

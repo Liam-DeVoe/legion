@@ -141,7 +141,7 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 	versioned.HoldVersion = 4
 	opening := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 4,
 		Task: "The work hold stopped your turn.\n\nThe issue's other roles may ask you questions.", Opening: "The work hold stopped your turn."}
-	messageStop := HoldStop{Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 4, Reason: "the work hold"}
+	messageStop := HoldStop{Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 4, Step: DesignStepSpec, Reason: "the work hold"}
 	versionedStop := messageStop
 	versionedStop.HoldVersion = 4
 	t.Run("the hold's rows round-trip", func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Close: true, Stop: &messageStop},
 			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Close: true, Stop: &versionedStop},
 			RoleMessage{Role: "legion-LEGION-210-merger", Body: "End your turn now.", Close: true, Wake: true, Stop: &HoldStop{
-				Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4, Reason: "the work hold"}},
+				Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4, Step: DesignStepCriteria, Reason: "the work hold"}},
 			RoleMessage{Role: "legion-LEGION-210-merger", Body: "Your phase goes on.", Close: true, Wake: true},
 		} {
 			row, err := NewOutboxRow("LEGION-209", payload, time.Time{})
@@ -215,9 +215,11 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 		wakeOfNoClose := RoleMessage{Role: "legion-LEGION-210-merger", Body: "The checks of your head settled.", Wake: true}
 		stopOfNoClose := stopOf(versionedStop)
 		stopOfNoClose.Close = false
-		noTree, noRole, negativeStop := versionedStop, versionedStop, versionedStop
+		noTree, noRole, noStep, otherStep, negativeStop := versionedStop, versionedStop, versionedStop, versionedStop, versionedStop
 		noTree.Tree = ""
 		noRole.Role = claim.RoleController
+		noStep.Step = ""
+		otherStep.Step = "design"
 		negativeStop.HoldVersion = -4
 		for name, tc := range map[string]struct {
 			payload OutboxPayload
@@ -235,6 +237,8 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 			"a negative version":                            {negativeVersion, "negative"},
 			"a message whose stop names no tree":            {stopOf(noTree), "stop"},
 			"a message whose stop names no role":            {stopOf(noRole), "stop"},
+			"a message whose stop names no step":            {stopOf(noStep), "step"},
+			"a message whose stop names no gated step":      {stopOf(otherStep), "step"},
 			"a message whose stop names a negative version": {stopOf(negativeStop), "negative"},
 			"a wake on a message that is no close":          {wakeOfNoClose, "close"},
 			"a stop on a message that is no close":          {stopOfNoClose, "close"},

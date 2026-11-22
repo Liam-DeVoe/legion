@@ -12,8 +12,7 @@
 -- same release makes it.
 --
 -- The release before has no cleared_spec_approvals table, so no release reads or writes the table
--- without this column. A rollback runs this way back first, and then the way back of
--- 20261120210115_approval_route_records, which drops the table.
+-- without this column.
 --
 -- There is no down file. This directory keeps none, so the way back is the one transaction that
 -- closes this header, its last paragraph (migrations.WayBack), run with this release's daemon
@@ -23,11 +22,14 @@
 -- again without the column.
 --
 -- The way back drops the column and deletes this migration's row, which makes the version the
--- store reports (store.SchemaVersionTx) that release's own again. At the roll-forward store.apply
--- finds no row of this version and runs this file again, and each record takes its approved
--- version as its latest version. What it costs is the newest version each record knew of: after
--- the roll-forward, a late changes request on a version between a record's approved version and
--- that newest version deletes the record, where the row would have ignored it.
+-- store reports (store.SchemaVersionTx) that release's own again. A rollback to the release before
+-- also runs the way back of 20261120210115_approval_route_records, which drops the table. So no
+-- record is left for a roll-forward: it creates the table again and runs this file over no row.
+-- An operator can still stop after this way back alone and start this release again. Then
+-- store.apply runs this file over the records the table holds, and each record takes its approved
+-- version as its latest version. That costs the newest version each record knew of: a late changes
+-- request on a version between a record's approved version and that newest version deletes the
+-- record, where the row would have ignored it.
 --
 -- begin;
 -- alter table if exists cleared_spec_approvals drop column if exists latest_version;

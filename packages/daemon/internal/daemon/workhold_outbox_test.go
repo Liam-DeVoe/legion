@@ -55,12 +55,14 @@ const holdGrace = 2 * time.Minute
 
 // holdTree is the tree a work-hold rig holds: its root, which is its own tree and its one member,
 // the Dispatch project of its issues, the document of its gated spec and the version a person
-// approved, the phase the root stands in, and the deployment's hold.
+// approved, the phase the root stands in, the deployment's hold, and the steps the deployment
+// gates, the spec alone where steps is nil.
 type holdTree struct {
 	key, project, document string
 	approved               int
 	at                     phase.Phase
 	hold                   config.Hold
+	steps                  []record.DesignStep
 }
 
 // legionTree is LEGION-208 standing in at under hold, its spec (artifact-208) approved at version 3.
@@ -107,6 +109,9 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 		t.Fatal(err)
 	}
 	approved := tree.approved
+	if tree.steps == nil {
+		tree.steps = config.DesignGateRootIssues.Steps()
+	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: tree.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: tree.project, Tree: tree.key, Title: "a held root", Phase: tree.at, Generation: 1, Status: workflow.PhaseStatus(tree.at),
@@ -138,7 +143,7 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 	r.runner = &outbox{
 		dispatchProject: tree.project, pool: pool, records: records, supervisor: r.sup, trees: trees, tokens: outboxTokens{},
 		project: tokenProject, stateDir: t.TempDir(), notices: r.publisher, dispatch: &outboxDispatch{},
-		gatedSteps: config.DesignGateRootIssues.Steps(), now: func() time.Time { return r.clock.Now() }, log: quietLogger(),
+		gatedSteps: tree.steps, now: func() time.Time { return r.clock.Now() }, log: quietLogger(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + tree.key}, nil
 		},
@@ -159,7 +164,7 @@ func (r *workHoldRig) deploy(hold config.Hold) {
 	}
 	r.tree.hold = hold
 	r.engine = workflow.New(r.records, workflow.Config{Project: r.tree.project, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Hold: hold, Pods: podRecords, Linger: time.Hour, Clock: func() time.Time { return r.clock.Now() },
+		Steps: r.tree.steps, Hold: hold, Pods: podRecords, Linger: time.Hour, Clock: func() time.Time { return r.clock.Now() },
 		Hooks: []workflow.Hook{{Name: "back-to-implementing", On: workflow.HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer},
 			Prompt: "Read the tester's report before you write anything."}}}, quietLogger())
 	r.admission = admit.New(r.records, r.engine, 2, r.tree.project, quietLogger())
@@ -989,7 +994,7 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || c.Pending.Task != keptTask || !c.Pending.ConfirmedAt.IsZero() {
 		t.Fatalf("the held implementer holds %+v, want the task it kept, unconfirmed", c.Pending)
 	}
-	if _, kept, err := r.trees.WorkspaceBundleSize(r.ctx, r.tree.key); err != nil || !kept {
+	if _, kept, _, err := r.trees.WorkspaceBundleSize(r.ctx, r.tree.key); err != nil || !kept {
 		t.Fatalf("the release's bundle is kept %v, %v; want it kept through the hold", kept, err)
 	}
 	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
@@ -2605,7 +2610,7 @@ func TestGatesHoldKeepsTheCloseMessageOfAnIssueTheRecordDoesNotHold(t *testing.T
 }
 
 // Under `merge`, a close message to a merger with no claim waits while a lane runs a start of the
-// merger, and not while that start is only queued (fix 2's gap c). Here the start runs at the
+// merger, and not while that start is only queued. Here the start runs at the
 // close, so the close marks its message to wait, and its provision then fails: the start row
 // waits on its backoff, and its next attempt reads the closed gate and waits at the fence through
 // the hold. So the message's attempt after that finds no lane running the start and no claim,
@@ -2643,15 +2648,15 @@ func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueuedAfterTheClose(t *testing
 	}
 }
 
-// The work hold's stop of a claim that runs nothing yet and is not gone (audit #3, and P1-1 and
-// P1-2 of the second audit). A queued claim and a claim whose launch is uncertain after a restart
-// can still launch: a start that passed the fence before the close spawns a queued claim, and the
-// boot's relaunch releases an uncertain launch to queued and spawns it with no fence
-// (launchUnfinishedClaim). So the stop waits for the launch on its row's backoff. That wait is
-// routine: the row logs no error, and no warning however long the hold stands, where a wait that
-// is not routine is a warning from its seventh attempt (waitWarnAttempts). The claim's own start
-// waits at the hold's fence meanwhile. Once the gate opens, the stop's next decision reads no work
-// hold row, and the row finishes with the one line that says the stop is not made.
+// The work hold's stop of a claim that runs nothing yet and is not gone. A queued claim and a
+// claim whose launch is uncertain after a restart can still launch: a start that passed the fence
+// before the close spawns a queued claim, and the boot's relaunch releases an uncertain launch to
+// queued and spawns it with no fence (launchUnfinishedClaim). So the stop waits for the launch on
+// its row's backoff. That wait is routine: the row logs no error, and no warning however long the
+// hold stands, where a wait that is not routine is a warning from its seventh attempt
+// (waitWarnAttempts). The claim's own start waits at the hold's fence meanwhile. Once the gate
+// opens, the stop's next decision reads no work hold row, and the row finishes with the one line
+// that says the stop is not made.
 func TestWorkHoldStopOfAClaimThatRunsNothingIsNoError(t *testing.T) {
 	const unmade = "outbox: the design gate opened again before the work hold's stop was made; the stop is not made"
 	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain} {
@@ -2739,7 +2744,7 @@ func (p *unresponsiveHolder) Publish(ctx context.Context, topic, message string,
 	return p.holderPublisher.Publish(ctx, topic, message, payload, key)
 }
 
-// Spec step 3, for a worker whose holder the listener reports unresponsive (audit #5): its session
+// Spec step 3, for a worker whose holder the listener reports unresponsive: its session
 // is not dead and can still be in a turn. The close message to it does not wait for that session
 // with its stop unposted: the row ends, and the stop is posted with its deadline 2 minutes on, so
 // the worker's turn is cut then, its session kept.
@@ -2765,13 +2770,13 @@ func TestWorkHoldStopsAWorkerWhoseHolderIsUnresponsive(t *testing.T) {
 	r.wantHeld(claim.RoleImplementer, launched, "2 minutes after the close message")
 }
 
-// A close message whose stop a newer close outran (audit #13). The close of version 4 reaches the
+// A close message whose stop a newer close outran. The close of version 4 reaches the
 // working implementer unconfirmed, and its row waits on its backoff. The gate opens, the open
 // message reaches the implementer, and the close of version 5 reaches it with its own stop. The
 // version 4 row then meets the standing hold of version 5: it is not published, so the implementer
 // is not told the older close after the newer one, and it posts no second stop.
 func TestWorkHoldPublishesNoCloseThatANewerCloseOutran(t *testing.T) {
-	const outran = "outbox role message finished unpublished: a newer close of the design gate told the role already"
+	const outran = "outbox role message finished unpublished: a newer close of the design gate stands"
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -2979,7 +2984,7 @@ func (r *workHoldRig) launchingWithATask() *supervise.Machine {
 	return machine
 }
 
-// P1-1 of the second audit, for a stop that meets a launch a restart left uncertain. A start
+// The work hold's stop holds the relaunch of a launch that a restart left uncertain. A start
 // spawned the implementer with its task, and the daemon stored the claim launching before it
 // recorded the process. The close message meets no session that holds the role, and its stop
 // holds the launch until the agent's ready. The daemon then restarts: the hold at the ready lived
@@ -3066,7 +3071,7 @@ func TestWorkHoldStopsTheRelaunchOfAnUncertainLaunchWithinTheBackoffOfItsReady(t
 	}
 }
 
-// P1-2 of the second audit, for a stop that lands between the two calls of the boot's relaunch of
+// The work hold's stop that lands between the two calls of the boot's relaunch of
 // an uncertain launch (launchUnfinishedClaim): the release, which leaves the claim queued at the
 // generation it had (supervise.Claim.ReleasedLaunch), and the spawn. A start spawned the
 // implementer with its task, the close message met no session that holds the role and queued its
@@ -3190,7 +3195,7 @@ func (r *workHoldRig) wantMergerToldThenStopped(told time.Time) {
 	}
 }
 
-// P1-3 (i) of the second audit: under `work`, the close message to a merger whose launch is under
+// Under `work`, the close message to a merger whose launch is under
 // way at the close, its session not holding the role's topic yet, is marked to wait for the
 // merger's session, as a woken merger's is, and carries the merger's stop. The merger takes its
 // pull request out of GitHub's merge queue on this message alone. So the message waits rather
@@ -3239,7 +3244,7 @@ func TestWorkHoldTellsALaunchingMergerTheCloseBeforeItsStop(t *testing.T) {
 	}
 }
 
-// P1-3 (ii) of the second audit: under `work`, a merger's close message whose holder the listener
+// Under `work`, a merger's close message whose holder the listener
 // reports unresponsive waits for that holder, with its stop not posted, where a worker's close
 // that is not a merger's ends and posts its stop (TestWorkHoldStopsAWorkerWhoseHolderIsUnresponsive).
 // The merger takes its pull request out of the merge queue on this message alone. This holds for
@@ -3309,7 +3314,7 @@ func TestWorkHoldWaitsForAnUnresponsiveMergerBeforeItsStop(t *testing.T) {
 	}
 }
 
-// P1-3 (iii) of the second audit: under `work`, a merger whose start read the gate open before
+// Under `work`, a merger whose start read the gate open before
 // the close launches the merger after it, its pull request still in GitHub's merge queue. The
 // close reads no claim of the merger, live or released, and a start of it under way
 // (StartUnderWay). It writes no stop of that merger at once, which would stop the merger at its
@@ -3372,33 +3377,33 @@ func TestWorkHoldTellsAMergerWhoseStartReadTheGateBeforeTheCloseBeforeItsStop(t 
 	}
 }
 
-// gatesReadThenOpened is the runner's record store with act run once, armed, right after the
-// next read of a tree's design gates: the opening commits between that read and whatever the
-// attempt reads after it. Every other call goes straight to the store.
-type gatesReadThenOpened struct {
+// openedBeforeGatesRead is the runner's record store with act run once, armed, right before the
+// next read of a tree's design gates: the opening commits after the attempt opened its
+// transaction and before that transaction's first read. Every other call goes straight to the
+// store.
+type openedBeforeGatesRead struct {
 	record.Store
 	armed *atomic.Bool
 	act   func()
 }
 
-func (s gatesReadThenOpened) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
-	gates, err := s.Store.GatesOf(ctx, tx, issue)
-	if err == nil && s.armed.CompareAndSwap(true, false) {
+func (s openedBeforeGatesRead) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
+	if s.armed.CompareAndSwap(true, false) {
 		s.act()
 	}
-	return gates, err
+	return s.Store.GatesOf(ctx, tx, issue)
 }
 
-// P3-1 of the second audit: a close message reads its tree's standing gate and the tree's record
-// of its work hold in one transaction (closeOutrun), and ends where the record shows the hold
-// ended. Here the opening commits right after the close message's attempt read the gate, still
-// closed, and before the attempt reads the record. The record then shows the opening, so the close
-// is not published, the implementer is told the opening alone, and no stop is posted. A daemon
-// restart or a failed attempt cannot change the outcome: the next attempt reads the opening
-// committed, and the open gate ends the row
+// A close message reads its tree's standing gate and the tree's record of its work hold in one
+// REPEATABLE READ transaction (closeOutrun), so both reads come from one snapshot. The snapshot
+// starts at the transaction's first read, the read of the gate. Here the opening commits after
+// the close message's attempt opened its transaction and right before that read. The snapshot
+// holds the opening, so the gate reads open: the close is not published, the implementer is told
+// the opening alone, and no stop is posted. A daemon restart or a failed attempt cannot change the
+// outcome: the next attempt reads the opening committed, and the open gate ends the row
 // (TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain).
 func TestWorkHoldPublishesNoCloseWhoseHoldEndedAfterItReadTheGate(t *testing.T) {
-	const ended = "outbox role message finished unpublished: the work hold ended before its close message was published"
+	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -3407,7 +3412,7 @@ func TestWorkHoldPublishesNoCloseWhoseHoldEndedAfterItReadTheGate(t *testing.T) 
 	r.close(4)
 	armed := &atomic.Bool{}
 	armed.Store(true)
-	r.runner.records = gatesReadThenOpened{Store: r.records, armed: armed, act: func() { r.approve(4, 12) }}
+	r.runner.records = openedBeforeGatesRead{Store: r.records, armed: armed, act: func() { r.approve(4, 12) }}
 	r.runOnce()
 	if armed.Load() {
 		t.Fatal("the close message's attempt read no design gate, so the opening was never made")
@@ -3423,10 +3428,107 @@ func TestWorkHoldPublishesNoCloseWhoseHoldEndedAfterItReadTheGate(t *testing.T) 
 	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 		t.Fatalf("the outbox holds the stops %+v of the implementer, want none", stops)
 	}
-	if lines := loggedMessages(t, logs.String(), ended); len(lines) != 1 || lines[0]["role"] != string(implementer) || lines[0]["version"] != float64(4) {
-		t.Fatalf("the outbox logged %v, want one line naming the implementer and version 4", lines)
+	if lines := loggedMessages(t, logs.String(), unpublished); len(lines) != 1 || lines[0]["role"] != string(implementer) {
+		t.Fatalf("the outbox logged %v, want one line naming the implementer", lines)
 	}
 	if c := r.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateWorking || c.WorkHeld() {
 		t.Fatalf("the implementer is %s, held %v; want it at work and not stopped", c.State, c.WorkHeld())
+	}
+}
+
+// Each gated step numbers the versions of its own document, so a close message's stop names the
+// step and the version of the close that sent it (record.HoldStop), and a close message is
+// outrun where the hold that stands names another step or another version (closeOutrun). The
+// deployment gates the Verification document and the spec. The close of version 4 of the spec
+// reaches the working implementer unconfirmed, and its row waits on its backoff. The spec's
+// approval opens the gate, and the open message reaches the implementer. Version 2 of the
+// Verification document closes the gate again, and its close message reaches the implementer
+// with its own stop. The spec's row then meets the standing hold of the criteria step at version
+// 2, a version below its own 4: it is not published, and it posts no stop.
+func TestWorkHoldPublishesNoCloseOfAnotherDocumentThatANewerCloseOutran(t *testing.T) {
+	const outran = "outbox role message finished unpublished: a newer close of the design gate stands"
+	const criteria = "artifact-208-criteria"
+	tree := legionTree(phase.Implementing, config.HoldWork)
+	tree.steps = []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
+	r := newWorkHoldRig(t, tree)
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	approved := 1
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutGate(r.ctx, tx, record.DesignGate{Issue: r.tree.key, Step: record.DesignStepCriteria, ArtifactID: criteria,
+			LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 2}, EverOpened: true})
+	})
+	r.working(claim.RoleImplementer)
+	implementer := r.token(claim.RoleImplementer)
+	r.runner.notices = &notConfirmedOnce{holderPublisher: r.publisher, topic: notify.RoleTopicPrefix + string(implementer)}
+	r.close(4)
+	r.runOnce()
+	r.approve(4, 12)
+	r.runOnce()
+	r.apply("criteria-version-2", intake.DispatchArtifact{Key: r.tree.key, ArtifactID: criteria, Kind: intake.DispatchArtifactVersion, Version: 2})
+	r.runOnce()
+	r.clock.advance(65 * time.Second)
+	r.runOnce()
+
+	criteriaClose := "The design gate of LEGION-208 closed: version 2 of its criteria document (" + criteria + ") is with its reviewer, " +
+		"so the design you are working to may change. " + holdSentence + " End your turn now."
+	if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.openedMessage(4) || got[1] != criteriaClose {
+		t.Fatalf("the implementer was told %q, want the opening and then the close of the criteria step alone", got)
+	}
+	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
+		t.Fatalf("the outbox still holds %d role messages, want the spec's close finished", got)
+	}
+	if lines := loggedMessages(t, logs.String(), outran); len(lines) != 1 || lines[0]["role"] != string(implementer) ||
+		lines[0]["step"] != string(record.DesignStepSpec) || lines[0]["version"] != float64(4) ||
+		lines[0]["standingStep"] != string(record.DesignStepCriteria) || lines[0]["standing"] != float64(2) {
+		t.Fatalf("the outbox logged %v, want one line naming the implementer, the spec at version 4 and the criteria at version 2", lines)
+	}
+	for _, stop := range r.holdStops(claim.RoleImplementer) {
+		if stop.HoldVersion != 2 {
+			t.Fatalf("the outbox holds the stop %+v, want only the stop of the criteria's close", stop)
+		}
+	}
+}
+
+// A restart into `merge` while the work close message to a live merger is still queued, the
+// gate still closed. The boot ends the tree's work hold, since `merge` holds no running work, and
+// the gate stays closed. The merger takes its pull request out of GitHub's merge queue on the
+// close message alone, so a hold that ended with the gate still closed does not outrun the
+// message: the merger is told the close, and then the boot's sentence that the deployment no
+// longer holds the tree's work. Under `merge` the message's stop is not made, and one line names
+// the merger and the version that closed the gate.
+func TestWorkHoldTellsAMergerTheCloseAfterARestartIntoMerge(t *testing.T) {
+	const unmade = "outbox: the deployment's hold is no longer `work`, which holds no running work; the work hold's stop is not made"
+	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	r.live(claim.RoleMerger)
+	merger := r.token(claim.RoleMerger)
+	r.close(4)
+	// A role message's row names its role by the claim token.
+	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
+		t.Fatalf("the close left %d messages to the merger, want its one close message queued", got)
+	}
+
+	r.restartBeforeTheBoot()
+	r.deploy(config.HoldMerge)
+	r.apply("boot", intake.DaemonBooted{})
+	r.drain()
+
+	bootOpened := "The deployment no longer holds the work of " + r.tree.key + "'s tree."
+	if got := r.published(claim.RoleMerger); len(got) != 2 || got[0] != r.workerClose(4) || got[1] != bootOpened {
+		t.Fatalf("the merger was told %q, want the work close and then that the deployment no longer holds the tree's work", got)
+	}
+	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
+		t.Fatalf("the outbox still holds %d role messages, want each published", got)
+	}
+	if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
+		t.Fatalf("the outbox holds the stops %+v of the merger, want none: `merge` holds no running work", stops)
+	}
+	if lines := loggedMessages(t, logs.String(), unmade); len(lines) != 1 || lines[0]["role"] != string(claim.RoleMerger) || lines[0]["version"] != float64(4) {
+		t.Fatalf("the outbox logged %v, want one line naming the merger and version 4", lines)
+	}
+	if c := r.machine(claim.RoleMerger).Claim(); c.State == supervise.StateSuspended || c.WorkHeld() || c.SuspensionHeld {
+		t.Fatalf("the merger is %s by %q, held %v, a stop held %v; want it running and not stopped", c.State, c.SuspendedBy, c.WorkHeld(), c.SuspensionHeld)
 	}
 }
