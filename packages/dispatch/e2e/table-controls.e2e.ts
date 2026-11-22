@@ -44,6 +44,7 @@ import {
   listMyReplies,
   mintAgentToken,
   patchIssue,
+  putAgentState,
   putArchitectureSource,
   putIssueState,
   putRepoProject,
@@ -7699,5 +7700,128 @@ test("the Delivery page's measures table keeps the height of its rows from befor
         ]
       : []
   );
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): three live agents pinned again at each of two widths, and the Agents page opened
+// at each.
+// INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-a5b-h and -a5b-b at
+// 3fce6150 and da0804df, and infra-3135-a5m at main's merge base 143b57a7): three live agents
+// are pinned, Alpha first, and the reader presses Enter on Alpha's Unpin on the Agents page. The
+// page lists pinned agents first, in the order they were pinned (`orderAgents`,
+// features/agents/AgentsPage.tsx), so Alpha's row moves to the end of the list, below Beta's and
+// Gamma's, and the focus follows it to that row's Pin Alpha, in Chromium, Firefox and WebKit at
+// both commits. At 1440x900 the three rows stand in the window and Pin Alpha with them, at
+// 505 px. At 390x664 the rows are 126 px tall. In Chromium and Firefox the focus put on Unpin
+// Alpha has scrolled the window to 328 px, and Pin Alpha lands at 546 px, in sight. In WebKit the
+// window stands at 58 px, Pin Alpha lands at 816 px, below the 664 px window, and nothing
+// scrolls, at both commits. Main, which has no focus rescue, does the same in WebKit: Pin Alpha
+// at 505 px at 1440, and at 816 px with the window held at 58 px at 390. The architect's rulings:
+// a landing the reader caused must be in view (2026-11-19 10:3xZ, WCAG 2.2's 2.4.11 Focus Not
+// Obscured), and the one scroll a landing may make is to the nearest edge of a control partly in
+// sight, the least distance that shows it whole (2026-11-21 12:3xZ). Which control the press
+// lands on is not read here: 2026-11-19 22:3xZ names the same control in the row now at the
+// pressed row's place, and main's page means the focus to follow the row to where it lands
+// (AgentsPage.tsx, `focusAfterPin`). A focused control taken away, for which Firefox and WebKit
+// fire no `focusout` (React moves the row's node): the clause of the `webkit` and `firefox`
+// projects that names the page-own focus row (e2e/playwright.config.ts).
+test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on the Agents page at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  const pinnedAgent = (sessionId: string, title: string): FakeSession => ({
+    capabilities: ["aside", "btw", "steer"],
+    dir: `/workspaces/${title.toLowerCase()}`,
+    last_seen: Date.now() - 5_000,
+    machine_id: "pin-host",
+    roles: [],
+    session_id: sessionId,
+    title,
+  });
+  const alpha = pinnedAgent("01a0e200-4848-7473-acc5-0000000000a5", "Alpha");
+  const beta = pinnedAgent("01a0e200-4848-7473-acc5-0000000000b5", "Beta");
+  const gamma = pinnedAgent("01a0e200-4848-7473-acc5-0000000000c5", "Gamma");
+  const agents = [alpha, beta, gamma];
+  await setLiveSessions(agents);
+  /** What holds the focus and where the window stands: the focused element's name, the agent row
+   *  it is in, its top and height, and whether its box stands wholly inside the window. */
+  const landing = () =>
+    page.evaluate(() => {
+      const scrollY = Math.round(window.scrollY);
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { height: 0, inSight: false, name: "the body", row: null, scrollY, top: null };
+      }
+      const own = focused.getBoundingClientRect();
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      return {
+        height: Math.round(own.height),
+        inSight:
+          own.top >= -1 &&
+          own.bottom <= window.innerHeight + 1 &&
+          own.left >= -1 &&
+          own.right <= window.innerWidth + 1,
+        name: `${focused.tagName.toLowerCase()} "${words}"`,
+        row: focused.closest("[data-agent-row]")?.getAttribute("data-agent-row") ?? null,
+        scrollY,
+        top: Math.round(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `Agents page at ${size.width}x${size.height}`;
+    // Pinned again in this order at each width, so Alpha is the first pinned row each time.
+    for (const agent of agents) await putAgentState(agent.session_id, { pinned: false });
+    for (const agent of agents) await putAgentState(agent.session_id, { pinned: true });
+    await page.goto("/agents");
+    const unpin = agentRow(page, alpha.session_id).getByRole("button", {
+      exact: true,
+      name: "Unpin Alpha",
+    });
+    await expect(unpin).toBeVisible();
+    await expect(
+      agentRow(page, gamma.session_id).getByRole("button", { exact: true, name: "Unpin Gamma" })
+    ).toBeVisible();
+    await unpin.focus();
+    await nextFrames(page);
+    // One instant is the point: where the window stands just before the press.
+    const before = await landing();
+    await page.keyboard.press("Enter");
+    // The pin's write has landed once Alpha's row offers to pin it again.
+    await expect(
+      agentRow(page, alpha.session_id).getByRole("button", { exact: true, name: "Pin Alpha" })
+    ).toBeVisible();
+    // The poll waits, up to the expect timeout, for the focus the moved row took to land again.
+    await expect
+      .poll(async () => (await landing()).top !== null)
+      .toBe(true)
+      .catch(() => undefined);
+    await settledScrollTop(page);
+    // One read is the answer: every hand-off of the press has run, and the window holds still.
+    const now = await landing();
+    const rowTitle = agents.find((agent) => agent.session_id === now.row)?.title ?? now.row;
+    const what = now.row === null ? now.name : `${now.name} in ${rowTitle}'s row`;
+    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY}`;
+    if (now.top === null) {
+      wrong.push(`${where}: after Enter on Unpin Alpha the focus is on the body (${numbers})`);
+    } else if (!now.inSight) {
+      wrong.push(
+        `${where}: after Enter on Unpin Alpha the focus is on ${what}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
+      );
+    }
+    // The 12:3xZ allowance: the landing's own height, and a pixel for the rounding of a box.
+    const allowed = now.height + 1;
+    if (Math.abs(now.scrollY - before.scrollY) > allowed) {
+      wrong.push(
+        `${where}: after Enter on Unpin Alpha the window scrolled ${now.scrollY - before.scrollY} px, more than the landing's own height, to ${what} (${numbers})`
+      );
+    }
+  }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });

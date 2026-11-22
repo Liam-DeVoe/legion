@@ -366,8 +366,10 @@ const parallelProjects = [
   // nothing, whose button the cleared brush takes away and whose landing each engine scrolls into
   // view its own way, its row that a bulk Dismiss deep in the Inbox's list hands the focus to
   // the row now at the marked row's place in sight, whose bar and rows the Dismiss takes away,
-  // and its row that a bulk action that takes the marked rows out of the project List's view
-  // hands the focus to the row now at their place, whose bar and rows the action takes away. And
+  // its row that a bulk action that takes the marked rows out of the project List's view
+  // hands the focus to the row now at their place, whose bar and rows the action takes away,
+  // and its row that Unpin on a pinned agent keeps the keyboard focus on a control in sight,
+  // whose row the unpin moves to its new place. And
   // `focus-landing`'s sixteen rows, one for each page of R2 at each of two widths, whose focused
   // control a press, a live update, another device or a press made offline takes away.
   // Measured in WebKit as well as Firefox:
