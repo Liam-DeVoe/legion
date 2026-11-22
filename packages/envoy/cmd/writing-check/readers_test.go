@@ -438,3 +438,35 @@ func TestReadersRefusesOnePathForItsTwoOutputs(t *testing.T) {
 		t.Errorf("the refused readers wrote %s (%v)", both, err)
 	}
 }
+
+// The same holds for two names of one new file where one name goes through a link and then "..":
+// the kernel follows the link before it takes "..", so work/link/../readers.json, with link
+// pointing at x/sub, is x/readers.json, the --state named here, and not work/readers.json.
+func TestReadersRefusesOneNewFileNamedThroughALinkAndDotDot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", filepath.Join(dir, "token"))
+	in := filepath.Join(dir, "cases.jsonl")
+	if err := os.WriteFile(in, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	work, target := filepath.Join(dir, "work"), filepath.Join(dir, "x", "sub")
+	for _, d := range []string{work, target} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, filepath.Join(work, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Written out, not with filepath.Join, which would take the ".." away before the link.
+	through := work + "/link/../readers.json"
+	state := filepath.Join(dir, "x", "readers.json")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"readers", "--in", in, "--log-through", "10", "--out", through, "--state", state}, &stdout, &stderr); code != 2 {
+		t.Errorf("readers --out link/../N --state N = %d:\n%s; want 2 and the refusal", code, stderr.String())
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused readers wrote %s (%v)", state, err)
+	}
+}
