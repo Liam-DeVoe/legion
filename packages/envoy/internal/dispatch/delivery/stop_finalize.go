@@ -131,7 +131,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 			return
 		case handBacksInDoubt:
 			if d.abandonHold(hold) {
-				d.traceFinalizerEnd(delivery, finalizerLapse, "the connection closed with a published hand-back that no flush confirmed")
+				d.traceFinalizerEnd(delivery, finalizerLapse, "the socket a published hand-back went out on has gone before a flush confirmed it")
 			} else {
 				d.traceFinalizerEnd(delivery, finalizerLost, "the hold was lost before the finalizer left it to lapse")
 			}

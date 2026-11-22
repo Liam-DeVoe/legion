@@ -35,7 +35,7 @@ body: |-
   whole read.
   A whole read asks for `GET /legion/v1/state?view=observed`, which carries only the fields
   Dispatch reads. A daemon of an earlier build ignores the query and serves its whole state, which
-  Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 8 MiB, and
+  Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 32 MiB, and
   stops one byte past the cap. A larger answer is a failed read whose `legion_reads` row names the
   cap and the answer's `Content-Length` where it declares one, and otherwise the 64 MiB and one
   byte where the read stopped; its `bytes` is that size.
@@ -45,9 +45,9 @@ body: |-
   sequence of the message that holds it and how many times that message went back to the stream,
   `legion_event_parts` holds the parts of a split transaction, and
   `server_processes.legion_state_intake` tells a process of this build from one of an earlier
-  build (migration `20261118212431_legion_events`). A call to a daemon waits up to 60 s, not 20 s.
+  build (migration `20261118212431_legion_events`).
   Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the
-  hub's instance. The lease pool holds 24 connections, not 22, and a server process opens at most
-  115 connections to Postgres, not 113.
+  hub's instance. The lease pool holds 26 connections, not 24, and a server process opens at most
+  117 connections to Postgres, not 115.
 custom:
   Issue: pr4432
