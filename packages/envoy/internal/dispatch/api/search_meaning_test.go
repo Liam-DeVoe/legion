@@ -54,6 +54,15 @@ type fakeEmbedder struct {
 	// the context's error then. It models a model service slower than its caller allows (the
 	// related-item check's meaning allowance).
 	delay time.Duration
+	// holdDocuments, once set, holds every InputDocument call before it answers: the call is
+	// counted in holding, says so on documentsHeld (without waiting for a reader), and waits until
+	// releaseDocuments is closed or its context ends, then answers as it would have. It models
+	// background work held in its call to the model service. A test makes the two channels before
+	// any call can reach them, and sets holdDocuments after.
+	holdDocuments    atomic.Bool
+	documentsHeld    chan struct{}
+	releaseDocuments chan struct{}
+	holding          atomic.Int32
 
 	callsMu sync.Mutex
 	calls   int
@@ -63,6 +72,18 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 	f.callsMu.Lock()
 	f.calls++
 	f.callsMu.Unlock()
+	if inputType == embed.InputDocument && f.holdDocuments.Load() {
+		f.holding.Add(1)
+		select {
+		case f.documentsHeld <- struct{}{}:
+		default:
+		}
+		select {
+		case <-f.releaseDocuments:
+		case <-ctx.Done():
+		}
+		f.holding.Add(-1)
+	}
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
@@ -324,7 +345,11 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
 // their InputQuery calls go straight to the unwrapped fake embedder and are never subject to
-// that backoff at all.
+// that backoff at all. That a live search never waits behind the background work is shown by the
+// searches answering while the drain is held in its call to the model service, with everything
+// it holds there: its claim on the pending rows, its share of the token budget and its limiter's
+// slot. A search that waited behind that work would not answer until the drain was let go, which
+// happens only once every search has answered.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -344,6 +369,8 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	// for the rest of the test - exactly a saturating background drain in progress.
 	throttleErr := embedtest.FakeThrottleError{Code: "ThrottlingException"}
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
+	embedder.documentsHeld = make(chan struct{}, 1)
+	embedder.releaseDocuments = make(chan struct{})
 	createInteractionIssue(t, handler, "SAT", "Other bulk content that never finishes embedding", "Body.")
 
 	bgCtx, cancel := context.WithCancel(context.Background())
@@ -375,8 +402,32 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 		return interval, interval > floor
 	})
 
+	// The drain's next call of the model service is held there until every search has answered.
+	release := sync.OnceFunc(func() { close(embedder.releaseDocuments) })
+	defer release()
+	embedder.holdDocuments.Store(true)
+	testwait.Until(t, "the background drain's next call of the model service to be held (the calls held)", func() (int32, bool) {
+		select {
+		case <-embedder.documentsHeld:
+			return embedder.holding.Load(), true
+		case <-done:
+			t.Fatal("the background drain stopped before its next call of the model service was held")
+		default:
+		}
+		return embedder.holding.Load(), false
+	})
+
 	for i := range 5 {
-		response := searchResponse(t, handler, "q=wibbleflorp")
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answered <- searchRequestOn(t, handler, "/api/v1/search", "q=wibbleflorp") }()
+		raw := testwait.Receive(t, fmt.Sprintf("live search request %d to answer while the background drain is held in its call of the model service", i), answered)
+		if embedder.holding.Load() == 0 {
+			t.Fatalf("search request %d answered once the background drain's call was no longer held, which shows nothing", i)
+		}
+		if raw.Code != http.StatusOK {
+			t.Fatalf("search request %d: status=%d body=%s", i, raw.Code, raw.Body.String())
+		}
+		response := decodeBody[model.SearchResponse](t, raw)
 		if response.Degraded != "" {
 			t.Errorf("search request %d: Degraded = %q, want empty - a live query must stay non-degraded while only background document traffic is throttled", i, response.Degraded)
 		}

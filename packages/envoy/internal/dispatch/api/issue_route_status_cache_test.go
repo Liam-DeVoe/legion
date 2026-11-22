@@ -231,31 +231,34 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 }
 
 // A listener that does not answer holds a fetch only for the fetch's own bound, not the client's
-// window (a minute here), and the reads after it read unknown at once without asking again. The
-// bound is half a second, so even a loaded machine's request reaches the listener inside it. How
+// window (a minute here), and the reads after it read unknown at once without asking again. How
 // long the fetch held the call is read off the stored silence, on the database's clock: from the
 // moment the call counts as sent to the silence's store (its expires_at less the silence window),
-// which the test's own setup and scheduling are no part of.
+// which the test's own setup and scheduling are no part of. That the fetch met a listener that did
+// not answer is its error, its bound's deadline. Whether a later read asked again is read off the
+// stored answer too, not off the listener's count of calls: a read that asked would have stored a
+// silence of its own, sent later, while a call a loaded machine sends past the half-second bound
+// reaches the listener late or not at all, so a count read after the read returns can miss it.
 func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) {
-	served, calls, _ := heldRosterServer(t)
+	served, _, _ := heldRosterServer(t)
 	served.rosters.timeout, served.rosters.silenceTTL = 500*time.Millisecond, time.Minute
 
-	if roster := readRoster(t, served, context.Background()); roster.answered {
+	roster := readRoster(t, served, context.Background())
+	if roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
+	}
+	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("the first read's fetch ended with %v, want its bound's %v", roster.err, context.DeadlineExceeded)
 	}
 	sent, expires := storedRosterTimes(t, served)
 	if held := expires.Add(-served.rosters.silenceTTL).Sub(sent); held >= time.Minute {
 		t.Fatalf("the fetch held the listener's call %s from its send to its silence's store, want about the 500ms fetch bound, not the client's minute", held)
 	}
-	first := calls.Load()
-	if first != 1 {
-		t.Fatalf("the first read made %d listener calls, want 1", first)
-	}
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read inside the silence window answered a roster")
 	}
-	if got := calls.Load(); got != first {
-		t.Fatalf("a read inside the silence window asked the listener again: %d calls, want %d", got, first)
+	if again, _ := storedRosterTimes(t, served); !again.Equal(sent) {
+		t.Fatalf("a read inside the silence window asked the listener again: the stored answer was sent at %s, after the first read's silence sent at %s", again, sent)
 	}
 }
 

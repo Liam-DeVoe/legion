@@ -37,7 +37,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
 	second := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 
 	var holders cursorHolders
 	var ids []int64
@@ -99,7 +99,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	standbyStore := storetest.SecondProcess(t, database)
 	released := releasedWake(t, standbyStore)
 	second := startFill(t, standbyStore, released, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
 	written := commitComment(t, database, broker, textversionstest.Issue).id
 	first.Wake()
@@ -133,7 +133,7 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
 	never := make(chan struct{})
 	second := startFill(t, storetest.SecondProcess(t, database), never, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 
 	first.Stop(t)
 	stopped := time.Now()

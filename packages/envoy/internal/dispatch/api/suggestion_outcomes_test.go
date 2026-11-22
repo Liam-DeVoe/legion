@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -103,17 +104,47 @@ type idleSweep struct {
 
 // sweepStatements counts the statements the idle sweep makes on its pool and, apart, the pages it
 // begins: every page first reads the outcome cursor for update (judgeSuggestionPage), so every pass
-// begins one page or more.
+// begins one page or more. It also keeps the highest safe horizon a committed page read events up
+// to (readSuggestionPage's last argument): a page's own transaction
+// (judgeSuggestionPageInTransaction) is the only one the sweep commits on that pool, and its pages
+// run one at a time.
 type sweepStatements struct {
 	storetest.StatementCounter
 	pages atomic.Int64
+
+	mu sync.Mutex
+	// reading is the safe horizon of the page read last begun; read the highest of a page committed.
+	reading, read int64
 }
 
 func (s *sweepStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	if strings.Contains(data.SQL, "from suggestion_outcome_cursor for update") {
 		s.pages.Add(1)
 	}
+	if data.SQL == readSuggestionPage && len(data.Args) == 4 {
+		if safe, ok := data.Args[3].(int64); ok {
+			s.mu.Lock()
+			s.reading = safe
+			s.mu.Unlock()
+		}
+	}
 	return s.StatementCounter.TraceQueryStart(ctx, conn, data)
+}
+
+func (s *sweepStatements) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	if data.Err == nil && data.CommandTag.String() == "COMMIT" {
+		s.mu.Lock()
+		s.read = max(s.read, s.reading)
+		s.mu.Unlock()
+	}
+	s.StatementCounter.TraceQueryEnd(ctx, conn, data)
+}
+
+// readThrough is the highest event id a page of the sweep has read up to and committed.
+func (s *sweepStatements) readThrough() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.read
 }
 
 // idleSweepGap is the idle sweep's gap between passes, far shorter than the server's minute so
@@ -207,24 +238,58 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // on the suggestion. The comment wakes the sweep at once, but an event is judged by only once it
 // is settle old, by which time the update is written too, so the rules see both and the acted_on
 // rules run before the overridden one: the comment is not judged alone as an override.
+//
+// The update is posted once a page of the sweep has read the log up to the comment and committed,
+// so a sweep that judges the comment as soon as it reads it has judged it alone, and fails the
+// test however loaded the machine is. What the claim needs then is that the update commits before
+// the comment is settle old by the database's clock, the clock and the column a pass reads every
+// age by (readSuggestionPage): every pass that judges the comment then begins after the update
+// committed, and its rules see it. A loaded machine can post the update later than that, and a
+// pass then rightly judges the comment alone; that attempt says nothing of the claim, so it is
+// made again, on a sweep of its own, until one posts the update in time.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	const settle = 1500 * time.Millisecond
-	sweep := startIdleSweep(t, "OTOGETHER", settle)
-	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
-	time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
+	attempts := 0
+	testwait.Until(t, "an attempt that posted the update before the comment was settle old by the database's clock", func() (string, bool) {
+		attempts++
+		sweep := startIdleSweep(t, "OTOGETHER", settle)
+		seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
+		time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
 
-	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-	time.Sleep(300 * time.Millisecond)
-	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	// The settle waited out on the database's clock, which the pass reads every age by; then the
-	// horizon alone, which the pass reads up to.
-	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
-	horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
-		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
+		postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
+		comment, _ := newestEvent(t, sweep.database, sweep.source, "message.created")
+		waitUntil(t, "a page of the sweep that read the log up to the comment to commit", func() bool { return sweep.counter.readThrough() >= comment })
+		postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
+		if _, age := newestEvent(t, sweep.database, sweep.source, "message.created"); age >= settle {
+			t.Logf("attempt %d: the update committed once the comment was %s old, past its %s settle; made again", attempts, age, settle)
+			return fmt.Sprintf("attempt %d: the update committed once the comment was %s old, past its %s settle", attempts, age, settle), false
+		}
+		// The settle waited out on the database's clock, which the pass reads every age by; then the
+		// horizon alone, which the pass reads up to.
+		awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
+		horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
+			return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
+		})
+		if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {
+			t.Fatalf("outcome = %+v; want acted_on, the update written moments after the comment", row)
+		}
+		return fmt.Sprintf("attempt %d", attempts), true
 	})
-	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {
-		t.Fatalf("outcome = %+v; want acted_on, the update written moments after the comment", row)
+}
+
+// newestEvent is the id of the newest event of eventType on issueKey, and how old it is by the
+// database's clock.
+func newestEvent(t *testing.T, database *store.Store, issueKey, eventType string) (int64, time.Duration) {
+	t.Helper()
+	var id int64
+	var seconds float64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select id, extract(epoch from clock_timestamp() - created_at)::double precision
+		  from events where issue_key = $1 and type = $2 order by id desc limit 1
+	`, issueKey, eventType).Scan(&id, &seconds); err != nil {
+		t.Fatalf("read the newest %s event of %s: %v", eventType, issueKey, err)
 	}
+	return id, time.Duration(seconds * float64(time.Second))
 }
 
 // A suggestion younger than settle is not judged, whatever older event a page carries: here

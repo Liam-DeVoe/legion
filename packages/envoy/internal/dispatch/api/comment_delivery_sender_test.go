@@ -438,12 +438,23 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions after the answer", "before")
 
+	// The request is built here, on the test's goroutine, so the one that serves it calls nothing
+	// that can fail the test: it only hands back the answer.
+	body, err := json.Marshal(map[string]any{
+		"body":     "All three of you.",
+		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
+	})
+	if err != nil {
+		t.Fatalf("encode the comment: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
 	posted := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		posted <- postMentionedComment(t, handler, issue.Key, map[string]any{
-			"body":     "All three of you.",
-			"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
-		})
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		posted <- response
 	}()
 	created := decodeMentionedComment(t, testwait.Receive(t, "the comment's answer while its three mention sends are held at the listener", posted))
 	if len(created.Deliveries) != 3 {
@@ -1192,8 +1203,10 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // committed with, and the sender's refresh loop (keepClaims) writes each of those claims again
 // before it lapses, so a lane held longer than a claim lease keeps them: a delivery sweep pass
 // that runs while every attempt is old enough to be owed takes none of them and sends nothing
-// past the send in flight. The claims age to just short of a lease: one a lease old with no
-// refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
+// past the send in flight. The claims age to fifteen seconds short of a lease, which leaves the
+// refresh loop, ticking every 20 ms here, fifteen seconds to write them again, so a refresh a
+// loaded machine runs late still lands: one a lease old with no refresh committed has lapsed, and
+// the refresh no longer writes it (refreshMentionClaims), which
 // TestALostRefreshNeverRevivesALapsedClaim covers.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	listener, state := newMentionListener(t)
@@ -1219,10 +1232,10 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	}
 	// The lane has now been held longer than a claim lease: every attempt was opened that long
 	// ago, and the claims the sender took on the sends waiting on it were last written all but a
-	// lease ago, so they lapse within seconds unless the refresh writes them again.
+	// lease ago, so they lapse within fifteen seconds unless the refresh writes them again.
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-5*time.Second)
+	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-15*time.Second)
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)

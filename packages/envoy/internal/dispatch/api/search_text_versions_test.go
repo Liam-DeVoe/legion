@@ -266,10 +266,7 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 	last := backlog[len(backlog)-1].ID
 
 	fill := startKeywordFill(t, filled)
-	testwait.UntilPolling(t, 20*time.Millisecond, "the keyword fill's first batch (the batches it logged)", func() (int, bool) {
-		batches := len(fill.Lines(t, keywordBatchLine))
-		return batches, batches > 0
-	})
+	fill.AwaitLine(t, keywordBatchLine)
 	if cursor := textversionstest.Cursor(t, filled.database); cursor >= last {
 		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: nothing is left to catch up beside the requests", cursor, last)
 	}
@@ -347,7 +344,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
 	fill := startKeywordFill(t, server)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
+	fill.AwaitLine(t, keywordBatchLine)
 	if cursor := textversionstest.Cursor(t, server.database); cursor >= last {
 		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
 	}
@@ -365,7 +362,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		return server.latency.Slow(time.Now())
 	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
-	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
+	fill.AwaitLine(t, keywordPausedLine)
 	var batchesBeforePause int
 	for _, msg := range fill.Lines(t, "") {
 		if strings.HasPrefix(msg, keywordPausedLine) {
@@ -437,7 +434,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	}
 
 	// Then the fill continues: the cursor moves, and every event gets its rows.
-	fill.AwaitLine(t, keywordContinuesLine, 20*time.Second)
+	fill.AwaitLine(t, keywordContinuesLine)
 	testwait.WithinPolling(t, 20*time.Second, 100*time.Millisecond,
 		fmt.Sprintf("the cursor to move from %d within 20 s of the fill saying it continues", paused), func() bool {
 			return textversionstest.Cursor(t, server.database) != paused
