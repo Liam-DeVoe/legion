@@ -370,9 +370,9 @@ func rolePushCommitIDs(cs []rolePushChange) []string {
 //   - `-c "<C1> | <C2>"`, C1 and C2 two commits that the reviewer made with the implementer's
 //     trailer: the step prints no rewrite, runs no metaedit and takes no snapshot (a recording jj
 //     ahead of the real one sees no metaedit and no command of the step's with no
-//     --ignore-working-copy), the real push gets the role's own words, every byte, and origin
-//     holds C1 and C2 as they were, with the reviewer's author, as jj alone leaves them on a twin
-//     state made the same way;
+//     --ignore-working-copy), the real push gets the role's own words, every byte, beside the pod's
+//     jj's own layers (rolePushFixture.written), and origin holds C1 and C2 as they were, with the
+//     reviewer's author, as jj alone leaves them on a twin state made the same way;
 //   - `-c "<E> | <C>"`, E a commit with an empty author and the implementer's trailer, which the
 //     step fills before it decides, after its one snapshot, and C one that the reviewer made with
 //     the implementer's trailer: the step prints the rewrite of E alone and runs one metaedit,
@@ -399,7 +399,7 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 		want.cannotSet, want.cannotSetNames = 1, rolePushPastTheLimit(args[3], n, f.argMax)
 		want.noMetaedit, want.snapshots = true, rolePushTakesNoSnapshot
 		want.pushed = func(words []string) {
-			if !slices.Equal(words, args) {
+			if !slices.Equal(f.written(words), args) {
 				f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
 			}
 		}

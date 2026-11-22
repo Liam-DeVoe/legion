@@ -262,6 +262,9 @@ type rolePushFixture struct {
 	// formDir is the directory whose jj is the form's: the pod's directory of wrappers, or the
 	// tmux form's bin.
 	formDir string
+	// podForces holds, for the git of each directory podDir wrote, the word that names it in each
+	// layer the pod's jj writes into a line it runs: `--config=git.executable-path="<git>"`.
+	podForces []string
 	// after is the PATH after formDir: the recording jj and the real one for tmux, the system's
 	// directories for the pod, whose wrapper runs its jj by its full path.
 	after string
@@ -361,7 +364,7 @@ func (f *rolePushFixture) script(dir, name, body string) string {
 // podDir writes the pod's wrappers into dir, as the image's /opt/legion/bin holds them: a git that
 // runs the real git, and packages/daemon/docker/jj with real= naming the form's next jj, wrapper=
 // naming that git, and legion=, where the script has that line, naming this test binary run as
-// legion. It answers dir.
+// legion. It adds that git's layer word to podForces, and answers dir.
 func (f *rolePushFixture) podDir(dir string) string {
 	f.t.Helper()
 	git := f.script(dir, "git", "#!/bin/sh\nexec '"+f.git+"' \"$@\"\n")
@@ -387,6 +390,7 @@ func (f *rolePushFixture) podDir(dir string) string {
 	if !repointed["real"] || !repointed["wrapper"] {
 		f.t.Fatalf("packages/daemon/docker/jj holds no real= or wrapper= line to repoint: %v", repointed)
 	}
+	f.podForces = append(f.podForces, `--config=git.executable-path="`+git+`"`)
 	f.script(dir, "jj", strings.Join(lines, "\n"))
 	return dir
 }
@@ -1015,9 +1019,10 @@ func (f *rolePushFixture) pushAndCheck(args []string, want rolePushWant) {
 // reads edits only where want sets metaedits, and a caller whose want sets none passes 0. Where a
 // recording jj ahead of the real one ran a real push, check reads that push's
 // --ignore-working-copy against args and the snapshots the step took before it (checkIgnoring),
-// and the ending of each line of a step that gave up against those snapshots, whatever want says;
-// a push whose step failed before any real push has none to read. It reads the recording jj's log
-// once, after the push.
+// under the pod's form the git wrapper's first layer that push carries (checkPodLayer), and the
+// ending of each line of a step that gave up against those snapshots, whatever want says; a push
+// whose step failed before any real push has none to read. It reads the recording jj's log once,
+// after the push.
 func (f *rolePushFixture) check(want rolePushWant, args []string, code int, stderr string, divergent map[string]int, edits int) {
 	t := f.t
 	t.Helper()
@@ -1104,6 +1109,9 @@ func (f *rolePushFixture) check(want rolePushWant, args []string, code int, stde
 			}
 		}
 		f.checkIgnoring(args, calls[push].args, len(taken))
+		if f.form == rolePushPod {
+			f.checkPodLayer(calls[push].args)
+		}
 		if want.pushed != nil {
 			want.pushed(calls[push].args)
 		}
@@ -1136,12 +1144,55 @@ func (f *rolePushFixture) checkIgnoring(args, pushed []string, snapshots int) {
 
 // pushedAfterSnapshot is a check of the words of a real push (rolePushWant.pushed) that runs after
 // the step's snapshot: the --ignore-working-copy that the snapshot gives it, then args, the role's
-// own words, every byte.
+// own words, every byte, beside the pod's jj's own layers (written).
 func (f *rolePushFixture) pushedAfterSnapshot(args []string) func(words []string) {
 	return func(words []string) {
-		if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(words, written) {
+		if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(f.written(words), written) {
 			f.t.Errorf("the real push ran with %q, want the step's --ignore-working-copy, then the role's own words: %q", words, written)
 		}
+	}
+}
+
+// written is words, the arguments of a command the recording jj ran, without the git wrapper's two
+// layers that the pod's jj writes into a line it runs (packages/daemon/docker/jj): the first, a
+// podForces word then `--config-file=/dev/null`, and the last, `--config-file=/dev/null` then a
+// podForces word. Of the two layers' four words it takes those alone: a podForces word with no
+// `--config-file=/dev/null` on the side its layer has it stays, as does every other word. Under the
+// tmux form, which writes no layer, words come back as they are.
+func (f *rolePushFixture) written(words []string) []string {
+	kept := make([]string, 0, len(words))
+	first := true
+	for i := 0; i < len(words); i++ {
+		word := words[i]
+		if !slices.Contains(f.podForces, word) {
+			kept = append(kept, word)
+			continue
+		}
+		was := first
+		first = false
+		switch n := len(kept); {
+		case was && i+1 < len(words) && words[i+1] == "--config-file=/dev/null":
+			i++
+		case !was && n > 0 && kept[n-1] == "--config-file=/dev/null":
+			kept = kept[:n-1]
+		default:
+			kept = append(kept, word)
+		}
+	}
+	return kept
+}
+
+// checkPodLayer checks that pushed, the words of a real push under the pod's form, carry the git
+// wrapper's first layer as the pod's jj writes it, after the step's --ignore-working-copy where
+// the push has it: a podForces word, then `--config-file=/dev/null`.
+func (f *rolePushFixture) checkPodLayer(pushed []string) {
+	f.t.Helper()
+	words := pushed
+	if len(words) > 0 && words[0] == "--ignore-working-copy" {
+		words = words[1:]
+	}
+	if len(words) < 2 || !slices.Contains(f.podForces, words[0]) || words[1] != "--config-file=/dev/null" {
+		f.t.Errorf("the real push ran with %q, want the pod's jj's first layer, one of %q then --config-file=/dev/null, in front of the role's words", pushed, f.podForces)
 	}
 }
 
