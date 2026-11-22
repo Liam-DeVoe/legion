@@ -286,7 +286,7 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 	}
 	if owner.Retired {
 		slog.Warn("dispatch: refuse a write into a retired document", "document", artifactID)
-		return nil, &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug}
+		return nil, &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey}
 	}
 	if err := s.awaitRoomRecovery(ctx, artifactID); err != nil {
 		return nil, err

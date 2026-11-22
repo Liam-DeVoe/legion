@@ -39,13 +39,15 @@ import (
 // (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
 // after the tie and the spec node has not changed since they did, which the page of the release
 // before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
-//
-// kept for one release: compat-objects
+// entries and open_questions stay. document and decisions go once no page of the release before
+// reads them (compat-objects).
 type issueDecisions struct {
-	Entries       []decisionEntry  `json:"entries"`
-	Document      *string          `json:"document"`
-	OpenQuestions []issueAskRow    `json:"open_questions"`
-	Decisions     []model.Decision `json:"decisions"`
+	Entries []decisionEntry `json:"entries"`
+	// kept for one release: compat-objects
+	Document      *string       `json:"document"`
+	OpenQuestions []issueAskRow `json:"open_questions"`
+	// kept for one release: compat-objects
+	Decisions []model.Decision `json:"decisions"`
 }
 
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +77,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// kept for one release: compat-objects
 	if answer.Document, err = s.standingDecisionsDocument(r.Context(), key); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -87,6 +90,8 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 // stands (decisions_documents()), and nil once it is retired or where the issue holds none: the
 // Decisions read's old `document` member. Nothing reads
 // the document's text.
+//
+// kept for one release: compat-objects
 func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*string, error) {
 	var issueKey, session *string
 	var project, slug, kind string
