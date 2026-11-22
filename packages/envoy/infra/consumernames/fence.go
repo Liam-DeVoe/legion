@@ -48,8 +48,35 @@ func familyMember(family, logical string) (member, error) {
 // logical's fixed name. Its refusal is selection.ErrMalformedRecord naming the field and the name,
 // or the library's refusal of a family or a durable key no store keeps. A nil is no leave to
 // delete: a name t-7 deletes also passes deleteOwned.
+//
+// A record restore --finish left selects the key's fixed name, which the creators refuse as a
+// current; the readers take it, and that shape alone (restoredRecord): its current is its restore
+// target, the key's fixed name, at phase created. It is judged with its current cleared, so every
+// other name it gives still meets the creators' fence. Any other fixed current is refused.
 func checkRecordFence(family, logical string, record selection.Record) error {
+	if restoredRecord(family, logical, record) {
+		record.Current = ""
+	}
 	return selection.CheckFamily(family, logical, record)
+}
+
+// restoredRecord reports whether record is one restore --finish left (restoreCreated): its
+// current is its restore target, and that is logical's fixed name by the family's own naming
+// (selection.FamilyNaming).
+func restoredRecord(family, logical string, record selection.Record) bool {
+	restore := record.Restore
+	if restore == nil || restore.Phase != restoreCreated || record.Current == "" || record.Current != restore.Target {
+		return false
+	}
+	naming, err := selection.FamilyNaming(family, logical)
+	if err != nil {
+		return false
+	}
+	fixed := naming.Prefix(logical)
+	if naming.Fixed != nil {
+		fixed = naming.Fixed(logical)
+	}
+	return record.Current == fixed
 }
 
 // deleteOwned deletes consumer name, which m's record or m's logical name names, only once the

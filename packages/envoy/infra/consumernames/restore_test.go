@@ -655,6 +655,93 @@ func TestRestoreSkipsAGoneDaemonStore(t *testing.T) {
 	require.NoError(t, rig.release(rollback))
 }
 
+// The operator's readers' record fence (checkRecordFence) passes a record restore --finish left,
+// and only that shape of a fixed current: its current equal to its restore target, which is the
+// key's fixed name, at phase created, judged with its current cleared, so its other names still
+// meet the creators' fence. A fixed current with no restore field, one at another phase, a target
+// that is another key's fixed name, and a restored record whose retired name is another family's
+// are each refused; and the creators' own fence (selection.CheckFamily) still refuses the restored
+// record. Control: 3cef381b26's fence, the creators' alone, refuses the restored record too.
+func TestTheReadersFencePassesOnlyARestoredRecord(t *testing.T) {
+	const session, fixed, fresh = "ses_r", "s-ses_r", "session~RestoredRetiredAAAA"
+	restored := func(phase string) *selection.Restore {
+		return &selection.Restore{Target: fixed, Start: 3, Phase: phase}
+	}
+	record := selection.Record{Current: fixed, Start: 3, Retired: []string{fresh}, Restore: restored(restoreCreated)}
+	require.NoError(t, checkRecordFence(familySession, session, record), "a restored session record")
+	require.ErrorIs(t, selection.CheckFamily(familySession, session, record), selection.ErrMalformedRecord, "the creators' fence refuses the restored record")
+	const daemon = "legion-go-p-wake"
+	require.NoError(t, checkRecordFence(daemonFamily("p"), daemon,
+		selection.Record{Current: daemon, Start: 3, Restore: &selection.Restore{Target: daemon, Start: 3, Phase: restoreCreated}}), "a restored daemon record")
+	for name, refused := range map[string]selection.Record{
+		"a fixed current with no restore field":            {Current: fixed, Start: 3},
+		"a fixed current at phase kept":                    {Current: fixed, Start: 3, Restore: restored(restoreKept)},
+		"a fixed current at phase source_deleted":          {Current: fixed, Start: 3, Restore: restored(restoreSourceDeleted)},
+		"a restore target of another key's fixed name":     {Current: "s-ses_other", Start: 3, Restore: &selection.Restore{Target: "s-ses_other", Start: 3, Phase: restoreCreated}},
+		"a restored record retiring another family's name": {Current: fixed, Start: 3, Retired: []string{"legion-go-p-dispatch"}, Restore: restored(restoreCreated)},
+	} {
+		require.ErrorIs(t, checkRecordFence(familySession, session, refused), selection.ErrMalformedRecord, name)
+	}
+}
+
+// After a rollback, the operator's readers take the records restore --finish left, each selecting
+// its fixed name with the fresh names the rollback retired: status lists no record its family's
+// creator refuses, the census's reader of the recorded names reads those families, and plain
+// cleanup deletes the retired fresh names and drops them from each record, keeping its current and
+// its fixed consumer. Control: 3cef381b26's readers, which judge each restored record by the
+// creators' fence alone, so status lists each as refused, the census's reader fails, and cleanup
+// leaves the retired names for good.
+func TestReadersTakeTheRecordsARollbackLeft(t *testing.T) {
+	ctx := context.Background()
+	rig := newRestoreRig(t, familyDispatch, daemonFamily("rsf"))
+	names := map[string]string{sessionFixedPrefix + "rolled": "notifications.agent.rolled", daemonFixedPrefix + "rsf-dispatch": "notifications.github.rsf"}
+	var conversions []restoreConversion
+	for name, subject := range names {
+		seqs := rig.publish(subject, 3)
+		rig.fixed(restoreFixedConfig(name, subject), 1)
+		conversions = append(conversions, restoreConversion{fixed: name, start: seqs[1]})
+	}
+	rig.cutover(conversions...)
+	rollback := rig.heldHold(holdrecord.WorkflowRollback)
+	for _, mode := range []string{"--prepare", "--finish"} {
+		code, _, stderr := rig.restore(rollback, mode)
+		require.Zero(t, code, "restore %s: %s", mode, stderr)
+	}
+	require.NoError(t, rig.release(rollback))
+	retired := map[string][]string{}
+	for name := range names {
+		m, _ := classify(name)
+		record := rig.record(m.Family, m.Logical)
+		require.Equal(t, name, record.Current, "restore --finish selects %s", name)
+		require.NotEmpty(t, record.Retired, "the rollback retired %s's fresh name", name)
+		retired[name] = record.Retired
+	}
+
+	code, stdout, stderr := rig.run(append([]string{actionStatus}, rig.flags...)...)
+	require.Zero(t, code, "status after the rollback: %s", stderr)
+	require.NotContains(t, stdout, "its family's creator refuses the record", "status lists a restored record as refused")
+
+	nc, _ := rig.operator()
+	_, _, err := ReadRecordedNames(ctx, nc, writerhold.KubeDaemonDeployments(rig.s.Kube.Client), []string{familySession, daemonFamily("rsf")}, "",
+		[]string{"rsf=" + rig.enrollFile(rig.pools[daemonFamily("rsf")])})
+	require.NoError(t, err, "the census's reader of the recorded names after the rollback")
+
+	cleanup := rig.heldHold(holdrecord.WorkflowConsumerCleanup)
+	code, stdout, stderr = rig.run(append([]string{actionCleanup, "--hold", cleanup, "--final"}, rig.flags...)...)
+	require.Zero(t, code, "cleanup after the rollback: %s%s", stdout, stderr)
+	for name := range names {
+		m, _ := classify(name)
+		record := rig.record(m.Family, m.Logical)
+		require.Empty(t, record.Retired, "cleanup left %s's retired names", name)
+		require.Equal(t, name, record.Current, "cleanup changed %s's current", name)
+		require.NotNil(t, rig.consumer(name), "cleanup deleted the fixed consumer %s", name)
+		for _, fresh := range retired[name] {
+			require.Nil(t, rig.consumer(fresh), "the retired %s is on the stream", fresh)
+		}
+	}
+	require.NoError(t, rig.release(cleanup))
+}
+
 // The H5 row's sessions: one whose target expires after restore --finish created it, and one whose
 // target round 17's prepare kept at a floor past its start. Each sorts in this order, the order
 // restore --finish creates them in.

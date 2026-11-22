@@ -226,6 +226,13 @@ names. A record `replay` refuses is one `convert` stops on as UNKNOWN at every r
 of this package rewrites it, so `hold abort` ends such a hold. The cutover rows do not stop
 `convert`: it writes each of its families' rows `done`.
 
+`status`, the census's reader and `cleanup` check each record as its family's creator does, and
+list or refuse one the creator refuses. A record `restore --finish` left selects the key's fixed
+name as its current, which a creator in the fresh mode refuses; these readers take that shape
+alone, its current equal to its restore target, the key's fixed name, at phase `created`, and check
+its other names as any record's. So after a rollback `cleanup` deletes the fresh names the rollback
+retired and keeps the fixed name.
+
 Before a first cutover, with one session, one listener and one daemon `P`, `status` reads, for
 example:
 
