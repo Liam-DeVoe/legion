@@ -213,11 +213,12 @@ done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
-# Each `rig.sh run` and `rig.sh batch` shell is a child subreaper, so every process a run starts
-# stays below it (scripts/e2e/lib/subreaper.sh); `profile`, `live-read`, `score`, `judge` and
-# `judge-omp` walk no run's processes, and run as they are.
+# Each `rig.sh run`, `rig.sh batch` and `rig.sh live-read` shell walks its processes at its exit
+# (stop_run, stop_batch), so each is a child subreaper, and every process it starts stays below it
+# (scripts/e2e/lib/subreaper.sh); `profile`, `score`, `judge` and `judge-omp` walk no run's
+# processes, and run as they are.
 case ${1:-} in
-  run | batch)
+  run | batch | live-read)
     # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/subreaper.sh
     . "$root/scripts/e2e/lib/subreaper.sh"
     ;;

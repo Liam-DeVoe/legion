@@ -384,10 +384,11 @@ cleanup() {
   # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
   # process the run marked (both agents carry LEGION_E2E_RUN).
   # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
-  # check, left running) is no clean teardown: it costs the run its status.
+  # check, left running) is no clean teardown: it costs the run its status, 1 where it had passed,
+  # and the FAIL line below then names the sweep.
   stop_marked_processes "$work" || {
     echo "the run's sweep of its own processes failed (stop_marked_processes exited $?), so a process of the run may still be running" >&2
-    [ "$status" -ne 0 ] || status=1
+    [ "$status" -ne 0 ] || { status=1 check=process-sweep; }
   }
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||

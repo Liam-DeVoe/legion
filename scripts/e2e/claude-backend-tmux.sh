@@ -201,7 +201,11 @@ cleanup() {
   # The review App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
   app_key_left "$work/app-key" || exit 1
-  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "${ok:-}" ] || echo "claude backend e2e: FAIL (check process-sweep)" >&2
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 trap cleanup EXIT

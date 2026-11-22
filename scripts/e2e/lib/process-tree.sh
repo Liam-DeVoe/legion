@@ -752,17 +752,20 @@ procs_naming() {
   # anew (address space randomization), and grep's read of it may have come back empty. An awk of
   # the bounds that fails (either read, or their comparison) leaves the batch no list of the entries
   # an exec met, so the batch says which and exits 2, as for a grep that failed: a walk that took
-  # its empty list for "none moved" read clean (a reviewer's forcing, status 0, named []).
-  local batch='before=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || snap="the bounds read before grep (awk exited $?)"
+  # its empty list for "none moved" read clean (a reviewer's forcing, status 0, named []). The list
+  # of failed reads starts empty in the batch itself, so no value from the caller's environment
+  # reads as one.
+  local batch='awk_failed=
+before=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || awk_failed="the bounds read before grep (awk exited $?)"
 said=$(grep -lzF "$@" 2>&1 >&3 3>&- 4>&-)
 status=$?
-after=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || snap="${snap:+$snap, }the bounds read after grep (awk exited $?)"
+after=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || awk_failed="${awk_failed:+$awk_failed, }the bounds read after grep (awk exited $?)"
 { printf "%s\n" "$before"; echo --; printf "%s\n" "$after"; } | awk -F "\t" "$NAMING_MOVED" >&4 ||
-  snap="${snap:+$snap, }the bounds compared (awk exited $?)"
+  awk_failed="${awk_failed:+$awk_failed, }the bounds compared (awk exited $?)"
 [ -z "$said" ] || printf "%s\n" "$said" >&2
-[ -z "${snap:-}" ] || echo "awk failed at $snap" >&2
+[ -z "$awk_failed" ] || echo "awk failed at $awk_failed" >&2
 case $status in
-  0 | 1) [ -n "${snap:-}" ] || exit 0 ;;
+  0 | 1) [ -n "$awk_failed" ] || exit 0 ;;
   2) [ -n "$said" ] || echo "grep exited 2 and printed nothing" >&2 ;;
   *)
     [ "$status" -le 128 ] || kill "-$((status - 128))" "$$"
@@ -823,11 +826,15 @@ exit 2'
     return 2
   }
   empties=$err/empty err=$err/said
-  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for an entry whose process ended during the walk.
+  # `|| exit "$?"` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`)
+  # from firing inside the substitution for an entry whose process ended during the walk. The status
+  # is passed out by value: a bare `exit` in a subshell a trap forked exits with the status from
+  # before the trap, so inside a teardown's EXIT trap a failed xargs read 0 after a run that passed
+  # (the walk took a batch it lost for one that matched nothing) and 1 after one that failed (the
+  # teardown failed on a benign 123: Tester4784-3's `xargs exited 1 … xargs printed nothing`).
   # The C locale keeps grep's complaints in the words proc_walk_complaint reads.
   mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" |
-    NAMING_SNAP=$walk_snap NAMING_MOVED=$moved LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" 4>"$empties" || exit)
+    NAMING_SNAP=$walk_snap NAMING_MOVED=$moved LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" 4>"$empties" || exit "$?")
   wait "$!" || status=$?
   mapfile -t empty_files <"$empties"
   complaint=

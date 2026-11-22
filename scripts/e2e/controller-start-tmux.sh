@@ -92,7 +92,11 @@ cleanup() {
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
   echo "evidence: $evidence (transcript.log, logs/daemon.log, logs/listener.log, and checks/: each check's own output and the controller panes)"
-  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "$ok" ] || echo "controller start e2e: FAIL (check process-sweep)"
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 trap cleanup EXIT

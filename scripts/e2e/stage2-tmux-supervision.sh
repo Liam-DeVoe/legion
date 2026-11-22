@@ -187,7 +187,11 @@ cleanup() {
     # killed, which is a failure, still does.
     [[ $status =~ ^(129|130|143)$ ]] || bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$work/model-gateway" "$check_started" "$check" >&2 || true
   fi
-  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "${ok:-}" ] || echo "stage 2 e2e: FAIL (check process-sweep)" >&2
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 trap cleanup EXIT

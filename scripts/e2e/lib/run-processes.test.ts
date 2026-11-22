@@ -477,6 +477,78 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   60_000
 );
 
+test.skipIf(skip)(
+  "a walk inside a teardown's EXIT trap answers by its own xargs's status, after a run that passed and after one that failed: a grep that failed is no answer, and a grep that met only unreadable or ended entries still answers",
+  async () => {
+    // The walk passed xargs's status out of its substitution with a bare `exit`, and a bare `exit` in
+    // a subshell a trap forked exits with the status from before the trap: inside a teardown's EXIT
+    // trap a grep that failed read 0 after a run that passed, so the walk took the batch it lost for
+    // one with no match, and a grep that met only an ended entry read 1 after a run that failed, so
+    // the teardown failed (Tester4784-3: `xargs exited 1 … xargs printed nothing`, 1 of 104 real
+    // teardown sweeps). The stubs are the grep-error row's: one fails as GNU grep does, and one runs
+    // the real grep and then reports entries that are no error, with exit 2.
+    const work = join(dir, "walk-in-trap");
+    mkdirSync(work);
+    const grepStub = (name: string, body: string) => {
+      const stubBin = join(dir, `trap-grep-${name}`);
+      mkdirSync(stubBin);
+      writeFileSync(join(stubBin, "grep"), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+      return stubBin;
+    };
+    const failed = grepStub(
+      "failed",
+      `for f; do :; done\necho "grep: $f: Input/output error" >&2\nexit 2`
+    );
+    const benign = grepStub(
+      "benign",
+      `/usr/bin/grep "$@"
+echo "grep: $proc_root/1/environ: Permission denied" >&2
+echo "grep: $proc_root/2/environ: No such file or directory" >&2
+exit 2`
+    );
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilRunning(marked, "sleep");
+    const teardown = (path: string, runStatus: number) => {
+      const r = harness(
+        work,
+        `walk() { st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?; echo "run_processes $st"; }
+trap walk EXIT
+exit ${runStatus}`,
+        path
+      );
+      return {
+        code: r.code,
+        out: r.out,
+        err: r.err,
+        named: pids(readFileSync(join(work, "rp.out"), "utf8")),
+        said: readFileSync(join(work, "rp.err"), "utf8"),
+      };
+    };
+    for (const runStatus of [0, 1]) {
+      const lost = teardown(failed, runStatus);
+      expect({ runStatus, code: lost.code, out: lost.out, err: lost.err }).toEqual({
+        runStatus,
+        code: runStatus,
+        out: "run_processes 2\n",
+        err: "",
+      });
+      expect(lost.said).toMatch(
+        /^procs_naming: xargs exited 123 reading \S+: grep: \S+\/environ: Input\/output error, so /m
+      );
+      const answered = teardown(benign, runStatus);
+      expect({ runStatus, code: answered.code, out: answered.out, said: answered.said }).toEqual({
+        runStatus,
+        code: runStatus,
+        out: "run_processes 0\n",
+        said: "",
+      });
+      expect(answered.named).toContain(String(marked));
+    }
+  },
+  // A guard on a hang only: four walks, every wait of the harness with a bound of its own.
+  60_000
+);
+
 // unreadablePy READY MODE [GO] is a python3 whose /proc/<pid>/environ is root's, so this user's
 // test of it fails: it makes itself not dumpable (prctl PR_SET_DUMPABLE 0, as ssh-agent and
 // gpg-agent do at their start), checks that PR_GET_DUMPABLE reads 0, writes its pid to READY
@@ -1212,7 +1284,9 @@ wait "$targets" 2>/dev/null || :`
 // subreaperSignals is the shell the two rows below run under lib/subreaper.py: the status of a
 // pipeline whose reader exits first (141 where SIGPIPE ends the writer, 1 and a "Broken pipe" where
 // the writer ignores it), the status of a write past `ulimit -f` (153 where SIGXFSZ ends it, 1 and
-// "File too large" where it is ignored), and the signals the shell ignores (SigIgn, a mask).
+// "File too large" where it is ignored), and the signals the shell ignores (SigIgn, a mask), which
+// gVisor's /proc/<pid>/status does not show: there the mask reads empty for both shells, and the row
+// holds the shell under subreaper.py to the two statuses alone.
 const subreaperSignals = `seq 1 100000 | head -n 1 >/dev/null 2>&1; pipe=\${PIPESTATUS[0]}
 d=$(mktemp -d); { (ulimit -f 1; head -c 8192 /dev/zero >"$d/f") 2>/dev/null; } 2>/dev/null; xfsz=$?; rm -rf "$d"
 while read -r k v; do [ "$k" != SigIgn: ] || ign=$v; done </proc/$$/status
@@ -1234,7 +1308,7 @@ test.skipIf(withoutPython)(
       env: { PATH: process.env.PATH ?? "" },
     });
     const plainSaid = plain.stdout.toString().replace(/, subreaper .*$/m, "");
-    expect(plainSaid).toMatch(/^pipe 141, xfsz 153, ignored [0-9a-f]{16}\n$/);
+    expect(plainSaid).toMatch(/^pipe 141, xfsz 153, ignored ([0-9a-f]{16})?\n$/);
     expect({
       under: under.stdout.toString().replace(/, subreaper .*$/m, ""),
       err: under.stderr.toString(),
@@ -1370,6 +1444,52 @@ if (!namespacesHold && !onActions) {
   );
 }
 
+// olderInitAdopts says whether this kernel gives the orphan that a child subreaper's shell leaves in
+// an older pid namespace to that namespace's init, as Linux does (a subreaper adopts within its own
+// namespace only), and so whether the older-namespace row below can run: gVisor gives such an
+// orphan to the subreaper shell itself (the reviewer's probe: orphan 23779, parent 23776, the
+// shell), where the walk judges it by its parent, the shell, and the row has no init to read. The
+// probe makes a namespace (unshare), then from a shell under lib/subreaper.py starts a python3
+// there (nsenter) whose sh exits at once, and reads the python3's parent. Elsewhere the row is
+// skipped by this name, and on GitHub Actions, whose runner is Linux, it fails by name.
+const adopterProbe = `set -u
+unshare --user --map-current-user --pid --fork --kill-child --mount-proc sh -c 'exec sleep 30' </dev/null >/dev/null 2>&1 &
+u=$!
+init=
+for _ in $(seq 1 200); do init=$(cut -d' ' -f1 <"/proc/$u/task/$u/children" 2>/dev/null); [ -n "$init" ] && break; sleep 0.05; done
+d=$(mktemp -d)
+INIT=$init D=$d python3 -I "$SUBREAPER" bash -c "$INNER"
+kill -KILL "$u" 2>/dev/null; wait "$u" 2>/dev/null; rm -rf "$d"`;
+const adopterInner = `nsenter --preserve-credentials --user --pid --target "$INIT" -- sh -c 'python3 -I -c "$1" "$2" </dev/null >/dev/null 2>&1 & exit 0' sh "$PY" "$D/orphan"
+o=
+for _ in $(seq 1 200); do { read -r o <"$D/orphan"; } 2>/dev/null && break; sleep 0.05; done
+p=
+for _ in $(seq 1 100); do p=$(cut -d' ' -f4 <"/proc/$o/stat" 2>/dev/null); [ "$p" = "$INIT" ] || [ "$p" = $$ ] && break; sleep 0.05; done
+if [ "$p" = "$INIT" ]; then echo init; elif [ "$p" = $$ ]; then echo "the subreaper shell"; else echo "process $p"; fi
+kill -KILL "$o" 2>/dev/null`;
+const adopter =
+  namespacesHold && !withoutPython
+    ? Bun.spawnSync(["bash", "-c", adopterProbe], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          SUBREAPER: subreaperPy,
+          INNER: adopterInner,
+          PY: 'import os, sys, time\nopen(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")\nos.rename(sys.argv[1] + ".tmp", sys.argv[1])\ntime.sleep(30)',
+        },
+        stdout: "pipe",
+        stderr: "ignore",
+        timeout: 20_000,
+      })
+        .stdout.toString()
+        .trim()
+    : "";
+const olderInitAdopts = adopter === "init";
+if (namespacesHold && !withoutPython && !olderInitAdopts && !onActions) {
+  console.warn(
+    `Skipped the older-namespace row of ${import.meta.path}: this kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init.`
+  );
+}
+
 test.skipIf(skip || withoutPython || (!namespacesHold && !onActions))(
   "a walk from a shell that entered a pid namespace from outside is no answer for an unreadable orphan of the run that the namespace's init adopted",
   async () => {
@@ -1449,12 +1569,22 @@ echo "shell's parent $(proc_parent $$), orphan's parent $(proc_parent "$orphan")
   60_000
 );
 
-test.skipIf(skip || withoutPython || (!namespacesHold && !onActions))(
+test.skipIf(
+  skip ||
+    withoutPython ||
+    (!namespacesHold && !onActions) ||
+    (namespacesHold && !olderInitAdopts && !onActions)
+)(
   "a walk from a subreaper shell is no answer for an unreadable orphan of the run that the init of an older pid namespace adopted",
   async () => {
     if (!namespacesHold) {
       throw new Error(
         'this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter; the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
+      );
+    }
+    if (!olderInitAdopts) {
+      throw new Error(
+        `this kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init (olderInitAdopts); the GitHub Actions runner's Linux kernel must give it to the init`
       );
     }
     // A child subreaper adopts the run's orphans in its own pid namespace only: a process the run

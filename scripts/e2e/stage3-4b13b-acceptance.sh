@@ -200,7 +200,11 @@ cleanup() {
   # $work: the lib's own check of the directory the removal above was to take (lib/github-apps.sh,
   # app_key_left).
   app_key_left "$work/app-key" || exit 1
-  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "${ok:-}" ] || echo "acceptance 4b.13b: FAIL (check process-sweep)" >&2
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 # github_cleanup closes every proof PR still open, deletes every proof head branch, and deletes the
