@@ -38,9 +38,11 @@ type holdRestoreBody struct {
 var errHoldLogUnknown = errors.New("a record the restore judges by reads as unknown")
 
 // handRepair is what a restore refusal names when no route can clear it: a database writer added
-// a done record that does not verify, put an older one back, deleted an ended hold's released
-// entry, or cut the log back under a live hold, and no route can tell those from a live hold's
-// record a writer broke, so freeing the restore would free every client mid-hold.
+// a done record that does not verify, put an older one back (an ended hold's included), deleted a
+// live hold's done record or an ended hold's released entry, cut the log back under a live hold,
+// or put an entry from another history back above a live hold (the log's latest entry, which the
+// refusal names by its gen and hold id), and no route can tell those from a live hold's record a
+// writer broke, so freeing the restore would free every client mid-hold.
 const handRepair = `no route can clear this, so a database admin deletes or restores the rows named here (infra/README.md, "Restoring a lost hold row")`
 
 // restoreNATSHold writes the hold row while there is none, once its signature verifies, judging
@@ -137,12 +139,15 @@ func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 // reaches them, since Admit and the cohort delete need its id on the row and it cannot be prepared
 // again; or a held one whose hold's journal, the done record, verifies and shows the hold ended (a
 // done hold release or hold abort), as when the row was lost between that done entry and the row's
-// move; after any other held entry it would free every client mid-hold. Whatever the latest entry,
-// a released row is refused while a hold's own record holds it (heldByRecord): that hold is held
-// by its own record, and a log a database writer emptied or cut back, on a replica whose floor
-// started again, would otherwise free every client mid-hold. Held follows only a prepare or held
-// entry of its own hold id, so a hold the log shows ended, by a release or by abort from prepare,
-// which leaves no journal entry, is not held again.
+// move; after any other held entry it would free every client mid-hold. After a held entry whose
+// hold has no done record, which a held hold always has, a database writer deleted it: the
+// refusal names the hand repair, not a held restore, which the operator's client refuses for a
+// hold with no done record. Whatever the latest entry, a released row is refused while a hold's
+// own record holds it (heldByRecord): that hold is held by its own record, and a log a database
+// writer emptied or cut back, on a replica whose floor started again, would otherwise free every
+// client mid-hold. Held follows only a prepare or held entry of its own hold id, so a hold the log
+// shows ended, by a release or by abort from prepare, which leaves no journal entry, is not held
+// again.
 func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
 	refuse := func(why string) error {
 		return &natshold.Conflict{Err: fmt.Errorf("%w: %s", natshold.ErrBadTransition, why)}
@@ -178,29 +183,34 @@ func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Re
 	default:
 		return nil
 	}
-	if s.holdEnded(latest.HoldID, journalOf(journals, latest.HoldID)) {
+	journal := journalOf(journals, latest.HoldID)
+	if journal == nil {
+		return refuse(fmt.Sprintf("the log's latest entry is held with hold id %q, and that hold has no done record, which a held hold always has: a database writer deleted it, so no released restore is judged after it, and a held one is refused too, since its client reads the journal first; %s", latest.HoldID, handRepair))
+	}
+	if s.holdEnded(latest.HoldID, journal) {
 		return nil
 	}
 	return refuse("the log's latest entry is held, and its hold's journal shows no done hold release or hold abort, so a released row restored after it would free every client mid-hold; restore the row held with its hold id")
 }
 
-// heldByRecord refuses a released restore while a hold's own record holds it. It skips a hold the
-// verified log shows ended (endedInLog): a released entry naming it, at any gen. Every other hold's
-// done record is judged: one below this replica's record floor (an older signed version put back)
-// or one that does not verify is unknown (409 below_floor), and one that shows hold set done and no
-// end refuses the restore (ErrBadTransition). A log cut back below a hold's own entries shows
-// nothing of that hold, so its record still refuses. Each refusal names the hold and why its
-// record holds the restore. It advises restoring the row held only when the route admits that
-// restore, after latest, the log's latest entry, when that is the hold's own prepare or held
-// entry; otherwise it names the hand repair (handRepair), and for a signature whose key left
-// BROKER_NATS_HOLD_SIGNING_KEYS, that key's id, which goes back in the list verify-only.
+// heldByRecord refuses a released restore while a hold's own record holds it. It first judges
+// every hold's done record, an ended hold's included: one below this replica's record floor (an
+// older signed version put back) or one that does not verify is unknown (409 below_floor). It then
+// skips a hold the verified log shows ended (endedInLog: a released entry naming it, at any gen)
+// while its journal shows no command's intent pending but hold release's or hold abort's: a
+// released entry of the live hold from another history of the log ends nothing while one of its
+// commands may run, and no command runs while the row is lost, since Admit reads the row first.
+// Every other journal that shows hold set done and no end refuses the restore (ErrBadTransition).
+// A log cut back below a hold's own entries shows nothing of that hold, so its record still
+// refuses. Each refusal names the hold and why its record holds the restore. It advises restoring
+// the row held only when the route admits that restore, after latest, the log's latest entry,
+// when that is the hold's own prepare or held entry; otherwise it names latest by its phase, gen
+// and hold id, the causes and the hand repair (handRepair), and for a signature whose key left
+// BROKER_NATS_HOLD_SIGNING_KEYS, that key's id.
 func (s *server) heldByRecord(log []natshold.LogEntry, latest *natshold.LogEntry, journals []natshold.Record) error {
 	ended := s.endedInLog(log)
 	for i := range journals {
 		holdID := journals[i].HoldID
-		if ended(holdID) {
-			continue
-		}
 		if s.holdFloors.below(recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}, journals[i].Gen) {
 			return fmt.Errorf("%w: hold %q's done record is at gen %d, below a gen this broker wrote or served, an older version put back; %s", errHoldLogUnknown, holdID, journals[i].Gen, handRepair)
 		}
@@ -208,34 +218,63 @@ func (s *server) heldByRecord(log []natshold.LogEntry, latest *natshold.LogEntry
 		if err != nil {
 			return unknownJournal(holdID, err)
 		}
+		running := runningCommand(d)
+		if ended(holdID) && running == "" {
+			continue
+		}
 		if _, setDone := d.Latest(holdrecord.CommandSet, holdrecord.StateDone); !setDone || journalEnded(d) {
 			continue
 		}
 		held := fmt.Errorf("%w: hold %s's journal shows hold set done and no end, so a released row restored now would free every client mid-hold", natshold.ErrBadTransition, holdID)
+		if ended(holdID) {
+			held = fmt.Errorf("%w; the log's released entry naming it did not end it, since its journal shows %s's intent pending", held, running)
+		}
 		if latest != nil && latest.HoldID == holdID && (latest.Phase == string(natsgrant.OperatorPhasePrepare) || latest.Phase == string(natsgrant.OperatorPhaseHeld)) {
 			return &natshold.Conflict{Err: fmt.Errorf("%w; restore the row held with its hold id %s", held, holdID)}
 		}
-		return &natshold.Conflict{Err: fmt.Errorf("%w, and the log's latest entry is not that hold's prepare or held entry, so no held restore of it is admitted either: the log was cut back under the live hold, or the ended hold's released entry was deleted; %s", held, handRepair)}
+		after := "the log is empty"
+		if latest != nil {
+			after = fmt.Sprintf("the log's latest entry, %s at gen %d with hold id %q, is not that hold's prepare or held entry", latest.Phase, latest.Gen, latest.HoldID)
+		}
+		return &natshold.Conflict{Err: fmt.Errorf("%w, and %s, so no held restore of it is admitted either: the log was cut back under the live hold, the ended hold's released entry was deleted, or an entry from another history put back above a live hold is the latest entry; %s", held, after, handRepair)}
 	}
 	return nil
 }
 
+// runningCommand is a command whose intent is d's latest entry of it, other than hold release's
+// and hold abort's, and "" when there is none: a command that may be running, since its intent was
+// written and neither its done entry nor a stop followed. Hold release's and hold abort's intents
+// are the hold's end, cut before their done entry.
+func runningCommand(d holdrecord.Done) string {
+	for _, o := range d.Ops {
+		if o.Command == holdrecord.CommandRelease || o.Command == holdrecord.CommandAbort {
+			continue
+		}
+		if latest, ok := d.Latest(o.Command); ok && latest.State == holdrecord.StateIntent {
+			return o.Command
+		}
+	}
+	return ""
+}
+
 // unknownJournal is heldByRecord's refusal of holdID's done record, which err says does not
-// verify. A record signed by a key no longer listed names that key's id, the repair a rotation
-// done too early needs; every refusal names the hand repair, the only one for a record a database
-// writer added or broke, or one a leaked key signed.
+// verify. A record signed by a key no longer listed names that key's id: the log and the journals
+// are kept, so a retired key stays listed, verify-only, until the hand repair deletes what it
+// signed. Every refusal names the hand repair, the only one for a record a database writer added
+// or broke, or one a leaked key signed.
 func unknownJournal(holdID string, err error) error {
 	repair := handRepair
 	var unlisted *signedrecord.UnlistedKeyError
 	if errors.As(err, &unlisted) {
-		repair = fmt.Sprintf("if key %s was retired while records it signed remain, it goes back in BROKER_NATS_HOLD_SIGNING_KEYS, verify-only; otherwise %s", unlisted.KeyID, handRepair)
+		repair = fmt.Sprintf("if key id %s is a retired key's, it goes back in BROKER_NATS_HOLD_SIGNING_KEYS, verify-only: the log and the journals are kept, so a retired key stays listed until the hand repair deletes what it signed (infra/README.md, \"Rotating the hold signing key\", step 4); otherwise %s", unlisted.KeyID, handRepair)
 	}
 	return fmt.Errorf("%w: hold %q's done record does not verify: %v; %s", errHoldLogUnknown, holdID, err, repair)
 }
 
-// endedInLog answers, for a hold id, whether the log's verified entries show that hold ended: a
-// released entry naming it, at any gen (its release or abort moved the row, and a hold id is never
-// held again). Nothing else does: a prepare of another hold at a higher gen may be an entry of
+// endedInLog answers, for a hold id, whether the log's verified entries name that hold released:
+// a released entry naming it, at any gen (its release or abort moved the row, and a hold id is
+// never held again), which heldByRecord takes as the hold's end only while its journal shows no
+// command running. Nothing else does: a prepare of another hold at a higher gen may be an entry of
 // another history of the log (a point-in-time restore, or a log cut back and saved rows put back),
 // whose gens and signing times say nothing about this hold. A hold no verified entry names is
 // shown nothing.
