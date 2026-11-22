@@ -549,9 +549,9 @@ compaction of its session that ran (`legion claims compact`, or the controller's
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
 recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
 `fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
-go. The notice is the claim's own — the issue and the role that names it — so
-two claims of one issue each get a notice of their own, and in a provider outage every claim that
-reaches six is told.
+go. The notice is the claim's own, keyed by its claim token, so two claims of one issue each get
+a notice of their own, two that hold one role among them (an agent on a step of another role,
+beside that role's own claim), and in a provider outage every claim that reaches six is told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON

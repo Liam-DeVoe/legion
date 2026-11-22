@@ -79,7 +79,8 @@ func decodeAsTheReleaseBefore(payload []byte, shape any) error {
 }
 
 // A row this release queues can name the claim it acts on: a supervise request, a release's
-// workspace save, an update round's ask, a hook's prompt and a merge forward's message. The release before knows no such key
+// workspace save, an update round's ask, a hook's prompt, a merge forward's message and a
+// provider-errors controller notice. The release before knows no such key
 // and decodes a payload strictly, so such a row left in place at a rollback fails its decode at
 // every attempt. The way back the migration's header
 // gives takes the key off each queued row of those kinds and leaves every other key as it was, and
@@ -106,6 +107,8 @@ func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) 
 			payload: `{"hook":"back-to-implementing","role":"implementer",` + keyed + `,"from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`},
 		{kind: "merge_forward", shape: record.MergeForwardMessage{},
 			payload: `{"role":"implementer",` + keyed + `,"step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"required-check-not-green"}`},
+		{kind: "controller_notice", shape: record.ControllerNotice{},
+			payload: `{"kind":"provider-errors","role":"tester",` + keyed + `,"reason":"6 turns in a row ended in a provider error"}`},
 	}
 	ids := make([]int64, len(rows))
 	for i, row := range rows {

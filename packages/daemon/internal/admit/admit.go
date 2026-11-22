@@ -468,17 +468,19 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
-// want, and a kind that speaks for one claim is one wake per claim — its issue and its role. The
-// second is the provider-errors notice: in an outage every claim's turns fail, each claim owes a
-// notice of its own, and the machine tells at exactly the sixth turn in a row, so a notice
-// dropped because another claim's still waited would never be sent. Two claims of one issue, an
-// architect and its worker, are two such claims, which is why the role is part of the key. The
-// tree-stalled notice is keyed the same way with no role at all, which keys it by its issue
-// alone: a role that is empty is a term the pending read leaves out.
+// want, and a kind that speaks for one claim is one wake per claim — the claim the notice names,
+// or, for a notice that names none, its issue and its role. The second is the provider-errors
+// notice: in an outage every claim's turns fail, each claim owes a notice of its own, and the
+// machine tells at exactly the sixth turn in a row, so a notice dropped because another claim's
+// still waited would never be sent. Two claims of one issue, an architect and its worker, or two
+// claims that hold one role (a keyed agent on a step of another role, beside that role's own
+// claim), are two such claims, which is why the claim is the key. The tree-stalled notice names
+// no claim and no role, which keys it by its issue alone: a claim and a role that are empty are
+// terms the pending read leaves out.
 //
 // It answers whether it queued a row. Two of its own rules queue nothing and are no error: no
 // controller is registered, so nothing would read the wake, and an older notice of the same
-// kind, issue and role still waits unsent. A caller that records something of its own about
+// kind, issue and claim (or role) still waits unsent. A caller that records something of its own about
 // the wake must know which happened, and one does: the stalled-tree rule marks a root only for
 // a notice that went into the outbox, in this same transaction, so a tree that stopped while
 // no controller ran is told at a later pass instead of being marked told and lost
@@ -488,11 +490,11 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 	if err != nil || !registered {
 		return false, err
 	}
-	of, from := "", claim.Role("")
+	of, from, named := "", claim.Role(""), claim.Token("")
 	if record.NoticePerClaim(notice.Kind) {
-		of, from = issue, notice.Role
+		of, from, named = issue, notice.Role, notice.Claim
 	}
-	pending, err := a.store.ControllerNoticePending(ctx, tx, a.project, notice.Kind, of, from)
+	pending, err := a.store.ControllerNoticePending(ctx, tx, a.project, notice.Kind, of, from, named)
 	if err != nil || pending {
 		return false, err
 	}

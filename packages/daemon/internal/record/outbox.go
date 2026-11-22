@@ -341,6 +341,11 @@ type NoticeKind string
 type Notice struct {
 	Kind    NoticeKind  `json:"kind"`
 	Role    claim.Role  `json:"role,omitempty"`
+	// Claim is the claim a controller notice of a kind that stands per claim speaks for
+	// (NoticePerClaim): the provider-errors notice names the claim whose turns keep ending in a
+	// provider error. It is "" for every other kind and for a row the release before wrote, which
+	// the pending read keys by its issue and role instead.
+	Claim claim.Token `json:"claim,omitempty"`
 	Phase   phase.Phase `json:"phase,omitempty"`
 	Summary string      `json:"summary,omitempty"`
 	Verdict string      `json:"verdict,omitempty"`
@@ -1038,7 +1043,8 @@ type ArchitectStall struct {
 }
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
-// issue and the role that names it — rather than one per project
+// claim the notice names (ControllerNotice.Claim), or, for a notice that names none, the issue and
+// the role it names — rather than one per project
 // (admit.Admission.wakeController reads it before it queues a wake).
 //
 // Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
@@ -1046,8 +1052,9 @@ type ArchitectStall struct {
 // It is told at exactly the sixth turn in a row and never again until a turn with no error puts
 // that run back to zero, so a second claim's notice dropped behind the first claim's would
 // never be sent at all. Two claims of one issue are two such claims — an issue's architect and
-// its worker fail their turns in the same outage — so the issue alone is not the key; the role
-// is the rest of it.
+// its worker fail their turns in the same outage, and two claims can hold one role (a keyed agent
+// on a step of another role, beside that role's own claim) — so neither the issue nor the issue
+// and the role is the key: the claim is.
 //
 // A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
 // is the whole tree's and not one agent's. So its key is the issue alone, which is what an

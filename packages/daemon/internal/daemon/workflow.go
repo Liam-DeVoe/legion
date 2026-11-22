@@ -2500,7 +2500,7 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Claim: c.Token, Reason: reason}
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so
