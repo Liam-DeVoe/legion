@@ -1,4 +1,6 @@
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
+  type FocusEvent,
   Fragment,
   type MouseEvent,
   type ReactNode,
@@ -7,6 +9,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -445,9 +448,36 @@ export function useOutOfTabOrder(
   }, [box, keepScrollers, out]);
 }
 
+/** `value`, or the one this hook last answered while `value` holds the same values, as TanStack
+ *  Query's `replaceEqualDeep` compares two answers of a read (`api/queries.ts`). A later read of
+ *  the tree hands a row the same reading and record in objects of its own (`tree-nodes.ts`'s
+ *  `readingOf`, `text-references.ts`'s `textSourceOf`), and the body paints again for every new
+ *  reading it is handed (`useRenderedMarkdown`), which replaces the link the reader is on. */
+function useSameValue<T>(value: T): T {
+  const [held, hold] = useState(value);
+  // `replaceEqualDeep` gives back the old value where the new one holds the same values.
+  if (replaceEqualDeep(held, value) === held) return held;
+  // React draws the component again at once with the state its render set, before it commits
+  // anything, and that render finds the value held.
+  hold(value);
+  return value;
+}
+
+/** The link in `root` of the address `link` has: the reference a row's own link names, else its
+ *  `href`. Undefined where `link` has no address, or `root` holds no link of it. */
+function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorElement | undefined {
+  const mark = link.hasAttribute("data-row-reference") ? "data-row-reference" : "href";
+  const address = link.getAttribute(mark);
+  if (address === null) return undefined;
+  return [...root.querySelectorAll("a")].find((anchor) => anchor.getAttribute(mark) === address);
+}
+
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
- *  reference's link once its target answers, a picture once it loads - as they arrive. */
+ *  reference's link once its target answers, a picture once it loads - as they arrive. A reading
+ *  that holds the same words as the one painted paints nothing again (`useSameValue`), and a
+ *  paint of other words keeps the focus on the link the reader was on: the new link of its
+ *  address takes it, where the new words hold one. */
 function DrawnText({
   focused,
   markdown,
@@ -462,6 +492,12 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const drawn = useRef<HTMLDivElement>(null);
+  // The reading and the record the body was last handed, while the new ones hold the same values.
+  const reading = useSameValue(tree);
+  const record = useSameValue(source);
+  /** The link inside the words that took the focus last, until the focus moves to another
+   *  element. */
+  const focusedLink = useRef<HTMLAnchorElement | null>(null);
   const read = useKnownReferenceNames();
   const ambiguous = useKnownAmbiguousReferences();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
@@ -485,14 +521,51 @@ function DrawnText({
       }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
+    // A paint of other words replaces every node of them, the link the reader was on with it,
+    // and the focus falls to nothing. The new link of the same address takes it back; a reader
+    // who has put the focus elsewhere since keeps it there, and a link the words no longer hold
+    // takes nothing.
+    const last = focusedLink.current;
+    if (last !== null && !last.isConnected) {
+      const active = document.activeElement;
+      const again =
+        active === null || active === document.body ? linkOfAddress(element, last) : undefined;
+      again?.focus({ preventScroll: true });
+      focusedLink.current = again ?? null;
+    }
   }, [ambiguous, names, tabStops]);
   useLayoutEffect(link, [link]);
   useOutOfTabOrder(drawn, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();
+  const enter = (event: FocusEvent<HTMLDivElement>): void => {
+    if (event.target instanceof HTMLAnchorElement) focusedLink.current = event.target;
+  };
+  // A focus that goes to another element forgets the link. One that goes to nothing keeps it
+  // only where the link itself is gone, as a paint removes it: a reader who puts the focus on
+  // nothing - a press on the page's blank space, a move to another window - leaves the link
+  // drawn, and the next paint gives them no focus they did not ask for.
+  const leave = (event: FocusEvent<HTMLDivElement>): void => {
+    const left: EventTarget = event.target;
+    if (event.relatedTarget !== null) {
+      focusedLink.current = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const held = focusedLink.current;
+      if (held !== null && held === left && held.isConnected) focusedLink.current = null;
+    });
+  };
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <div className="min-w-0 break-words" onClick={follow} ref={drawn} {...authorText}>
+    <div
+      className="min-w-0 break-words"
+      onBlur={leave}
+      onClick={follow}
+      onFocus={enter}
+      ref={drawn}
+      {...authorText}
+    >
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
@@ -500,8 +573,8 @@ function DrawnText({
           markdown={markdown}
           onRendered={link}
           referenceText=""
-          source={source}
-          tree={tree}
+          source={record}
+          tree={reading}
         />
       </TextAskCard.Provider>
     </div>
