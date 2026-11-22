@@ -245,8 +245,17 @@ function childrenIn(answer: IssueTreeRead): Children {
   return children;
 }
 
+/** The kinds of a block of an ask, a comment or a message: the page draws such a block inside
+ *  its item's row and no row of its own, and a reply to it under that item's row. */
+const ITEM_BLOCKS: Readonly<Record<string, true>> = {
+  ask_block: true,
+  comment_block: true,
+  message_block: true,
+};
+
 /** Every node of issue `key` in `answer` under the node `readId`, at any depth, by the read's
- *  `parent`: the tree each count walks. */
+ *  `parent`, that the page draws as a row: the tree each count walks. The walk passes through a
+ *  block of an item, which is no row, to the replies under it. */
 function underIn(answer: IssueTreeRead, key: string, readId: string): IssueTreeNode[] {
   const children = childrenIn(answer);
   const found: IssueTreeNode[] = [];
@@ -255,7 +264,7 @@ function underIn(answer: IssueTreeRead, key: string, readId: string): IssueTreeN
     for (const child of children.get(id) ?? []) {
       if (!ownOf(child, key) || seen.has(child.id)) continue;
       seen.add(child.id);
-      found.push(child);
+      if (ITEM_BLOCKS[child.supertag] !== true) found.push(child);
       walk(child.id);
     }
   };

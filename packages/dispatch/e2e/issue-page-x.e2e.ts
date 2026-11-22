@@ -512,9 +512,13 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
 async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise<void> {
   const { key, plain, seeded, treeId } = read;
   const { ids } = seeded;
+  // A `#b-` fragment names a block by its id in its document, which the tree read's own id for
+  // the block (`<KEY>/<slug>#<block id>`) is not: it is read from the block's address.
+  const block = blockOf(seeded.addresses.statement8);
+  if (block === undefined) throw new Error("statement 8's address names no block");
   for (const address of [
     `${plain}?node=${encodeURIComponent(ids.statement8)}`,
-    `${plain}#b-${encodeURIComponent(ids.statement8)}`,
+    `${plain}#b-${encodeURIComponent(block)}`,
   ]) {
     await gotoIssue(page, address);
     await expect
@@ -528,10 +532,10 @@ async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise
       `${address} does not open statement 8's line`
     ).toBe("true");
   }
-  await gotoIssue(
-    page,
-    `${presetPath(key, "decisions")}#b-${encodeURIComponent(ids.waitingDecision)}`
-  );
+  const decisionBlock = blockOf(seeded.addresses.waitingDecision);
+  if (decisionBlock === undefined)
+    throw new Error("the overtaken decision's address names no block");
+  await gotoIssue(page, `${presetPath(key, "decisions")}#b-${encodeURIComponent(decisionBlock)}`);
   const decision = nodeRow(page, treeId(ids.waitingDecision)).first();
   await expect
     .poll(
@@ -926,9 +930,11 @@ async function readAsReader(
   await expect
     .poll(
       async () =>
-        (await foldedCounts(page)).flatMap((row) =>
-          row.readId === null || row.count === heldUnder(answer, key, row.readId) ? [] : [row.id]
-        ),
+        (await foldedCounts(page)).flatMap((row) => {
+          if (row.readId === null) return [];
+          const held = heldUnder(answer, key, row.readId);
+          return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
+        }),
       { message: `${who}'s folds do not count what ${who}'s tree read holds under them` }
     )
     .toEqual([]);
