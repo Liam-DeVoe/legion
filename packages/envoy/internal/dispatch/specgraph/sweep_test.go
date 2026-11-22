@@ -152,10 +152,10 @@ func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]st
 // it built, drops one that it judged, writes an input's bytes otherwise, reads a base of other bytes,
 // or judges an input by another right. known holds the lines that the sweep reported of each of its
 // known positives (knownPositives), by its words, which no floor counts: a sweep whose judgment no
-// longer reports an input that moves a state toward true, of any kind of state, with no right, or
-// beyond its right, at a place that the right names with another state or at a place that it leaves
-// out, whether it skips that judgment, counts such an input as read or computes it blind, fails by
-// name there (sweepAgainst).
+// longer reports one move of the table of moves (knownMoves), a kind of state moved toward true with
+// no right or beyond a right at one kind of place, whether it skips that judgment, counts such an
+// input as read or computes it blind, fails by the name of the known positive that makes that move
+// (sweepAgainst).
 type sweepCount struct {
 	inputs, refused, same, moved, byRight int
 	rights                                []string
@@ -199,35 +199,51 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 	t.Error(failure)
 }
 
-// knownRight is the right of the known positive that a sweep must report beyond its right
-// (knownPositives): it leaves out one place that the input moves and holds at each other place the
-// state that the base reads there, so each move of the input is beyond it, at a place that the right
-// leaves out or at one that it names with another state.
-const knownRight = "a right that leaves out one place that the input moves and holds at each other place the state that the base reads there, so that each move is beyond it"
+// knownRight is the right of each known positive that a sweep must report beyond its right
+// (knownPositives): it holds at each place the state that the base reads there, but at places that
+// the input moves, which it may leave out or name with a state that is neither the base's nor the
+// input's; so each move of the input is beyond it, at a place that the right leaves out, at one that
+// it names with the base's state, or at one that it names with another state.
+const knownRight = "a right that holds at each place the state that the base reads there, but at places that the input moves, which it may leave out or name with a state that is neither the base's nor the input's, so that each move is beyond it"
+
+// The words of the known positives (knownPositives), by which the table of moves names each
+// (knownMoves).
+const (
+	knownNoRight    = "the known positive with no right, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out"
+	knownBeyond     = "the known positive beyond its right, results.json /5 (a failure of production-delivery-takes-under-a-second) with the outcome pass"
+	knownWait       = "the known positive of a wait, results.json /4 (the failing run of a-restart-keeps-the-message) with the outcome pass"
+	knownOutOrOther = "the known positive beyond its right at places that it leaves out or names with another state, jobs.json /1 (the leg arm of go-checks at m2) taken out"
+	knownBaseState  = "the known positive beyond its right at places that it names with the base's state, results.json /2 (a pass of a-restart-loses-no-message at c1) on the leg arm"
+)
 
 // knownPositives is each input that a sweep must report at the base name, with moves, the lines of
-// the states that it is built to move toward true, as towardTrue writes them, in their order: one for
-// each kind of move that the judgment reports, with no right and beyond a right. At silent-leg, its
-// failing result of production-delivery-takes-under-a-second (results.json /5) taken out, with no
-// right: the check reads true at the third subject, where silent-leg reads it false (a row of
+// the states that it is built to move toward true, as towardTrue writes them, in their order: each
+// move of the table of moves (knownMoves), a kind of state moved with no right or beyond a right at a
+// kind of place, is a move of one of them. At silent-leg, its failing result of
+// production-delivery-takes-under-a-second (results.json /5) taken out, with no right: the check
+// reads true at the third subject, where silent-leg reads it false (a row of
 // TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and its statement delivery-is-fast and that
 // statement's own state read met; and that result with the outcome pass, with the right knownRight,
 // whose places leave out that check's place at the third subject and hold the base's state at each
 // other place: so it moves the same states, each beyond its right, the check at a place that the
-// right leaves out, and the statement and its own state at places that the right names with another
-// state. At wait-cycle, the failing run of a-restart-keeps-the-message (results.json /4) with the
-// outcome pass, with no right: that check reads true, a-message-survives-a-restart, its own state and
-// envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. And at
-// silent-leg, the leg arm of go-checks at m2 (jobs.json /1), which ended with no result of
-// a-restart-loses-no-message, taken out, with the right knownRight, whose places leave out the wait
-// of u-a at the first subject: the check, which silent-leg reads unknown at the first and third
-// subjects, reads true there, a-stored-message-survives-a-restart, its own state and
-// messages-reach-sessions read met, and the wait of u-a on a-stored-message-survives-a-restart ends,
-// each beyond its right, the wait at a place that the right leaves out and the others at places that
-// it names with another state. whole is the states of the base. So a judgment blind to checks, to
-// statements or their own states, or to waits, with no right or beyond a right, or beyond a right to
-// the places that it names or to those that it leaves out, fails by the name of the known positive
-// whose report then lacks a line.
+// right leaves out, and the statement and its own state at places that the right names with the
+// base's state. At wait-cycle, the failing run of a-restart-keeps-the-message (results.json /4) with
+// the outcome pass, with no right: that check reads true, a-message-survives-a-restart, its own state
+// and envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. And
+// at silent-leg, two inputs that each end the silent leg of go-checks at m2 and move the same nine
+// states (legMoves): the check a-restart-loses-no-message, which silent-leg reads unknown at the first
+// and third subjects, reads true there, a-stored-message-survives-a-restart, its own state and
+// messages-reach-sessions read met there, and the wait of u-a on a-stored-message-survives-a-restart
+// ends at the first subject. One takes out the leg arm of go-checks at m2 (jobs.json /1), which ended
+// with no result of the check, with the right knownRight, which leaves out each place that the input
+// moves at the first subject and names each that it moves at the third with a state that is neither
+// the base's nor the input's (false for the check, not_met for the statements and the own state): so
+// it moves a check, a statement, an own state and a wait beyond its right at places that the right
+// leaves out, and a check, a statement and an own state at places that it names with another state.
+// The other writes the second pass of the check at c1 (results.json /2), on the leg linux, on the
+// leg arm, so that the leg arm has a pass that carries to m2, with the right knownRight that holds
+// the base's state at each place: so it moves each of the nine at a place that the right names with
+// the base's state. whole is the states of the base.
 func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[string]string) []sweepInput {
 	t.Helper()
 	passed := func(i int) treeChange { return treeChange{place: []string{strconv.Itoa(i), "outcome"}, value: "pass"} }
@@ -240,34 +256,55 @@ func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[stri
 		}
 		checkLeftOut := maps.Clone(whole)
 		delete(checkLeftOut, "subject 3 check production-delivery-takes-under-a-second")
-		waitLeftOut := maps.Clone(whole)
-		delete(waitLeftOut, "subject 1 wait of u-a on a-stored-message-survives-a-restart")
+		legMoves := []string{
+			`subject 1 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
+			`subject 1 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+			`subject 1 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+			`subject 1 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
+			`subject 1 wait of u-a on a-stored-message-survives-a-restart: "ends", and "holds" in the whole scenario`,
+			`subject 3 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
+			`subject 3 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+			`subject 3 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+			`subject 3 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
+		}
+		outOrOther := maps.Clone(whole)
+		for _, at := range []string{
+			"subject 1 check a-restart-loses-no-message",
+			"subject 1 own state of a-stored-message-survives-a-restart",
+			"subject 1 statement a-stored-message-survives-a-restart",
+			"subject 1 statement messages-reach-sessions",
+			"subject 1 wait of u-a on a-stored-message-survives-a-restart",
+		} {
+			delete(outOrOther, at)
+		}
+		outOrOther["subject 3 check a-restart-loses-no-message"] = checkFalse
+		for _, at := range []string{
+			"subject 3 own state of a-stored-message-survives-a-restart",
+			"subject 3 statement a-stored-message-survives-a-restart",
+			"subject 3 statement messages-reach-sessions",
+		} {
+			outOrOther[at] = statementNotMet
+		}
 		return []sweepInput{{
-			what:  "the known positive with no right, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out",
+			what:  knownNoRight,
 			fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, leftOutAt),
 			known: true, moves: moves,
 		}, {
-			what:  "the known positive beyond its right, results.json /5 (a failure of production-delivery-takes-under-a-second) with the outcome pass",
+			what:  knownBeyond,
 			fsys:  changedFile(t, base, "results.json", passed(5), valueAt),
 			right: knownRight, allowed: checkLeftOut, known: true, moves: moves,
 		}, {
-			what:  "the known positive of a wait beyond its right, jobs.json /1 (the leg arm of go-checks at m2) taken out",
+			what:  knownOutOrOther,
 			fsys:  changedFile(t, base, "jobs.json", treeChange{place: []string{"1"}, out: true}, leftOutAt),
-			right: knownRight, allowed: waitLeftOut, known: true, moves: []string{
-				`subject 1 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
-				`subject 1 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 1 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 1 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
-				`subject 1 wait of u-a on a-stored-message-survives-a-restart: "ends", and "holds" in the whole scenario`,
-				`subject 3 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
-				`subject 3 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 3 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 3 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
-			},
+			right: knownRight, allowed: outOrOther, known: true, moves: legMoves,
+		}, {
+			what:  knownBaseState,
+			fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"2", "leg"}, value: "arm"}, valueAt),
+			right: knownRight, allowed: maps.Clone(whole), known: true, moves: legMoves,
 		}}
 	case "wait-cycle":
 		return []sweepInput{{
-			what:  "the known positive of a wait, results.json /4 (the failing run of a-restart-keeps-the-message) with the outcome pass",
+			what:  knownWait,
 			fsys:  changedFile(t, base, "results.json", passed(4), valueAt),
 			known: true, moves: []string{
 				`subject 1 check a-restart-keeps-the-message: "true", and "false" in the whole scenario`,
@@ -279,6 +316,181 @@ func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[stri
 		}}
 	}
 	return nil
+}
+
+// The kinds of state whose move toward true the judgment reports, by the form in which the reader
+// writes the place of each (sweepreader's sweepStates, stateKind): "subject <n> check <id>",
+// "subject <n> statement <id>", "subject <n> own state of <id>" and "subject <n> wait of <unit> on
+// <id>". A statement and its own state are two places, so a judgment can be blind to one alone.
+const (
+	stateCheck     = "a check"
+	stateStatement = "a statement"
+	stateOwn       = "a statement's own state"
+	stateWait      = "a wait"
+)
+
+// The kinds of place of a move toward true that the judgment reports (sweepAgainst, placeKind): the
+// move of an input with no right; and beyond a right that names its places, a move at a place that
+// the right leaves out, at one that it names with the state that the base reads there, and at one
+// that it names with another state, past which the move goes to a third.
+const (
+	placeNoRight = "with no right"
+	placeLeftOut = "at a place that the right leaves out"
+	placeBase    = "at a place that the right names with the base's state"
+	placeOther   = "at a place that the right names with another state"
+)
+
+// stateKinds and placeKinds are each kind of state and each kind of place of the table of moves
+// (knownMoves).
+func stateKinds() []string { return []string{stateCheck, stateStatement, stateOwn, stateWait} }
+func placeKinds() []string { return []string{placeNoRight, placeLeftOut, placeBase, placeOther} }
+
+// stateKind is the kind of the state at the place at, by the form of the place, or "" for a place of
+// no kind of the table of moves.
+func stateKind(at string) string {
+	words := strings.SplitN(at, " ", 3)
+	if len(words) != 3 || words[0] != "subject" {
+		return ""
+	}
+	if _, err := strconv.Atoi(words[1]); err != nil {
+		return ""
+	}
+	for _, kind := range []struct{ prefix, kind string }{{"check ", stateCheck}, {"statement ", stateStatement}, {"own state of ", stateOwn}, {"wait of ", stateWait}} {
+		if strings.HasPrefix(words[2], kind.prefix) {
+			return kind.kind
+		}
+	}
+	return ""
+}
+
+// placeKind is the kind of place of the move of the input in at the place at, where whole is the
+// states of the base: with no right where in has none, else by what in's right holds at that place.
+func placeKind(in sweepInput, whole map[string]string, at string) string {
+	if in.right == "" {
+		return placeNoRight
+	}
+	switch allowed, named := in.allowed[at]; {
+	case !named:
+		return placeLeftOut
+	case allowed == whole[at]:
+		return placeBase
+	}
+	return placeOther
+}
+
+// knownMove is one row of the table of moves (knownMoves): a kind of state and a kind of place, and
+// the known positive that makes that move, by its base and its words; or, in none, why no input can
+// make it.
+type knownMove struct {
+	state, place, base, known, none string
+}
+
+// knownMoves is the table of the moves that the judgment reports, one row for each kind of state at
+// each kind of place, each with the known positive (knownPositives) that makes the move, so that a
+// judgment blind to that one move fails by the name of that known positive (sweepAgainst). One move
+// can occur at no place: a wait reads holds or ends and nothing else (sweepreader's sweepStates), and
+// a move toward true reads ends, so a right that names a wait's place with a state other than the
+// base's, holds, names it with ends, and the move is within it.
+// TestEachMoveThatTheJudgmentReportsHasAKnownPositive holds the table to the known positives.
+func knownMoves() []knownMove {
+	const waitOfTwoStates = "a wait reads holds or ends and nothing else, and a move toward true reads ends: a right that names a wait's place with a state other than the base's, holds, names it with ends, so the move is within the right"
+	return []knownMove{
+		{state: stateCheck, place: placeNoRight, base: "silent-leg", known: knownNoRight},
+		{state: stateStatement, place: placeNoRight, base: "silent-leg", known: knownNoRight},
+		{state: stateOwn, place: placeNoRight, base: "silent-leg", known: knownNoRight},
+		{state: stateWait, place: placeNoRight, base: "wait-cycle", known: knownWait},
+		{state: stateCheck, place: placeLeftOut, base: "silent-leg", known: knownBeyond},
+		{state: stateStatement, place: placeLeftOut, base: "silent-leg", known: knownOutOrOther},
+		{state: stateOwn, place: placeLeftOut, base: "silent-leg", known: knownOutOrOther},
+		{state: stateWait, place: placeLeftOut, base: "silent-leg", known: knownOutOrOther},
+		{state: stateCheck, place: placeBase, base: "silent-leg", known: knownBaseState},
+		{state: stateStatement, place: placeBase, base: "silent-leg", known: knownBeyond},
+		{state: stateOwn, place: placeBase, base: "silent-leg", known: knownBeyond},
+		{state: stateWait, place: placeBase, base: "silent-leg", known: knownBaseState},
+		{state: stateCheck, place: placeOther, base: "silent-leg", known: knownOutOrOther},
+		{state: stateStatement, place: placeOther, base: "silent-leg", known: knownOutOrOther},
+		{state: stateOwn, place: placeOther, base: "silent-leg", known: knownOutOrOther},
+		{state: stateWait, place: placeOther, none: waitOfTwoStates},
+	}
+}
+
+// TestEachMoveThatTheJudgmentReportsHasAKnownPositive holds the table of moves (knownMoves) to the
+// known positives (knownPositives), which it reads at each base of the sweeps (sweepBases) with the
+// base's states as the reader's process reads them: the table has one row for each kind of state at
+// each kind of place (stateKinds, placeKinds) and no other; the place of each state of each base is of
+// a kind of the table, and each wait reads holds or ends, as the row of a move that no input can make
+// says; each known positive with a right names its places; each line of each known positive's moves
+// is a move toward true of the base's state at its place (towardTrue), beyond the right where the
+// input has one; each row's known positive makes that row's move, by its moves and its right
+// (placeKind); and no known positive makes the move of a row that says why none can. So a kind of
+// state or of place added with no known positive that makes it, a known positive taken out, and a
+// right changed so that its known positive no longer makes its row's move each fail by name. It logs
+// each move with the known positives that make it.
+func TestEachMoveThatTheJudgmentReportsHasAKnownPositive(t *testing.T) {
+	t.Parallel()
+	bases := sweepBases(t)
+	p := newSweepReader(t).start(t)
+	made := map[[2]string][]string{}
+	for _, name := range slices.Sorted(maps.Keys(bases)) {
+		base := bases[name]
+		whole := baseStates(t, p, base)
+		for _, at := range slices.Sorted(maps.Keys(whole)) {
+			switch kind := stateKind(at); {
+			case kind == "":
+				t.Errorf("%s: the place %q is of no kind of state of the table of moves (knownMoves)", name, at)
+			case kind == stateWait && whole[at] != "holds" && whole[at] != "ends":
+				t.Errorf("%s: the wait %q reads %q, and the table of moves (knownMoves) holds that a wait reads holds or ends", name, at, whole[at])
+			}
+		}
+		for _, k := range knownPositives(t, name, base, whole) {
+			if k.right != "" && k.allowed == nil {
+				t.Errorf("%s, %s: the known positive has a right that names no place, so the judgment reports no move of it (knownMoves)", name, k.what)
+				continue
+			}
+			for _, line := range k.moves {
+				at, rest, _ := strings.Cut(line, ": ")
+				got, err := strconv.QuotedPrefix(rest)
+				if err == nil {
+					got, err = strconv.Unquote(got)
+				}
+				switch {
+				case err != nil || stateKind(at) == "" || !slices.Equal(towardTrue(whole, map[string]string{at: got}), []string{line}):
+					t.Errorf("%s, %s: the line %q of its moves is no move toward true of the base's state at a place of a kind of the table of moves (knownMoves)", name, k.what, line)
+					continue
+				case k.right != "" && k.allowed[at] == got:
+					t.Errorf("%s, %s: its right allows %q at %s, so the move of the line %q is within its right", name, k.what, got, at, line)
+					continue
+				}
+				move := [2]string{stateKind(at), placeKind(k, whole, at)}
+				made[move] = append(made[move], name+": "+k.what)
+			}
+		}
+	}
+	rows := map[[2]string]bool{}
+	for _, row := range knownMoves() {
+		move := [2]string{row.state, row.place}
+		switch {
+		case !slices.Contains(stateKinds(), row.state) || !slices.Contains(placeKinds(), row.place):
+			t.Errorf("the table of moves (knownMoves) holds a move of %s toward true %s, which is no kind of state at a kind of place", row.state, row.place)
+		case rows[move]:
+			t.Errorf("the table of moves (knownMoves) holds the move of %s toward true %s twice", row.state, row.place)
+		case row.none != "" && len(made[move]) > 0:
+			t.Errorf("the table of moves (knownMoves) says that no input can move %s toward true %s (%s), and %q make that move", row.state, row.place, row.none, made[move])
+		case row.none == "" && !slices.Contains(made[move], row.base+": "+row.known):
+			t.Errorf("the table of moves (knownMoves) names the known positive at %s, %s, for the move of %s toward true %s, which it does not make; the known positives that make it: %q", row.base, row.known, row.state, row.place, made[move])
+		}
+		rows[move] = true
+	}
+	for _, state := range stateKinds() {
+		for _, place := range placeKinds() {
+			if !rows[[2]string{state, place}] {
+				t.Errorf("the table of moves (knownMoves) has no row for the move of %s toward true %s", state, place)
+			}
+			if known := made[[2]string{state, place}]; len(known) > 0 {
+				t.Logf("the move of %s toward true %s: %q", state, place, known)
+			}
+		}
+	}
 }
 
 // sweepAgainst derives each input of base, the base name, in the reader's process p and compares its
