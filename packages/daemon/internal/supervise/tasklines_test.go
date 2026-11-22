@@ -30,6 +30,7 @@ const (
 	diedLiteral       = "supervise: process died"
 	registeredLiteral = "supervise: an agent registered"
 	startedLiteral    = "legion daemon started"
+	startingLiteral   = "legion daemon starting"
 	viewCutLiteral    = "supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again"
 	viewWholeLiteral  = "supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here"
 )
@@ -282,9 +283,11 @@ func TestTaskValueLogOfARetakeAfterAFailedTakeNamesRetake(t *testing.T) {
 // machine writes, word for word, and a reword of any of them fails here before it silences every
 // search: the constants are pinned to the words, and walks of a claim write each of them under
 // those words — but the undecided take's, which its own test walks
-// (TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed), and the daemon's start, which
-// internal/daemon writes. The cost reading reads every one of them. A close and the hello after it,
-// over no pending task, write the two lines of the claim's view of the worker's turns.
+// (TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed), and the daemon's starting and
+// start lines, which internal/daemon writes (its TestRunLogsTheStartingLineFirstAtBoot holds the
+// first). The cost reading reads every one of them: the daemon's two from their message alone, since
+// they name no claim, and the others whole (costedLines). A close and the hello after it, over no
+// pending task, write the two lines of the claim's view of the worker's turns.
 func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 	for constant, words := range map[string]string{
 		turnStartedLine:     startedLine,
@@ -301,13 +304,14 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 		processDiedLine:     diedLiteral,
 		agentRegisteredLine: registeredLiteral,
 		DaemonStartedLine:   startedLiteral,
+		DaemonStartingLine:  startingLiteral,
 		viewCutLine:         viewCutLiteral,
 		viewWholeLine:       viewWholeLiteral,
 	} {
 		if constant != words {
 			t.Errorf("the pinned message %q reads %q", words, constant)
 		}
-		if !costedLines[words] && words != startedLiteral {
+		if !costedLines[words] && words != startedLiteral && words != startingLiteral {
 			t.Errorf("the cost reading does not read %q", words)
 		}
 	}

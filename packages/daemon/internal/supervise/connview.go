@@ -94,19 +94,6 @@ const (
 	viewAsked
 )
 
-// String is the view's name, as the line of a view ceasing to be whole carries it (viewCutLine).
-func (v connView) String() string {
-	switch v {
-	case viewNoHello:
-		return "no-hello"
-	case viewClosed:
-		return "closed"
-	case viewAsked:
-		return "asked"
-	}
-	return "whole"
-}
-
 // viewAskedLine is the line of the ask a reconnect hello makes (askView), at Info, with the task
 // pending: the three bounds wait for the agent's answer or a turn frame.
 const viewAskedLine = "supervise: the shim reconnected over a pending task; the daemon asks its agent whether it is in a turn, and the bounds on the worker wait for that answer or a turn frame"
@@ -124,12 +111,11 @@ const viewAnsweredLine = "supervise: the agent said whether it is in a turn afte
 // task taken back as a cut turn.
 const viewUnansweredRelaunchLine = "supervise: the agent did not say whether it is in a turn within the reconnect deadline of its shim's hello; it is relaunched, uncharged, and its task taken back as a cut turn"
 
-// viewCutLine is the line of the claim's view ceasing to be whole (setView), at Info, with the view
-// it becomes (view) and the task pending where one is: a daemon start that restored the claim with
-// a process (NewMachine, view no-hello, which nothing else sets), a close (closeView, closed), or a
-// reconnect hello over a pending task that found the view whole (askView, asked). The three bounds
-// stand still from here. The cost reading stops the claim's clocks at it, and reads the first one
-// of a daemon start that names no-hello as the line where that start began (ReadTaskCost).
+// viewCutLine is the line of the claim's view ceasing to be whole (setView), at Info, with the
+// task pending where one is: a daemon start that restored the claim with a process (NewMachine), a
+// close (closeView), or a reconnect hello over a pending task that found the view whole (askView).
+// The three bounds stand still from here. The cost reading stops the claim's clocks at it
+// (ReadTaskCost).
 const viewCutLine = "supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again"
 
 // viewWholeLine is the line of the claim's view becoming whole again (setView), at Info, with the
@@ -156,14 +142,11 @@ func (m *Machine) setView(v connView) {
 	if v == viewWhole {
 		line = viewWholeLine
 	}
-	attrs := make([]any, 0, 4)
-	if v != viewWhole {
-		attrs = append(attrs, "view", v.String())
-	}
+	var task []any
 	if p := m.claim.Pending; p != nil {
-		attrs = append(attrs, "task", p.Number)
+		task = []any{"task", p.Number}
 	}
-	m.log.Info(line, attrs...)
+	m.log.Info(line, task...)
 }
 
 // reconnectBound is the reconnect deadline's bound: the registration deadline's base,

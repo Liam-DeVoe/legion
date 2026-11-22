@@ -778,6 +778,28 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 	}
 }
 
+// The first line every boot writes is the starting line with the project
+// (supervise.DaemonStartingLine): run writes it before anything else it does, so the cost reading
+// takes it for where this daemon began, and no other line of the boot for one of the daemon
+// before. A boot that then fails on its port has written it all the same.
+func TestRunLogsTheStartingLineFirstAtBoot(t *testing.T) {
+	cfg := testConfig(t)
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.listen = nil
+	var logged strings.Builder
+	if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+		t.Fatal("run returned no error although another listener held its port")
+	}
+	first, _, _ := strings.Cut(logged.String(), "\n")
+	var line struct {
+		Msg     string `json:"msg"`
+		Project string `json:"project"`
+	}
+	if json.Unmarshal([]byte(first), &line) != nil || line.Msg != supervise.DaemonStartingLine || line.Project != cfg.Project {
+		t.Fatalf("the boot's first line is %s, want %q naming project %q; log:\n%s", first, supervise.DaemonStartingLine, cfg.Project, logged.String())
+	}
+}
+
 // `legion start` hands Run the socket it inherited (LEGION_LISTEN_FD), which a harness opened on a
 // port the kernel chose and held from then on: the daemon serves its API on that socket without
 // binding an address of its own, and its boot line names the address it serves on.

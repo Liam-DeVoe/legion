@@ -778,6 +778,18 @@ func logDaemonStarted(h *harness) {
 	h.deps.Log.Info(DaemonStartedLine, "project", "INFRA")
 }
 
+// daemonRestart is a daemon stopped for d and started again (outage), its lines written as
+// internal/daemon writes them: its starting line first, then the restore of the claim (NewMachine).
+// The start line, which comes after the restore, is the test's to write (logDaemonStarted).
+func daemonRestart(h *harness, d time.Duration) {
+	h.t.Helper()
+	h.m.Wait()
+	h.clock.dropAll()
+	h.clock.Advance(d)
+	h.deps.Log.Info(DaemonStartingLine, "project", "INFRA")
+	h.start(h.store.load(h.token))
+}
+
 // unreachedFrom is the line the reading lists for the claim's task number whose first-wait clock
 // started at from, passed the first bound with no take, and was still owed at the window's end.
 func unreachedFrom(h *harness, number uint64, from time.Time) []string {
@@ -816,7 +828,7 @@ func TestTaskCostLogReadsTheTurnStartWaitAfterADaemonStartFromTheAnswerNotTheWor
 			h.takeOf("implement the plan")
 			value, _ := h.values.value(h.token)
 			h.advance(time.Minute)
-			h.restart()
+			daemonRestart(h, 0)
 			if !tc.startedAfterTheAnswer {
 				logDaemonStarted(h)
 			}
@@ -867,7 +879,7 @@ func TestTaskCostLogReadsTheTurnStartWaitOfATakeMadeBeforeTheAnswerFromTheAnswer
 		h.manualTakes()
 		h.reach(StateReady)
 		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
-		h.restart()
+		daemonRestart(h, 0)
 		logDaemonStarted(h)
 		h.advance(time.Minute)
 		h.mustTake()
@@ -896,7 +908,8 @@ func TestTaskCostLogReadsTheTurnStartWaitOfATakeMadeBeforeTheAnswerFromTheAnswer
 		cost := b.readCost([]string{
 			b.written(0, claim, 1, 1, TaskValueQueued),
 			b.seen(time.Second, claim, 1, 1),
-			b.line(10*time.Minute, viewCutLine, claim, "view", viewNoHello.String(), "task", 1),
+			b.line(10*time.Minute, DaemonStartingLine, "", "project", "INFRA"),
+			b.line(10*time.Minute, viewCutLine, claim, "task", 1),
 			b.line(10*time.Minute, DaemonStartedLine, "", "project", "INFRA"),
 			b.answered(11*time.Minute, claim, 1, TakeOutcomeAccepted, ""),
 			b.line(12*time.Minute, viewAskedLine, claim, "task", 1),
@@ -998,7 +1011,7 @@ func TestTaskCostLogRunsTheClocksFromTheAnswerToADaemonStartsOwnAskAfterItsTurn(
 	h, log := jsonHarness(t, currentPlugin)
 	h.manualTakes()
 	h.reach(StateWorking)
-	h.restart()
+	daemonRestart(h, 0)
 	logDaemonStarted(h)
 	h.advance(time.Minute)
 	h.conn.SetStreaming(true)
@@ -1040,7 +1053,7 @@ func TestTaskCostLogRunsTheTurnClocksFromTheFirstHelloOfAProcessRestoredLaunchin
 	h, log := jsonHarness(t, currentPlugin)
 	h.manualTakes()
 	h.reach(StateLaunching)
-	h.restart()
+	daemonRestart(h, 0)
 	logDaemonStarted(h)
 	h.advance(time.Minute)
 	h.reach(StateReady)
@@ -1061,20 +1074,20 @@ func TestTaskCostLogRunsTheTurnClocksFromTheFirstHelloOfAProcessRestoredLaunchin
 // No time between the last line of a daemon and the start of the next one counts toward the first
 // bound: the machine a daemon start builds runs none of its waits until the worker's first act and
 // its view's whole line, so the time no daemon ran is no time the worker had to take its task.
-// The new daemon's first line the reading decodes is the line of its restore of a claim with a
-// process (viewCutLine, view no-hello), before its start line, so the reading stops every clock as
-// of the last line it decoded before that one: the boot's lines before its restore, which the
-// reading does not decode, say nothing of the daemon before. A number seen a minute before its
-// daemon's last line, a gap of more than the first bound with no line, the new daemon's boot,
-// restore and start lines, and a take a minute after the view's whole line: the number was owed no
-// bound with no take, and the third verdict passes, through the machine and its own log and in a
-// log written line by line.
+// A daemon's first line is its starting line (DaemonStartingLine), so the reading stops every clock
+// there, as of the last line it decoded before, and no line of the new daemon after it — its boot's
+// lines, a line it decodes before its restore and start lines, such as a boot write of another
+// claim's value — counts as the daemon before's. A number seen a minute before its daemon's last
+// line, a gap of more than the first bound with no line, the new daemon's starting, boot, restore
+// and start lines, and a take a minute after the view's whole line: the number was owed no bound
+// with no take, and the third verdict passes, through the machine and its own log and in a log
+// written line by line.
 //
 // The negative controls: the same gap with the daemon before the start writing lines through it,
 // another claim's turn, lists the number from its seen report, since that daemon lived past the
-// bound; the reading before this change (its parent), which judged the bound at the restore's own
-// line, lists it in the gap with no line too; and so does a reading that takes the boot's lines
-// for the daemon before.
+// bound; a log with no starting line, as an older daemon's, is read with its start line as the
+// start, and lists the number too; and so does the reading before this change (its parent), which
+// took the line it decoded before the restore for one of the daemon before.
 func TestTaskCostLogCountsNoGapBetweenTwoDaemonsTowardTheFirstBoundBeforeATakeOrTurn(t *testing.T) {
 	t.Run("the machine's own log, no line in the gap", func(t *testing.T) {
 		h, log := jsonHarness(t, currentPlugin)
@@ -1083,7 +1096,7 @@ func TestTaskCostLogCountsNoGapBetweenTwoDaemonsTowardTheFirstBoundBeforeATakeOr
 		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 		h.seen()
 		h.advance(time.Minute)
-		h.outage(takeBound + 10*time.Minute)
+		daemonRestart(h, takeBound+10*time.Minute)
 		logDaemonStarted(h)
 		h.advance(time.Minute)
 		h.connect()
@@ -1099,16 +1112,18 @@ func TestTaskCostLogCountsNoGapBetweenTwoDaemonsTowardTheFirstBoundBeforeATakeOr
 	})
 	const claim = "owed-across-a-gap"
 	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	starting := b.line(19*time.Minute, DaemonStartingLine, "", "project", "INFRA")
+	listed := []string{claim + " task 1: the clock started 2026-11-14T09:00:01.000Z, the bound passed 2026-11-14T09:05:01.000Z, taken 2026-11-14T09:22:00.000Z"}
 	for _, tc := range []struct {
-		name string
-		gap  []string
-		want []string
+		name             string
+		gap, start, want []string
 	}{
-		{name: "no line in the gap"},
+		{name: "no line in the gap", start: []string{starting}},
 		{name: "the daemon before the start writing lines through the gap", gap: []string{
 			b.turn(10*time.Minute, turnStartedLine, "another-claim"),
 			b.turn(11*time.Minute, turnEndedLine, "another-claim"),
-		}, want: []string{claim + " task 1: the clock started 2026-11-14T09:00:01.000Z, the bound passed 2026-11-14T09:05:01.000Z, taken 2026-11-14T09:22:00.000Z"}},
+		}, start: []string{starting}, want: listed},
+		{name: "no starting line, as an older daemon's log", want: listed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lines := []string{
@@ -1116,9 +1131,11 @@ func TestTaskCostLogCountsNoGapBetweenTwoDaemonsTowardTheFirstBoundBeforeATakeOr
 				b.seen(time.Second, claim, 1, 1),
 			}
 			lines = append(lines, tc.gap...)
+			lines = append(lines, tc.start...)
 			lines = append(lines,
-				b.line(19*time.Minute, "daemon: opening the store; a connection error that the next attempt can clear is tried again", ""),
-				b.line(20*time.Minute, viewCutLine, claim, "view", viewNoHello.String(), "task", 1),
+				b.line(19*time.Minute+time.Second, "daemon: opening the store; a connection error that the next attempt can clear is tried again", ""),
+				b.written(19*time.Minute+30*time.Second, "another-claim", 1, 1, TaskValueBoot),
+				b.line(20*time.Minute, viewCutLine, claim, "task", 1),
 				b.line(20*time.Minute, DaemonStartedLine, "", "project", "INFRA"),
 				b.line(21*time.Minute, viewWholeLine, claim, "task", 1),
 				b.answered(22*time.Minute, claim, 1, TakeOutcomeAccepted, ""),
@@ -1144,7 +1161,7 @@ func TestTaskCostLogKeepsTheTurnClocksAWholeLineBeforeTheStartLineStarted(t *tes
 	h, log := jsonHarness(t, currentPlugin)
 	h.manualTakes()
 	h.reach(StateReady)
-	h.restart()
+	daemonRestart(h, 0)
 	h.advance(time.Minute)
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 	number := h.pending().Number

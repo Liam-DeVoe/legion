@@ -217,19 +217,18 @@ So each figure that names a task names its claim too.
     So after a registration, the clock starts again only at the report of the new process that it saw the task.
 
   - The clock runs only while the daemon sees every frame of the worker's turns on the worker's connection.
-    The daemon writes `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again` when it stops seeing them, with `view` set to what it sees now: `no-hello` when a start of the daemon restores a claim with a process, `closed` when the connection closes, and `asked` when a hello over a pending task comes on a new connection before the daemon read the close of the one before it.
+    The daemon writes `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again` when it stops seeing them: when the connection closes, when a start of the daemon restores a claim with a process, and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it.
     That line stops the clock, and no act of the worker starts it again.
     The daemon writes `supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here` when it sees them again: at the first hello of a new process, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, at a turn's start or end, and when the daemon lets the worker's process go.
     That line starts the clock again, and the bound starts again from zero.
 
   - A start of the daemon stops the clock as of the last line that the command read from the daemon before it.
     No time between the two daemons counts, because the new daemon runs none of its waits until the worker acts and the daemon sees every frame again.
-    The new daemon writes no line that the command reads before it restores its claims.
-    It then writes the line that stops the clock, with `view` set to `no-hello`, for each claim that it restores with a process, and after that `legion daemon started`.
-    So the first line with `view` set to `no-hello` marks the start, and the command reads the lines before it as lines of the daemon before.
-    When the new daemon restores no claim with a process, `legion daemon started` marks the start.
-    The clock of a claim that the daemon restores with a process starts again at the line that starts it, before `legion daemon started` or after it.
+    The first line of every daemon is `legion daemon starting`, with the `project`, so the command reads each line before it as a line of the daemon before, and each line after it as a line of the new daemon.
+    The new daemon then restores its claims and writes `legion daemon started`.
+    The clock of a claim that it restores with a process starts again at the line that starts it, before `legion daemon started` or after it.
     The clock of every other claim starts again at the worker's next act that the command reads in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
+    In a log that holds no `legion daemon starting` line, the log of an older daemon, `legion daemon started` marks the start.
     A daemon that starts with a report of a seen task from its database writes the task again at the first bound, and charges nobody.
     So a clock whose bound ends at a new write of the task has not passed the bound.
 
@@ -246,7 +245,6 @@ So each figure that names a task names its claim too.
     The log has no line for the time that a new process of the worker needs to start after a release, a suspension or a relaunch, for the time of a compaction, or for a hold that stands while the worker asks for nothing.
     When the daemon lets a process go, it writes the line that starts the clock for the next process, so a clock that a closed connection stopped runs during that time.
     A turn that started before the first line of the log has no start line in the log.
-    When a start of the daemon restores no claim with a process, `legion daemon started` marks the start, so a line that the command reads and that the new daemon wrote before that line counts as a line of the daemon before.
     The clock counts all of that time, so the figure can list a task that no worker could take in time.
 
   - The figure can also miss a task.

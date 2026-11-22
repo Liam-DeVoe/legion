@@ -339,6 +339,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if log == nil {
 		log = slog.Default()
 	}
+	// The boot's first line, before anything else it does: the cost reading reads it as where this
+	// daemon began, so no line of the boot after it is read as one of the daemon before
+	// (supervise.ReadTaskCost).
+	log.Info(supervise.DaemonStartingLine, "project", cfg.Project)
 	plan, err := prepare(cfg, log, o)
 	if err != nil {
 		return err

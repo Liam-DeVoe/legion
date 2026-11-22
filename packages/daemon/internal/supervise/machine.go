@@ -2709,9 +2709,17 @@ const (
 	agentRegisteredLine = "supervise: an agent registered"
 )
 
+// DaemonStartingLine is the first line a daemon writes (internal/daemon's run, before anything else
+// it does), with its project and no claim. It is pinned here, beside the lines it is read with,
+// because the cost reading reads it as where a daemon began: every claim's clock stops as of the
+// last line it decoded before, the daemon before's, so no time between the two daemons counts
+// toward a bound (ReadTaskCost).
+const DaemonStartingLine = "legion daemon starting"
+
 // DaemonStartedLine is the daemon's boot line, which internal/daemon writes once the daemon has
 // started (with no claim: the start is every claim's). It is pinned here, beside the lines it is
-// read with, because the cost reading stops every claim's first-wait clock at it (ReadTaskCost).
+// read with, because the cost reading stops every claim's first-wait clock at it in a log that
+// holds no starting line before it (DaemonStartingLine), an older daemon's (ReadTaskCost).
 const DaemonStartedLine = "legion daemon started"
 
 // logTurn writes one of the two turn lines at Info, with the claim's generation and, where the

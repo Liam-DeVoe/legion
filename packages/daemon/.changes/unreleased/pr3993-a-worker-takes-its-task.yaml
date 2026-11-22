@@ -13,10 +13,11 @@ body: |-
   starts again whole once the agent answers the daemon's ask after its shim's reconnect hello, or
   a turn starts or ends. The daemon logs each change of that view at Info, with the task where one
   is pending: `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on
-  the worker stand still until it does again`, whose `view` names what it sees then (`no-hello` at a
-  daemon start's restore, `closed` or `asked`), and `supervise: the daemon sees every frame of the
-  worker's turns again; the bounds on the worker run again, whole, from here`; `legion task-cost`
-  reads both to start each wait where the daemon started it. A daemon that
+  the worker stand still until it does again` and `supervise: the daemon sees every frame of the
+  worker's turns again; the bounds on the worker run again, whole, from here`. Every boot's first
+  line is `legion daemon starting`, with the project, before the plugin gate. `legion task-cost`
+  reads these lines to start each wait where the daemon started it, and counts no time between two
+  daemons toward a bound. A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
   connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
   `legion config check` prints the refusal of a daemon that would connect as that user.
