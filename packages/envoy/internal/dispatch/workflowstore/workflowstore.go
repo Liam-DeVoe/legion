@@ -194,6 +194,7 @@ type PlanTask struct {
 	// Needs are the tasks of the plan this task needs, each by its id, as the daemon resolved
 	// them when it took the plan; [] for a task that needs none, and nil where the write carried
 	// no needs (a daemon of the release before), which stores no member and reads as not recorded.
+	// A Dispatch of the release before ignores the member, so a node it stored reads the same.
 	Needs *[]string `json:"needs,omitempty"`
 }
 

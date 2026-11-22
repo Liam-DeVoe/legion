@@ -428,8 +428,9 @@ describe("dispatch steps", () => {
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
-  // A plan node that recorded no needs, a daemon's of the release before, answers them null: the
-  // line says they are not recorded, never that the task needs nothing.
+  // A plan node that recorded no needs (a daemon of the release before wrote it, or a Dispatch of
+  // the release before took the write) answers them null: the line says they are not recorded,
+  // never that the task needs nothing.
   test("a task whose needs are not recorded says so", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",

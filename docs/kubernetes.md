@@ -2600,6 +2600,12 @@ The release before decodes a `plan_record` row strictly (`DisallowUnknownFields`
 A decode error is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so each such row still queued at the rollback fails at every attempt and is retried on its backoff until the roll forward, and that run's plan never reaches Dispatch.
 This change runs no migration and changes no column, so no dump and no `alter table` belong here.
 
+Deploy Dispatch first, then the daemon.
+A Dispatch of the release before ignores `needs`, a member its plan write does not declare (`decodeJSON` in `packages/envoy/internal/dispatch/api/server.go`), so it stores each plan this release's daemon writes to it with every task's needs not recorded.
+A later write of that plan at the same version changes nothing (`PutPlan` in `workflowstore/plans.go`), so the steps read, the Steps tab and `dispatch steps` show that run's tasks with their needs not recorded until Legion takes a later version of the owner's plan, and for the whole run under a default plan, whose version is 0.
+That happens when the daemon deploys before Dispatch, and while Dispatch's own rolling deploy still serves the release before beside this one.
+With Dispatch first, the daemon that writes plans during Dispatch's deploy is the release before, which writes no needs, and every plan this release's daemon writes reaches a Dispatch that stores its needs.
+
 At the rollback, with the project's daemon stopped and before the earlier image is pinned, run the statement below once in `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`, with `<PROJECT>` the key of the project whose daemon rolls back.
 It takes `needs` off each task of each queued `plan_record` row of that project and leaves the rest of the row as it was.
 The outbox is shared by every project's daemon on the database, so the statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
