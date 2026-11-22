@@ -4114,9 +4114,11 @@ Each item below names an input and its default, then what it means.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
 
-- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — `a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c`
+- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — unset: main at the commit the change's branch last merged
 
-  the commit of the release before this change, whose build writes `older-rows`' database: main at the commit the change's branch last merged.
+  the commit of the release before this change, whose build writes `older-rows`' database.
+  Unset, the script reads it at each run as `git merge-base` of HEAD with `origin`'s main (`release_before_of_head`): it clones main's commits alone, with no trees, into a bare repository of the run's own, which takes HEAD's commits from this checkout's history, or from `origin` for a shallow checkout such as CI's.
+  So no merge of main leaves it stale.
   The script takes its `packages/envoy` with `git archive` and builds `./cmd/dispatch`: from this checkout's repository where it holds the commit, else from a bare repository of the run's own that fetches that one commit at depth 1 from `origin`.
   The working copy is never touched
 
@@ -4286,7 +4288,8 @@ First the driver makes the phase's writes that need a server, while the server o
 Then the script stops the server, and the driver writes the fixture while no server runs and deletes the reconcile's records of its passes in `duty_passes`.
 A phase that reads before its pass then gets a server that starts with no pass at its start; the driver reads, checks that `duty_passes` still holds no record of a pass, and the script stops the server again.
 Then the script starts the server with a pass at its start and the next pass an hour away (`DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1h`).
-The driver waits for the two records of that pass (one by the lease's name, one by its period, at one boundary, each of period one hour), for the lease to be free, and for one more `dispatch delivery: pull request attribution` line in the log than at the fixture, and asserts.
+The driver waits for the two records of that pass (one by the lease's name, one by its period, at one boundary, each of the period the second one's key names), for the lease to be free, and for one more `dispatch delivery: pull request attribution` line in the log than at the fixture, and asserts.
+The period is the build's own (`duty.LeasePeriod` of the interval), read from its record: the driver writes down no period, so a change of that rule does not stop the phases.
 A reading other than that stops the driver at `setup the boundary of one pass`.
 The server's port must be outside the kernel's ephemeral range, since each phase starts the server on it again.
 

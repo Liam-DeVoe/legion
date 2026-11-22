@@ -100,9 +100,9 @@
 # attribution line of a pass, as DISPATCH_BIN built from a commit before that line is, so the
 # boundary of one pass does not count that line.
 # VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
-# build writes older-rows' database: a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c unless it is given,
-# which is main at the commit this change's branch last merged (a later merge of main moves it
-# here and in scripts/e2e/README.md). Its packages/envoy is taken with
+# build writes older-rows' database. Unset, it is main at the commit this change's branch last
+# merged: `git merge-base` of HEAD with origin's main, read at each run (release_before_of_head),
+# so no merge of main leaves it stale. Its packages/envoy is taken with
 # `git archive` and built: from this checkout's own repository where that holds the commit, else
 # from a bare repository of the run's own that fetches that one commit from this checkout's
 # `origin`, since a CI checkout is shallow and holds its own head alone; either way this working
@@ -148,7 +148,7 @@ database_url=${DATABASE_URL:-}
 dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
 envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
 github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
-release_before=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE:-a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c}
+release_before=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE:-}
 release_before_bin=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN:-}
 # older-rows runs in a whole run and in its own negative control (the driver skips it under any
 # other VERIFICATION_RESULTS_E2E_ONLY), and only then is the release before built.
@@ -190,7 +190,7 @@ cleanup() {
     echo "verification results e2e: PASS in $((SECONDS - started))s"
   else
     rm -rf "${work:?}/bin" "${work:?}/nats-store" "${work:?}/older-rows-nats-store" \
-      "${work:?}/release-before" "${work:?}/release-before.git"
+      "${work:?}/release-before" "${work:?}/release-before.git" "${work:?}/main-history.git"
     echo "verification results e2e: FAIL at $check after $((SECONDS - started))s (logs: $work)" >&2
   fi
   exit "$rc"
@@ -247,6 +247,30 @@ fi
 note "database host $db_host (URL not printed)"
 pass
 
+# release_before_of_head <checkout> <repository>: prints the release before this change when the
+# run is given none, main at the commit the checkout's branch last merged: the merge base of HEAD
+# with origin's main, the newest commit of main the branch holds. It clones main's commits alone
+# (--filter=tree:0) from the checkout's `origin` into <repository>, a bare repository of the run's
+# own, so the checkout is never written. A checkout with its whole history lends HEAD's commits to
+# that repository (objects/info/alternates), so a HEAD that was never pushed is read as it stands;
+# a shallow checkout, as CI's is, has HEAD's commits fetched from `origin` too. It prints nothing
+# and fails when the checkout names no origin or git cannot answer.
+release_before_of_head() {
+  local checkout=$1 repository=$2 url head shallow
+  url=$(git -C "$checkout" remote get-url origin) || return 1
+  head=$(git -C "$checkout" rev-parse --verify 'HEAD^{commit}') || return 1
+  shallow=$(git -C "$checkout" rev-parse --is-shallow-repository) || return 1
+  git clone -q --bare --filter=tree:0 --single-branch --branch main --no-tags "$url" "$repository" ||
+    return 1
+  if [ "$shallow" = false ]; then
+    git -C "$checkout" rev-parse --path-format=absolute --git-path objects \
+      >>"$repository/objects/info/alternates" || return 1
+  else
+    git -C "$repository" fetch -q --no-tags origin "$head" || return 1
+  fi
+  git -C "$repository" merge-base "$head" refs/heads/main
+}
+
 # release_before_tree takes the release before's packages/envoy into $work/release-before and sets
 # release_before_sha. The tree is the commit's own, taken out of a repository and never checked
 # out, so this working copy is never touched: this checkout's own repository where it holds the
@@ -290,6 +314,11 @@ if [ -n "$older_rows" ] && [ -n "$release_before_bin" ]; then
     fail "could not copy VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=$release_before_bin"
   note "the release before's envoy-dispatch is a copy of VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=$release_before_bin"
 elif [ -n "$older_rows" ]; then
+  if [ -z "$release_before" ]; then
+    release_before=$(release_before_of_head "$root" "$work/main-history.git") ||
+      fail "could not read main at the commit this checkout's branch last merged (the merge base of HEAD with origin's main); give VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit> or VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN"
+    note "the release before is $release_before, the merge base of HEAD with origin's main"
+  fi
   release_before_tree
   go -C "$work/release-before/packages/envoy" build -o "$work/bin/envoy-dispatch-release-before" ./cmd/dispatch ||
     fail "the release before's ./cmd/dispatch did not build"

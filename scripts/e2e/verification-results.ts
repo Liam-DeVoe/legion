@@ -138,9 +138,6 @@ const origin = new URL(dispatchUrl).origin;
  *  start, takes the envelope, reads the pull request from GitHub and writes its head row;
  *  nothing else is waited on, since every other answer is computed while the results are read. */
 const headAfterEventMs = 5_000;
-/** The interval the shell starts the server with for a one-pass phase
- *  (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1h), in the nanoseconds duty_passes stores. */
-const onePassPeriodNs = String(3_600_000_000_000);
 /** How long a phase's start pass may take to end: it reads GitHub for each row it takes. */
 const onePassWaitMs = 120_000;
 const pollMs = 250;
@@ -898,8 +895,11 @@ async function prepareOnePass(): Promise<string> {
 /** Step 4 of one complete pass, and its self-check: waits, bounded by onePassWaitMs, for the
  *  record of the start pass, and then for the lease to be free. Then it holds the pass to the
  *  boundary. duty.Exclusive's recordPass writes two records of one pass, by the lease's name and
- *  by its period: both must be there, at one boundary, at the period of one hour. The lease must
- *  be free, and the log must hold one more attribution line than at the fixture (linesBefore).
+ *  by its period: both must be there, at one boundary, each of the period the record keyed by it
+ *  names. That period is the build's, read from its record, never a figure of this driver's: the
+ *  build derives it from the interval the shell gives (duty.LeasePeriod), and a change of that
+ *  rule on main must not stop every phase here. The lease must be free, and the log must hold
+ *  one more attribution line than at the fixture (linesBefore).
  *  A control of a build before that line (VERIFICATION_RESULTS_E2E_OLD_BUILD=1) writes no such
  *  line, so for it the boundary rests on the records and the lease alone, and so does the pass
  *  of the release before's build that older-rows waits for (`countLines` false). A log with no
@@ -936,7 +936,14 @@ async function awaitOnePass(linesBefore: number, countLines = !oldBuild): Promis
     rows.map(([lease, period, at]) => `${lease} (period ${period} ns, at ${at})`).join(", ") ||
     "no record";
   const kept = rows.map(([lease, period]) => `${lease} ${period}`).join(", ");
-  const wanted = `${reconcileLease} ${onePassPeriodNs}, ${reconcileLease}/${onePassPeriodNs} ${onePassPeriodNs}`;
+  // duty.passKey: the record of a period is keyed `<lease>/<period_ns>`, a positive count.
+  const keyed = rows
+    .map(([lease]) => lease)
+    .find((lease) => lease.startsWith(`${reconcileLease}/`));
+  const period = keyed?.slice(reconcileLease.length + 1) ?? "";
+  const wanted = /^[1-9][0-9]*$/.test(period)
+    ? `${reconcileLease} ${period}, ${keyed} ${period}`
+    : undefined;
   const lines = attributionLines().length - linesBefore;
   if (
     kept !== wanted ||
@@ -946,7 +953,7 @@ async function awaitOnePass(linesBefore: number, countLines = !oldBuild): Promis
   ) {
     setupFailed(
       "the boundary of one pass",
-      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/${onePassPeriodNs} at one boundary, each of period ${onePassPeriodNs} ns; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want ${countLines ? "1" : "any (a build before that line)"}`
+      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/<period_ns> at one boundary, each of the period its key names, a positive count of nanoseconds; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want ${countLines ? "1" : "any (a build before that line)"}`
     );
   }
   return countLines
