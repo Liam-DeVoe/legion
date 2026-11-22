@@ -16,9 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -77,19 +74,24 @@ func TestAnApprovalOfTheBaseStandsUnderASpecQueryThatTakesComponents(t *testing.
 	if err := migrated.Migrate(ctx); err != nil {
 		t.Fatalf("apply this build's migrations: %v", err)
 	}
-	// The head's definition of the spec query, this test's own build, reads the approved version
-	// at the revision its record was read at.
-	var cut refs.TreeCut
-	if err := database.QueryRow(ctx, `select read_seq, at from version_renders where artifact_id = $1::uuid and number = $2`,
-		spec, approved.version).Scan(&cut.ReadSeq, &cut.At); err != nil {
-		t.Fatalf("read the revision version %d of the spec was read at: %v", approved.version, err)
+	// No version of the base records the revision of the tree it was read at: version_renders has
+	// no writer in the base release, nor in this build. So the digest the approval pinned is the
+	// digest of the version's stored bytes, and the head, its migrations run - the block schema's
+	// version 7 and the spec query that takes components among them - answers the same digest for
+	// the approved version (artifact_version_text_sha256), the one an approval is judged by.
+	var rendered int
+	if err := database.QueryRow(ctx, `select count(*) from version_renders where artifact_id = $1::uuid`, spec).Scan(&rendered); err != nil {
+		t.Fatalf("count the versions of the spec rendered from the tree: %v", err)
 	}
-	record, err := docs.ReadQueryRecord(ctx, migrated.Pool, issue, graphstore.QuerySpec, cut)
-	if err != nil {
-		t.Fatalf("read the spec record of %s at version %d: %v", issue, approved.version, err)
+	if rendered != 0 {
+		t.Fatalf("%d versions of the spec hold a version_renders row, want none: the base release renders no version from the tree", rendered)
 	}
-	if record.Digest != pinned {
-		t.Fatalf("the head reads the spec record of the approved version as %s, and the base release pinned %s: the approval would read as of other text", record.Digest, pinned)
+	var digest string
+	if err := database.QueryRow(ctx, `select artifact_version_text_sha256($1::uuid, $2)`, spec, approved.version).Scan(&digest); err != nil {
+		t.Fatalf("read the digest the head answers for version %d of the spec: %v", approved.version, err)
+	}
+	if digest != pinned {
+		t.Fatalf("the head answers %s for the approved version, and the base release pinned %s: the approval would read as of other text", digest, pinned)
 	}
 
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
