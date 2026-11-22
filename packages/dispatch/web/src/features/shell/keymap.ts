@@ -71,6 +71,10 @@ export interface KeyBinding {
    *  such a binding starts no chord. It is for the `y` that copies a focused link's address, which
    *  works on every page and in every dialog. */
   beforeScopes?: boolean;
+  /** The catalogue action the binding stands for, which `actionBinding` names; a binding written
+   *  out whole names none. `?` lists the binding under the action's own scope, whatever scope
+   *  registered it: the Inbox drawer registers the Inbox's actions under `dialog`. */
+  catalogueAction?: KeymapActionId;
 }
 
 /** A binding that names an action of the catalogue: the action gives its id, its label, its
@@ -82,8 +86,10 @@ export interface ActionBinding {
   when?: () => boolean;
 }
 
-/** A binding as `?` describes it: keys as typed, its scope, and whether it applies right now. */
+/** A binding as `?` describes it: keys as typed, the scope it was registered in, the catalogue
+ *  action it stands for if any, and whether it applies right now. */
 export interface KeyBindingDescription {
+  catalogueAction?: KeymapActionId;
   enabled: boolean;
   id: string;
   keys: readonly string[];
@@ -400,9 +406,10 @@ export interface Keymap {
   actions(): KeymapAction[];
   /** The unfinished chord, or one with no keys; the same object until the chord changes. */
   chord(): PendingChord;
-  /** Every registered binding with its `when()` evaluated now — the source for `?`. One component
-   *  mounted twice registers its bindings twice (an issue's hidden Spec beside another of its
-   *  documents), and they are one row, enabled when either instance's `when()` holds. */
+  /** Every registered binding with its `when()` evaluated now, under the scope it was registered
+   *  in — the source for `?`. One component mounted twice registers its bindings twice (an
+   *  issue's hidden Spec beside another of its documents), and they are one row, enabled when
+   *  either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
   handleKeyDown(event: KeyboardEvent): void;
   pushScope(scope: KeymapScope): () => void;
@@ -655,6 +662,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         const seen = described.get(key);
         if (seen === undefined) {
           described.set(key, {
+            catalogueAction: binding.catalogueAction,
             enabled,
             id: binding.id,
             keys: keysOf(binding),
@@ -771,6 +779,7 @@ export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): K
   const entry = catalogueEntry(binding.action);
   const { run } = binding;
   return {
+    catalogueAction: binding.action,
     id: entry.id,
     inEditable: entry.inEditable === true,
     keys: keysOfAction(binding.action, personKeys),

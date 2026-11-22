@@ -15,6 +15,7 @@ import {
 import { isPlainClick } from "../refs/picture-lightbox";
 import { keyTokens } from "./key-text";
 import { ariaKeyshortcuts, type KeyBindingDescription, type KeymapScope } from "./keymap";
+import { catalogueEntry } from "./keymap-catalogue";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
 
 /** The id of Settings' Keyboard shortcuts section, where a person changes these keys (R14): the
@@ -63,6 +64,13 @@ export const SCOPE_ORDER: readonly KeymapScope[] = [
  * bindings report the right availability — and `null` while closed. Inactive rows are greyed.
  * A route change closes it, like the search palette. Its foot links to Settings' Keyboard
  * shortcuts, where the person changes these keys.
+ *
+ * A catalogue action is listed under its own scope (`catalogueEntry`), whatever scope registered
+ * it, and the filter reads that scope: the Inbox drawer registers the Inbox's actions under
+ * `dialog`, so they win while it is open, and `?` lists them under Inbox. A binding that names no
+ * action (a dialog's own Escape) is listed under the scope that registered it. An action two
+ * scopes register (the Inbox page's beneath its drawer's) is one row, enabled when either
+ * registration applies.
  */
 export function ShortcutHelp({
   onClose,
@@ -82,8 +90,23 @@ export function ShortcutHelp({
   }
 
   const needle = filter.trim().toLowerCase();
-  // A palette-only action has no keys; `?` is the list of keys, so it has nothing to show here.
-  const keyed = snapshot.filter((entry) => entry.keys.length > 0);
+  const listed = new Map<string, KeyBindingDescription>();
+  for (const entry of snapshot) {
+    // A palette-only action has no keys; `?` is the list of keys, so it has nothing to show here.
+    if (entry.keys.length === 0) continue;
+    const scope =
+      entry.catalogueAction === undefined
+        ? entry.scope
+        : catalogueEntry(entry.catalogueAction).scope;
+    const key = `${scope}\u0000${entry.id}`;
+    const seen = listed.get(key);
+    if (seen === undefined) {
+      listed.set(key, { ...entry, scope });
+    } else {
+      seen.enabled ||= entry.enabled;
+    }
+  }
+  const keyed = [...listed.values()];
   const shown =
     needle === ""
       ? keyed

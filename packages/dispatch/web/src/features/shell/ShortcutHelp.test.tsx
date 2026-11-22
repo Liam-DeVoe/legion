@@ -3,7 +3,13 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { actionBinding, createKeymap, type KeyBindingDescription } from "./keymap";
+import {
+  actionBinding,
+  createKeymap,
+  DIALOG_SCOPE,
+  type KeyBindingDescription,
+  type Keymap,
+} from "./keymap";
 import { catalogueEntry, KEYMAP_ACTIONS, keysOfAction, NO_PERSON_KEYS } from "./keymap-catalogue";
 import { KeyHints, SCOPE_LABELS, SCOPE_ORDER, ShortcutHelp } from "./ShortcutHelp";
 
@@ -129,6 +135,84 @@ test("the help draws a section, with the catalogue's keys, for each scope that h
     expect(kbds("Inbox", "Pick an option of the ask in hand")).toEqual(["1", "9", "0"]);
     expect(kbds("Inbox", "Scroll the open document up")).toEqual(["Shift+Space"]);
     expect(kbds("Issue", "Set priority P0–P3")).toEqual(["0", "3"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** `?` drawn over `keymap` as it stands: its dialog, its sections' headings in order, and the
+ *  rows of the section `scope` and their labels. */
+function drawHelp(keymap: Keymap) {
+  const view = render(
+    <MemoryRouter>
+      <ShortcutHelp onClose={() => {}} snapshot={keymap.describe()} />
+    </MemoryRouter>
+  );
+  const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+  const sections = () =>
+    within(dialog)
+      .getAllByRole("region")
+      .map((section) => section.getAttribute("aria-label"));
+  const rows = (scope: string) =>
+    within(within(dialog).getByRole("region", { name: scope })).getAllByRole("listitem");
+  const labels = (scope: string) => rows(scope).map((row) => row.firstChild?.textContent);
+  return { dialog, labels, rows, sections, view };
+}
+
+/** The Escape every open dialog registers in the dialog scope (`useDialog`). */
+const dialogClose = {
+  id: "dialog.close",
+  inEditable: true,
+  keys: "Escape",
+  label: "Close dialog",
+  run: () => undefined,
+};
+
+// R13: the Inbox drawer registers the Inbox's actions in the dialog scope (`InboxDrawer.tsx`),
+// where they win while it is open; `?` lists each under its own scope, Inbox, and the dialog's
+// own Escape under Dialog, and its filter matches the scope a row is listed under.
+test("? lists an Inbox action the drawer registers in the dialog scope under Inbox, and the dialog's own key under Dialog", async () => {
+  const user = userEvent.setup();
+  const keymap = createKeymap();
+  keymap.register(DIALOG_SCOPE, [
+    actionBinding({ action: "inbox.snooze", run: () => undefined }, NO_PERSON_KEYS),
+    dialogClose,
+  ]);
+  const { dialog, labels, sections, view } = drawHelp(keymap);
+  try {
+    expect(sections()).toEqual(["Inbox", "Dialog"]);
+    expect(labels("Inbox")).toEqual([catalogueEntry("inbox.snooze").label]);
+    expect(labels("Dialog")).toEqual(["Close dialog"]);
+
+    await user.type(within(dialog).getByRole("searchbox", { name: "Filter shortcuts" }), "dialog");
+    expect(sections()).toEqual(["Dialog"]);
+    expect(labels("Dialog")).toEqual(["Close dialog"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R13: with the drawer open over the Inbox page, the page and the drawer both register the
+// Inbox's actions, in two scopes; `?` lists each once, enabled when either applies.
+test("? lists an action the page and the drawer over it both register once, enabled when either applies", () => {
+  const keymap = createKeymap();
+  // The page beneath, where no row is in hand.
+  keymap.register("inbox", [
+    actionBinding(
+      { action: "inbox.snooze", run: () => undefined, when: () => false },
+      NO_PERSON_KEYS
+    ),
+  ]);
+  keymap.register(DIALOG_SCOPE, [
+    actionBinding({ action: "inbox.snooze", run: () => undefined }, NO_PERSON_KEYS),
+    dialogClose,
+  ]);
+  const { labels, rows, sections, view } = drawHelp(keymap);
+  try {
+    expect(sections()).toEqual(["Inbox", "Dialog"]);
+    expect(labels("Inbox")).toEqual([catalogueEntry("inbox.snooze").label]);
+    expect(rows("Inbox")[0]?.getAttribute("data-enabled")).toBe("true");
+    expect(labels("Dialog")).toEqual(["Close dialog"]);
   } finally {
     view.unmount();
   }
