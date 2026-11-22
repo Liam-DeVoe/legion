@@ -49,17 +49,18 @@ import {
 // answers the public name: a write that goes around the proxy opens no connection at all.
 //
 // Run as a script, `bun packages/envoy-client/test/ci-results-stack.ts` starts the stack, seeds
-// project ACME mapped to the repository local-org/local-repo and one commit of it with the probe
-// spec, prints the variables of one job of a push run and the commands of the try line, and runs
-// until Ctrl-C. With `--forge-only` it starts the stand-in's Actions token endpoint alone and
-// prints the three variables a job reads it by: each token it mints is signed by a key no real
-// issuer holds, so a broker that verifies GitHub's tokens refuses it on its signature.
+// project ACME, whose default repository is local-org/local-repo, and one commit of that
+// repository with the probe spec, prints the variables of one job of a push run and the commands
+// of the try line, and runs until Ctrl-C. With `--forge-only` it starts the stand-in's Actions
+// token endpoint alone and prints the three variables a job reads it by: each token it mints is
+// signed by a key no real issuer holds, so a broker that verifies GitHub's tokens refuses it on
+// its signature.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
 const { PATH: SHELL_PATH = "" } = process.env;
 
-/** The project the stack's result entry writes, mapped to {@link REPOSITORY}. */
+/** The project the stack's result entry writes, whose default repository is {@link REPOSITORY}. */
 const PROJECT = "ACME";
 /** The repository whose runs the result entry takes. */
 const REPOSITORY = "local-org/local-repo";
@@ -634,7 +635,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       return JSON.parse(text);
     };
     await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
-    await asPerson("PUT", `/api/v1/settings/repo-projects/${REPOSITORY}`, { project: PROJECT });
+    await asPerson("PUT", `/api/v1/projects/${PROJECT}/default-repository`, { repo: REPOSITORY });
 
     // One workflow run for each push of a ref at a commit, as GitHub numbers them: the attempts
     // and the legs of one push share its run.
