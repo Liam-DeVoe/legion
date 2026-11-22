@@ -672,10 +672,10 @@ func storeKinds() []StoreKind {
 			" a lens's, a risk's or a requirement's pointer, the retraction of the far end it held and the assertion" +
 			" of the new one",
 	}, {
-		// Counted off specstore's writesOf (specstore/apply.go:345), which an approval of a change
-		// request (Apply, apply.go:155) and the import of an approved level (Import, import.go:390)
-		// write each node of the approved spec through: the node specNode makes (apply.go:381,
-		// apply.go:393), project-visible, live and in its project, which graphstore.Write states
+		// Counted off specstore's writesOf, which an approval of a change request (specstore.Apply)
+		// and the import of an approved level (specstore.Import) write each node of the approved
+		// spec through: the node specstore's specNode makes, project-visible, live and in its
+		// project, which graphstore.Write states
 		// as those three tuples on the node's first write and a later write restates, moving
 		// nothing. A level is an issue's spec, so its approval counts the statements its import
 		// writes, and the import's component and interface nodes are spec_component's.
@@ -688,9 +688,9 @@ func storeKinds() []StoreKind {
 			" names one",
 		count: `(select count(*) from sized_spec_blocks where holds and held is null)`,
 	}, {
-		// Counted off the one value tuple writesOf appends of each node it writes
-		// (specstore/apply.go:382-385): the version (apply.go:374), the node's fields as the act
-		// holds them with the version's number, its time and the act's provenance.
+		// Counted off the one value tuple writesOf appends of each node it writes: the
+		// specstore.AttributeVersion value, the node's fields as the act holds them with the
+		// version's number, its time and the act's provenance.
 		Name: "spec_version", MovedBy: movedWithSpecs, Tuples: 1,
 		Driver: "artifact_reviews.created_at of a person's approval of an issue's spec or Verification document, each" +
 			" requirement or check block spec_node reads whose text the approved version holds and the version the" +
@@ -698,9 +698,8 @@ func storeKinds() []StoreKind {
 			" appends to the statement or check it adds or changes, which over-states as spec_node does",
 		count: `(select count(*) from sized_spec_blocks where holds and moved)`,
 	}, {
-		// Counted off the value tuple writesOf appends of a node a change request removes
-		// (specstore/apply.go:366-368, apply.go:382-385): the removed value, which names the version
-		// it retires.
+		// Counted off the value tuple writesOf appends of a node a change request removes: the
+		// specstore.AttributeRemoved value, which names the version it retires.
 		Name: "spec_removal", MovedBy: movedWithSpecs, Tuples: 1,
 		Driver: "artifact_reviews.created_at of a person's approval of an issue's spec or Verification document, each" +
 			" requirement or check block spec_node reads that the version the document's approval before it named" +
@@ -711,8 +710,8 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from sized_spec_blocks where not holds and held)`,
 	}, {
 		// Counted off Import's plan of each component and interface of the level that the approved
-		// spec does not hold (specstore/import.go:357-361), which writesOf writes (import.go:390) as
-		// a node's first version: specNode's node with its visibility, state and project, and its
+		// spec does not hold, which writesOf writes as a node's first version: specNode's node with
+		// its visibility, state and project, and its
 		// version value. Level one is api's fixture testdata/level-one, which api's readLevelOne
 		// holds to 59 statements and 43 components, 12 of them interfaces, and whose import
 		// TestImportLevelOne holds to writing every component.
@@ -723,8 +722,8 @@ func storeKinds() []StoreKind {
 			" approval writes one from: the node of a component or an interface, its visibility, state and project," +
 			" and its first version",
 	}, {
-		// Counted off Import's write of each statement of the level it cannot resolve
-		// (specstore/import.go:403-414): specNode's hold node with its visibility, state and project,
+		// Counted off Import's write of each statement of the level it cannot resolve (its holds
+		// loop over specstore.KindHold nodes): specNode's hold node with its visibility, state and project,
 		// and its hold value. TestImportLevelOne holds the import of level one (spec_component) to
 		// holding each of its 59 statements where it reads notes no approval names.
 		Name: "spec_hold", MovedBy: movedWithSpecs, Nodes: 1, Tuples: 4, Assumed: 59,
@@ -733,15 +732,15 @@ func storeKinds() []StoreKind {
 			" whose notes a person approved, which holds none, since no table before this release records a level's" +
 			" import: the hold's node, its visibility, state and project, and its hold value",
 	}, {
-		// Counted off clearedHold (specstore/import.go:243), which an approval (apply.go:163-165)
-		// and an import (import.go:400-402) state a hold gone through once they write its
+		// Counted off specstore's clearedHold, which an approval (specstore.Apply, through
+		// openHolds) and an import (specstore.Import) state a hold gone through once they write its
 		// statement: the node stated gone, which no longer restates it, so its write states the one
 		// state tuple.
 		Name: "spec_hold_cleared", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 59,
 		Driver: "assumed at one for each assumed hold, 59, which over-states a hold whose statement no approval or" +
 			" import has written yet: the hold's node stated gone",
 	}, {
-		// Counted off specstore's RepairIssueFacts (specstore/import.go:458), which api's
+		// Counted off specstore.RepairIssueFacts, which api's
 		// repairIssueHook writes in the create of the child issue a level's import opens for its
 		// holds: one value on each hold's node.
 		Name: "spec_repair_issue", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 59,
@@ -805,8 +804,12 @@ func reachesANode(topic string) string {
 // a version past the one the document's approval before it named, up to the approved one: each
 // with whether the latest version up to that earlier one held it (null where none held the block),
 // whether the approved version holds it, and whether the two hold it with other texts. The
-// approval before it is the latest person's approval of the same document written before it, of
-// whatever version, and version 0 where there is none. An approval is a review a person wrote
+// approval before it is the person's approval of the same document, of whatever version, that
+// committed last before it, in the order docs.ReviewOrder reads a document's reviews (the order
+// their events committed, since created_at is a transaction's start and id is random), and version
+// 0 where there is none; the order is spelled out with its table named, as grapherase's
+// readReviews spells it, because docs' own tests import this package. An approval is a review a
+// person wrote
 // (docs.ReviewKindPerson), and artifact_reviews and its kind are tables of releases before this
 // branch.
 func sizingWritesWith(rooms bool) string {
@@ -896,8 +899,21 @@ func sizingWritesWith(rooms bool) string {
 		from artifact_reviews r
 		join artifacts d on d.id = r.artifact_id
 		cross join lateral (
-			select coalesce(max(p.version), 0) as version from artifact_reviews p
-			where p.artifact_id = r.artifact_id and p.state = 'approved' and p.kind = 'person' and p.created_at < r.created_at
+			select coalesce((
+				select artifact_reviews.version from artifact_reviews
+				where artifact_reviews.artifact_id = r.artifact_id and artifact_reviews.state = 'approved'
+				  and artifact_reviews.kind = 'person' and artifact_reviews.id <> r.id
+				  and case
+				    when r.event_seq is not null and artifact_reviews.event_seq is not null
+				      then artifact_reviews.event_seq < r.event_seq
+				    when r.event_seq is not null then true
+				    when artifact_reviews.event_seq is not null then false
+				    else (artifact_reviews.created_at, artifact_reviews.id) < (r.created_at, r.id)
+				  end
+				order by artifact_reviews.event_seq desc nulls last, artifact_reviews.created_at desc,
+				         artifact_reviews.id desc
+				limit 1
+			), 0) as version
 		) previous
 		cross join lateral (
 			select distinct on (c.artifact_id, c.block_id) c.artifact_id, c.block_id, c.text
