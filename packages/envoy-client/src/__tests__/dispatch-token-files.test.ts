@@ -417,11 +417,31 @@ describe("the dispatch command's token files", () => {
     // more than it had heard before the row ran.
     const dispatch = standInDispatch();
     const listener = standInListener();
+    // A trade needs AGENT_SECRETS_URL and an identity the broker takes, set together: here a
+    // kubernetes identity with the projected token it presents, beside DISPATCH_URL. No row below
+    // sets both, so this is the one case here whose broker check can fail: it fails if the files
+    // stop refusing.
+    const pod = copyFiles();
+    const projected = path.join(pod.dir, "projected");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const brokerSet = await run(
+      ["projects"],
+      commandEnvironment(pod, dispatch.url, {
+        ENVOY_URL: listener.url,
+        AGENT_SECRETS_URL: broker.url,
+        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+        AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+      }),
+      pod.dir
+    );
+    expect(broker.trades).toEqual([]);
+    expect(brokerSet.code, brokerSet.stdout).toBe(2);
+    expect(brokerSet.stdout).toContain("AGENT_SECRETS_URL is set");
+    expect(brokerSet.stdout).toContain("AGENT_SECRETS_MACHINE_IDENTITY is set");
     // Each row's problems, so a failure names every row that fails rather than the first.
     const problems: string[] = [];
     for (const { row, named, change } of REFUSED) {
       const copy = copyFiles();
-      const traded = broker.trades.length;
       const heard = dispatch.presented.length + listener.presented.length;
       const changed = change({ copy, brokerUrl: broker.url });
       const cwd = changed.cwd ?? copy.dir;
@@ -440,7 +460,6 @@ describe("the dispatch command's token files", () => {
           (other) => other.named !== named && stdout.includes(wordsOf(other.named, copy, cwd))
         ).map((other) => `also says "${other.named}"`),
         sent === 0 ? [] : [`sends ${sent} requests`],
-        broker.trades.length === traded ? [] : ["trades at the broker"],
         changed.ranNothing?.() === false ? ["runs the envoy.json's command"] : [],
       ].flat();
       if (wrong.length > 0) problems.push(`${row}: ${wrong.join("; ")}`);
@@ -463,7 +482,6 @@ describe("the dispatch command's token files", () => {
     const { code, stdout } = await run(["projects"], env, cwd);
     expect(code).toBe(2);
     for (const { named } of together) expect(stdout).toContain(wordsOf(named, copy, cwd));
-    expect(broker.trades).toEqual([]);
 
     // A checkout's file that cannot be read is refused too: whether it sets dispatch.token
     // cannot be told.
@@ -620,12 +638,13 @@ describe("the dispatch command's token files", () => {
 
   test("a tool's dry run beside the token files prints the arguments", async () => {
     // Beside the settings the token files refuse, a dry run that does not ask Dispatch prints the
-    // arguments, as it does with Dispatch off, and sends nothing.
-    const broker = stubBroker(900);
+    // arguments, as it does with Dispatch off, and asks Dispatch nothing. No broker stands in: a
+    // broker credential trades at its first request (`brokerCredential`), and this dry run makes
+    // none, so a broker here would be asked nothing whatever the token files did.
     const dispatch = standInDispatch();
     const copy = copyFiles();
     const env = commandEnvironment(copy, dispatch.url, {
-      AGENT_SECRETS_URL: broker.url,
+      AGENT_SECRETS_URL: "http://broker.test",
       AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
     });
     const dry = await run(
@@ -635,7 +654,7 @@ describe("the dispatch command's token files", () => {
     );
     expect(dry.code, dry.stdout).toBe(0);
     expect(JSON.parse(dry.stdout)).toEqual({ issue: "DSP-1", body: "hi" });
-    expect([dispatch.presented, broker.trades]).toEqual([[], []]);
+    expect(dispatch.presented).toEqual([]);
   });
 
   test("a loop of reads sees the renamed token", async () => {

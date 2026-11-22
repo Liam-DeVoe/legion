@@ -68,6 +68,9 @@ interface Cycle extends Bounds {
   readonly afterCall?: () => Promise<void>;
 }
 
+/** A cycle as its builder makes it, before its client names it ({@link clientOf}). */
+type Unnamed = Omit<Cycle, "name">;
+
 /** What a row's client did over its span. */
 interface Counted {
   readonly trades: number;
@@ -134,7 +137,7 @@ async function deviceLoginCycle(
   read: boolean,
   bounds: Bounds,
   olderBuild = false
-): Promise<Cycle> {
+): Promise<Unnamed> {
   const stub = stubDeviceLoginBroker({ accessSeconds: life });
   stops.push(stub.stop);
   const path = join(makeDirectory(), "legion", "device-login.json");
@@ -153,7 +156,6 @@ async function deviceLoginCycle(
     await writeFile(path, JSON.stringify(json), { mode: 0o600 });
   };
   return {
-    name: `a device login's ${read ? "read" : "plain"} client at S = ${life} s${olderBuild ? " whose file an older build rewrote" : ""}`,
     life,
     client: made.client,
     trades: () => stub.trades.length,
@@ -169,9 +171,10 @@ async function deviceLoginCycle(
  * answers a read trade with the credential's remaining life where that is shorter, in whole
  * seconds, truncated, as `clampNarrowed` bounds it, and a read trade moves the credential not at
  * all, as `signInCredential` takes it. The row's last call comes a step before the credential
- * lapses. A person's client refreshes nothing, so its rows allow no refresh.
+ * lapses. Its refreshes are the refresh grants the broker is sent: a person's client refreshes
+ * nothing there, so its rows allow none.
  */
-async function personCycle(life: number, start: number, bounds: Bounds): Promise<Cycle> {
+async function personCycle(life: number, start: number, bounds: Bounds): Promise<Unnamed> {
   const ends = start + LIVES * life * 1000;
   const broker = stubBroker((trade) => {
     const left = Math.floor((ends - Date.now()) / 1000);
@@ -194,11 +197,11 @@ async function personCycle(life: number, start: number, bounds: Bounds): Promise
   const made = await brokerTokenClient(env, "ses_cycle", {});
   if (made === undefined) throw new Error("the factory made no client for a person");
   return {
-    name: `a person's read client at S = ${life} s`,
     life,
     client: made.client,
     trades: () => broker.trades.length,
-    refreshes: () => 0,
+    refreshes: () =>
+      broker.trades.filter((trade) => trade.form.get("grant_type") === "refresh_token").length,
     ...bounds,
   };
 }
@@ -213,21 +216,35 @@ interface Client {
   readonly cycle: (life: number, start: number, bounds: Bounds) => Promise<Cycle>;
 }
 
+/** The client `name` names, whose cycles `build` makes, each named for the client and its life. */
+function clientOf(
+  name: string,
+  build: (life: number, start: number, bounds: Bounds) => Promise<Unnamed>
+): Client {
+  return {
+    name,
+    cycle: async (life, start, bounds) => ({
+      name: `${name} at S = ${life} s`,
+      ...(await build(life, start, bounds)),
+    }),
+  };
+}
+
 /** A device login's read or plain client ({@link deviceLoginCycle}), whose file an older build
  *  rewrites where `olderBuild` is set. */
 function deviceLoginClient(read: boolean, olderBuild = false): Client {
-  return {
-    name: `a device login's ${read ? "read" : "plain"} client${olderBuild ? " whose file an older build rewrote" : ""}`,
-    cycle: (life, _start, bounds) => deviceLoginCycle(life, read, bounds, olderBuild),
-  };
+  return clientOf(
+    `a device login's ${read ? "read" : "plain"} client${olderBuild ? " whose file an older build rewrote" : ""}`,
+    (life, _start, bounds) => deviceLoginCycle(life, read, bounds, olderBuild)
+  );
 }
 
 const READ = deviceLoginClient(true);
 const PLAIN = deviceLoginClient(false);
-const PERSON_CLIENT: Client = {
-  name: "a person's read client whose sign-in credential nears its end",
-  cycle: personCycle,
-};
+const PERSON_CLIENT = clientOf(
+  "a person's read client whose sign-in credential nears its end",
+  personCycle
+);
 
 // Fifteen rows: each access-token life S against each of the three clients, with the bounds each
 // row states and the rule it follows. A token of S s renews after the corpus's moment m for S
@@ -290,8 +307,8 @@ test(
   async () => {
     const start = Date.now();
     const bounds = { tradesPerLife: 2, refreshesPerLife: 2, refreshGap: -30 };
-    const plain = await run(await deviceLoginCycle(30, false, bounds), start);
-    const read = await run(await deviceLoginCycle(30, true, bounds), start);
+    const plain = await run(await PLAIN.cycle(30, start, bounds), start);
+    const read = await run(await READ.cycle(30, start, bounds), start);
     expect(read.refreshes).toBeLessThanOrEqual(plain.refreshes);
   },
   ROW_MS

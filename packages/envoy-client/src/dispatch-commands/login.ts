@@ -10,8 +10,8 @@
 // It is the one `dispatch` command that is no Dispatch tool: a person runs it in a terminal,
 // before any session exists, so it reads no host, no session and no envoy.json, only the
 // environment's broker settings. Unlike a Dispatch call, which runs on the command's token files
-// and refuses only the settings beside them (`tokenFilesTarget` in `dispatch-config.ts`), it
-// refuses while either file is set.
+// once both are set with `DISPATCH_URL` and nothing beside them (`tokenFilesTarget` in
+// `dispatch-config.ts`), it refuses while either file is set.
 
 import { hostname } from "node:os";
 import {
@@ -35,7 +35,6 @@ import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { settingsBesideTokenFiles, tokenFilesSet } from "../dispatch-config";
 import { messageFor } from "../errors";
-import { DPOP_KEY_FILE_VAR, TOKEN_FILE_VAR } from "../file-token-credential";
 
 /** The exit codes of every `dispatch` command: done, refused, and a usage error. */
 const OK = 0;
@@ -126,7 +125,7 @@ export async function loginCommand(
   // the broker (`tokenFilesTarget`): a device login beside them would ask the broker and keep a
   // login on the copy. It is refused before either, naming each setting set beside them as every
   // Dispatch call names it.
-  const tokenFiles = tokenFilesSet(env[TOKEN_FILE_VAR], env[DPOP_KEY_FILE_VAR]);
+  const tokenFiles = tokenFilesSet(env);
   if (tokenFiles !== undefined) {
     const beside = settingsBesideTokenFiles(env);
     return refuse(
