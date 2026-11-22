@@ -680,11 +680,6 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 		}
 		return false
 	})
-	// The ready is not the end of the launch: the role process sends its first report in a
-	// request of its own after it, and a stop that lands between the two retires the claim and
-	// drops the secret that report is authenticated by. The claim would then keep no report at
-	// all, which quiet never back-dates, and its pod would stay young for the whole idle period.
-	r.awaitReported(token, "")
 }
 
 // diagnose is what a failure of the rig prints: the launchers' own log and the last of the
