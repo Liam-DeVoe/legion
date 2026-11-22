@@ -44,7 +44,7 @@ func TestReplayMemberMapsEachFamilysLogicalName(t *testing.T) {
 	for key, want := range map[string]string{
 		"a.b":               "holds a '.'",
 		"durable.something": "is no listener's durable",
-		selection.DurableKey("listener-x") + "=4": "ends inside an escape",
+		selection.DurableKey("listener-x") + "=4": "is no durable's key",
 		durable:                  "--key " + selection.DurableKey(durable),
 		"ses with a space":       "a logical name no consumer can be named after",
 		strings.Repeat("s", 254): "maximum allowed is 255",

@@ -200,12 +200,17 @@ func (rig *restoreRig) cutover(conversions ...restoreConversion) string {
 	if _, err := streamInfo(ctx, nc, selectionStreamName); err != nil {
 		// selection.CreateSessionBucket writes the sentinel at once, which on three copies can
 		// find no leader yet (no responders): the row creates the bucket, waits for its leader,
-		// then writes the sentinel, as create-bucket's rerun adopts an empty bucket.
+		// then writes the sentinel, as create-bucket's rerun adopts an empty bucket. A named leader
+		// is not yet a responder on every server (createBucketFreshWrite), so a write that meets
+		// no responder is sent again.
 		_, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(rig.replicas))
 		require.NoError(t, err)
 		rig.waitLeader(nc, selectionStreamName)
-		_, err = selection.NewKVStore(selection.ConnRequester{Conn: nc}).
-			WriteSentinel(ctx, selection.StoreState{Boundary: 1, Hold: id}, 0)
+		require.Eventually(t, func() bool {
+			_, err = selection.NewKVStore(selection.ConnRequester{Conn: nc}).
+				WriteSentinel(ctx, selection.StoreState{Boundary: 1, Hold: id}, 0)
+			return !errors.Is(err, nats.ErrNoResponders)
+		}, 30*time.Second, 100*time.Millisecond, "the sentinel's write met no responder for 30 s")
 		require.NoError(t, err)
 	}
 	for family, pool := range rig.pools {
