@@ -32,8 +32,8 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 	const rootKey, childKey = "LEGION-208", "LEGION-209"
 	// heldSentence is the retro-held sentence of the root's hold, naming the issue beneath it.
 	const heldSentence = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-		"A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, " +
-		"or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."
+		"A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+		record.StatusNotTakenYet + " " + record.EndChildRule
 	for _, tc := range []struct {
 		name string
 		// moved is the status the board is moved to before the last issue leaves, "" for none, and

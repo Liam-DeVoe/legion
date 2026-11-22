@@ -32,9 +32,9 @@
 -- row still reads `default`, so a run that started on the owner's plan goes on with it (its first
 -- step does not run again), while each later version and each stop_task is answered
 -- PLAN_NOT_TAKEN, so its owner can neither change nor stop that plan until the issue's next run,
--- whose first step passes the plan over, or a park, which ends the run. Rolling forward again
--- also costs the window the other way: an issue that release drew while it ran reads ''
--- afterwards and runs as with no experiment.
+-- whose first step passes the plan over, or until the issue leaves the workflow, which ends the
+-- run. Rolling forward again also costs the window the other way: an issue that release drew
+-- while it ran reads '' afterwards and runs as with no experiment.
 alter table experiment_assignments
     add column plan text not null default ''
         check (plan in ('', 'owner', 'default', 'owner-alone'));

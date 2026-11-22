@@ -1932,6 +1932,11 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds in
+	// the tree, and whether it holds one. It reads the claim in any state, as SessionClaimsTree
+	// does: a suspended architect's session is still the session of its claim, and a write in
+	// Dispatch names that session.
+	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.
@@ -2612,14 +2617,28 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 // ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
 // tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
 // the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
-// recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
-// issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
+// recorded issue (api's architectForIssue, register_plan, and rerun_child's childOfTree over the
+// tree it read, ArchitectOfTreeIn) and the giver of a stored plan at the issue's first step
+// (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
 // longer, whatever tree its claim was registered in. A claim that ends in no architect role is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
 // architect costs the read of the tree.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return store.TreeIssues(ctx, tx, issue.Tree) })
+}
+
+// ArchitectOfTreeIn is ArchitectOfTree over members, the records of issue's tree that the caller
+// read already (Store.TreeIssues), so a request that judges more of the tree than its owner reads
+// the tree once (api's childOfTree).
+func ArchitectOfTreeIn(architect claim.Token, issue Issue, members []Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return members, nil })
+}
+
+// architectOfTree is the rule of ArchitectOfTree, with members the records of issue's tree, read
+// only where the architect is not the tree root's.
+func architectOfTree(architect claim.Token, issue Issue, members func() ([]Issue, error)) (bool, error) {
 	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
 		return false, nil
 	}
@@ -2634,11 +2653,11 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 	if architectOf(issue.Tree) {
 		return true, nil
 	}
-	members, err := store.TreeIssues(ctx, tx, issue.Tree)
+	tree, err := members()
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
+	return slices.ContainsFunc(tree, func(member Issue) bool { return architectOf(member.Key) }), nil
 }
 
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
@@ -2663,9 +2682,9 @@ const (
 // or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
 // human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
 // except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
-// notice router ends the same walk at the same place (internal/daemon's owningArchitect), so the
-// architect the reviewer's phase-finished notice reaches is the one that may accept the issue. An
-// architect this answers true for is an architect of the issue's tree (ArchitectOfTree), since the
+// notice router ends the same walk at the same place (OwningArchitect), so the architect the
+// reviewer's phase-finished notice reaches is the one that may accept the issue. An architect this
+// answers true for is an architect of the issue's tree (ArchitectOfTree), since the
 // walk stays in that tree. The route judges it on its own read and the fact again under the lock,
 // so the two never judge different rules.
 func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
