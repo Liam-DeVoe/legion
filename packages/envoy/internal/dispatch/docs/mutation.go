@@ -1082,13 +1082,8 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // write, so an ask whose block an earlier write took out is neither refused to an agent nor a
 // removal of a person's.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node, by dropper) error {
-	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target, by)
-}
-
-// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's asks through q,
-// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
-func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node, by dropper) error {
-	open, err := openAskBlocksIn(ctx, q, artifactID)
+	q := s.queryFrom(ctx)
+	open, err := s.openAskBlocks(ctx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -1116,7 +1111,7 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 // removal (holdRemovals).
 func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}, after *pmdoc.Node, by dropper) error {
 	q := s.queryFrom(ctx)
-	open, err := openAskBlocksIn(ctx, q, artifactID)
+	open, err := s.openAskBlocks(ctx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -1140,9 +1135,9 @@ func droppedBlock(dropped map[string]struct{}) func(blockID string) bool {
 	}
 }
 
-// openAskBlocksIn is the block id of each open ask of the document, read through q.
-func openAskBlocksIn(ctx context.Context, q Queryer, artifactID string) (map[string]struct{}, error) {
-	rows, err := q.Query(ctx, `
+// openAskBlocks is the block id of each open ask of the document.
+func (s *Service) openAskBlocks(ctx context.Context, artifactID string) (map[string]struct{}, error) {
+	rows, err := s.queryFrom(ctx).Query(ctx, `
 		select block_id from asks
 		where block_artifact_id = $1 and state = 'open' and block_id is not null
 	`, artifactID)
