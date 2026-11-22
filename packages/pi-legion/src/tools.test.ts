@@ -233,7 +233,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move " +
   "counts a review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
@@ -281,8 +281,8 @@ const STOP_TASK_TERMS = {
   ],
 } as const;
 
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
- * each refusal code its text gives. */
+/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names
+ * each refusal code its text gives, and says why a parent waits for the issues beneath it. */
 const SIGN_OFF_TERMS = {
   opens: "sign_off ",
   names: [
@@ -292,6 +292,7 @@ const SIGN_OFF_TERMS = {
     "ISSUE_OUTSIDE_TREE",
     "SIGNOFF_STALE_GENERATION",
     "SIGNOFF_STALE_ENTRY",
+    "since a parent is accepted only once no issue beneath it is still in the workflow",
   ],
 } as const;
 

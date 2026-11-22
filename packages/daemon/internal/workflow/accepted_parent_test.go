@@ -36,8 +36,8 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 
 // A6. A parent is accepted after its children: sign_off is refused while any issue beneath the
 // one being accepted is still in the workflow, naming each of them, and is taken once the last
-// of them leaves. A parent's head proves its children's merged work, so accepting it first would
-// send a head to the merge queue that does not carry that work.
+// of them leaves, since a parent is accepted only once no issue beneath it is still in the
+// workflow.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -204,7 +204,7 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
 	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
 		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
-		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
+		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, unless the pull request of LEGION-208 has merged, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
 	for _, tc := range []struct {
 		name  string
 		steps []string

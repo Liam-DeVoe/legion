@@ -186,21 +186,21 @@ func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 }
 
 // A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
-// The daemon part states what to do, in two sentences: sign off or send back, and the head a
-// parent's sign-off needs; the role part points to it rather than saying it again, so the composed
-// root prompt holds the parent's head rule once. This shows the text is loaded, never that an
-// architect follows it.
+// The daemon part states what to do, in one sentence: sign off a parent only after its last round,
+// on the head a parent's sign-off needs, or send it back; the role part points to it rather than
+// saying it again, so the composed root prompt holds the parent's head rule once. This shows the
+// text is loaded, never that an architect follows it.
 func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` a parent only after its last round, on a head that the step before your acceptance passed and at which its checks pass (`skill://legion-architect/references/acceptance.md`, \"The last round\"), or send it back with `request_backward_move`."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
-	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
+	if n := strings.Count(text, "on a head that the step before your acceptance passed and at which its checks pass"); n != 1 {
 		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }
@@ -296,7 +296,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
 		"A task with no `acceptance:owner` step has no `accepting`",
-		"the phase of an earlier step of the task: `implementing`, or `testing` where the task has a tester step",
+		"the phase of an earlier step of the task: `planning` where the task has a planner step, `implementing`, or `testing` where the task has a tester step",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
 		"goes back to the implementer, or to the earlier step its completion names",
 	}
