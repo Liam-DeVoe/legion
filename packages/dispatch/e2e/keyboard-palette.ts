@@ -37,5 +37,6 @@ export async function namesMac(page: Page): Promise<boolean> {
  *  where it names a Mac, and `Control` elsewhere. Playwright's `ControlOrMeta` cannot stand in
  *  for it: that picks by the machine the browser runs on, not by the user agent the page reads. */
 export async function modKey(page: Page): Promise<"Control" | "Meta"> {
+  // One read is the answer: `namesMac` reads a user agent set before the page loads.
   return (await namesMac(page)) ? "Meta" : "Control";
 }
