@@ -279,11 +279,27 @@ func (rr *restoreRun) info(ctx context.Context, name string) (*jetstream.Consume
 	return info, err
 }
 
-// delete deletes consumer name of the notification stream (deleteConsumer), asked again while no
-// leader answers: a delete that landed unanswered reads as not found the next time, which is no
-// error. The run's account (restoreLeft) records each name it deleted or found gone.
-func (rr *restoreRun) delete(ctx context.Context, name string) error {
-	err := rr.answered(ctx, func(ctx context.Context) error { return deleteConsumer(ctx, rr.nc, notifications, name) })
+// delete deletes consumer name of the notification stream, which set's logical name names, once
+// its info shows it is that logical name's own (selection.Names.Owns of familyNames: the target,
+// the fixed name, by its name, a fresh name by the metadata its family's consumers carry), asked
+// again while no leader answers: a delete that landed unanswered reads as not found the next time,
+// which is no error. One of another key is refused (selection.ErrMalformedRecord) and not deleted.
+// The run's account (restoreLeft) records each name it deleted or found gone.
+func (rr *restoreRun) delete(ctx context.Context, set restoreSetName, name string) error {
+	m, err := familyMember(set.Family, set.Logical)
+	if err != nil {
+		return err
+	}
+	info, err := rr.info(ctx, name)
+	if err != nil {
+		return err
+	}
+	if info != nil {
+		if err := familyNames(m).Owns(m.Logical, info); err != nil {
+			return err
+		}
+	}
+	err = rr.answered(ctx, func(ctx context.Context) error { return deleteConsumer(ctx, rr.nc, notifications, name) })
 	if err == nil {
 		rr.left.deleted = append(rr.left.deleted, name)
 	}
@@ -770,13 +786,13 @@ func (rr *restoreRun) settle(ctx context.Context, name restoreSetName, start uin
 		}
 		keep := target != nil && (restoreRules.keepAnyTarget || restoreFloor(target)+1 <= start)
 		if target != nil && !keep {
-			if err := rr.delete(ctx, name.Target); err != nil {
+			if err := rr.delete(ctx, name, name.Target); err != nil {
 				return "", unknownf(err, "the delete of %s", name.Target)
 			}
 		}
 		next := record
 		for _, fresh := range restoreFreshNames(record, name.Target) {
-			if err := rr.delete(ctx, fresh); err != nil {
+			if err := rr.delete(ctx, name, fresh); err != nil {
 				return "", unknownf(err, "the delete of %s", fresh)
 			}
 			next = retire(next, name.Target, fresh)
@@ -1081,7 +1097,7 @@ func (rr *restoreRun) check(ctx context.Context, name restoreSetName) (create, d
 			case target != nil:
 				// A native policy's start cannot change in place (nats-server consumer.go
 				// 2541-2557), so the target goes and is created at the start.
-				if err := rr.delete(ctx, name.Target); err != nil {
+				if err := rr.delete(ctx, name, name.Target); err != nil {
 					return false, deleted, unknownf(err, "the delete of %s", name.Target)
 				}
 				deleted = true
@@ -1111,7 +1127,7 @@ func (rr *restoreRun) check(ctx context.Context, name restoreSetName) (create, d
 				next.Current = name.Target
 				next.Restore = &selection.Restore{Target: name.Target, Start: restore.Start, Phase: restoreCreated}
 			case target != nil:
-				if err := rr.delete(ctx, name.Target); err != nil {
+				if err := rr.delete(ctx, name, name.Target); err != nil {
 					return false, deleted, unknownf(err, "the delete of %s", name.Target)
 				}
 				return true, true, nil

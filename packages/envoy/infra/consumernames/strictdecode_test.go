@@ -105,14 +105,15 @@ func malformedRefused(t *testing.T, key string, value []byte) {
 	require.Error(t, err, "the readers' decode took the value under %s", key)
 }
 
-// The strict decode takes exactly what the library writes and nothing else. It takes a record
-// json.Marshal wrote with every field set (an open operation, a last floor, retired names, a
-// restore), the empty record, and a store state; a barrier key holding its hold id. It refuses a
-// STREAM.INFO-shaped document, null, an array, a string, nothing at all, a key that names a field
-// in another case, data after the object, an operation without its reserved_at, a last floor
-// without its stream_id, a null where the field is a string, a barrier holding another hold's id,
-// and a barrier key whose id is two tokens. Control: today's decode (json.Unmarshal) takes every
-// refused value that is one JSON value, so each refusal is the strict decode's own.
+// The readers' decode (readSelectionValue, through selection.DecodeKVValue) takes exactly what the
+// library writes under a key and nothing else. It takes a record json.Marshal wrote with every
+// field set (an open operation, a last floor, retired names, a restore), the empty record of its
+// key, and the bucket's sentinel; a barrier key holding its hold id. It refuses a STREAM.INFO-shaped
+// document, null, an array, a string, nothing at all, data after the object, another key's record,
+// a record carrying no key, an operation without its reserved_at, a sentinel of another family, a
+// barrier holding another hold's id, and a barrier key whose id is two tokens. Control: today's
+// lenient decode (json.Unmarshal) takes every refused value that is one JSON object, so each
+// refusal is the readers' decode's own.
 func TestTheStrictDecodeTakesOnlyAnExactValue(t *testing.T) {
 	full := selection.Record{
 		Key: "ses_a", Current: "session~a", Start: 4, Retired: []string{"session~r"},
@@ -123,34 +124,39 @@ func TestTheStrictDecodeTakesOnlyAnExactValue(t *testing.T) {
 	for _, record := range []selection.Record{full, {Key: "ses_b"}} {
 		raw, err := json.Marshal(record)
 		require.NoError(t, err)
-		got, err := strictRecord(raw)
-		require.NoError(t, err, "the strict decode refused %s", raw)
-		require.Equal(t, record, got)
+		got, err := readSelectionValue(statusKey{Key: record.Key, Value: raw})
+		require.NoError(t, err, "the readers' decode refused %s", raw)
+		require.Equal(t, &record, got.record)
 	}
 	raw, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "s", Orphans: []string{"x"}}))
 	require.NoError(t, err)
-	_, err = strictStoreState(raw)
+	got, err := readSelectionValue(statusKey{Key: selection.SentinelKey, Value: raw})
 	require.NoError(t, err)
+	require.NotNil(t, got.state)
 	require.NoError(t, strictBarrier("hold.barrier.h1", []byte("h1")))
 
 	for _, value := range []string{
 		`{"type":"io.nats.jetstream.api.v1.stream_info_response","config":{"name":"ENVOY_NOTIFICATIONS"}}`,
 		`null`, `[]`, `"session~a"`, ``,
-		`{"Current":"session~a"}`,
-		`{"current":"session~a"} {}`,
-		`{"op":{"kind":"create"}}`,
-		`{"last_floor":{"floor":1,"name":"session~a"}}`,
-		`{"current":null}`,
+		`{"key":"ses_x","current":"session~a"} {}`,
+		`{"key":"ses_y","current":"session~a"}`,
+		`{"current":"session~a"}`,
+		`{"key":"ses_x","op":{"kind":"create","candidate":"session~n"}}`,
 	} {
-		_, err := strictRecord([]byte(value))
-		require.Error(t, err, "the strict decode took %q", value)
+		_, err := readSelectionValue(statusKey{Key: "ses_x", Value: []byte(value)})
+		require.Error(t, err, "the readers' decode took %q", value)
 		var lenient selection.Record
-		if json.Valid([]byte(value)) && value != `[]` && value != `"session~a"` {
+		if strings.HasPrefix(value, "{") && !strings.Contains(value, "} {") {
 			require.NoError(t, json.Unmarshal([]byte(value), &lenient), "control: today's decode refused %q", value)
 		}
 	}
-	_, err = strictStoreState([]byte(`{"type":"io.nats.jetstream.api.v1.stream_info_response"}`))
-	require.Error(t, err)
+	for _, value := range []string{
+		`{"type":"io.nats.jetstream.api.v1.stream_info_response"}`,
+		`{"key":"envoy.bucket","family":"dispatch","cutover":"done"}`,
+	} {
+		_, err := readSelectionValue(statusKey{Key: selection.SentinelKey, Value: []byte(value)})
+		require.Error(t, err, "the readers' decode took the sentinel %q", value)
+	}
 	require.Error(t, strictBarrier("hold.barrier.h1", []byte("h2")), "a barrier holding another hold's id")
 	require.Error(t, strictBarrier("hold.barrier.a.b", []byte("a.b")), "a barrier key of two tokens")
 }

@@ -226,7 +226,13 @@ func (r *run) cleanupGone(ctx context.Context) error {
 	}
 	var removed []string
 	for _, name := range targets {
-		if err := deleteConsumer(ctx, nc, notifications, name); err != nil {
+		// Each name's logical name is one of the daemon's (selection.LogicalOf), and its delete
+		// needs the consumer to be that logical name's own (deleteOwned): the fixed name by its
+		// name, a fresh one by the metadata the daemon's creator writes. One that is not, a
+		// consumer of the pattern another principal made, is refused and stops the run.
+		logical := selection.LogicalOf(name)
+		m := member{Family: family, Logical: logical, Fixed: logical, Prefix: logical, Project: project}
+		if err := deleteOwned(ctx, nc, m, name); err != nil {
 			// A delete whose answer failed may have landed, so the stop never records this run unchanged.
 			return a.stopped(ctx, fmt.Errorf("cleanup --gone %s: the delete of %s: %w", family, name, err),
 				false, "this run removed "+namesOrNone(removed)+" from "+notifications+", and the delete of "+name+" may have landed")
@@ -349,14 +355,24 @@ func (r *run) cleanupPGTargets(ctx context.Context, family string) ([]cleanupTar
 
 // cleanupRecord deletes target's retired names the server holds and drops from its record each one
 // the server reports absent, the deleted ones included, in a write conditional on the revision it
-// read. It answers the names it deleted and dropped. A retired name the record still selects is
-// left as it is. A name whose info or delete failed stays retired, and is answered in the error.
+// read. It answers the names it deleted and dropped. A record its family's creator refuses
+// (checkRecordFence) is an error, and nothing of it is deleted; each name it deletes is the key's
+// own (deleteIfOwned), and one that is not stays retired and is answered in the error. A retired
+// name the record still selects is left as it is. A name whose info or delete failed stays
+// retired, and is answered in the error.
 func cleanupRecord(ctx context.Context, nc *nats.Conn, target cleanupTarget) ([]string, []string, error) {
+	m, err := familyMember(target.family, target.logical)
+	if err != nil {
+		return nil, nil, err
+	}
 	var deleted []string
 	var failed []string
 	for range cleanupMaxConflicts {
 		record, revision, err := target.store.Read(ctx, target.logical)
 		if err != nil {
+			return deleted, nil, err
+		}
+		if err := checkRecordFence(target.family, target.logical, record); err != nil {
 			return deleted, nil, err
 		}
 		selected := []string{record.Current}
@@ -375,7 +391,7 @@ func cleanupRecord(ctx context.Context, nc *nats.Conn, target cleanupTarget) ([]
 				continue
 			}
 			if info != nil {
-				if err := deleteConsumer(ctx, nc, notifications, name); err != nil {
+				if err := deleteIfOwned(ctx, nc, m, info); err != nil {
 					failed = append(failed, fmt.Sprintf("the delete of %s: %v", name, err))
 					continue
 				}

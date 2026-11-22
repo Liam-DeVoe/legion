@@ -99,7 +99,7 @@ func TestAnOldListenerSweepAfterTheWindow(t *testing.T) {
 			require.Equal(t, s.current, started.Name, "this tree selected another consumer for %s than its record's", s.id)
 			require.False(t, started.Created, "this tree created a consumer for %s, whose record's consumer the pass kept", s.id)
 			want := mixedBuildFrom(s.seqs, s.start)
-			require.Equal(t, want, mixedBuildPullSeqs(t, sc, started.Name, len(want), false),
+			require.Equal(t, want, mixedBuildPullSeqs(t, sc, s.id, started.Name, len(want), false),
 				"the messages of %s from its saved start %d", s.id, s.start)
 		}
 	})
@@ -175,7 +175,7 @@ func (h *stack) mixedBuildFixedSessions(n int) []*mixedBuildSession {
 			require.NoError(h.t, err)
 			s.seqs = append(s.seqs, ack.Sequence)
 		}
-		require.Equal(h.t, s.seqs[:1], mixedBuildPullSeqs(h.t, sc, started.Name, 1, true), "the first message of %s", s.id)
+		require.Equal(h.t, s.seqs[:1], mixedBuildPullSeqs(h.t, sc, s.id, started.Name, 1, true), "the first message of %s", s.id)
 		s.floor = s.seqs[0]
 		sessions = append(sessions, s)
 	}

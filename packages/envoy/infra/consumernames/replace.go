@@ -133,7 +133,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 		return a.stopped(ctx, fmt.Errorf("replace %s (%s) at %d: %w", old, durable, start, err), false,
 			fmt.Sprintf("this run's replace of %s may have reserved, created or published a fresh name in %s's record %s, which its rerun settles (Step 0)", old, durable, m.Logical))
 	}
-	deleted, err := replaceDeleteRetired(ctx, nc, replaced.Record)
+	deleted, err := replaceDeleteRetired(ctx, nc, m, replaced.Record)
 	if err != nil {
 		return a.stopped(ctx, fmt.Errorf("%s is %s's current at %d, and %w", replaced.Record.Current, durable, replaced.Record.Start, err), false,
 			fmt.Sprintf("this run replaced %s by %s in %s's record %s, and deleted %d of its retired names", old, replaced.Record.Current, durable, m.Logical, deleted))
@@ -219,9 +219,9 @@ func replaceCreate(nc *nats.Conn, base jetstream.ConsumerConfig, m member) selec
 }
 
 // replaceDeleteRetired deletes each retired name of record, but its current, that the server still
-// holds, and answers how many it deleted. The names stay in the record's retired list, which the
-// cleanup command reads.
-func replaceDeleteRetired(ctx context.Context, nc *nats.Conn, record selection.Record) (int, error) {
+// holds and that is m's own (deleteIfOwned), and answers how many it deleted. The names stay in the
+// record's retired list, which the cleanup command reads.
+func replaceDeleteRetired(ctx context.Context, nc *nats.Conn, m member, record selection.Record) (int, error) {
 	deleted := 0
 	for _, name := range record.Retired {
 		if name == record.Current {
@@ -234,7 +234,7 @@ func replaceDeleteRetired(ctx context.Context, nc *nats.Conn, record selection.R
 		if info == nil {
 			continue
 		}
-		if err := deleteConsumer(ctx, nc, notifications, name); err != nil {
+		if err := deleteIfOwned(ctx, nc, m, info); err != nil {
 			return deleted, fmt.Errorf("the delete of retired %s failed: %w", name, err)
 		}
 		deleted++

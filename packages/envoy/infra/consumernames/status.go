@@ -120,7 +120,8 @@ var statusRules statusRuleSet
 // consumers, and prints: the row; with --hold, that hold's journal; the broker's cutover rows;
 // each store's sentinel; each record, with its current and whether the stream holds it, its open
 // operation, start, last floor, retired names and restore; and each blocker: a store or sentinel
-// that is missing, a record deleted, a current the stream does not hold, an open operation, and a
+// that is missing, a record deleted, a record its family's creator refuses (checkRecordFence,
+// naming the field and the name), a current the stream does not hold, an open operation, and a
 // fixed name still on the stream. It changes nothing. A complete reading exits 0, blockers or
 // not, and ends with their count; a store it could not read (no flag names it, or a read failed)
 // or a listing it could not complete is UNKNOWN, exit 2, after it has printed what it read.
@@ -336,6 +337,9 @@ func statusPrintFamily(out io.Writer, f statusFamily, held map[string]bool) []st
 	for _, logical := range slices.Sorted(maps.Keys(f.records)) {
 		record := f.records[logical]
 		fmt.Fprintf(out, "record %s %s: %s\n", f.family, logical, statusRecordLine(record, held))
+		if err := checkRecordFence(f.family, logical, record); err != nil {
+			blockers = append(blockers, fmt.Sprintf("%s %s: its family's creator refuses the record: %v", f.family, logical, err))
+		}
 		if record.Current != "" && !held[record.Current] {
 			blockers = append(blockers, fmt.Sprintf("%s %s: its current %s is not on %s", f.family, logical, record.Current, notifications))
 		}

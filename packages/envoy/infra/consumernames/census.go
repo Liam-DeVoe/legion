@@ -80,10 +80,11 @@ func RecordedSessionConsumers(ctx context.Context, conn *nats.Conn) ([]streams.C
 // holding a '.' is a system key (selection.SentinelKey, hold.barrier.<hold id>) and names nothing.
 // Every value is read by its key's kind (readSelectionValue), the system keys' too. A record whose
 // last write is a delete marker is lost state, which cannot be told from a session that never had
-// a record; a durable's record of no listener is one no census shape takes; and a malformed value,
-// a document a reply subject stored there, cannot be told from a record or a sentinel: each is an
-// error, all of them named in one, which names the session family's store; so is a walk of the
-// bucket that is not whole.
+// a record; a durable's record of no listener is one no census shape takes; a malformed value, a
+// document a reply subject stored there, cannot be told from a record or a sentinel; and a record
+// its family's creator refuses (checkRecordFence: a name of another key or family, a retired fixed
+// name) is no account of which consumers are the key's: each is an error, all of them named in one,
+// which names the session family's store; so is a walk of the bucket that is not whole.
 func censusSelectionRecords(ctx context.Context, conn *nats.Conn) (map[string]selection.Record, map[string]selection.Record, error) {
 	keys, err := statusSelectionKeys(ctx, conn)
 	if err != nil {
@@ -105,6 +106,9 @@ func censusSelectionRecords(ctx context.Context, conn *nats.Conn) (map[string]se
 			continue
 		}
 		value, err := readSelectionValue(key)
+		if err == nil && value.record != nil {
+			err = checkRecordFence(familySession, key.Key, *value.record)
+		}
 		switch {
 		case err != nil:
 			malformed = append(malformed, fmt.Sprintf("%s (%v)", key.Key, err))
@@ -266,7 +270,8 @@ func censusStoreNames(ctx context.Context, o options, family string) (map[string
 // censusListNames is every name family's intake_consumers records on db hold, read through the
 // family's store's list (selection.PGStore.List, which reads only the family's own rows and leaves
 // its sentinel row out). A row that is not its key's record of the family, one copied there from
-// another key or family among them, fails the list (selection.ErrMalformedRecord).
+// another key or family among them, fails the list (selection.ErrMalformedRecord), and so does a
+// record its family's creator refuses (checkRecordFence).
 func censusListNames(ctx context.Context, db Database, family string) (map[string]bool, error) {
 	store, err := pgStore(family, db)
 	if err != nil {
@@ -280,8 +285,11 @@ func censusListNames(ctx context.Context, db Database, family string) (map[strin
 		return nil, err
 	}
 	set := map[string]bool{}
-	for _, record := range records {
-		censusAddNames(set, record)
+	for _, logical := range slices.Sorted(maps.Keys(records)) {
+		if err := checkRecordFence(family, logical, records[logical]); err != nil {
+			return nil, err
+		}
+		censusAddNames(set, records[logical])
 	}
 	return set, nil
 }

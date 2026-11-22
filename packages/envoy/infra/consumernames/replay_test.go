@@ -183,8 +183,8 @@ func TestReplayInARecoveryFollowsCreateBucketAfterLoss(t *testing.T) {
 // over a value under K that is no record of K, in any family: a STREAM.INFO answer stored under a
 // session's key through a reply subject, a session's key holding "no record", and Dispatch's
 // intake_consumers row of delivery-events holding delivery-jobs' record. The store refuses each as
-// no record of K (selection.ErrMalformedRecord), and the readers' strict decode refuses the session
-// values too (readSelectionValue). After it K's value is exactly K's record (strictRecord) with
+// no record of K (selection.ErrMalformedRecord), and the readers' decode refuses the session values
+// too (readSelectionValue). After it K's value is exactly K's record (selection.DecodeKVValue) with
 // start SEQ, no current and no retired name, written over the value's revision; replay's intent
 // and done entries are written, and its output and done entry name the value it replaced
 // (replaced). Control: the red run, this row against the replay before it wrote over such a value
@@ -244,8 +244,8 @@ func TestReplayReplacesAMalformedSessionRecord(t *testing.T) {
 		require.Equal(t, []string{replayCommand, "done"}, []string{done.Command, done.State}, row.key)
 		require.Contains(t, done.Outputs["replaced"], "no selection record of its own", "replay %s names the value it replaced", row.key)
 		value := row.value(row.key)
-		record, err := strictRecord(value)
-		require.NoError(t, err, "%s's value after replay is no exact record: %s", row.key, value)
+		record, _, _, err := selection.DecodeKVValue(row.recordKey, value)
+		require.NoError(t, err, "%s's value after replay is no exact record of its own: %s", row.key, value)
 		require.Equal(t, selection.Record{Key: row.recordKey, Start: row.from}, record, row.key)
 	}
 }

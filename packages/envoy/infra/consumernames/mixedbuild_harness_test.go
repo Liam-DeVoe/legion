@@ -287,14 +287,14 @@ func (h *stack) mixedBuildSessionConsumers(machine string, mode selection.Mode) 
 	return sc
 }
 
-// mixedBuildPullSeqs pulls n messages from consumer name with this tree's pull
+// mixedBuildPullSeqs pulls n messages from consumer name, sessionID's, with this tree's pull
 // (bus.SessionConsumers.Pull), acking each when ack is set, and answers their stream sequences in
 // the order they arrived. It fails the test when n do not arrive within 30 seconds.
-func mixedBuildPullSeqs(t *testing.T, sc *bus.SessionConsumers, name string, n int, ack bool) []uint64 {
+func mixedBuildPullSeqs(t *testing.T, sc *bus.SessionConsumers, sessionID, name string, n int, ack bool) []uint64 {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pull, err := sc.Pull(ctx, name)
+	pull, err := sc.Pull(ctx, sessionID, name)
 	require.NoError(t, err, "pull %s", name)
 	defer pull.Stop()
 	seqs := make([]uint64, 0, n)

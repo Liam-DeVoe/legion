@@ -156,8 +156,8 @@ func TestRepairSentinelRewritesAMalformedSentinelSoSessionsServeAgain(t *testing
 	require.NoError(t, err, "before the damage the call serves")
 	require.Equal(t, current, sel.Record.Current)
 	malformed := repairPlant(t, rig.stack, rig.writerConn)
-	_, err = strictStoreState(malformed)
-	require.Error(t, err, "the planted value is a store state")
+	_, _, _, err = selection.DecodeKVValue(selection.SentinelKey, malformed)
+	require.ErrorIs(t, err, selection.ErrMalformedSentinel, "the planted value is the bucket's sentinel")
 	for _, logical := range []string{"r1", "r-new"} {
 		_, err := rig.repairCall(logical)
 		require.ErrorIs(t, err, selection.ErrMalformedSentinel, "the call for %s over the malformed sentinel", logical)
@@ -317,7 +317,7 @@ func TestRestoreCutoverHoldIsTheDoneSessionRowsHold(t *testing.T) {
 // writes {cutover rolled_back, boundary, the cutover's hold}, byte for byte what restore --finish
 // left; after the release a fixed-mode listener's read of the sentinel (the listener's
 // RefuseConvertedStore reads selection.Store.State) succeeds with rolled_back, which is no done, so
-// fixed names run, and the readers' strict decode takes it. Control: the rollback run by today's
+// fixed names run, and the readers' decode takes it. Control: the rollback run by today's
 // restore (restoreRuleSet's noCutoverHold) saves no cutover hold, and the repair stops UNKNOWN
 // naming it, before its intent, the malformed sentinel left as it was.
 func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
@@ -388,8 +388,8 @@ func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
 		require.NoError(t, err, "the fixed-mode listener's read of the sentinel")
 		require.Equal(t, selection.CutoverRolledBack, state.Cutover, "the fixed-mode listener reads rolled_back, which is no done, and runs")
 		malformedRefused(t, selection.SentinelKey, []byte(`{"type":"io.nats.jetstream.api.v1.stream_info_response"}`))
-		_, err = strictStoreState(written)
-		require.NoError(t, err, "the readers' strict decode takes the rewritten sentinel")
+		_, _, _, err = selection.DecodeKVValue(selection.SentinelKey, written)
+		require.NoError(t, err, "the readers' decode takes the rewritten sentinel")
 	})
 }
 

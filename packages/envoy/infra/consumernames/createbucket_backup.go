@@ -212,12 +212,13 @@ func createBucketWalkOp(headers kvrecords.Headers) string {
 // createBucketExactValue is create-bucket --after-loss's one check of a value it loads or adopts (a
 // walk's, a restored snapshot's or a present bucket's, createBucketCheckValues): a KV delete or
 // purge marker holds no data, and any other value is an exact value of its key's kind as
-// readSelectionValue reads it, the package's one decode of the bucket's values (strictdecode.go: a
-// session's or a durable's selection.Record, the sentinel's selection.StoreState, which this
-// answers, nil for a marker or another key; a hold's barrier, its hold id; no other key). Any
-// principal with a JetStream API grant can have the server store its JSON answer under any key of
-// the bucket through a request's reply subject, which a lenient decode takes as an empty record.
-// Its errors begin "holds", for the caller to name the key and its sequence before them.
+// readSelectionValue reads it, the package's one decode of the bucket's values (strictdecode.go:
+// a session's or a durable's selection.Record and the sentinel's selection.StoreState through
+// selection.DecodeKVValue, the state answered here, nil for a marker or another key; a hold's
+// barrier, its hold id; no other key). Any principal with a JetStream API grant can have the server
+// store its JSON answer under any key of the bucket through a request's reply subject, which a
+// lenient decode takes as an empty record. Its errors begin "holds", for the caller to name the key
+// and its sequence before them.
 func createBucketExactValue(key, op string, data []byte) (*selection.StoreState, error) {
 	switch op {
 	case "":

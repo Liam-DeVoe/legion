@@ -667,7 +667,8 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 		id := createBucketLoseBucket(t, h)
 		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
 		require.Equal(t, 1, code, stderr)
-		require.Contains(t, stderr, fmt.Sprintf("selection bucket %s's key ses_forged at sequence %d holds no selection record", selection.SessionBucket, seq))
+		require.Contains(t, stderr, fmt.Sprintf("selection bucket %s's key ses_forged at sequence %d holds ", selection.SessionBucket, seq))
+		require.Contains(t, stderr, "the key holds no selection record of its own")
 		require.Contains(t, stderr, "the bucket "+selectionStreamName+" restored from the backup and deleted again")
 		require.False(t, h.journal(id).Complete)
 		_, present, _, _ := createBucketState(h)
@@ -678,8 +679,8 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 		name, key, kind string
 		decoded         any
 	}{
-		{name: "a present bucket's session key", key: "ses_forged", kind: "no selection record", decoded: &selection.Record{}},
-		{name: "a present bucket's sentinel", key: selection.SentinelKey, kind: "no store state", decoded: &selection.StoreState{}},
+		{name: "a present bucket's session key", key: "ses_forged", kind: "the key holds no selection record of its own", decoded: &selection.Record{}},
+		{name: "a present bucket's sentinel", key: selection.SentinelKey, kind: "the selection store's sentinel key holds no sentinel of its own", decoded: &selection.StoreState{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newStack(t)
@@ -700,7 +701,8 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 			id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
 			code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
 			require.Equal(t, 1, code, stderr)
-			require.Contains(t, stderr, fmt.Sprintf("selection bucket %s's key %s at sequence %d holds %s", selection.SessionBucket, c.key, seq, c.kind))
+			require.Contains(t, stderr, fmt.Sprintf("selection bucket %s's key %s at sequence %d holds ", selection.SessionBucket, c.key, seq))
+			require.Contains(t, stderr, c.kind)
 			require.False(t, h.journal(id).Complete)
 			nc, _ := h.operator()
 			after, _, err := replayLeaderRead(ctx, nc, selection.SessionBucket, selection.SentinelKey)

@@ -186,14 +186,22 @@ func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, re
 	}
 	// Pseudo-random values, a stream of its own for each key: a pattern the archive's s2
 	// compression folds would leave one chunk, and a cut after the second chunk would fall on the
-	// restore's last request instead.
+	// restore's last request instead. The bytes go in base64url as retired names of at most 200
+	// characters each, which the library's decode takes as consumer names (no '/' or '+', at most
+	// 255 bytes).
 	value := make([]byte, 4096)
 	for i := range filler {
 		random := rand.New(rand.NewPCG(uint64(i), 0x5eed))
 		for j := range value {
 			value[j] = byte(random.Uint32())
 		}
-		_, err := store.Write(ctx, fmt.Sprintf("filler-%d", i), selection.Record{Current: base64.StdEncoding.EncodeToString(value)}, 0)
+		encoded := base64.RawURLEncoding.EncodeToString(value)
+		var retired []string
+		for len(encoded) > 0 {
+			n := min(200, len(encoded))
+			retired, encoded = append(retired, encoded[:n]), encoded[n:]
+		}
+		_, err := store.Write(ctx, fmt.Sprintf("filler-%d", i), selection.Record{Retired: retired}, 0)
 		require.NoError(t, err)
 	}
 	mgr, err := jsm.New(nc, jsm.WithTimeout(30*time.Second))

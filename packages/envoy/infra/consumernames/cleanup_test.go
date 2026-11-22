@@ -25,11 +25,15 @@ func cleanupRetired(t *testing.T, store selection.Store, logical string) []strin
 	return record.Retired
 }
 
-// cleanupPull creates, as the operator, a pull consumer named name on the notification stream.
-func cleanupPull(t *testing.T, nc *nats.Conn, name string) {
+// cleanupPull creates, as the operator, a pull consumer named name on the notification stream,
+// carrying the metadata the creator of logical's family writes (member.Metadata, of logical's
+// member), which the owner check of every delete reads (deleteOwned).
+func cleanupPull(t *testing.T, nc *nats.Conn, name, logical string) {
 	t.Helper()
-	_, err := writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
-		FilterSubject: "notifications.agent.cleanup." + name[len(name)-3:]}, actionCreateConsumer)
+	m, err := replayMember(logical)
+	require.NoError(t, err, "the member of %s", logical)
+	_, err = writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
+		FilterSubject: "notifications.agent.cleanup." + name[len(name)-3:], Metadata: m.Metadata()}, actionCreateConsumer)
 	require.NoError(t, err, "create %s", name)
 }
 
@@ -73,12 +77,14 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 		dispatchCurrent = "delivery-events~cleanupDispaJJJ"
 		dispatchAbsent  = "delivery-events~cleanupDispaKKK"
 	)
-	for _, name := range []string{sessionCurrent, sessionRetired, selfRetired, unrecorded, listenerCurrent, listenerOld, daemonCurrent, daemonRetired, dispatchCurrent} {
-		cleanupPull(t, nc, name)
+	listenerKey := selection.DurableKey("listener-hub")
+	for name, logical := range map[string]string{sessionCurrent: "ses_a", sessionRetired: "ses_a", selfRetired: "ses_b", unrecorded: "ses_c",
+		listenerCurrent: listenerKey, listenerOld: listenerKey, daemonCurrent: "legion-go-PROJ-github", daemonRetired: "legion-go-PROJ-github",
+		dispatchCurrent: "delivery-events"} {
+		cleanupPull(t, nc, name, logical)
 	}
 	write(kv, "ses_a", selection.Record{Current: sessionCurrent, Start: 2, Retired: []string{sessionRetired, sessionAbsent}})
 	write(kv, "ses_b", selection.Record{Current: selfRetired, Start: 2, Retired: []string{selfRetired}})
-	listenerKey := selection.DurableKey("listener-hub")
 	write(kv, listenerKey, selection.Record{Current: listenerCurrent, Start: 2, Retired: []string{listenerOld}})
 	write(daemon, "legion-go-PROJ-github", selection.Record{Current: daemonCurrent, Start: 2, Retired: []string{daemonRetired}})
 	write(dispatch, "delivery-events", selection.Record{Current: dispatchCurrent, Start: 2, Retired: []string{dispatchAbsent}})
@@ -158,8 +164,8 @@ func TestTheConsumerCleanupCommandsRunOnlyInItsHold(t *testing.T) {
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
 	const current, retired = "session~onlyInItsHoldCurrentAAA", "session~onlyInItsHoldRetiredBBB"
-	cleanupPull(t, nc, current)
-	cleanupPull(t, nc, retired)
+	cleanupPull(t, nc, current, "ses_a")
+	cleanupPull(t, nc, retired, "ses_a")
 	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	_, err = kv.Write(ctx, "ses_a", selection.Record{Current: current, Start: 2, Retired: []string{retired}}, 0)
 	require.NoError(t, err)

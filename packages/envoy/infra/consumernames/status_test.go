@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -151,7 +152,7 @@ func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
 	}
 	write(kv, "ses_a", selection.Record{Current: "session~A", Start: 3, Retired: []string{"session~R", "session~Q"}})
 	write(kv, "ses_b", selection.Record{Current: "session~B", Start: 4})
-	write(kv, "ses_c", selection.Record{Current: "session~C", Start: 5, Op: &selection.Op{Kind: selection.OpReplace, Candidate: "session~N", Old: "session~C", Owner: "o1"}})
+	write(kv, "ses_c", selection.Record{Current: "session~C", Start: 5, Op: &selection.Op{Kind: selection.OpReplace, Candidate: "session~N", Old: "session~C", Owner: "o1", ReservedAt: time.Now()}})
 	write(kv, selection.DurableKey("listener-hub"), selection.Record{Current: "listener-hub~L", Start: 6})
 	write(kv, "ses_gone", selection.Record{Current: "session~G"})
 	statusPublishKV(t, nc, "ses_gone", nil, "DEL")
@@ -291,4 +292,41 @@ func TestTheStatusReportsAGoneDaemonStore(t *testing.T) {
 	require.Contains(t, stderr, "daemon/ELSEWHERE's store answers SQLSTATE 3D000, and the census's rule does not confirm it gone")
 	require.Contains(t, stderr, "Deployment legion/legion-daemon-elsewhere reads database \"daemon_elsewhere\"")
 	require.Contains(t, stdout, "store daemon/GONE: gone: ", "status went on past the gone store")
+}
+
+// status lists, as a blocker naming the field and the name, a record its family's creator refuses
+// (checkRecordFence, selection.Names.Check): a session's record that retires its fixed name, and
+// one whose current is a daemon's consumer name. A complete reading still exits 0. Control: the
+// status before the fence (the previous status.go, by -overlay) lists both records with no blocker
+// naming either field, as healthy.
+func TestStatusListsARecordItsCreatorRefusesAsABlocker(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
+	_, err = kv.Write(ctx, "ses_fixed", selection.Record{Current: selection.FreshName(sessionFreshPrefix), Start: 1,
+		Retired: []string{sessionFixedPrefix + "ses_fixed"}}, 0)
+	require.NoError(t, err)
+	_, err = kv.Write(ctx, "ses_other", selection.Record{Current: selection.FreshName("legion-go-PROJ-wake"), Start: 1}, 0)
+	require.NoError(t, err)
+	h.database(familyDispatch, dispatchMigrations...)
+	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: "streams census"}, nil)
+	require.NoError(t, err)
+	require.NoError(t, h.records().AppendDone(ctx, id, "streams census", nil))
+	require.NoError(t, h.release(id))
+
+	code, stdout, stderr := h.run(actionStatus, "--dispatch-database-file", "dispatch.url")
+	require.Equal(t, 0, code, "%s", stderr)
+	for _, want := range []string{
+		`BLOCKER session ses_fixed: its family's creator refuses the record: `,
+		`the key ses_fixed's retired name "s-ses_fixed" is no session~<nuid> name`,
+		`BLOCKER session ses_other: its family's creator refuses the record: `,
+		`the key ses_other's current "legion-go-PROJ-wake~`,
+	} {
+		require.Contains(t, stdout, want)
+	}
 }

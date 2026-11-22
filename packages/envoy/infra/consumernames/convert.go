@@ -643,10 +643,8 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			// package's own replace never retires the fixed name and deletes it itself; convert
 			// holds F's delete. A crash before it leaves F listed, which this command's rerun and
 			// final listing delete again.
-			if info != nil {
-				if err := deleteConsumer(ctx, nc, notifications, name.Fixed); err != nil {
-					return false, nil, fmt.Errorf("delete %s, which %s's record no longer selects: %w", name.Fixed, m.Logical, err)
-				}
+			if err := deleteIfOwned(ctx, nc, m, info); err != nil {
+				return false, nil, fmt.Errorf("delete %s, which %s's record no longer selects: %w", name.Fixed, m.Logical, err)
 			}
 			return false, nil, nil
 		}
@@ -707,7 +705,7 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 		if err != nil {
 			return false, nil, fmt.Errorf("reserve %s's conversion: %w", m.Logical, err)
 		}
-		if err := deleteConsumer(ctx, nc, notifications, name.Fixed); err != nil {
+		if err := deleteIfOwned(ctx, nc, m, info); err != nil {
 			return false, nil, fmt.Errorf("delete %s, whose start %d %s's record saved: %w", name.Fixed, next.Start, m.Logical, err)
 		}
 		if err := c.launch(ctx, r, nc, st, m, convertCreatorThreshold(*config, bound), next, revision); err != nil {
@@ -750,7 +748,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 			}
 		}
 		if op.Old != "" {
-			if err := deleteConsumer(ctx, nc, notifications, op.Old); err != nil {
+			if err := deleteOwned(ctx, nc, m, op.Old); err != nil {
 				return fmt.Errorf("delete %s, %s's open delete: %w", op.Old, m.Logical, err)
 			}
 		}
@@ -876,13 +874,11 @@ func (c convertRule) launch(ctx context.Context, r *run, nc *nats.Conn, st famil
 			case !cleared:
 				cleared = true
 				for _, retired := range record.Retired {
-					if held, err := consumerInfo(ctx, nc, notifications, retired); err == nil && held != nil {
-						_ = deleteConsumer(ctx, nc, notifications, retired)
-					}
+					_ = deleteOwned(ctx, nc, m, retired)
 				}
 			case op.Old != "" && !oldDeleted:
 				oldDeleted = true
-				if err := deleteConsumer(ctx, nc, notifications, op.Old); err != nil {
+				if err := deleteOwned(ctx, nc, m, op.Old); err != nil {
 					return fmt.Errorf("delete %s under %s's saved start %d at the stream's max_consumers: %w", op.Old, m.Logical, record.Start, err)
 				}
 			default:
@@ -923,7 +919,7 @@ func (c convertRule) publish(ctx context.Context, nc *nats.Conn, st familyStore,
 		return err
 	}
 	if op.Kind == selection.OpReplace && op.Old != "" {
-		_ = deleteConsumer(ctx, nc, notifications, op.Old)
+		_ = deleteOwned(ctx, nc, m, op.Old)
 	}
 	return nil
 }
