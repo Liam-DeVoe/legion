@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
-import { chromiumLaunchOptions } from "./browser-namespace";
+import { chromiumLaunchOptions, guardChromiumLaunches, guardedChromium } from "./browser-namespace";
 import {
   clockFileOnCommandLine,
   clockProjectNames,
@@ -17,6 +17,12 @@ import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
 import { inVisualOrder, visualOrder } from "./visual-order";
+
+// Every process that loads this config, each worker included, refuses a Chromium launch that does
+// not start through e2e/browser-namespace.sh while the run's browser network is its own: a row's
+// or a file's `launchOptions` replace the project's whole, and one written without
+// `chromiumLaunchOptions` would otherwise start Chromium on the host's network with nothing said.
+guardChromiumLaunches(guardedChromium());
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the

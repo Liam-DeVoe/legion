@@ -10,6 +10,8 @@ import {
   browserNetworkVariable,
   chromiumExecutable,
   chromiumLaunchOptions,
+  guardChromiumLaunches,
+  guardedChromium,
   launchPrefix,
   loopbackAddress,
   loopbackSocksServer,
@@ -173,6 +175,68 @@ test("a Chromium launch names the launcher where the network is its own, and kee
     executablePath: browserLauncher,
   });
   expect(chromiumLaunchOptions({ args }, { [browserNetworkVariable]: "host" })).toEqual({ args });
+});
+
+/** A stand-in for Playwright's Chromium `BrowserType` whose `browser` fixture filled
+ *  `_defaultLaunchOptions` with `defaults`: it records each launch it is asked for. */
+function standInChromium(defaults: object | undefined) {
+  const launched: string[] = [];
+  return {
+    _playwright: { _defaultLaunchOptions: defaults },
+    launch: async (options?: { executablePath?: string }) => {
+      launched.push(`launch ${options?.executablePath ?? "-"}`);
+    },
+    launchPersistentContext: async (directory: string) => {
+      launched.push(`persistent ${directory}`);
+    },
+    launched,
+  };
+}
+
+// A row's or a file's `launchOptions` replace the project's whole; the guard catches one written
+// without `chromiumLaunchOptions` at the launch, by name, where the network is the browser's own.
+test("a Chromium launch that does not start through the launcher fails by name where the network is its own", async () => {
+  const own = { [browserNetworkVariable]: "own" };
+  const bypassed = standInChromium({ args: ["--enable-precise-memory-info"], handleSIGINT: false });
+  guardChromiumLaunches(bypassed, own);
+  await expect(bypassed.launch()).rejects.toThrow(
+    'e2e: a Chromium launch did not start through e2e/browser-namespace.sh (executablePath null) while DISPATCH_E2E_BROWSER_NETWORK is "own"'
+  );
+  await expect(bypassed.launchPersistentContext("profile")).rejects.toThrow(
+    "did not start through"
+  );
+  await expect(bypassed.launch({ executablePath: "/usr/bin/chromium" })).rejects.toThrow(
+    '(executablePath "/usr/bin/chromium")'
+  );
+  expect(bypassed.launched).toEqual([]);
+
+  const routed = standInChromium({ executablePath: browserLauncher });
+  guardChromiumLaunches(routed, own);
+  await routed.launch();
+  await routed.launch({ executablePath: browserLauncher });
+  expect(routed.launched).toEqual([`launch -`, `launch ${browserLauncher}`]);
+
+  const onHost = standInChromium({ args: [] });
+  guardChromiumLaunches(onHost, { [browserNetworkVariable]: "host" });
+  await onHost.launch();
+  expect(onHost.launched).toEqual(["launch -"]);
+
+  const unreadable = { launch: async () => {}, launchPersistentContext: async () => {} };
+  guardChromiumLaunches(unreadable, own);
+  await expect(unreadable.launch()).rejects.toThrow("has no `_playwright`");
+});
+
+// The guard wraps the object the `browser` fixture launches from - Playwright's own Chromium,
+// which `@playwright/test` exports too - and reads the defaults where that Chromium's own `launch`
+// reads them. A Playwright that merged them anywhere else would leave the guard reading none, and
+// every routed launch would then fail by name; this row says so before a run does.
+test("the guard reaches Playwright's own Chromium, whose launch reads the default options where the guard does", async () => {
+  const chromium = guardedChromium();
+  const { chromium: exported } = await import("@playwright/test");
+  expect(chromium).toBe(exported);
+  expect(typeof Reflect.get(chromium, "_playwright")).toBe("object");
+  const ownLaunch: unknown = Reflect.get(Object.getPrototypeOf(chromium), "launch");
+  expect(String(ownLaunch)).toContain("...this._playwright._defaultLaunchOptions, ...options");
 });
 
 // Every Chromium project the config runs on this machine's network launches through the

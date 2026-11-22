@@ -143,6 +143,90 @@ export function chromiumLaunchOptions(
   return browserNetwork(env) === "own" ? { ...options, executablePath: browserLauncher } : options;
 }
 
+/** The part of a Playwright `BrowserType` the launch guard wraps: the two calls that start a
+ *  browser, and the Playwright object whose `_defaultLaunchOptions` the worker's `browser`
+ *  fixture fills from the project's and the row's `launchOptions` before it calls `launch()`
+ *  with none (playwright/lib/index.js, `_browserOptions` and `browser`). */
+type GuardedType = {
+  launch(options?: LaunchOptions): Promise<unknown>;
+  launchPersistentContext(userDataDir: string, options?: LaunchOptions): Promise<unknown>;
+};
+
+/** The options a launch of `type` with `options` starts the browser with, merged as Playwright's
+ *  own `launch` merges them: its default launch options first (unset until a worker's
+ *  `_browserOptions` fixture fills them), the call's own over them. */
+function effectiveLaunchOptions(type: object, options: LaunchOptions | undefined): LaunchOptions {
+  const playwright: unknown = Reflect.get(type, "_playwright");
+  if (typeof playwright !== "object" || playwright === null) {
+    throw new Error(
+      "e2e/browser-namespace.ts: this Playwright's BrowserType has no `_playwright`, whose " +
+        "`_defaultLaunchOptions` the launch guard reads; read the guard again against it."
+    );
+  }
+  const defaults: unknown = Reflect.get(playwright, "_defaultLaunchOptions");
+  return { ...(typeof defaults === "object" && defaults !== null ? defaults : {}), ...options };
+}
+
+/** Makes every launch of `type` (Chromium's) fail by name unless it starts through the launcher,
+ *  where the run's browser network is its own. A row's or a file's own `launchOptions` replace
+ *  the project's whole, so one written without `chromiumLaunchOptions` would start Chromium on the
+ *  host's network with nothing said; this is where that is caught, at the launch itself, whatever
+ *  `test` the spec imports. e2e/playwright.config.ts installs it on Playwright's own Chromium
+ *  (`guardedChromium`) in every process that loads the config, its workers included. */
+export function guardChromiumLaunches(
+  type: GuardedType,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  if (browserNetwork(env) !== "own") return;
+  const refuseUnrouted = (options: LaunchOptions) => {
+    if (options.executablePath === browserLauncher) return;
+    throw new Error(
+      `e2e: a Chromium launch did not start through e2e/browser-namespace.sh ` +
+        `(executablePath ${JSON.stringify(options.executablePath ?? null)}) while ` +
+        `${browserNetworkVariable} is "own": build a row's or a file's launchOptions with ` +
+        `chromiumLaunchOptions (e2e/browser-namespace.ts), or set ${browserNetworkVariable}=host.`
+    );
+  };
+  const launch = type.launch.bind(type);
+  const persistent = type.launchPersistentContext.bind(type);
+  type.launch = async (options) => {
+    refuseUnrouted(effectiveLaunchOptions(type, options));
+    return launch(options);
+  };
+  type.launchPersistentContext = async (userDataDir, options) => {
+    refuseUnrouted(effectiveLaunchOptions(type, options));
+    return persistent(userDataDir, options);
+  };
+}
+
+/** Whether `value` has the two launch calls the guard wraps. */
+function isGuardedType(value: unknown): value is GuardedType {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof Reflect.get(value, "launch") === "function" &&
+    typeof Reflect.get(value, "launchPersistentContext") === "function"
+  );
+}
+
+/** Playwright's own Chromium `BrowserType`: the object the `browser` fixture launches, reached as
+ *  that fixture reaches it (`require("playwright-core")` from the `playwright` package that
+ *  `@playwright/test` loads), so the guard wraps the very object every worker launches from. */
+export function guardedChromium(): GuardedType {
+  const fromHere = createRequire(import.meta.url);
+  const fromTest = createRequire(fromHere.resolve("@playwright/test/package.json"));
+  const fromPlaywright = createRequire(fromTest.resolve("playwright/package.json"));
+  const core: unknown = fromPlaywright("playwright-core");
+  const chromium: unknown =
+    typeof core === "object" && core !== null ? Reflect.get(core, "chromium") : undefined;
+  if (!isGuardedType(chromium)) {
+    throw new Error(
+      "e2e/browser-namespace.ts: playwright-core exports no Chromium launcher to guard"
+    );
+  }
+  return chromium;
+}
+
 /** Where Chromium reaches its proxy inside its namespace. The namespace is the browser's alone,
  *  so no other listener can hold the port. */
 export const proxyPort = 1080;
