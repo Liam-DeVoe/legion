@@ -33,10 +33,13 @@ func (n *Names) freshOf(logical, name string) bool {
 // names a consumer outside logical's own family: its current, each retired name and an open
 // operation's candidate must be fresh names of logical (freshOf), and an open operation's old name
 // one of those or logical's fixed name, which the cutover's convert replaces. Each is a name the
-// protocol creates, binds, updates or deletes, so a record that names another family's consumer (a
-// daemon's durable, a session's of another prefix) never gets one of those calls on it. It is the
-// creator's own fence on every record it reads (read), and a reader's by the family's naming
-// (CheckFamily).
+// protocol creates, binds, updates or deletes, so a record never gets one of those calls on a
+// consumer of another prefix than its key's (a session's under a durable's key, a daemon's durable
+// under a session's). It judges the names by the key's own prefix and fixed name, so it cannot
+// tell a key of another family's: a record keyed by the listener's durable in a daemon's store
+// names that durable as its own. The key rule refuses such a key before any record is read
+// (Config.CheckKey, the family's Naming.CheckKey, which FamilyNaming applies). It is the creator's
+// own fence on every record it reads (read), and a reader's by the family's naming (CheckFamily).
 func (n *Names) check(logical string, record Record) error {
 	refuse := func(field, name string) error {
 		return fmt.Errorf("%w: the key %s's %s %q is no %s~<nuid> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))

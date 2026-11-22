@@ -20,10 +20,18 @@ import (
 
 // forcedSessionConsumers is SessionConsumers in the fresh mode on urls, over a selection bucket at
 // replicas copies conn makes as the operator's create-bucket does, its sentinel saying the cutover
-// is done.
+// is done. The create is bounded by forcedLed, not by a request's default 5 s: the server picks a
+// new stream's preferred leader at random among the online members, and a preferred member that
+// has not applied the stream's assignment never campaigns, so the stream is led, and its create
+// answered, only after an election timeout (nats-server v2.15.1 jetstream_cluster.go:11096-11097,
+// setPreferredMember :3945-3985); TestForcedOrderASelectionBucketIsReadOnlyOnceTheMetaLeaderHasAppliedIt
+// parks the meta leader so, and failed its create with "context deadline exceeded" when that member
+// was picked.
 func forcedSessionConsumers(t *testing.T, urls []string, conn *natsgo.Conn, replicas int) *SessionConsumers {
 	t.Helper()
-	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, replicas, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), forcedLed)
+	defer cancel()
+	if _, err := consumernames.CreateSessionBucket(ctx, conn, replicas, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
 		t.Fatalf("create the selection bucket: %v", err)
 	}
 	return forcedProcess(t, urls)

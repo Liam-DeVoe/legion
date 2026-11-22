@@ -167,12 +167,14 @@ const LegionWakeTopic = NotificationTopicPrefix + "legion.wake"
 const WebhookRedeliveryRetention = 72 * time.Hour
 
 // DispatchDeliveryDurable is the stream's durable consumer Dispatch's delivery intake binds, over
-// every GitHub notification (internal/dispatch/delivery).
-const DispatchDeliveryDurable = "delivery-events"
+// every GitHub notification (internal/dispatch/delivery): the family table's
+// (consumernames.DispatchDeliveryDurable), one of the two keys of Dispatch's selection store.
+const DispatchDeliveryDurable = consumernames.DispatchDeliveryDurable
 
 // DispatchJobDurable is the stream's durable consumer Dispatch's job intake binds, over a deploy
-// run's job events (internal/dispatch/delivery).
-const DispatchJobDurable = "delivery-jobs"
+// run's job events (internal/dispatch/delivery): the family table's
+// (consumernames.DispatchJobDurable), the other key of Dispatch's selection store.
+const DispatchJobDurable = consumernames.DispatchJobDurable
 
 // DispatchDeliveryFilter is the subject Dispatch's delivery intake consumes: every GitHub
 // notification. DispatchJobFilter is the job intake's: a deploy run's job events.
@@ -210,9 +212,11 @@ func DispatchJobConsumer() nats.ConsumerConfig {
 }
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: the family table's prefix (consumernames.ListenerDurablePrefix), the one the session
+// store's key rule takes a durable's key by, and the machine id. A space in the machine id is a
+// hyphen in the name.
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return consumernames.ListenerDurablePrefix + strings.ReplaceAll(machineID, " ", "-")
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
