@@ -662,23 +662,30 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // takes its root's project when the workflow writes it, so the root of a record of this project
 // is this project's too.
 //
-// The view's StepRole is the subquery record.issueColumns ends with, written here a second time
-// over the alias i, since store and record import neither each other: the role of the step the
-// task of the issue's generation stands at, "" where its plan rows hold none or the task stands
-// at no step.
+// The view's StepRole and PlaceRole are the two subqueries record.issueColumns ends with, written
+// here a second time over the alias i, since store and record import neither each other: the role
+// of the step the task of the issue's generation stands at, "" where its plan rows hold none or
+// the task stands at no step; and the role of the claim that works the task's place (the architect
+// where its agent is the owner), which a test holds equal to the issue's read.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase, stepRole string
+	var issuePhase, rootPhase, stepRole, placeRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null,
 		coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
-			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')
+			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), ''),
+		coalesce((select case t.running_kind
+			when 'step' then (select case when s.agent_key = 'owner' then 'architect' else s.role end from plan_steps s
+				where s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position)
+			when 'retro' then coalesce((select case when s.agent_key = 'owner' then 'architect' else s.role end from plan_steps s
+				where s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.type = 'implementation' order by s.position desc limit 1), 'architect')
+			end from plan_tasks t where t.issue = i.key and t.generation = i.generation), '')
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole)
+		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole, &placeRole)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -687,7 +694,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	view.Found = true
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
-	view.StepRole = claim.Role(stepRole)
+	view.StepRole, view.PlaceRole = claim.Role(stepRole), claim.Role(placeRole)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
 	claims, err := tx.Query(ctx, `select c.token, c.role, c.state, c.plugin_contract, c.serving_generation,

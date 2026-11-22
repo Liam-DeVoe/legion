@@ -144,7 +144,9 @@ const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 // project's daemon keeps of the issue on a shared database is not this daemon's
 // (store.readIdleView). StepRole is the role of the step the issue's task stands at, read from
 // its plan rows as the issue's own record reads it (record.Issue.StepRole), and "" where they
-// hold none: at step, the worker of the issue's open phase, which no phase names.
+// hold none: at step, the worker of the issue's open phase, which no phase names. PlaceRole is
+// the role of the claim that works that place, read the same way (record.Issue.PlaceRole): the
+// architect at a step or a retro the owner does, and the retro's agent's role at the retro.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
@@ -155,6 +157,7 @@ type IdleView struct {
 	Found       bool
 	Phase       phase.Phase
 	StepRole    claim.Role
+	PlaceRole   claim.Role
 	Status      string
 	Generation  uint64
 	LingerUntil *time.Time
