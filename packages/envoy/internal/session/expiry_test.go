@@ -74,10 +74,14 @@ func watchedDelete(key string, revision uint64) watchedEntry {
 	return watchedEntry{key: key, revision: revision, created: time.Now(), op: natsgo.KeyValueDelete}
 }
 
-// waitUntil polls condition until it holds, failing the test after five seconds.
+// waitUntil polls condition until it holds. Its one bound is the test binary's deadline
+// (testwait.Until): an expiry timer a loaded machine fires late is not a failure.
 func waitUntil(t *testing.T, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "the registry's expiry", condition)
+	testwait.Until(t, "the registry's expiry", func() (bool, bool) {
+		held := condition()
+		return held, held
+	})
 }
 
 // waitForCacheSize waits, reading only CacheSize, until the cache holds want entries.
@@ -93,6 +97,18 @@ func lastSeenHeld(r *SessionRegistry, id string) bool {
 	defer r.mu.RUnlock()
 	_, ok := r.seenLocal[id]
 	return ok
+}
+
+// lastSeenUntil is the deadline the expiry heap holds for id's per-process last-seen record
+// (expireLastSeen), where the expiry timer drops it, and whether the heap holds one.
+func lastSeenUntil(r *SessionRegistry, id string) (time.Time, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	item, ok := r.expiryIndex[expiryKey{id: id, kind: expireLastSeen}]
+	if !ok {
+		return time.Time{}, false
+	}
+	return item.deadline, true
 }
 
 // fence is the revision the copy's fence holds for id, and whether it holds one. A registry built
@@ -350,28 +366,43 @@ func TestNonPositiveTTLNeverRemovesOrSchedules(t *testing.T) {
 // TestLastSeenRetentionKeepsTheRecordAndFenceThatLong lets a session expire and removes another in
 // a registry whose retention is longer than its TTL: LastSeen answers each one's final heartbeat,
 // and the fence holds off a stale replay, until the retention has passed since the session left
-// the cache, well past one TTL, and both leave together after it.
+// the cache, well past one TTL, and both leave together after it. The registry reads a clock the
+// row holds (heldClock), so "within the retention" is the row's own clock, however long the
+// machine takes between two lines.
 func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 	const (
 		ttl       = 50 * time.Millisecond
 		retention = time.Second
 	)
+	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(ttl)
+	r.now = clock.Now
 	r.lastSeenRetention = retention
-	created := time.Now()
+	created := clock.Now()
 	heartbeat := created.UnixMilli()
 	stale := watchedPut(t, "ses_deleted", 1, created, SessionEntry{Port: 1, UpdatedAt: heartbeat})
 	r.applyWatched(watchedPut(t, "ses_expired", 2, created, SessionEntry{Port: 2, UpdatedAt: heartbeat}))
 	r.applyWatched(stale)
-	deleted := time.Now()
 	r.applyWatched(watchedDelete("ses_deleted", 3))
-	waitForCacheSize(t, r, 0)
 
 	// Several TTLs after both left, well inside the retention.
-	time.Sleep(4 * ttl)
+	clock.advance(4 * ttl)
+	waitForCacheSize(t, r, 0)
 	for _, id := range []string{"ses_expired", "ses_deleted"} {
 		if got := r.LastSeen(context.Background(), id); got != heartbeat {
-			t.Fatalf("LastSeen(%s) %s after it left = %d, want its heartbeat %d", id, time.Since(created), got, heartbeat)
+			t.Fatalf("LastSeen(%s) %s after it left = %d, want its heartbeat %d", id, clock.Now().Sub(created), got, heartbeat)
+		}
+	}
+	// Each record is kept for the retention from the moment its session left the live view, and
+	// never before the retention after its registration's expiry, where LastSeen stops reporting
+	// it (lastSeenUntilLocked): the expired one left at its own deadline, that expiry, and the
+	// deleted one at its delete, before that expiry, so it is kept the retention past the expiry.
+	for id, want := range map[string]time.Time{
+		"ses_expired": created.Add(ttl).Add(retention),
+		"ses_deleted": time.UnixMilli(heartbeat).Add(ttl).Add(retention),
+	} {
+		if until, held := lastSeenUntil(r, id); !held || !until.Equal(want) {
+			t.Fatalf("%s's record is kept until %v (scheduled %v), want %v", id, until, held, want)
 		}
 	}
 	if revision, ok := fence(r, "ses_deleted"); !ok || revision != 3 {
@@ -385,14 +416,12 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 		t.Fatalf("LastSeen(ses_deleted) after a replay the fence holds off = %d, want %d", got, heartbeat)
 	}
 
+	clock.advance(retention)
 	waitUntil(t, func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		return len(r.seenLocal) == 0 && len(r.expiries) == 0
 	})
-	if gone := time.Since(deleted); gone < retention {
-		t.Fatalf("records and fences left %s after ses_deleted was removed, before the retention %s", gone, retention)
-	}
 	for _, id := range []string{"ses_expired", "ses_deleted"} {
 		if got := r.LastSeen(context.Background(), id); got != 0 {
 			t.Fatalf("LastSeen(%s) after the retention = %d, want 0", id, got)
@@ -402,27 +431,35 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 
 // TestLastSeenRetentionShorterThanTheTTLKeepsOneTTL asks for a retention shorter than the TTL: the
 // record is still kept one TTL, and the fence stays until a completed read of the bucket drops it.
+// The registry reads a clock the row holds (heldClock), as the row above does.
 func TestLastSeenRetentionShorterThanTheTTLKeepsOneTTL(t *testing.T) {
 	const ttl = 500 * time.Millisecond
+	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(ttl)
+	r.now = clock.Now
 	r.lastSeenRetention = time.Millisecond
-	now := time.Now()
+	now := clock.Now()
 	r.applyWatched(watchedPut(t, "ses_deleted", 1, now, SessionEntry{Port: 1, UpdatedAt: now.UnixMilli()}))
-	deleted := time.Now()
+	deleted := clock.Now()
 	r.applyWatched(watchedDelete("ses_deleted", 2))
 
 	// Many retentions later, well inside one TTL.
-	time.Sleep(50 * time.Millisecond)
+	clock.advance(50 * time.Millisecond)
 	if got := r.LastSeen(context.Background(), "ses_deleted"); got != now.UnixMilli() {
-		t.Fatalf("LastSeen(ses_deleted) %s after it left = %d, want its heartbeat %d", time.Since(deleted), got, now.UnixMilli())
+		t.Fatalf("LastSeen(ses_deleted) %s after it left = %d, want its heartbeat %d", clock.Now().Sub(deleted), got, now.UnixMilli())
 	}
 	if revision, ok := fence(r, "ses_deleted"); !ok || revision != 2 {
 		t.Fatalf("fence for ses_deleted = %d (held %v), want 2 within one TTL", revision, ok)
 	}
-	waitUntil(t, func() bool { return !lastSeenHeld(r, "ses_deleted") })
-	if gone := time.Since(deleted); gone < ttl {
-		t.Fatalf("the record left %s after the delete, before one TTL %s", gone, ttl)
+	// The retention is never shorter than one TTL (SessionRegistry.retention), and the delete came
+	// before the registration's expiry, one TTL after its write, so the record is kept one TTL past
+	// that expiry.
+	want := time.UnixMilli(now.UnixMilli()).Add(2 * ttl)
+	if until, held := lastSeenUntil(r, "ses_deleted"); !held || !until.Equal(want) {
+		t.Fatalf("the record is kept until %v (scheduled %v), want one TTL after its registration's expiry, %v", until, held, want)
 	}
+	clock.advance(2 * ttl)
+	waitUntil(t, func() bool { return !lastSeenHeld(r, "ses_deleted") })
 	r.sweep()
 	if revision, ok := fence(r, "ses_deleted"); ok {
 		t.Fatalf("a completed read left fence %d", revision)

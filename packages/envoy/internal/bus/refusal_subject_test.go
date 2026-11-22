@@ -163,7 +163,11 @@ func readModeBucket(t *testing.T, admin *nats.Conn, client *Client, bucket, key 
 // listener's) sends both as gets from the stream's leader, on a stream that allows direct gets too
 // (streamMessageReads). So a read whose own request lost its answer, while the connection earned
 // the refusal of the request the other kind of handle sends, reports its own silence and leaves
-// that refusal in the record; and a read whose own request the grant refuses names that refusal.
+// that refusal in the record; and a read whose own request the grant refuses names that refusal,
+// ErrPublishDenied with the server's text, once its request has waited out RequestTimeout (10 s):
+// nats-server drops a refused request unanswered and reports the refusal only on the connection,
+// so the read does not fail at once. What the handle's kind decides is which refusal the read
+// names after that wait, its own or none (a deadline).
 //
 // Each row starts a server of its own, whose user may publish to anything but the one subject the
 // row refuses, and the server's admin makes the bucket there. The handle under test is the user's,

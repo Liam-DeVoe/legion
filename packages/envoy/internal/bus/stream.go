@@ -75,7 +75,7 @@ const (
 	// and every session's last-seen record (LastSeenPrefix, internal/session).
 	ListenerStateBucket = "envoy_listener"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
-	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
 	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
