@@ -1457,8 +1457,9 @@ func runeOffset(s string, n int) int {
 
 // deathFirstLine is the part of a death the worker-died's reason carries: its first line — the
 // verdict and the start of the runtime's account — without the header of a log tail that ends
-// it. The sandbox runtime ends that line with "; last lines of <role>:" and writes the tail of
-// the role's log and of the container's on the lines after it, among them lines a role wrote:
+// it. The sandbox runtime ends that line with "; last lines of <slot>:", the slot of the claim's
+// agent, and writes the tail of that slot's log and of the container's on the lines after it,
+// among them lines an agent wrote:
 // carried whole, each of those became a line of the architect's notice. The whole account stays
 // on the claim (supervise.Claim.LastDeathCause), where an operator reads it, and in the `death`
 // of the failure record a notice carries when the fact names a cause (noticeFailure). The line
@@ -2075,7 +2076,10 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, phase.RoleFor(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
+	// The role the hold is from is the issue's at that phase (record.Issue.RoleAt): for a hold from
+	// step, the role of the step it was held at, which the held issue keeps, since phase.RoleFor
+	// knows no role of step.
+	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, issue.RoleAt(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
@@ -2541,12 +2545,14 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
-	// session until its issue closes (leave), and its phase entry ends here, not its process. The
-	// workspace passes to the next role at the completion this move records, which the worker reports
-	// once its handoff is committed and pushed, so the next role's start may run while that worker's
-	// turn is still finishing (the issue's lifecycle lane runs its supervise rows one at a time,
-	// oldest due first, and a start waits for no turn to end). From then on
+	// No transition stops a worker: the claim whose phase this ends keeps its process, its role and
+	// its session until its issue closes (leave), or until its agent's next step is of another
+	// role, which the start of that step waits for its turn to end to give it (the outbox's
+	// reroleForStep), and its phase entry ends here, not its process. The workspace passes to the
+	// next role at the completion this move records, which the worker reports once its handoff is
+	// committed and pushed, so the next role's start may run while that worker's turn is still
+	// finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest due
+	// first, and the start of a claim on the role it holds waits for no turn to end). From then on
 	// the finished role answers questions read-only: a completion it reports is refused, since it no
 	// longer works the issue's phase (handoff), and a task queued for a phase the issue has left is
 	// dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one role -

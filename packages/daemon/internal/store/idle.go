@@ -479,14 +479,16 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold and a
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
-// where the deployment releases no pod), and which role works an issue's open phase
-// (workflow.OpenPhaseRole), which the store does not restate (nil arms no backstop). At is
-// required of every cancel, since whether the project is paused is read inside the cancel's own
-// transaction; a cancel made while the project runs reads nothing else of it.
+// where the deployment releases no pod), and the claim that works an issue's open phase, read in
+// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim the
+// record gives the running step, which can be a keyed agent's beside the role's own claim), which
+// the store does not restate (nil arms no backstop). At is required of every cancel, since whether
+// the project is paused is read inside the cancel's own transaction; a cancel made while the
+// project runs reads nothing else of it.
 type ReleaseCancelPause struct {
-	At            time.Time
-	Backstop      time.Duration
-	OpenPhaseRole func(phase.Phase) claim.Role
+	At         time.Time
+	Backstop   time.Duration
+	OpenWorker func(ctx context.Context, tx pgx.Tx, issue string) (claim.Token, error)
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -510,12 +512,21 @@ type ReleaseCancelled struct {
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
-// backstop, which the record arms only where the stop owes no launch. A wake taken since is left
-// open: it is the launch the role is owed, and its start row runs at the resume. The caller holds
-// the issue's lock and held's row for share.
+// backstop, which the record arms only where the stop owes no launch. That worker is a claim
+// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step a keyed agent's claim works the
+// step beside the role's own claim, which gets none. A wake taken since is left open: it is the
+// launch the role is owed, and its start row runs at the resume. The caller holds the issue's lock
+// and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
+	var worker claim.Token
+	if paused.Backstop > 0 && paused.OpenWorker != nil {
+		var err error
+		if worker, err = paused.OpenWorker(ctx, tx, issue); err != nil {
+			return fmt.Errorf("read the worker of %s's open phase: %w", issue, err)
+		}
+	}
 	for _, r := range roles {
 		_, _, owed, err := openPodResume(ctx, tx, project, issue, r.role, r.token)
 		if err != nil {
@@ -523,9 +534,8 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if paused.Backstop > 0 && paused.OpenPhaseRole != nil &&
-			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.generation {
-			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, DueAt: at.Add(paused.Backstop)}
+		if worker != "" && r.token == worker && r.serving == standing.generation {
+			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Claim: r.token, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
 			return err
@@ -536,11 +546,10 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding),
 // and what a start that has just stored a claim of it reads (StandsInWorkflow): the generation the
-// resume names, the phase whose worker a paused cancel arms a backstop for, and whether the issue
-// and its tree root are both still the workflow's to run (pods.InWorkflowNotLingering).
+// resume names, and whether the issue and its tree root are both still the workflow's to run
+// (pods.InWorkflowNotLingering).
 type issueStanding struct {
 	generation uint64
-	phase      phase.Phase
 	live       bool
 }
 
@@ -585,7 +594,7 @@ func readIssueStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkfl
 		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
 		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
 		outOfWorkflow)
-	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
+	return issueStanding{generation: uint64(generation), live: live}, nil
 }
 
 // releasedRole is one claim a release suspended that is still suspended as `released`: the claim

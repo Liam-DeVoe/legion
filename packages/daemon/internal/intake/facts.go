@@ -1193,7 +1193,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
+// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
+// AgentUnnamed for a version in which a fresh agent would need the name of its role that another
+// agent of the plan holds from an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1440,17 +1442,19 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
-// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
-// launcher reported it on the connection of the role whose process it was
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the claim's session), as the
+// pod's launcher reported it on the connection of the slot whose process it was, the slot of a
+// claim's agent
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
 // `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
 // twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
 // guest watch (memoryguard.Guest).
 //
-// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
-// the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim the
+// connection authenticated for, its slot's agent's whatever role that agent's step is on, and that
+// pod), never anything the report says. The workflow tells that claim, on the role topic of its
+// token, which of its processes was ended and why,
 // in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
@@ -1670,13 +1674,17 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at): the phase worker it names is woken whatever else did or did not happen since
-// the release. It is never decoded from an event — the daemon's own pass reads the due rows and
-// applies one fact per row, under the row's id, so a backstop that came due while the daemon was
-// down fires once after it starts.
+// at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
+// is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
+// since the release, and a backstop of an issue the record no longer holds does nothing. Role is
+// the role that claim held then; a backstop the release before armed names no claim, and wakes the
+// claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
+// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
+// while the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
+	Claim claim.Token
 	Role  claim.Role
 }
 

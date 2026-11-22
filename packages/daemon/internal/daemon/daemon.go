@@ -1,7 +1,7 @@
 // Package daemon runs one legion: it opens the store its configuration names, brings the schema
-// forward, records the boot, supervises every role claim — the worker stream the shims dial, the
-// runtime their processes run under, one machine per claim — serves the API, and stops in the
-// order the durable record needs.
+// forward, records the boot, supervises every claim, one agent of an issue or the controller —
+// the worker stream the shims dial, the runtime their processes run under, one machine per claim —
+// serves the API, and stops in the order the durable record needs.
 package daemon
 
 import (
@@ -2194,7 +2194,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
 // what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// other worker, on the Envoy topic of its claim (supervision.openPodUpdate). staleRegistration
 // accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //
