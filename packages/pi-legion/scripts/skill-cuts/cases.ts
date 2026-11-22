@@ -26,9 +26,38 @@ const RepoPath = {
   commit: z.string().min(1),
   path: z.string().min(1),
 };
-/** An installed skill directory of a case's profile, and the name it is installed under. */
-export const ProfileSkill = z.strictObject({ ...RepoPath, name: z.string().min(1) });
+/** An installed skill directory of a case's profile, and the name it is installed under. A
+ *  `namespace` marks a second copy of a name whose text differs from the first's, which Oh My Pi
+ *  lists as `<namespace>/<name>` (extensibility/skills.ts, lines 164-223); context.ts installs it
+ *  in a skills directory of its own under that namespace. */
+export const ProfileSkill = z.strictObject({
+  ...RepoPath,
+  name: z.string().min(1),
+  namespace: z
+    .string()
+    .regex(/^[\p{L}\p{N}_-]+$/u, "is not one token of letters, digits, _ and -")
+    .optional(),
+});
 export type ProfileSkill = z.infer<typeof ProfileSkill>;
+
+/** The name Oh My Pi lists a profile skill under: `<namespace>/<name>` for a namespaced copy, else
+ *  its name. Every check of a profile's names reads this one. */
+export function listedName(skill: Pick<ProfileSkill, "name" | "namespace">): string {
+  return skill.namespace === undefined ? skill.name : `${skill.namespace}/${skill.name}`;
+}
+
+/** Which of `skills` are copies of the source of the tested skill `name`: the repository and path
+ *  (at any commit, under any namespace) of the copy listed under `name` itself. An arm gives each
+ *  of them its own text (`none` leaves each out); a copy of another source that shares the name
+ *  stays as the profile has it. With no copy listed under `name`, none is. */
+export function testedCopy(
+  skills: readonly ProfileSkill[],
+  name: string
+): (skill: Pick<ProfileSkill, "repo" | "path">) => boolean {
+  const source = skills.find((skill) => listedName(skill) === name);
+  return (skill) =>
+    source !== undefined && skill.repo === source.repo && skill.path === source.path;
+}
 
 /** A directory inside a repository's checkout: relative, `/`-separated, with no empty, `.` or
  * `..` part. */
@@ -188,7 +217,7 @@ function refusal(
   if (lines[c.line.lineNumber - 1]?.trim() !== wanted) {
     return `line ${c.line.lineNumber} of ${file} is not its line`;
   }
-  if (!c.profile.skills.some((skill) => skill.name === c.skill)) {
+  if (!c.profile.skills.some((skill) => listedName(skill) === c.skill)) {
     return `its profile does not install the skill ${c.skill}`;
   }
   const targets = readTargets(c.messages);

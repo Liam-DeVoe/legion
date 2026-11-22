@@ -1016,7 +1016,7 @@ export interface Repository {
  *  each holds this version (`repositoryKey`, `walkLevelKey`), and one saved under other rules is
  *  read again. Bump it with every change to what `keepsEntry` keeps, `manifestKind`,
  *  MANIFEST_KINDS, TEXT_EXTENSIONS and TEXT_NAMES included. */
-export const KEEP_RULES_VERSION = 1;
+export const KEEP_RULES_VERSION = 2;
 
 /** Whether a tree entry is one this list uses, of a fork's tree when `fork`: a `SKILL.md`, a file
  *  of a manifest kind, or, in a fork, a text file its scan may read. Every other entry is
@@ -1877,6 +1877,27 @@ export const MANIFEST_KINDS = [
     listed: "always",
   },
   {
+    kind: "legion-role-setup",
+    about:
+      "a Legion role-start setup script: the catalog repository whose plugins each role installs (omp plugin marketplace add, omp plugin install)",
+    path: /(^|\/)legion\/[^/]*setup\.sh$/,
+    listed: "when of its kind",
+  },
+  {
+    kind: "legion-program",
+    about:
+      "a Legion deployment program: the catalog plugins every role installs (everyRolePlugins)",
+    path: /(^|\/)legion\/main\.go$/,
+    listed: "when of its kind",
+  },
+  {
+    kind: "worker-image",
+    about:
+      "a Legion worker image's Dockerfile: a skill of a release it installs as an Oh My Pi plugin under /opt",
+    path: /(^|\/)legion\/worker[^/]*\/Dockerfile$/,
+    listed: "when of its kind",
+  },
+  {
     kind: "prepack-script",
     about: "the prepack script that copies skills/ into the Oh My Pi plugin packages",
     path: /(^|\/)scripts\/pi-plugin-prepack\.sh$/,
@@ -1958,8 +1979,10 @@ type Fact =
       readonly npm: string;
       readonly skills: readonly string[];
       readonly other: string;
-      /** The commit a `url`, `git` or `github` source pins (`sha`, else `ref`), or `""`. */
+      /** The commit a `url`, `git`, `git-subdir` or `github` source pins (`sha`, else `ref`), or
+       *  `""`; and, for `git-subdir`, the plugin's directory in that repository (`path`), else `""`. */
       readonly ref: string;
+      readonly subdir: string;
     }
   | {
       readonly type: "plugin-manifest";
@@ -2008,7 +2031,25 @@ type Fact =
       readonly unit: string;
       readonly skills: readonly string[];
     }
+  /** A project file that sets verificationSkillsLeaveOut, an empty list too: each role of the
+   *  project installs the whole catalog but `plugins`. A file that does not set it gives none, and
+   *  its roles install the every-role plugins alone. */
   | { readonly type: "leaves-out"; readonly project: string; readonly plugins: readonly string[] }
+  | {
+      readonly type: "role-setup";
+      /** The catalog repository whose marketplace each role start installs plugins of. */
+      readonly repo: string;
+    }
+  | { readonly type: "every-role"; readonly plugins: readonly string[] }
+  | {
+      readonly type: "image-skill";
+      /** A worker image's skill: the repository of the release it is taken from, the release's
+       *  tag, the skill's name and the plugin directory the image installs it in (`/opt/<name>`). */
+      readonly repo: string;
+      readonly ref: string;
+      readonly skill: string;
+      readonly dir: string;
+    }
   | {
       readonly type: "installs-package";
       readonly package: string;
@@ -2109,6 +2150,7 @@ const MarketplaceFile = z.looseObject({
           url: z.string().optional(),
           sha: z.string().optional(),
           ref: z.string().optional(),
+          path: z.string().optional(),
         }),
       ]),
       skills: StringList,
@@ -2188,6 +2230,7 @@ function parseMarketplace(file: string, text: string): ParsedManifest {
     let npm = "";
     let other = "";
     let ref = "";
+    let subdir = "";
     if (typeof source === "string" && !source.includes("://")) {
       root = joinPath(
         base,
@@ -2200,10 +2243,11 @@ function parseMarketplace(file: string, text: string): ParsedManifest {
     } else {
       if (source.source === "github") repo = source.repo ?? "";
       else if (source.source === "npm") npm = source.package ?? "";
-      else if (source.source === "url" || source.source === "git")
+      else if (source.source === "url" || source.source === "git" || source.source === "git-subdir")
         repo = githubRepository(source.url ?? "");
       if (repo === "" && npm === "") other = JSON.stringify(source);
       if (repo !== "") ref = source.sha ?? source.ref ?? "";
+      if (repo !== "" && source.source === "git-subdir") subdir = joinPath(source.path ?? "");
     }
     const plugin = entry.name;
     facts.push({
@@ -2216,6 +2260,7 @@ function parseMarketplace(file: string, text: string): ParsedManifest {
       skills: strings(entry.skills),
       other,
       ref,
+      subdir,
     });
     const from =
       root !== undefined
@@ -2429,11 +2474,82 @@ function parseAgent(file: string, text: string): ParsedManifest {
 function parseLegionProject(file: string, text: string): ParsedManifest {
   const value = parseFile(ProjectFile, text, "yaml");
   const project = value.key ?? path.posix.basename(file).replace(/\.ya?ml$/, "");
-  const plugins = value.verificationSkillsLeaveOut ?? [];
+  const set = value.verificationSkillsLeaveOut;
+  const plugins = set ?? [];
   return {
-    facts: plugins.length > 0 ? [{ type: "leaves-out", project, plugins }] : [],
+    facts: set === undefined || set === null ? [] : [{ type: "leaves-out", project, plugins }],
     ofKind: true,
     says: `project ${project}: verificationSkillsLeaveOut ${plugins.join(", ") || "none"}`,
+  };
+}
+
+/** A Legion role-start setup script: the catalog repository it fetches (`repo=<owner>/<name>`,
+ *  then `omp plugin marketplace add`) and installs plugins of (`omp plugin install`). */
+function parseRoleSetup(text: string): ParsedManifest {
+  const repo = /^\s*repo=["']?([\w.-]+\/[\w.-]+)["']?\s*$/m.exec(text)?.[1];
+  const installs = /omp plugin marketplace add/.test(text) && /omp plugin install/.test(text);
+  return repo === undefined || !installs
+    ? { facts: [], ofKind: false, says: "installs no catalog's plugins" }
+    : {
+        facts: [{ type: "role-setup", repo }],
+        ofKind: true,
+        says: `installs plugins of the catalog ${repo} at each role start`,
+      };
+}
+
+/** A Legion deployment program: the catalog plugins every role installs, its
+ *  `everyRolePlugins = []string{…}`. */
+function parseLegionProgram(text: string): ParsedManifest {
+  const list = /\beveryRolePlugins\s*=\s*\[\]string\{([^}]*)\}/.exec(text)?.[1];
+  const plugins = [...(list ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1] ?? "");
+  return list === undefined
+    ? { facts: [], ofKind: false, says: "names no every-role plugin" }
+    : {
+        facts: [{ type: "every-role", plugins }],
+        ofKind: true,
+        says: `every role installs ${plugins.join(", ") || "no plugin"} of the catalog`,
+      };
+}
+
+/** A worker image's Dockerfile: each skill it installs as an Oh My Pi plugin under /opt
+ *  (`…/skills/<name>/SKILL.md /opt/<dir>/skills/<name>/SKILL.md`, with an `omp` package.json
+ *  written to /opt/<dir>/package.json), from the GitHub release the step before it downloads
+ *  (`release="${<X>_RELEASE_URL}/v${<X>_VERSION}"`, each an ARG of the file). */
+function parseWorkerImage(text: string): ParsedManifest {
+  const args = new Map(
+    [...text.matchAll(/^ARG ([A-Za-z_]\w*)=(\S+)\s*$/gm)].map((match) => [
+      match[1] ?? "",
+      match[2] ?? "",
+    ])
+  );
+  const facts: Fact[] = [];
+  let release: { repo: string; ref: string } | undefined;
+  for (const line of text.split("\n")) {
+    const from = /release="\$\{(\w+)\}\/v\$\{(\w+)\}"/.exec(line);
+    if (from !== null) {
+      const url = args.get(from[1] ?? "") ?? "";
+      const repo = /github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/?$/.exec(url)?.[1];
+      const version = args.get(from[2] ?? "");
+      release =
+        repo === undefined || version === undefined ? undefined : { repo, ref: `v${version}` };
+    }
+    const skill = /\/opt\/([\w.-]+)\/skills\/([\w.-]+)\/SKILL\.md/.exec(line);
+    if (skill === null || release === undefined) continue;
+    const dir = `/opt/${skill[1] ?? ""}`;
+    if (!text.includes(`${dir}/package.json`) || !/"omp"/.test(text)) continue;
+    facts.push({ type: "image-skill", ...release, skill: skill[2] ?? "", dir });
+  }
+  return {
+    facts,
+    ofKind: facts.length > 0,
+    says:
+      facts
+        .map((fact) =>
+          fact.type === "image-skill"
+            ? `installs ${fact.skill} of ${fact.repo} ${fact.ref} as the Oh My Pi plugin ${fact.dir}`
+            : ""
+        )
+        .join("; ") || "installs no skill",
   };
 }
 
@@ -2725,6 +2841,12 @@ export function parseManifest(kind: ManifestKind, file: string, text: string): P
       return parseAgent(file, text);
     case "legion-project":
       return parseLegionProject(file, text);
+    case "legion-role-setup":
+      return parseRoleSetup(text);
+    case "legion-program":
+      return parseLegionProgram(text);
+    case "worker-image":
+      return parseWorkerImage(text);
     case "prepack-script":
       return parsePrepack(file, text);
     case "build-script":
@@ -3217,7 +3339,7 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
     let note = "";
     if (root === undefined && fact.repo !== "") {
       repository = fact.repo;
-      root = "";
+      root = fact.subdir;
     } else if (root === undefined && fact.npm !== "") {
       const found = packages.get(fact.npm);
       if (found !== undefined) {
@@ -3294,6 +3416,27 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
         copy === undefined
           ? `no SKILL.md of ${fact.skill} in ${repository} was read`
           : `gh skill install ${fact.repo} ${fact.skill}${fact.ref === "" ? "" : ` --pin ${fact.ref}`}`,
+    });
+  }
+
+  // A skill a worker image installs as an Oh My Pi plugin under /opt (`image-skill`): Oh My Pi
+  // reads that plugin's package.json, whose `omp` manifest names no skills, so its skills/
+  // (discovery/omp-plugins.ts, pluginSkillDirs, lines 107-134). Its copy is the release
+  // repository's skills/<skill> at the release's tag.
+  for (const { manifest, fact } of factsOf(manifests, "image-skill")) {
+    const repository = index.spelling(fact.repo);
+    const copy = index.at(repository, joinPath("skills", fact.skill));
+    units.push({
+      id: `image:${path.posix.basename(fact.dir)}`,
+      host: "omp",
+      manifest,
+      action: "installs",
+      members: copy === undefined ? [] : [{ copy, rel: fact.skill }],
+      locations: [`${fact.dir}/skills/`],
+      note:
+        copy === undefined
+          ? `no SKILL.md at skills/${fact.skill} of ${repository} was read`
+          : `the image installs it from the release ${fact.ref} of ${fact.repo}`,
     });
   }
 

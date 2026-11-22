@@ -205,6 +205,42 @@ test("none removes each read call of the skill and its result, and leaves the sk
   ]);
 });
 
+test("none leaves out every copy of the skill's source, a namespaced one too, and keeps a copy of another source that shares the name; each other arm keeps them all", () => {
+  const twice = structuredClone(f1Case);
+  twice.profile.skills.push(
+    // acme/skills' alpha again at another commit, which Oh My Pi lists as pack/alpha.
+    {
+      repo: "acme/skills",
+      commit: "fedcba9876543210",
+      path: "skills/alpha",
+      name: "alpha",
+      namespace: "pack",
+    },
+    // Another repository's alpha, listed as tools/alpha.
+    {
+      repo: "acme/tools",
+      commit: "0123456789abcdef",
+      path: "skills/alpha",
+      name: "alpha",
+      namespace: "tools",
+    }
+  );
+  const dirs = { old: oldDir, new: newDir };
+  const none = buildArm(twice, "none", dirs, path.join(scratch, "twice"));
+  expect(
+    none.profileSkills.map((skill) => `${skill.repo} ${skill.namespace ?? ""}/${skill.name}`)
+  ).toEqual(["acme/skills /beta", "acme/tools tools/alpha"]);
+  // Its not-found answer lists the names Oh My Pi lists.
+  expect(skillFile(none, "SKILL.md").text).toBe(
+    "Unknown skill: alpha\nAvailable: beta, tools/alpha"
+  );
+  for (const name of ["old", "new", "minus", "twin"] as const) {
+    expect(buildArm(twice, name, dirs, path.join(scratch, "twice")).profileSkills).toEqual(
+      twice.profile.skills
+    );
+  }
+});
+
 test("minus removes the case's line, or the planted line when one is given", () => {
   const minus = arm("minus");
   expect(minus.skillDir).toBe(path.join(scratch, "scratch-minus-", "minus"));

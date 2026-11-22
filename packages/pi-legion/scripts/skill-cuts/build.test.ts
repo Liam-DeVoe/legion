@@ -82,6 +82,8 @@ const PART_CHARS = 200;
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 /** The commit acme/dots's installer pins acme/pack at (`ensure_vendor`). */
 const PACK_PIN = "4444444444444444444444444444444444444444";
+/** The commit of the made-up release v1.0.0 that acme/deploy's worker image takes memo from. */
+const REL_PIN = "6666666666666666666666666666666666666666";
 const LINE = "2. Write each step's result on one line.";
 const scratch = temporaryDirectory("skill-cuts-build", { real: true });
 
@@ -967,6 +969,50 @@ const INSTALLER = [
   "",
 ].join("\n");
 const REPOSITORIES: Record<string, Record<string, string>> = {
+  // acme/infra is the deployment of the suite's Legion project ACME: its project file alone, so
+  // a pod installs the worker image's packages alone. acme/deploy is a deployment in full, which
+  // the Legion install test names in place of acme/infra: its project file leaves beta-tools of
+  // the catalog out, its role setup installs plugins of the catalog acme/catalog, its program
+  // names every-tools as the plugin every role installs, and its worker image installs memo of
+  // the release v1.0.0 of acme/rel as an Oh My Pi plugin under /opt/memo.
+  "acme/infra": { "legion/projects/10-ACME.yaml": "key: ACME\ninstructions: acme.md\n" },
+  "acme/deploy": {
+    "legion/projects/10-ACME.yaml":
+      "key: ACME\ninstructions: acme.md\nverificationSkillsLeaveOut: [beta-tools]\n",
+    "legion/acme-setup.sh": [
+      "#!/bin/sh",
+      "repo=acme/catalog",
+      'omp plugin marketplace add "$repo"',
+      'omp plugin install "$p@$catalog" --force',
+      "",
+    ].join("\n"),
+    "legion/main.go": 'package main\n\nvar everyRolePlugins = []string{"every-tools"}\n',
+    "legion/worker/Dockerfile": [
+      "FROM scratch",
+      "ARG MEMO_RELEASE_URL=https://github.com/acme/rel/releases/download",
+      "ARG MEMO_VERSION=1.0.0",
+      'RUN release="${MEMO_RELEASE_URL}/v${MEMO_VERSION}"; \\',
+      '    install -D -m 0644 "$t/skills/memo/SKILL.md" /opt/memo/skills/memo/SKILL.md; \\',
+      '    printf \'{"name": "memo", "omp": {}}\\n\' > /opt/memo/package.json',
+      "",
+    ].join("\n"),
+  },
+  "acme/catalog": {
+    ".claude-plugin/marketplace.json": JSON.stringify({
+      name: "acme-catalog",
+      plugins: ["every-tools", "alpha-tools", "beta-tools"].map((name) => ({
+        name,
+        source: `./plugins/${name}`,
+      })),
+    }),
+    "plugins/every-tools/skills/every-one/SKILL.md": skillMd("every-one"),
+    "plugins/alpha-tools/skills/alpha-one/SKILL.md": skillMd("alpha-one"),
+    // A second alpha, whose text differs from acme/skills' alpha: Oh My Pi lists it as
+    // alpha-tools/alpha beside the bare alpha the session read.
+    "plugins/alpha-tools/skills/alpha/SKILL.md":
+      "---\nname: alpha\ndescription: Use for the catalog's own alpha.\n---\n\n# alpha of the catalog\n",
+    "plugins/beta-tools/skills/beta-one/SKILL.md": skillMd("beta-one"),
+  },
   "acme/other": {
     "skills/alpha/SKILL.md": skillMd("alpha"),
     "skills/delta/SKILL.md": skillMd("delta"),
@@ -1054,6 +1100,11 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "package.json": JSON.stringify({ name: "powers-of-acme", pi: { skills: ["./skills"] } }),
     "skills/power-one/SKILL.md": skillMd("power-one"),
     "skills/power-two/SKILL.md": skillMd("power-two"),
+    // A pack-two of other text than acme/pack's: the pool's copy keeps the bare name, since Oh My
+    // Pi admits a pool an extension names before an extension package's skill, though the session
+    // read the package's power-one first.
+    "skills/pack-two/SKILL.md":
+      "---\nname: pack-two\ndescription: Use for the powers' own pack-two.\n---\n\n# pack-two of powers\n",
   },
   "acme/dots": {
     "omp/plugins/package.json": JSON.stringify({
@@ -1106,6 +1157,7 @@ const PINNED: Record<string, { sha: string; files: Record<string, string> }> = {
       "skills/pack-two/SKILL.md": skillMd("pack-two"),
     },
   },
+  "acme/rel@v1.0.0": { sha: REL_PIN, files: { "skills/memo/SKILL.md": skillMd("memo") } },
 };
 /** The files of `repository` at the commit `id`: SHA's, or a PINNED commit's. */
 const filesAt = (repository: string, id: string): Record<string, string> | undefined =>
@@ -2308,6 +2360,14 @@ describe("build-cases over every made-up session", () => {
     expect(c?.profile.skills).toEqual([
       { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
       { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      // The project's beta differs from the package's, so Oh My Pi lists it under its provider.
+      {
+        repo: "acme/proj",
+        commit: SHA,
+        path: ".claude/skills/beta",
+        name: "beta",
+        namespace: "claude",
+      },
       { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
@@ -2336,8 +2396,17 @@ describe("build-cases over every made-up session", () => {
     const c = byName("proj-devbox");
     expect(c?.context).toBe("devbox");
     expect(c?.profile.skills).toEqual([
+      // The user's older and the project's beta differ from the copies that keep their names.
+      { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older", namespace: "agent" },
       { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
       { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      {
+        repo: "acme/proj",
+        commit: SHA,
+        path: ".claude/skills/beta",
+        name: "beta",
+        namespace: "claude",
+      },
       { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
@@ -2383,9 +2452,9 @@ describe("build-cases over every made-up session", () => {
   });
 
   test("a project skill and a user or plugin skill of the same name follow Oh My Pi's order: the project's .omp/skills come before ~/.omp/agent/skills, and the project's .claude/skills after those and after extension packages", () => {
-    /** Checks that `source` starts with `start` and then gives Oh My Pi's order with its source. */
+    /** Checks that `source` gives `start` and then Oh My Pi's order with its source. */
     const decided = (source: string | undefined, start: string) => {
-      expect(source).toStartWith(
+      expect(source).toContain(
         `${start}: Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order`
       );
       for (const cited of [
@@ -2400,29 +2469,34 @@ describe("build-cases over every made-up session", () => {
     };
     // On the dev box acme/skills's installer links beta and older into ~/.omp/agent/skills: the
     // user's beta comes before the project's .claude/skills/beta, and the project's
-    // .omp/skills/older before the user's older.
+    // .omp/skills/older before the user's older. Each later copy differs, so Oh My Pi lists it
+    // under a namespace: claude/beta (its provider's, for the dotted .claude/) and agent/older.
     const devbox = Object.fromEntries(
       byName("proj-devbox")?.evidence?.map((each) => [each.item, each.source]) ?? []
     );
+    const claudeBeta = devbox["skill claude/beta (acme/proj .claude/skills/beta)"];
     decided(
-      devbox["left out: skill beta from acme/proj .claude/skills/beta"],
-      "project skill of acme/proj too; Oh My Pi gives the session the copy of acme/skills skills/beta under that name (user-skills:omp links it (acme/skills:installers/skills.sh))"
+      claudeBeta,
+      "under the name beta Oh My Pi gives the session the copy of acme/skills skills/beta under that name (user-skills:omp links it (acme/skills:installers/skills.sh))"
+    );
+    expect(claudeBeta).toContain(
+      "and this copy's text differs: Oh My Pi 18.18.6 keeps the bare name"
     );
     expect(devbox["skill older (acme/proj .omp/skills/older)"]).toStartWith(
       "project skill of acme/proj"
     );
     decided(
-      devbox["left out: skill older from acme/skills skills/older"],
-      "user-skills:omp links it (acme/skills:installers/skills.sh) too; Oh My Pi gives the session the copy of acme/proj .omp/skills/older under that name (project skill of acme/proj)"
+      devbox["skill agent/older (acme/skills skills/older)"],
+      "under the name older Oh My Pi gives the session the copy of acme/proj .omp/skills/older under that name (project skill of acme/proj)"
     );
     // In the Legion pane the package @acme/pi-acme, an extension package, ships beta, and it
     // comes before the project's .claude/skills/beta.
     const legion = Object.fromEntries(
       byName("proj-legion")?.evidence?.map((each) => [each.item, each.source]) ?? []
     );
-    const legionBeta = legion["left out: skill beta from acme/proj .claude/skills/beta"];
-    expect(legionBeta).toStartWith(
-      "project skill of acme/proj too; Oh My Pi gives the session the copy of acme/skills skills/beta under that name (package:@acme/pi-acme "
+    const legionBeta = legion["skill claude/beta (acme/proj .claude/skills/beta)"];
+    expect(legionBeta).toContain(
+      "under the name beta Oh My Pi gives the session the copy of acme/skills skills/beta under that name (package:@acme/pi-acme "
     );
     expect(legionBeta).toContain("extension packages come next (90");
   });
@@ -2431,8 +2505,16 @@ describe("build-cases over every made-up session", () => {
     const c = byName("proj-subdir");
     // other/ is no level of the working directory, so its xi is not listed.
     expect(c?.profile.skills).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older", namespace: "agent" },
       { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
       { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      {
+        repo: "acme/proj",
+        commit: SHA,
+        path: ".claude/skills/beta",
+        name: "beta",
+        namespace: "claude",
+      },
       { repo: "acme/proj", commit: SHA, path: "agents/.claude/skills/kappa", name: "kappa" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
       { repo: "acme/proj", commit: SHA, path: "agents/.claude/skills/mu", name: "mu" },
@@ -2656,7 +2738,7 @@ describe("build-cases over every made-up session", () => {
       "unit user-skills:omp (acme/skills:installers/skills.sh)",
     ]);
     expect(evidence["left out: skill alpha from acme/other skills/alpha"]).toBe(
-      "user-skills:omp links it (acme/other:installers/skills.sh) too; the session read the copy of acme/skills skills/alpha (message 4)"
+      "user-skills:omp links it (acme/other:installers/skills.sh) too; the session read the copy of acme/skills skills/alpha (message 4); its SKILL.md is the same, and Oh My Pi drops such a copy (NAMESPACE_RULE)"
     );
     expect(evidence["skill alpha (acme/skills skills/alpha)"]).toContain(
       "; message 4 reads this copy"
@@ -2826,9 +2908,19 @@ test("a dev-box session that read a skill of a github: dependency's package and 
     `older acme/skills skills/older ${SHA}`,
     `pack-one acme/pack skills/pack-one ${PACK_PIN}`,
     `pack-two acme/pack skills/pack-two ${PACK_PIN}`,
+    `pack-two acme/powers skills/pack-two ${SHA}`,
     `power-one acme/powers skills/power-one ${SHA}`,
     `power-two acme/powers skills/power-two ${SHA}`,
   ]);
+  // Two pack-two of other texts: the pool's keeps the bare name, and the package's is listed
+  // under the name of its directory in the plugins' node_modules.
+  expect(c?.profile.skills).toContainEqual({
+    repo: "acme/powers",
+    commit: SHA,
+    path: "skills/pack-two",
+    name: "pack-two",
+    namespace: "acme-powers",
+  });
   // The package at its repository's root is named as Oh My Pi installs it.
   expect(c?.profile.plugins).toContainEqual({
     repo: "acme/powers",
@@ -2911,6 +3003,68 @@ test("a dev-box profile installs the units its dev box's own installers install 
   expect(measure.added).toContain("unread");
   expect(measure.added).not.toContain("quiet");
   expect(measure.added).not.toContain("shy");
+});
+
+test("a Legion profile installs what its deployment gives each role at its start: the every-role plugin and every other plugin of the catalog its role setup names but those the project leaves out, and the skill its worker image installs from a release", async () => {
+  // The suite's copies output, with acme/deploy as the deployment that holds ACME's project file.
+  const copies = path.join(setupDir, "copies-deploy");
+  mkdirSync(copies, { recursive: true });
+  for (const file of [
+    "prefix-table.tsv",
+    "installers.tsv",
+    "loaders.tsv",
+    "skill-copies.tsv",
+    "repositories.tsv",
+  ]) {
+    writeFileSync(path.join(copies, file), readFileSync(path.join(copiesDir, file)));
+  }
+  writeFileSync(
+    path.join(copies, "manifests.tsv"),
+    readFileSync(path.join(copiesDir, "manifests.tsv"), "utf8").replace(
+      "acme/infra\tlegion/projects/10-ACME.yaml",
+      "acme/deploy\tlegion/projects/10-ACME.yaml"
+    )
+  );
+  const out = path.join(scratch, "legion-deploy", "cases.jsonl");
+  const sessions = sessionsFile("legion-deploy.jsonl", ["legion"]);
+  const lines: string[] = [];
+  expect(await main(buildArgs(sessions, out, "1", "--copies", copies), io(lines))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  const skills = (c?.profile.skills ?? []).map(
+    (skill) => `${skill.name} ${skill.repo} ${skill.path} ${skill.commit}`
+  );
+  expect(skills).toEqual(
+    expect.arrayContaining([
+      `every-one acme/catalog plugins/every-tools/skills/every-one ${SHA}`,
+      `alpha-one acme/catalog plugins/alpha-tools/skills/alpha-one ${SHA}`,
+      `memo acme/rel skills/memo ${REL_PIN}`,
+    ])
+  );
+  expect(skills.some((skill) => skill.startsWith("beta-one "))).toBe(false);
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(
+    evidence["unit plugin:alpha-tools@acme-catalog (acme/catalog:.claude-plugin/marketplace.json)"]
+  ).toContain(
+    "legion/projects/10-ACME.yaml sets verificationSkillsLeaveOut [beta-tools], so each role installs every plugin of the catalog but those, and the every-role plugins (every-tools)"
+  );
+  expect(evidence["unit image:memo (acme/deploy:legion/worker/Dockerfile)"]).toContain(
+    "installs it in the worker image"
+  );
+  expect(evidence[`commit ${REL_PIN} of acme/rel`]).toStartWith(
+    "the last commit of v1.0.0, the ref acme/deploy:legion/worker/Dockerfile pins"
+  );
+  // The catalog's alpha differs from the alpha the session read: it is installed too, under its
+  // plugin's namespace.
+  expect(c?.profile.skills).toContainEqual({
+    repo: "acme/catalog",
+    commit: SHA,
+    path: "plugins/alpha-tools/skills/alpha",
+    name: "alpha",
+    namespace: "alpha-tools",
+  });
+  expect(
+    evidence["skill alpha-tools/alpha (acme/catalog plugins/alpha-tools/skills/alpha)"]
+  ).toContain("and this copy's text differs");
 });
 
 test("the seed fixes the order the sessions are taken in, and --max stops at that many cases", async () => {
@@ -4713,7 +4867,7 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "6d77e8e093e478a2bb9dde4da88d8f6c8071af24f04dfb17502b4c15fe484e42",
+    "profiles summary": "4cc377ae6cdbf24ad93bd56c6b9677a51cd164ac79c33a8f90d093b0177681c5",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -5025,7 +5179,15 @@ test("build-tasks --reprofile of a task whose session is now in a checkout of ac
   expect(JSON.parse(readFileSync(path.resolve(dir, "t1.json"), "utf8"))).toEqual({
     ...before,
     skills: [
+      { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older", namespace: "agent" },
       { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      {
+        repo: "acme/proj",
+        commit: SHA,
+        path: ".claude/skills/beta",
+        name: "beta",
+        namespace: "claude",
+      },
       { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },

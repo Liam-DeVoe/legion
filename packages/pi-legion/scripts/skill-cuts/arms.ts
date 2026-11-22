@@ -7,7 +7,10 @@
  * each copy of it goes) and `twin` (the old directory again, built as `old` is: the false-loss
  * control's second copy of the old arm, with its own capture and runs). Only the skill's directory
  * differs between arms: the messages are the case's own but for the text of the skill's files in
- * its read results, and the profile is the case's own but for the skill, which `none` leaves out.
+ * its read results, and the profile is the case's own, each copy of the skill's source (cases.ts's
+ * `testedCopy`: its repository and path, under its own name or a namespace) installed from the
+ * arm's directory, which `none` leaves out; a copy of another source that shares the name stays
+ * as the profile has it in every arm.
  *
  * In each arm but `none` and `ours`, each read result of a file of the skill (the case's
  * `skillReads`) is answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a
@@ -24,16 +27,18 @@
  * with no text and no tool call goes too.
  *
  * `ours` is a skill whose frontmatter name (and directory name) may differ from the case's skill
- * (`ArmDirs.ours` gives its directory and its name). Its profile is the case's with ours in place
- * of theirs, under our name; where the profile already holds a skill of our name, the `--ours`
- * text replaces that entry, so no name is installed twice (context.ts refuses one installed twice),
- * and the arm records that it replaced it. Its installed directory is theirs with our name as its
- * last part. Each history read of a file of theirs becomes a read of `skill://<ours>` at the same
- * path inside the skill (the call's `path` argument), answered from our directory at our installed
- * directory, when ours has that file; when ours lacks it, the read call and its result are removed
- * as `none` removes them, and the arm records the read's path inside the skill. So a renamed
- * unchanged copy of their skill gives old's texts but for the name. A reply's read of their skill
- * gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does not install it.
+ * (`ArmDirs.ours` gives its directory and its name). Its profile is the case's less each copy of
+ * their skill's source, as `none` leaves them out, with ours under our name in the place of the
+ * copy listed under theirs; where the profile already lists a skill of another source under our
+ * name, the `--ours` text replaces that entry, so no name is listed twice (context.ts refuses one
+ * installed twice), and the arm records that it replaced it. Its installed directory is theirs
+ * with our name as its last part. Each history read of a file of theirs becomes a read of
+ * `skill://<ours>` at the same path inside the skill (the call's `path` argument), answered from
+ * our directory at our installed directory, when ours has that file; when ours lacks it, the read
+ * call and its result are removed as `none` removes them, and the arm records the read's path
+ * inside the skill. So a renamed unchanged copy of their skill gives old's texts but for the
+ * name. A reply's read of their skill gets Oh My Pi's unknown-skill text (`unknownSkill`): the
+ * arm does not install it.
  *
  * `skillFile(arm, file)` answers one new read the same way, at the arm's `installedDir`, and is
  * what replay.ts answers a reply's read with; cases.ts's `skillReadFile(arm.skill, target)` says
@@ -57,7 +62,14 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Case, type ProfileSkill, skillReadFile, textLines } from "./cases";
+import {
+  type Case,
+  listedName,
+  type ProfileSkill,
+  skillReadFile,
+  testedCopy,
+  textLines,
+} from "./cases";
 import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
@@ -79,8 +91,11 @@ export interface Arm {
   readonly installedDir: string;
   /** The case's messages, as this arm gives them. */
   readonly messages: SessionMessage[];
-  /** The skills the arm's profile installs: the case's own, less the case's skill for `none`, and
-   * with ours in its place for `ours`. The arm's skill is installed from `skillDir`. */
+  /** The skills the arm's profile installs: the case's own, less each copy of the case's skill's
+   * source for `none` (cases.ts's `testedCopy`), and for `ours` less those too, with ours in the
+   * place of the copy listed under the case's skill or of the skill listed under our name. Each
+   * copy of the arm's skill's source (`testedCopy(profileSkills, skill)`) is installed from
+   * `skillDir`. */
   readonly profileSkills: ProfileSkill[];
   /** In `ours` only: the case's skill (`theirs`), which the arm does not install; whether our text
    *  replaced a skill of our name that the profile held (`replacedOwn`); and the path inside the
@@ -104,9 +119,9 @@ export interface ArmDirs {
 }
 
 /** Oh My Pi's answer to a read of `skill`, which `arm` does not install: one line naming it, then
- *  the skills the arm's profile installs. */
+ *  the names Oh My Pi lists the arm's profile skills under (cases.ts's `listedName`). */
 export function unknownSkill(arm: Arm, skill: string): { text: string; isError: true } {
-  const names = arm.profileSkills.map((each) => each.name);
+  const names = arm.profileSkills.map((each) => listedName(each));
   const available = names.length > 0 ? names.join(", ") : "none";
   return { text: `Unknown skill: ${skill}\nAvailable: ${available}`, isError: true };
 }
@@ -260,11 +275,16 @@ function oursArm(
   installedDir: string
 ): Arm {
   const skillDir = directory(ours.dir, "ours");
-  const replacedOwn =
-    ours.name !== c.skill && c.profile.skills.some((skill) => skill.name === ours.name);
+  // Theirs goes as `none` leaves it out: each copy of its source. Ours takes the place of the copy
+  // listed under their name, or of a skill of another source listed under ours, never beside it.
+  const tested = testedCopy(c.profile.skills, c.skill);
+  const replacedOwn = c.profile.skills.some(
+    (skill) => !tested(skill) && listedName(skill) === ours.name
+  );
   const profileSkills = c.profile.skills.flatMap((skill) => {
-    if (skill.name !== c.skill) return [skill];
-    return replacedOwn ? [] : [{ ...skill, name: ours.name }];
+    if (!tested(skill)) return [skill];
+    if (replacedOwn || listedName(skill) !== c.skill) return [];
+    return [{ repo: skill.repo, commit: skill.commit, path: skill.path, name: ours.name }];
   });
   const arm: Arm = {
     name: "ours",
@@ -349,13 +369,14 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
   }
   if (name === "none") {
     const messages = withoutReads(c.messages, reads);
+    const tested = testedCopy(c.profile.skills, c.skill);
     return {
       name,
       skill: c.skill,
       skillDir: undefined,
       installedDir,
       messages,
-      profileSkills: structuredClone(c.profile.skills.filter((skill) => skill.name !== c.skill)),
+      profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
     };
   }
 

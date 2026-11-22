@@ -371,15 +371,20 @@ test("installs ours under its own name and never a name twice", async () => {
   expect(existsSync(path.join(built.skillsDir, "alpha"))).toBe(false);
   expect(built.record.skills[0]).toEqual({ name: "alpha-ours", from: "arm" });
 
-  // A profile that holds a skill of our name: the --ours text is installed once, in its place.
+  // A profile that holds a skill of our name (another source, which the made-up repositories do
+  // not hold: never read): the --ours text is installed once, in its place, and beta stays its
+  // repository's.
   const holding = aCase("devbox", {
     skills: [
       ...c.profile.skills,
-      { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "alpha-ours" },
+      { repo: "acme/dotfiles", commit: COMMIT, path: "skills/alpha-ours", name: "alpha-ours" },
     ],
   });
   const bundled = await buildContext(holding, buildArm(holding, "ours", dirs, root), options);
-  expect(bundled.skills.map((skill) => skill.name)).toEqual(["beta", "alpha-ours"]);
+  expect(bundled.skills.map((skill) => [skill.name, skill.description])).toEqual([
+    ["beta", "Use for the beta greeting."],
+    ["alpha-ours", "Use for our alpha list."],
+  ]);
   expect(readFileSync(path.join(bundled.skillsDir, "alpha-ours/SKILL.md"), "utf8")).toBe(OURS);
   expect(existsSync(path.join(bundled.skillsDir, "alpha"))).toBe(false);
 
@@ -389,6 +394,72 @@ test("installs ours under its own name and never a name twice", async () => {
   expect(await buildContext(c, twice, options).then(() => "built", String)).toContain(
     "installs alpha-ours twice"
   );
+});
+
+test("a second copy of a name whose text differs goes in a skills directory of its namespace, which the capture gives Oh My Pi after skills/, so it lists the copy as <namespace>/<name>", async () => {
+  const root = path.join(dir, "namespaced");
+  const c = aCase("devbox", {});
+  c.profile.skills.push({
+    repo: "acme/tools",
+    commit: COMMIT,
+    path: "skills/beta",
+    name: "beta",
+    namespace: "tools",
+  });
+  const { options, arm } = setUp(root, c);
+  const tools =
+    "---\nname: beta\ndescription: Use for the tools' own beta.\n---\n\n# beta of tools\n";
+  writeTree(path.join(root, "repos", "acme", "tools", COMMIT, "skills", "beta"), {
+    "SKILL.md": tools,
+  });
+  const built = await buildContext(c, arm, options);
+  const namespaced = path.join(options.root, "namespaced", "tools", "skills");
+  expect(built.namespacedDirs).toEqual([namespaced]);
+  expect(readFileSync(path.join(namespaced, "beta", "SKILL.md"), "utf8")).toBe(tools);
+  // The bare beta stays acme/skills' copy, in skills/.
+  expect(readFileSync(path.join(built.skillsDir, "beta", "SKILL.md"), "utf8")).not.toBe(tools);
+  expect(built.skills.map((skill) => skill.name)).toEqual(["alpha", "beta", "tools/beta"]);
+  expect(built.skills[2]?.description).toBe("Use for the tools' own beta.");
+});
+
+test("each copy of the case's skill's source, a namespaced one at another commit too, is the arm's directory, and a copy of another source that shares the name is its repository's in every arm; none installs neither copy of the source", async () => {
+  const root = path.join(dir, "tested-copies");
+  const c = aCase("devbox", {});
+  c.profile.skills.push(
+    // acme/skills' alpha at a commit the made-up repositories do not hold: never read.
+    {
+      repo: "acme/skills",
+      commit: "f".repeat(40),
+      path: "skills/alpha",
+      name: "alpha",
+      namespace: "pack",
+    },
+    { repo: "acme/tools", commit: COMMIT, path: "skills/alpha", name: "alpha", namespace: "tools" }
+  );
+  const { options, arm } = setUp(root, c);
+  const tools =
+    "---\nname: alpha\ndescription: Use for the tools' own alpha.\n---\n\n# alpha of tools\n";
+  writeTree(path.join(root, "repos", "acme", "tools", COMMIT, "skills", "alpha"), {
+    "SKILL.md": tools,
+  });
+  const built = await buildContext(c, arm, options);
+  const namespaced = (ns: string) =>
+    path.join(options.root, "namespaced", ns, "skills", "alpha", "SKILL.md");
+  expect(readFileSync(path.join(built.skillsDir, "alpha", "SKILL.md"), "utf8")).toBe(ALPHA_ARM);
+  expect(readFileSync(namespaced("pack"), "utf8")).toBe(ALPHA_ARM);
+  expect(readFileSync(namespaced("tools"), "utf8")).toBe(tools);
+  expect(
+    built.record.skills.filter((skill) => skill.from === "arm").map((skill) => skill.name)
+  ).toEqual(["alpha", "pack/alpha"]);
+  const none = buildArm(
+    c,
+    "none",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    root
+  );
+  const without = await buildContext(c, none, options);
+  expect(without.skills.map((skill) => skill.name)).toEqual(["beta", "tools/alpha"]);
+  expect(readFileSync(namespaced("tools"), "utf8")).toBe(tools);
 });
 
 test("a devbox profile's user-level .claude/CLAUDE.md (user: true) goes in the Claude Code config directory, and the root CLAUDE.md or AGENTS.md of its session's repository in the working directory; two user-level files are refused", async () => {
