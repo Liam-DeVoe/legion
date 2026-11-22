@@ -16,12 +16,13 @@
 #     its own budget) is not a whole count of seconds;
 #   - runs `go test -json -count=1 -run '^(<names>)$'` once per package the inventory names, where
 #     <names> are the top-level names of that package's inventory tests, each escaped and
-#     anchored, under a timeout this run derives for that package from its own probe (below, at
-#     the loop); the whole packages are CI's. It keeps each exit status, and fails on a non-zero
-#     status, on a package that did not end in a pass, and on an inventory test or subtest that
-#     did not run, did not pass, or was skipped; for a package that failed, it prints each failed
-#     test with its first and last reported lines from go test's events (a test's t.Log lines read
-#     as its t.Error lines do, and the last is the one nearest its failure), the compiler's errors
+#     anchored, under a timeout this run derives for that package from its own start-up run
+#     (below, at the loop); the whole packages are CI's. It keeps each exit status, and fails on
+#     a non-zero status, on a package that did not end in a pass, and on an inventory test or
+#     subtest that did not run, did not pass, or was skipped; for a package that failed, it prints
+#     each failed test with its first and last reported lines from go test's events (a test's
+#     t.Log lines read as its t.Error lines do, and the last is the one nearest its failure), the
+#     compiler's errors
 #     of one that does not build, and the tail of the output of one that failed with no failing
 #     test. A package that ran past its timeout is UNKNOWN, not failed: it prints the timeout's
 #     panic line, the tests it was running and the goroutine running each;
