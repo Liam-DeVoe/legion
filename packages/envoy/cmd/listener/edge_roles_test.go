@@ -469,12 +469,12 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 // renewed, and the answer's warnings name it, as a claim of that role at the edge is refused. A
 // message on that role's lane after the registration then reaches no holder, and the session's
 // role of the token's project stays and is renewed. A role message the lane forwarded to the
-// session's agent subject before the registration still reaches it
-// (TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration), and so does one forwarded under a
-// later claim another writer makes: the relay's check of each frame's topic (edgeFrameVerdict),
-// which comes with #4819, holds those frames. Controls: with edge mode off, and with the edge's
-// release (edgeTopicHold.releaseRefusedRoles) releasing nothing, the INFRA claim still names the
-// session after the registration, and the row fails.
+// session's agent subject before the registration is withheld from it
+// (TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration), and so is one forwarded under a
+// later claim another writer makes: the relay's check of each frame's topic (edgeFrameVerdict)
+// holds those frames. Controls: with edge mode off, and with the edge's release
+// (edgeTopicHold.releaseRefusedRoles) releasing nothing, the INFRA claim still names the session
+// after the registration, and the row fails.
 func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const moved, privIssues = "ses_edge_role_moved", "notifications.dispatch.issue.PRIV.>"
