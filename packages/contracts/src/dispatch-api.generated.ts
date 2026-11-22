@@ -93,7 +93,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. */
+    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -364,6 +364,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/changes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What changed between two stored versions of one document, ?from=<n>&to=<m>: {artifact_id, from, to, decision_only, unchanged, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. Exactly one of three holds: decision_only, true when the two stored texts differ and cut to the same text; unchanged, true when the two differ in nothing any section or block holds (the stored texts are the same, or the cut texts name nothing and are not decision-only); or sections and blocks name at least one item. sections and blocks are empty when decision_only or unchanged is true. sections is each top-level unit whose text differs, that moved, or that one version alone holds: a `##` section by heading and occurrence (the heading's text as a heading anchor reads it, without markdown's syntax and with a line break in it as a line feed; 0 for the first section of that heading, so a `##` heading with no words counts from occurrence 1), and a run of the text outside every `##` section (the title and what stands above the first `##`, or what follows a `#` heading up to the next `##`) under heading "" and occurrence 0 with its place: place before_first_section, or place after_section with after_heading and after_occurrence naming the `##` section directly before the run, in the later version for a changed, added or moved run and in the earlier for a removed one. A `#` or `##` heading that holds a line break, which is stored in setext form with no `#`, cuts the document as any heading of its level does. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each unit and block is marked changed, added or removed, and a unit whose text is the same is marked moved when its place among the document's top-level units is another: it stands outside one longest common subsequence of the two versions' orders of the units both hold, and of several that long the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is moved. Both versions hold a run when both hold its text at the same place, and then, among the runs left in each version, the n-th run of one text in each is one run in both, so adding or removing one copy of a repeated run moves no other copy's match; a run the other version does not hold pairs with that version's unpaired run at the same place and is marked changed, and a run left unpaired is added or removed. A block is never marked moved. Each list holds the later version's items in its document order, a moved unit where the later version holds it, then what only the earlier holds, in its order. from and to must be positive, at most 2147483647 (the largest version number the store holds), and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT. */
+    get: operations["getApiV1ArtifactsByIdChanges"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/comments": {
     parameters: {
       query?: never;
@@ -406,7 +423,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page a document's event log. */
+    /** @description Page a document's event log as an issue's is paged (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. */
     get: operations["getApiV1ArtifactsByIdEvents"];
     put?: never;
     post?: never;
@@ -560,7 +577,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. With ?blocks=true a document version's JSON carries that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. A version's author carries proven: true only when the credential of every write that author made to the version proved it. With ?blocks=true a document version's JSON carries that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1486,7 +1503,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
+    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1609,7 +1626,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id, holds}, step one of decisions, criteria and spec, artifact_id the document that step's gate recorded, and holds whether the deployment's gate holds the issue's tree on that step, or [] for an issue whose gates record none. An entry without holds, or with holds null, is stored as null, which the superseded_approval advice answers by the project's gated_steps. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyDesignGates"];
     post?: never;
     delete?: never;
@@ -1625,7 +1642,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
+    /** @description Page an issue's event log (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -1765,7 +1782,7 @@ export interface paths {
     /** @description The checks of the issue's Verification document as the block index holds each, in the order of its newest stored version, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's attributes and words are read out of the text the block index recorded at that version, whose digest it carries, so a browser's edit that has not settled changes nothing here until its settlement indexes it, and a check the index does not hold yet is not listed. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is the head of each open pull request Dispatch holds for the check's issue and the final head of each merged one: the pull requests attributed to the check's issue, among them a pull request its external links name by its URL (https://github.com/<owner>/<repo>/pull/<n>) in any repository unless its head is in a fork, each at the head its stored row holds now. Each is {kind: pull_request, commit, pull_request, merged, repo, learned_at: {at, kind}}, merged true for a merged pull request's final head, repo the owner/repo of a pull request in another repository than the one the check's issue resolves to, compared without case, which a pull request the issue links may be in (absent for a pull request of the issue's own repository, and for an attributed one wherever Dispatch cannot name the issue's repository), so a reader can tell it from a pull request of the same number in the issue's own repository, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Where it holds none open, the check is also compared with the head of each branch that a result a CI job recorded on that issue names and that belongs to that issue (the head branch of one of its pull requests, or a branch whose name's first issue key that names an issue is that issue's), in name order, which it lists in branch_heads, {kind: branch_head, branch, commit}, and not in compared_with, so each field a dispatch command released before the branch heads reads keeps its meaning: commit is where GitHub answers the branch is on this read, and a head is left out where a pull request head names that commit or GitHub holds no such branch. For an after_merge check compared_with is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where compared_with and branch_heads are both empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request and no branch a CI job pushed), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer, the read of a pushed branch's head among them). Each check also carries pass_stands {answer, roles, reason, subjects, results}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves with no subjects whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. A before_merge check compared with heads asks that of each of its subjects: each open pull request's head, or where none is open, the newest merged pull request's final head and each branch head above; a merged pull request's head beside an open one stays in compared_with and is no subject. It reads yes only where a pass stands at each, no where one holds only a fail or nothing, and unknown where none is no and one could not be read or is unknown; subjects lists each {basis, answer, reason, roles, results, ci}: reason fail (only a fail stands there), no_result (nothing does), pass_and_fail, or read_failed (the check runs of a check CI proves could not be read at that head, which reads unknown whatever the other heads read); roles each role whose pass counts at that head, for yes alone; results the ids of the results that decide its state, the newest pass of each of those roles for yes, the newest fail for reason fail, the newest pass and the newest fail for pass_and_fail, and none for no_result and read_failed; ci, on a subject of a check CI proves, the read of its run at that head. The check's own roles then name a role only where each subject names it, in the order of the first subject. On a before_merge check, a pass and a fail that count at one commit, from any role and in either order, make that commit's state unknown, with reason pass_and_fail, and no pass stands there; on a check CI proves, each result its CI job recorded and the result derived from its check run count alike. A later pass at that commit does not end that state; a retraction of the wrong one ends it, and so does a change of the check's words. A read with ?at= follows the same rule. An after_merge or default_branch check takes its newest result that counts at one of its branches, or that Dispatch could not place on one, with and without ?at=, and pass_stands.results names that result: yes only where it is a pass, with the roles of each pass at a branch newer than the newest fail there; no where it is a fail, or where no result decides; unknown where Dispatch could not place it. So a later fail cancels an earlier pass, and a deploy after the newest result changes no state here. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands against compared_with: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed); a before_merge result at no compared commit is unknown where the head of a branch a CI job pushed could not be read, since it may be that head. An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. A result of results whose commit is a head of branch_heads answers other_commit there, and names that head in at_branch_head. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run and a negative_control: its block's attributes, read on every read. A document write is held to a fourth rule too, that no result a role recorded stands against the block (400 INVALID_CI_CHECK), so a result a role recorded stands against such a check only until the settlement that takes its ci_check off; it carries not_counted, the reason it counts for nothing, and counts as no evidence. Dispatch reads that run at the head of each open pull request of the issue, each in the repository of that pull request's own row, else at the final head of its merged pull request of the highest number, at most 8 heads at one time and every head under one deadline, and a head whose read did not end by then is unread there alone. The check carries ci {run, state, case, detail, line}, the read at the head of its open pull request of the highest number, else at that merged head: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its derived result at each head comes from that head's run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. The results of such a check hold those derived results alone, as a dispatch command released before a CI job recorded results reads them, and recorded_results holds every result recorded against it, newest first: each one a run of the check's CI job recorded (role ci, run the check run's name, branch the branch whose push the job ran on), and each role's, which carries not_counted, as does a result whose run is another CI job's than the one the check's ci_check names. branch is set on a result a CI job recorded and on no other. Such a result also carries attestation, the in-toto Statement v1 of its run, built as the project's results route builds one: _type https://in-toto.io/Statement/v1; subject [{name: git+https://github.com/<the run's repository>, digest: {gitCommit: commit_sha}}]; predicateType https://github.com/cybermonklabs/legion/attestations/check-block-result/v1; predicate {project, check (the check's ref), procedure_digest (the result's check_sha256), test {runner "", selector "", job: the check's ci_check}, verdict, observed, job and leg (the check run's name cut at its last " ("), run {repository, workflow_ref, ref, event_name, run_id, attempt, check_run_id, runner_environment}, recorder {session, principal}, recorded_at (the result's created_at)}. A result a role recorded and a derived result carry no attestation. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and reads no branch head. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's open pull request heads, or its newest merged one, as on every read, so a derived result stands at the named commit only where that commit is one of those heads. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
-    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run and a negative_control, the block's attributes alone) is 409 CHECK_PROVED_BY_CI for every credential but a CI job's results token, naming the block and the CI job, since only a run of that job records its result. A results token sends {check, commit, verdict, observed} alone, verdict pass or fail, and any other member is 400 RESULT_INPUT naming it: commit must be the commit its run tested (403 COMMIT_NOT_THE_RUNS, naming both) and the run a push of a branch (403 REF_NOT_A_BRANCH); the check must be one CI proves whose ci_check is the name of the token's check run (409 CHECK_NOT_THIS_JOBS, naming the check, its ci_check or that it carries none, and the check run); GitHub must name that check run at the run's commit (403 CHECK_RUN_NOT_THE_RUNS, naming both; 503 CHECK_RUN_UNREADABLE where GitHub does not answer, and nothing is stored); the run's repository must be the one the check's issue resolves to (403 REPOSITORY_NOT_THE_ISSUES, naming both); and the branch the run pushed must belong to {key}, the issue the result is recorded on: the head branch of an open or merged pull request of that issue, or a branch whose name's first issue key that names an issue is that issue's key, as Dispatch attributes a pull request by its head branch (403 BRANCH_NOT_THE_ISSUES, naming both). Such a result is stored with role ci, run the check run's name, surface and negative_control the check's, session the token's, commit_sha the run's, observed kept as POST /api/v1/projects/{key}/results keeps it (2000 characters: a longer text is its first 500 characters, a line that says the middle was cut, and its last characters), branch the run's ref without refs/heads/, and attestation, the in-toto statement of its run (GET's). role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A result is taken at a commit that the repository the check's issue resolves to holds, that the repository of an open or merged pull request of that issue holds, which for a pull request the issue links may be another repository, or that a repository holds in which the external links of the check's issue name a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open or merged: a commit that is the head of a pull request of the issue is taken with no read of GitHub, and any other is asked of the issue's repository, then of the repository of each other pull request of the issue in name order, then of each linked repository. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. One record reads at most 10 linked pull requests. A commit that each repository asked answers it does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and each owner/repo asked, each linked repository whose links Dispatch set aside because GitHub's naming rule refuses its name (such as acme/.git, which is empty once .git is trimmed, and which no grant of the App mends), and how many linked pull requests it left unread past that bound. Any other answer from any of them, a repository Dispatch cannot read (one its GitHub App is not installed on, GitHub's 403 that is no rate limit, or a read that does not answer: a rate limit, a 5xx, a transport failure), or no repository at all, stores the result as before. A failed read of Dispatch's own list of the issue's links, where GitHub does not say that the issue's repository holds the commit, is a server error and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The check is the block as the block index holds it, read again when the write takes its locks, so a settlement that rewords the check while the result is being written leaves the check the result is judged by, refused by, and recorded against. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' " - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup. */
+    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run and a negative_control, the block's attributes alone) is 409 CHECK_PROVED_BY_CI for every credential but a CI job's results token, naming the block and the CI job, since only a run of that job records its result. A results token sends {check, commit, verdict, observed} alone, verdict pass or fail, and any other member is 400 RESULT_INPUT naming it: commit must be the commit its run tested (403 COMMIT_NOT_THE_RUNS, naming both) and the run a push of a branch (403 REF_NOT_A_BRANCH); the check must be one CI proves whose ci_check is the name of the token's check run (409 CHECK_NOT_THIS_JOBS, naming the check, its ci_check or that it carries none, and the check run); GitHub must name that check run at the run's commit (403 CHECK_RUN_NOT_THE_RUNS, naming both; 503 CHECK_RUN_UNREADABLE where GitHub does not answer, and nothing is stored); the run's repository must be the one the check's issue resolves to (403 REPOSITORY_NOT_THE_ISSUES, naming both); and the branch the run pushed must belong to {key}, the issue the result is recorded on: the head branch of an open or merged pull request of that issue, or a branch whose name's first issue key that names an issue is that issue's key, as Dispatch attributes a pull request by its head branch (403 BRANCH_NOT_THE_ISSUES, naming both). Such a result is stored with role ci, run the check run's name, surface and negative_control the check's, session the token's, commit_sha the run's, observed kept as POST /api/v1/projects/{key}/results keeps it (2000 characters: a longer text is its first 500 characters, a line that says the middle was cut, and its last characters), branch the run's ref without refs/heads/, and attestation, the in-toto statement of its run (GET's). role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and each count is from 0 to 2147483647 (the largest the store holds) and defaults to 0; a field outside these bounds is 400 RESULT_INPUT, and a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A result is taken at a commit that the repository the check's issue resolves to holds, that the repository of an open or merged pull request of that issue holds, which for a pull request the issue links may be another repository, or that a repository holds in which the external links of the check's issue name a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open or merged: a commit that is the head of a pull request of the issue is taken with no read of GitHub, and any other is asked of the issue's repository, then of the repository of each other pull request of the issue in name order, then of each linked repository. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. One record reads at most 10 linked pull requests. A commit that each repository asked answers it does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and each owner/repo asked, each linked repository whose links Dispatch set aside because GitHub's naming rule refuses its name (such as acme/.git, which is empty once .git is trimmed, and which no grant of the App mends), and how many linked pull requests it left unread past that bound. Any other answer from any of them, a repository Dispatch cannot read (one its GitHub App is not installed on, GitHub's 403 that is no rate limit, or a read that does not answer: a rate limit, a 5xx, a transport failure), or no repository at all, stores the result as before. A failed read of Dispatch's own list of the issue's links, where GitHub does not say that the issue's repository holds the commit, is a server error and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The check is the block as the block index holds it, read again when the write takes its locks, so a settlement that rewords the check while the result is being written leaves the check the result is judged by, refused by, and recorded against. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' " - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup. */
     post: operations["postApiV1IssuesByKeyResults"];
     delete?: never;
     options?: never;
@@ -2126,7 +2143,7 @@ export interface paths {
     };
     /** @description The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none. */
     get: operations["getApiV1MeDocumentsByIdRead"];
-    /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing or negative is 400 INVALID_STATE. */
+    /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing, negative or above 2147483647 (the largest version number the store holds) is 400 INVALID_STATE. */
     put: operations["putApiV1MeDocumentsByIdRead"];
     post?: never;
     delete?: never;
@@ -2177,7 +2194,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Update the caller's read state for an issue. */
+    /** @description Update the caller's read state for an issue. last_read_seq is from 0 to 2147483647 (the largest event position the store holds); any other is 400 INVALID_STATE. */
     put: operations["putApiV1MeIssuesByKeyState"];
     post?: never;
     delete?: never;
@@ -2314,7 +2331,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. */
+    /** @description The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). An attempt the message does not have is 404 MESSAGE_NOT_FOUND, and so is one that is not a positive number of at most 2147483647 (the largest the store holds). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. */
     post: operations["postApiV1MessagesByIdDeliveriesByAttemptAccept"];
     delete?: never;
     options?: never;
@@ -2691,7 +2708,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
+    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -3529,6 +3546,21 @@ export interface components {
       token: string;
       type: string;
     };
+    ArtifactBlockChange: {
+      /** @enum {string} */
+      change: "changed" | "added" | "removed";
+      id: string;
+      type: string;
+    };
+    ArtifactChanges: {
+      artifact_id: string;
+      blocks: components["schemas"]["ArtifactBlockChange"][] | null;
+      decision_only: boolean;
+      from: number;
+      sections: components["schemas"]["ArtifactSectionChange"][] | null;
+      to: number;
+      unchanged: boolean;
+    };
     ArtifactRebuildReport: {
       /** Format: int64 */
       head: number;
@@ -3578,6 +3610,16 @@ export interface components {
       };
       state: string;
       version: number;
+    };
+    ArtifactSectionChange: {
+      after_heading?: string;
+      after_occurrence?: number;
+      /** @enum {string} */
+      change: "changed" | "added" | "removed" | "moved";
+      heading: string;
+      occurrence: number;
+      /** @enum {string} */
+      place?: "before_first_section" | "after_section";
     };
     ArtifactText: {
       blocks?: components["schemas"]["ArtifactBlock"][];
@@ -5381,6 +5423,13 @@ export interface components {
     };
     IssueDesignGate: {
       artifact_id: string;
+      holds: null | boolean;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
+    };
+    IssueDesignGateInput: {
+      artifact_id: string;
+      holds?: null | boolean;
       /** @enum {string} */
       step: "decisions" | "criteria" | "spec";
     };
@@ -5390,7 +5439,7 @@ export interface components {
     };
     IssueDesignGatesInput: {
       actor?: components["schemas"]["Actor"] | null;
-      gates: null | components["schemas"]["IssueDesignGate"][];
+      gates: null | components["schemas"]["IssueDesignGateInput"][];
     };
     IssueDetails: {
       advances: components["schemas"]["IssueAdvance"][] | null;
@@ -7883,6 +7932,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DecisionKeep"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdChanges: {
+    parameters: {
+      query?: {
+        from?: number;
+        to?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactChanges"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15094,10 +15179,13 @@ export type Artifact = components["schemas"]["Artifact"];
 export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
 export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
+export type ArtifactBlockChange = components["schemas"]["ArtifactBlockChange"];
+export type ArtifactChanges = components["schemas"]["ArtifactChanges"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferences = components["schemas"]["ArtifactReferences"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
 export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
+export type ArtifactSectionChange = components["schemas"]["ArtifactSectionChange"];
 export type ArtifactText = components["schemas"]["ArtifactText"];
 export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];
@@ -15288,6 +15376,7 @@ export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"]
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisions = components["schemas"]["IssueDecisions"];
 export type IssueDesignGate = components["schemas"]["IssueDesignGate"];
+export type IssueDesignGateInput = components["schemas"]["IssueDesignGateInput"];
 export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
 export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];

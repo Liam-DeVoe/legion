@@ -1480,9 +1480,9 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
-// as every other fact, so a root whose wait was held because its architect had not yet taken its
-// task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
+// takes it as every other fact, so a root whose wait was held because its architect had not yet
+// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role

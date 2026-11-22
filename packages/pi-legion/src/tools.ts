@@ -550,8 +550,8 @@ export function createLegionTool(deps: {
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
-        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
-        "work. " +
+        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent is accepted only once no issue " +
+        "beneath it is still in the workflow. " +
         "Sign off again when each of them has left the workflow. " +
         "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
         "End a child with your own status write in Dispatch. " +
