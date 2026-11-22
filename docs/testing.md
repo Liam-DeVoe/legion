@@ -348,8 +348,10 @@ The clock of a unit test:
   `web/src/features/refs/fixture-table-readings.test.ts`, which two of its rows set.
   On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held the clock and
   awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`. A harness row in
-  `e2e/__tests__` that starts a child states its own limit with `rowLimit` from
-  `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it waits for, plus 30 s.
+  `e2e/__tests__` that waits for a bounded child or poll (`runBounded`, `eventually`) states its own
+  limit with `rowLimit` from `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it
+  waits for, plus 30 s (`e2e/__tests__/row-limits.test.ts` holds it). A row that waits for nothing
+  bounded, such as one that runs a child with `Bun.spawnSync`, runs under `test:harness`'s 60 s.
 
 - A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
   real wait, because only real time moves that peer (`local-instance-support.test.ts`,
