@@ -338,7 +338,7 @@ async function runCredentialCommand(
   const armDrain = (ms: number) => {
     drainTimer = setTimeout(() => {
       // blockedMs grows while the timer waits, so a firing that is early re-arms for the rest.
-      const left = exitedAt + drainLimitMs - performance.now(); // CONTROL: no blocked time given back
+      const left = exitedAt + drainLimitMs + (blockedMs - blockedAtExit) - performance.now();
       if (left <= 0) drainWait.resolve(false);
       else armDrain(left);
     }, ms);
