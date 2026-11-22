@@ -146,7 +146,8 @@ type InterestPlan struct {
 	Topics   []string
 	Withheld []string
 	Revision uint64
-	// afterConflict is set on a plan PlanInterestAfterConflict made, whose row was read from the
-	// stream's leader; UpsertPlanned reads the row it fences the write on the same way.
-	afterConflict bool
+	// read is where the row this plan was built over was read from (interestRead): readLeader for a
+	// plan PlanInterestAfterConflict made over the stream's leader, so UpsertPlanned reads the row it
+	// fences the write on the same way; readCache otherwise.
+	read interestRead
 }

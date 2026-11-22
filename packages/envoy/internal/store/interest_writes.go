@@ -209,7 +209,7 @@ func (r *Registry) PlanInterest(ctx context.Context, sessionID string, requested
 // did for the first, so the filter and the row still name one set after a conflict.
 //
 // The row is read from the stream's leader (readLeader), and so is the row UpsertPlanned fences
-// this plan's write on (InterestPlan.afterConflict): a refusal is also what a record the server
+// this plan's write on (InterestPlan.read): a refusal is also what a record the server
 // wrote earns a write, since a direct get reports it at another stream's sequence, and the
 // leader's read answers such a record as no row of the session's at the sequence it is stored
 // at, which the write then replaces.
@@ -230,10 +230,10 @@ func (r *Registry) planInterest(ctx context.Context, sessionID string, requested
 		return InterestPlan{}, err
 	}
 	return InterestPlan{
-		Roles:         roles,
-		Topics:        MergedTopics(sessionID, roles, cur.Topics, requested),
-		Revision:      revision,
-		afterConflict: read == readLeader,
+		Roles:    roles,
+		Topics:   MergedTopics(sessionID, roles, cur.Topics, requested),
+		Revision: revision,
+		read:     read,
 	}, nil
 }
 
@@ -271,7 +271,7 @@ var ErrInterestPlanConflict = errors.New("the interest record changed under the 
 // stored inside it refuses the write, and the skip inside it answers from the row that moved.
 func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan InterestPlan) (Interest, error) {
 	read := readBucket
-	if plan.afterConflict {
+	if plan.read == readLeader {
 		read = readLeader
 	}
 	cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, read)
