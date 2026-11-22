@@ -52,9 +52,9 @@ type IdleClaim struct {
 	HasProcess bool
 	// SuspendedBy is the source recorded on the claim's suspension (supervise.Claim.SuspendedBy),
 	// "" for a claim that is not suspended: who stopped this role — the operator, the project's
-	// controller, an architect, the workflow's own close, an idle release. The rule reads it to
-	// tell the suspensions no daemon rule may undo, the operator's, the controller's and an
-	// architect's, from every other (IdleClaim.SuspensionHolds).
+	// controller, the workflow's own close, an idle release. The rule reads it to tell the
+	// suspensions no daemon rule may undo, the operator's and the controller's, from every other
+	// (IdleClaim.SuspensionHolds).
 	SuspendedBy supervise.SuspendSource
 	// ServingGeneration is the run the claim is serving, which tells a phase worker of the
 	// issue's current run from one left over by an older one.

@@ -51,9 +51,9 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 // A news-only start goes only where nothing else will carry the news, and never where the record
 // says nothing may: not to a claim owed its phase start (that start carries the news), not to a
 // retired or failed claim (the phase's own repair revives it with a start that carries the news),
-// not to an agent a suspension that holds is over (the operator's, the controller's or an
-// architect's, which no start the daemon queues gets past), and not into a tree that lingers or to
-// an issue not at work, which are owed nothing. The reconcile queues none for such a claim, and a
+// not to an agent a suspension that holds is over (the operator's or the controller's, which no
+// start the daemon queues gets past), and not into a tree that lingers or to an issue not at work,
+// which are owed nothing. The reconcile queues none for such a claim, and a
 // news-only start that meets one when it runs finishes without acting. The live claim is the
 // control: the same reconcile queues its start, and the same start hands it the news.
 func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {

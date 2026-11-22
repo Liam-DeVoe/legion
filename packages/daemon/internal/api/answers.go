@@ -138,9 +138,8 @@ var typedSettings = []TypedSetting{
 
 // Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
 // pause and resume answers (`legion project pause|resume`) and the controller's secret and
-// credential answers are no rows: no plugin parses them. The agent actions the controller and
-// an architect ask for through the `legion` tool, and the controller's pod update, are rows: the
-// plugin parses their answers.
+// credential answers are no rows: no plugin parses them. The agent actions the controller asks for
+// through the `legion` tool, and its pod update, are rows: the plugin parses their answers.
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
