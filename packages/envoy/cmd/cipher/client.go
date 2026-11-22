@@ -414,47 +414,25 @@ type RequestResult struct {
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
-// request object plus two optional, unsigned fields, session_id (wake-only) and github_app, the
-// narrowing this request's grant will be released with. The v8 top-level
-// "secrets"/"reason"/"issue" fields are gone — they live inside the signed request object instead.
-// github_app is left out when the run asks for no narrowing, so such a run sends the body it
-// always sent; it narrows nothing by itself, the release being what applies a narrowing, and the
-// broker checks it before it asks a person to approve the request.
+// request object plus one optional, unsigned field, session_id (wake-only). The v8 top-level
+// "secrets"/"reason"/"issue" fields are gone — they live inside the signed request object instead,
+// as does a run's target (its one detail's locations).
 type createRequestBody struct {
-	Request   string           `json:"request"`
-	SessionID *string          `json:"session_id"`
-	GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
-}
-
-// brokerTookNoNarrowing reports whether err is a broker from before POST /v1/requests took a
-// github_app field: its readJSON refuses an unknown field with 400 INVALID_REQUEST, and refuses
-// it before the request machine runs, so nothing was written and the signed request object's jti
-// is unspent. Every refusal of the narrowing itself has a code of its own (INVALID_NARROWING,
-// NARROWING_NOT_APPLICABLE, NARROWING_OWNER_NOT_LISTED, NARROWING_BEHIND_AIRLOCK,
-// NARROWING_REFUSED), and a request object the broker would not take is REQUEST_INVALID, so none
-// of them reads as an older broker and none is sent again.
-func brokerTookNoNarrowing(err error) bool {
-	var refusal *apiError
-	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.hasCode("INVALID_REQUEST")
+	Request   string  `json:"request"`
+	SessionID *string `json:"session_id"`
 }
 
 // CreateRequest builds and signs a credential-request object carrying one
-// agent_secret authorization_detail per requested name and lifetimeSeconds, the grant's lifetime
-// (nil for until the session ends) (Signer.SignRequestObject, audience == the broker's own base
-// URL), then calls POST /v1/requests with that object nested in the body and the outer call still
-// authenticated with a session Proof header. It returns both the decoded result and the exact raw
-// response's answer, for --json's "print the response body verbatim" requirement (writeVerbatim).
-//
-// narrowing is the narrowing the release will ask for, sent as github_app so the broker refuses a
-// narrowing it cannot serve before anybody is asked to approve the request; nil sends no such
-// field. A broker from before that field refuses the whole body (brokerTookNoNarrowing) without
-// reading the request object, so the same signed object is sent once more without the field and
-// that second call's own result and raw bytes are what this answers. Once only: a second refusal
-// is about something else, which sending it again cannot mend. When the session registers again
-// on the way (doProofBuilt), the object is signed again, by the key the session now holds.
-func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, *redact.Answer, error) {
+// agent_secret authorization_detail per requested name, locations on it for a run's target (nil
+// for none), and lifetimeSeconds, the grant's lifetime (nil for until the session ends)
+// (Signer.SignRequestObject, audience == the broker's own base URL), then calls POST /v1/requests
+// with that object nested in the body and the outer call still authenticated with a session Proof
+// header. It returns both the decoded result and the exact raw response's answer, for --json's
+// "print the response body verbatim" requirement (writeVerbatim). When the session registers
+// again on the way (doProofBuilt), the object is signed again, by the key the session now holds.
+func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, locations []string) (RequestResult, *redact.Answer, error) {
 	sign := func() (string, error) {
-		requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
+		requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds, locations)
 		if err != nil {
 			return "", fmt.Errorf("sign request object: %w", err)
 		}
@@ -468,23 +446,16 @@ func (c *client) CreateRequest(ctx context.Context, signer Signer, names []strin
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
-	body := func(narrowing *GitHubNarrowing) func(bool) ([]byte, error) {
-		return func(reregistered bool) ([]byte, error) {
-			if reregistered {
-				signed, err := sign()
-				if err != nil {
-					return nil, err
-				}
-				requestObject = signed
+	return c.postRequest(ctx, signer, func(reregistered bool) ([]byte, error) {
+		if reregistered {
+			signed, err := sign()
+			if err != nil {
+				return nil, err
 			}
-			return json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr, GitHubApp: narrowing})
+			requestObject = signed
 		}
-	}
-	result, answer, err := c.postRequest(ctx, signer, body(narrowing))
-	if narrowing == nil || !brokerTookNoNarrowing(err) {
-		return result, answer, err
-	}
-	return c.postRequest(ctx, signer, body(nil))
+		return json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
+	})
 }
 
 // postRequest is one POST /v1/requests with the body build makes (doProofBuilt), answering the
@@ -576,38 +547,22 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 
 // --- POST /v1/grants/{id}/values, POST /v1/grants/{id}/revoke ---
 
-// GitHubNarrowing is POST /v1/grants/{id}/values's github_app object: one release's narrowing of
-// its GitHub App tokens, as the request names it; the answer names what the broker applied as an
-// AppliedNarrowing. POST /v1/requests takes the same object, where it says which narrowing the
-// release will ask for, so the broker checks it before a person is asked to approve the request.
-type GitHubNarrowing struct {
-	Owner        string   `json:"owner"`
-	Repositories []string `json:"repositories,omitempty"`
-	ReadOnly     bool     `json:"read_only,omitempty"`
-}
-
-// AppliedNarrowing is the github_app object of POST /v1/grants/{id}/values's answer: the
-// narrowing the broker applied to the release's GitHub App tokens. Its owner and repositories are
-// the broker's text, or the text of whatever answers in its place, which can echo the release's
-// Proof header: each is held as redact.RemoteText with that request's record, so narrowedAsAsked
-// compares them as they came (applies) and its refusal prints them only as the rule reads them.
-type AppliedNarrowing struct {
-	Owner        redact.RemoteText   `json:"owner"`
-	Repositories []redact.RemoteText `json:"repositories,omitempty"`
-	ReadOnly     bool                `json:"read_only,omitempty"`
-}
-
-// GrantValues is POST /v1/grants/{id}/values's exact response shape. GitHubApp is the narrowing
-// the broker applied: nil when it applied none, and always from a broker from before narrowing.
-// Airlock is how to reach the values this release did not hand over, nil when every granted name
-// was handed over — which is every release of a broker with no rules file. The keys of Values and
-// of Airlock.Names are the broker's text too, and encoding/json decodes a key into no
-// redact.RemoteText: a line names one only where this run asked for it (releasedName).
+// GrantValues is POST /v1/grants/{id}/values's exact response shape. Locations is the grant's
+// target as its request signed it, the locations record.TargetLocations made, nil for a grant with
+// no target and from a broker from before the target. GitHubLeftOut names, for each GitHub profile
+// and each account of its release, every entry of the profile's permissions the installation on
+// that account does not hold, which its token leaves out: "<permission>" or
+// "<permission>:<level>"; nil when nothing was left out. Airlock is how to reach the values this
+// release did not hand over, nil when every granted name was handed over — which is every
+// release of a broker with no rules file. The keys of Values and of Airlock.Names are the broker's
+// text too, and encoding/json decodes a key into no redact.RemoteText: a line names one only where
+// this run asked for it (releasedName).
 type GrantValues struct {
-	Values    map[string]string `json:"values"`
-	ExpiresAt *time.Time        `json:"expires_at"`
-	GitHubApp *AppliedNarrowing `json:"github_app"`
-	Airlock   *AirlockRelease   `json:"airlock"`
+	Values        map[string]string              `json:"values"`
+	ExpiresAt     *time.Time                     `json:"expires_at"`
+	Locations     []string                       `json:"locations"`
+	GitHubLeftOut map[string]map[string][]string `json:"github_left_out"`
+	Airlock       *AirlockRelease                `json:"airlock"`
 }
 
 // AirlockRelease is POST /v1/grants/{id}/values's airlock object: how a session reaches the
@@ -656,20 +611,19 @@ type releaseCall struct {
 // says reports whether call names anything, which is what puts it in a release's body.
 func (call releaseCall) says() bool { return len(call.Command) > 0 || call.Reason != "" }
 
-// GrantValues releases grantID's values, asking the broker to narrow its GitHub App tokens when
-// narrowing is not nil, and naming what call says of the release; with neither it sends no body,
-// the release as the grant holds it. A broker from before the command or the reason field
-// refuses a body holding it, 400 INVALID_NARROWING naming the unknown field, and releases nothing
-// (callRefused), so the same release is sent once more without either: a newer client releases
-// from an older broker as before, only unlogged. This stays: a client can meet an older broker
-// on every future independent rollout.
-func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (GrantValues, error) {
+// GrantValues releases grantID's values, naming what call says of the release; when it says
+// nothing it sends no body, the release as the grant holds it. A broker from before the command
+// or the reason field refuses a body holding it, 400 INVALID_NARROWING naming the unknown field,
+// and releases nothing (callRefused), so the same release is sent once more without either: a
+// newer client releases from an older broker as before, only unlogged. This stays: a client can
+// meet an older broker on every future independent rollout.
+func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, call releaseCall) (GrantValues, error) {
 	if err := pathID("a grant id", grantID); err != nil {
 		return GrantValues{}, err
 	}
-	answer, err := c.release(ctx, signer, grantID, narrowing, call)
+	answer, err := c.release(ctx, signer, grantID, call)
 	if call.says() && callRefused(err) {
-		answer, err = c.release(ctx, signer, grantID, narrowing, releaseCall{})
+		answer, err = c.release(ctx, signer, grantID, releaseCall{})
 	}
 	if err != nil {
 		return GrantValues{}, err
@@ -681,15 +635,12 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 	return values, nil
 }
 
-// release is one POST /v1/grants/{id}/values, its body holding narrowing and what call says
-// where each is given, and no body when none is.
-func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (*redact.Answer, error) {
+// release is one POST /v1/grants/{id}/values, its body holding what call says, and no body when
+// it says nothing.
+func (c *client) release(ctx context.Context, signer Signer, grantID string, call releaseCall) (*redact.Answer, error) {
 	var body []byte
-	if narrowing != nil || call.says() {
-		encoded, err := json.Marshal(struct {
-			GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
-			releaseCall
-		}{narrowing, call})
+	if call.says() {
+		encoded, err := json.Marshal(call)
 		if err != nil {
 			return nil, fmt.Errorf("encode the release: %w", err)
 		}

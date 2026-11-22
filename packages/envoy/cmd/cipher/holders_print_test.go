@@ -117,12 +117,6 @@ type operatorGrantsTwin struct {
 	Grants []operatorGrantTwin `json:"grants"`
 }
 
-type appliedNarrowingTwin struct {
-	Owner        string   `json:"owner"`
-	Repositories []string `json:"repositories,omitempty"`
-	ReadOnly     bool     `json:"read_only,omitempty"`
-}
-
 type rereadTwin struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
@@ -162,8 +156,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		Approver: &words, DecidedBy: &words, ExpiresAt: &at, CreatedAt: at}
 	operatorGrantTwinValue := operatorGrantTwin{GrantID: probe, Granted: probe, Enrollment: enrollmentTwinValue, Names: []string{probe},
 		Approver: &probe, DecidedBy: &probe, ExpiresAt: &at, CreatedAt: at}
-	applied := AppliedNarrowing{Owner: words, Repositories: []redact.RemoteText{words}}
-	appliedTwin := appliedNarrowingTwin{Owner: probe, Repositories: []string{probe}}
 	for _, h := range []redacttest.Holder{
 		{
 			Name:     "agent-secrets.apiError",
@@ -225,10 +217,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Same:     operatorGrantsTwin{Grants: []operatorGrantTwin{operatorGrantTwinValue}},
 			Exported: operatorGrantsTwin{Grants: []operatorGrantTwin{operatorGrantTwinValue}},
 		},
-		{Name: "agent-secrets.AppliedNarrowing", Kind: "fields", Boxed: applied, Same: appliedTwin, Exported: appliedTwin},
-		// GrantValues holds the box only behind its GitHubApp pointer, which fmt prints as an
-		// address: it has no same-shape twin a printer reaches, so its rows use the kind's own.
-		{Name: "agent-secrets.GrantValues", Kind: "fields", Boxed: GrantValues{GitHubApp: &applied}},
 		{
 			Name:     "agent-secrets.Reread",
 			Kind:     "fields",

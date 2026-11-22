@@ -192,13 +192,6 @@ func TestABrokerAnswerPrintsNoCredentialItsRequestCarried(t *testing.T) {
 			return map[string]any{"request_id": "req-1", "state": "granted", "grant_id": p}
 		}}, exec("SOME_SECRET"), 1, false,
 			[]string{"grant " + redact.Redacted + " from ", "is not released"}},
-		{"exec-narrowing", map[string]func(string) any{
-			"POST /v1/requests": granted,
-			"POST /v1/grants/": func(p string) any {
-				return map[string]any{"values": map[string]string{"APP": "released-value"}, "github_app": map[string]any{"owner": echoProof(p)}}
-			},
-		}, exec("--github-owner", "ada", "APP"), 1, false,
-			[]string{`it answered {"owner":"` + shownEcho + `"}`}},
 		{"exec-airlock-names", map[string]func(string) any{
 			"POST /v1/requests": granted,
 			"POST /v1/grants/": func(p string) any {
@@ -210,13 +203,6 @@ func TestABrokerAnswerPrintsNoCredentialItsRequestCarried(t *testing.T) {
 			},
 		}, exec("AWS_ONE"), 1, false,
 			[]string{"for both AWS_ONE and a name this run did not ask for"}},
-		{"exec-github-token", map[string]func(string) any{
-			"POST /v1/requests": granted,
-			"POST /v1/grants/": func(p string) any {
-				return map[string]any{"values": map[string]string{"APP": "released-value", p: "another-value"}, "github_app": map[string]any{"owner": "ada"}}
-			},
-		}, exec("--github-owner", "ada", "--github-token", "APP"), 1, false,
-			[]string{"it read APP, 1 name this run did not ask for"}},
 		{"ttl-revoke", map[string]func(string) any{"POST /v1/requests": func(p string) any {
 			return map[string]any{"request_id": "req-1", "state": "granted", "grant_id": p}
 		}}, []string{"request", "--reason", "need it", "--ttl", "60s", "SOME_SECRET"}, 1, false,

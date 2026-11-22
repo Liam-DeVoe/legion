@@ -129,14 +129,6 @@
         "test": "print-agent-secrets.OperatorGrants"
       },
       {
-        "holder": "github.com/sjawhar/envoy/cmd/cipher.AppliedNarrowing",
-        "test": "print-agent-secrets.AppliedNarrowing"
-      },
-      {
-        "holder": "github.com/sjawhar/envoy/cmd/cipher.GrantValues",
-        "test": "print-agent-secrets.GrantValues"
-      },
-      {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.Reread",
         "test": "print-agent-secrets.Reread"
       },
@@ -4781,20 +4773,6 @@
       "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrants: every printer at every placement"
     },
     {
-      "id": "print-agent-secrets.AppliedNarrowing",
-      "requirement": "r2-held",
-      "package": "./cmd/cipher",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.AppliedNarrowing",
-      "production": "github.com/sjawhar/envoy/cmd/cipher.AppliedNarrowing: every printer at every placement"
-    },
-    {
-      "id": "print-agent-secrets.GrantValues",
-      "requirement": "r2-held",
-      "package": "./cmd/cipher",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.GrantValues",
-      "production": "github.com/sjawhar/envoy/cmd/cipher.GrantValues: every printer at every placement"
-    },
-    {
       "id": "print-agent-secrets.Reread",
       "requirement": "r2-held",
       "package": "./cmd/cipher",
@@ -4907,32 +4885,11 @@
       "production": "agent-secrets cmdExec: the grant id the release sends back, and the airlock names, only as RemoteText.SendBack answers it"
     },
     {
-      "id": "agentsecrets-answer-words-exec-narrowing",
-      "requirement": "r3-each-site",
-      "package": "./cmd/cipher",
-      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-narrowing",
-      "production": "agent-secrets narrowedAsAsked: the applied narrowing held as AppliedNarrowing (redact.RemoteText), compared as it came and printed as the rule reads it beside a clean address, cipheraddr.WordsNotPrinted beside any other"
-    },
-    {
       "id": "agentsecrets-answer-words-exec-airlock-names",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-airlock-names",
       "production": "agent-secrets airlockVars: the AWS pair refusal names a release key only where this run asked for it (releasedName)"
-    },
-    {
-      "id": "agentsecrets-answer-words-exec-github-token",
-      "requirement": "r3-each-site",
-      "package": "./cmd/cipher",
-      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-github-token",
-      "production": "agent-secrets githubTokensAlone: the --github-token refusals name a released key only where this run asked for it (releasedName, releasedNames)"
-    },
-    {
-      "id": "agentsecrets-github-token-accounts",
-      "requirement": "r3-each-site",
-      "package": "./cmd/cipher",
-      "test": "TestAGitHubTokenRefusalPrintsNoAccountOfTheRelease",
-      "production": "agent-secrets githubTokensAlone: the refusal of a release of other than one installation counts its accounts and prints none (heldAccounts)"
     },
     {
       "id": "agentsecrets-answer-words-ttl-revoke",
@@ -8496,19 +8453,9 @@
       "guard": "agentsecrets-answer-words-exec-poll"
     },
     {
-      "site": "agent-secrets narrowedAsAsked, which printed the broker's applied github_app raw",
-      "source": "the class search of round 5's deep review",
-      "guard": "agentsecrets-answer-words-exec-narrowing"
-    },
-    {
       "site": "agent-secrets airlockVars' AWS pair refusal, which printed the release's airlock name keys raw",
       "source": "the class search of round 5's deep review",
       "guard": "agentsecrets-answer-words-exec-airlock-names"
-    },
-    {
-      "site": "agent-secrets githubTokensAlone's refusals, which printed the release's value keys raw",
-      "source": "the class search of round 5's deep review",
-      "guard": "agentsecrets-answer-words-exec-github-token"
     },
     {
       "site": "agent-secrets grantedLifetime's --ttl refusal, which printed the request and grant ids without the record and sent them back whatever they held",
@@ -8859,11 +8806,6 @@
       "site": "daemon readBaseRules: GitHub's base branch, named in Unread through net/http's error for a read that got no answer",
       "source": "the class search of round 5's deep review",
       "guard": "daemon-answer-words-base-unanswered"
-    },
-    {
-      "site": "agent-secrets --github-token: the accounts of a release of other than one installation, printed as the broker wrote them",
-      "source": "the class search of round 5's deep review",
-      "guard": "agentsecrets-github-token-accounts"
     },
     {
       "site": "appauth mintFromCommand decides on agent-secrets' stderr, which the CLI printed through the rule",
