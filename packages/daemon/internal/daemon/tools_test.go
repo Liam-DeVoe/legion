@@ -52,8 +52,12 @@ func fakeJJ(t *testing.T, dir, version string) string {
 // other two. m1 and m2 below are two merges of the same n commits, each of which changes f from
 // the root's "c" to "b", so f is "b" on both sides and in every merge base, and a merge of m1 and
 // m2 can only be a clean "b". That is the minimal case of jj-vcs/jj#6369, where jj merges such
-// commits back to the root's "c" without a conflict to say so. The pinned jj must carry the port of
-// jj-vcs/jj#10100, which fixes it, so this test is red at every pin that lacks that port.
+// commits back to the root's "c" without a conflict to say so. K1 merges two children of a merge
+// whose f is a conflict, one that resolves f to "R" and one that leaves it, and must give a clean
+// "R". K4 merges two merges of the same two commits, which set f to "x" and "y", one resolved to
+// "x" and one to "y", and must give a conflict at f, not one side's text or the root's "o". The
+// pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100, so this
+// test is red at every pin that lacks that fix.
 func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -66,35 +70,62 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 	home := t.TempDir()
 	version := fixturegit.Isolated(t, home).Run(home, jj, "--version")
 	t.Logf("%s is %s", jj, version)
+	// scratch is a colocated jj repository of the subtest's own, the runner its commands run under,
+	// and the two ways its commits are built. write sets a file of the working copy, which the next
+	// jj command snapshots into the working-copy commit. commitID names a commit by its commit id,
+	// which in a colocated repository is git's id of the same commit, so git merge-base reads the
+	// ids jj prints.
+	scratch := func(t *testing.T) (repo string, run fixturegit.Runner, write func(name, content string), commitID func(revision string) string) {
+		t.Helper()
+		repo = t.TempDir()
+		run = fixturegit.Isolated(t, t.TempDir())
+		write = func(name, content string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		commitID = func(revision string) string {
+			t.Helper()
+			return run.Out(repo, jj, "log", "-r", revision, "--no-graph", "-T", "commit_id")
+		}
+		init := fixturegit.JJInit(repo, true)
+		init[0] = jj
+		run.Run(repo, init...)
+		return repo, run, write, commitID
+	}
+	// conflicts is the paths jj resolve --list names at revision. At a revision that holds no
+	// conflict jj resolve fails for want of one to list, so a failure there is an empty list.
+	conflicts := func(run fixturegit.Runner, repo, revision string) []string {
+		run.TB.Helper()
+		listing, err := run.Try(repo, jj, "resolve", "--list", "-r", revision)
+		if err != nil {
+			if run.Out(repo, jj, "log", "-r", revision, "--no-graph", "-T", `if(conflict, "conflict", "clean")`) == "clean" {
+				return nil
+			}
+			run.TB.Fatalf("jj resolve --list -r %s in %s: %v\n%s", revision, repo, err, listing)
+		}
+		var paths []string
+		for line := range strings.Lines(listing) {
+			if fields := strings.Fields(line); len(fields) > 0 {
+				paths = append(paths, fields[0])
+			}
+		}
+		return paths
+	}
 	for _, tc := range []struct {
 		name string
 		n    int
 	}{{"two merge bases", 2}, {"three merge bases", 3}} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			run := fixturegit.Isolated(t, t.TempDir())
-			write := func(content string) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(repo, "f"), []byte(content), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			// A commit is named by its commit id, which in a colocated repository is git's id of the
-			// same commit, so git merge-base reads the ids jj prints.
-			commitID := func(revision string) string {
-				t.Helper()
-				return run.Out(repo, jj, "log", "-r", revision, "--no-graph", "-T", "commit_id")
-			}
-			init := fixturegit.JJInit(repo, true)
-			init[0] = jj
-			run.Run(repo, init...)
-			write("c\n")
+			repo, run, write, commitID := scratch(t)
+			write("f", "c\n")
 			run.Run(repo, jj, "commit", "-m", "root")
 			root := commitID("@-")
 			var bases []string
 			for i := 1; i <= tc.n; i++ {
 				run.Run(repo, jj, "new", root, "-m", fmt.Sprintf("x%d", i))
-				write("b\n")
+				write("f", "b\n")
 				run.Run(repo, jj, "new")
 				bases = append(bases, commitID("@-"))
 			}
@@ -121,10 +152,88 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 			held := run.Out(repo, jj, "file", "show", "-r", "@", "f")
 			if state != "clean" || held != "b\n" {
 				t.Errorf("%s merges m1 and m2, two merges of the same %d commits that each hold \"b\\n\" in f, into a %s commit holding %q in f; want a clean one holding \"b\\n\". "+
-					"This is jj-vcs/jj#6369, and the pinned jj must carry the port of jj-vcs/jj#10100", version, tc.n, state, held)
+					"This is jj-vcs/jj#6369, and the pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100", version, tc.n, state, held)
 			}
 		})
 	}
+	// K1: a and b change f from the root's "o" to "a" and to "b", so m, their merge, holds a conflict
+	// at f. r1 and r2 are children of m: r1 resolves f to "R", and r2 adds g and leaves f as m holds
+	// it. m is the only merge base of r1 and r2, so m's conflict at f is the merge bases' own merge
+	// there, which r2 leaves as it is.
+	t.Run("K1", func(t *testing.T) {
+		repo, run, write, commitID := scratch(t)
+		write("f", "o\n")
+		run.Run(repo, jj, "commit", "-m", "root")
+		root := commitID("@-")
+		run.Run(repo, jj, "new", root, "-m", "a")
+		write("f", "a\n")
+		run.Run(repo, jj, "new")
+		a := commitID("@-")
+		run.Run(repo, jj, "new", root, "-m", "b")
+		write("f", "b\n")
+		run.Run(repo, jj, "new")
+		b := commitID("@-")
+		run.Run(repo, jj, "new", a, b, "-m", "m")
+		m := commitID("@")
+		if listed := conflicts(run, repo, m); !slices.Contains(listed, "f") {
+			t.Fatalf("the fixture is wrong, not jj: jj resolve --list -r m lists %v, want f, which a sets to \"a\\n\" and b to \"b\\n\"", listed)
+		}
+		run.Run(repo, jj, "new", m, "-m", "r1")
+		write("f", "R\n")
+		run.Run(repo, jj, "new")
+		r1 := commitID("@-")
+		run.Run(repo, jj, "new", m, "-m", "r2")
+		write("g", "x\n")
+		run.Run(repo, jj, "new")
+		r2 := commitID("@-")
+		if listed := strings.Fields(run.Out(repo, git, "merge-base", "--all", r1, r2)); !slices.Equal(listed, []string{m}) {
+			t.Fatalf("the fixture is wrong, not jj: git merge-base --all r1 r2 lists %v, want m alone, %s", listed, m)
+		}
+		run.Run(repo, jj, "new", r1, r2, "-m", "merge")
+		state := run.Out(repo, jj, "log", "-r", "@", "--no-graph", "-T", `if(conflict, "conflict", "clean")`)
+		held := run.Out(repo, jj, "file", "show", "-r", "@", "f")
+		if state != "clean" || slices.Contains(conflicts(run, repo, "@"), "f") || held != "R\n" {
+			t.Errorf("%s merges r1, which resolves m's conflict at f to \"R\", and r2, which leaves it, into a %s commit holding %q in f; want a clean one holding \"R\\n\": "+
+				"a side that leaves the merge bases' conflict as it is counts as unchanged (R5 of the fork's fix of sjawhar/jj#4)", version, state, held)
+		}
+	})
+	// K4: A and B change f from the root's "o" to "x" and to "y", and P1 and P2 are two merges of A
+	// and B, which resolve f to "x" and to "y". A and B are the merge bases of P1 and P2, their own
+	// merge at f is a conflict, and P1 and P2 each change that conflict, and change it differently.
+	t.Run("K4", func(t *testing.T) {
+		repo, run, write, commitID := scratch(t)
+		write("f", "o\n")
+		run.Run(repo, jj, "commit", "-m", "root")
+		root := commitID("@-")
+		run.Run(repo, jj, "new", root, "-m", "A")
+		write("f", "x\n")
+		run.Run(repo, jj, "new")
+		a := commitID("@-")
+		run.Run(repo, jj, "new", root, "-m", "B")
+		write("f", "y\n")
+		run.Run(repo, jj, "new")
+		b := commitID("@-")
+		run.Run(repo, jj, "new", a, b, "-m", "P1")
+		write("f", "x\n")
+		run.Run(repo, jj, "new")
+		p1 := commitID("@-")
+		run.Run(repo, jj, "new", a, b, "-m", "P2")
+		write("f", "y\n")
+		run.Run(repo, jj, "new")
+		p2 := commitID("@-")
+		listed := strings.Fields(run.Out(repo, git, "merge-base", "--all", p1, p2))
+		slices.Sort(listed)
+		if want := slices.Sorted(slices.Values([]string{a, b})); !slices.Equal(listed, want) {
+			t.Fatalf("the fixture is wrong, not jj: git merge-base --all P1 P2 lists %v, want A and B, %v", listed, want)
+		}
+		run.Run(repo, jj, "new", p1, p2, "-m", "merge")
+		if !slices.Contains(conflicts(run, repo, "@"), "f") {
+			state := run.Out(repo, jj, "log", "-r", "@", "--no-graph", "-T", `if(conflict, "conflict", "clean")`)
+			held := run.Out(repo, jj, "file", "show", "-r", "@", "f")
+			t.Errorf("%s merges P1 and P2, two merges of A and B, which hold \"x\" and \"y\" in f, where P1 resolves f to \"x\" and P2 to \"y\", into a %s commit holding %q in f; want a conflict at f: "+
+				"where the merge bases' own merge is a conflict and both sides change it, each differently, the merge keeps both changes (R5 of the fork's fix of sjawhar/jj#4)", version, state, held)
+		}
+	})
 }
 
 // Boot resolves the binaries Legion itself runs or hands a pane — git, jj and the real gh a pane's
