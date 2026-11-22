@@ -270,6 +270,22 @@ test.skipIf(process.platform !== "linux")(
   }
 );
 
+/** The program each recording stand-in below hands its call on to, resolved before the stand-in's
+ *  own directory goes first on PATH. For python3 it is the interpreter itself, as it names itself
+ *  (`sys.executable`): the python3 on PATH can be a version manager's shim, which looks python3 up
+ *  on PATH again and would find the stand-in, so the stand-in would call itself until the shim
+ *  gives up. */
+function realProgram(tool: "python3" | "env"): string {
+  const found = Bun.which(tool);
+  if (found === null) throw new Error(`no ${tool} on PATH`);
+  if (tool !== "python3") return found;
+  const named = Bun.spawnSync([found, "-c", "import sys; print(sys.executable)"]);
+  const executable = named.stdout.toString().trim();
+  if (!named.success || executable === "")
+    throw new Error(`${found} named no interpreter: ${named.stderr.toString()}`);
+  return executable;
+}
+
 /** Each sign-in run-server.sh starts its server for: the settings a run gives it, and the sign-in
  *  secrets the server gets from them, each a canary of its own (e2e/run-server.sh's
  *  `signin_secret_env`). */
@@ -307,10 +323,10 @@ for (const signIn of serverSignIns) {
       // A python3 and an env first on PATH that record their arguments before they run, as
       // held-port.py and env would carry a setting named to them, and a stand-in server that
       // writes its own arguments and the settings it was given.
-      for (const tool of ["python3", "env"]) {
+      for (const tool of ["python3", "env"] as const) {
         writeFileSync(
           join(work, "bin", tool),
-          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>${shellQuote(join(work, "argv"))}\nexec ${Bun.which(tool)} "$@"\n`,
+          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>${shellQuote(join(work, "argv"))}\nexec ${shellQuote(realProgram(tool))} "$@"\n`,
           { mode: 0o755 }
         );
       }
