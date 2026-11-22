@@ -757,6 +757,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// reviewer does (the architect's ruling of 2026-11-22 on round 20).
 		{"go/implementer.md", "Push, then complete: never wait for CI, except for the waits `skill://legion-worker/references/red-at-the-head.md` gives for a red you act on."},
 		{"go/implementer.md", "Outside those waits, each of which a wake ends as that page says, never wait for, watch or poll the pull request's remote CI"},
+		// While the tester or the reviewer holds the work, the implementer reads a red at once and starts
+		// the fix outside the workspace, pushing nothing but a forward merge until the work comes back
+		// (the person's answer of 2026-11-22, dispatch://INFRA-1303/ask/1e24dfc4-54b7-449c-bf11-f917823ac6a7).
+		{"go/implementer.md", "While the tester or the reviewer holds the work, the daemon tells you of each CI result as well: read the failed job's log at once, and where the change made the red, start the fix at once, in a copy outside the issue workspace, and push it when the work comes back to you."},
+		{"go/implementer.md", "While another role holds the work you re-run nothing and push nothing but a forward merge the daemon asks of you."},
 		{"go/implementer.md", "A failed job of the head's own `pull_request` run is acted on once that run has completed, whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of the head is acted on at all; a read made seconds after a push never shows that the head has no red, so a check you were told of that no `pull_request` run of the head holds is waited for once"},
 		// The worker part names the three roles that hold the re-run, the merger only at a head its
 		// own forward merge made, and the two that press none. It is composed into the merger's

@@ -1451,6 +1451,13 @@ const UNREAD_LOG_NAMES_THE_JOB =
  */
 const RECORD_BEFORE_THE_PRESS =
   "It writes the failure down before the `gh run rerun` call that re-runs the failed jobs once: in a handoff record of its own phase (`dispatch handoff-write`), or, for the merger, in a `dispatch comment` on the issue.";
+/**
+ * The implementer's act on a red while the tester or the reviewer holds the work, from the
+ * person's answer of 2026-11-22 (dispatch://INFRA-1303/ask/1e24dfc4-54b7-449c-bf11-f917823ac6a7):
+ * the implementer is told of the failure so it can start the fix while the other role works.
+ */
+const THE_IMPLEMENTER_FIXES_IN_PARALLEL =
+  "While the tester or the reviewer holds the work, the implementer is told of each CI result and reads the failed job's log at once. Where the change made the red, it starts the fix at once, in a copy outside the issue workspace, and pushes the fix when the work comes back to it; while another role holds the work it re-runs nothing and pushes nothing but a forward merge the daemon asks of it.";
 const THE_MERGERS_RECORD_IS_A_COMMENT =
   "The merger writes no handoff record: its record is a `dispatch comment` on the issue that carries the eight facts, posted before the `gh run rerun` call, as its `failed_checks` requeue record is.";
 const RUN_STATUS_IS_THE_LEAVE =
@@ -1650,6 +1657,11 @@ export function redAtTheHeadFaults(pages: {
           sentence: RECORD_BEFORE_THE_PRESS,
           because:
             "a role that reads the record as a note presses the re-run before Dispatch holds the failure",
+        },
+        {
+          sentence: THE_IMPLEMENTER_FIXES_IN_PARALLEL,
+          because:
+            "an implementer told of a red its change made while another role holds the work waits for the work to come back before it starts the fix, and the tree pays a lap for the wait",
         },
         {
           sentence: THE_MERGERS_RECORD_IS_A_COMMENT,

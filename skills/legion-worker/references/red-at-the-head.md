@@ -27,10 +27,14 @@ merger, in a `dispatch comment` on the issue.
   with no re-run, nothing shows the test fails at random, so the red is no occurrence for the
   census. The implementer still re-runs such a red once.
 - The architect in `accepting` and an implementer that runs retro re-run nothing.
-- A role that is told of a red whose phase it does not hold re-runs nothing.
+- A role that is told of a red whose phase it does not hold re-runs nothing. While the tester or the
+  reviewer holds the work, the implementer is told of each CI result and reads the failed job's log
+  at once. Where the change made the red, it starts the fix at once, in a copy outside the issue
+  workspace, and pushes the fix when the work comes back to it; while another role holds the work it
+  re-runs nothing and pushes nothing but a forward merge the daemon asks of it.
 - A red moves no phase: the daemon names each check of a settlement to the architect, the phase's
-  worker and, before `merging`, the implementer, and judges none (`tellChecks`, in the daemon's
-  `workflow/review.go`), so only the role ends a round such a red would hold, by this page.
+  worker and, before `merging`, the implementer, and judges none (`tellChecks`), so only the role
+  ends a round such a red would hold, by this page.
 
 ## The record comes first, never after
 
@@ -97,14 +101,9 @@ Four readings decide it:
    changes. Such a file is the workflow file that job runs, the manifest or the lock file the step
    installs from, or the Dockerfile it builds.
 
-These are therefore not the change's:
-
-- a fetch that answered 5xx
-- a name that did not resolve
-- a registry, a cache or a package index that refused the step
-- a runner that ended
-- a job GitHub cancelled
-- a job its own time limit killed
+These are therefore not the change's: a fetch that answered 5xx, a name that did not resolve, a
+registry, a cache or a package index that refused the step, a runner that ended, a job GitHub
+cancelled, and a job its own time limit killed.
 
 A lint, type, build or format failure of the change's own code is the change's.
 
