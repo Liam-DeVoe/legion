@@ -105,7 +105,7 @@ func rolePushDescendantRows() []rolePushNamedRow {
 			}
 			want := rolePushWant{
 				refs: refs(rewritten(p), rewritten(q)), rewrites: []rolePushRewrite{rewrite(p), rewrite(q)},
-				ids: []rolePushIDs{{argument: "heads(mine())", commits: 1, words: 1, bound: rolePushRevisionBound}},
+				ids: []rolePushIDs{rolePushOneIDLine("heads(mine())")},
 			}
 			alone := rolePushWant{refs: refs(held(p), held(q)), same: map[string]rolePushIdentity{p.commit: rev, q.commit: rev}}
 			return []string{"git", "push", "-b", "bq", "--named", "n=heads(mine())"}, want, alone
@@ -131,7 +131,7 @@ func rolePushDescendantRows() []rolePushNamedRow {
 					{ref: "refs/heads/push-" + y.change[:12], commits: []rolePushCommit{written(y), written(e)}},
 					{ref: "refs/heads/be"}, {ref: "refs/heads/by"},
 				},
-				ids:        []rolePushIDs{{argument: h.commit, commits: 1, words: 1, bound: rolePushRevisionBound}},
+				ids:        []rolePushIDs{rolePushOneIDLine(h.commit)},
 				noMetaedit: true, snapshots: rolePushTakesOneSnapshot,
 			}
 			return []string{"git", "push", "-c", h.commit}, want, rolePushWant{}
@@ -289,7 +289,8 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 				if row.after != nil {
 					row.after(f, stderr)
 				}
-				calls, pushes := f.oneRealPush()
+				calls := f.calls()
+				pushes := f.oneRealPush(calls)
 				push := calls[pushes]
 				steps := slices.Delete(slices.Clone(calls), pushes, pushes+1)
 				isMetaedit := func(c rolePushCall) bool { return c.has("metaedit") }

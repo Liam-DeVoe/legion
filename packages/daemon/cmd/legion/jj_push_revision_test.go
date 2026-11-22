@@ -109,17 +109,12 @@ func rolePushMineSends(ref string, m, p, a rolePushChange) (want, alone rolePush
 // implementer.
 func rolePushNamedRows() []rolePushNamedRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
-	// line is the one line of argument, which the real push gets as the id of the one commit it
-	// named before the step, in one word.
-	line := func(argument string) rolePushIDs {
-		return rolePushIDs{argument: argument, commits: 1, words: 1, bound: rolePushRevisionBound}
-	}
 	return []rolePushNamedRow{
 		{name: "--named x=<change>/1 of a divergent change", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
 			want := rolePushSends("x", d1, "implementer", impl)
 			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			want.ids = []rolePushIDs{line(change + "/1")}
+			want.ids = []rolePushIDs{rolePushOneIDLine(change + "/1")}
 			alone := rolePushWant{
 				refs: []rolePushRef{{ref: "refs/heads/x", commits: []rolePushCommit{{change: change, author: rev, commit: d1.commit}}}},
 				same: map[string]rolePushIdentity{d1.commit: rev, d2.commit: rev},
@@ -137,7 +132,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 			want := rolePushSends("a", d1, "implementer", impl)
 			want.refs = append(want.refs, rolePushRef{ref: "refs/heads/b"})
 			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			want.ids = []rolePushIDs{line(change + "/1")}
+			want.ids = []rolePushIDs{rolePushOneIDLine(change + "/1")}
 			return []string{"git", "push", "-r", change + "/1"}, want, rolePushWant{}
 		}},
 		// The step's rewrite of C gives it the implementer's author, which the argument names: C
@@ -153,7 +148,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 					{change: d.change, author: impl}, {change: c.change, author: impl},
 				}}, noC},
 				rewrites: []rolePushRewrite{{role: "implementer", author: impl, change: c.change, old: c.commit}},
-				ids:      []rolePushIDs{line(argument)},
+				ids:      []rolePushIDs{rolePushOneIDLine(argument)},
 			}
 			alone := rolePushWant{
 				refs: []rolePushRef{{ref: "refs/heads/push-" + d.change[:12], commits: []rolePushCommit{
@@ -216,7 +211,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 		{name: "--named f and g of offsets 0 and 1 of a divergent change, the step rewriting offset 1's commit", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
 			want, alone := rolePushOffsetSends("g", "f", d1, d2)
-			want.ids = []rolePushIDs{line(change + "/0"), line(change + "/1")}
+			want.ids = []rolePushIDs{rolePushOneIDLine(change + "/0"), rolePushOneIDLine(change + "/1")}
 			return []string{"git", "push", "--named", "f=" + change + "/0", "--named", "g=" + change + "/1"}, want, alone
 		}},
 		// -r sends each bookmark that points at a commit it names: b, on D2, offset 0 before the
@@ -228,7 +223,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 			f.bookmark("a", d1.commit)
 			f.bookmark("b", d2.commit)
 			want, alone := rolePushOffsetSends("a", "b", d1, d2)
-			want.ids = []rolePushIDs{line(change + "/0")}
+			want.ids = []rolePushIDs{rolePushOneIDLine(change + "/0")}
 			return []string{"git", "push", "-b", "a", "-r", change + "/0"}, want, alone
 		}},
 		// -r sends each bookmark that points at a commit it names: other, on M, and not mid, on P,
@@ -236,14 +231,14 @@ func rolePushNamedRows() []rolePushNamedRow {
 		{name: "-b top -r mine(), mine() naming M on other alone, the step rewriting P on mid and A on top", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			m, p, a := f.mine()
 			want, alone := rolePushMineSends("other", m, p, a)
-			want.ids = []rolePushIDs{line("mine()")}
+			want.ids = []rolePushIDs{rolePushOneIDLine("mine()")}
 			return []string{"git", "push", "-b", "top", "-r", "mine()"}, want, alone
 		}},
 		// --named names one commit: jj would refuse mine() once the step has rewritten P and A.
 		{name: "-b top --named nm=mine(), mine() naming M alone, the step rewriting P on mid and A on top", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			m, p, a := f.mine()
 			want, alone := rolePushMineSends("nm", m, p, a)
-			want.ids = []rolePushIDs{line("mine()")}
+			want.ids = []rolePushIDs{rolePushOneIDLine("mine()")}
 			return []string{"git", "push", "-b", "top", "--named", "nm=mine()"}, want, alone
 		}},
 		// The argument names no commit before the step, and P once the step has rewritten it: the
@@ -269,11 +264,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 			f.bookmark("legion/K-1", c.commit)
 			args := []string{"git", "push", "-b", "legion/K-1", "-r", "none()"}
 			want := rolePushSends("legion/K-1", c, "implementer", impl)
-			want.pushed = func(words []string) {
-				if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(words, written) {
-					f.t.Errorf("the real push ran with %q, want the step's --ignore-working-copy, then the role's own words: %q", words, written)
-				}
-			}
+			want.pushed = f.pushedAfterSnapshot(args)
 			alone := rolePushWant{
 				refs: []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}}},
 				same: map[string]rolePushIdentity{c.commit: rev},

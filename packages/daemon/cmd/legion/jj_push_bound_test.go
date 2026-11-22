@@ -185,7 +185,8 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 				if rewrites != rolePushIDsHistory {
 					t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushIDsHistory, printed)
 				}
-				calls, push := f.oneRealPush()
+				calls := f.calls()
+				push := f.oneRealPush(calls)
 				for _, call := range calls {
 					for _, word := range call.args {
 						if len(word) >= rolePushRevisionBound {
@@ -429,10 +430,7 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 				same:      map[string]rolePushIdentity{m.commit: impl},
 				metaedits: 1,
 				cannotSet: 1, cannotSetNames: rolePushPastTheLimit(d.commit, 1, f.argMax),
-				ids: []rolePushIDs{
-					{argument: d.commit, commits: 1, words: 1, bound: rolePushRevisionBound},
-					{argument: "mine()", commits: 1, words: 1, bound: rolePushRevisionBound},
-				},
+				ids:       []rolePushIDs{rolePushOneIDLine(d.commit), rolePushOneIDLine("mine()")},
 				snapshots: rolePushTakesOneSnapshot,
 			}
 			return args, want, rolePushWant{}

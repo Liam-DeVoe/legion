@@ -265,13 +265,11 @@ var errJJSnapshot = errors.New("the step has a commit or a word to change and ta
 // and the real push takes its snapshot as jj alone does. Where it finds a commit or a word to
 // change (errJJSnapshot), the step takes the one snapshot the push would take itself (snapshot),
 // forgets all that the first run read (jjRun), and runs once more, with no other snapshot. The
-// real push then runs with --ignore-working-copy and takes no snapshot of its own (runJJ), so each
-// commit id the second run reads, @'s and those of @'s descendants included, names the commit the
-// push sees: @ resolves against the step's snapshot, and a write another process makes after that
-// snapshot stays in the working copy for the next jj command. Before a push that takes no snapshot
-// (jjPush.noSnapshot) the first run reads what the push will see, and is the one run. An error is
-// a jjStepFailure, a step that changes nothing more (errJJAsWritten), or output of jj's it cannot
-// parse.
+// real push then runs with --ignore-working-copy (runJJ), so each commit id the second run reads,
+// @'s and those of @'s descendants included, names the commit the push sees. Before a push that
+// takes no snapshot (jjPush.noSnapshot) the first run reads what the push will see, and is the one
+// run. An error is a jjStepFailure, a step that changes nothing more (errJJAsWritten), or output of
+// jj's it cannot parse.
 func (s *jjStep) rewrite() error {
 	err := s.once()
 	if !errors.Is(err, errJJSnapshot) {
@@ -315,11 +313,8 @@ func (s *jjStep) once() error {
 // the push's snapshot would print it: jj's warning of a file it refuses to snapshot, or its line
 // of the descendants of @ it rebased, which --quiet silences. A snapshot that finds nothing new
 // adds no operation. Once it has run (snapshotted), the real push runs with --ignore-working-copy
-// and takes no snapshot of its own (runJJ): @ resolves against this snapshot, a write another
-// process makes after it stays in the working copy for the next jj command, and a warning a
-// snapshot prints is printed once, here. A command that cannot start or exits non-zero is a
-// jjStepFailure, with what it printed on standard error (output): the push would fail at the same
-// snapshot.
+// (runJJ). A command that cannot start or exits non-zero is a jjStepFailure, with what it printed
+// on standard error (output): the push would fail at the same snapshot.
 func (s *jjStep) snapshot() error {
 	flags := []string{"--color=never"}
 	if s.push.quiet {

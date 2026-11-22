@@ -735,8 +735,8 @@ type rolePushWant struct {
 	ids []rolePushIDs
 	// snapshots is how many snapshots of the working copy the step takes: the commands of the
 	// step's that a recording jj ahead of the real one sees run with no --ignore-working-copy
-	// before the real push. check reads the real push's --ignore-working-copy by what it sees
-	// there, whatever snapshots says (checkIgnoring).
+	// before the real push. check reads the real push's --ignore-working-copy (checkIgnoring), and
+	// the ending of each line of a step that gave up, by what it sees there, whatever snapshots says.
 	snapshots rolePushSnapshots
 	// pushed, when not nil, checks the words of the real push, which a recording jj ahead of the
 	// real one saw (oneRealPush).
@@ -814,6 +814,12 @@ var rolePushFullID = regexp.MustCompile(`[0-9a-f]{40}`)
 type rolePushIDs struct {
 	argument              string
 	commits, words, bound int
+}
+
+// rolePushOneIDLine is the line of argument whose real push gets the id of the one commit it named
+// before the step, in one word under rolePushRevisionBound bytes.
+func rolePushOneIDLine(argument string) rolePushIDs {
+	return rolePushIDs{argument: argument, commits: 1, words: 1, bound: rolePushRevisionBound}
 }
 
 var (
@@ -1009,7 +1015,9 @@ func (f *rolePushFixture) pushAndCheck(args []string, want rolePushWant) {
 // reads edits only where want sets metaedits, and a caller whose want sets none passes 0. Where a
 // recording jj ahead of the real one ran a real push, check reads that push's
 // --ignore-working-copy against args and the snapshots the step took before it (checkIgnoring),
-// whatever want says; a push whose step failed before any real push has none to read.
+// and the ending of each line of a step that gave up against those snapshots, whatever want says;
+// a push whose step failed before any real push has none to read. It reads the recording jj's log
+// once, after the push.
 func (f *rolePushFixture) check(want rolePushWant, args []string, code int, stderr string, divergent map[string]int, edits int) {
 	t := f.t
 	t.Helper()
@@ -1063,15 +1071,16 @@ func (f *rolePushFixture) check(want rolePushWant, args []string, code int, stde
 			t.Errorf("the push added %d metaedit operations, want %d, one for each role", got, want.metaedits)
 		}
 	}
+	calls := f.calls()
 	if want.noMetaedit {
-		for _, call := range f.calls() {
+		for _, call := range calls {
 			if call.has("metaedit") {
 				t.Errorf("the recording jj ran %q, want no metaedit", call.args)
 			}
 		}
 	}
-	if want.snapshots != rolePushSnapshotsUnread || want.pushed != nil || slices.ContainsFunc(f.calls(), rolePushCall.realPush) {
-		calls, push := f.oneRealPush()
+	if want.snapshots != rolePushSnapshotsUnread || want.pushed != nil || slices.ContainsFunc(calls, rolePushCall.realPush) {
+		push := f.oneRealPush(calls)
 		var taken [][]string
 		for _, call := range calls[:push] {
 			if !call.has("--ignore-working-copy") {
@@ -1082,16 +1091,16 @@ func (f *rolePushFixture) check(want rolePushWant, args []string, code int, stde
 			if n := int(want.snapshots - rolePushTakesNoSnapshot); len(taken) != n {
 				t.Errorf("the step ran %q with no --ignore-working-copy, want %d such command(s), each a snapshot of the working copy", taken, n)
 			}
-			// The line of a step that gave up says --ignore-working-copy where the step took its
-			// snapshot, and only there.
-			suffix := rolePushAsWrittenSuffix
-			if want.snapshots == rolePushTakesOneSnapshot {
-				suffix = rolePushAsWrittenIgnoringSuffix
-			}
-			for _, line := range slices.Concat(lines.cannotRead, lines.cannotSet) {
-				if !strings.HasSuffix(line, suffix) {
-					t.Errorf("the push printed %q, want it to end %q", line, suffix)
-				}
+		}
+		// The line of a step that gave up says --ignore-working-copy where the step took its
+		// snapshot, and only there.
+		suffix := rolePushAsWrittenSuffix
+		if len(taken) > 0 {
+			suffix = rolePushAsWrittenIgnoringSuffix
+		}
+		for _, line := range slices.Concat(lines.cannotRead, lines.cannotSet) {
+			if !strings.HasSuffix(line, suffix) {
+				t.Errorf("the push printed %q, want it to end %q", line, suffix)
 			}
 		}
 		f.checkIgnoring(args, calls[push].args, len(taken))
@@ -1125,16 +1134,26 @@ func (f *rolePushFixture) checkIgnoring(args, pushed []string, snapshots int) {
 	}
 }
 
-// oneRealPush is every command the recording jj ran, and the index among them of its real push;
-// it fails the test where that jj ran no real push, or more than one.
-func (f *rolePushFixture) oneRealPush() (calls []rolePushCall, push int) {
+// pushedAfterSnapshot is a check of the words of a real push (rolePushWant.pushed) that runs after
+// the step's snapshot: the --ignore-working-copy that the snapshot gives it, then args, the role's
+// own words, every byte.
+func (f *rolePushFixture) pushedAfterSnapshot(args []string) func(words []string) {
+	return func(words []string) {
+		if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(words, written) {
+			f.t.Errorf("the real push ran with %q, want the step's --ignore-working-copy, then the role's own words: %q", words, written)
+		}
+	}
+}
+
+// oneRealPush is the index among calls, the commands the recording jj ran, of its real push; it
+// fails the test where calls hold no real push, or more than one.
+func (f *rolePushFixture) oneRealPush(calls []rolePushCall) int {
 	f.t.Helper()
-	calls = f.calls()
-	push = slices.IndexFunc(calls, rolePushCall.realPush)
+	push := slices.IndexFunc(calls, rolePushCall.realPush)
 	if push < 0 || slices.ContainsFunc(calls[push+1:], rolePushCall.realPush) {
 		f.t.Fatalf("the recording jj ran %v, want one real push", calls)
 	}
-	return calls, push
+	return push
 }
 
 // checkRef checks what a remote holds of ref, and adds each commit it holds to landed, by change.
@@ -1539,7 +1558,7 @@ func rolePushFormRows() []rolePushRow {
 	byID := func(setup func(f *rolePushFixture) rolePushWant) func(f *rolePushFixture) rolePushWant {
 		return func(f *rolePushFixture) rolePushWant {
 			want := setup(f)
-			want.ids = []rolePushIDs{{argument: want.rewrites[0].old, commits: 1, words: 1, bound: rolePushRevisionBound}}
+			want.ids = []rolePushIDs{rolePushOneIDLine(want.rewrites[0].old)}
 			return want
 		}
 	}
@@ -1786,14 +1805,9 @@ func rolePushFollowedRows() []rolePushArgsRow {
 	work := func(f *rolePushFixture) rolePushChange {
 		return f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 	}
-	// asWritten is args and want, and what the real push's words must be: the --ignore-working-copy
-	// that the step's snapshot gives it, then args, every byte.
+	// asWritten is args and want, and what the real push's words must be (pushedAfterSnapshot).
 	asWritten := func(f *rolePushFixture, args []string, want rolePushWant) ([]string, rolePushWant) {
-		want.pushed = func(words []string) {
-			if written := slices.Concat([]string{"--ignore-working-copy"}, args); !slices.Equal(words, written) {
-				f.t.Errorf("the real push ran with %q, want the step's --ignore-working-copy, then the role's own words: %q", words, written)
-			}
-		}
+		want.pushed = f.pushedAfterSnapshot(args)
 		return args, want
 	}
 	waiting := rolePushWaitingRow(rolePushWaitingChange, true)
@@ -1953,7 +1967,7 @@ func TestARefusedPushLeavesNoBookmarkAndItsRetrySends(t *testing.T) {
 					rolePushNextSecond()
 				}
 				want.others = true
-				want.ids = []rolePushIDs{{argument: want.rewrites[0].old, commits: 1, words: 1, bound: rolePushRevisionBound}}
+				want.ids = []rolePushIDs{rolePushOneIDLine(want.rewrites[0].old)}
 				want.rewrites = nil
 				divergent := f.divergence()
 				code, _, stderr := f.push(rolePushImplementer, args...)
@@ -1990,7 +2004,7 @@ func TestASameSecondRetrySendsTheCommitTheRefusedPushMade(t *testing.T) {
 		}
 		want.refs[0].commits[0].commit = printed[0].new
 		want.diverges = false
-		want.ids = []rolePushIDs{{argument: d1, commits: 1, words: 1, bound: rolePushRevisionBound}}
+		want.ids = []rolePushIDs{rolePushOneIDLine(d1)}
 		divergent := f.divergence()
 		code, _, stderr := f.push(rolePushImplementer, args...)
 		f.check(want, args, code, stderr, divergent, 0)
@@ -2299,7 +2313,7 @@ func rolePushShortIDRows() []rolePushRow {
 		{name: "-c <commit id>", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
 			p := f.shortIDPushed(rev, impl, message)
 			want := rolePushSends("push-"+p.change[:12], p, "implementer", impl)
-			want.ids = []rolePushIDs{{argument: p.commit, commits: 1, words: 1, bound: rolePushRevisionBound}}
+			want.ids = []rolePushIDs{rolePushOneIDLine(p.commit)}
 			return want
 		}},
 		{name: "--bookmark, another bookmark's commit of the same digit", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
@@ -2541,7 +2555,7 @@ var rolePushCannotReadIDRows = []rolePushArgsRow{
 		c := f.commitOn(rolePushNobody, rolePushNobody, "main", rolePushMessage("work", "implementer"))
 		want := rolePushSends("nm", c, "implementer", rolePushImplementer)
 		want.cannotRead, want.cannotReadNames = rolePushCannotReadIt, rolePushUnreadableLine
-		want.ids = []rolePushIDs{{argument: c.commit, commits: 1, words: 1, bound: rolePushRevisionBound}}
+		want.ids = []rolePushIDs{rolePushOneIDLine(c.commit)}
 		return []string{"git", "push", "--named", "nm=" + c.commit}, want
 	}},
 }
@@ -2761,8 +2775,11 @@ var rolePushPanesRows = []struct {
 
 // A pane's jj never runs itself again: with its directory twice on PATH, with a host's jj script
 // after it that calls jj by PATH, and behind a second Legion bin directory, the step runs once (one
-// metaedit, one push and one snapshot at most, which the recording jj sees) and the remote gets the
-// trailer's author.
+// metaedit, one push and one snapshot at most, and no dry run after the metaedit, which the
+// recording jj sees) and the remote gets the trailer's author. The step's dry runs of this push
+// come before its metaedit, since no commit the push sends lacks an author, so a dry run after it
+// is a second run of the step: one on the real push takes no snapshot, since the push's words carry
+// the step's --ignore-working-copy, and runs no metaedit, since the commit has its author by then.
 func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -2777,11 +2794,17 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 				divergent := f.divergence()
 				code, _, stderr := f.pushOn(path, impl, rolePushBookmark...)
 				f.check(rolePushSends("legion/K-1", c, "implementer", impl), rolePushBookmark, code, stderr, divergent, 0)
+				calls := f.calls()
 				var snapshot, metaedit, push int
-				for _, call := range f.calls() {
+				var again [][]string
+				for _, call := range calls {
 					switch {
 					case call.has("metaedit"):
 						metaedit++
+					case call.has("--dry-run"):
+						if metaedit > 0 {
+							again = append(again, call.args)
+						}
 					case call.realPush():
 						push++
 					case !call.has("--ignore-working-copy"):
@@ -2789,7 +2812,10 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 					}
 				}
 				if metaedit != 1 || push != 1 || snapshot > 1 {
-					t.Errorf("the recording jj saw %d metaedits, %d pushes and %d snapshots, want one metaedit, one push and one snapshot at most: the step runs once\n%v", metaedit, push, snapshot, f.calls())
+					t.Errorf("the recording jj saw %d metaedits, %d pushes and %d snapshots, want one metaedit, one push and one snapshot at most: the step runs once\n%v", metaedit, push, snapshot, calls)
+				}
+				if len(again) != 0 {
+					t.Errorf("the recording jj saw the dry runs %q after the step's metaedit, want none: the step ran again on the real push, which the loop guard skips where wrappedJJStepped is the digest of the push's own words, the step's --ignore-working-copy among them (jjStepped)\n%v", again, calls)
 				}
 			})
 		})

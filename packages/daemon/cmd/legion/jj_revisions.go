@@ -35,9 +35,9 @@ type jjSent struct {
 
 // word is the commit as a revision argument's words write it: `@` for the working-copy commit, and
 // its full id for any other. Where the step took its snapshot, the real push runs with
-// --ignore-working-copy and takes none of its own (runJJ): `@` resolves against the step's
-// snapshot, and a write another process makes after that snapshot stays in the working copy for
-// the next jj command.
+// --ignore-working-copy (runJJ). The working-copy commit is `@` rather than its id because another
+// jj command may rewrite @ between the step's read and the real push: `@` then names the @ that
+// command left, where the id would name a hidden commit.
 func (c jjSent) word() string {
 	if c.working {
 		return "@"
