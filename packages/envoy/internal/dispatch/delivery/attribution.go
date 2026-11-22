@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -503,6 +505,12 @@ type PullRequestAttribution struct {
 // under the renaming rule. A key with neither a results row nor a timeline row is absent from the
 // map.
 func PullRequestIssues(ctx context.Context, q Querier, keys []PullRequestKey) (map[PullRequestKey]PullRequestAttribution, error) {
+	return pullRequestIssues(ctx, q, keys)
+}
+
+// pullRequestIssues is PullRequestIssues with options of the read, a pgx.QueryExecMode, which go
+// before its arguments.
+func pullRequestIssues(ctx context.Context, q Querier, keys []PullRequestKey, options ...any) (map[PullRequestKey]PullRequestAttribution, error) {
 	statements, err := attribution()
 	if err != nil {
 		return nil, err
@@ -512,7 +520,7 @@ func PullRequestIssues(ctx context.Context, q Querier, keys []PullRequestKey) (m
 	for i, key := range keys {
 		repos[i], numbers[i] = key.Repo, key.Number
 	}
-	rows, err := q.Query(ctx, statements.pullRequestIssues, repos, numbers)
+	rows, err := q.Query(ctx, statements.pullRequestIssues, append(options, repos, numbers)...)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of %d pull requests: %w", len(keys), err)
 	}
@@ -544,6 +552,14 @@ type PullRequestIssue struct {
 // a pull request's issue here, so the timeline and the results name one issue. One statement
 // reads all of prs. A pull request with neither a results row nor a timeline row has no answer and
 // keeps its stored IssueKey.
+//
+// The statement is planned at each call for the keys of that call (pgx.QueryExecModeCacheDescribe,
+// an unnamed statement), where every other reader runs the statement its connection has prepared.
+// A prepared statement takes a generic plan from its sixth run, and Postgres prices that plan for
+// an array of 10 keys, so its joins over the keys' rows are nested loops. One window holds one
+// pull request or thousands: on 5,000 stored pull requests, a call of 3,000 keys took 1.50 s by a
+// connection's generic plan and 0.23 s by a plan of its own keys, and one of 1,000 keys 0.30 s and
+// 0.11 s. A call of 10 keys costs its plan, 8.9 ms against 7.6 ms.
 func attributedIssues(ctx context.Context, q Querier, prs []DeliveryPullRequest) ([]PullRequestIssue, error) {
 	issues := make([]PullRequestIssue, len(prs))
 	if len(prs) == 0 {
@@ -553,7 +569,7 @@ func attributedIssues(ctx context.Context, q Querier, prs []DeliveryPullRequest)
 	for i, pr := range prs {
 		keys[i] = PullRequestKey{Repo: pr.Repo, Number: pr.Number}
 	}
-	answers, err := PullRequestIssues(ctx, q, keys)
+	answers, err := pullRequestIssues(ctx, q, keys, pgx.QueryExecModeCacheDescribe)
 	if err != nil {
 		return nil, err
 	}

@@ -351,12 +351,22 @@ func LinkedPullRequestSQL(url string) string {
 // issue_external_links_url_lower serves with one probe a form, and takes the link only where
 // LinkedPullRequestSQL takes it too (attributedTerms): lower() of a character outside ASCII can
 // be an ASCII letter, and a renamed name that GitHub cannot have names nothing.
+//
+// The renamed names are only those of the rows whose own renamed_to is repo's canonical name, in
+// any case: a name passes the comparison of canonical names below only where some row of that
+// name, in any case, renames to repo's canonical name, and that row is one of these, under a name
+// whose lowered form is the same, which is all the array holds of it. The comparison reads
+// repo_projects again for each name, so over every renamed row it read each renamed row once for
+// each, for each pull request a statement judges: the statement over 10 pull requests took 996 ms
+// with 500 renamed repositories, against 8 ms with 1. repo's canonical name is read once, as c.
 func PullRequestLinksSQL(repo, number string) string {
 	return `array(select lower('https://github.com/' || n.name || '/' || f.form || '/' || ` + number + `)
-		from (select ` + refs.CanonicalRepoSQL(repo) + ` as name
-			union select renamed.repo from repo_projects renamed where renamed.renamed_to is not null) n
+		from (select ` + refs.CanonicalRepoSQL(repo) + ` as canonical) c
+		cross join lateral (select c.canonical as name
+			union select renamed.repo from repo_projects renamed
+			where renamed.renamed_to is not null and lower(renamed.renamed_to) = lower(c.canonical)) n
 		cross join (values ('pull'), ('issues')) f(form)
-		where lower(` + refs.CanonicalRepoSQL("n.name") + `) = lower(` + refs.CanonicalRepoSQL(repo) + `))`
+		where lower(` + refs.CanonicalRepoSQL("n.name") + `) = lower(c.canonical))`
 }
 
 // OweLinkedPullRequestReads owes a read of GitHub for each pull request that a person or an agent
