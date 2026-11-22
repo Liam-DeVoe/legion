@@ -563,6 +563,22 @@ var goldenKept = []goldenKeptOf{
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"relaunch.in_flight_tool_calls": texts.ToolCallsNeverAnswered, "relaunch.turn_background_work": texts.TurnBackgroundWorkGone}
 		}},
+	{kind: texts.RelaunchNote, variants: []string{"no-report"}, what: "that every subagent and background job of the process is gone, where no report speaks of its last turn " +
+		"and it was in no turn, or the turn cut off names no work that stopped, as main's note said",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field), dispatch://INFRA-714's R6 and dispatch://INFRA-3276's R3",
+		keys:   []string{"process_background_work"},
+		values: func(want map[string]string) map[string]string {
+			return map[string]string{"process_background_work": want["process_background_work"]}
+		}},
+	{kind: texts.CatchUp, variants: []string{"root"}, what: "that every subagent and background job of the relaunched process is gone, as a relaunch-note says it",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field), dispatch://INFRA-714's R6 and dispatch://INFRA-3276's R3",
+		keys:   []string{"relaunch.process_background_work"},
+		values: func(want map[string]string) map[string]string {
+			if want["relaunch.process_background_work"] == "" {
+				return nil
+			}
+			return map[string]string{"relaunch.process_background_work": want["relaunch.process_background_work"]}
+		}},
 	{kind: texts.OutOfMemoryNote, what: "the pointer to the part of the worker skill to read before heavy work runs again, as main's note gave it",
 		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-1229's R2",
 		keys:   []string{"read_before_heavy_work"},
@@ -594,11 +610,12 @@ var goldenKept = []goldenKeptOf{
 		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-2009's R5",
 		keys:   []string{"nothing_held"},
 		values: func(map[string]string) map[string]string { return map[string]string{"nothing_held": "true"} }},
-	{kind: texts.TreeStalled, what: "what the controller decides among once it has read the tree: ask a role what it waits on, move an issue back a phase, or park the tree",
+	{kind: texts.TreeStalled, what: "the step the controller takes first, read the tree, and what it decides among once it has read it: ask a role what it waits on, " +
+		"move an issue back a phase, or park the tree",
 		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-2560's R5",
-		keys:   []string{"decide"},
+		keys:   []string{"first", "decide"},
 		values: func(map[string]string) map[string]string {
-			return map[string]string{"decide": strings.Join(texts.TreeStalledChoices(), ",")}
+			return map[string]string{"first": texts.TreeStalledFirst, "decide": strings.Join(texts.TreeStalledChoices(), ",")}
 		}},
 }
 

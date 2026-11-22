@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,10 +32,10 @@ const CheckLookBound = 2 * time.Hour
 const CheckWakeFloor = time.Minute
 
 // The causes a look is woken by: what the check's record names as its last wake, and what the
-// check task tells the checking agent woke it. wakeRetry is a check_wake row the daemon marked as
-// the retry of a look nobody reported (record.CheckWakeDue.Retry), which the task names as such
-// (CheckLook); the record names it as a check wake (startLook), as it named every check_wake row
-// before, since the state's last wake lists `check wake` for both.
+// check task tells the checking agent woke it. wakeRetry is a check_wake row of the retry of a look
+// nobody reported (queuedRetry), which the task names as such (CheckLook); the record names it as
+// a check wake (startLook), as it named every check_wake row before, since the state's last wake
+// lists `check wake` for both.
 const (
 	wakeMerge = "merge"
 	wakeBound = "bound"
@@ -137,9 +138,36 @@ func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, c
 
 // retryOfLook opens the reason the daemon writes on the wake that retries a look nobody reported
 // (endLook), whose row it marks as a retry (record.CheckWakeDue.Retry). The look that wake starts
-// names the rest as why (CheckLook). The mark, not these words, says that the wake is a retry: a
-// pending report's summary is the checking role's own words and may open with them too.
+// names the rest as why (CheckLook). The mark, not these words, says that a wake this release
+// queued is a retry: a pending report's summary is the checking role's own words and may open with
+// them too. A row an earlier release queued has no mark, and its words are read (queuedRetry).
 const retryOfLook = "the retry of a look nobody reported: "
+
+// earlierRetryCauses is every cause an earlier release's endLook wrote after retryOfLook on the
+// wake of a retry, which it did not mark: main's endLook at d46ec4e0 and c03d3afe, whose callers
+// name a look's bound, an operator's hold on its start and its role's failed claim.
+var earlierRetryCauses = []string{"look bound", "operator hold", "claim failed"}
+
+// queuedRetry is whether the check_wake row fact, due on check, is the retry of a look nobody
+// reported: a row this release queued says so by its mark (record.CheckWakeDue.Retry), since its
+// endLook marks every retry it queues. A row an earlier release queued has no mark, and it is a
+// retry where its reason is word for word the sentence that release's endLook wrote, retryOfLook and
+// one of earlierRetryCauses, and the check holds no time of a pending report
+// (record.ProductionCheck.ReportedAt). That time is what keeps every pending summary this release
+// recorded from being read so, whatever words it opens with: checkReported sets it in the
+// transaction that queues the report's unmarked row, and only endLook clears it, which ends a look
+// that row would start, so that row is spent by then. An earlier release never wrote the time, so
+// every check it recorded holds none, and the words alone tell its rows apart, as the checking
+// role's prompt of that release told them apart: its retry's reason was that sentence, and its
+// pending's the role's own summary, which is read as a retry only where the role wrote that
+// sentence word for word as its whole summary.
+func queuedRetry(check record.ProductionCheck, fact intake.CheckWakeDue) bool {
+	if fact.Retry {
+		return true
+	}
+	cause, found := strings.CutPrefix(fact.Reason, retryOfLook)
+	return found && check.ReportedAt == nil && slices.Contains(earlierRetryCauses, cause)
+}
 
 // CheckLook is what the check's role is told at a look of the closed issue's production check, as
 // the record of its kind. The session it reaches may be fresh — a woken pod after a lost volume —
@@ -167,18 +195,17 @@ const retryOfLook = "the retry of a look nobody reported: "
 // ("closes the check as not run").
 //
 // What woke it is the cause (texts.WokenByMerge and the others): the merge that opened the check
-// (wakeMerge), its bound (wakeBound), a check_wake row the daemon marked as the retry of a look
-// nobody reported (wakeRetry, record.CheckWakeDue.Retry, endLook), whose reason the daemon wrote
-// and whose words after retryOfLook name why, or any other check_wake row (wakeNamed), the
-// checking agent's own wake, whose reason is the summary its pending report gave (checkReported),
-// whatever words it opens with, carried in the summary block by the checking role at the time the
-// daemon recorded that report (record.ProductionCheck.ReportedAt; a check an earlier release
-// recorded holds none, and its block then names no time). A check_wake row an earlier release
-// queued carries no mark, and is told as the agent's wake, as that release told every such row. The
-// rest of the rules of the check — each requirement only the deploy can show observed as it names
-// it, the three verdicts and what each asks of the pull request, the wake a pending names, and
-// nothing to wait for in the session — are the checking role's prompt's, which also says what the
-// fields of the rule name.
+// (wakeMerge), its bound (wakeBound), a check_wake row of the retry of a look nobody reported
+// (wakeRetry, endLook; queuedRetry reads the row's mark, or the words of a row an earlier release
+// queued), whose reason the daemon wrote and whose words after retryOfLook name why, or any other
+// check_wake row (wakeNamed), the checking agent's own wake, whose reason is the summary its
+// pending report gave (checkReported), whatever words it opens with, carried in the summary block
+// by the checking role at the time the daemon recorded that report
+// (record.ProductionCheck.ReportedAt; a check an earlier release recorded holds none, and its block
+// then names no time). The rest of the rules of the check — each requirement only the deploy can
+// show observed as it names it, the three verdicts and what each asks of the pull request, the wake
+// a pending names, and nothing to wait for in the session — are the checking role's prompt's,
+// which also says what the fields of the rule name.
 func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) texts.CheckLookRecord {
 	look := texts.CheckLookRecord{Issue: issue.Key, Title: issue.Title, Kind: texts.CheckLook, Look: check.Looks, Last: last,
 		NotMetRequirement: texts.LookNotMetRequirement, UnobservedRequirement: texts.LookUnobservedRequirement,
@@ -505,7 +532,9 @@ func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.Chec
 //     (checkBound).
 //
 // The first three change nothing and are logged with why; without them the last one's queue
-// would make an orphan row immortal.
+// would make an orphan row immortal. Whether the row is the retry of a look nobody reported is
+// read once (queuedRetry), so the look it starts names a retry, and a row queued again keeps the
+// mark: an earlier release's unmarked retry is queued again marked.
 func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckWakeDue) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil {
@@ -529,6 +558,7 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 			"reason", fact.Reason, "why", why)
 		return intake.Result{}, nil
 	}
+	retry := queuedRetry(*check, fact)
 	issue, _, err := e.checkIssue(ctx, tx, *check)
 	if err != nil {
 		return intake.Result{}, err
@@ -540,10 +570,10 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 		if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.nameWake(ctx, tx, check, fact.Reason, fact.Retry)
+		return intake.Result{}, e.nameWake(ctx, tx, check, fact.Reason, retry)
 	}
 	cause := wakeNamed
-	if fact.Retry {
+	if retry {
 		cause = wakeRetry
 	}
 	return intake.Result{}, e.startLook(ctx, tx, issue, check, cause, fact.Reason, false)

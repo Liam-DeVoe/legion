@@ -902,6 +902,21 @@ func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, toke
 	return pause, nil
 }
 
+// StoppingPause is StoppingPauseTx in a transaction of its own: the pause that stopped claim
+// token, read where no transaction of the caller's is open. An update-stalled notice reads it for
+// a claim that a pause stopped owing it no launch (internal/daemon's stoppedByAPause), whose
+// suspension that pause's stop, and no idle release, made. project is the project token, as
+// pod_releases holds it.
+func (s *Store) StoppingPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
+	var pause int64
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		pause, err = StoppingPauseTx(ctx, tx, project, issue, token)
+		return err
+	})
+	return pause, err
+}
+
 // IssueHasLiveRoleTx is whether any claim of issue is live through tx: not suspended, failed or
 // retired, as liveClaimsOf reads a live claim. Read under the issue's lock (LockIssueForPause), it
 // is what the stop transaction of a pause that has ended asks of the stopped role's pod

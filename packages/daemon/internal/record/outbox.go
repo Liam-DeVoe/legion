@@ -652,10 +652,11 @@ type Notice struct {
 	Turns      int    `json:"turns,omitempty"`
 	Model      string `json:"model,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
-	// A stopped tree (tree-stalled), and what the controller decides among for it
-	// (texts.TreeStalledChoices).
+	// A stopped tree (tree-stalled), the step the controller takes first for it
+	// (texts.TreeStalledFirst) and what it decides among then (texts.TreeStalledChoices).
 	QuietFor string             `json:"quiet_for,omitempty"`
 	Members  []texts.TreeMember `json:"members,omitempty"`
+	First    string             `json:"first,omitempty"`
 	Decide   []string           `json:"decide,omitempty"`
 	// A root's stalled architect (architect-stalled): the arm that read it (an
 	// ArchitectStallArm) and what the record says for that arm, with the moment it counted its
@@ -1684,10 +1685,11 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 // its looks from one again — zero names no instance and is not fenced. Reason is what the wake
 // is, for the look's wake and the log: the checking agent's summary on its pending report, or the
 // daemon's words of the retry of a look nobody reported. Retry marks the latter (workflow's
-// endLook): the look it starts names it as a retry (woken_by: retry). A row with no mark is the
-// agent's own wake, whose reason is the agent's summary whatever words it opens with, and so is a
-// row an earlier release queued, which marked none: a retry it queued reads as the agent's wake,
-// its reason, the daemon's words of that retry, carried as the summary.
+// endLook): the look it starts names it as a retry (woken_by: retry). A row with no mark that this
+// release queued is the agent's own wake, whose reason is the agent's summary whatever words it
+// opens with. A row an earlier release queued marked none: one whose reason is word for word that
+// release's sentence of a retry, on a check that holds no time of a pending report, is a retry
+// too, and any other is the agent's own wake (workflow's queuedRetry).
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`
@@ -1718,9 +1720,10 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
 // as the deployment spells it, Role the recipient, From the phase the work left and To the phase
-// it went back to, Count the hook's own count of that pair at the firing, Counts every
-// backward-move count of the issue after the move, PullRequest the issue's pull request as
-// `owner/name#n` where the issue has one, and Prompt the hook's own words.
+// it went back to, Count the hook's own count at the firing (the counts of every move back the
+// hook selects, added up after the move: workflow's hookCount), Counts every backward-move count
+// of the issue after the move, PullRequest the issue's pull request as `owner/name#n` where the
+// issue has one, and Prompt the hook's own words.
 //
 // It rides the role-message lane (LaneRoleMessage) because a role hears a hook prompt while it is
 // news, as it hears a merge forward's messages (MergeForwardMessage): a prompt held behind
@@ -1753,11 +1756,11 @@ type HookPrompt struct {
 func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 
 // Record is the hook prompt's record for issue (texts.HookPromptRecord): the hook, the issue, the
-// move back, the hook's words, and its facts — the count that fired the hook, every backward-move
-// count of the issue and the pull request where the issue has one. The counts are listed in the
-// order phase.BackwardPairs() gives rather than the map's own, so two readings of one row read
-// alike; a pair the map does not hold is left out, and an empty map gives an empty list, which
-// tells a reader of a row written any other way that the daemon counted nothing.
+// move back, the hook's words, and its facts — the hook's own count at the firing, every
+// backward-move count of the issue and the pull request where the issue has one. The counts are
+// listed in the order phase.BackwardPairs() gives rather than the map's own, so two readings of
+// one row read alike; a pair the map does not hold is left out, and an empty map gives an empty
+// list, which tells a reader of a row written any other way that the daemon counted nothing.
 func (p HookPrompt) Record(issue string) texts.HookPromptRecord {
 	counts := make([]texts.MoveCount, 0, len(p.Counts))
 	for _, pair := range phase.BackwardPairs() {

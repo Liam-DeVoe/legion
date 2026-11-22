@@ -187,13 +187,18 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 }
 
 // SuspendedByPause is what an update-stalled notice's suspended_by says of a claim that a
-// project's pause stopped and still owes a launch (the daemon's podHolds.owedLaunch), whether or
-// not the claim answered the round: the pause, and no idle release of the claim's pod, suspended
-// it. Before the round's bound the round asks such a claim once its agent is ready and waits for
-// it while it has not answered (podHolds.owes); the notice is told only past the bound, where no
+// project's pause stopped, whether or not the claim answered the round: the pause, and no idle
+// release of the claim's pod, suspended it. It names two cases. In the first the pause still owes
+// the claim a launch (the daemon's podHolds.owedLaunch): the claim's role has not run in the pod
+// since the pause stopped it, and before the round's bound the round asks such a claim once its
+// agent is ready and waits for it while it has not answered (podHolds.owes). In the second the
+// pause stopped the claim while it held no task and met no launch, owing it none, and neither a
+// release of the pod nor a ready of the claim came after that stop (the daemon's
+// stoppedByAPause, store.StoppingPauseTx). The notice is told only past the bound, where no
 // answer holds the round, so the word names who suspended the claim and nothing the round waits
 // for. The claim's own source is released (supervise.SuspendedByReleased), as an idle release's
-// is, so this word is the notice's, read from the pause's hold of the pod.
+// is, so this word is the notice's, read from the pause's hold of the pod and its record of the
+// pause's stops.
 const SuspendedByPause = "pause"
 
 // UpdateWaiting is one claim an update-stalled notice lists (record.UpdateWaiting is this type):
@@ -201,7 +206,7 @@ const SuspendedByPause = "pause"
 // it: a supervise.SuspendSource word (operator for the operator's suspension, which only the
 // operator's resume ends, released for the daemon's idle release of its pod, and daemon, exit or
 // unknown for a suspension of the daemon's own), or SuspendedByPause for a claim a project's pause
-// stopped and still owes a launch. A claim not suspended yet names operator too where its machine
+// stopped, owing it a launch or not. A claim not suspended yet names operator too where its machine
 // holds the operator's suspension for its agent's turn or launch (supervise.Claim.SuspensionHeld).
 // LeftRound says that the claim left the round's pod (supervise.Claim.LeftPodRound): its process
 // came up in another pod while the round was open, so the round asks it nothing, and an operator's
@@ -228,18 +233,24 @@ type ProviderErrorsRecord struct {
 }
 
 // TreeStalledRecord is the notice that a tree has stopped (admit's tellStalledTrees): how long the
-// tree has been quiet, each issue the workflow still runs, and what the controller decides among
-// once it has read the tree (Decide, TreeStalledChoices): ask a role what it waits on, move an
-// issue back a phase, or park the tree. dispatch://INFRA-2560's R5 has the notice tell the
-// controller to read the tree and decide among those three, as main's notice said ("Read the tree
-// and decide what it needs. You can ask a role what it waits on. You can move an issue back a
-// phase. You can park the tree."), and R8 of dispatch://INFRA-3686 keeps that step as a field.
+// tree has been quiet, each issue the workflow still runs, the step the controller takes first
+// (First, TreeStalledFirst: read the tree) and what it decides among once it has read the tree
+// (Decide, TreeStalledChoices): ask a role what it waits on, move an issue back a phase, or park
+// the tree. dispatch://INFRA-2560's R5 has the notice tell the controller to read the tree and
+// decide among those three, as main's notice said ("Read the tree and decide what it needs. You can
+// ask a role what it waits on. You can move an issue back a phase. You can park the tree."), and
+// R8 of dispatch://INFRA-3686 keeps that step as fields: the read in First, the decision in Decide.
 type TreeStalledRecord struct {
 	NoticeHead
 	QuietFor string       `json:"quiet_for"`
 	Members  []TreeMember `json:"members"`
+	First    string       `json:"first"`
 	Decide   []string     `json:"decide"`
 }
+
+// TreeStalledFirst is the step a tree-stalled notice has the controller take first, before it
+// decides among TreeStalledChoices: read the tree (TreeStalledRecord.First).
+const TreeStalledFirst = "read_tree"
 
 // The choices a tree-stalled notice names for the controller once it has read the tree
 // (TreeStalledRecord.Decide).

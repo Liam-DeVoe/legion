@@ -15,10 +15,13 @@ body: |-
   named by its author: where that line is the daemon's sentence of a worker's backward move or of
   the architect's close and then that author's words, the notice gives the sentence as a field
   (`refused_move: <from>-<to>`, `refused_close: before_first_phase`) and the block holds the
-  worker's or the architect's words alone; any other line is the daemon's own, whole. The block
-  holds no character the daemon added: a line ends at a line feed or at a carriage return and a
-  line feed, neither of which the block holds; a line past 200 UTF-16 units is cut with no
-  ellipsis, and never between a letter and the combining marks after it; the words object counts
+  worker's or the architect's words alone, from their first line that holds a character, so a close
+  whose reason opens with a line break quotes the architect's words and not the daemon's sentence;
+  any other line is the daemon's own, whole. The block holds no character the daemon added: a line
+  ends at a line feed or at a carriage return and a line feed, neither of which the block holds; a
+  line past 200 UTF-16 units is cut with no ellipsis, and never inside an extended grapheme cluster
+  (a letter and the combining marks after it, an emoji and its skin-tone modifier, the jamo of one
+  Hangul syllable); the words object counts
   every UTF-16 unit of the words after the block, the later lines among them but not the line
   endings the words end with (`rest`), as the notice's `length` counts the refused body in UTF-16
   units; and a worker's words lose the full stop the daemon's sentence adds after words that end
@@ -44,12 +47,15 @@ body: |-
   report on the block of its summary (`at`), which the check keeps (`production_checks.reported_at`,
   migration `20261122011615_production_check_reported_at`); the look of a check recorded before it
   names no time. The wake of the retry of a look nobody reported is marked on its `check_wake` row
-  (`retry`), and only that mark makes the look it starts a retry (`woken_by: retry`); any other
-  wake is the checking role's own, whose summary is its words whatever they open with. An
+  (`retry`), which makes the look it starts a retry (`woken_by: retry`), and so is a row an earlier
+  release queued with no mark whose reason is word for word that release's sentence of a retry, on
+  a check that holds no time of a pending report; any other wake is the checking role's own, whose
+  summary is its words whatever they open with. An
   update-stalled notice names who suspended each suspended claim it lists (`suspended_by:
   operator` for the operator's suspension, one held for a claim's turn among them, and
-  `suspended_by: pause` for a claim a project's pause stopped and still owes a launch, answered or
-  not, apart from an idle release's `released`) and each claim that left the round's pod
+  `suspended_by: pause` for a claim a project's pause stopped, answered or not, whether the pause
+  still owes it a launch or stopped it owing none with no release of the pod and no ready of the
+  claim since, apart from an idle release's `released`) and each claim that left the round's pod
   (`left_round: true`), whose suspension holds no pod; a phase-finished notice of a role's own move
   back says so whether or not the role gave words (`moved_back: true`), a let-go notice says of
   each child whether Dispatch's listing still holds it (`listed`), an unslotted notice names why an
@@ -74,7 +80,10 @@ body: |-
   notice names when the person made it (`at`). A relaunch note and a catch-up's `relaunch` of a
   cut turn say that its tool calls in flight were never answered and that the subagents and
   background jobs of that turn are gone (`in_flight_tool_calls: never_answered`,
-  `turn_background_work: gone`); an out-of-memory note points to the worker skill's tools guide
+  `turn_background_work: gone`), and, where no report speaks of the process's last turn, of a
+  process in no turn or a cut turn that names no work that stopped, that every subagent and
+  background job of the process is gone (`process_background_work: gone`); an out-of-memory note
+  points to the worker skill's tools guide
   (`read_before_heavy_work`); the task of a review's request for changes names GitHub's id of the
   review (`review_id`), where a cut body is read whole; a merge-forward ask whose required check
   has not passed says that GitHub runs no check on the head (`checks_on_head: none`), and a
@@ -83,8 +92,9 @@ body: |-
   worker-died and a held notice write each line break and backslash of a failure record's texts,
   and of the worker-died's own `detail`, `death` and `pod_end`, as Go writes them in a string
   (`\n`, `\\`) rather than joining lines with ` / `, so every character is kept; and a
-  tree-stalled notice names what the controller decides among (`decide:
-  ask_role_what_it_waits_on,move_issue_back_a_phase,park_tree`). A root's start task of a gate
+  tree-stalled notice tells the controller to read the tree first (`first: read_tree`) and names
+  what it decides among (`decide: ask_role_what_it_waits_on,move_issue_back_a_phase,park_tree`). A
+  root's start task of a gate
   that stands part way takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`).
   A woken role's task of
   a message to its role topic says that a kept copy whose hour ended before the session came back

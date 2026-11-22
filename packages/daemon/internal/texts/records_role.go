@@ -195,9 +195,10 @@ type HookPromptRecord struct {
 	HookFacts
 }
 
-// HookFacts is the facts of a hook prompt, below the hook's words: the count of the move that
-// fired the hook, every backward-move count of the issue in phase.BackwardPairs order, and the
-// issue's pull request where it has one.
+// HookFacts is the facts of a hook prompt, below the hook's words: the hook's own count at the
+// firing, the counts of every move back the hook selects added up after the move that fired it
+// (workflow's hookCount, a whole multiple of the hook's every), every backward-move count of the
+// issue in phase.BackwardPairs order, and the issue's pull request where it has one.
 type HookFacts struct {
 	Count       int         `json:"count"`
 	Counts      []MoveCount `json:"counts"`

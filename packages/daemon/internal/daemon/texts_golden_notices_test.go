@@ -506,10 +506,11 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 				"update.waiting[1].role", claim.RoleTester, "update.waiting[1].suspended_by", string(supervise.SuspendedByOperator),
 				"update.waiting[2].suspended_by", string(supervise.SuspendedByReleased)))
 		// Every word suspended_by can say, as tellLateRound writes them (waitingOf, then
-		// pauseStopped over the round's pause holds): an unknown source, the operator's own
-		// suspension, an idle release, a project's pause that still owes the planner a launch,
-		// the daemon's own suspension, which the merger also took after its process came up in
-		// another pod during the round (left_round), and a root's exit.
+		// pauseStopped over the round's pause holds and the pause stops the store records, here
+		// none): an unknown source, the operator's own suspension, an idle release, a project's
+		// pause that still owes the planner a launch, the daemon's own suspension, which the merger
+		// also took after its process came up in another pod during the round (left_round), and a
+		// root's exit.
 		marks := stall
 		marks.holds, marks.round = texts.HoldsOperator, supervise.PodRoundPrefix+r.id("update/marks-round")
 		marked := func(role claim.Role, by supervise.SuspendSource) supervise.Claim {
@@ -528,7 +529,7 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 			marked(claim.RoleArchitect, supervise.SuspendedByExit),
 		})
 		marks.waiting = pauseStopped(waitingOf(marks.round, listed), listed,
-			podHolds{{Pause: 40 + int64(r.n), Issue: stall.issue, Owed: []claim.Role{claim.RolePlanner}}})
+			podHolds{{Pause: 40 + int64(r.n), Issue: stall.issue, Owed: []claim.Role{claim.RolePlanner}}}, nil)
 		b.notice(r, "marks", ctl, updateStalledNotice(marks),
 			goldenWant("issue", stall.issue, "holds", texts.HoldsOperator, "update.round", marks.round, "update.pod", stall.pod,
 				"update.waiting[0].suspended_by", string(supervise.SuspendedByUnknown),
@@ -831,6 +832,11 @@ func (b *goldenBuild) catchUps(r goldenRendering) {
 			want["catch_up.gates[0].step"], want["catch_up.gates[0].version"] = "spec", fmt.Sprint(tree.gate.LatestVersion)
 			want["catch_up.gates[0].open"], want["catch_up.gates[0].document"] = "false", "dispatch://"+tree.owner.Key+"/spec"
 			want["relaunch.cause"] = ended.Cause
+			// A turn cut off whose record names no work that stopped and no report: main's note said
+			// that every other subagent and background job of the process is gone too.
+			if !ended.Reported {
+				want["relaunch.process_background_work"] = texts.ProcessBackgroundWorkGone
+			}
 			for i, decision := range tree.kept {
 				want[fmt.Sprintf("catch_up.kept.decisions[%d].ref", i)] = decision.Ref
 				want[fmt.Sprintf("words.catch_up.kept.decisions[%d].answer.by", i)] = decision.Actor

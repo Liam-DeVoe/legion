@@ -845,6 +845,15 @@ func (b *goldenBuild) startParts(r goldenRendering) {
 	// never the controller, whose start message carries the note in front of it.
 	b.task(r, "alone", claim.RoleArchitect, issue, supervise.RelaunchNote(issue, ended, false),
 		goldenWant("issue", issue, "cause", cause, "in_turn", true))
+	// With no report of the process's last turn: a process in no turn (sample 1) and a turn cut off
+	// whose record names no work that stopped (sample 2), of each of which main's note said that
+	// every subagent and background job of the process is gone.
+	unreported := supervise.EndedWork{At: r.at(2), Cause: cause, Turn: r.n == 2}
+	want := goldenWant("issue", r.key(63), "cause", cause, "process_background_work", texts.ProcessBackgroundWorkGone)
+	if unreported.Turn {
+		want["in_turn"] = "true"
+	}
+	b.task(r, "no-report", claim.RoleReviewer, r.key(63), supervise.RelaunchNote(r.key(63), unreported, false), want)
 
 	b.task(r, "cut-turn", claim.RoleTester, issue, supervise.CutTurnNote(issue, cause), goldenWant("issue", issue, "cause", cause))
 	b.task(r, "cut-turn-no-cause", claim.RoleReviewer, r.key(61), supervise.CutTurnNote(r.key(61), ""), goldenWant("issue", r.key(61), "cause", ""))

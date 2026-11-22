@@ -241,21 +241,25 @@ const BeforeFirstPhase = "before_first_phase"
 // write gives the status, whether the status is set, whether the reason posted beside it is on the
 // issue, and, where it is not, the reason's length and how its first line begins. The length, like
 // every count of carried words (Carry), is in UTF-16 units, as Dispatch counts a body. A line ends
-// at a line feed, or at a carriage return and a line feed, and neither is part of it. Two first
-// lines open with the daemon's own sentence and go on with another author's words: a worker's
-// backward move, whose move and asker the sentence states, and a close before the issue's first
-// phase, whose words are the architect's. Of such a line the record gives the daemon's sentence as
-// a field, RefusedMove (the move, "<from>-<to>") or RefusedClose (BeforeFirstPhase), and the other
-// author's words alone in Begins. Every other first line, such a sentence with no words after it
-// among them, is the daemon's own, and Begins gives it whole. A first line that is empty gives no
-// Begins: FirstLineEmpty says so, as main's notice said the body begins "". Begins is a words
-// field, which the words object names with its author, the role whose words it holds (the asker of
-// the move, the architect of the close) or ByDaemon for the daemon's own text, with the time the
-// daemon queued the write, and, where the words go on past what Begins holds, with the count of
-// the rest (rest): every unit of those words after Begins, the lines after the first among them,
-// so the count is 0 only where Begins holds the words whole. The line endings the words end with
-// are no words, and the count leaves them out. Begins holds the first line's head and nothing
-// else, cut where it parts no letter from the combining marks that follow it.
+// at a line feed, or at a carriage return and a line feed, and neither is part of it. Two bodies
+// open with the daemon's own sentence and go on with another author's words: a worker's backward
+// move, whose move and asker the sentence states, and a close before the issue's first phase,
+// whose words are the architect's. Of such a body the record gives the daemon's sentence as a
+// field, RefusedMove (the move, "<from>-<to>") or RefusedClose (BeforeFirstPhase), and the first
+// line of the other author's words alone in Begins: those words begin at their first line that
+// holds a character, since the line endings they open with, as those they end with, are no words.
+// Every other first line, such a sentence with no words after it among them, is the daemon's own,
+// and Begins gives it whole. A first line that is empty gives no Begins: FirstLineEmpty says so,
+// as main's notice said the body begins "". Begins is a words field, which the words object names
+// with its author, the role whose words it holds (the asker of the move, the architect of the
+// close) or ByDaemon for the daemon's own text, with the time the daemon queued the write, and,
+// where the words go on past what Begins holds, with the count of the rest (rest): every unit of
+// those words after Begins, the lines after the first among them, so the count is 0 only where
+// Begins holds the words whole. The line endings the words end with are no words, and the count
+// leaves them out. Begins holds the first line's head and nothing else, cut where it parts no
+// extended grapheme cluster of Unicode's UAX #29 (a letter and the combining marks after it, an
+// emoji and its skin-tone modifier, the jamo of one Hangul syllable), unless the line's first
+// cluster alone runs past the bound.
 type MessageRefusedRecord struct {
 	NoticeHead
 	Refused        string               `json:"refused"`

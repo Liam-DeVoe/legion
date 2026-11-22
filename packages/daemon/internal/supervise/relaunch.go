@@ -38,6 +38,12 @@ func RelaunchNote(issue string, ended EndedWork, task bool) texts.RelaunchNoteRe
 //     in_turn is (texts.ToolCallsNeverAnswered, texts.TurnBackgroundWorkGone): its tool calls in
 //     flight were never answered, and the subagents and background jobs of that turn are gone,
 //     whatever report the record holds, for the reason reported gives below;
+//   - process_background_work: every subagent and background job started in the process is gone
+//     (texts.ProcessBackgroundWorkGone), said where main's note said it: where no report speaks of
+//     the process's last turn (reported, below), for a process in no turn, and for a turn cut off
+//     whose record names no work that stopped (no stopped, no background). A report, or a turn cut
+//     off whose record names what stopped, says no more of the process's work than the record
+//     names;
 //   - stopped: each kind of background work the record names, all of which ended with the
 //     process, in the store's own words for them (`subagent`, `async-job`,
 //     `claude-background-task`: claim.BackgroundWork.KnownKinds); a kind the store does not know
@@ -67,6 +73,9 @@ func (e EndedWork) Facts(task bool) texts.RelaunchFacts {
 	}
 	if facts.InTurn {
 		facts.InFlightToolCalls, facts.TurnBackgroundWork = texts.ToolCallsNeverAnswered, texts.TurnBackgroundWorkGone
+	}
+	if !facts.Reported && (!facts.InTurn || (len(facts.Stopped) == 0 && !facts.Background)) {
+		facts.ProcessBackgroundWork = texts.ProcessBackgroundWorkGone
 	}
 	return facts
 }
