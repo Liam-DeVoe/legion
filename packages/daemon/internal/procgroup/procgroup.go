@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // WaitDelay is the one value Configure sets: how long Wait keeps waiting, once the command's own
@@ -36,6 +38,20 @@ import (
 // needs no margin for slow work, only enough to not block on one indefinitely; one second serves a
 // probe and a git clone alike.
 const WaitDelay = time.Second
+
+// WaitDelayBound is WaitDelay as Configure reads it, through programbound (WaitDelayNow): a variable
+// so that cmd/legion's tests, whose commands copy their stand-ins' output on a loaded machine, can
+// give it their own deadline, since a copy a loaded machine left unscheduled past WaitDelay after
+// the command's exit loses what the command printed.
+var WaitDelayBound = WaitDelay
+
+func init() {
+	programbound.Register(&WaitDelayBound)
+}
+
+// WaitDelayNow is the WaitDelay a command configured now gets: WaitDelay in a legion binary, and in
+// cmd/legion's tests what is left of the test binary's deadline (programbound).
+func WaitDelayNow() time.Duration { return programbound.Of(&WaitDelayBound) }
 
 // StopGrace is how long Cancel gives the group between its SIGTERM and its SIGKILL: the time a
 // command that handles SIGTERM has to clean up after itself. git removes its own lock files from
@@ -120,7 +136,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 		}
 		return err
 	}
-	cmd.WaitDelay = WaitDelay
+	cmd.WaitDelay = WaitDelayNow()
 	return KilledByContext(cmd)
 }
 
