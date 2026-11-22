@@ -61,7 +61,7 @@ type PlanReason struct {
 // registerPlanRoute is register_plan as a refusal names it, the operation the caller retries.
 const registerPlanRoute = "register_plan"
 
-// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 211): the
+// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 219): the
 // routes register_plan and stop_task with register_plan's answer (answers.go's
 // AnswerPlanRegister) and the `reasons` of its refusal (PlanRefusal), a failed step's returnTo on
 // handoff_complete, the hold reasons task-stopped and children of an issue's holdReason, and the
@@ -72,7 +72,7 @@ const registerPlanRoute = "register_plan"
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
 // only with this change's own number.
-const OwnerPlanContract = 211
+const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
 // (PlanRefusal), and every other refusal as its code and its sentence (writeFailure). Both are
@@ -97,10 +97,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 
 // registerPlan is register_plan. It authorizes the owner (planOwner), reads the
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
-// reads the plan's blocks at the version given (planAt), and refuses with one reason for each
-// cause of a plan this release does not carry out (plan.Supported) or no release can
-// (plan.Validate); each of those answers records nothing. A plan both take is recorded as
-// intake.PlanGiven, whose rules of a later version are the workflow's.
+// reads the plan's blocks at the version given, each need as the task it names (planAt, through
+// plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
+// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
+// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
+// a later version are the workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
@@ -145,9 +146,11 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Both checks run, so a plan with two causes gets two reasons: what this release does not
-	// carry out yet, then what no release can. Each judges the plan against the deployment the
-	// daemon's settings define (Options.Deployment), so a role of `roles` is a role a step names.
+	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
+	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
+	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
+	// yet, then what no release can. Each judges the plan against the deployment the daemon's
+	// settings define (Options.Deployment), so a role of `roles` is a role a step names.
 	refusals := append(plan.Supported(given, s.deployment), plan.Validate(given, s.deployment)...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))

@@ -20,10 +20,11 @@ import (
 const heldParentChild = "LEGION-209"
 
 // heldParentReason is the reason of the retro-held notice LEGION-208 gets while heldParentChild is
-// in the workflow beneath it.
+// in the workflow beneath it: it ends with the daemon's sentence on a status not taken yet and its
+// rules for ending a child, as the pr-merged notice does.
 const heldParentReason = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-	"A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, " +
-	"or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."
+	"A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+	record.StatusNotTakenYet + " " + record.EndChildRule
 
 // approveReview settles LEGION-208's review round as approved, as settleRound moves it: the
 // reviewer's phases row as the round left it, with the handoff the retro's task names written to

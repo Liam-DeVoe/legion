@@ -47,13 +47,17 @@ type planRecordInput struct {
 	Tasks      []planTaskInput `json:"tasks" required:"true"`
 }
 
-// planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`. It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts
-// between the three, and a field added to one of them alone fails the build rather than being
-// dropped on the way.
+// planTaskInput is one task of a written plan: its id, its steps in order, each a role or
+// `role:key`, and the tasks of the plan it needs, each by its id, [] for a task that needs none. A
+// write with no needs, a daemon's of the release before, records the task's needs as not recorded,
+// as does a write a Dispatch of the release before took, since it ignores the member.
+// It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts between the
+// three, and a field added to one of them alone fails the build rather than being dropped on the
+// way.
 type planTaskInput struct {
-	ID    string   `json:"id" required:"true"`
-	Steps []string `json:"steps" required:"true"`
+	ID    string    `json:"id" required:"true"`
+	Steps []string  `json:"steps" required:"true"`
+	Needs *[]string `json:"needs"`
 }
 
 // putIssuePlan writes the plan of one run of an issue and answers it as it stands after the

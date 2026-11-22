@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -16,11 +17,14 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// Validate is what Legion cannot carry out in any release: a plan with no task, and each step
-// that names a role neither d nor the plan's own role blocks define, refused once for each role
-// at the first step that names it. It refuses no plan for a step the plan lacks. The other causes
-// no release carries out need an attribute or a block that Supported refuses in this release, so
-// the release that lifts that refusal adds them here.
+// Validate is what Legion cannot carry out in any release: a plan with no task; for each task,
+// each `needs` word that names no task of the plan, in the block's order (Task.Unresolved, which
+// FromBlocks fills), and each step that names a role neither d nor the plan's own role blocks
+// define, refused once for each role at the first step that names it; then each cycle of needs
+// (cycles), named by its first task in id order with the chain from that task. It refuses no plan
+// for a step the plan lacks. The other refusals of a plan no release carries out need an attribute
+// or a block that Supported refuses in this release, so the release that lifts that refusal adds
+// them here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -31,6 +35,9 @@ func Validate(p Plan, d Deployment) []Refusal {
 	}
 	var refusals []Refusal
 	for _, task := range p.Tasks {
+		for _, word := range task.Unresolved {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, word)})
+		}
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
 			if _, ok := d.Roles[step.Role]; ok || defined[step.Role] || refused[step.Role] {
@@ -41,11 +48,81 @@ func Validate(p Plan, d Deployment) []Refusal {
 				"step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)})
 		}
 	}
+	for _, cycle := range cycles(p.Tasks) {
+		chain := make([]string, len(cycle))
+		for i, id := range cycle {
+			chain[i] = id + " needs " + cycle[(i+1)%len(cycle)]
+		}
+		refusals = append(refusals, Refusal{Task: cycle[0], Reason: fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))})
+	}
 	return refusals
 }
 
-// Supported is what this release does not carry out yet: more than one task, a role block, and,
-// for each task, `needs`, `owner`, `part_of` and `merges`, the key owner on a role but acceptance,
+// cycles is the cycles of the tasks' needs that a reason names: for each need that lies on a
+// cycle, the shortest cycle through it, once however many of its needs it is the shortest
+// through. So each need that closes a cycle is in one of them, and the answer holds at most one
+// cycle for each need. Each cycle is its tasks from its first in id order, and the cycles are in
+// the order of their tasks' ids, compared one by one. A need is a task id (FromBlocks); one that
+// names no task of tasks closes no cycle.
+func cycles(tasks []Task) [][]string {
+	needs := make(map[string][]string, len(tasks))
+	for _, task := range tasks {
+		needs[task.ID] = task.Needs
+	}
+	var found [][]string
+	for _, task := range tasks {
+		for _, needed := range task.Needs {
+			back := shortestPath(needs, needed, task.ID)
+			if back == nil {
+				continue
+			}
+			cycle := append([]string{task.ID}, back[:len(back)-1]...)
+			first := 0
+			for i, id := range cycle {
+				if id < cycle[first] {
+					first = i
+				}
+			}
+			cycle = append(slices.Clone(cycle[first:]), cycle[:first]...)
+			if !slices.ContainsFunc(found, func(other []string) bool { return slices.Equal(other, cycle) }) {
+				found = append(found, cycle)
+			}
+		}
+	}
+	slices.SortFunc(found, slices.Compare)
+	return found
+}
+
+// shortestPath is the fewest tasks from from to to through needs, both ends included, each step
+// from a task to one it needs, taken in the order its block writes them; from alone when it is
+// to, and nil when no path leads there.
+func shortestPath(needs map[string][]string, from, to string) []string {
+	parent := map[string]string{from: from}
+	for queue := []string{from}; len(queue) > 0; queue = queue[1:] {
+		at := queue[0]
+		if at == to {
+			path := []string{at}
+			for at != from {
+				at = parent[at]
+				path = append(path, at)
+			}
+			slices.Reverse(path)
+			return path
+		}
+		for _, next := range needs[at] {
+			if _, reached := parent[next]; !reached {
+				parent[next] = at
+				queue = append(queue, next)
+			}
+		}
+	}
+	return nil
+}
+
+// Supported is what this release does not carry out yet: more than one task, more than one task
+// that no task needs (Sinks, over the task ids FromBlocks reads), whose work would each merge by
+// itself where this release merges an issue's work as one change, a role block, and, for each
+// task, `needs`, `owner`, `part_of` and `merges`, the key owner on a role but acceptance,
 // acceptance with a key but owner or with none, a role named at two steps, no implementer, each
 // step of a role that reads the implementer's pull request with no implementer step before it,
 // and each step after the implementer's whose role d gives the type implementation, since Legion's
@@ -63,6 +140,10 @@ func Supported(p Plan, d Deployment) []Refusal {
 		}
 		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 			"the plan has %d tasks (%s), and this release runs one task for each issue.", len(p.Tasks), strings.Join(ids, ", ")) + notYet})
+	}
+	if sinks := Sinks(p.Tasks); len(sinks) > 1 {
+		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+			"the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), strings.Join(sinks, ", ")) + notYet})
 	}
 	for _, role := range p.RoleBlocks {
 		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role + "." + notYet})

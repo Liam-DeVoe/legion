@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,15 +113,17 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
 	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks)
+	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks, twoSinks)
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."})
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks,
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks, twoSinks,
 		PlanReason{Task: "b", Reason: "step 2 of task b names the role prober, which neither the deployment nor the plan defines."})
 	// A version that keeps the task of the default steps and adds a second is a plan of two tasks
 	// like any other: the route refuses it, so the workflow never takes it.
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
-		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."})
+		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."},
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, default), and the work of each would merge by itself. This release of Legion does not carry it out yet."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
 	}
@@ -185,7 +188,7 @@ func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
 	}
 }
 
-// The reader of 211 takes every field of register_plan's answer as optional, since no plugin code
+// The reader of 219 takes every field of register_plan's answer as optional, since no plugin code
 // reads one (legion-api.ts's LEGION_ANSWER_READS: a field that set does not name is optional). So
 // the reader takes a task written without `steps`, and the daemon holds what it does not check:
 // every task of the answer, as shapeAnswer writes it to a caller at OwnerPlanContract, carries
@@ -229,6 +232,62 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("unreadable documents recorded %#v, want nothing", got)
+	}
+}
+
+// needing is block with `needs` writing the words needs.
+func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock {
+	block.Attributes["needs"] = needs
+	return block
+}
+
+// register_plan reads each need as the task it names (plan.FromBlocks) before either check, so
+// the reasons name the task a reference names, a task a reference names is needed (b alone ends
+// the first plan), and a word that names no task gets the reason no release lifts rather than the reason of a
+// need this release does not carry out yet; the plan recorded is the one both checks read. The
+// fault is a route that checks, and records, the words as the blocks write them; the control is
+// a FromBlocks that keeps each word whole, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`
+// and `task b needs x.`, each as not carried out yet, and a and b as two tasks that no task needs.
+func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), needing(taskBlock("b", "implementer reviewer"), "x"))
+
+	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks,
+		PlanReason{Task: "b", Reason: "task b needs a. This release of Legion does not carry it out yet."})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), twoTasks,
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
+		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("refused registrations recorded %#v, want nothing", got)
+	}
+}
+
+// A plan whose tasks need each other in a cycle is refused, and among its reasons is the cycle's,
+// which names the chain, whatever reasons of this release's come before it. The fault is a cycle
+// answered only as needs this release does not carry out yet; the control is Validate without its
+// check of cycles, whose answer holds no reason naming the chain.
+func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+
+	answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", answer.Code, answer.Body)
+	}
+	var refusal PlanRefusal
+	decodeInto(t, answer, &refusal)
+	cycle := PlanReason{Task: "a", Reason: "task a needs itself: a needs b, b needs a."}
+	if refusal.Code != "PLAN_REFUSED" || !slices.Contains(refusal.Reasons, cycle) || !strings.Contains(refusal.Error, cycle.Reason) {
+		t.Fatalf("refusal = %+v, want PLAN_REFUSED holding the reason %+v", refusal, cycle)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a refused registration recorded %#v, want nothing", got)
 	}
 }
 

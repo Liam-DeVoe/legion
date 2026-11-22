@@ -38,6 +38,9 @@ type Walk struct {
 	Text string
 	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
+	// Needs are the tasks the task needs, each by its id (record.PlanTask.Needs), which the run's
+	// plan node carries (planNode); nil where it needs none or the run has no plan rows.
+	Needs []string
 	// Line is the phases the task walks: one for each step, then retro and merging.
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
@@ -79,7 +82,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 		return Walk{}, fmt.Errorf("walk %s: %w", issue.Key, err)
 	}
 	steps := stored.Steps[task.Task]
-	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(issue.Key), Text: task.BlockText, Steps: steps,
+	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(issue.Key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
 		Line: plan.Line(namedSteps(steps)), State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
 		Version: stored.Version}, nil
 }

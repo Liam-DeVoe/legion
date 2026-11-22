@@ -93,9 +93,15 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	}{
 		{name: "more than one task", plan: Plan{Tasks: []Task{
 			{ID: "a", Steps: implementer}, {ID: "b", Steps: implementer}, {ID: "c"},
-		}}, want: []Refusal{{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet}}},
-		{name: "needs", plan: withTask(Task{ID: "a", Needs: []string{"b", "dispatch://ACME-2/artifact/plan-md#b-c"}, Steps: implementer}),
-			want: []Refusal{{Task: "a", Reason: "task a needs b, dispatch://ACME-2/artifact/plan-md#b-c." + yet}}},
+		}}, want: []Refusal{
+			{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
+			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
+		}},
+		{name: "needs", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-2/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c")),
+			want: []Refusal{
+				{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
+				{Task: "a", Reason: "task a needs b, c." + yet},
+			}},
 		{name: "a step that reads a pull request before the implementer", plan: oneTask("a", "reviewer implementer"),
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet}}},
 		{name: "a task with no implementer", plan: oneTask("a", "tester reviewer"), want: []Refusal{
@@ -137,12 +143,13 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		}
 	}
 
-	// Both checks run, so a plan with a cause of each gets two reasons, one from each.
+	// Both checks run, so a plan with causes of each kind gets the reasons of both.
 	twoTasks := oneTask("a", "implementer prober")
 	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
 	got := append(Supported(twoTasks, builtin), Validate(twoTasks, builtin)...)
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},
+		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
 		{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."},
 	}
 	if !reflect.DeepEqual(got, want) {

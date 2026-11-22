@@ -13,13 +13,15 @@ import {
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
-import { DispatchNoRouteError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchNoRouteError } from "../dispatch-http";
 
-// `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
-// `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
-// format cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`)
-// as a fetch, so each reads the text and the details a host is handed; the command-line cases
-// drive the real CLI against that fake on a loopback port, and read its exit code and output.
+// `dispatch steps --issue <KEY>`: the tasks of an issue and the steps that ran on it, as Dispatch's
+// `GET /api/v1/issues/{key}/steps` answers them: one header line, then each task in turn. A task of
+// the plan prints one line of its needs and its planned steps before its runs, and each run prints
+// one line. The format cases drive `executeDispatchTool` over the shared fake Dispatch
+// (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host is handed;
+// the command-line cases drive the real CLI against that fake on a loopback port, and read its exit
+// code and output.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
@@ -229,10 +231,10 @@ async function readSteps(answer: IssueSteps) {
 }
 
 describe("dispatch steps", () => {
-  test("prints a header, then one line per run, a running step running", async () => {
+  test("an issue with no plan prints a header, then one line per run, a running step running", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, tester] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, tester] }],
     };
 
     const { result, requests } = await readSteps(answer);
@@ -251,7 +253,7 @@ describe("dispatch steps", () => {
   test("a field with no value prints -, the start of a run with none among them", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, mergedByGitHub] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, mergedByGitHub] }],
     };
 
     const { result } = await readSteps(answer);
@@ -266,7 +268,7 @@ describe("dispatch steps", () => {
   test("a retro's rating and its reason reach the details, and its line keeps the columns", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, ratedRetro] }],
     };
 
     const { result } = await readSteps(answer);
@@ -276,7 +278,7 @@ describe("dispatch steps", () => {
     );
     expect(result.details).toEqual({
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, ratedRetro] }],
     });
   });
 
@@ -301,7 +303,7 @@ describe("dispatch steps", () => {
     for (const run of ended) {
       const { result } = await readSteps({
         issue: "LEG-1",
-        tasks: [{ task: "default", steps: [run] }],
+        tasks: [{ task: "default", needs: null, steps: [run] }],
       });
 
       expect(result.text.split("\n")[1], run.result).toEndWith(
@@ -331,7 +333,7 @@ describe("dispatch steps", () => {
 
     const { result } = await readSteps({
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, retro] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, retro] }],
     });
 
     expect(result.text.split("\n")[2]).toBe(
@@ -345,8 +347,8 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "docs", steps: [docsDraft, docsReview] },
-        { task: "default", steps: [implementer] },
+        { task: "docs", needs: null, steps: [docsDraft, docsReview] },
+        { task: "default", needs: null, steps: [implementer] },
       ],
     };
 
@@ -369,8 +371,8 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "default", steps: [implementer, tester, mergeSentBack] },
-        { task: "docs", steps: [docsReview] },
+        { task: "default", needs: null, steps: [implementer, tester, mergeSentBack] },
+        { task: "docs", needs: null, steps: [docsReview] },
       ],
     };
 
@@ -379,10 +381,115 @@ describe("dispatch steps", () => {
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
-  // Dispatch answers an issue no step ran on with no task (a key no issue carries is its 404
-  // NOT_FOUND, as the issue read answers it); the generated type also lets the list be null, which
-  // reads as the empty list.
-  test("an issue with no step prints 0 steps in 0 tasks", async () => {
+  // The tasks of the plan come first, each on a line naming the tasks it needs and each step the
+  // plan gives it at the state Dispatch answers for it, before its runs; a task with no planned
+  // step prints its runs alone. The fault is a task or a step of the plan the reader cannot see;
+  // the control is the command that prints the runs alone, under which no `task` line shows.
+  test("each task of the plan prints its needs and the state of each planned step", async () => {
+    const implementing: StepRecord = {
+      ...implementer,
+      step: 1,
+      task: "a",
+      ended_at: null,
+      result: "",
+      model: "",
+    };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "a",
+          needs: [],
+          planned: [
+            { step: 1, name: "implementer", state: "running" },
+            { step: 2, name: "reviewer", state: "not started" },
+          ],
+          steps: [implementing],
+        },
+        {
+          task: "b",
+          needs: ["a"],
+          planned: [{ step: 1, name: "tester", state: "not started" }],
+          steps: [],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 1 steps in 2 tasks",
+        "task a needs nothing: 1 implementer running, 2 reviewer not started",
+        "a 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer - 2026-11-16T09:00:00Z running running",
+        "task b needs a: 1 tester not started",
+      ].join("\n")
+    );
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
+  });
+
+  // A plan node that recorded no needs (a daemon of the release before wrote it, or a Dispatch of
+  // the release before took the write) answers them null: the line says they are not recorded,
+  // never that the task needs nothing.
+  test("a task whose needs are not recorded says so", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: null,
+          planned: [{ step: 1, name: "implementer", state: "passed" }],
+          steps: [{ ...implementer, step: 1 }],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[1]).toBe(
+      "task default needs are not recorded: 1 implementer passed"
+    );
+  });
+
+  // Dispatch reads where a planned step stands from the runs of the plan's own run of the issue;
+  // the line prints that state and works out none from the runs it lists, which hold every run of
+  // the issue. The fault is a step of a new run that prints the result of an older one; the control
+  // is the command that takes the newest run at the step's place, under which the reviewer reads
+  // passed.
+  test("a planned step prints the state Dispatch answers", async () => {
+    const reviewed: StepRecord = {
+      ...docsReview,
+      task: "default",
+      attempt: 1,
+      result: "passed",
+      returned_to: null,
+    };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: [],
+          planned: [
+            { step: 1, name: "implementer", state: "passed" },
+            { step: 2, name: "reviewer", state: "not started" },
+          ],
+          steps: [reviewed, { ...implementer, step: 1, generation: 2 }],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[1]).toBe(
+      "task default needs nothing: 1 implementer passed, 2 reviewer not started"
+    );
+  });
+
+  // Dispatch answers an issue that has no plan and that no step ran on with no task (a key no
+  // issue carries is its 404 NOT_FOUND, as the issue read answers it); the generated type also lets
+  // the list be null, which reads as the empty list.
+  test("an issue with no plan and no step prints 0 steps in 0 tasks", async () => {
     for (const answer of [
       { issue: "LEG-1", tasks: [] },
       { issue: "LEG-1", tasks: null },
@@ -421,8 +528,8 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "docs", steps: null },
-        { task: "default", steps: [implementer] },
+        { task: "docs", needs: null, steps: null },
+        { task: "default", needs: null, steps: [implementer] },
       ],
     };
 
@@ -437,8 +544,8 @@ describe("dispatch steps", () => {
     expect(result.details).toEqual({
       issue: "LEG-1",
       tasks: [
-        { task: "docs", steps: [] },
-        { task: "default", steps: [implementer] },
+        { task: "docs", needs: null, steps: [] },
+        { task: "default", needs: null, steps: [implementer] },
       ],
     });
   });
@@ -456,7 +563,6 @@ describe("dispatch steps on the command line", () => {
   let stateDir = "";
   beforeEach(() => {
     stateDir = makeDirectory();
-    forgetKeyedLayerMemory();
   });
 
   /** A fake Dispatch on a loopback port of its own, answering as `options` say, which the hook
@@ -497,7 +603,7 @@ describe("dispatch steps on the command line", () => {
   test("--issue and a bare key read the same steps and print them, exit 0", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, tester] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, tester] }],
     };
     for (const argv of [
       ["steps", "--issue", "LEG-1"],
@@ -525,7 +631,7 @@ describe("dispatch steps on the command line", () => {
   });
 
   // Only Dispatch's 200 reads as an issue with no step.
-  test("an issue with no step exits 0 and prints 0 steps in 0 tasks", async () => {
+  test("an issue with no plan and no step exits 0 and prints 0 steps in 0 tasks", async () => {
     const server = dispatchServing({ routes: { [STEPS_PATH]: { issue: "LEG-1", tasks: [] } } });
 
     const { code, stdout } = await run(server, ["steps", "--issue", "LEG-1"]);

@@ -1,0 +1,5 @@
+kind: Added
+body: The Dispatch API document and its generated types carry `needs` on each task of a plan (`PlanTask`) and of the steps read (`StepTask`), and `planned` (`PlannedStep`, `{step, name, state}`) on the steps read. The `dispatch_steps` tool's description names the line it prints for each task of the plan.
+time: 2026-11-22T04:01:22.090029928Z
+custom:
+    Issue: pr4948
