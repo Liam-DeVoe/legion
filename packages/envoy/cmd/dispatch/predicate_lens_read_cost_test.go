@@ -98,14 +98,19 @@ const (
 // of the store's set that serves a read into a node.
 var predicateCostInboundIndexes = []string{"graph_tuples_as_of_in"}
 
-// predicateCostJITOff is the environment both builds' servers and this test's own process run
-// under, so every reading is taken with JIT off, as production runs. Production's database is
-// Cloud SQL, which does not support PostgreSQL's LLVM JIT, and under Postgres's default jit = on a
-// reading times compilation production never pays: over the history shape, JIT took about 1.3 s of
-// each of the references read's two 1.3 s statements. benchtime.Open turns JIT off for the same
-// reason. pgx reads PGOPTIONS into the options startup parameter (pgconn's config.go), so every
-// connection either build opens starts with JIT off; no URL here sets options of its own.
-const predicateCostJITOff = "PGOPTIONS=-c jit=off"
+// predicateCostJITOff is the setting both builds' databases carry from before either server starts
+// (startCostArmsWith), so every reading is taken with JIT off, as production runs. Production's
+// database is Cloud SQL, which does not support PostgreSQL's LLVM JIT, and under Postgres's
+// default jit = on a reading times compilation production never pays: over the history shape, JIT
+// took about 1.3 s of each of the references read's two 1.3 s statements. benchtime.Open turns JIT
+// off for the same reason.
+var predicateCostJITOff = map[string]string{"jit": "off"}
+
+// predicateCostSessionJIT is what the session that runs it reads of JIT: the jit it runs under, and
+// the settings its database holds for every role (pg_db_role_setting's row with setrole 0), empty
+// where it holds none.
+const predicateCostSessionJIT = `select current_setting('jit'), coalesce((select s.setconfig from pg_db_role_setting s
+	join pg_database d on d.oid = s.setdatabase where d.datname = current_database() and s.setrole = 0), '{}')`
 
 // predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its
 // node id, read as a value before the read as readEdgeRows reads it: the edges of graph_edges into
@@ -832,12 +837,13 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // whose tree holds no migration 20261109013400 (graph_store) is refused before anything is
 // built, naming the base (predicateCostBaseHoldsTheStore), since a base with no store measures
 // nothing this child changed.
-// The base serves a database of its own (startCostArms). Both builds are read in one loop, one reading on
-// each in each turn, the build that goes first alternating, after one warm-up reading on each that
-// is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
+// Each build serves a database of its own (startCostArmsWith), which holds jit = off from before
+// that build's server starts, as production's Cloud SQL runs with JIT off (predicateCostJITOff);
+// the run reads the setting on each before it seeds. Both builds are read in one loop, one reading
+// on each in each turn, the build that goes first alternating, after one warm-up reading on each
+// that is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
 // backfill (costArm.vacuumAnalyze), and the block-index lease of each build is held while the
 // readings are taken (costHoldBlockIndex).
-// Both builds connect with JIT off, as production's Cloud SQL runs (predicateCostJITOff).
 // It takes 200 readings of each read over each shape on each build and prints the nearest-rank
 // p50, p95 and p99. A read whose p50 at this head is more than 1.25 times its p50 at the base
 // build fails the test, and the failure prints the read, the shape and both builds' readings. The
@@ -879,24 +885,23 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 
 	listener := costEnvoy(t)
 	listener.Accept(true)
-	// This test's own pools (costArm.pool) open their sessions as both servers do: startCostArm
-	// reads each pool's configuration, PGOPTIONS with it, before it starts that arm's server.
-	name, value, _ := strings.Cut(predicateCostJITOff, "=")
-	t.Setenv(name, value)
-	head, base := startCostArmsWith(t, listener.URL, map[string]string{name: value})
+	head, base := startCostArmsWith(t, listener.URL, predicateCostJITOff)
 	builds := []*costArm{head, base}
 	for _, arm := range builds {
 		var jit string
-		if err := arm.pool.QueryRow(context.Background(), `select current_setting('jit')`).Scan(&jit); err != nil {
-			t.Fatalf("%s: read jit: %v", arm.name, err)
+		var held []string
+		if err := arm.pool.QueryRow(context.Background(), predicateCostSessionJIT).Scan(&jit, &held); err != nil {
+			t.Fatalf("%s: read jit and its database's settings: %v", arm.name, err)
 		}
-		if jit != "off" {
-			t.Fatalf("%s: jit reads %q on this test's own pool under %s, want off", arm.name, jit, predicateCostJITOff)
+		if jit != "off" || !slices.Contains(held, "jit=off") {
+			t.Fatalf("%s: jit reads %q on this test's own session and the build's database holds %q, want off and a setting jit=off",
+				arm.name, jit, held)
 		}
 	}
-	t.Logf("JIT is off on both builds' connections, as production runs: both servers and this test's own pools connect under %s, "+
-		"and jit reads off on each build's pool. Production's Cloud SQL does not support PostgreSQL's LLVM JIT, so a reading "+
-		"under jit = on would time compilation production never pays", predicateCostJITOff)
+	t.Log("JIT is off on both builds, as production runs: each build's database holds jit = off, set before its server " +
+		"started, so every session either server opens starts with JIT off, and the test's own session on each reads it. " +
+		"Production's Cloud SQL does not support PostgreSQL's LLVM JIT, so a reading under jit = on would time compilation " +
+		"production never pays")
 	shapes := map[*costArm][]*predicateCostShape{}
 	for _, arm := range builds {
 		shapes[arm] = seedPredicateCost(t, arm, sizes)

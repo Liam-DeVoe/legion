@@ -44,7 +44,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +54,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -126,42 +126,46 @@ func (a *costArm) ready(t *testing.T) {
 // that build migrates at boot, and both delivering to one stub Envoy listener, so a delivery costs
 // the same transport on either arm. It answers them in the order they are measured in, this child
 // first. The base arm is named "the base build" and not "the commit before this child":
-// BASELINE_SHA may name a commit that already holds some of this child's own bases. Neither
-// server is given any environment beyond its ENVOY_URL (startCostArmsWith).
+// BASELINE_SHA may name a commit that already holds some of this child's own bases. It sets no
+// setting on either arm's database (startCostArmsWith with none), and neither server is given any
+// environment beyond its ENVOY_URL.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	return startCostArmsWith(t, envoyURL, nil)
 }
 
-// startCostArmsWith is startCostArms with env added to both servers' environment beside their
-// ENVOY_URL, for a setting both builds have to run under. A server's environment is the rows
-// startDispatchProcessWith sets and its options.Env, and nothing of this test's own process, so
-// such a setting reaches the servers only through here.
-func startCostArmsWith(t *testing.T, envoyURL string, env map[string]string) (*costArm, *costArm) {
+// startCostArmsWith is startCostArms with each of settings, a Postgres setting's name and value,
+// set on each arm's database before that arm's pool or server opens a session on it
+// (startCostArm), for a setting both builds have to run under. A setting on the database is the
+// value every session opened after it starts with, whichever client opens it - the server's, the
+// test's own pool's, and a connection a later step opens - unless that client names a value of its
+// own as it connects.
+func startCostArmsWith(t *testing.T, envoyURL string, settings map[string]string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)
-	environment := map[string]string{"ENVOY_URL": envoyURL}
-	maps.Copy(environment, env)
-	head := startCostArm(t, "this child", true, dispatchOptions{
+	head := startCostArm(t, "this child", true, settings, dispatchOptions{
 		SigningKey: costSigningKey,
-		Env:        environment,
+		Env:        map[string]string{"ENVOY_URL": envoyURL},
 	})
-	base := startCostArm(t, "the base build", false, dispatchOptions{
+	base := startCostArm(t, "the base build", false, settings, dispatchOptions{
 		Binary:     older,
 		SigningKey: costSigningKey,
-		Env:        environment,
+		Env:        map[string]string{"ENVOY_URL": envoyURL},
 	})
 	t.Logf("arm %q is this working copy's build, serving %s", head.name, costDatabaseName(head.databaseURL))
 	t.Logf("arm %q is %s, serving %s", base.name, older, costDatabaseName(base.databaseURL))
 	return head, base
 }
 
-// startCostArm starts one arm on an empty database of its own. The database is empty rather
-// than storetest's clone of a migrated template, because each build has to run its own
-// migrations on it: that is what makes the older arm the older schema.
-func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
+// startCostArm starts one arm on an empty database of its own, carrying settings
+// (setCostDatabase), which are set after censusDatabase makes the database and before the arm's
+// pool or server opens any session on it. The database is empty rather than storetest's clone of a
+// migrated template, because each build has to run its own migrations on it: that is what makes
+// the older arm the older schema.
+func startCostArm(t *testing.T, name string, head bool, settings map[string]string, options dispatchOptions) *costArm {
 	t.Helper()
 	databaseURL := censusDatabase(t)
+	setCostDatabase(t, name, databaseURL, settings)
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
@@ -170,6 +174,30 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 	server := startDispatchProcessWith(t, databaseURL, options)
 	server.waitHealthy(t)
 	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool}
+}
+
+// setCostDatabase sets each of settings on the database databaseURL names, arm name's, with
+// `alter database <the database> set <name> = <value>` on a connection of its own, which it
+// closes before it returns. The database's name and each setting's name are quoted as identifiers
+// and each value as a literal. With no settings it opens no connection.
+func setCostDatabase(t *testing.T, name, databaseURL string, settings map[string]string) {
+	t.Helper()
+	if len(settings) == 0 {
+		return
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("%s: connect to set its database's settings: %v", name, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	database := pgx.Identifier{conn.Config().Database}.Sanitize()
+	for setting, value := range settings {
+		statement := "alter database " + database + " set " + pgx.Identifier{setting}.Sanitize() + " = '" + strings.ReplaceAll(value, "'", "''") + "'"
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %s: %v", name, statement, err)
+		}
+	}
 }
 
 // costDatabaseName is the database a URL names, for the line that says which arm served which.
