@@ -3120,13 +3120,14 @@ package api
 // The forward merge of main at 0497e861b0d9 brought in 205's removal of the operation that took a
 // child out of the workflow through the daemon, and this entry's refusals and notices lost their
 // sentences that named it: `SIGNOFF_CHILD_IN_WORKFLOW` and `SIGNOFF_CHILD_OPEN`, as
-// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer them, end with the rules for
-// ending a child and the sentence on a status the daemon has not taken yet
-// (`record.EndChildRule`, `record.StatusNotTakenYet`, workflow's endChildrenFirst), and the
-// `awaiting-children` notice and the `children-first` notice end a child by the same rules.
+// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer them, carry the sentence on a
+// status the daemon has not taken yet and the rules for ending a child (`record.StatusNotTakenYet`,
+// `record.EndChildRule`), followed by the sentence on asking the person (workflow's
+// endChildrenFirst), and the `awaiting-children` notice and the `children-first` notice end a
+// child by the rules alone.
 // `WAITING_ON_CHILDREN` on a parent with an open child, as `POST /legion/v1/signoff` and the
-// architect's `POST /legion/v1/phase/backward` answer it, ends with the same rules and the same
-// sentence on a status not taken yet; as a phase worker's `POST /legion/v1/phase/backward` answers
+// architect's `POST /legion/v1/phase/backward` answer it, ends with the same sentence on a status
+// not taken yet and the same rules; as a phase worker's `POST /legion/v1/phase/backward` answers
 // it, it ends by telling the worker that its architect acts on the children, and gives none of
 // the architect's rules, since a worker ends no child. Each refusal keeps its code and the shape
 // every refusal has, so no reader's parse moves.

@@ -99,12 +99,12 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"After each move, read the child back (dispatch read --issue <KEY>). " +
 	"When the daemon set the move back, write it again."
 
-// StatusNotTakenYet is the sentence that each refusal over children still in the workflow, and the
-// pr-merged notice, adds; workflow's endChildWords holds it with EndChildRule and names each text
-// that ends with them. The daemon reads the architect's status write on a child from that write's
-// Dispatch event, and the event consumer can deliver the event after the architect calls again.
-// Until then the record holds the child in the workflow and the refusal names it, so the
-// architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
+// StatusNotTakenYet is the sentence that the architect's refusals over children still in the
+// workflow, and the pr-merged notice, carry; workflow's endChildWords holds it with EndChildRule
+// and names each text that carries them. The daemon reads the architect's status write on a child
+// from that write's Dispatch event, and the event consumer can deliver the event after the
+// architect calls again. Until then the record holds the child in the workflow and the refusal
+// names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
 //
 // It lives here, beside EndChildRule, because the legion tool's description carries both texts
 // (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description
