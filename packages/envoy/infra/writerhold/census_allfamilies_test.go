@@ -39,7 +39,8 @@ func TestHoldTheCensusTakesEveryFamilyFromTheCutoverRows(t *testing.T) {
 	ctx := context.Background()
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 
-	// Dispatch's live consumer in its fresh form, as Dispatch's own create leaves it.
+	// Dispatch's live consumer in its fresh form, as Dispatch's own create leaves it: bus's shape,
+	// with the deliver subject Dispatch's intake names itself (#4687 eff3354745).
 	fresh := bus.DispatchDeliveryDurable + "~" + nuid.Next()
 	listener, err := nats.Connect(h.s.Cluster.URL(), h.s.ListenerCredential(holdtest.ListenerMachines[0]), nats.NoReconnect(), nats.Timeout(10*time.Second))
 	require.NoError(t, err)
@@ -47,6 +48,7 @@ func TestHoldTheCensusTakesEveryFamilyFromTheCutoverRows(t *testing.T) {
 	require.NoError(t, err)
 	config := bus.DispatchDeliveryConsumer()
 	config.Durable = fresh
+	config.DeliverSubject = listener.NewInbox()
 	_, err = ljs.AddConsumer(bus.Stream, &config)
 	require.NoError(t, err, "setup: Dispatch's fresh consumer")
 	listener.Close()
