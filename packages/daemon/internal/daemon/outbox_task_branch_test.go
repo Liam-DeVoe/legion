@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -34,10 +35,13 @@ type taskBranchRig struct {
 	runner  *outbox
 }
 
-// plannedTask is a task of the stored plan: its id and the ids it needs.
+// plannedTask is a task of the stored plan: its id, the ids it needs and the role of each of its
+// steps, typed as Legion's own roles type them (stepplan.BuiltinRoles); one implementer step where
+// it names none.
 type plannedTask struct {
 	id    string
 	needs []string
+	roles []string
 }
 
 // newTaskBranchRig stores taskBranchIssue and its plan of tasks, starts each task in the order of
@@ -62,10 +66,17 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 	v := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenAt: time.Now()}
 	var rows []record.PlanTask
 	var steps []record.PlanStep
+	roles := stepplan.BuiltinRoles()
 	for _, task := range tasks {
 		rows = append(rows, record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: task.id, PlanVersion: 1, BlockText: "Task " + task.id + ".",
 			Needs: task.needs, State: record.TaskWaiting})
-		steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: task.id, Position: 1, Role: "implementer", Type: "implementation"})
+		named := task.roles
+		if len(named) == 0 {
+			named = []string{"implementer"}
+		}
+		for i, role := range named {
+			steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: task.id, Position: i + 1, Role: role, Type: roles[role].Type})
+		}
 	}
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
 		if err := rig.records.PutPlan(ctx, tx, v, rows, steps); err != nil {

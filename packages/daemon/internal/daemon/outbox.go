@@ -4531,7 +4531,9 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // again changes nothing. Each start of the task queues the row (workflow's startTaskCopy, at the
 // start of every step), the first and a start again, so a need a later version gave a stopped task
 // is joined into its branch when it starts again. A merge GitHub refuses as a conflict is no
-// refusal: the branch stands on the needs that joined. Once its merges end, the end of the join is
+// refusal: the branch stands on the needs that joined. A task none of whose steps implements then
+// gets its pull request from Legion, where its branch holds work its base lacks
+// (openTaskPullRequest), since no step of it opens one. Once its merges end, the end of the join is
 // applied as a fact (intake.TaskJoined, joined) at the row's own generation, naming the branch,
 // the needs it joined and each need GitHub refused as a conflict: the workflow writes those on the
 // task, for its first step to repair, and starts the step that waits for that join, and changes
@@ -4581,9 +4583,10 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 		needs = append(needs, need)
 	}
 	branch := task.BranchOf(issue.Key)
-	onto, join := stored.BaseOf(issue, task.Task)
-	if !join {
-		onto = branch
+	base, join := stored.BaseOf(issue, task.Task)
+	onto := branch
+	if join {
+		onto = base
 	}
 	conflicts, err := r.joinBranch(ctx, issue, branch, onto, needs)
 	var missing *needBranchMissing
@@ -4593,8 +4596,41 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	if err != nil {
 		return fmt.Errorf("make the branch %s of task %s of %s, which its first step waits for: %w", branch, task.Task, issue.Key, err)
 	}
+	if !stored.Implements(task.Task) {
+		if err := r.openTaskPullRequest(ctx, issue, task.Task, branch, base); err != nil {
+			return fmt.Errorf("open the pull request of task %s of %s, which no step of it implements: %w", task.Task, issue.Key, err)
+		}
+	}
 	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: payload.Generation, Task: task.Task, Branch: branch, Needs: task.Needs,
 		Conflicts: conflicts})
+}
+
+// openTaskPullRequest opens the pull request of task of issue, on branch against base, as
+// branchClient makes each write of a branch, within branchRowTimeout: the pull request of a task
+// none of whose steps implements, which no step opens. It is opened once the join leaves branch
+// holding a commit base lacks (githubrest.Comparison.AheadBy above 0, whatever the compare's
+// status: ahead, or diverged once base moved on after the task's needs started), with the title
+// `<KEY>: <task id>` and a body holding the line `Dispatch: <KEY>`, as an implementer's does. A
+// branch that holds nothing base lacks gets none, and a pull request open on branch already is kept
+// (ghbranch.OpenPullRequest), so a row that runs again opens none.
+func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, task, branch, base string) error {
+	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
+	defer cancel()
+	github, repo, err := r.branchClient(ctx, issue)
+	if err != nil {
+		return err
+	}
+	comparison, err := github.Compare(ctx, base, branch)
+	if err != nil {
+		return fmt.Errorf("compare %s with %s on %s: %w", branch, base, repo, err)
+	}
+	if comparison.AheadBy <= 0 {
+		return nil
+	}
+	body := fmt.Sprintf("No step of task %s of %s implements, so Legion opened this pull request for the work its branch holds.\n\nDispatch: %s",
+		task, issue.Key, issue.Key)
+	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body)
+	return err
 }
 
 // joined applies fact, the end of the join row made (intake.TaskJoined), through the outbox's

@@ -398,9 +398,7 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 // branch.
 func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool) {
 	at := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == task })
-	if at < 0 || len(p.Tasks[at].Needs) == 0 || p.merges(task) || !slices.ContainsFunc(p.Steps[task], func(step PlanStep) bool {
-		return step.Type == plan.TypeImplementation
-	}) {
+	if at < 0 || len(p.Tasks[at].Needs) == 0 || p.merges(task) || !p.Implements(task) {
 		return issue.DefaultBranch, false
 	}
 	of := p.Tasks[at]
@@ -412,6 +410,12 @@ func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool) {
 		return issue.DefaultBranch, false
 	}
 	return p.Tasks[need].BranchOf(issue.Key), false
+}
+
+// Implements says whether a step of task of p is of the type implementation: the step that opens
+// the task's pull request. A task with no such step gets its pull request from Legion.
+func (p StoredPlan) Implements(task string) bool {
+	return slices.ContainsFunc(p.Steps[task], func(step PlanStep) bool { return step.Type == plan.TypeImplementation })
 }
 
 // merges says whether task is the task of p whose work merges: the one task no task needs
