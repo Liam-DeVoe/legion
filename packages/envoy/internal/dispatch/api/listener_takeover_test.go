@@ -413,13 +413,15 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				handler.ServeHTTP(response, request)
 				answered <- response
 			}()
-			// Two tries the sender made while holding the attempt. A request that answered first
-			// settled without them, and no try is left to come.
+			// Two tries the sender made while holding the attempt. A direct message's request that
+			// answered first settled without them, and no try is left to come. A mention's request
+			// answers its attempt pending once it commits, and its lane's tries come after, so its
+			// answer says nothing about them.
 			testwait.UntilPolling(t, 20*time.Millisecond, "two tries of the sender that found its attempt held (the tries seen)", func() (int, bool) {
 				claimsMu.Lock()
 				seen := len(claims)
 				claimsMu.Unlock()
-				if seen < 2 && len(answered) > 0 {
+				if seen < 2 && !tc.answersPending && len(answered) > 0 {
 					t.Fatalf("the request answered after %d tries holding its attempt, want 2 during the take-over", seen)
 				}
 				return seen, seen >= 2
