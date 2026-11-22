@@ -9,8 +9,9 @@
 --                        commit messages name, each in text order with the first place of each
 --                        entry. A cited issue is https://github.com/<owner>/<repo>/issues/<n>, from
 --                        a path /<owner>/<repo>/issues/<n> whose host is github.com in any case
---                        with an optional port (the byte before the host is no letter, digit, dot
---                        or hyphen), or from a bare #n of two to six digits, not after a word
+--                        with an optional port of up to 253 digits, as the Go reading credited
+--                        (the byte before the host is no letter, digit, dot or hyphen), or from a
+--                        bare #n of two to six digits, not after a word
 --                        character, &, / or #, which names an issue of repo; each cited URL is in
 --                        ASCII lower case. One pass over the body finds every path and every bare
 --                        #n, each with the text since the match before it, which gives each path's
@@ -93,7 +94,7 @@ select
        from pg_catalog.regexp_matches(coalesce(body, '') collate "C", '(.*?)(/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)(?![A-Za-z0-9_])|(?:^|[^A-Za-z0-9_&/#])#([1-9][0-9]{1,5})(?![A-Za-z0-9_]))', 'g') with ordinality r(m, n)) p,
        (select pg_catalog.convert_to(coalesce(body, ''), 'UTF8') bytes offset 0) b
      where m[4] is not null or pg_catalog.convert_from(pg_catalog.ltrim(pg_catalog.substring(b.bytes, greatest(path_at - 507, 0) + 1, least(path_at, 507)), '\x808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf'::bytea), 'UTF8') collate "C"
-       ~ '(?<![A-Za-z0-9.-])[Gg][Ii][Tt][Hh][Uu][Bb]\.[Cc][Oo][Mm](?::[0-9]{1,252})?$') c where pg_catalog.octet_length(c.u) <= 1024 group by u) d),
+       ~ '(?<![A-Za-z0-9.-])[Gg][Ii][Tt][Hh][Uu][Bb]\.[Cc][Oo][Mm](?::[0-9]{1,253})?$') c where pg_catalog.octet_length(c.u) <= 1024 group by u) d),
   (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.translate(coalesce(head_ref, '') collate "C", 'abcdefghijklmnopqrstuvwxyzıſ', 'ABCDEFGHIJKLMNOPQRSTUVWXYZIS'), '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t),
   (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.array_to_string(coalesce(messages, '{}'), E'\n') collate "C", '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t);
 end;

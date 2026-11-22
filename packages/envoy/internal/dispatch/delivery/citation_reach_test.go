@@ -10,7 +10,7 @@ import (
 
 // hostCheckReach is how far before an issue path the reading's host check reads: the byte before
 // the host, github.com, the colon and the longest port it credits (attribution_keys).
-const hostCheckReach = 1 + len("github.com") + 1 + 252
+const hostCheckReach = 1 + len("github.com") + 1 + 253
 
 // wholeBodyLimit is the longest body the row reads with the whole-body copy. That copy hands each
 // path's check the body from its start, so it costs the square of a body's length: over the cost

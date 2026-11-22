@@ -322,6 +322,14 @@ func readingCorpusInputs() []readingInput {
 			Repo: "acme/widgets", Title: "T " + text, Body: text, HeadRef: "legion/" + text, Messages: []string{text, "m " + text},
 		})
 	}
+	// The longest port the Go reading of the default branch credits is 253 digits, a host name's
+	// length; its answers for 252, 253 and 254 digits, read at main 5c418da848 by a probe of
+	// citedIssues, are the cases' lists.
+	for _, digits := range []int{252, 253, 254} {
+		add(fmt.Sprintf("a port of %d digits", digits), readingText{
+			Repo: "acme/widgets", Body: "See https://github.com:" + strings.Repeat("4", digits) + "/acme/widgets/issues/7 here.",
+		})
+	}
 	return inputs
 }
 
