@@ -3667,6 +3667,13 @@ function scoreRuns(runsDir: string, only: string | undefined) {
             ? headsTester(dir, run, label)
             : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
     };
+  // A catalog row whose scenario has no scorer here, such as a typo of one that has, would leave
+  // its runs read as runs of a label: refused before any run is scored.
+  const noScorer = HEADS_SCENARIOS.filter((scenario) => scorers[scenario] === undefined);
+  if (noScorer.length > 0)
+    throw new Error(
+      `heads-scenarios.txt lists the scenario ${noScorer.join(", ")}, which score.ts has no scorer for`
+    );
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
   const fixtureOnly: string[] = [];

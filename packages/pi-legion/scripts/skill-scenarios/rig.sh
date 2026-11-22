@@ -2374,17 +2374,32 @@ hide_state_off() {
   [ ! -e "$hide_state_file.results-before.txt" ] || mv -- "$hide_state_file.results-before.txt" "$R/results-before.txt"
 }
 
+# rig_scenario SCENARIO succeeds when rig.sh runs SCENARIO: cmd_run's dispatch below has its runner.
+# cmd_batch refuses any other scenario, and heads_cases any catalog row that names one.
+rig_scenario() {
+  case $1 in
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
+  *) return 1 ;;
+  esac
+}
+
 # heads_cases SCENARIO sets cases, an array of its caller's, to the case of each world of SCENARIO
 # that the heads-scenario catalog lists, in the catalog's order, which a batch runs them in: "" for
 # the scenario's own world, whose run names no case, and no element for a scenario the catalog
 # does not list. The catalog, heads-scenarios.txt, holds one world a line, `<scenario> [<case>]`,
 # and is the one heads-scenarios.ts reads for seed.ts, heads-world.ts, score.ts and hidden-proof.ts.
+# A row whose scenario rig.sh does not run, such as a typo of one it does, fails every caller, so
+# no batch or run goes on without that row's world.
 heads_cases() {
   local catalog=$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt known which
   [ -r "$catalog" ] || fail "cannot read the heads-scenario catalog $catalog"
   cases=()
-  # A last line with no newline is a world too, as heads-scenarios.ts reads it.
+  # A last line with no newline is a world too, and a blank line none, as heads-scenarios.ts reads
+  # them.
   while read -r known which || [ -n "$known" ]; do
+    [ -n "$known" ] || continue
+    rig_scenario "$known" ||
+      fail "the heads-scenario catalog $catalog lists the scenario '$known', which rig.sh does not run"
     [ "$known" != "$1" ] || cases+=("$which")
   done <"$catalog"
 }
@@ -2452,12 +2467,13 @@ run_reviewer_own_head() {
 }
 
 # reviewer-pass-and-fail: a reviewer reviews #702, at whose head the tester recorded a pass, its
-# test record, and then a fail. Scored by headsReview.
+# test record, and then a fail; in a case the catalog lists, that case's world (seed.ts
+# heads-events refuses a world it records no results for). Scored by headsReview.
 run_reviewer_pass_and_fail() {
-  local index=$1 start=$2
-  heads_world reviewer-pass-and-fail "$index" "$start"
+  local index=$1 start=$2 scenario_case=${3:-}
+  heads_world reviewer-pass-and-fail "$index" "$start" "$scenario_case"
   [ ! -e "$R/fixture-only" ] || return 0
-  heads_routes reviewer-pass-and-fail
+  heads_routes reviewer-pass-and-fail "$scenario_case"
   reviewer_prompt
   hide_state_on
   legion_session reviewer
@@ -2573,7 +2589,7 @@ cmd_run() {
   askgate) run_askgate ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" "$label" ;;
   reviewer-own-head) run_reviewer_own_head "$index" "$start" "$scenario_case" ;;
-  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" ;;
+  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" "$scenario_case" ;;
   architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" "$scenario_case" ;;
   ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
   *) fail "unknown scenario $scenario" ;;
@@ -2603,7 +2619,7 @@ cmd_batch() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
   local runs=$2 label n index=0 start scenario_case cases askgate
   batch_scenario=$1
-  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;; *) fail "unknown scenario $batch_scenario" ;; esac
+  rig_scenario "$batch_scenario" || fail "unknown scenario $batch_scenario"
   # A heads scenario runs each of its worlds the heads-scenario catalog lists, in the catalog's
   # order, the world's case the last argument of each run (none for the scenario's own world);
   # another scenario runs one world, which names no case.

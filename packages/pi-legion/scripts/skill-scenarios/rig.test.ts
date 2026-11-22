@@ -1915,6 +1915,7 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
         fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
@@ -1962,6 +1963,7 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
       fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
@@ -2008,6 +2010,7 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
       fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
@@ -2041,6 +2044,7 @@ describe("cmd_batch", () => {
     const batch = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
         fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
@@ -2071,6 +2075,7 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(work, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
       fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
@@ -2176,6 +2181,7 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
         fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
@@ -2205,6 +2211,7 @@ describe("cmd_batch", () => {
     const batch = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
         fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
@@ -2235,6 +2242,7 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(work, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
       fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
