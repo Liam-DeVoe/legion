@@ -22,8 +22,8 @@ handoff's residual risk), find the sentence on the page that states that behavio
 same condition in the same round. If you don't, the pull request says "not proven" while the page
 states the behaviour as a property, and the page is what a reader keeps.
 
-Check this before the approval, not at retro: a retro may change only `docs/solutions/`, so a
-sentence found too strong there costs a full test and review round.
+Check this before the approval, not at retro. Retro commits nothing, so a sentence found too
+strong at retro costs a move back and another pass through the task's steps.
 
 ## Evidence
 

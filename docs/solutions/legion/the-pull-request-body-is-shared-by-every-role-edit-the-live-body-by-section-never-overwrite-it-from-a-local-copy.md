@@ -22,11 +22,11 @@ related_issues:
 
 The implementer writes the READY-format body when the pull request opens and keeps a local copy
 of it (`--body-file`). Later rounds ask the implementer to update a few lines — the `CI` line to
-the new head's runs, `Threads`, `Thermo`, `Fast-follow`. By then the tester has written its own
-`E2E (tester)` line into the live body on GitHub, and the reviewer may have too. Re-running
-`legion gh -- pr edit --body-file <the local copy>` would have replaced the tester's line with
-the implementer's stale `<pending the tester>` — silently, with no diff anyone reviews, and the
-reviewer's approval refuses a head whose `E2E (tester)` line is missing.
+the new head's runs, `Threads`, `Thermo`, `Fast-follow`. By then a tester that ran before has
+written its own `E2E (tester)` line into the live body on GitHub, and the reviewer may have too.
+Re-running `legion gh -- pr edit --body-file <the local copy>` would have replaced the tester's
+line with the implementer's stale `<pending the tester>` — silently, with no diff anyone reviews.
+The reviewer's approval then refused a head whose `E2E (tester)` line was missing.
 
 ## The rule
 

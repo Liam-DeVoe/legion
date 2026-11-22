@@ -9,7 +9,7 @@ tags:
   - retro
   - workflow-table
 date: 2026-10-08
-status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold
+status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer, where the task has a reviewer step, by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold
 module: packages/daemon
 related_issues:
   - "LEGION-578"
@@ -27,8 +27,9 @@ related_issues:
   architect is told, and will ask for the smallest round that closes the findings. Make a conflict
   round's fixes one commit, answer the blocking threads with it, and send non-blocking findings to
   the named fast-follow comment, answering their threads `Declined:` with its link.
-- The workflow table runs retro after every approval (`table.go`: `Reviewing` + `TriggerReviewApproved`
-  → `Retro`), so a conflict round's new approval starts the implementer on retro a second time. The
+- The workflow table moves an approval on to the task's next step (`table.go`, `stepRows`), and
+  retro starts once the task's last step passes. So a conflict round's new approval starts the
+  implementer on retro a second time, once the steps after the review pass. The
   retro skill's "a conflict-forced rebase after retro moves these documents with the branch; retro
   does not re-run" is the other case: a rebase that changes nothing the reviewer re-decides, where
   the approval stands and the tree goes to the merger. A second retro covers only what the merge,

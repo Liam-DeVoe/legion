@@ -47,7 +47,8 @@ related_issues:
   section.
 - **Say which open pull requests the move breaks.** Every open pull request that edits a line inside
   the moved range conflicts with it, and its forward merge has to carry its edit into the reference.
-  List them in the plan and the pull request body, so their trees know before they merge forward.
+  List them in the pull request body, and in the plan where the task has one, so their trees know
+  before they merge forward.
 
 ## Evidence
 

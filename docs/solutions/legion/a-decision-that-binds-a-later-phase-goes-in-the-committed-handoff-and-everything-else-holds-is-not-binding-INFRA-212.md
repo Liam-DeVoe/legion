@@ -31,7 +31,8 @@ endorsement is a claim. Two deltas, each of which cost a round here.
   all. Keep the reasoning in the document; put the binding rule in the handoff. Before
   sjawhar/legion#2354 that handoff was the committed `plan.json`. It is a record on the Dispatch
   issue now, read with `dispatch handoff-read --issue <KEY> --phase plan --version <n>`.
-- **Phase worker: open the plan document the plan handoff names before your first commit.** The
+- **Phase worker: where a planner step comes before yours, open the plan document the plan handoff
+  names before your first commit.** The
   `plan` field is a summary string, never the plan; a decision you never saw still binds you.
 - **Reviewer: enumerate what you checked and name what is still open. Never write a blanket
   "everything else holds" over a clause you are still checking** — a later role, and the merger,

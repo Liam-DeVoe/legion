@@ -20,11 +20,10 @@ related_issues:
 
 Extends docs/solutions/legion/a-conflict-round-that-changes-the-fingerprint-is-a-counted-review-round-and-its-approval-starts-a-second-retro-LEGION-578.md.
 
-- The implementer's `phases.rounds` counts every move to an earlier phase, not only a reviewer's
-  `changes_requested`: `movesBack` (`packages/daemon/internal/workflow/engine.go`, `phaseIndex(to) <
-  phaseIndex(from)`) calls `recordRound` for the tester's fail, a worker's backward move, and the
-  move the daemon makes itself on a red CI verdict or a conflicting head (`TriggerChecksRed` from
-  Testing, Reviewing and AwaitingMerge, `workflow/table.go`), since main's #1850. A proof that
+- The task's `rounds` count rises only on a review that requests changes (`recordRound`,
+  `packages/daemon/internal/workflow/review.go`). Every move back by the task's own order
+  (`Walk.MovesBack`, `workflow/line.go`) counts a pass instead (`recordPass`): a tester's fail, a
+  worker's backward move, a rejected review. A proof that
   keys a handoff assertion by round must count the daemon's own moves in its expected round, not
   just the reviews the proof scripted. The helper was `handoff_fact_commit ISSUE ROLE PHASE ROUND`
   (`scripts/e2e/lib/workflow.sh`): `review_round` had to equal `ROUND`, else the fact was empty

@@ -27,10 +27,9 @@ merge — is the one thing retro must not do.
   to a census run in your workspace, and it is the note most likely to teach the mechanism, since
   it was written while the mechanism was still true.
 
-- **A note your branch does not carry is not yours to correct in retro.** READY compares the
-  reviewer's approved head with the head on GitHub and refuses anything above it outside
-  `docs/solutions/` (`READY_UNREVIEWED_CHANGE`), so a forward merge made in retro sends the change
-  back for another review round. Name each such note to the architect with the line that teaches
+- **A note your branch does not carry is not yours to correct in retro.** Retro commits nothing
+  and pushes nothing: a forward merge made in retro would put a commit above the head the task's
+  last worker step passed. Name each such note to the architect with the line that teaches
   the mechanism, and let the architect decide: a review round that merges main, or a follow-up
   issue once this one merges.
 

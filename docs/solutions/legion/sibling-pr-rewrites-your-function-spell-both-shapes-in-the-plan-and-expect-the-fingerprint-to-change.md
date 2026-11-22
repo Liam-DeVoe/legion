@@ -148,9 +148,10 @@ diff /tmp/fp-before.diff /tmp/fp-after.diff | grep -E '^[<>] (diff --git|[-+])'
 
 On LEGION-79 that printed exactly the `reduceIssueClosed` hunk and the one `AGENTS.md` row.
 Quote it in the skill's `rebase <old> → <new>; fingerprint <a> → <b>; changed` PR comment and
-in the completion summary. `changed` means a full test round — the architect routes tester
-then reviewer again (LEGION-79 round 2: tester at `f328eb57`, reviewer `COMMENT` 5191364309,
-then the deletion push and `APPROVE` 5191380595 at `a6b38398`). A "changed" fingerprint with an
+in the completion summary. `changed` means a full test round — the architect routes the task's
+steps after the implementer again, in the task's order. LEGION-79 round 2 ran the tester at
+`f328eb57`, reviewer `COMMENT` 5191364309, then the deletion push and `APPROVE` 5191380595 at
+`a6b38398`. A "changed" fingerprint with an
 interdiff confined to the plan's named sites is the expected outcome, not a defect.
 
 ## 5. The end-game is a two-branch step

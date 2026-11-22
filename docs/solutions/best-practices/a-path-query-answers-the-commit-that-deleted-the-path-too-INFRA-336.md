@@ -50,9 +50,9 @@ nothing. Measured on this
 pull request: the revset answered `ec7c7ad0`, the commit that deleted the directory, for both
 `implement.json` and `test.json`.
 
-The consumer is the daemon's refusal of a handoff commit it has already recorded: the field exists
-to make a repeated round's bytes differ, and retro's commit does that as well as any other. So the
-prose was fixed, not the query — the prompts now say "the newest commit on this branch that
+The consumer was the daemon's refusal of a handoff commit it had already recorded. The field
+existed to make a repeated round's bytes differ, and retro's commit did that as well as any other.
+So the prose was fixed, not the query — the prompts now say "the newest commit on this branch that
 changed `.legion/<issue>/<phase>.json` (usually this role's previous handoff; after a retro,
 retro's removal)". Had any consumer read the previous handoff's contents, the same mismatch would
 have made the query wrong instead.

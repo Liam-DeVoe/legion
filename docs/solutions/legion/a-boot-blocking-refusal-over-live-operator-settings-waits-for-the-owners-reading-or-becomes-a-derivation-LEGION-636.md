@@ -28,7 +28,8 @@ related_issues:
   configuration; `/legion/v1/state` carries no timeout. A coordinator's dated sentence that "both
   deployments hold the relation" is a hypothesis to check, not evidence; the one reader is the
   role that owns the deployments (Envoy role `legion-deploy`), asked through the architect — and
-  asked before the plan is approved, not left to the implementer "if the pod's identity allows".
+  asked before the plan is approved, or before the implementer starts where no planner step comes
+  first, not left to the implementer "if the pod's identity allows".
 - Prefer the design that needs no reading. When the invariant is a relation between two keys the
   operator sets independently, derive the dependent value instead of refusing the pair:
   `daemon.ProbeBudget` makes the image probe's attempt `max(slow_command_timeout_seconds,

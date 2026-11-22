@@ -884,7 +884,7 @@ the image compiles the Go `legion` at `go.work`'s Go version, so a change that m
 It also fails when trigger (2)'s `worker_image` filter matches a file the build does not read (one the `.dockerignore` drops, or one no `COPY` names), since a pull request touching only that file would build an image for nothing;
 the filter's `!` patterns drop those, under its step's `some-with-excludes`.
 Trigger (2) selects by the pull request's whole diff:
-on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (retro's learnings, a docs fix) still gets the build and the PR head never loses it.
+on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (a docs fix, say) still gets the build and the PR head never loses it.
 A filter on the pushed commits alone would leave such a head unguarded.
 The `worker-image` job of `ci.yaml` grants the called workflow its `packages`/`contents` permissions, which apply to same-repo pull requests (this repository takes no fork PRs, whose token would be read-only).
 The `attest` job's `id-token` and `attestations` scopes reach a pull request run only if it drops that job's `if:`, and its attestation then names `refs/pull/<n>/merge`, which the verify command above refuses.

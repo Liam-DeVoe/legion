@@ -147,8 +147,8 @@ parent's own first phase can start once the last of them has left the workflow, 
 request then builds on a base that already carries their merges. For the same reason the daemon
 refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
 workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work, and the child is accepted only after they have left the
-workflow, at a head that carries their merges.
+run beside the child's own work. Where its task has an acceptance step, the child is accepted only
+after they have left the workflow, at a head that carries their merges.
 
 ## Phase workers
 

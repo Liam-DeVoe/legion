@@ -145,8 +145,9 @@ runtime starts, which covers what arrived while the daemon was down, and a start
 GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
 been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
 ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
-for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
-the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+for, a push to the head of an issue in `implementing`, `testing`, `reviewing`, `accepting`, `retro`
+or `merging` asks for, and a push to the base asks for each issue standing in one of those phases
+but `implementing`; after a ladder whose five
 reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
 state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
 answers a state, the head moves or the pull request is no longer open, each
@@ -170,11 +171,12 @@ lost, or that still waits behind the daemon's GitHub consumer, leaves the record
 the next of them:
 
 - **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
-  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
-  the repository itself (not a fork's) that the daemon does not record open is applied as its
-  opened webhook would be, a reopen when the record holds the same pull request: the workflow
-  records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to its task's next step.
+  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch that the
+  daemon does not record open is applied as its opened webhook would be. This holds only for the
+  repository itself, not a fork, and is a reopen when the record holds the same pull request. The
+  workflow records it in whatever phase the issue is. An implementing issue whose implementer
+  completed moves on to its task's next step, or toward its retro where that step is the task's
+  last.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
@@ -443,7 +445,8 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session. A child's
+  With `tester`, the merge hands the tester the check's first look in its session, a fresh one
+  where the task had no tester step. A child's
   other five claims are retired. A root's are suspended with the rest of its tree for the linger,
   and retired when the linger ends. With `off`, no check opens at all: a child's close retires
   every claim of the child and releases its pod, and a root's close suspends every claim of its
@@ -968,8 +971,9 @@ answer. A pre-registration states seven things.
    judged on: the share of issues merged with no fix by a person, say, or the median hours from
    an issue's start to its merge. Say how it is computed and which records it is read from. List
    secondary measures if you want them, and let none of them decide the experiment. Say which
-   roles the arms reach (`roles`), and check that no reached role decides the outcome: a merge
-   waits on the reviewer's approval and the architect's sign-off, and the tester's fail sends
+   roles the arms reach (`roles`), and check that no reached role decides the outcome: where the
+   task has those steps, a merge waits on the reviewer's approval and the architect's sign-off, and
+   the tester's fail sends
    work back, so where the arm reaches those roles a merge rate or a count of review rounds is
    partly the treatment's own verdict, and a laxer reviewer reads as a better arm. Leave such
    roles out of `roles`, or choose an outcome no reached role decides.

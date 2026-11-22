@@ -34,9 +34,9 @@ related_issues:
   `always() && (success || skipped)` chain): the push's race repair covers one package.
 - Trusted publishing is per package name, and npm drops a configuration that has not completed a
   publish within two days. Have the placeholder published early so the name and its settings
-  page exist, and open the trusted-publisher ask only once review is done, with the merge to
-  follow inside the window; a release that runs before it fails at `npm publish` and is re-run
-  with `workflow_dispatch`, which the job's `npm view` skip makes safe.
+  page exist. Open the trusted-publisher ask only late in the task, so the merge follows inside
+  the window: in the default steps, once review is done. A release that runs before it fails at
+  `npm publish` and is re-run with `workflow_dispatch`, which the job's `npm view` skip makes safe.
 - The committed manifest version is not the released version. Readers of the diff see the last
   pre-split version in both manifests; the build job computes the next one (`release-push.sh
   version --first-npm`).

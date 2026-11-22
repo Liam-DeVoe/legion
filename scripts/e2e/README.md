@@ -952,7 +952,7 @@ the daemon holds that suspension until the architect's turn ends and names it no
 After the first look's report, `smoke-main-clean` first holds that the merged pull request carried no handoff:
 no commit of it changes only `.legion/` (`pull_request_legion_only_commits`) and no file it merged is under `.legion/`, since every role's handoff is a record on the Dispatch issue, which each phase's `assert_handoff_record` read back as written by that role's claim session.
 The proof human then removes every `.legion/` file and `docs/solutions/` learning from the smoke `main` through one merged fixture pull request, and the run checks that `main` carries none:
-a proof merge carries only its retro learnings, and the cleanup removes those and any `.legion/` a merge from before handoffs moved to Dispatch left, so the next run starts from a base carrying no other issue's files.
+a proof merge carries no retro learning, since retro commits nothing, and the cleanup removes any learning or `.legion/` an earlier merge left, so the next run starts from a base carrying no other issue's files.
 The smoke `main` requires the `gate` check, which has not started when the fixture pull request is created, and GitHub refuses a merge before it passes, so the cleanup first waits up to 600 s, named in the transcript, for the pull request's merge state to read `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (`smoke_pr_mergeable` in `lib/workflow.sh`).
 A failed read is a poll that has not seen it yet, and a timeout names the last state read.
 The fixture pull request's branch is `proof/clean-main-<project, lowercased>`, and the cleanup fails, naming it, when a branch of that name is there before it makes its own:
@@ -4341,7 +4341,7 @@ A step reads `GET /legion/v1/state` for `admission.waiting` and each issue's pha
 `POST /legion/v1/children/park` answering 200, not 403 `ISSUE_OUTSIDE_TREE`, as the route-visible proof that an issue is in T;
 what the daemon wrote to the Dispatch stand-in; and, for tree membership, which no route shows, the daemon's own record of the issue in its PostgreSQL.
 Step 4 also reads the outbox table, for the rows the old linger queued.
-Each child a step reads back as running in T is in `planning` with its planner's claim, on a slot of its own and out of `admission.waiting`, and holds its own architect's claim, which the fake runtime was asked to launch: a child's first phase start starts its own architect beside its planner.
+Each child a step reads back as running in T is in `planning` with its planner's claim, on a slot of its own and out of `admission.waiting`, and holds its own architect's claim, which the fake runtime was asked to launch: a child's first phase start starts its own architect beside the worker of its first step.
 A child read back as waiting for a slot is `admitted` in `admission.waiting`, with no slot, no architect and no launch of one.
 Each park is T's architect's `POST /legion/v1/children/park` answering 200 and the stand-in taking its PATCH to `backlog`; the stand-in answers that write with no sequence, so the route leaves the record to the write's own event, which the driver then delivers (actor `legion-daemon:<project>`, the next sequence), and the park is read back as the child parked at `done` with its slot freed.
 
@@ -6956,7 +6956,7 @@ The daemon empties both when a transition starts that role on a new phase (`clea
 the implementer's `rounds` counts its returns to implementing.
 Read right after the transition a completion caused, a role's handoff is that phase's own:
 `assert_round_handoff ISSUE ROUND` (testing reached on the implementer's completion of that round;
-implementing moves to testing only on it), `assert_handoff_record ISSUE ROLE PHASE ROUND` (Dispatch's `GET /api/v1/handoffs/<id>` holds the record as the issue's handoff of the role's word
+in the default steps, implementing moves to testing only on it), `assert_handoff_record ISSUE ROLE PHASE ROUND` (Dispatch's `GET /api/v1/handoffs/<id>` holds the record as the issue's handoff of the role's word
 — `plan`, `implement`, `test`, `review` — at the version named, written by the session the role's claim registered;
 for the implementer, its commit is authored and committed by its own App, read with `workspace_jj`), `assert_review_of_head ISSUE ROUND STATE` (the reviewer's newest review of that state names the pull request's head the daemon records:
 the reviewer pushes nothing), `pull_request_legion_only_commits` (each commit of the proof's pull request that changes only `.legion/`, of which a run makes none) and `retro_reported` (the implementer's completion while the issue is merging or awaiting merge).

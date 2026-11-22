@@ -34,8 +34,8 @@ already corrected — so keeping main's would put the measured defects back.
   the merge head, no symbol of the superseded draft is left in the tree, and every test row that
   draft deleted is accounted for — obsolete under the new shape, dropped on purpose, or still
   covered by a row of yours.
-- Expect the fingerprint to change and a full test round to follow, and re-run the delivery proof
-  at the merge head.
+- Expect the fingerprint to change and, where the task has a tester step, a full test round to
+  follow. Re-run the delivery proof at the merge head.
 - Write the replacement into the pull request body as a fix of main: name the merged pull request
   and the time it landed, then each defect of the shipped shape with the review round that
   measured it and the row that fails without the fix. A reader who meets only the diff reads a

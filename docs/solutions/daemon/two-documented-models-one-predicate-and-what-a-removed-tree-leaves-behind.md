@@ -137,7 +137,7 @@ role that can act on it.
   resources did not isolate the event source. The rig is removed; use the daemon's test harness
   and real-process fixtures for pre-merge coverage, and record a live observation at the
   operator's next authorized daemon restart.
-- **A conflict-forced rebase before testing keeps the fingerprint procedure out of the picture.**
+- **A conflict-forced rebase before the tester and the reviewer start keeps the fingerprint procedure out of the picture.**
   GitHub reported `CONFLICTING` before the tester started; rebasing then (onto LEGION-20's
   design-gate rewrite, six files integrated with main rather than around it) meant no reviewed
   head existed to compare, so no unchanged-diff check, no confirmation approval, and no re-test

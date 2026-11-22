@@ -21,8 +21,8 @@ related_issues:
   back; then …"), the planner and the plan reviewer hand-trace at least one row of the plan's own
   named acceptance test through that exact order, fact by fact, before approving the plan. A row
   whose first fact already takes the second branch (the round is not yet complete at the approval,
-  so the red branch fires and the completion is refused) is unreachable under the plan, and the
-  implementer meets the contradiction only once the test is written.
+  so the red branch fires and the completion is refused) is unreachable under the plan. An
+  implementer that builds the plan meets the contradiction only once the test is written.
 - When the spec says two rules are independent and names no order, the plan's tie-break for the
   one fact where both hold is a decision to record (a `D<n>` with its reason), and the
   implementation that departs from it is a `deviations` entry the reviewer reads beside the plan,

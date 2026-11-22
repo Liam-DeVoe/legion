@@ -1,5 +1,5 @@
 ---
-title: "An approved head waiting on its merge rechecks main's migration numbers at every wake, and only a push can send it back"
+title: "An approved head waiting on its merge rechecks main's migration numbers at every wake, and the merger can send it back to an earlier step"
 category: envoy
 tags:
   - migration
@@ -13,7 +13,7 @@ related_issues:
   - "sjawhar/legion#2483"
 ---
 
-# An approved head waiting on its merge rechecks main's migration numbers at every wake, and only a push can send it back
+# An approved head waiting on its merge rechecks main's migration numbers at every wake, and the merger can send it back to an earlier step
 
 Extends docs/solutions/envoy/a-migration-number-is-checked-against-mains-highest-at-every-push-and-the-local-harness-database-is-recreated-after-a-renumber-INFRA-367.md.
 

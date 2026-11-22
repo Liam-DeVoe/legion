@@ -76,11 +76,11 @@ permits; the point of this note is what a *semantic* conflict adds to the proced
 6. **Re-run the full package suite after the rebase**, not only the plan's named files: main's
    fixture refactor changed a wrapper that silently dropped a new argument
    (`../testing/model-the-receivers-dedupe-in-the-test-when-a-rig-is-forbidden.md`).
-7. **Read `mergeable` again at retro time, before committing the docs.** LEGION-107 went
-   `CONFLICTING` a second time between the reviewer's approval of `9bf634be` and the retro
-   commit: LEGION-93 (#1082) landed in the same four daemon files, LEGION-84 (#1080) in two of
-   them. Retro's brief said "report, do not rebase", so the retro worker stopped with the three
-   documents written but uncommitted and asked. The architect's ordering: commit the docs above
+7. **Retro then read `mergeable` again before committing the docs. Retro now commits nothing.**
+   LEGION-107 went `CONFLICTING` a second time between the reviewer's approval of `9bf634be` and
+   the retro commit: LEGION-93 (#1082) landed in the same four daemon files, LEGION-84 (#1080) in
+   two of them. Retro's brief said "report, do not rebase", so the retro worker stopped with the
+   three documents written but uncommitted and asked. The architect's ordering: commit the docs above
    the approved head first (they ride the resolution — the skill's "a conflict-forced rebase after
    retro moves these documents with the branch"), then rebase the whole chain (superseded
    2026-09-27 by LEGION-118 — merge the bookmark forward instead, `skills/legion-worker/references/conflicts-and-rewrites.md`), resolve

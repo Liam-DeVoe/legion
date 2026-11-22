@@ -18,7 +18,7 @@ related_issues:
   - "sjawhar/legion#1006"
 symptoms:
   - "a PR body's `Fast-follow:` line names cleanup and nothing says who turns it into a change, when, or on which branch"
-  - "the merge queue organizer learns a PR's scope and tier only from READY, after test and review are already spent on it"
+  - "the merge queue organizer learns a PR's scope and tier only from READY, after the task's steps are already spent on it"
   - "a follow-up PR's own review finds more tidiness and a worker reaches for another follow-up"
 ---
 

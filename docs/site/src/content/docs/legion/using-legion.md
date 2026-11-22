@@ -123,8 +123,8 @@ template, and the later phases fill in their own lines:
   at the check's last look for a requirement only the deploy can show that is still unobserved,
   whether or not production carries the merge.
 - Any line your repository's own instructions derive from the paths the change touches, such as a
-  checklist named for each kind of path: after the approval, the retro recomputes it for the whole
-  change, the way those instructions say.
+  checklist named for each kind of path: after the task's last step, the retro recomputes it for
+  the whole change, the way those instructions say.
 
 Legion's reviewer posts its review as the review App. A review from anyone with write access to the
 repository, submitted on GitHub while the issue is in `needs_review`, counts the same way:
@@ -136,8 +136,8 @@ file list shows only the change and the merge brings no handoff onto the default
 
 ## Merge
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, as
-the implement App and at the head it read, which it names as the head GitHub must match. It
+When the task's steps and the retro have passed, the merger merges the pull request itself. It
+merges as the implement App, at the head it read, which it names as the head GitHub must match. It
 writes the squash commit's message itself — the pull request's title and number, and an empty
 body — so GitHub's own default, which joins every commit message of the branch, never puts
 Legion's internal trailers on your default branch. On a base with a merge queue it enqueues the

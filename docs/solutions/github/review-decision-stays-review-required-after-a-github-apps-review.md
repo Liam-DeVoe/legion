@@ -54,9 +54,9 @@ not "no review yet"; it is "no review that branch protection counts".
 - `mergeStateStatus: BLOCKED` with a green check rollup and an App approval on the head is branch
   protection waiting for a *counted* approval the App may never supply. On this deployment the
   merge queue merges under its own authority after `READY`; the merger's gate facts are the
-  reviewer's `APPROVED` at the exact head SHA (verified through `latestReviews`/`reviews`), the
-  green run, and the thread state — not `reviewDecision`, and not `mergeStateStatus` leaving
-  `BLOCKED`.
+  reviewer's `APPROVED` at the exact head SHA where the task has a reviewer step (verified through
+  `latestReviews`/`reviews`), the green run, and the thread state — not `reviewDecision`, and not
+  `mergeStateStatus` leaving `BLOCKED`.
 - The same App boundary explains the thread rule: the review App can reply on a thread but cannot
   resolve it on a pull request the implement App opened, so the implementer's/merger's
   `legion threads resolve` closes the threads the reviewer has `Accepted:` (see

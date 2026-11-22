@@ -41,9 +41,10 @@ post-retro head.
 - **A round reopened above retro changes no code.** Record the round's handoff again with
   `dispatch handoff-write`, which writes a new version on the issue and pushes nothing, and
   complete naming it. The audits of the previous round stand when the compare from the previously
-  audited head to the current code head lists only `docs/solutions/`: the tester re-runs the live
-  proofs at that head and reads the new prose, the reviewer re-runs no thermonuclear pair, and the
-  architect's acceptance and the next retro follow. A code push here withdraws READY and reopens
+  audited head to the current code head lists only `docs/solutions/`. The tester re-runs the live
+  proofs at that head and reads the new prose, and the reviewer re-runs no thermonuclear pair. The
+  task's other steps, such as the architect's acceptance, run in the task's order, and the next
+  retro follows the task's last step. A code push here withdraws READY and reopens
   the review. Before sjawhar/legion#2354 the handoff was a committed file, so such a round still
   pushed: the handoff went up alone under the `skip-checks: true` trailer, the daemon carried the
   code head's verdict to it, and the compare also listed `.legion/`.

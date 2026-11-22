@@ -26,7 +26,7 @@ related_issues:
   the rest to the unit tests and the production check, not to an inference from the new
   provider's runs.
 - If the default path's working matters before the merge, ask for the credential (a `dispatch
-  ask`) at planning. Do not discover the gap at review.
+  ask`) before implementation starts. Do not discover the gap at review.
 
 ## Evidence
 

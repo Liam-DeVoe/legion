@@ -28,8 +28,9 @@ decides that main's rule wins:
   main's change is labelled as that tree, with its comparison in the past tense.
 - When aligning with main leaves a field or helper of yours with no reader, search every reader in
   the repository, record the search in the pull request's contract change census, and delete it.
-- Expect the fingerprint to change and a full test round to follow. Re-run your delivery proof on
-  the merge, and run the same proof against main's own build as the negative control.
+- Expect the fingerprint to change and, where the task has a tester step, a full test round to
+  follow. Re-run your delivery proof on the merge, and run the same proof against main's own build
+  as the negative control.
 
 ## Evidence
 

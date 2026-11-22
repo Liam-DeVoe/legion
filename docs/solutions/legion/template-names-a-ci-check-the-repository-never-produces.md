@@ -111,8 +111,9 @@ That sentence is what made the skip safe. Before sjawhar/legion#2354 the impleme
 told the implementer to "read the plan handoff's `requiredSkills` for your role" and to "read the
 plan and existing `.legion/` handoffs first", and the worker skill listed `plan.json` second in
 the handoff order. A worker reads a predecessor's handoff with `dispatch handoff-read` now. A
-worker that finds no plan handoff and no statement about it has a missing predecessor,
-and the correct response to a missing predecessor is to stop and ask the architect. The architect
+worker whose task puts a planner step before it, and who finds no plan handoff and no statement
+about it, has a missing predecessor. The correct response to a missing predecessor is to stop and
+ask the architect. The architect
 who skips a phase owns telling each worker it spawns (implementer, tester, reviewer) that the
 phase was skipped and what stands in for its output — here, the spec's Design table.
 

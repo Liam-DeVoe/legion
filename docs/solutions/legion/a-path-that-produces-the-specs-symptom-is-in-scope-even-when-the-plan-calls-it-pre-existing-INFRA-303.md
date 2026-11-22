@@ -21,10 +21,10 @@ related_issues:
   the bug predates the issue, or has a different cause than the one the spec traced.
 - A planner who finds such a path fixes it in the plan. If a person must decide it, the planner
   asks the architect to decide it before planning ends. A decisions line calling it "unchanged and
-  out of scope" is not enough. The tester tries each path a user can reach, so the plan sends the
-  issue back a round later, after a full implement-test cycle.
+  out of scope" is not enough. Where the task has a tester step, the tester tries each path a user
+  can reach. So the plan sends the issue back a round later, after a full implement-test cycle.
 - An implementer reading a plan with such an exclusion asks the architect before implementing,
-  rather than shipping the round the tester will fail.
+  rather than shipping a round any tester step will fail.
 
 ## Evidence
 

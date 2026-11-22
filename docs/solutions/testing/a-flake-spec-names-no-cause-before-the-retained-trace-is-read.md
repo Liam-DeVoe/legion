@@ -64,7 +64,7 @@ plan stopped at "raise the timeout", the two racing scenarios would have failed 
 ## The rule
 
 A spec about a flaky browser test names no cause until the retained trace of a failing run has
-been read. Until then the spec says "cause: not yet read" and the plan's first task is the trace.
+been read. Until then the spec says "cause: not yet read" and the task's first step begins with the trace.
 The error text names only the assertion that gave up, never why the state it waited for did not
 arrive.
 

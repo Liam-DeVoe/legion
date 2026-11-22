@@ -52,9 +52,10 @@ base's pull request has squash-merged and its bookmark is deleted, neither works
   (`42a685d1` here, found from the base pull request's merge-time head or your own earlier
   "merge base into branch" commit's second parent) gives the same digest before and after the
   merge; `fork_point(main@origin | <old head>)` counts the base's whole diff as yours and differs
-  from the post-merge value, which would read as a changed diff and force a full test round for
-  nothing. The reviewer independently reached the same base from `fork_point(<old base tip> |
-  head)`; the rebase comment and the handoff should name the base commit and why.
+  from the post-merge value, which would read as a changed diff and force a full round of the
+  later steps for nothing. The reviewer independently reached the same base from
+  `fork_point(<old base tip> | head)`; the rebase comment and the handoff should name the base
+  commit and why.
 - **Once the pull request targets main, workflows gated on `pull_request.branches: [main]` run
   for the first time.** The worker image's build-time probe (`Worker Image`) never ran while the
   pull request targeted the stacked base; it ran at the merge head and was acceptance 4a's real

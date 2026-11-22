@@ -1,5 +1,5 @@
 ---
-title: "After a forward merge, a drop in a project's row count is a failure until the plan explains it"
+title: "After a forward merge, a drop in a project's row count is a failure until the plan or the issue's spec explains it"
 category: testing
 tags:
   - forward-merge
@@ -11,7 +11,7 @@ status: active
 module: packages/dispatch/e2e
 ---
 
-# After a forward merge, a drop in a project's row count is a failure until the plan explains it
+# After a forward merge, a drop in a project's row count is a failure until the plan or the issue's spec explains it
 
 Extends docs/solutions/legion/at-a-forward-merge-hold-your-branchs-readers-of-the-same-input-to-the-incoming-changes-input-rules-pr2311.md.
 
@@ -19,10 +19,11 @@ Extends docs/solutions/legion/at-a-forward-merge-hold-your-branchs-readers-of-th
   the merge (`grep -oE "\[(chromium|iphone|webkit|firefox)\]" <run log> | sort | uniq -c`, or
   `--list` per project). Main can change which tests a project selects, and a project that now
   runs none of your rows passes the run without a word.
-- A count that dropped is a failure of the merge until it is checked against the plan: if the plan
-  proves those rows on that project, restore them (for Dispatch's `iphone` project, ` @phone` at the
-  end of each title, docs/solutions/testing/a-playwright-project-selected-by-tag-takes-the-tag-in-the-title-matches-it-as-a-whole-word-and-is-proven-by-an-exact-list-INFRA-521.md)
-  in the same merge round. Explaining the drop in the handoff is not restoring it.
+- A count that dropped fails the merge until it is checked against the plan, or the issue's spec
+  where no planner step precedes yours. If that document proves those rows on that project, restore
+  them in the same merge round. For Dispatch's `iphone` project, that is ` @phone` at the end of
+  each title (docs/solutions/testing/a-playwright-project-selected-by-tag-takes-the-tag-in-the-title-matches-it-as-a-whole-word-and-is-proven-by-an-exact-list-INFRA-521.md).
+  Explaining the drop in the handoff is not restoring it.
 
 ## Evidence
 

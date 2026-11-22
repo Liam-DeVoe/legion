@@ -26,8 +26,9 @@ tester's checklist or the throwaway acceptance check. So:
   plan names the work you were given; the issue names the work that is due.
 - **Turn each widened item into acceptance before you write its code:** a `proof` entry with its
   own criterion, command and negative control, and an extension of any acceptance script that
-  would otherwise refuse the new edit. An item that is not in the acceptance list is not proven,
-  and the tester follows the same list, so the reviewer is the first to notice.
+  would otherwise refuse the new edit. An item that is not in the acceptance list is not proven.
+  The tester follows the same list, so the first to notice is the reviewer or the owner, whichever
+  step comes first.
 - **Carry a changed command form to every copy, the auto-loaded `AGENTS.md` copy first.** Search
   for the command's stem (`auth can-i`), not for each full command: prose lists abbreviate
   (`` `kubectl auth can-i create jobs`, `create services` and `get services` ``), so a grep for

@@ -80,9 +80,10 @@ commits", and a runbook calling a load-bearing scrub "belt and braces"). Landing
 deletion cost one tester bare-gate pass and one short reviewer re-check — the same price round
 1's fast-follow paid — and left the PR with no follow-up. The alternative, a follow-up LEGION
 issue for wording, is a deferral in disguise; Sami's rule is no deferrals. The order that works:
-fast-follow commit → push → `legion threads resolve` (every thread accepted so far resolves, and
-its output describes the pushed head) → tester bare gates → reviewer re-check → approval of
-that head → retro. Before sjawhar/legion#2354 a `.legion/` deletion push sat between the re-check and
+fast-follow commit → push → `legion threads resolve` → the task's later steps in its order → retro.
+`legion threads resolve` resolves every thread accepted so far, and its output describes the pushed
+head. In the default steps the later steps are tester bare gates, reviewer re-check and approval of
+that head, then the owner's acceptance. Before sjawhar/legion#2354 a `.legion/` deletion push sat between the re-check and
 the approval, and the fast-follow had to land before it. (2026-09-25, LEGION-285: the tester and
 the reviewer began pushing their own handoff commits; the order was unchanged. 2026-09-30,
 LEGION-386: `legion threads resolve` runs after the push, not before it.)
