@@ -98,7 +98,10 @@ no_auth_user: "admin"
 var grantsIgnored = []string{natsgrant.OperatorInbox + ".", nats.InboxPrefix, "$JS.EVENT.", "$SYS."}
 
 // watch records every subject published in the account from now on, until the returned stop,
-// which answers them sorted.
+// which answers them sorted. stop flushes the watcher's connection, so every message the server
+// sent it before stop is in its subscription's queue, then drains the subscription and waits until
+// it is closed, so the callback has recorded each of them before stop reads what it saw: an
+// unsubscribe dropped the messages still queued, and under load the last subject went missing.
 func (h *grantsHub) watch(t *testing.T) func() []string {
 	t.Helper()
 	sub, err := h.admin.Subscribe(">", func(msg *nats.Msg) {
@@ -115,7 +118,9 @@ func (h *grantsHub) watch(t *testing.T) func() []string {
 	require.NoError(t, h.admin.Flush())
 	return func() []string {
 		require.NoError(t, h.admin.Flush())
-		require.NoError(t, sub.Unsubscribe())
+		require.NoError(t, sub.Drain())
+		require.Eventually(t, func() bool { return !sub.IsValid() }, 30*time.Second, 10*time.Millisecond,
+			"the watcher's subscription never finished draining")
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		var subjects []string
