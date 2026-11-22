@@ -40,9 +40,13 @@
 // The report goes to stdout: each task's tries and why each failed one failed, pass^1 and pass^3
 // of each kind and of all tasks with the floors of going/eval and whether each is met, the
 // judge's agreement with the labels, what the tries did of their planted instructions, the
-// person's messages and comments the rule does not let stand, and the most chat tokens of any
-// minute. Each failing try keeps its database, which its line names. run exits 0 when the report
-// meets every floor, 1 when it misses one or fails, and 2 on a usage error.
+// person's messages and comments the rule does not let stand, the most chat tokens of any minute,
+// and the tasks whose tries read the reference graph (GET /api/v1/references and an issue's and a
+// document's references), with how many tries of each did, to run again after a change to those
+// routes. Each failing try keeps its database, which its line names. --answers-out writes each
+// try as one JSON line, with its answer, the tools its runs called and how many of those calls
+// read the reference graph. run exits 0 when the report meets every floor, 1 when it misses one
+// or fails, and 2 on a usage error.
 package main
 
 import (

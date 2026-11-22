@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,7 +22,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/going/eval"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 )
 
 // evalPerson is the person every try acts as, who is none of the seed's people.
@@ -161,6 +164,11 @@ type tryResult struct {
 	// Database is the try's database where it is kept: a failing try's, and every try's with
 	// --keep-databases.
 	Database string `json:"database,omitempty"`
+	// Tools is each tool the try's runs called, by name, with how many times, a call_tool call
+	// counted under the tool it names; ReferenceReads is how many of those calls read the
+	// reference graph (referenceRoutes). countCalls counts both.
+	Tools          map[string]int `json:"tools,omitempty"`
+	ReferenceReads int            `json:"reference_reads,omitempty"`
 }
 
 // tryTiming is the seconds of each phase of a try: copying the seed's database, starting the
@@ -417,7 +425,7 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 	srv.stop()
 	envoy.close()
 	lap(&result.Timing.Stop)
-	if err := e.grade(ctx, task, database, &result); err != nil {
+	if err := e.grade(ctx, task, database, srv.origin, &result); err != nil {
 		result.Error = strings.TrimPrefix(result.Error+"; "+err.Error(), "; ")
 	}
 	graded = true
@@ -428,13 +436,17 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 	return result
 }
 
-// grade grades a try from the store it left and the answer it gave.
-func (e *evalRun) grade(ctx context.Context, task eval.Task, database string, result *tryResult) error {
+// grade grades a try from the store it left and the answer it gave, and records the calls of its
+// runs' tools (readCalls) before the store is dropped. serverURL is the try's server's address.
+func (e *evalRun) grade(ctx context.Context, task eval.Task, database, serverURL string, result *tryResult) error {
 	conn, err := pgx.Connect(ctx, e.databases.url(database))
 	if err != nil {
 		return fmt.Errorf("read the try's store: %w", err)
 	}
 	defer conn.Close(context.WithoutCancel(ctx))
+	if result.Tools, result.ReferenceReads, err = readCalls(ctx, conn, serverURL); err != nil {
+		return err
+	}
 	after, err := eval.ReadStore(ctx, conn)
 	if err != nil {
 		return err
@@ -470,6 +482,81 @@ func (e *evalRun) grade(ctx context.Context, task eval.Task, database string, re
 	}
 	result.Pass = pass
 	return nil
+}
+
+// referenceRoutes are the rows of the server's table that read the reference graph
+// (references.go): a node's links (getReferences), an issue's (getIssueReferences) and a
+// document's (getArtifactReferences). The agent reaches the first by a read of a block's
+// reference, and the other two by call_tool of dispatch_read_issue_references and of
+// dispatch_read_document_references. A test pins each to the call that reaches it.
+var referenceRoutes = map[string]bool{
+	"GET /api/v1/references":                true,
+	"GET /api/v1/issues/{key}/references":   true,
+	"GET /api/v1/artifacts/{id}/references": true,
+}
+
+// toolCall is a call as a tool step of a run saves it (going/agent's toolBody.Call), and as
+// call_tool's arguments name the tool it runs.
+type toolCall struct {
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// countCalls counts the calls of a try's tool steps, each step's body as going/agent saves it:
+// each tool by name, a call_tool call under the tool its arguments name, and how many calls read
+// a row of referenceRoutes. The row is the one the server picks for the call (api.GoingReadRoute)
+// under the Dispatch tool the agent's tool calls (going/agent tools.go): read calls dispatch_read
+// with its arguments as written, search calls dispatch_search, and call_tool calls the tool it
+// names. serverURL is the try's server's address, under which a dashboard URL names an item.
+func countCalls(steps [][]byte, serverURL string) (map[string]int, int) {
+	tools, reads := map[string]int{}, 0
+	for _, body := range steps {
+		var step struct {
+			Call toolCall `json:"call"`
+		}
+		if json.Unmarshal(body, &step) != nil || step.Call.Tool == "" {
+			continue
+		}
+		call, dispatchTool := step.Call, step.Call.Tool
+		switch call.Tool {
+		case "call_tool":
+			var named toolCall
+			if json.Unmarshal(call.Arguments, &named) == nil && named.Tool != "" {
+				call, dispatchTool = named, named.Tool
+			}
+		case "read":
+			dispatchTool = "dispatch_read"
+		case "search":
+			dispatchTool = "dispatch_search"
+		}
+		tools[call.Tool]++
+		var arguments map[string]any
+		if json.Unmarshal(call.Arguments, &arguments) != nil {
+			continue
+		}
+		if route, picked := api.GoingReadRoute(dispatchTool, arguments, serverURL); picked && referenceRoutes[route] {
+			reads++
+		}
+	}
+	return tools, reads
+}
+
+// readCalls is countCalls of every tool step of the person's runs in a try's store.
+func readCalls(ctx context.Context, conn *pgx.Conn, serverURL string) (map[string]int, int, error) {
+	rows, err := conn.Query(ctx, `
+		select s.body::text from going_run_steps s
+		join going_runs r on r.id = s.run_id and lower(r.author_login) = lower($1)
+		where s.kind = $2
+	`, evalPerson, agentwire.StepTool)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read the try's tool steps: %w", err)
+	}
+	steps, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		return nil, 0, fmt.Errorf("read the try's tool steps: %w", err)
+	}
+	tools, reads := countCalls(steps, serverURL)
+	return tools, reads, nil
 }
 
 // judgedAnswer is an answer as the judge reads it: its prose, then each block it drew with the
@@ -699,6 +786,8 @@ func writeReport(w io.Writer, in reportInput) bool {
 	}
 	fmt.Fprintf(w, "The most chat tokens spent within any 60 seconds: %d, over %d calls of the run; the limit is %d: %s.\n\n", in.highest, in.calls, tokenLimit, meets(tokensOK))
 
+	writeReferenceReads(w, in.tasks, byTask)
+
 	failedTries := 0
 	for _, r := range in.results {
 		if r.Error != "" {
@@ -714,4 +803,34 @@ func writeReport(w io.Writer, in reportInput) bool {
 	}
 	fmt.Fprintf(w, "RESULT: the run misses: %s.\n", strings.Join(missed, "; "))
 	return false
+}
+
+// writeReferenceReads writes the tasks any of whose tries read the reference graph
+// (referenceRoutes), each with how many of its tries did, and the --tasks that runs those tasks
+// again, to re-run what a change to those routes reaches.
+func writeReferenceReads(w io.Writer, tasks []eval.Task, byTask map[string][]tryResult) {
+	fmt.Fprintln(w, "## Reads of the reference graph")
+	fmt.Fprintln(w)
+	var read, lines []string
+	for _, task := range tasks {
+		tries := 0
+		for _, r := range byTask[task.ID] {
+			if r.ReferenceReads > 0 {
+				tries++
+			}
+		}
+		if tries > 0 {
+			read = append(read, task.ID)
+			lines = append(lines, fmt.Sprintf("- %s: %d of %d tries", task.ID, tries, len(byTask[task.ID])))
+		}
+	}
+	fmt.Fprintf(w, "The tasks whose tries read %s, which a change to those routes reaches: %d.\n",
+		strings.Join(slices.Sorted(maps.Keys(referenceRoutes)), ", "), len(read))
+	for _, line := range lines {
+		fmt.Fprintln(w, line)
+	}
+	if len(read) > 0 {
+		fmt.Fprintf(w, "Run them again with `--tasks %s`.\n", strings.Join(read, ","))
+	}
+	fmt.Fprintln(w)
 }

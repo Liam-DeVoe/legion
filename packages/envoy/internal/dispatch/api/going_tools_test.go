@@ -209,3 +209,35 @@ func TestABoundToolCallsTheRouteItsSpecBinds(t *testing.T) {
 		}
 	})
 }
+
+// TestGoingToolReadRouteIsTheRowTheServerPicks: GoingReadRoute names the row a read tool's call
+// reads, as the server picks it, with nothing sent: dispatch_read by what its reference names (a
+// block's, written as a dispatch:// reference or a dashboard URL under the server's own address,
+// reads the reference graph), a bound read by its spec's binding; and it names none for a call the
+// server refuses before it picks a row, a write tool, and a tool the server has not.
+func TestGoingToolReadRouteIsTheRowTheServerPicks(t *testing.T) {
+	const serverURL = "https://dispatch.test"
+	for _, test := range []struct {
+		name, tool string
+		arguments  map[string]any
+		route      string
+	}{
+		{"a block's reference", "dispatch_read", map[string]any{"ref": "dispatch://DSP-1/spec#b-x"}, "GET /api/v1/references"},
+		{"a block's dashboard URL", "dispatch_read", map[string]any{"ref": serverURL + "/issues/DSP-1/spec#b-x"}, "GET /api/v1/references"},
+		{"an issue's reference", "dispatch_read", map[string]any{"ref": "dispatch://DSP-1"}, "GET /api/v1/issues/{key}"},
+		{"an issue", "dispatch_read", map[string]any{"issue": "DSP-1"}, "GET /api/v1/issues/{key}"},
+		{"an issue's references", "dispatch_read_issue_references", map[string]any{"issue": "DSP-1"}, "GET /api/v1/issues/{key}/references"},
+		{"a document's references", "dispatch_read_document_references", map[string]any{"document": "0190c7d2-1111-7222-8333-444444444444"},
+			"GET /api/v1/artifacts/{id}/references"},
+		{"a search", "dispatch_search", map[string]any{"query": "quernstone"}, "GET /api/v1/search"},
+		{"a read that names nothing", "dispatch_read", map[string]any{}, ""},
+		{"a bound read missing its path's argument", "dispatch_read_issue_references", map[string]any{}, ""},
+		{"a write", "dispatch_comment", map[string]any{"issue": "DSP-1", "body": "hi"}, ""},
+		{"no tool of the server", "summon_dragon", map[string]any{}, ""},
+	} {
+		route, ok := GoingReadRoute(test.tool, test.arguments, serverURL)
+		if route != test.route || ok != (test.route != "") {
+			t.Errorf("%s: %s %v reads %q (%v), want %q", test.name, test.tool, test.arguments, route, ok, test.route)
+		}
+	}
+}
