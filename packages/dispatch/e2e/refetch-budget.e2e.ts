@@ -1,6 +1,8 @@
 import { writeFile } from "node:fs/promises";
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { CREDENTIAL_POLL_INTERVAL_MS } from "../web/src/features/credentials/pending";
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import { plannerSession, setLiveSessions } from "./agents";
 import {
   createAgentMessage,
@@ -19,7 +21,7 @@ import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
 import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
-import { expect, type Page, type Request, test } from "./test";
+import { type Browser, expect, type Page, type Request, type TestInfo, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -30,12 +32,83 @@ import { asUser } from "./users";
 // alice's browser is real.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 
+/** The page's two polls: the Inbox's credential list (`credentialPendingQuery`,
+ *  `web/src/features/credentials/pending.ts`) and the agent registry (`AgentRegistryPoller`,
+ *  `web/src/features/refs/agent-registry.ts`). Each is a TanStack query whose `refetchInterval` is
+ *  a `setInterval` of 15 s (`QueryObserver`'s `#updateRefetchInterval`), which TanStack starts
+ *  again only when that query's own observer subscribes, changes its options or sees its own query
+ *  update. An issue's status write refreshes neither query - `eventRefreshTargets` names no
+ *  credential key, and the one `agents` key it names is `["agents", "issue-picker"]`, exactly - so
+ *  it neither starts nor resets either timer. A window that spans a tick holds that tick's read,
+ *  which no write sent: two runs of the status writes row counted one against the move to done,
+ *  the credential list once and the registry once. */
+const TIMED_POLLS: readonly string[] = ["/api/v1/credential-requests", "/api/v1/agents"];
+
+/** The intervals of `TIMED_POLLS`, which two constants hold apart (`pending.ts` says why). */
+const POLL_INTERVALS_MS: readonly number[] = [CREDENTIAL_POLL_INTERVAL_MS, AGENT_REGISTRY_POLL_MS];
+
+/** The header `tagTimedPolls` puts on a read that a page starts on a poll's own timer. */
+const TIMED_POLL_HEADER = "x-dispatch-e2e-timed-poll";
+
+/** Where `tagTimedPolls` counts, on the page's `window`, the poll intervals it has wrapped. */
+const TIMED_POLL_COUNT = "dispatchE2eTimedPollIntervals";
+
+/**
+ * Tags each read `page` starts on a poll's own timer, so a counted window can leave those reads
+ * out and still count the same paths whenever anything else sends them. A poll's read starts
+ * inside its timer's callback, before the callback returns: the interval calls `Query.fetch`,
+ * which runs the query function at once (`createRetryer`'s `start`), and the query function
+ * reaches `fetch` through `DispatchApiClient.read`, `exchange` and `answered` with no `await`
+ * before it. So the script wraps the page's `setInterval`: while the callback of an interval of
+ * `POLL_INTERVALS_MS` runs, every `fetch` the page starts carries `TIMED_POLL_HEADER`. A read a
+ * write sets off starts elsewhere - in the event feed's batch timeout, a render or an effect - and
+ * carries none. The script is added after `page.clock.install()`, whose own script runs first, so
+ * it wraps the clock's `setInterval`; `TIMED_POLL_COUNT` says whether it did.
+ */
+async function tagTimedPolls(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ count, delays, header }) => {
+      let running = 0;
+      const wrapped = { started: 0 };
+      Object.assign(window, { [count]: wrapped });
+      const setIntervalOf = window.setInterval;
+      window.setInterval = ((handler: TimerHandler, timeout?: number, ...rest: unknown[]) => {
+        if (typeof handler !== "function" || !delays.includes(Number(timeout))) {
+          return setIntervalOf(handler, timeout, ...rest);
+        }
+        const callback = handler;
+        wrapped.started += 1;
+        const timed = (...args: unknown[]) => {
+          running += 1;
+          try {
+            callback(...args);
+          } finally {
+            running -= 1;
+          }
+        };
+        return setIntervalOf(timed, timeout, ...rest);
+      }) as typeof window.setInterval;
+      const fetchOf = window.fetch;
+      window.fetch = (input, init) => {
+        if (running === 0) return fetchOf(input, init);
+        const headers = new Headers(
+          init?.headers ?? (input instanceof Request ? input.headers : undefined)
+        );
+        headers.set(header, "1");
+        return fetchOf(input, { ...init, headers });
+      };
+    },
+    { count: TIMED_POLL_COUNT, delays: POLL_INTERVALS_MS, header: TIMED_POLL_HEADER }
+  );
+}
+
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
  *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
  *  request, so none of these counts it. */
 interface Traffic {
-  /** Path and query of each GET under `/api/` since the last `reset`. */
+  /** Path and query of each GET under `/api/` since the last `reset`, but a poll a page whose
+   *  polls are tagged (`tagTimedPolls`) sent on its own timer. */
   readonly gets: string[];
   /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
   issueReads(key: string): number;
@@ -53,7 +126,9 @@ function watchTraffic(page: Page): Traffic {
     inFlight.add(request);
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
-    gets.push(`${url.pathname}${url.search}`);
+    const timedPoll =
+      request.headers()[TIMED_POLL_HEADER] === "1" && TIMED_POLLS.includes(url.pathname);
+    if (!timedPoll) gets.push(`${url.pathname}${url.search}`);
     const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
     if (issue !== undefined) {
       const key = decodeURIComponent(issue);
@@ -344,13 +419,6 @@ function summaryReads(gets: readonly string[], issues: readonly { key: string }[
   return gets.filter((get) => paths.has(get)).sort();
 }
 
-/** The reads a page sends on timers of its own, which no write causes: the Inbox's credential
- *  list (`web/src/features/credentials/pending.ts`) and the agent registry
- *  (`web/src/features/refs/agent-registry.ts`), each asked again every 15 s of the page's clock
- *  while the page holds it. A window that spans a tick holds one: two runs of the status writes
- *  row counted one against the move to done, the credential list once and the registry once. */
-const TIMED_READS: readonly string[] = ["/api/v1/credential-requests", "/api/v1/agents"];
-
 /** GETs under `/api/` the first load of the citing page sends: 70 on chromium at the commit
  *  before INFRA-4009 (df87c903eb89) and 70 at INFRA-4009's head, one run each - the 50 summaries
  *  and the 20 reads the page and its shell send whatever the message cites. */
@@ -400,13 +468,15 @@ test("first load: a page citing 50 issues sends as many reads as it did before t
 // refreshes what counts work by its status whatever the page cites - the rail's priority counts
 // (`["priorities"]`, `web/src/api/event-refresh.ts`) - so the title change it is held to is
 // measured beside the same status write to an issue the page does not cite. Its negative
-// control: an issue the page comes to cite after its first load has its summary read once.
-// SLOW(>=2s): seeding 52 issues, an event barrier, and seven writes in five windows, each drained
-// to half a second of quiet traffic.
-test("status writes: moving and closing a cited issue each send no more reads than renaming it, and a newly cited issue's summary is read once", async ({
-  browser,
-}, testInfo) => {
-  test.setTimeout(120_000);
+// controls: an issue the page comes to cite after its first load has its summary read once, and
+// the control rows below, where a move sets off a read of a poll's path and the row fails.
+/**
+ * The status writes row, whole. Its windows count every GET but a poll's read that the page sent
+ * on the poll's own timer (`tagTimedPolls`, `TIMED_POLLS`). `setOff`, for the control rows, is a
+ * path of `TIMED_POLLS` the page reads once more as soon as each move shows: a read the move sets
+ * off, on no timer, which the move's window counts.
+ */
+async function statusWrites(browser: Browser, testInfo: TestInfo, setOff?: string): Promise<void> {
   const { source, targets } = await seedCitations();
   const cited = targets[0];
   if (cited === undefined) throw new Error("setup: no cited issue");
@@ -417,6 +487,7 @@ test("status writes: moving and closing a cited issue each send no more reads th
     const traffic = watchTraffic(page);
     // The scheduler's trailing window is fired on this clock rather than waited out.
     await page.clock.install();
+    await tagTimedPolls(page);
     await page.goto(`/issues/${source.key}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(
@@ -424,16 +495,25 @@ test("status writes: moving and closing a cited issue each send no more reads th
     ).toHaveCount(50, { timeout: 60_000 });
     await eventBarrier(page, traffic, source.key, source.title);
     await drainRefreshWindow(page, traffic);
+    // Both polls have started their timers by now; none wrapped would mean every poll read is
+    // counted, and the row would only fail more often, never less.
+    expect(
+      await page.evaluate(
+        (count) =>
+          (window as unknown as Record<string, { started: number } | undefined>)[count]?.started,
+        TIMED_POLL_COUNT
+      ),
+      "poll intervals the timed-poll tag wrapped"
+    ).toBeGreaterThan(0);
     const named = (words: string, title: string) =>
       turns.getByRole("link", { exact: true, name: `${cited.key}, ${words}, ${title}` });
-    /** The GETs `write` sends, from its first write until the window it leaves is drained, but
-     *  for the page's own timed reads (`TIMED_READS`, by path). `write` waits for what it
-     *  changes to show, which only its last event can bring. */
+    /** The GETs `write` sends, from its first write until the window it leaves is drained.
+     *  `write` waits for what it changes to show, which only its last event can bring. */
     const windowOf = async (write: () => Promise<void>): Promise<string[]> => {
       traffic.reset();
       await write();
       await drainRefreshWindow(page, traffic);
-      return traffic.gets.filter((get) => !TIMED_READS.includes(get.split("?")[0] ?? get));
+      return [...traffic.gets];
     };
     const issueReads = (gets: readonly string[]) =>
       gets.filter((get) => get.startsWith("/api/v1/issues/"));
@@ -466,6 +546,11 @@ test("status writes: moving and closing a cited issue each send no more reads th
           "data-status-glyph",
           glyph
         );
+        if (setOff !== undefined) {
+          await page.evaluate((path) => {
+            void fetch(path);
+          }, setOff);
+        }
       });
       console.log(
         `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ after the move to ${status}: ${moving.length}; after a rename beside the uncited issue's move: ${owed.length}`
@@ -492,7 +577,43 @@ test("status writes: moving and closing a cited issue each send no more reads th
   } finally {
     await alice.close();
   }
+}
+
+// SLOW(>=2s): seeding 52 issues, an event barrier, and seven writes in five windows, each drained
+// to half a second of quiet traffic.
+test("status writes: moving and closing a cited issue each send no more reads than renaming it, and a newly cited issue's summary is read once", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  await statusWrites(browser, testInfo);
 });
+
+// The status writes row's negative control, for each poll's path: the page reads the path once
+// more as soon as the move to in_progress shows, a read the move sets off and no timer does, and
+// the row fails on the move's count. A row that left the path out of its windows whatever sent it
+// would pass here.
+for (const path of TIMED_POLLS) {
+  // SLOW(>=2s): the status writes row up to its first move: seeding 52 issues, an event barrier
+  // and three windows.
+  test(`status writes' control: a read of ${path} that a move sets off counts against the move, and the row fails`, async ({
+    browser,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const failure = await statusWrites(browser, testInfo, path).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    const message = failure instanceof Error ? failure.message : String(failure);
+    console.log(
+      `REFETCH-BUDGET-CONTROL [${testInfo.project.name}] ${path}: ${message.replaceAll("\n", " | ")}`
+    );
+    expect(failure, "the status writes row fails").toBeInstanceOf(Error);
+    // The failure is the first move's count, and the move's window holds the read it set off.
+    const [moved = ""] = message.split("\nafter a rename");
+    expect(moved).toContain("GETs after the move to in_progress, by path:");
+    expect(moved).toMatch(new RegExp(`^1 × ${path}$`, "m"));
+  });
+}
 
 test("sidebar: an issue event while the sidebar's first reads are in flight discards none of them", async ({
   browser,
