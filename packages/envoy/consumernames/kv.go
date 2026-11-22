@@ -179,8 +179,12 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 }
 
 // Read implements Store. A value under logical that is not logical's record (DecodeKVValue) is
-// ErrMalformedRecord, naming the key and the value's sequence.
+// ErrMalformedRecord, naming the key and the value's sequence. The sentinel's key is no record's
+// (ErrInvalidKey, recordKey).
 func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, error) {
+	if err := recordKey(logical); err != nil {
+		return Record{}, 0, err
+	}
 	data, revision, err := s.last(ctx, logical)
 	if err != nil {
 		return Record{}, 0, err
@@ -192,14 +196,28 @@ func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, err
 	return record, revision, nil
 }
 
-// Write implements Store. It writes the record under its own key (Record.Key).
+// Write implements Store. It writes the record under its own key (Record.Key), never under the
+// sentinel's (recordKey): only WriteSentinel writes there.
 func (s *KVStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
+	if err := recordKey(logical); err != nil {
+		return 0, err
+	}
 	record.Key = logical
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
 	}
 	return s.put(ctx, logical, data, revision)
+}
+
+// recordKey refuses, as ErrInvalidKey, the sentinel's key (SentinelKey) as the key of a record: a
+// record read there is the sentinel decoded as no record, and one written there replaces the
+// sentinel, after which every State is ErrMalformedSentinel.
+func recordKey(logical string) error {
+	if logical == SentinelKey {
+		return fmt.Errorf("%w: %q is the sentinel's key, no record's", ErrInvalidKey, logical)
+	}
+	return nil
 }
 
 // WriteSentinel writes the sentinel, under its own key (StoreState.Key) and naming the session
@@ -302,7 +320,11 @@ func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) 
 	return response.Message.Data, response.Message.Seq, nil
 }
 
-// put publishes data on key if the key's last sequence is revision.
+// put publishes data on key if the key's last sequence is revision. A write no server answers (no
+// responders: no stream captures the key's subject yet, or no JetStream answers at all) tells
+// nothing of the bucket, as a read that meets none (last), so it is a failed write wrapping
+// nats.ErrNoResponders, never ErrNoStore: only a read's stream-not-found answer is the missing
+// store.
 func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uint64) (uint64, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
@@ -310,9 +332,6 @@ func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uin
 	msg.Header.Set(jetstream.ExpectedLastSubjSeqHeader, strconv.FormatUint(revision, 10))
 	reply, err := s.request.Request(ctx, msg)
 	if err != nil {
-		if errors.Is(err, nats.ErrNoResponders) {
-			return 0, fmt.Errorf("%w: %s (%w)", ErrNoStore, s.stream(), err)
-		}
 		return 0, fmt.Errorf("consumer names: write %s to %s: %w", key, s.bucket, err)
 	}
 	var ack struct {

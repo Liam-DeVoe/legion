@@ -148,7 +148,7 @@ func createdTwice(names []string, removed map[string]bool) string {
 
 // TestNoConsumerNameIsCreatedTwice is the fixed-name spy for the listener's own durable: in the fresh
 // mode the start's bind and the monitor's rebuild after the server removed the durable create a fresh
-// <durable>~<nuid> each, and never the fixed name. Its control is the fixed mode's own rebuild, which
+// <durable>~<random> each, and never the fixed name. Its control is the fixed mode's own rebuild, which
 // the spy sees create the fixed name again after its removal.
 func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 	t.Run("control: the fixed mode's rebuild", func(t *testing.T) {
@@ -178,7 +178,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 		}
 		for _, name := range creates {
 			if name == r.durable || !strings.HasPrefix(name, r.durable+"~") {
-				t.Fatalf("the fresh mode created %s, want only %s~<nuid> names: %v", name, r.durable, creates)
+				t.Fatalf("the fresh mode created %s, want only %s~<random> names: %v", name, r.durable, creates)
 			}
 		}
 		if len(removed) != 2 || len(creates) < 3 {
@@ -200,7 +200,7 @@ func TestEveryReaderFindsTheCurrentName(t *testing.T) {
 	r.rebuild(t)
 	current := r.current(t)
 	if current == first || !strings.HasPrefix(current, r.durable+"~") {
-		t.Fatalf("the rebuild selected %q after %q, want a fresh %s~<nuid>", current, first, r.durable)
+		t.Fatalf("the rebuild selected %q after %q, want a fresh %s~<random>", current, first, r.durable)
 	}
 	ctx := context.Background()
 	// Control: the fixed name reads as no consumer.

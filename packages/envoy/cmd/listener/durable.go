@@ -168,7 +168,7 @@ func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) 
 	case err != nil:
 		return err
 	case info == nil:
-		config := listenerDurableConfig(consumer, subjects)
+		config := listenerDurableConfig(client, consumer, subjects)
 		if err := client.MarkerUnread(); err != nil {
 			return err
 		}
@@ -182,10 +182,11 @@ func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) 
 // either naming mode: the canonical policy on subjects (applyListenerConsumerPolicy), delivering to
 // a random inbox. The deliver subject is a random inbox, not a derivable name: on a shared NATS
 // account a predictable subject would let any client hold interest on it, shadow-reading deliveries
-// and making the consumer look push-bound so the listener could never attach. The fresh mode adds
-// its start and metadata.
-func listenerDurableConfig(name string, subjects []string) nats.ConsumerConfig {
-	config := nats.ConsumerConfig{Durable: name, DeliverSubject: nats.NewInbox()}
+// and making the consumer look push-bound so the listener could never attach. It is client's
+// connection's own inbox, under the connection's inbox prefix, which an edge listener's grant
+// subscribes in place of every reply inbox. The fresh mode adds its start and metadata.
+func listenerDurableConfig(client *bus.Client, name string, subjects []string) nats.ConsumerConfig {
+	config := nats.ConsumerConfig{Durable: name, DeliverSubject: client.Connection().NewInbox()}
 	applyListenerConsumerPolicy(&config, subjects)
 	return config
 }

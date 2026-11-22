@@ -16,10 +16,13 @@ import (
 )
 
 // scopeGrant is grant, entry's kind's grant (serviceGrant), held to the projects entry may reach.
+// It has three cases, in this order.
 //
-// An edge listener's entry lists its projects, and natsgrant holds no grant of an edge listener's
-// to hold to them, so its connection is refused by name. An all-projects entry takes that grant
-// whole.
+// An edge listener's entry takes its grant whole: its grant is already built for the projects its
+// entry lists (serviceGrant, natsgrant.Edge), which name its role subjects and their exception
+// lanes, and no other subject or key of it names a project yet, so its read is the whole bus.
+//
+// An all-projects entry takes its grant whole.
 //
 // Any other entry is held to the projects the broker's own exchange list gives its account
 // (Deps.Exchange), the one list that also decides the projects of a token minted for that
@@ -83,7 +86,7 @@ import (
 // pull request.
 func scopeGrant(deps Deps, entry config.NATSService, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
 	if entry.Kind == config.NATSEdgeListener {
-		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service "+entry.Name())
+		return grant, nil
 	}
 	if entry.AllProjects {
 		return grant, nil
@@ -164,7 +167,7 @@ type heldAnswer struct{ notFound, visible bool }
 
 // newHeldAccess holds the answers about every project deps.Exchange gives an entry of services
 // that is held to its exchange projects (not an all-projects one, nor an edge listener's, whose
-// connection scopeGrant refuses before it reads an answer), each asked for the person its exchange
+// grant scopeGrant takes whole without reading an answer), each asked for the person its exchange
 // entry acts for; nil when the broker cannot read them (no exchange list, or no Dispatch client)
 // or no entry can name a project.
 func newHeldAccess(deps Deps, services []config.NATSService) *heldAccess {
