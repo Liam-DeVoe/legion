@@ -68,5 +68,5 @@ The version you give replaces them with your own one block: delete theirs, and p
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-Each finished issue of a project, with its plan's source and steps, its retro's ratings, its time and its count of failed steps, is `dispatch plans --project <KEY>`.
+Each finished issue of a project, with its plan's source and steps, its retro's ratings, its time, its count of failed steps and, for an issue drawn into an experiment's group, its variant, is `dispatch plans --project <KEY>`.
 Read it before you choose the steps of an issue like one that finished.
