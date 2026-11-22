@@ -1176,10 +1176,16 @@ func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testi
 		"names no planner has no plan handoff",
 		"the architect's acceptance where the task has the step `acceptance:owner`)",
 		"for implementation, for each step that follows yours",
+		"Past review, where the task has a reviewer step",
+		"an independent reading of the whole finished work before the retro",
+		"your issue closing, which the merge does (where",
+		"the reviewer of a task whose `Steps:` line names the planner",
+		"since the daemon asks the implementer for it once the issue is past its review",
 	}
 	noPullRequest := map[claim.Role]string{
-		claim.RoleTester:   "An issue with no pull request closes when its retro ends",
-		claim.RoleReviewer: "Where the issue has no pull request, no review on GitHub can exist to decide your step",
+		claim.RoleTester:         "An issue with no pull request closes when its retro ends",
+		claim.RoleReviewer:       "Where the issue has no pull request, no review on GitHub can exist to decide your step",
+		claim.Role("acceptance"): "On an issue with no pull request the reviewer approves nothing on GitHub",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.Role("acceptance")} {
 		text := foldWhitespace(composedText(t, composer, role, false))
