@@ -24,4 +24,4 @@ When a merge of the base lands while the issue stands past its review (`acceptin
 
 A prose defect is a false statement, a contradiction, or an instruction a role would follow wrongly. Where no behavioural finding stands, you fix it in your text commit; beside a behavioural finding, it is a thread of your request for changes. A wording preference is not a finding, and it holds nothing. Do not raise it.
 
-Your one commit of text fixes is a new head: a pass recorded at the head before it carries to it only under the carry rule, and on a base whose rules want each change approved by someone other than its author, your approval cannot cover a commit you wrote, so there you push nothing and leave each text finding as its inline thread.
+Your one commit of text fixes is a new head: a pass recorded at the head before it carries to it only under the carry rule, and you record that carry at the new head before you approve it (your role part says how); on a base whose rules want each change approved by someone other than its author, your approval cannot cover a commit you wrote, so there you push nothing and leave each text finding as its inline thread.

@@ -744,6 +744,43 @@ func TestEveryComposedReviewerSentenceThatRequestsChangesNamesABehaviouralFindin
 	}
 }
 
+// The carry rule keeps a `before_merge` check's pass current across a push that changes only text,
+// and `dispatch results` reads a pass as standing only at the commit it names. So the role that
+// pushes such a commit records each carry at its head (the architect's ruling of
+// 2026-11-22T19:29:27Z, after INFRA-138's finding): the reviewer before it approves the head that
+// carries its text commit, and the implementer when it pushes its one text-only commit, before it
+// tells the reviewer. Without the step, the reviewer's approval gate and the architect's acceptance
+// read no pass standing at the head the reviewer approves. This shows the text is loaded, never
+// that a role follows it.
+func TestTheRoleThatPushesATextOnlyCommitRecordsTheCarryAtItsHead(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const observed = "--observed 'carried from <head before>: the commit changes only text: <files>'"
+	for _, tc := range []struct {
+		role claim.Role
+		want []string
+	}{
+		{claim.RoleReviewer, []string{
+			"Before you approve, record each `before_merge` check of this issue's Verification document again at the head you approve",
+			"--role reviewer --verdict pass --commit <head> " + observed,
+			"you record that carry at the new head before you approve it",
+		}},
+		{claim.RoleImplementer, []string{
+			"When you push that commit, record each `before_merge` check again at its head, as carried from the head before it, before you tell the reviewer",
+			"--role implementer --verdict pass --commit <head> " + observed,
+		}},
+	} {
+		text := foldWhitespace(composedText(t, composer, tc.role, false))
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Errorf("the composed %s prompt omits the carry record at a text-only head: %q", tc.role, want)
+			}
+		}
+	}
+}
+
 // A review the review App submits decides a round only when the head its Legion footer names is
 // the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
 // so a reviewer whose prompt teaches the footer without the head submits a review every round
