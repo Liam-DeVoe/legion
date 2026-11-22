@@ -242,25 +242,6 @@ func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, erro
 // nodeColumns is what every node read answers, in the order a node scan takes them.
 const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event`
 
-// ProjectedTable is one table that projects the store: each of its rows names the node it is the
-// projection of by its node_kind and node_address, which migration 20261109022248 gave it with a
-// foreign key to graph_nodes. Issue is the column naming the issue that owns a row itself, empty
-// for a table whose rows are owned through their document alone, by the artifact_id each of them
-// carries: a comment is an issue's or a document's (comments_one_owner, migration 0009), and a
-// block and a block reference are their document's. Key is the table's primary key, the order a
-// reader takes a node's rows of it in and how it names each.
-type ProjectedTable struct{ Table, Issue, Key string }
-
-// ProjectedTables are the tables that project the store, the one list of them the tree holds, each
-// with the column naming the issue that owns a row and its key. censustest.ProjectedColumns holds
-// the columns of each that the store states, and graphcensus's
-// TestTheProjectedColumnsListEveryTableTheStoreProjects holds its tables to these.
-var ProjectedTables = []ProjectedTable{
-	{Table: "comments", Issue: "issue_key", Key: "id"},
-	{Table: "document_blocks", Key: "artifact_id, block_id"},
-	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
-}
-
 // NodesOfKind answers every node of one kind, in id order. It reads through the primary key
 // (kind, id), whose leading column it binds, so a kind the store holds few of costs that few
 // rows however many nodes the store holds. The block schema's supertag and attribute nodes are

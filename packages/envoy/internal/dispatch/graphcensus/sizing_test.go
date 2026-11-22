@@ -1102,7 +1102,7 @@ func TestTheSizingRunsOnADatabaseWithNoStore(t *testing.T) {
 	seedSizedHistory(t, database)
 	before := sizingCensus(t, database)
 	if _, err := database.Pool.Exec(context.Background(), `
-		drop table graph_tuples, graph_nodes, graph_erasures cascade;
+		drop table graph_tuples, graph_nodes cascade;
 		alter table comments drop column node_kind cascade, drop column node_address cascade;
 		alter table document_blocks drop column node_kind cascade, drop column node_address cascade,
 			drop column parent_block_id cascade;

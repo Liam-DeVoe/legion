@@ -1107,68 +1107,6 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
-// TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough holds the census to admitting the two indexes
-// the erase's reads under its owner locks probe (20261121180000 on comment_deliveries.reply_id,
-// 20261121180100 on asks.handed_back_reply_id) over a database at 20261120122700, the version
-// before them, with the limit at one byte, where both tables are over it
-// (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261120122700, 20261121180000, 20261121180100)
-}
-
-// TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough holds the census to admitting three
-// indexes: the two the erase's reads of a block's related-item checks probe (20261122010000 on
-// related_checks.source_block_id, 20261122010100 on the source_issue_key of the issues' own
-// checks), and the one the record of a check probes graph_erasures through for an erase of its
-// source (20261122010200 on the document of each erased block), over a database at
-// 20261121180100, the version before them, with the limit at one byte, where related_checks and
-// graph_erasures are over it (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261121180100, 20261122010000, 20261122010100, 20261122010200)
-}
-
-// TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough holds the census to admitting the
-// index a person's erase reads comments through for the comments a session the server proved
-// theirs wrote (20261122010300, on user_threads_login(author->>'owner') of those comments), over
-// a database at 20261122010200, the version before it, with the limit at one byte, where comments
-// is over it (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261122010200, 20261122010300)
-}
-
-// requireCensusAdmitsConcurrentIndexes holds the census, over a database migrated through before
-// with the limit at one byte, to admitting each of versions, every one pending there, as one
-// concurrent, non-unique index of its own migration, which the limit never applies to at any size.
-// Only each entry is read, never the verdict of the whole set, for the reason
-// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
-func requireCensusAdmitsConcurrentIndexes(t *testing.T, before int, versions ...int) {
-	t.Helper()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, before)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, slices.Max(versions)), pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
-	}
-	found := map[int]bool{}
-	for _, version := range versions {
-		found[version] = false
-	}
-	for _, entry := range report.Pending {
-		if _, wanted := found[entry.Migration.Version]; !wanted {
-			continue
-		}
-		found[entry.Migration.Version] = true
-		if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
-			t.Errorf("the census did not admit migration %d as a concurrent index: %+v", entry.Migration.Version, entry)
-		}
-	}
-	for version, present := range found {
-		if !present {
-			t.Errorf("migration %d was not pending in the census over a database at %d", version, before)
-		}
-	}
-}
-
 // queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the

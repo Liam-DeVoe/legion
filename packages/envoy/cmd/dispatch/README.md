@@ -3370,8 +3370,7 @@ The kinds are:
   A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
   A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
   The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
-  A person's and a session's row side also hold what the event log says of a comment: the author the `actor` of a `comment.created` or `comment.answered` event names, for a comment whose row is gone, and every session a `comment.delivery` receipt says the listener took an attempt to.
-  A node is history and never goes, so a node a comment's write made stays owed whatever becomes of the comment's rows; no path of this build deletes a comments row, so the events of a comment whose row is gone name nobody today.
+  A session's row side also holds every session a `comment.delivery` receipt of the event log says the listener took an attempt to.
   The census reads each of these row sides once a run, in one statement, and binds the names into every statement that reads that kind's rows; `backfill-graph-store` reads the same definition for roles and for sessions.
   A session's own page is no part of this census.
 
