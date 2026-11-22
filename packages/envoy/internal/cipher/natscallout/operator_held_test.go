@@ -480,8 +480,7 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 	for _, decision := range r.decisions.since(operatorName, seen) {
 		require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld), decision.Grant, "a reconnect of the restore was not given the held grant")
 	}
-	info, err := js.StreamInfo(sessions)
-	require.NoError(t, err, "%s is missing after the restore", sessions)
+	info := awaitStream(t, js, sessions)
 	require.EqualValues(t, 40, info.State.Msgs, "the restored %s lost messages", sessions)
 
 	t.Run("a second close stops the command", func(t *testing.T) {
@@ -500,6 +499,19 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 			_, err := js.StreamInfo(sessions)
 			return !errors.Is(err, nats.ErrStreamNotFound)
 		}, 12*time.Second, 500*time.Millisecond, "the stopped restore left %s", sessions)
+	})
+}
+
+// awaitStream waits until the clustered hub answers stream's info, and returns it. Right after a
+// restore its create response has answered, a member's STREAM.INFO has answered "stream not found"
+// (one run in five at a load of about 1,500 read KV_envoy_sessions as missing 12.6 s in); the wait
+// ends on the answer itself, and its one bound is the test binary's deadline (testwait.Until), so
+// a stream that never comes back still fails the test, naming it.
+func awaitStream(t *testing.T, js nats.JetStreamContext, stream string) *nats.StreamInfo {
+	t.Helper()
+	return testwait.Until(t, stream+" to be found after the restore", func() (*nats.StreamInfo, bool) {
+		info, err := js.StreamInfo(stream)
+		return info, err == nil
 	})
 }
 
