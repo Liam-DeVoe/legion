@@ -96,9 +96,12 @@ const (
 	w5MarkLine        = "reach: the claim's session has not registered with Envoy for 20 minutes; it is out of reach, and keeps its state"
 	w5HeldFinishPhase = "outbox role message held for a claim Envoy cannot reach is finished undelivered: its phase moved on"
 	w5HeldFinishEnded = "outbox role message held for a claim Envoy cannot reach is finished undelivered: its claim ended"
-	w5NoHolderFinish  = "outbox role message finished undelivered: its role has no live holder"
-	w5PhaseChanged    = "workflow: phase changed"
-	w5R2Note          = "Your previous turn was interrupted."
+	// w5NoHolderFinish starts the outbox's line of a role message it finishes for want of a live
+	// holder; main's line goes on with ", or its claim records a session it does not hold", so the
+	// base block matches its start.
+	w5NoHolderFinish = "outbox role message finished undelivered: its role has no live holder"
+	w5PhaseChanged   = "workflow: phase changed"
+	w5R2Note         = "Your previous turn was interrupted."
 	// The cause the daemon's cut-turn note names for its own relaunch of a claim Envoy could not
 	// reach (internal/daemon's relaunchedByDaemon), as the resumed session's transcript shows it:
 	// "Your process ended because Envoy could not reach its session for 20 minutes, so the daemon
@@ -1124,7 +1127,7 @@ func (r *w5Run) baseFirstBlock() {
 	lives := r.rowLives()
 	life := lives[r.roleRow]
 	finishedLine := r.logs(func(rec loggedRecord) bool {
-		return rec.Message == w5NoHolderFinish && fmt.Sprint(rec.Attrs["row"]) == fmt.Sprint(r.roleRow)
+		return strings.HasPrefix(rec.Message, w5NoHolderFinish) && fmt.Sprint(rec.Attrs["row"]) == fmt.Sprint(r.roleRow)
 	})
 	session := r.session(impl.token)
 	envoy := r.envoySessions()[session]
