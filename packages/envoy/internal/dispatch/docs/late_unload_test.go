@@ -159,7 +159,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded(t *t
 // writerTakesUpALoadingSettlementRoom holds the load of the room a late departure's settlement
 // makes while it decodes the stored history (bootstrapping), before its hook takes the room's
 // record, and opens a joined write held after its fork read. It lets the load go first, or, with
-// writeFirst, the write first, which commits and reaches its publish while the room still loads.
+// writeFirst, the write first, which commits while the room still loads and publishes into it.
 // It then requires that room to stay resident once a retirement runs after every holder has ended
 // (TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded).
 func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
@@ -205,15 +205,18 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 			<-letWrite
 		}
 	}
-	type publish struct {
+	// The write as its transaction commits (checkRendering's "commit", the last point the hook
+	// sees the write): whether it forked cold, and the room resident then, which its publish after
+	// the commit goes into.
+	type atCommit struct {
 		cold bool
 		held *crdt.Doc
 	}
-	publishes := make(chan publish, 1)
+	commits := make(chan atCommit, 1)
 	r.service.checkRendering = func(at string, write *liveWrite) {
-		if at == "publish" && write.artifactID == r.room {
+		if at == "commit" && write.artifactID == r.room {
 			select {
-			case publishes <- publish{cold: write.cold, held: r.service.srv.GetDoc(r.room)}:
+			case commits <- atCommit{cold: write.cold, held: r.service.srv.GetDoc(r.room)}:
 			default:
 			}
 		}
@@ -245,12 +248,12 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 		}
 		return false
 	})
-	var published publish
+	var committed atCommit
 	if writeFirst {
 		releaseWrite()
-		published = testwait.Receive(t, "the write to reach its publish while the settlement's room loads", publishes)
-		if published.held != nil {
-			t.Fatalf("the write reached its publish with room %p resident, want the settlement's room still loading; nothing here is tested", published.held)
+		committed = testwait.Receive(t, "the write to commit while the settlement's room loads", commits)
+		if committed.held != nil {
+			t.Fatalf("the write committed with room %p resident, want the settlement's room still loading; nothing here is tested", committed.held)
 		}
 		releaseLoad()
 	} else {
@@ -265,19 +268,19 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	}
 	if !writeFirst {
 		select {
-		case published = <-publishes:
+		case committed = <-commits:
 		default:
-			t.Fatal("the write published nothing, so nothing here is tested")
+			t.Fatal("the write committed nothing, so nothing here is tested")
 		}
 	}
 	// No other room of the document loaded and nothing refused the publish; the room's text, read
 	// once nothing holds the record, says the publish reached the settlement's room.
 	settlementRoom := settlementDoc.Load()
-	if loads := r.loads.Load(); loads != 3 || !published.cold || refused.Load() {
-		t.Fatalf("after the write the document was loaded %d times, and the write forked cold: %v and had its publish refused: %v; want the settlement's room, the third load, published into by a cold write; nothing here is tested", loads, published.cold, refused.Load())
+	if loads := r.loads.Load(); loads != 3 || !committed.cold || refused.Load() {
+		t.Fatalf("after the write the document was loaded %d times, and the write forked cold: %v and had its publish refused: %v; want the settlement's room, the third load, published into by a cold write; nothing here is tested", loads, committed.cold, refused.Load())
 	}
-	if !writeFirst && published.held != settlementRoom {
-		t.Fatalf("the write published into room %p, want the room the late settlement loaded (%p); nothing here is tested", published.held, settlementRoom)
+	if !writeFirst && committed.held != settlementRoom {
+		t.Fatalf("the write committed with room %p resident, want the room the late settlement loaded (%p), which its publish goes into; nothing here is tested", committed.held, settlementRoom)
 	}
 
 	r.awaitSocketEnd("the second room's browser")

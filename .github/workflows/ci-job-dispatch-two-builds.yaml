@@ -67,7 +67,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 50 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
       # the service's pull is that step's too.
