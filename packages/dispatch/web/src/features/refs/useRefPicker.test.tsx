@@ -28,6 +28,7 @@ import {
   REF_PICKER_KIND_NAMES,
   REF_PICKER_KINDS,
   REF_PICKER_PARTS_WORDS,
+  REF_PICKER_PARTY_WORDS,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
   type RefPickerKind,
@@ -846,6 +847,51 @@ test("the list says it is loading, that nothing matches, and that Dispatch is un
     expect(screen.getByTestId("ref-picker-unreachable").textContent).toBe(
       REF_PICKER_WORDS.unreachable
     )
+  );
+});
+
+// The case the roles nobody runs are offered for: every agent of the issue has stopped, so the
+// live list answers with no agent and the picker holds those roles alone, as not running. It must
+// not say that nothing matches under the rows it is showing.
+test("a picker holding only stopped roles does not say no agent matches", async () => {
+  const user = userEvent.setup();
+  const page = renderHost({ agents: [] });
+  page.getIssueCollaborators.mockResolvedValue({ ...collaborators, people: [] });
+  page.getArchitecture.mockRejectedValue(new ApiError(404, { code: "SOURCE_NOT_FOUND" }));
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+
+  await waitFor(() => expect(drawnRows()).toEqual(["Roles: reviewer"]));
+  expect(screen.getByRole("option")).toHaveTextContent(
+    "Reviewer · reviewer · not running, not told"
+  );
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-list-unreachable")).not.toBeInTheDocument();
+});
+
+// A role is offered as not running only where a live list that answered names nobody holding
+// it: a list whose read failed says nothing of who is absent. So while it has failed, the picker
+// offers none of the roles the issue records, and says the list could not load where the agent
+// and role rows would be.
+test("the picker adds no stopped option while the live agents list failed", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  page.listAgents.mockRejectedValue(new Error("listener down"));
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-list-unreachable").textContent).toBe(
+      REF_PICKER_PARTY_WORDS.unreachable
+    )
+  );
+  expect(page.getIssueCollaborators).toHaveBeenCalledWith("CORE-1");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual(["People: alice@example.com", "Components: The relay"])
   );
 });
 

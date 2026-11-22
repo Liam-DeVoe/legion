@@ -27,6 +27,7 @@ import { askResolutionBadge } from "../refs/actor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { usePlainHeadline } from "../refs/plain-text";
 import { parseNodeReference } from "../refs/routes";
+import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
@@ -3276,6 +3277,21 @@ test("a node's words keep the bare address its line reads", () => {
       "Do it as dispatch://CORE-2 says."
     );
   }
+});
+
+// A caller that names each reference itself reads words in which no address is written short,
+// or it finds no address left to name: the line of a reading keeps a bare address as written,
+// and the words of a stored text's reading keep each bare address and each autolink's URL as
+// written, its marks gone.
+test("the raw words of a reading and of a stored text keep each address as written", () => {
+  const reading = "Do it as dispatch://CORE-2 says.";
+  const task = nodeOf(planTasks([reading], true), blockNodeId("plan-md", "t1"));
+  expect(task?.tree).toBeDefined();
+  expect(task === undefined ? "" : nodeLineOf(task)).toBe(reading);
+  const stored = "Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.";
+  expect(wordsOf(storedReading(stored))).toBe(
+    "Do it as dispatch://CORE-2 says, see dispatch://CORE-3."
+  );
 });
 
 // A span that only looks like an address - a path no route reads, a key in lower case, or the

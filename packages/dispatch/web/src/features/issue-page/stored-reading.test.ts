@@ -88,6 +88,90 @@ test("a stored text read to plain words keeps the author's private-use character
   }
 });
 
+/** What a stored text reads to on one line, as the row above reads it: the words of its reading
+ *  (`wordsOfText`), and the name the names store projects from that reading (`projectedNames`),
+ *  `""` where the reading holds no word. */
+function plainLine(stored: string): { name: string; words: string } {
+  const projected = projectedNames(new Map([["stored", { tree: storedReading(stored) }]]));
+  return { name: projected.get("stored") ?? "", words: wordsOfText(stored) };
+}
+
+// A stored text reads to the words the server's reading of it holds: what markdown reads
+// literally stays and its marks go. A bare address is the words its author wrote, as written,
+// while the name projected from the reading writes it as its target's short form, as a name reads
+// no other name; an address in a code span stays as written in both.
+test("a stored text read to plain words keeps what markdown reads literally and drops its marks", () => {
+  for (const [stored, words, name = words] of [
+    // A backslash before punctuation is that character, never a mark nor a sentence's end.
+    ["**1\\. Stand the harness up.** Run it.", "1. Stand the harness up. Run it."],
+    ["\\*not emphasis\\*", "*not emphasis*"],
+    ["\\# not a heading", "# not a heading"],
+    ["\\`not code\\`", "`not code`"],
+    // A code span's content is verbatim: no mark and no escape is read inside it.
+    ["Run `a * b \\. c` now", "Run a * b \\. c now"],
+    ["Run `**not bold**` now", "Run **not bold** now"],
+    ["``a `tick` b``", "a `tick` b"],
+    ["an `open run", "an `open run"],
+    // An image holds no words; a link reads as its words, an autolink as its URL.
+    ["see ![diagram](shot.png) here", "see here"],
+    ["![diagram](shot.png)", ""],
+    ["[the plan](https://example.com/plan)", "the plan"],
+    ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
+    // An escaped mark after an address is the character it escapes, so it trails the address as
+    // a sentence's end.
+    ["see dispatch://CORE-2\\.", "see dispatch://CORE-2.", "see CORE-2."],
+    ["Run `dispatch read dispatch://CORE-2` now", "Run dispatch read dispatch://CORE-2 now"],
+    [
+      "`dispatch://CORE-2` is dispatch://CORE-2",
+      "dispatch://CORE-2 is dispatch://CORE-2",
+      "dispatch://CORE-2 is CORE-2",
+    ],
+    // An underscore inside a word is no mark; marks nest.
+    ["snake_case_name", "snake_case_name"],
+    ["_emphasis_ and __strong__", "emphasis and strong"],
+    ["***x***", "x"],
+    ["**a *b* c** and ~~gone~~", "a b c and gone"],
+    ["2 * 3 * 4", "2 * 3 * 4"],
+    // A heading marker goes at the start of any line, and white space collapses.
+    ["## Keep it\nKeep the model pure.", "Keep it Keep the model pure."],
+    ["   ### Indented", "Indented"],
+    ["  one\n\ntwo   three  ", "one two three"],
+  ] as const) {
+    expect(plainLine(stored), stored).toEqual({ name, words });
+  }
+});
+
+// A blockquote's and a list item's markers are markup, which the server's reading holds as the
+// blocks they open and no word of them, so a stored text reads to words without them at the
+// start of each line, nested ones and a task box included, and without a heading's marker after
+// them; the name projected from the reading writes an ordered item's number as a rendered body
+// draws it, and no other marker. What markdown reads literally keeps them: an escaped `1\.` or
+// `\-` opens no list, and `**bold**` at a line's start is no bullet, so a plan task's label still
+// reads `1.`.
+test("a stored text read to plain words drops the markers of a quote and of a list", () => {
+  for (const [stored, words, name = words] of [
+    ["- Hold the deploy.\n- Then ship.", "Hold the deploy. Then ship."],
+    ["> quoted words\n\nmy reply", "quoted words my reply"],
+    ["> > deeper\n>> deepest\n   > indented", "deeper deepest indented"],
+    ["1. one\n2. two\n10) ten", "one two ten", "1. one 2. two 10. ten"],
+    ["- [x] done\n* [ ] to do\n+ [X] also done", "done to do also done"],
+    [
+      "- one\n  - nested\n    1. deeper\n\t+ tabbed",
+      "one nested deeper tabbed",
+      "one nested 1. deeper tabbed",
+    ],
+    ["> ## Title\n> - item", "Title item"],
+    ["1\\. not a list\n\\- nor this", "1. not a list - nor this"],
+    [
+      "**1\\. Stand the harness up.** Run it.\n**2\\. Then ship.**",
+      "1. Stand the harness up. Run it. 2. Then ship.",
+    ],
+    ["*emphasis* stays a word", "emphasis stays a word"],
+  ] as const) {
+    expect(plainLine(stored), stored).toEqual({ name, words });
+  }
+});
+
 // A quote marker opens one block, so the first 100 of 150 open quotes and the 50 past the bound
 // read as the text they are, as the server keeps them.
 test("a stored text of quote markers past the nesting bound reads them as text", () => {
