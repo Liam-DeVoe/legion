@@ -180,6 +180,7 @@ export const realStackReasons: Record<string, string> = {
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
   "issue-page-j.e2e.ts": "the Spec view reads the server's stored decisions, ties and results",
+  "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
@@ -274,7 +275,7 @@ export const realStackReasons: Record<string, string> = {
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",
   "search.e2e.ts": "the server's search hits; the server's answer for the query",
-  "settings.e2e.ts": "mappings, defaults and architecture sources saved, refused and re-read",
+  "settings.e2e.ts": "project defaults and architecture sources saved, refused and re-read",
   "shell.e2e.ts": "the server must revoke the session",
   "signins.e2e.ts": "the broker's machine list and a Revoke decided there",
   "smoke.e2e.ts":
