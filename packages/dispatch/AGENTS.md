@@ -50,6 +50,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - `lib/page-address.ts`: the module that reads and writes a page's narrowing in the address, for the seven features in `ADDRESS_FEATURES`; `features/architecture/` still reads the router itself.
 
 - `components/focus-place.ts`: the shell's one focus rescue (`useFocusRescue`) and a component's own hand-off of a control a press takes out of it (`useFocusPlace`); `components/row-marker.ts` says what it treats as a row.
+  Hold a control while the write its press started is out through `components/held-press.ts` (`heldPress`, or `heldField` for a text field), not with native `disabled`, so it keeps the keyboard focus.
 
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
