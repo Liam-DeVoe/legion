@@ -1,11 +1,14 @@
 package leakguard
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -16,8 +19,13 @@ import (
 // word. It is built out of two pieces for the reason theHost is.
 const namedBase64 = "iQEzBAABCAAdFiEE+agen" + "tc/Rk9vYmFyYmF6"
 
-// repositoryClass is what the rules call a match of the repository rule: its description.
-const repositoryClass = "names the private deployment repository or its Dispatch project key"
+// namedLine is a line that starts with the deployment repository's name, so that a read that took
+// its first character off would no longer find the name. It is built out of two pieces for the
+// reason theHost is.
+const namedLine = "agen" + "t-c holds the run"
+
+// fixtureTagger is the tagger of a tag a test writes field by field, which names nothing.
+const fixtureTagger = "T <t@example.invalid>"
 
 // signature is a signature block as git writes one at the end of a tag's message and as a
 // commit's gpgsig field, with lines as its body. No key made it, and no git here checks it.
@@ -33,7 +41,8 @@ func continued(value string) string {
 
 // stored writes raw into repo's object store as an object of kind, and answers its id: how a
 // test makes a tag or a commit field by field, with a signature no key made or a field git does
-// not know, which no command that makes a tag or a commit writes.
+// not know, which no command that makes a tag or a commit writes. git checks the object's format
+// as it writes it, so each object here is one git accepts.
 func stored(t *testing.T, fixture fixturegit.Runner, repo, kind, raw string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), kind)
@@ -41,6 +50,18 @@ func stored(t *testing.T, fixture fixturegit.Runner, repo, kind, raw string) str
 		t.Fatal(err)
 	}
 	return fixture.Run(repo, "git", "hash-object", "-t", kind, "-w", path)
+}
+
+// storedTag writes a tag of target named name, with tagger and message, field by field, and the
+// ref refs/tags/<name> at it, and answers its id. extra are fields written after the tagger, each
+// with its line break.
+func storedTag(t *testing.T, fixture fixturegit.Runner, repo, name, target, tagger, message string, extra ...string) string {
+	t.Helper()
+	kind := fixture.Run(repo, "git", "cat-file", "-t", target)
+	sha := stored(t, fixture, repo, "tag", "object "+target+"\ntype "+kind+"\ntag "+name+
+		"\ntagger "+tagger+" 1700000000 +0000\n"+strings.Join(extra, "")+"\n"+message)
+	fixture.Run(repo, "git", "update-ref", "refs/tags/"+name, sha)
+	return sha
 }
 
 // heldRepo is a repository whose one commit the destination holds, on origin/main, and the id of
@@ -64,10 +85,9 @@ func heldRepo(t *testing.T) (fixturegit.Runner, string, string) {
 	return fixture, repo, held
 }
 
-// pushOf is the guard's answer to a push of update from repo to a public destination.
-func pushOf(t *testing.T, repo string, update Update) error {
+// pushOf is guard's answer to a push of update from repo to a public destination.
+func pushOf(t *testing.T, guard *Guard, repo string, update Update) error {
 	t.Helper()
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	return guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
@@ -76,13 +96,55 @@ func pushOf(t *testing.T, repo string, update Update) error {
 	})
 }
 
+// passingGuard is a guard whose shared check passes everything and whose destinations are public,
+// so that its rules are the whole of what refuses a push.
+func passingGuard(t *testing.T) *Guard {
+	t.Helper()
+	return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+}
+
+// pushCase is one push a test makes and the report it wants: build makes what the push moves and
+// answers the update and the report, nil where the push passes.
+type pushCase struct {
+	name  string
+	build func(t *testing.T) (Update, []string)
+}
+
+// runPushCases pushes each case's update from repo through a passing guard, as a subtest of its
+// own, and holds the answer to the case's report.
+func runPushCases(t *testing.T, repo string, cases []pushCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			update, want := tc.build(t)
+			err := pushOf(t, passingGuard(t), repo, update)
+			if want == nil {
+				if err != nil {
+					t.Fatalf("a push that names nothing: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, want)
+			}
+		})
+	}
+}
+
+// newRef is the update of a push that creates ref at sha.
+func newRef(ref, sha string) Update {
+	return Update{LocalRef: ref, LocalSHA: sha, RemoteRef: ref, RemoteSHA: noSHA}
+}
+
 // A pushed annotated tag is read: its message, its tagger and the name it was made with, which the
 // push sends to the destination with the tag. rev-list follows a tag to its commit and reads
 // nothing of the tag, and the commit here is one the destination holds, so each of these is the
 // whole of what the push adds. A tag that points to a tag is read down to the inner one, which the
-// push sends too. A tag's signature is not read as text: its base64 can hold a run a rule refuses
-// by chance, and the same run in the message is refused. A lightweight tag is a ref that holds the
-// commit, and adds nothing; nor does a tag the destination holds at the ref already.
+// push sends too, through the object its first field names, as git follows it: a second object
+// field after the tagger is text. A tag's signature is not read as text: its base64 can hold a run
+// a rule refuses by chance, and the same run in the message is refused, as it is in an armoured
+// block of the message before the signature, which git reads as message. A lightweight tag is a
+// ref that holds the commit, and adds nothing; nor does a tag the destination holds at the ref.
 func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 	fixture, repo, held := heldRepo(t)
 	// tag makes an annotated tag of target named name, with message, under env, and answers it.
@@ -94,18 +156,10 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 	// madeTag is a tag of the held commit written field by field, with message as its message.
 	madeTag := func(t *testing.T, name, message string) string {
 		t.Helper()
-		sha := stored(t, fixture, repo, "tag", "object "+held+"\ntype commit\ntag "+name+
-			"\ntagger T <t@example.invalid> 1700000000 +0000\n\n"+message)
-		fixture.Run(repo, "git", "update-ref", "refs/tags/"+name, sha)
-		return sha
+		return storedTag(t, fixture, repo, name, held, fixtureTagger, message)
 	}
 
-	for _, tc := range []struct {
-		name string
-		// build makes the case's tag and answers the update that pushes it and the report, nil
-		// where the push passes.
-		build func(t *testing.T) (Update, []string)
-	}{
+	runPushCases(t, repo, []pushCase{
 		{
 			name: "the message names a host",
 			build: func(t *testing.T) (Update, []string) {
@@ -142,6 +196,20 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 			},
 		},
 		{
+			// git follows the first field, so the push sends the inner tag; a guard that followed
+			// the second would read the held commit in its place and never the inner tag.
+			name: "a tag of a tag with a second object field that names the held commit",
+			build: func(t *testing.T) (Update, []string) {
+				inner := tag(t, "inner-two", held, "moved the run to "+theHost)
+				outer := storedTag(t, fixture, repo, "outer-two", inner, fixtureTagger, "a message of no interest\n",
+					"object "+held+"\n")
+				if peeled := fixture.Run(repo, "git", "rev-parse", outer+"^{tag}", "refs/tags/outer-two^{}"); peeled != outer+"\n"+held {
+					t.Fatalf("git reads the outer tag as %q, want it and, peeled, the held commit through the inner tag", peeled)
+				}
+				return newRef("refs/tags/outer-two", outer), []string{"tag " + short(inner) + " message: " + theClass}
+			},
+		},
+		{
 			name: "a signature's bytes that read as a name",
 			build: func(t *testing.T) (Update, []string) {
 				sha := madeTag(t, "signed", "a message of no interest\n"+signature(namedBase64))
@@ -153,6 +221,15 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 			build: func(t *testing.T) (Update, []string) {
 				sha := madeTag(t, "unsigned", "a message of no interest\n"+namedBase64+"\n")
 				return newRef("refs/tags/unsigned", sha), []string{"tag " + short(sha) + " message: " + repositoryClass}
+			},
+		},
+		{
+			// git's signature is the last block alone; an armoured block before it is message.
+			name: "the same bytes in an armoured block before the signature",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "armoured", "a message of no interest\n-----BEGIN PGP MESSAGE-----\n\n"+namedBase64+
+					"\n-----END PGP MESSAGE-----\n"+signature("Rk9vYmFy"))
+				return newRef("refs/tags/armoured", sha), []string{"tag " + short(sha) + " message: " + repositoryClass}
 			},
 		},
 		{
@@ -176,53 +253,43 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 				return newRef("refs/tags/clean", tag(t, "clean", held, "a message of no interest")), nil
 			},
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			update, want := tc.build(t)
-			err := pushOf(t, repo, update)
-			if want == nil {
-				if err != nil {
-					t.Fatalf("a push that names nothing: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, want)
-			}
-		})
-	}
+	})
 }
 
-// newRef is the update of a push that creates ref at sha.
-func newRef(ref, sha string) Update {
-	return Update{LocalRef: ref, LocalSHA: sha, RemoteRef: ref, RemoteSHA: noSHA}
-}
-
-// A commit's whole header is read, not only its identities and message. A merge of a signed tag
-// carries that tag in its header (mergetag), its tagger and message included, and the push sends
-// the commit alone: the tag is read there as a pushed tag is. A field git does not know is read
-// too, and a commit's encoding: a message stored in another encoding than UTF-8 is read as git
-// shows it. A signature's bytes are not read as text, whether a commit's (gpgsig) or a merged
-// tag's: the same bytes in a field git does not know are refused, and a line of a signature block
-// that is not base64 is read. Each commit here adds no line of a file, so its header and message
-// are the whole of what it adds.
+// A commit's whole header is read by git's rules, not only its identities and message. A merge of a
+// signed tag carries that tag in its header (mergetag), its tagger and message included, and the
+// push sends the commit alone: the tag is read there as a pushed tag is. A field git does not know
+// is read, and so is a field of git's own names out of git's place, which git reads no structure
+// from: a second committer is read whole, and a parent after the committer is no parent, so the
+// commit's diff is read in the shape git's own parents call for. A merge's parents are git's
+// whatever the case of their hex. A message stored in another encoding than UTF-8 is read as git
+// shows it, whichever encoding field comes first. A signature's bytes are not read as text,
+// whether a commit's (gpgsig) or a merged tag's: the same bytes in a field git does not know are
+// refused, and a line of a signature block that is not base64 is read. Each commit here adds no
+// line of a file unless its case says so, so its header and message are the whole of what it adds.
 func TestACommitsWholeHeaderIsRead(t *testing.T) {
 	fixture, repo, held := heldRepo(t)
-	tree := fixture.Run(repo, "git", "rev-parse", held+"^{tree}")
+	heldTree := fixture.Run(repo, "git", "rev-parse", held+"^{tree}")
+	onMain := func(head string) Update {
+		return Update{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: held}
+	}
+	// committed is a commit of name.md, holding content, on a branch of name from base.
+	committed := func(t *testing.T, name, base, content string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
+		if err := os.WriteFile(filepath.Join(repo, name+".md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", "a commit of no interest")
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
 	// merged is a merge onto the held commit of a side commit through a signed tag of it, made
 	// field by field with tagger and message, as `git merge` of a signed tag writes it.
 	merged := func(t *testing.T, name, tagger, message string) string {
 		t.Helper()
-		fixture.Run(repo, "git", "checkout", "--quiet", "-B", "side-"+name, held)
-		if err := os.WriteFile(filepath.Join(repo, name+".md"), []byte("a line of the side branch\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.Run(repo, "git", "commit", "--quiet", "-m", "a side commit")
-		side := fixture.Run(repo, "git", "rev-parse", "HEAD")
-		tag := stored(t, fixture, repo, "tag", "object "+side+"\ntype commit\ntag "+name+
-			"\ntagger "+tagger+" 1700000000 +0000\n\n"+message)
-		fixture.Run(repo, "git", "update-ref", "refs/tags/"+name, tag)
+		side := committed(t, "side-"+name, held, "a line of the side branch\n")
+		storedTag(t, fixture, repo, name, side, tagger, message)
 		fixture.Run(repo, "git", "checkout", "--quiet", "-B", "merge-"+name, held)
 		fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "-m", "a merge of no interest", name)
 		merge := fixture.Run(repo, "git", "rev-parse", "HEAD")
@@ -231,9 +298,10 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 		}
 		return merge
 	}
-	// madeOf is a commit of the held commit's tree on top of it, written field by field with fields
-	// after its committer and message after them; made is one of a message of no interest.
-	madeOf := func(t *testing.T, fields, message string) string {
+	// madeOn is a commit of tree on top of the held commit, written field by field with fields
+	// after its committer and message after them; made is one of the held commit's tree and a
+	// message of no interest.
+	madeOn := func(t *testing.T, tree, fields, message string) string {
 		t.Helper()
 		return stored(t, fixture, repo, "commit", "tree "+tree+"\nparent "+held+
 			"\nauthor A <a@example.invalid> 1700000000 +0000\ncommitter C <c@example.invalid> 1700000000 +0000\n"+
@@ -241,69 +309,99 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 	}
 	made := func(t *testing.T, fields string) string {
 		t.Helper()
-		return madeOf(t, fields, "a message of no interest\n")
+		return madeOn(t, heldTree, fields, "a message of no interest\n")
 	}
-	const tagger = "T <t@example.invalid>"
+	// refused is a case's update of head and its one line of report, about head's record.
+	refused := func(head, record, class string) (Update, []string) {
+		return onMain(head), []string{"commit " + short(head) + " " + record + ": " + class}
+	}
 
-	for _, tc := range []struct {
-		name string
-		// build makes the case's commit and answers it, and the report as a function of it, nil
-		// where the push passes.
-		build func(t *testing.T) (string, func(head string) []string)
-	}{
+	runPushCases(t, repo, []pushCase{
 		{
 			name: "a merged tag's message names a host",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return merged(t, "message", tagger, "moved the run to "+theHost+"\n"+signature("Rk9vYmFy")),
-					func(head string) []string {
-						return []string{"commit " + short(head) + " mergetag message: " + theClass}
-					}
+			build: func(t *testing.T) (Update, []string) {
+				head := merged(t, "message", fixtureTagger, "moved the run to "+theHost+"\n"+signature("Rk9vYmFy"))
+				return refused(head, "mergetag message", theClass)
 			},
 		},
 		{
 			name: "a merged tag's tagger names a host",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return merged(t, "tagger", "T <t@"+theHost+">", "a message of no interest\n"+signature("Rk9vYmFy")),
-					func(head string) []string {
-						return []string{"commit " + short(head) + " mergetag tagger: " + theClass}
-					}
+			build: func(t *testing.T) (Update, []string) {
+				head := merged(t, "tagger", "T <t@"+theHost+">", "a message of no interest\n"+signature("Rk9vYmFy"))
+				return refused(head, "mergetag tagger", theClass)
 			},
 		},
 		{
 			name: "a merged tag's signature bytes that read as a name",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return merged(t, "signed", tagger, "a message of no interest\n"+signature(namedBase64)), nil
+			build: func(t *testing.T) (Update, []string) {
+				return onMain(merged(t, "signed", fixtureTagger, "a message of no interest\n"+signature(namedBase64))), nil
 			},
 		},
 		{
 			name: "a field git does not know names a host",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return made(t, "x-note the run moved to "+theHost+"\n"), func(head string) []string {
-					return []string{"commit " + short(head) + " header: " + theClass}
+			build: func(t *testing.T) (Update, []string) {
+				return refused(made(t, "x-note the run moved to "+theHost+"\n"), "header", theClass)
+			},
+		},
+		{
+			// git reads the first committer alone; this one is a field of text after it.
+			name: "a second committer with text after its address",
+			build: func(t *testing.T) (Update, []string) {
+				return refused(made(t, "committer D <d@example.invalid> moved the run to "+theHost+"\n"), "header", theClass)
+			},
+		},
+		{
+			// git reads the parents straight after the tree alone: this commit has one parent to
+			// git, and its added line is read in full, its first character included.
+			name: "a parent field after the committer",
+			build: func(t *testing.T) (Update, []string) {
+				tree := fixture.Run(repo, "git", "rev-parse", committed(t, "extra-parent", held, namedLine+"\n")+"^{tree}")
+				return onMain(madeOn(t, tree, "parent "+held+"\n", "a message of no interest\n")),
+					[]string{"extra-parent.md: " + repositoryClass}
+			},
+		},
+		{
+			// git reads hex of either case as a parent, so this is a merge, and its resolution's
+			// own line is in its combined diff alone.
+			name: "a merge whose second parent is written in capitals",
+			build: func(t *testing.T) (Update, []string) {
+				side := committed(t, "upper-side", held, "a line of the side branch\n")
+				committed(t, "upper-main", held, "a line of the main branch\n")
+				fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "upper-side")
+				if err := os.WriteFile(filepath.Join(repo, "upper-resolution.md"), []byte("the runner answers at "+theHost+"\n"), 0o600); err != nil {
+					t.Fatal(err)
 				}
+				fixture.Run(repo, "git", "add", "-A")
+				fixture.Run(repo, "git", "commit", "--quiet", "-m", "a merge of no interest")
+				raw := fixture.Out(repo, "git", "cat-file", "commit", "HEAD")
+				upper := strings.Replace(raw, "\nparent "+side+"\n", "\nparent "+strings.ToUpper(side)+"\n", 1)
+				if upper == raw {
+					t.Fatalf("the merge names no second parent %s:\n%s", side, raw)
+				}
+				head := stored(t, fixture, repo, "commit", upper)
+				if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
+					t.Fatalf("git reads %q, want a merge of two parents", parents)
+				}
+				return onMain(head), []string{"upper-resolution.md: " + theClass}
 			},
 		},
 		{
 			name: "a commit's signature bytes that read as a name",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return made(t, "gpgsig "+continued(signature(namedBase64))), nil
+			build: func(t *testing.T) (Update, []string) {
+				return onMain(made(t, "gpgsig "+continued(signature(namedBase64)))), nil
 			},
 		},
 		{
 			name: "the same bytes in a field git does not know",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return made(t, "x-note "+namedBase64+"\n"), func(head string) []string {
-					return []string{"commit " + short(head) + " header: " + repositoryClass}
-				}
+			build: func(t *testing.T) (Update, []string) {
+				return refused(made(t, "x-note "+namedBase64+"\n"), "header", repositoryClass)
 			},
 		},
 		{
 			name: "a line of a signature block that is not base64",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return made(t, "gpgsig "+continued(signature("Comment: the run moved to "+theHost, "Rk9vYmFy"))),
-					func(head string) []string {
-						return []string{"commit " + short(head) + " header: " + theClass}
-					}
+			build: func(t *testing.T) (Update, []string) {
+				head := made(t, "gpgsig "+continued(signature("Comment: the run moved to "+theHost, "Rk9vYmFy")))
+				return refused(head, "header", theClass)
 			},
 		},
 		{
@@ -311,27 +409,61 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 			// bytes do not name the repository to the rules, and the text git shows does. Built
 			// out of two pieces for the reason theHost is.
 			name: "a message in another encoding names the repository",
-			build: func(t *testing.T) (string, func(string) []string) {
-				return madeOf(t, "encoding ISO-8859-1\n", "the run moved to agen"+"t\xa0c today\n"),
-					func(head string) []string {
-						return []string{"commit " + short(head) + " message in UTF-8: " + repositoryClass}
-					}
+			build: func(t *testing.T) (Update, []string) {
+				head := madeOn(t, heldTree, "encoding ISO-8859-1\n", "the run moved to agen"+"t\xa0c today\n")
+				return refused(head, "message in UTF-8", repositoryClass)
 			},
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			head, want := tc.build(t)
-			err := pushOf(t, repo, Update{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: held})
-			if want == nil {
-				if err != nil {
-					t.Fatalf("a push that names nothing: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, want(head)) {
-				t.Errorf("the report is %q, want %q", refused.Lines, want(head))
-			}
-		})
+		{
+			// git converts from the first encoding field; a second that names UTF-8 changes
+			// nothing of what git shows.
+			name: "a message in another encoding, with a second encoding field that names UTF-8",
+			build: func(t *testing.T) (Update, []string) {
+				head := madeOn(t, heldTree, "encoding ISO-8859-1\nencoding UTF-8\n", "the run moved to agen"+"t\xa0c today\n")
+				return refused(head, "message in UTF-8", repositoryClass)
+			},
+		},
+	})
+}
+
+// A field of many lines is read in one pass over it: a merged tag of 40,000 lines, 2 MB, is read
+// with an allocation of a few times its size, where a value built a line at a time would copy
+// itself again for each line, which for this one is tens of gigabytes and, measured, 13 s under
+// load. The allocation, unlike the time, does not depend on the machine's load. The message comes
+// back whole, its lines as they were.
+func TestAFieldOfManyLinesIsReadInOnePass(t *testing.T) {
+	const lines = 40_000
+	var message strings.Builder
+	for i := range lines {
+		fmt.Fprintf(&message, "line %d of a long tag message of nothing in particular\n", i)
+	}
+	tag := "object " + strings.Repeat("a", 40) + "\ntype commit\ntag long\ntagger " + fixtureTagger +
+		" 1700000000 +0000\n\n" + message.String()
+	raw := "tree " + strings.Repeat("b", 40) + "\nauthor A <a@example.invalid> 1700000000 +0000\n" +
+		"committer C <c@example.invalid> 1700000000 +0000\nmergetag " + continued(tag) + "\na merge of no interest\n"
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	started := time.Now()
+	var read string
+	_, err := objectRecords("commit x", raw, false, func(r Record) error {
+		if r.Label == "commit x mergetag message" {
+			read = r.Text
+		}
+		return nil
+	})
+	took := time.Since(started)
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("a merged tag of %d lines, %d bytes, read in %s with %d bytes allocated", lines, len(raw), took, allocated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.TrimSuffix(message.String(), "\n"); read != want {
+		t.Fatalf("the merged tag's message is %d bytes, want its %d bytes as they were", len(read), len(want))
+	}
+	if limit := 8 * uint64(len(raw)); allocated > limit {
+		t.Errorf("reading %d bytes allocated %d bytes, want at most %d: a field read once costs a few copies of it", len(raw), allocated, limit)
 	}
 }
 
@@ -348,12 +480,7 @@ func TestAFailedTagReadRefusesThePush(t *testing.T) {
 			guard := gitFirst(t, "case \" $* \" in\n"+
 				"*\" "+read+" \"*) echo 'fatal: the stand-in fails this read' >&2; exit 128 ;;\n"+
 				"*) exec '"+git+"' \"$@\" ;;\nesac\n")
-			err := guard.Push(bound(t), PushRequest{
-				Dir:     repo,
-				Remote:  "origin",
-				URL:     "https://github.com/invented-org/invented-repo.git",
-				Updates: []Update{newRef("refs/tags/clean", sha)},
-			})
+			err := pushOf(t, guard, repo, newRef("refs/tags/clean", sha))
 			says(t, setupFailure(t, err), "the push's commits and tags could not be read: git cat-file exited 128: fatal: the stand-in fails this read")
 		})
 	}

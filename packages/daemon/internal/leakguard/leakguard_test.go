@@ -31,6 +31,10 @@ const theHost = "wobble-fern.quiet-harbor.ts" + ".net"
 // a report names and the whole of what it says about the text.
 const theClass = "names a Tailscale MagicDNS host"
 
+// repositoryClass is what the rules call a match of the repository rule: the description of
+// repository_rule. Its path rule's description is this with " in its path" after it.
+const repositoryClass = "names the private deployment repository or its Dispatch project key"
+
 // noSHA is git's "this ref is not there", which a pre-push line carries for a ref the push
 // creates and for one it deletes.
 const noSHA = "0000000000000000000000000000000000000000"
@@ -281,8 +285,7 @@ func TestTheReportMasksAPathComponent(t *testing.T) {
 	// A path record is read twice over, as a path by the path rules and as a text by the content
 	// rules, so a path that names the deployment repository earns both of that class's wordings.
 	refused := refusal(t, guard.Rules(bound(t), Record{Label: path, Text: path}))
-	const class = "names the private deployment repository or its Dispatch project key"
-	want := []string{"packages/<name>/main.go: " + class, "packages/<name>/main.go: " + class + " in its path"}
+	want := []string{"packages/<name>/main.go: " + repositoryClass, "packages/<name>/main.go: " + repositoryClass + " in its path"}
 	if !slices.Equal(refused.Lines, want) {
 		t.Fatalf("the report is %q, want %q", refused.Lines, want)
 	}

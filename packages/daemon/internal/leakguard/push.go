@@ -180,10 +180,10 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			return err
 		}
 		for _, commit := range commits {
-			if read[commit] {
+			if read[commit.id] {
 				continue
 			}
-			read[commit] = true
+			read[commit.id] = true
 			if err := g.commitRecords(ctx, req.Dir, commit, emit); err != nil {
 				return err
 			}
@@ -200,8 +200,9 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 // is asked for rather than read from the tag that points to it. A lightweight tag is a ref that
 // holds a commit, and adds no record of its own; a deletion adds none either, and neither does a
 // ref the destination holds at that sha already, which the push does not move. A tag already in
-// read is not read again, and neither is what it points to. A tag that names no object it points
-// to is an error, as a commit git could not read is: what it points to would go unread.
+// read is not read again, and neither is what it points to. A tag whose first field is not the
+// object it points to is an error, as a commit git could not read is: git follows that first
+// field and nothing else, and a tag without it has nothing the guard could follow in its place.
 func (g *Guard) tagRecords(ctx context.Context, dir string, update Update, read map[string]bool, emit func(Record) error) error {
 	sha := update.LocalSHA
 	if sha == update.RemoteSHA {
@@ -225,11 +226,18 @@ func (g *Guard) tagRecords(ctx context.Context, dir string, update Update, read 
 			return err
 		}
 		if links.object == "" {
-			return fmt.Errorf("tag %s names no object it points to", short(sha))
+			return fmt.Errorf("tag %s does not start with the object it points to", short(sha))
 		}
 		sha = links.object
 	}
 	return nil
+}
+
+// pushed is one commit a push would add: its id, and the number of its parents as git counts
+// them, which says how its diff is read (diffTree).
+type pushed struct {
+	id      string
+	parents int
 }
 
 // commits are the commits one update would add to the destination, oldest first: the commits
@@ -241,11 +249,15 @@ func (g *Guard) tagRecords(ctx context.Context, dir string, update Update, read 
 // the destination has as much as for a new one. Without them, a forward merge (the default
 // branch merged onto an older tip of the branch) would read every commit of the default branch
 // since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
-func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
+//
+// Each commit's parents are git's own, from rev-list --parents, and not read out of the commit's
+// header by this package: git takes only the parent fields straight after the tree, in hex of
+// either case, and a count read any other way would read a merge's diff in the wrong shape.
+func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]pushed, error) {
 	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
 		return nil, nil
 	}
-	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
+	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA, "--not"}
 	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
 	if err != nil {
 		return nil, err
@@ -262,7 +274,13 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 	if err != nil {
 		return nil, err
 	}
-	return strings.Fields(out), nil
+	var commits []pushed
+	for line := range strings.Lines(out) {
+		if ids := strings.Fields(line); len(ids) > 0 {
+			commits = append(commits, pushed{id: ids[0], parents: len(ids) - 1})
+		}
+	}
+	return commits, nil
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates
@@ -286,41 +304,42 @@ func zeroSHA(sha string) bool {
 }
 
 // commitRecords hands emit one commit as records. The header and the message come from the commit
-// as git stores it (objectRecords), which is all of what the commit object carries: the identities,
-// a signed tag a merge carries (mergetag), an encoding and any field git does not know, besides
-// the message. A commit whose encoding field names another encoding than UTF-8 is read a second
-// time as git shows it (inUTF8). The added and renamed paths and the added lines come from its
-// diff, read in the shape its number of parents calls for (diffTree).
+// as git stores it, read by git's rules (objectRecords): the identities, a signed tag a merge
+// carries (mergetag), an encoding, any field git does not know and any field out of git's place,
+// besides the message. A commit with an encoding field that names another encoding than UTF-8 is
+// read a second time as git shows it (inUTF8). The added and renamed paths and the added lines
+// come from its diff, read in the shape its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
-func (g *Guard) commitRecords(ctx context.Context, dir, commit string, emit func(Record) error) error {
-	raw, err := g.git(ctx, dir, "cat-file", "commit", commit)
+func (g *Guard) commitRecords(ctx context.Context, dir string, commit pushed, emit func(Record) error) error {
+	raw, err := g.git(ctx, dir, "cat-file", "commit", commit.id)
 	if err != nil {
 		return err
 	}
-	label := "commit " + short(commit)
+	label := "commit " + short(commit.id)
 	links, err := objectRecords(label, raw, false, emit)
 	if err != nil {
 		return err
 	}
-	if links.encoding != "" && !utf8Name(links.encoding) {
-		if err := g.inUTF8(ctx, dir, commit, label, emit); err != nil {
+	if links.otherEncoding {
+		if err := g.inUTF8(ctx, dir, commit.id, label, emit); err != nil {
 			return err
 		}
 	}
-	if err := g.addedPaths(ctx, dir, commit, links.parents, emit); err != nil {
+	if err := g.addedPaths(ctx, dir, commit.id, commit.parents, emit); err != nil {
 		return err
 	}
-	return g.addedLines(ctx, dir, commit, links.parents, emit)
+	return g.addedLines(ctx, dir, commit.id, commit.parents, emit)
 }
 
 // inUTF8 hands emit one commit's identities and message as git shows them, converted into UTF-8
-// from the encoding the commit's encoding field names, which is the text a reader of the
-// destination sees. The bytes the commit stores are read as well (objectRecords), but in another
-// encoding a character the rules know, such as a no-break space or a dash between two words, is
-// not the UTF-8 the rules match.
+// from the encoding the commit names, which is the text a reader of the destination sees. The
+// bytes the commit stores are read as well (objectRecords), but in another encoding a character
+// the rules know, such as a no-break space or a dash between two words, is not the UTF-8 the rules
+// match. git converts from the first encoding field; this is asked for wherever any of them names
+// another encoding than UTF-8, so no order of the fields leaves the converted text unread.
 func (g *Guard) inUTF8(ctx context.Context, dir, commit, label string, emit func(Record) error) error {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all.

@@ -563,8 +563,7 @@ func TestARenamedPathIsReadAsItsNewPath(t *testing.T) {
 	fixture.Run(push.req.Dir, "git", "mv", "old.md", path)
 	fixture.Run(push.req.Dir, "git", "commit", "--quiet", "-m", "a rename")
 	push.req.Updates = []Update{{LocalRef: "refs/heads/main", LocalSHA: fixture.Run(push.req.Dir, "git", "rev-parse", "HEAD"), RemoteRef: "refs/heads/main", RemoteSHA: base}}
-	const class = "names the private deployment repository or its Dispatch project key"
-	want := []string{"packages/<name>/notes.md: " + class, "packages/<name>/notes.md: " + class + " in its path"}
+	want := []string{"packages/<name>/notes.md: " + repositoryClass, "packages/<name>/notes.md: " + repositoryClass + " in its path"}
 	if got := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines; !slices.Equal(got, want) {
 		t.Fatalf("the report is %q, want %q", got, want)
 	}
@@ -593,7 +592,6 @@ func TestAPathWithASpaceIsReportedAsItself(t *testing.T) {
 func TestARefusalNamesAtMostItsBoundOfLines(t *testing.T) {
 	// Built out of two pieces for the reason theHost is (TestTheReportMasksAPathComponent).
 	path := "packages/" + "agen" + "t-c/notes.md"
-	const class = "names the private deployment repository or its Dispatch project key"
 	for _, tc := range []struct {
 		name string
 		// lines is how many lines the file adds; the report of each is one line, and the path's
@@ -625,8 +623,8 @@ func TestARefusalNamesAtMostItsBoundOfLines(t *testing.T) {
 			}
 			push := aPushOf(t, map[string]string{path: content.String()})
 			got := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
-			today := []string{"packages/<name>/notes.md: " + class, "packages/<name>/notes.md: " + class + " in its path"}
-			today = append(today, slices.Repeat([]string{"packages/<name>/notes.md: " + class + " in its path"}, tc.lines)...)
+			today := []string{"packages/<name>/notes.md: " + repositoryClass, "packages/<name>/notes.md: " + repositoryClass + " in its path"}
+			today = append(today, slices.Repeat([]string{"packages/<name>/notes.md: " + repositoryClass + " in its path"}, tc.lines)...)
 			want := tc.want(today)
 			if !slices.Equal(got, want) {
 				t.Fatalf("the report is %d lines ending %q, want %d lines ending %q", len(got), got[max(0, len(got)-2):], len(want), want[max(0, len(want)-2):])
