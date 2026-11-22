@@ -142,7 +142,7 @@ func workRows(race bool) []workRow {
 // 64 (33.9), so its n is 128. At those n each of the four walks, broken in turn, failed its row in
 // 5 of 5 runs, 228.7, 169.4, 50.8 and 47.8 times or more, and failed no other row but the row of
 // many lines, which the first break also reads whole for each way out (153.5 times or more). The
-// charge of each reading of a sentence (sentenceReads) has two rows, one sentence that holds in
+// charge of each reading of a sentence (charge.Texts) has two rows, one sentence that holds in
 // code font the words of many findings that stand in the sentences after it, and the same as a
 // document holds them, the sentence after the findings: each finding's way out is read in that
 // sentence too (wayJudge.alsoAt), so with the charge taken out one sentence is read once for each
@@ -150,7 +150,19 @@ func workRows(race bool) []workRow {
 // the machine of 288 cores at a load average of 750 to 1,340: with the charge taken out, each row
 // first passed the bound at the least n whose windows cputest reads (8: 65.9 and 68.4 times), so
 // its n is 16, where the smaller window with the charge in place lasts 123 ms and 150 ms. At 16,
-// with the charge taken out, each row failed in 5 of 5 runs, 102.9 and 98.6 times or more.
+// with the charge taken out, each row failed in 5 of 5 runs, 102.9 and 98.6 times or more. The
+// judge's look for the sentences where a finding's words stand (wholeText.holding) and its walk of
+// the sentences that a piece of ste-lint runs through between two that a way out changes
+// (wholeText.changedRuns) have three rows, each n found in the same way, on the machine of 288
+// cores at a load average of 900 to 1,000: one finding beside one sentence that holds its bare
+// form many times in code font, whose walk, a lookup keyed by the sentence's text for each word of
+// that form, first passed the bound at 5,793 (32.0; 26.1 at 4,096), so its n is 11,585; many
+// findings of one bare form beside such a sentence, whose walk, the bare form's hit tested in the
+// whole sentence for each word of it, first passed it at 90 (46.4; 28.5 at 64), so its n is 180,
+// where the smaller window lasts about 110 ms unbroken; and many findings whose two places a run
+// of open quoted sentences joins, whose walk, each sentence between read with no charge, first
+// passed it at 64 (32.7; 29.2 at 45), so its n is 128. The types hold the third walk's charge (no
+// code of the judge reads a sentence but through charge.Texts.Read), so its break loosens them.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -362,11 +374,11 @@ func workTable() []workRow {
 			extracted(func(n int) string {
 				return ":::check{#c}\n" + units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.\n:::\n")(n)
 			})},
-		{"one finding beside one sentence that holds its bare form many times in code font", ruleStopNoSpace, 500,
+		{"one finding beside one sentence that holds its bare form many times in code font", ruleStopNoSpace, 11_585,
 			built(KindClaim, func(n int) string {
 				return "It keeps `" + strings.TrimSpace(strings.Repeat("a1.B ", n)) + "` at boot. It reads a1.B."
 			})},
-		{"many findings of one bare form beside one sentence that holds it many times in code font", ruleStopNoSpace, 512,
+		{"many findings of one bare form beside one sentence that holds it many times in code font", ruleStopNoSpace, 180,
 			built(KindClaim, func(n int) string {
 				var text strings.Builder
 				for _, mark := range []string{",", ";", ":", ")", "]", "}", "'", "\"", ">", "*", "-", "_"} {
@@ -374,7 +386,7 @@ func workTable() []workRow {
 				}
 				return text.String() + "It logs" + strings.Repeat(" `Web.Config`", n) + " today."
 			})},
-		{"many findings whose two places a run of open quoted sentences joins", ruleStopNoSpace, 200,
+		{"many findings whose two places a run of open quoted sentences joins", ruleStopNoSpace, 128,
 			built(KindClaim, func(n int) string {
 				var text strings.Builder
 				text.WriteString("It starts.")
