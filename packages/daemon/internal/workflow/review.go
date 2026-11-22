@@ -1239,11 +1239,13 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 
 // askVerdictWrite asks the daemon, on the commit, to write legion-verdict on head of pr
 // (Config.WriteVerdict), "" asking nothing. Only an open pull request of an issue of the project's
-// own is written on: a closed one merges nothing, and the record a fact finds by its repository and
-// number can be another project's issue's, whose daemon writes its check. It is registered before
-// askMergeStateFor registers the read on the same commit, and commit hooks run in order
-// (intake.WithCommitHooks), so the daemon has the write pending when the read is asked for, and
-// holds the read until the write ends.
+// own is asked for: a closed one merges nothing, and the record a fact finds by its repository and
+// number can be another project's issue's. This daemon holds none of that issue's steps, so no
+// verdict stands at its head and no fact of it gives anything to write; the writers' sweep writes
+// failure over the one App's runs and statuses there. It is registered before askMergeStateFor
+// registers the read on the same commit, and commit hooks run in order (intake.WithCommitHooks), so
+// the daemon has the write pending when the read is asked for, and holds the read until the write
+// ends.
 func (e *Engine) askVerdictWrite(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, head string) error {
 	if e.cfg.WriteVerdict == nil || head == "" || pr.State != record.PullRequestOpen {
 		return nil

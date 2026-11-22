@@ -34,13 +34,28 @@ import (
 
 // verdictAppLogin is the one App's bot login in these rigs, verdictAppSlug the slug GitHub names
 // that App by on each check run it made, and verdictAppNumber the App's id there, which the
-// writer's configuration names as verdictAppID (github_apps.implement.app_id).
+// writer's configuration names as verdictAppID (github_apps.implement.app_id). verdictBotNumber is
+// the id of the App's bot user, which each status it creates names as its creator's.
 const (
 	verdictAppLogin        = "legion-app[bot]"
 	verdictAppSlug         = "legion-app"
 	verdictAppNumber int64 = 1001
 	verdictAppID           = "1001"
+	verdictBotNumber int64 = 2001
 )
+
+// botLeases is tokens whose verdict lease carries the one App's bot identity, as appauth's leases
+// do: its noreply email names the bot user's id (appauth.BotUserID), by which the writer tells the
+// bot's commit statuses.
+type botLeases struct{ appauth.Tokens }
+
+func (t botLeases) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	lease, err := t.Tokens.VerdictToken(ctx, owner)
+	if err == nil {
+		lease.Identity = appauth.GitIdentity{Name: verdictAppLogin, Email: fmt.Sprintf("%d+%s@users.noreply.github.com", verdictBotNumber, verdictAppLogin)}
+	}
+	return lease, err
+}
 
 // ciReviewer is the bot login acme/widgets' verdict entry names as its ci_reviewer.
 const ciReviewer = "example-ci-review[bot]"
@@ -85,13 +100,27 @@ type fakePull struct {
 	head   string
 }
 
-// fakeStatus is one commit status GitHub holds at a head, newest last.
+// fakeStatus is one commit status GitHub holds at a head, newest last, with its creator's login and
+// that account's id (creatorID).
 type fakeStatus struct {
-	ID      int64
-	Head    string
-	Context string
-	State   string
-	Creator string
+	ID        int64
+	Head      string
+	Context   string
+	State     string
+	Creator   string
+	CreatorID int64
+}
+
+// creatorID is the id of the account that created status: CreatorID where a case gives one, the
+// App's bot's for a status under its login, and 0, another account's, for every other.
+func (status fakeStatus) creatorID() int64 {
+	switch {
+	case status.CreatorID != 0:
+		return status.CreatorID
+	case status.Creator == verdictAppLogin:
+		return verdictBotNumber
+	}
+	return 0
 }
 
 // fakeWrite is one write of a check run or a commit status the daemon made: the method, the path
@@ -271,7 +300,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			for i := len(g.statuses) - 1; i >= 0; i-- {
 				if status := g.statuses[i]; status.Head == parts[1] {
 					listed = append(listed, map[string]any{"id": status.ID, "context": status.Context, "state": status.State,
-						"creator": map[string]any{"login": status.Creator}})
+						"creator": map[string]any{"login": status.Creator, "id": status.creatorID()}})
 				}
 			}
 			answer(listed)
@@ -366,7 +395,7 @@ func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.Verdict
 	log := slog.New(slog.NewJSONHandler(rig.logs, nil))
 	w := &workflowRuntime{
 		pool: rig.pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),
-		tokens: tokens, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, appLogin: verdictAppLogin,
+		tokens: botLeases{tokens}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, appLogin: verdictAppLogin,
 		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{}, mergeStateRetry: readRigWait,
 		verdicts: newVerdictWriter(entries, verdictAppID),
 	}
@@ -1276,6 +1305,37 @@ func TestLegionVerdictTellsTheAppsRunsByItsID(t *testing.T) {
 	}
 	if recorded := verdictWrites(t, rig.pool, "code"); len(recorded) != 1 || recorded[0].GitHubID != 500 || recorded[0].ForeignID != 500 {
 		t.Fatalf("the store records %+v, want run 500 written over as another writer's", recorded)
+	}
+}
+
+// R19, C56: the writer tells the one App's bot's commit statuses by the bot user's id, which C56
+// reads as each status's creator.id and which a rename of the App leaves as it is, while the bot's
+// login changes (R16). Here the newest legion-verdict status is another account's that now holds
+// the bot's old login, and the one before it is the App's bot's under its new login: the writer
+// passes over the first and sets a status of its own over the bot's.
+func TestLegionVerdictTellsTheBotsStatusesByItsID(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.github.mu.Lock()
+	rig.github.statuses = append(rig.github.statuses,
+		fakeStatus{ID: 600, Head: "code", Context: verdict.CheckName, State: "success", Creator: "legion-renamed[bot]", CreatorID: verdictBotNumber},
+		fakeStatus{ID: 601, Head: "code", Context: verdict.CheckName, State: "success", Creator: verdictAppLogin, CreatorID: 4242})
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("changes", "code", 1))
+	rig.written(t)
+	rig.github.mu.Lock()
+	statuses := slices.Clone(rig.github.statuses)
+	rig.github.mu.Unlock()
+	if len(statuses) != 3 || statuses[2].State != "failure" || statuses[2].creatorID() != verdictBotNumber {
+		t.Fatalf("statuses on code = %+v, want a newer legion-verdict status of the daemon's own at failure", statuses)
+	}
+	var over []int64
+	for _, written := range verdictWrites(t, rig.pool, "code") {
+		if written.Kind == store.VerdictWriteStatus {
+			over = append(over, written.ForeignID)
+		}
+	}
+	if !slices.Equal(over, []int64{600}) {
+		t.Fatalf("the daemon's statuses went over %v, want over the App's bot's status 600 alone, not the other account's 601", over)
 	}
 }
 
