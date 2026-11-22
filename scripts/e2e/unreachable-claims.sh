@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Check w5 of this change's verification: a claim Envoy cannot reach is marked, reported and
-# relaunched (R5), and a person is told what no agent can hear (R6). The whole daemon runs on the
-# rig of this change's checks (packages/daemon/internal/daemon/RIG.md): the listener production
+# Check w5 of this change's verification: a claim Envoy cannot reach is marked and the daemon
+# relaunches it on its same session (R5), and a person is told what no agent can hear or act on
+# (R6). The whole daemon runs on the rig of this change's checks
+# (packages/daemon/internal/daemon/RIG.md): the listener production
 # pins, built from its own commit, a real nats-server with production's grants, a PostgreSQL of the
 # run's own, a scratch Dispatch the daemon reads, and real `omp --mode rpc` panes under the real
 # `legion worker-shim`, each with this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion, whose
@@ -38,9 +39,9 @@
 # worktree of <rev> is made under TMPDIR (removed on any exit), this checkout's rig and the check's
 # driver are laid over it (rig_files; w5_inplace_live_test.go, which names the head's own runtime
 # symbols, is left out), `bun install --frozen-lockfile` gives it node_modules of its own, and the
-# setup and the first block run there: the daemon, `legion` and both plugins are the base's. The
-# control passes when the first block fails at its mark, where it says that at 22 minutes
-# read_state shows the implementer's claim working with no mark, no notice names it, fresh_session
+# setup and the first block run there, with W5_BASE_RUN set: the daemon, `legion` and both plugins
+# are the base's. The control passes when the first block fails at its mark, where it says that at
+# 22 minutes read_state shows the implementer's claim working with no mark, no notice names it, fresh_session
 # refuses it CLAIM_IN_A_TURN, and the role message is finished undelivered once Envoy reads the
 # session gone. Its last line is `unreachable claims negative control: PASS|FAIL …`.
 set -euo pipefail
@@ -163,7 +164,7 @@ negative_control() {
   (
     set -e
     root=$base_tree
-    export LEGION_E2E_REPO_ROOT="$base_tree"
+    export LEGION_E2E_REPO_ROOT="$base_tree" W5_BASE_RUN=1
     live_rig_proof "unreachable claims at ${base_sha:0:12}" unreachable-claims-base \
       "^$test_name\$/^($setup_step|$first_block)\$" "$base_evidence" fail
   )

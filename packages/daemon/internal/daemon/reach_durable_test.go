@@ -236,8 +236,6 @@ func (d *durableReach) workflow() *workflowRuntime {
 // The notices the tests count: each a notice of one kind, which is queued under the outbox kind
 // that notice kind takes (record.ControllerNotice.OutboxKind, record.Notice.OutboxKind).
 var (
-	unreachableList = record.ControllerNotice{Kind: record.UnreachableClaimsNotice}
-	unreachableExit = record.ControllerNotice{Kind: record.UnreachableExitNotice}
 	noLiveSession   = record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice}
 	lockedOut       = record.ControllerNotice{Kind: record.WorkerLockedOutNotice}
 	architectToldOf = record.Notice{Kind: record.ClaimOutOfReachNotice}
@@ -266,38 +264,70 @@ func (d *durableReach) delivered(notice record.OutboxPayload) int {
 	return int(tag.RowsAffected())
 }
 
-// relaunchedOnce relaunches worker once on the first daemon, marked out of reach by its sweep, and
+// relaunching is a keeper over the database built from o whose relaunch is the daemon's own
+// (relaunchByDaemon), through the supervision of claims it is booted with.
+func (d *durableReach) relaunching(o reachKeeperOptions, claims ...supervise.Claim) *reachKeeper {
+	d.t.Helper()
+	var s *supervision
+	o.relaunch = func(ctx context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
+		return s.relaunchByDaemon(ctx, c, at)
+	}
+	k := newReachKeeper(o)
+	s = d.daemon(k, nil, claims...)
+	return k
+}
+
+// relaunchedOnce has the first daemon's sweep mark worker out of reach and relaunch it, and
 // answers the claim as the database holds it once the relaunch's launch is written. put is that
-// daemon's write of the reach record; relaunch runs the controller's relaunch, which a daemon that
-// ends inside it never returns from.
-func (d *durableReach) relaunchedOnce(worker supervise.Claim, put func(context.Context, claim.Token, supervise.Reach) (bool, error), relaunch func(func() error)) supervise.Claim {
+// daemon's write of the reach record; waits is whether the sweep's relaunch returns, which it
+// does not in a daemon that ends inside its write of the record.
+func (d *durableReach) relaunchedOnce(worker supervise.Claim, put func(context.Context, claim.Token, supervise.Reach) (bool, error), waits bool) supervise.Claim {
 	d.t.Helper()
 	d.put(worker)
-	k := newReachKeeper(d.options(false, put))
-	s := d.daemon(k, nil, worker)
+	generation := d.claim(worker.Token).Generation
+	d.report(worker.Token, generation)
+	k := d.relaunching(d.options(false, put), worker)
 	d.at(21 * time.Minute)
 	k.sweep(context.Background(), d.stored())
+	if waits {
+		k.wait()
+	}
+	testwait.Eventually(d.t, "the relaunch's launch to be written", func() bool { return d.claim(worker.Token).Generation > generation })
 	if !d.claim(worker.Token).Reach.Unreachable() {
 		d.t.Fatal("the first daemon did not mark the worker out of reach")
 	}
-	m, _ := s.supervisor.Machine(worker.Token)
-	generation := m.Claim().Generation
-	relaunch(func() error { return s.relaunch(context.Background(), m) })
-	testwait.Eventually(d.t, "the relaunch's launch to be written", func() bool { return d.claim(worker.Token).Generation > generation })
 	return d.claim(worker.Token)
 }
 
-// relaunchAfterRestart boots a second daemon onto the database 3 hours after the first booted,
-// with worker's relaunched process working, and answers its controller's relaunch of worker.
-func (d *durableReach) relaunchAfterRestart(worker supervise.Claim) error {
+// refusedAfterRestart boots a second daemon onto the database 3 hours after the first booted and
+// checks that its sweep does not relaunch worker a second time. worker's relaunched process is
+// working, its session registered after the relaunch, which ended that episode, and it is out of
+// reach again, with no relaunch in its reach record: the 6 hours are read from the claim's own row
+// (supervise.Claim.LastRelaunch), which the relaunch's launch wrote, and R6's line says it is out
+// of reach a second time within them.
+func (d *durableReach) refusedAfterRestart(worker supervise.Claim) {
 	d.t.Helper()
 	restarted := d.claim(worker.Token)
 	restarted.State = supervise.StateWorking
 	d.put(restarted)
+	d.report(worker.Token, restarted.Generation)
+	if known, err := d.st.PutClaimReach(context.Background(), worker.Token, supervise.Reach{}); err != nil || !known {
+		d.t.Fatalf("end the first relaunch's episode = %t, %v", known, err)
+	}
 	d.at(3 * time.Hour)
-	s := d.daemon(newReachKeeper(d.options(false, d.st.PutClaimReach)), nil, d.claim(worker.Token))
-	m, _ := s.supervisor.Machine(worker.Token)
-	return s.relaunch(context.Background(), m)
+	logged := &testlog.Buffer{}
+	o := d.options(false, d.st.PutClaimReach)
+	o.alerts = fleetalert.New(slog.New(slog.NewTextHandler(logged, nil)), "LEGION")
+	k := d.relaunching(o, d.claim(worker.Token))
+	k.sweep(context.Background(), d.stored())
+	k.wait()
+	if got := d.claim(worker.Token).Generation; got != restarted.Generation {
+		d.t.Fatalf("the next daemon's sweep 3 hours after the first relaunch left the worker at generation %d, want %d: no second relaunch within 6 hours",
+			got, restarted.Generation)
+	}
+	if line := logged.String(); !strings.Contains(line, "case="+fleetalert.ClaimUnreachable.Word) || !strings.Contains(line, "a second time within") {
+		d.t.Fatalf("the next daemon wrote %q, want R6's line that the worker is out of reach a second time within 6 hours", line)
+	}
 }
 
 // A relaunch whose reach write the store refuses is still refused a second time within 6 hours by
@@ -305,20 +335,13 @@ func (d *durableReach) relaunchAfterRestart(worker supervise.Claim) error {
 func TestARelaunchIsRefusedForSixHoursAcrossARefusedReachWriteAndARestart(t *testing.T) {
 	d := newDurableReach(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-	var lift func()
-	relaunched := d.relaunchedOnce(worker, d.st.PutClaimReach, func(relaunch func() error) {
-		lift = d.refuseReachWrites("relaunchedAt")
-		if err := relaunch(); err != nil {
-			t.Fatalf("the controller's relaunch of the marked worker = %v", err)
-		}
-	})
+	lift := d.refuseReachWrites("relaunchedAt")
+	relaunched := d.relaunchedOnce(worker, d.st.PutClaimReach, true)
 	lift()
 	if !relaunched.Reach.RelaunchedAt.IsZero() || relaunched.Reach.Relaunched {
 		t.Fatalf("the keeper's record of the relaunch reached the store: %+v; want the store to have refused it", relaunched.Reach)
 	}
-	if err := d.relaunchAfterRestart(worker); !errors.Is(err, supervise.ErrRelaunchedRecently) {
-		t.Fatalf("a second relaunch 3 hours after the first, whose reach write the store refused, on the next daemon = %v, want ErrRelaunchedRecently", err)
-	}
+	d.refusedAfterRestart(worker)
 }
 
 // A daemon that ends between the relaunch's launch and its reach write leaves the next daemon the
@@ -336,13 +359,11 @@ func TestARelaunchIsRefusedForSixHoursAcrossADaemonThatEndsBeforeItsReachWrite(t
 		}
 		return d.st.PutClaimReach(ctx, token, reach)
 	}
-	relaunched := d.relaunchedOnce(worker, put, func(relaunch func() error) { go relaunch() })
+	relaunched := d.relaunchedOnce(worker, put, false)
 	if !relaunched.Reach.RelaunchedAt.IsZero() || relaunched.Reach.Relaunched {
 		t.Fatalf("the keeper's record of the relaunch reached the store: %+v; want the daemon to have ended first", relaunched.Reach)
 	}
-	if err := d.relaunchAfterRestart(worker); !errors.Is(err, supervise.ErrRelaunchedRecently) {
-		t.Fatalf("a second relaunch 3 hours after the first, whose daemon ended before its reach write, on the next daemon = %v, want ErrRelaunchedRecently", err)
-	}
+	d.refusedAfterRestart(worker)
 }
 
 // The daemon relaunches its own controller at most once in 6 hours, across a reach write the store
@@ -356,9 +377,7 @@ func TestTheDaemonRelaunchesItsControllerOnceAcrossARefusedReachWriteAndARestart
 		Locator: pluginTestLocator(token), PluginContract: api.DaemonAPIVersion})
 	d.report(token, 1)
 	boot := func() *reachKeeper {
-		k := newReachKeeper(d.options(true, d.st.PutClaimReach))
-		k.relaunchController = d.daemon(k, nil, d.claim(token)).relaunchOwnController
-		return k
+		return d.relaunching(d.options(true, d.st.PutClaimReach), d.claim(token))
 	}
 
 	first := boot()
@@ -409,70 +428,6 @@ func (d *durableReach) sweeps(minute int, notice record.OutboxPayload, keepers .
 	return told
 }
 
-// A claim reported out of reach is not reported again by the next daemon, across a write of its
-// reported mark the store refused: while the mark cannot be written, neither can the list.
-func TestAnUnreachableClaimIsListedOnceAcrossARefusedReportedWriteAndARestart(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	d.put(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-
-	lift := d.refuseReachWrites("reported")
-	refused := d.sweeps(21, unreachableList, d.notifying(w, d.st.PutClaimReach))
-	lift()
-	if refused != 0 {
-		t.Fatalf("the controller was told %d lists while the store refused their mark, want none", refused)
-	}
-	told := d.sweeps(23, unreachableList,
-		d.notifying(w, d.st.PutClaimReach), d.notifying(w, d.st.PutClaimReach))
-	if told != 1 {
-		t.Fatalf("the controller was told %d lists naming the claim across two restarts once its mark could be written, want 1", told)
-	}
-}
-
-// A daemon that ends between a list's commit and its reported mark leaves the next daemon nothing
-// to report again.
-func TestAnUnreachableClaimIsListedOnceAcrossADaemonThatEndsBeforeItsReportedWrite(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	d.put(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-
-	ended := d.failAfter(func(reach supervise.Reach) bool { return reach.Reported })
-	if told := d.sweeps(21, unreachableList, d.notifying(w, ended)); told != 1 {
-		t.Fatalf("the first daemon told %d lists naming the claim, want the one it told before it ended", told)
-	}
-	if told := d.sweeps(23, unreachableList, d.notifying(w, d.st.PutClaimReach)); told != 0 {
-		t.Fatalf("the next daemon told %d lists naming the claim the first had told before it ended, want none", told)
-	}
-}
-
-// A per-claim notice, the exit of a marked claim owing no task, is told once across a write of its
-// mark the store refused and a restart; and one the outbox did not take is told at the next sweep
-// rather than lost with the launch it was of.
-func TestAnUnreachableExitIsToldOnceAcrossARefusedMarkWriteAndARestart(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	planner := reachClaim(t, "LEGION-208", "LEGION-210", claim.RolePlanner, "ses_planner")
-	d.put(planner)
-	d.sweeps(21, unreachableExit, d.notifying(w, d.st.PutClaimReach))
-
-	// Its process exits at its Envoy role claim, and the daemon's own supervision launches it again.
-	planner = d.claim(planner.Token)
-	planner.Generation++
-	planner.State = supervise.StateLaunching
-	d.put(planner)
-	lift := d.refuseReachWrites("exitTold")
-	refused := d.sweeps(23, unreachableExit, d.notifying(w, d.st.PutClaimReach))
-	lift()
-	if refused != 0 {
-		t.Fatalf("the controller was told %d exits while the store refused their mark, want none", refused)
-	}
-	told := d.sweeps(25, unreachableExit,
-		d.notifying(w, d.st.PutClaimReach), d.notifying(w, d.st.PutClaimReach))
-	if told != 1 {
-		t.Fatalf("the controller was told %d exits of the planner across two restarts once its mark could be written, want 1", told)
-	}
-}
-
 // architectNotified is a keeper whose architects' notices are written through w, and whose reach
 // record is written by put.
 func (d *durableReach) architectNotified(w *workflowRuntime, put func(context.Context, claim.Token, supervise.Reach) (bool, error)) *reachKeeper {
@@ -514,65 +469,6 @@ func TestTheArchitectIsToldOfAnUnreachableClaimOnceAcrossADaemonThatEndsBeforeIt
 	}
 	if told := d.sweeps(23, architectToldOf, d.architectNotified(w, d.st.PutClaimReach)); told != 0 {
 		t.Fatalf("the next daemon told the architect %d times of a claim the first had told it of before it ended, want none", told)
-	}
-}
-
-// A guard's refusal whose record the store refused is answered as a failure: the notice that the
-// guard would now let the claim through counts from that record, so nothing may come of it.
-func TestAGuardRefusalTheStoreDidNotRecordIsAnsweredAsAFailure(t *testing.T) {
-	d := newDurableReach(t)
-	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-	d.put(worker)
-	k := newReachKeeper(d.options(false, d.st.PutClaimReach))
-	s := d.daemon(k, &supervise.ActivityReport{At: reachBoot.Add(-50 * time.Minute), Background: true, Kinds: []string{"subagent"}}, worker)
-	d.at(21 * time.Minute)
-	k.sweep(context.Background(), d.stored())
-
-	lift := d.refuseReachWrites("guardRefusedAt")
-	defer lift()
-	m, _ := s.supervisor.Machine(worker.Token)
-	err := s.relaunch(context.Background(), m)
-	if !errors.Is(err, supervise.ErrRelaunchGuard) || !strings.Contains(err.Error(), "could not write the claim's reach record") {
-		t.Fatalf("a guard's refusal the store did not record = %v, want the refusal and that its record was not written", err)
-	}
-}
-
-// The relaunch's launch records the generation it left the claim at beside its moment, so the next
-// daemon, taking in a relaunch the first never wrote its record of, counts the claim's launches
-// from that generation: a claim that exited at its Envoy role claim and was launched again in that
-// gap is told as an exit once, and the relaunch's own launch is told as none.
-func TestAnExitInTheGapAfterARelaunchIsToldOnceByTheNextDaemon(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	planner := reachClaim(t, "LEGION-208", "LEGION-210", claim.RolePlanner, "ses_planner")
-	d.put(planner)
-	first := d.notifying(w, d.st.PutClaimReach)
-	s := d.daemon(first, nil, planner)
-	d.sweeps(21, unreachableExit, first)
-	if !d.claim(planner.Token).Reach.Unreachable() {
-		t.Fatal("the first daemon did not mark the planner out of reach")
-	}
-
-	m, _ := s.supervisor.Machine(planner.Token)
-	lift := d.refuseReachWrites("relaunchedAt")
-	if err := s.relaunch(context.Background(), m); err != nil {
-		t.Fatalf("the controller's relaunch of the marked planner = %v", err)
-	}
-	lift()
-	relaunched := d.claim(planner.Token)
-	if relaunched.Generation != planner.Generation+1 || !relaunched.Reach.RelaunchedAt.IsZero() {
-		t.Fatalf("after the relaunch the claim is at generation %d with the keeper's record %+v; want %d and the record unwritten",
-			relaunched.Generation, relaunched.Reach, planner.Generation+1)
-	}
-	// In the gap the relaunched process exits at its Envoy role claim, and the daemon's own
-	// supervision launches it again.
-	exited := relaunched
-	exited.Generation++
-	exited.State = supervise.StateLaunching
-	d.put(exited)
-
-	if told := d.sweeps(30, unreachableExit, d.notifying(w, d.st.PutClaimReach), d.notifying(w, d.st.PutClaimReach)); told != 1 {
-		t.Fatalf("the next daemons told %d exits of the planner launched again after its relaunch, want 1", told)
 	}
 }
 
@@ -738,7 +634,7 @@ func (d *durableReach) markController() supervise.Claim {
 	c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-25*time.Minute), c.Generation
 	d.put(c)
 	marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
-		Generation: c.LastRelaunchGeneration, Relaunched: true, RelaunchedAt: c.LastRelaunch}
+		Relaunched: true, RelaunchedAt: c.LastRelaunch}
 	if known, err := d.st.PutClaimReach(context.Background(), c.Token, marked); err != nil || !known {
 		d.t.Fatalf("mark the controller out of reach = %t, %v", known, err)
 	}

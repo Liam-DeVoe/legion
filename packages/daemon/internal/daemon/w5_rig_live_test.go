@@ -9,7 +9,7 @@
 //     RIG.md says to point it;
 //   - one scripted model stand-in per claim (w5Standin, scriptedStandin's shape with a rule that
 //     holds a request and then answers it with a tool call), so each claim does what the check
-//     names and the controller calls no `relaunch` of its own;
+//     names;
 //   - pods (podRuntime): the rig's local runtime hands the daemon Sandbox locators, one pod per
 //     issue and one for the controller, and translates them back for every call it makes of the
 //     local runtime. The daemon's pod rule (a relaunch into a pod whose every claim is out of
@@ -77,17 +77,17 @@ const w5ResultsEnv = "W5_RESULTS_FILE"
 // The daemon's own words a step reads, as literals so the file builds over the base.
 const (
 	w5FleetAlertPrefix      = "LEGION FLEET ALERT: "
-	w5NoticeUnreachable     = "unreachable-claims"
-	w5NoticeRelaunchReady   = "relaunch-ready"
-	w5NoticeGuardHeld       = "relaunch-guard-held"
-	w5NoticeNotBack         = "relaunch-not-back"
-	w5NoticeExit            = "unreachable-exit"
 	w5NoticeNoLive          = "envoy-no-live-session"
 	w5NoticeClaimOutOfReach = "claim-out-of-reach"
 	w5CaseNoLive            = "envoy_no_live_session"
 	w5CaseListUnreadable    = "envoy_session_list_unreadable"
 	w5CaseControllerGone    = "controller_unreachable"
 	w5CaseControllerRefused = "controller_relaunch_refused"
+	w5CaseClaimGone         = "claim_unreachable"
+	w5CaseClaimRefused      = "claim_relaunch_refused"
+	// w5GuardLine is the daemon's line at the first refusal of an episode by its relaunch guard,
+	// which names the guard's reason (reachKeeper.guardRefuses).
+	w5GuardLine = "reach: the relaunch guard holds the daemon's relaunch of a claim Envoy cannot reach; it asks again at each sweep"
 )
 
 // w5Claim is one claim the check seeds: its issue, where that issue stands in its tree, the role
@@ -658,8 +658,8 @@ func continuing(seen seenRequest) bool { return !seen.prompt && !seen.side && !s
 // (`<pod uid>/<generation>`, the launch's generation), so the daemon fences observations as it
 // fences a pod's. Nothing else of the local runtime changes.
 //
-// The pod of a claim can be replaced (replacePod), which the controller's relaunch through a
-// launcher that is not connected does: its next launch runs in a pod of a new uid.
+// The pod of a claim can be replaced (replacePod), which the daemon's relaunch of its controller
+// through a launcher that is not connected does: its next launch runs in a pod of a new uid.
 type podRuntime struct {
 	*rigRuntime
 	podOf func(claim.Token) string
@@ -671,9 +671,12 @@ type podRuntime struct {
 	toPod    map[string]runtime.Locator
 	// launcher is the launcher state the rig reports for a claim's relaunch
 	// (w5_inplace_live_test.go): "" connected, or one of the w5Launcher words. relaunches is
-	// every relaunch refusal and stop the daemon asked of it, oldest first.
+	// every relaunch refusal and stop the daemon asked of it, oldest first. onStop is what the rig
+	// runs at the first stop of a claim's process that a relaunch makes and that ends it
+	// (liftOnStop).
 	launcher   map[claim.Token]string
 	relaunches []podRelaunchCall
+	onStop     map[claim.Token]func()
 }
 
 // The launcher states the rig can report for a claim's relaunch.
@@ -696,7 +699,29 @@ type podRelaunchCall struct {
 
 func newPodRuntime(local *rigRuntime, podOf func(claim.Token) string) *podRuntime {
 	return &podRuntime{rigRuntime: local, podOf: podOf, pods: map[string]string{}, replaced: map[string]int{},
-		toLocal: map[string]runtime.Locator{}, toPod: map[string]runtime.Locator{}, launcher: map[claim.Token]string{}}
+		toLocal: map[string]runtime.Locator{}, toPod: map[string]runtime.Locator{}, launcher: map[claim.Token]string{},
+		onStop: map[claim.Token]func(){}}
+}
+
+// liftOnStop has the rig run lift once, at the first stop of token's process that a relaunch makes
+// and that ends it: where the rig's block of a claim's registrations stands for a cause in that
+// process (one frozen in its wait), the relaunch that replaces the process ends the cause, and lift
+// lets the new process's registrations through before it claims its Envoy role.
+func (p *podRuntime) liftOnStop(token claim.Token, lift func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onStop[token] = lift
+}
+
+// stopped runs and forgets the lift liftOnStop left for token, if any.
+func (p *podRuntime) stopped(token claim.Token) {
+	p.mu.Lock()
+	lift := p.onStop[token]
+	delete(p.onStop, token)
+	p.mu.Unlock()
+	if lift != nil {
+		lift()
+	}
 }
 
 // podOf is the pod a claim's process runs in: its issue's, or the controller's.
@@ -1526,45 +1551,24 @@ func (w *w5Rig) controllerGrant() string {
 	return grant.GrantID
 }
 
-// relaunchAnswer is the daemon's answer to a `relaunch`: at is when the request was sent, and
-// answered when the answer arrived, so a time the daemon read while it judged the request lies
-// between the two.
-type relaunchAnswer struct {
-	at       time.Time
-	answered time.Time
-	status   int
-	code     string
-	body     string
+// routeAnswer is the daemon's answer to one of its routes: at is when the request was sent.
+type routeAnswer struct {
+	at     time.Time
+	status int
+	code   string
+	body   string
 }
 
-func (a relaunchAnswer) reached() bool { return a.status == http.StatusOK }
-
-func (a relaunchAnswer) String() string {
+func (a routeAnswer) String() string {
 	return fmt.Sprintf("%d %s at %s: %s", a.status, a.code, clockAt(a.at), a.body)
 }
 
-// relaunch calls the controller's `relaunch` of token through the daemon's route, as the `legion`
-// tool's relaunch posts it: a fresh controller grant and the claim's token.
-func (w *w5Rig) relaunch(token claim.Token) relaunchAnswer {
-	grant := w.controllerGrant()
-	at := time.Now()
-	status, body := w.apiCall(http.MethodPost, "/legion/v1/claims/relaunch", map[string]any{"grantId": grant, "claim": string(token)}, false, 5*time.Minute)
-	answer := relaunchAnswer{at: at, answered: time.Now(), status: status, body: strings.TrimSpace(string(body))}
-	var failure struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(body, &failure)
-	answer.code = failure.Code
-	w.record("relaunch %s: %s", token, answer)
-	return answer
-}
-
 // freshSession calls the controller's `fresh_session` of role on issue.
-func (w *w5Rig) freshSession(issue string, role claim.Role) relaunchAnswer {
+func (w *w5Rig) freshSession(issue string, role claim.Role) routeAnswer {
 	grant := w.controllerGrant()
 	at := time.Now()
 	status, body := w.apiCall(http.MethodPost, "/legion/v1/claims/fresh-session", map[string]any{"grantId": grant, "issue": issue, "role": string(role)}, false, 5*time.Minute)
-	answer := relaunchAnswer{at: at, status: status, body: strings.TrimSpace(string(body))}
+	answer := routeAnswer{at: at, status: status, body: strings.TrimSpace(string(body))}
 	var failure struct {
 		Code string `json:"code"`
 	}

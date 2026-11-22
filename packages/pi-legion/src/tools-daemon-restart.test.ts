@@ -75,7 +75,6 @@ const FIXTURE_OF: Readonly<Record<string, string>> = {
   "/legion/v1/handoff/complete": "handoff-complete.json",
   "/legion/v1/signoff": "signoff.json",
   "/legion/v1/gates/register": "gate-register.json",
-  "/legion/v1/claims/relaunch": "relaunch.json",
 };
 
 /** The fixture `route` is answered with, or a 404 for a route the tool never calls. */
@@ -792,48 +791,6 @@ test("a 409 from the daemon is its answer and is never retried", async () => {
   expect(clock.waits).toEqual([]);
   expect(updates).toEqual([]);
   expect(completed).toEqual([]);
-});
-
-// A relaunch is not among the writes that wait out a restart. Its request reached a daemon that
-// closed the connection before answering, so the claim may already be stopped and started again,
-// and a repeat would be a second relaunch inside 6 hours, which the daemon refuses as a person's
-// case. So the call fails at once, naming the closed connection, though the daemon is back.
-test("relaunch is posted once: a connection closed before the answer fails the call, with no wait and no repeat", async () => {
-  const live = liveDaemon();
-  const clock = virtualClock();
-  const client = restartingClient(live.url, await closingOrigin(), 1);
-  const tool = createLegionTool({
-    pi,
-    daemon: () => client,
-    session: () => ({ kind: "controller", sessionID: "ses_controller" }),
-    controllerGrant: async () => ({
-      grantId: "controller-grant-1",
-      expiresAt: "2099-01-01T00:00:00Z",
-    }),
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: async () => {
-      throw new Error("no handoff report expected");
-    },
-    branchHead: async () => "",
-    resolveDocument: async () => {
-      throw new Error("no document lookup expected");
-    },
-    restartClock: { now: clock.now, sleep: clock.sleep },
-  });
-
-  const { result, updates } = await run(tool, {
-    op: "relaunch",
-    claim: "legion-omp-legion-208-implementer",
-  });
-
-  expect(result.isError).toBe(true);
-  expect(result.content).toEqual([
-    { type: "text", text: expect.stringContaining("ECONNRESET: The socket connection was closed") },
-  ]);
-  expect(live.answered).toEqual([]);
-  expect(clock.waits).toEqual([]);
-  expect(updates).toEqual([]);
 });
 
 test("sign_off waits out a restarting daemon with a fresh grant on each attempt, and a 409 is not retried", async () => {

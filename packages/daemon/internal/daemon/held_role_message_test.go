@@ -199,7 +199,7 @@ func TestARowIsHeldForAClaimRestoredMidLaunch(t *testing.T) {
 	}
 }
 
-// The controller's relaunch of a claim Envoy cannot reach stops its process only to start it
+// The daemon's relaunch of a claim Envoy cannot reach stops its process only to start it
 // again on the same session, so a role message or hook prompt held for that claim, tried while the
 // relaunch's stop waits on the runtime (exitingSuspend), stays held: the claim keeps its role
 // through the stop, and the session the relaunch brings back is the one the hold waits for (R5).

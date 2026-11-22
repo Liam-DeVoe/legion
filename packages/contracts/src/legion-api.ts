@@ -29,8 +29,6 @@ export {
   LegionClaimRequest,
   LegionCompactResponse,
   LegionFreshSessionResponse,
-  LegionRelaunchRequest,
-  LegionRelaunchResponse,
 } from "./legion-claim-recovery";
 
 const nonEmptyString = z.string().min(1);
@@ -271,7 +269,7 @@ const legionPendingTaskView = z.object({
  * claim's session and the end of the daemon's last failed or empty read of the listener's session
  * list. `since` is when the daemon found it so, and `lastSeen` is the last registration of its
  * session the daemon read, absent where it read none. The claim keeps its state: this says only
- * that no message reaches it, which is the case for the controller's `relaunch`. */
+ * that no message reaches it, and the daemon relaunches it on its same session (R5). */
 const legionUnreachableView = z.object({
   since: timestamp,
   lastSeen: timestamp.optional(),
@@ -2152,16 +2150,11 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
   // The `read_state` summary's mark of a claim Envoy cannot reach (contract 208): when the daemon
-  // found it so, and the token `relaunch` takes, which is its locator's. The summary reads them
-  // off a claim view whichever path reached it, so each is named under every parent of its name.
+  // found it so. The summary reads it off a claim view whichever path reached it, so it is named
+  // under every parent of its name.
   "architect.unreachable.since",
-  "architect.locator|0.claim",
-  "architect.locator|1.claim",
   "workers{}.claim.unreachable",
   "workers{}.claim.unreachable.since",
-  "workers{}.claim.locator",
-  "workers{}.claim.locator|0.claim",
-  "workers{}.claim.locator|1.claim",
   "check",
   "check.role",
   "check.looks",

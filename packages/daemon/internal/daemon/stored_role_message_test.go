@@ -126,7 +126,7 @@ func TestAMessageTheListenerStoredForTheSessionThatHoldsTheRoleAgainFinishesWith
 				t.Fatalf("outbox rows left = %d, want the row kept while its session has not come back", left)
 			}
 
-			// The controller relaunches the claim onto the same session, which says ready: the
+			// The daemon relaunches the claim onto the same session, which says ready: the
 			// session holds its role again and reads the stored copy from its own consumer.
 			relaunchedOnto(t, runner, implementer.Claim().Session, supervise.StateIdle)
 			dueNow(t, pool)

@@ -86,7 +86,6 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "set_status",
     "fresh_session",
     "compact",
-    "relaunch",
     "pause",
     "resume",
   ],
@@ -108,7 +107,6 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
-  relaunch: ["claim"],
   pause: ["reason"],
   resume: [],
 };
@@ -216,8 +214,8 @@ const SUMMARY_LEGEND =
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
-  "<last turn start> <last turn end> [unreachable <since> claim <token>] lines, - for a value " +
-  "the daemon has none for. " +
+  "<last turn start> <last turn end> [unreachable <since>] lines, - for a value the daemon has " +
+  "none for. " +
   "read_state with issue, issues, phase or settings returns the full records it names.";
 
 /**
@@ -293,12 +291,8 @@ function stateSummary(state: LegionState): string {
     for (const [role, claim] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
       // it last did anything, and a dash is a turn the daemon recorded none of. A claim Envoy
-      // cannot reach carries when the daemon found it so and the token `relaunch` takes, which
-      // is its locator's, a dash where the claim records no process at this read.
-      const mark =
-        claim.unreachable === undefined
-          ? ""
-          : ` unreachable ${claim.unreachable.since} claim ${claim.locator?.claim ?? "-"}`;
+      // cannot reach carries when the daemon found it so.
+      const mark = claim.unreachable === undefined ? "" : ` unreachable ${claim.unreachable.since}`;
       lines.push(
         `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${mark}`
       );
@@ -394,14 +388,6 @@ function toolSchema(pi: PiApi): unknown {
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
-    // A claim's token, which relaunch names its claim by: the daemon's notice of an unreachable
-    // claim names it so, where the two other recoveries take an issue and a role.
-    claim: z
-      .string()
-      .describe(
-        "relaunch's claim: the token of a claim Envoy cannot reach, as the daemon's notice of it names it"
-      )
-      .optional(),
   });
 }
 
@@ -594,31 +580,6 @@ export function createLegionTool(deps: {
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. " +
-        "relaunch (claim) starts again, on the session it recorded, a claim that Envoy cannot reach, as the daemon starts " +
-        "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
-        "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
-        "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
-        "empty, also where the daemon's store did not answer the launch after the stop: the daemon then starts the claim " +
-        "itself at its probe interval. " +
-        "The daemon refuses it, stopping nothing, for a grant that is not the controller's (CONTROLLER_REQUIRED), " +
-        "for a token it holds no claim under (NO_CLAIM), for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
-        "between states (CLAIM_UNSETTLED), for the project's controller, which only the daemon relaunches, and only " +
-        "where it runs the controller itself (controller: daemon in legion.yaml) (CLAIM_IS_CONTROLLER), for a claim " +
-        "whose tree allows it no launch, because the tree's cleanup is reserved or the tree was opened again since " +
-        "(TREE_REFUSES_LAUNCH), which that tree's close or its next start decides, and for a " +
-        "claim whose worker stream showed a step in the last 20 minutes, which is in " +
-        "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
-        "wait, or whose last activity report since its launch is missing or shows a background job or a " +
-        "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
-        "it through. While the daemon is stopping it answers 503 with no code and stops nothing: relaunch again once " +
-        "it is back. TREE_CHECK_FAILED (503) says the daemon could not check the claim's tree and stopped nothing: " +
-        "relaunch it again. RELAUNCH_FAILED says the relaunch failed or the daemon could not record it, and the claim may " +
-        "already be stopped: read it in read_state before you relaunch it again. The refusals coded " +
-        "LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
-        "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +
-        "(the old process outlived its stop), POD_UNREACHABLE (every claim of a pod of two or more claims is " +
-        "unreachable) and RELAUNCHED_RECENTLY (the claim was relaunched in the last 6 hours) are cases for a person: " +
-        "ask one with a dispatch ask. " +
         "pause (reason) pauses the whole project, and resume ends its pause; neither takes an issue. While the project " +
         "is paused the daemon admits no issue, and it starts no role and gives no role a task except the controller. Every " +
         "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
@@ -629,8 +590,8 @@ export function createLegionTool(deps: {
         "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-        "the project is paused it refuses fresh_session, compact and relaunch (PROJECT_PAUSED, naming the pause that " +
-        "stands), since each would start a turn. ",
+        "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
+        "since each would start a turn. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -685,16 +646,6 @@ export function createLegionTool(deps: {
             return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
           }
           if (operation === "read_state") return readState(await client.state(), parameters);
-          // The relaunch names its claim by token, and is validated whole before its grant is
-          // minted.
-          if (operation === "relaunch") {
-            // Posted once, never through `retryWhileDaemonRestarts`: a relaunch whose answer was
-            // lost may have stopped and started the claim, and the daemon refuses a second one
-            // within 6 hours as a person's case, so a repeat would turn one relaunch into that.
-            const claim = requiredString(parameters, operation, "claim");
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(await client.relaunch({ grantId, claim }));
-          }
           // The project's pause and its resume name no issue: the daemon acts on its own project.
           // Each is validated whole before its grant is minted, and each answer is the daemon's
           // own: the pause it began, or the pause it ended with how many held rows it let out.

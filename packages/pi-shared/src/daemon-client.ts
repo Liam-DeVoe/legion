@@ -29,8 +29,6 @@ import {
   type LegionReadyRequest,
   LegionRegisterResponse,
   type LegionRegistration,
-  LegionRelaunchRequest,
-  LegionRelaunchResponse,
   LegionReleaseRecordsRequest,
   LegionReleaseRecordsResponse,
   LegionRootCloseRequest,
@@ -199,14 +197,6 @@ export interface LegionDaemonClient {
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
-  /** The controller's `relaunch`: the claim `claim` names, which Envoy cannot reach, is started
-   * again on its same session, as the daemon relaunches a claim after a death, uncharged. The
-   * answer is empty; every refusal is a `LegionDaemonApiError` with the daemon's code. No retry
-   * wraps it: a relaunch that may have run is not asked for again, and the daemon refuses a
-   * second one of the same claim within 6 hours. */
-  readonly relaunch: (
-    input: z.input<typeof LegionRelaunchRequest>
-  ) => Promise<z.output<typeof LegionRelaunchResponse>>;
   /** The controller's `pause`: the daemon pauses its own project for `reason`, the effect
    * `legion project pause` runs for an operator. Every role but the controller stops, one in a
    * turn when that turn ends, and every start waits for the resume. The answer is the pause it
@@ -952,8 +942,6 @@ export function createLegionDaemonClient(
       ),
     compact: (input) =>
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
-    relaunch: (input) =>
-      post("/legion/v1/claims/relaunch", LegionRelaunchRequest, LegionRelaunchResponse, input),
     projectPause: (input) =>
       post(
         "/legion/v1/project/pause",

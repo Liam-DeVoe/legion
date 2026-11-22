@@ -1596,7 +1596,7 @@ type supervision struct {
 	backstopMu   sync.Mutex
 	backstopOwed map[claim.Token]stallNoticeOwed
 	// reach is the daemon's reading of which claims Envoy cannot reach, and what it tells and does
-	// about them (R5): swept with the orphan sweep, asked by the `relaunch` route, and holding the
+	// about them (R5): swept with the orphan sweep, relaunching each claim it marks, and holding the
 	// one R6 writer the worker stream writes its lock-out line through as well, so one case opens
 	// one line. lockOuts keeps the controller's notices of R3's lock-outs, resent at the same
 	// sweep. Neither is nil once openSupervision returns.

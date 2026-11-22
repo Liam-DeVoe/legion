@@ -1,12 +1,12 @@
 -- 20261116082000_reach_notice_kinds.up.sql — the two outbox kinds of the notices this change adds:
 -- reach_notice, the architect's notice of a claim of its tree out of reach, and
--- reach_controller_notice, the controller's notices of claims out of reach and of a claim locked
--- out of its worker stream (internal/record's OutboxKindReachNotice and
+-- reach_controller_notice, the controller's notices that Envoy lists no live session and of a claim
+-- locked out of its worker stream (internal/record's OutboxKindReachNotice and
 -- OutboxKindReachControllerNotice).
 --
 -- They are kinds of their own so that the release before them never runs one: that release decodes
--- a row strictly and knows neither those notice kinds nor their claim and unreachable fields, so
--- it would fail on such a row under notice or controller_notice at every attempt, and it runs a
+-- a row strictly and knows neither those notice kinds nor their claim field, so it would fail on
+-- such a row under notice or controller_notice at every attempt, and it runs a
 -- row only through a lane that lists the row's kind. A rollback onto that release therefore leaves
 -- each such row where it stands, and the next daemon of this one delivers it. Both ride the board
 -- lane, as the other two notice kinds do; reach_notice holds the issue's pod as notice does (the
@@ -44,6 +44,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
 update outbox set kind = 'reach_notice'
   where kind = 'notice' and payload->>'kind' = 'claim-out-of-reach';
 update outbox set kind = 'reach_controller_notice'
-  where kind = 'controller_notice' and payload->>'kind' in ('unreachable-claims', 'relaunch-ready',
-    'relaunch-guard-held', 'relaunch-not-back', 'unreachable-exit', 'envoy-no-live-session',
+  where kind = 'controller_notice' and payload->>'kind' in ('envoy-no-live-session',
     'worker-locked-out', 'claim-out-of-reach');

@@ -42,7 +42,7 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 		t.Logf("before the migration a %s row is refused: %v", kind, err)
 	}
 	written := map[string]struct{ kind, payload string }{
-		"list":      {"controller_notice", `{"kind":"unreachable-claims","unreachable":[{"claim":"legion-legion-209-implementer"}]}`},
+		"nolive":    {"controller_notice", `{"kind":"envoy-no-live-session","reason":"r"}`},
 		"locked":    {"controller_notice", `{"kind":"worker-locked-out","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
 		"architect": {"notice", `{"kind":"claim-out-of-reach","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
 		"tick":      {"controller_notice", `{"kind":"tick"}`},
@@ -61,7 +61,7 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 		t.Fatalf("migrate through the reach notice kinds: %v", err)
 	}
 	for name, want := range map[string]record.OutboxKind{
-		"list": record.OutboxKindReachControllerNotice, "locked": record.OutboxKindReachControllerNotice,
+		"nolive": record.OutboxKindReachControllerNotice, "locked": record.OutboxKindReachControllerNotice,
 		"architect": record.OutboxKindReachNotice, "tick": record.OutboxKindControllerNotice, "finished": record.OutboxKindNotice,
 	} {
 		var row record.OutboxRow

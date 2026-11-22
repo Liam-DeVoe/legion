@@ -381,8 +381,8 @@ export default function legionExtension(pi: PiApi): void {
     const sessionID = context.sessionManager.getSessionId();
     const claim = claimSession.capability(sessionID);
     // The controller the daemon launched reports too (R5): the daemon's relaunch of it reads its
-    // last report, as the controller's `relaunch` of a role reads the role's. Its claim is no
-    // issue's role, so the request carries its registration's own token.
+    // last report, as its relaunch of a role reads the role's. Its claim is no issue's role, so the
+    // request carries its registration's own token.
     const controller = claim === undefined ? controllerSession.activityClaim(sessionID) : undefined;
     if (claim === undefined && controller === undefined) return;
     // An architect and the controller arm no phase reminder, so neither waits on a reminder of

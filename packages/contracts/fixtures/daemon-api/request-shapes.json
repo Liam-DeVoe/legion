@@ -1016,14 +1016,6 @@
   },
   {
     "contract": 208,
-    "route": "POST /legion/v1/claims/relaunch",
-    "fieldPaths": [
-      "claim",
-      "grantId"
-    ]
-  },
-  {
-    "contract": 208,
     "route": "POST /legion/v1/claims/release-records",
     "fieldPaths": [
       "claimToken",

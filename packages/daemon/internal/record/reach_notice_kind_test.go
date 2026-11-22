@@ -116,9 +116,9 @@ func TestANoticeDecodesOnlyUnderTheKindItIsQueuedAs(t *testing.T) {
 }
 
 // The reads that decide whether a controller notice still waits unsent find the notices of this
-// change under their own kind, so a second unreachable-claims list is not queued behind the first
-// and a claim's own notice is one per claim, as the reads do for every other kind; and a pending
-// tick is still found under its own.
+// change under their own kind, so a second notice that Envoy lists no live session is not queued
+// behind the first and a claim's lock-out notice is one per claim, as the reads do for every other
+// kind; and a pending tick is still found under its own.
 func TestAControllerNoticeIsPendingUnderTheKindItIsQueuedAs(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

@@ -1106,7 +1106,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
 		{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Claim: "legion-LEGION-208-implementer",
-			Reason: "Envoy has not heard from this claim's session since 2026-11-08T08:00:00Z, more than 20 minutes ago; it keeps its state and the controller decides whether to relaunch it"},
+			Reason: "Envoy has not heard from this claim's session since 2026-11-08T08:00:00Z, more than 20 minutes ago; it keeps its state and the daemon relaunches it"},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

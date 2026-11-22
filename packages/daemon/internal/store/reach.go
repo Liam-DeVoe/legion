@@ -38,7 +38,7 @@ func (s *Store) ClaimReach(ctx context.Context, token claim.Token) (supervise.Re
 
 // PutClaimReach writes the reach column of token's claim row and nothing else: the daemon's record
 // of whether Envoy can reach that claim's session (supervise.Reach, R5). It is no part of a claim's
-// machine state — the daemon's minute sweep and the `relaunch` route write it between a machine's
+// machine state — the daemon's minute sweep and the relaunches it starts write it between a machine's
 // writes — so a machine's write never carries it (putClaim names no such column), as it carries no
 // step and no activity report. Unlike those it is not of one launch: a relaunch keeps the claim's
 // session, and the record is of that session, so a launch's write leaves it as it stands. The

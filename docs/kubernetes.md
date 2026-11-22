@@ -2456,7 +2456,7 @@ A rollback needs one SQL statement, the one in **Activity reports go back to the
   So the launches the earlier release makes during the rollback are archived as this release's are, and at the roll forward the worker stream tells the shim of each of those launches to stop instead of reading its token as one no launch minted.
 
 - **The new notices wait for the roll forward.**
-  The eight notices this release adds wait in rows of kind `reach_notice` and `reach_controller_notice`, and an earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and the row holds back no other row.
+  The three notices this release adds wait in rows of kind `reach_notice` and `reach_controller_notice`, and an earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and the row holds back no other row.
   At the roll forward each is delivered once; `scripts/e2e/rollback-notices.sh` is the proof.
 
 - **A held role message is not held by the earlier release.**
@@ -2465,7 +2465,7 @@ A rollback needs one SQL statement, the one in **Activity reports go back to the
 
 - **No fleet alert line is written during the rollback.**
   The earlier release has no `LEGION FLEET ALERT` line at all and reads no row of `fleet_alert_lines`, so no case of this release reaches a person while it runs.
-  At the roll forward, every sweep closes the stored lines of each case this configuration does not judge (the controller's when the daemon does not run its controller, every list and controller line when no session list is read), and each controller line whose controller is not marked out of reach.
+  At the roll forward, every sweep closes the stored lines of each case this configuration does not judge (the controller's when the daemon does not run its controller, every list, claim and controller line when no session list is read), and each claim's and controller's line whose claim is not marked out of reach.
   The session list's two lines close at the first list read that answers: one that answers closes the unreadable line, and one that answers with a live session closes the no-live line.
   So a case that ended during the rollback does not silence the next line of the same case and claim.
   A stored line whose case still holds stays open, and the daemon does not write it again.

@@ -12,9 +12,7 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
   - `holder_lapsed`: the holder has not registered within the live window. It keeps the role (`claim_released: false`), and the daemon holds its notice and publishes it again.
     A publish of yours to such a role is kept: `202` with `kept_reason: holder_lapsed` and `kept_until`.
   - `delivery_failed`: the stream stored no forward for the holder. It releases no claim.
-- A claim whose session has not registered with Envoy for more than 20 minutes is unreachable.
-  The daemon marks it, and `read_state` and `read_record` show it with the time of that last registration.
-  Your project's controller relaunches it on that same session with the `legion` tool's `relaunch`; the daemon relaunches the controller's own claim only under `controller: daemon` in `legion.yaml`.
+- A claim whose session has not registered with Envoy for more than 20 minutes is unreachable: `read_state` and `read_record` mark it, and the daemon relaunches it on that same session.
   Nothing replaces a session whose last registration is 20 minutes old or less, and a relaunch replaces no session: your workspace and the task you owe stay, and the resumed session is told that its turn was cut.
 - A role message to a released Legion role is kept for one hour and wakes the role. The woken session gets it as an Envoy card with `kept_at`, which can come before the daemon's task.
 - A role send the listener refuses `404` also raises an exception on `notifications.envoy.exceptions.notifications.role.<role>`, naming `unclaimed` or `holder_lapsed`.

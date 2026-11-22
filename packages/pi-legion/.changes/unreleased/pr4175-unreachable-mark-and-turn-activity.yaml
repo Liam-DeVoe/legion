@@ -1,11 +1,7 @@
 kind: Added
 body: |-
-    The controller's `legion` tool gains `op: "relaunch"`, which takes a `claim` token as the
-    daemon's notice of an unreachable claim names it and posts `POST /legion/v1/claims/relaunch`.
-    The daemon stops that claim's process through its launcher and starts it again on the same
-    session. `read_state`'s summary ends a claim's line with `unreachable <since> claim <token>`
-    while Envoy cannot reach it, and adds a `controller unreachable <since>` line while Envoy
-    cannot reach the controller.
+    `read_state`'s summary ends a claim's line with `unreachable <since>` while Envoy cannot reach
+    it, and adds a `controller unreachable <since>` line while Envoy cannot reach the controller.
     Every Oh My Pi session Legion drives sends its activity report again every 5 minutes while a
     turn is open, whatever it says, from a timer of its own process: the daemon's relaunch guard
     reads a report of the open turn in the last 20 minutes as a process that still runs that turn.

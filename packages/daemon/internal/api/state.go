@@ -1029,8 +1029,8 @@ type ClaimView struct {
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
 	// Unreachable is the daemon's mark of a claim whose session has not registered with Envoy for
 	// 20 minutes (supervise.Reach, R5), and is absent while it is reachable. The claim keeps its
-	// state, so `state` reads as before and every rule that reads it is unchanged; this is the case
-	// for the controller's `relaunch`.
+	// state, so `state` reads as before and every rule that reads it is unchanged; the daemon
+	// relaunches such a claim on its same session.
 	Unreachable *UnreachableView `json:"unreachable,omitempty"`
 }
 

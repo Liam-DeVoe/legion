@@ -50,7 +50,8 @@ func (p *podRuntime) RelaunchRefusal(_ context.Context, loc runtime.Locator, may
 // StopForRelaunch stops loc's process through its launcher (the local runtime's Suspend), ends its
 // pod where the launcher is not connected and the relaunch may replace the pod, refuses a stop
 // through a launcher that is not connected, and answers a stop the process outlives with
-// runtime.ErrProcessOutlivedStop, leaving the process running.
+// runtime.ErrProcessOutlivedStop, leaving the process running. A stop that ends the process runs
+// what the run left for it (podRuntime.liftOnStop).
 func (p *podRuntime) StopForRelaunch(ctx context.Context, loc runtime.Locator, mayReplacePod bool) error {
 	state := p.launcherOf(loc.Claim)
 	var err error
@@ -70,6 +71,9 @@ func (p *podRuntime) StopForRelaunch(ctx context.Context, loc runtime.Locator, m
 	}
 	p.noteRelaunch(podRelaunchCall{at: time.Now(), call: "StopForRelaunch", claim: loc.Claim, mayReplacePod: mayReplacePod,
 		launcher: state, answer: answerOf(err), running: p.runs(loc)})
+	if err == nil {
+		p.stopped(loc.Claim)
+	}
 	return err
 }
 

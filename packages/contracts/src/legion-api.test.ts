@@ -44,8 +44,6 @@ import {
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
-  LegionRelaunchRequest,
-  LegionRelaunchResponse,
   LegionReleaseRecordsRequest,
   LegionReleaseRecordsResponse,
   LegionRootCloseRequest,
@@ -162,9 +160,6 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // `api.RelaunchResponse`: the controller's relaunch of an unreachable claim on its same
-  // session answers nothing but that it ran; every refusal is the daemon's error body.
-  "relaunch.json": LegionRelaunchResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -1843,11 +1838,6 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
     [
-      "relaunch",
-      LegionRelaunchRequest,
-      { grantId: "grant-controller", claim: "legion-legion-legion-209-implementer" },
-    ],
-    [
       "gate register",
       LegionGateRegisterRequest,
       {
@@ -1916,24 +1906,6 @@ test("an escalation rejects empty required fields", () => {
   for (const field of ["grantId", "issue", "reason"] as const) {
     expect(LegionEscalateRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
   }
-});
-
-// The relaunch names its claim by the token `legion claims list` and the daemon's notices name
-// it by, not by issue and role as the two other recoveries do: an empty or missing token, or the
-// issue and role those take, is refused before the request leaves the pane.
-test("a relaunch names its claim by its token and nothing else", () => {
-  const request = { grantId: "grant-controller", claim: "legion-legion-legion-209-implementer" };
-  expect(LegionRelaunchRequest.safeParse(request).success).toBeTrue();
-  for (const field of ["grantId", "claim"] as const) {
-    expect(LegionRelaunchRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
-  }
-  expect(
-    LegionRelaunchRequest.safeParse({
-      grantId: "grant-controller",
-      issue: "LEGION-209",
-      role: "implementer",
-    }).success
-  ).toBeFalse();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {

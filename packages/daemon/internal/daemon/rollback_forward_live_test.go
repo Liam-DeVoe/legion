@@ -101,19 +101,8 @@ func TestARollbackSeedIsWrittenByTheNewerReleaseLive(t *testing.T) {
 			payload record.OutboxPayload
 		}{
 			{p.cfg.Project, record.ControllerNotice{Kind: record.TickNotice}},
-			{p.cfg.Project, record.ControllerNotice{Kind: record.UnreachableClaimsNotice, Unreachable: []record.UnreachableClaim{
-				{Claim: string(implementer), Issue: root, Role: claim.RoleImplementer, State: string(supervise.StateWorking), LastSeen: now.Add(-25 * time.Minute)},
-			}}},
 			{p.cfg.Project, record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice,
 				Reason: "Envoy's session list has held no live session for 20 minutes"}},
-			{root, record.ControllerNotice{Kind: record.RelaunchReadyNotice, Role: claim.RoleImplementer, Claim: string(implementer),
-				Reason: "the relaunch guard would now let it through"}},
-			{root, record.ControllerNotice{Kind: record.RelaunchGuardHeldNotice, Role: claim.RoleImplementer, Claim: string(implementer),
-				Reason: "the relaunch guard has refused it for 60 minutes; this is a case for a person"}},
-			{root, record.ControllerNotice{Kind: record.RelaunchNotBackNotice, Role: claim.RoleImplementer, Claim: string(implementer),
-				Reason: "it is still out of reach 20 minutes after its relaunch; this is a case for a person"}},
-			{root, record.ControllerNotice{Kind: record.UnreachableExitNotice, Role: claim.RolePlanner, Claim: string(p.token(rollbackClaim{role: claim.RolePlanner})),
-				Reason: "its process exits at its Envoy role claim; this is a case for a person"}},
 			{root, record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: string(implementer),
 				Reason: "generation 3 has been refused the worker stream for 5 minutes; generation 2 is still connected"}},
 			{root, record.Notice{Kind: record.ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: string(implementer),

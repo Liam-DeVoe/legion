@@ -517,11 +517,11 @@ func (a *Admission) TellController(ctx context.Context, tx pgx.Tx, notice record
 }
 
 // TellControllerQueued is TellController that answers whether it queued the notice, for a caller
-// that records something of its own about the telling: the daemon's reach keeper marks a claim it
-// lists in an unreachable-claims notice as reported only once that notice is in the outbox, in this
-// transaction (R5), so a claim the wake dropped — no controller registered, or an older notice of
-// the same kind still waiting unsent — is listed again at the keeper's next pass rather than marked
-// told and never sent, as the stalled-tree rule marks a root (tellStalledTrees).
+// that records something of its own about the telling: the daemon's reach keeper and its lock-out
+// notices mark a notice told only once it is in the outbox, in this transaction (R5, R3), so a
+// notice the wake dropped — no controller registered, or an older notice of the same kind still
+// waiting unsent — is told again at the keeper's next pass rather than marked told and never sent,
+// as the stalled-tree rule marks a root (tellStalledTrees).
 func (a *Admission) TellControllerQueued(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string) (bool, error) {
 	return a.wakeController(ctx, tx, notice, issue, a.now())
 }

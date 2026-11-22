@@ -148,7 +148,7 @@ func (r *reachRig) listing(seen map[string]time.Duration) {
 }
 
 // sweep is one minute's pass over claims, the lock-out notices' resend first as the orphan sweep
-// runs it, with the controller's relaunch it may start finished.
+// runs it, with the relaunches it may start finished.
 func (r *reachRig) sweep(claims ...supervise.Claim) {
 	r.t.Helper()
 	r.lockOuts.resend(context.Background())
@@ -391,9 +391,9 @@ func TestAFailedReadChangesNothingAndTwentyMinutesOfThemWriteTheLine(t *testing.
 }
 
 // A failed read, or a read whose list holds no live session, holds back a mark that is not made
-// yet: the 20 minutes count from it. A mark already made it leaves as it is — its moment, its last
-// registration and its report — and it sends nothing, the minute it happens and the minute after,
-// when the list answers again with the claim's session still unregistered.
+// yet: the 20 minutes count from it. A mark already made it leaves as it is — its moment and its
+// last registration — and it sends nothing, the minute it happens and the minute after, when the
+// list answers again with the claim's session still unregistered.
 func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 	for name, interrupt := range map[string]func(r *reachRig, minute time.Duration){
 		"a failed read": func(r *reachRig, _ time.Duration) {
@@ -412,10 +412,10 @@ func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 			r.listing(map[string]time.Duration{"ses_implementer": -time.Hour, "ses_other": 25 * time.Minute})
 			r.sweep(worker)
 			marked := r.reach(worker.Token)
-			if !marked.Unreachable() || !marked.Reported {
-				t.Fatalf("at 25 minutes the claim reads %+v, want it marked and reported", marked)
+			if !marked.Unreachable() {
+				t.Fatalf("at 25 minutes the claim reads %+v, want it marked", marked)
 			}
-			told, rows := len(r.notices(record.UnreachableClaimsNotice)), len(r.architectNotices("LEGION-209"))
+			rows := len(r.architectNotices("LEGION-209"))
 
 			r.at(26 * time.Minute)
 			interrupt(r, 26*time.Minute)
@@ -428,12 +428,12 @@ func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 				r.listing(map[string]time.Duration{"ses_implementer": -time.Hour, "ses_other": time.Duration(minute) * time.Minute})
 				r.sweep(r.with(worker))
 				got := r.reach(worker.Token)
-				if !got.Unreachable() || !got.Since.Equal(marked.Since) || !got.LastSeen.Equal(marked.LastSeen) || !got.Reported {
+				if !got.Unreachable() || !got.Since.Equal(marked.Since) || !got.LastSeen.Equal(marked.LastSeen) {
 					t.Fatalf("at %d minutes, after %s at 26, the claim reads %+v, want its mark %+v as it was", minute, name, got, marked)
 				}
 			}
-			if got := len(r.notices(record.UnreachableClaimsNotice)); got != told {
-				t.Errorf("after %s the controller was told %d more lists of unreachable claims, want none", name, got-told)
+			if told := r.toldCount(); told != 0 {
+				t.Errorf("after %s the controller was told %d notices, want none", name, told)
 			}
 			if got := len(r.architectNotices("LEGION-209")); got != rows {
 				t.Errorf("after %s the architect was sent %d more notices, want none", name, got-rows)
@@ -777,4 +777,42 @@ func TestACaseForAPersonWritesTheClaimsLineOnce(t *testing.T) {
 				len(r.relaunched), r.reach(worker.Token))
 		}
 	})
+}
+
+// A pod that holds two or more live claims, every one out of reach, is a case for a person: the
+// daemon relaunches none of them, since a relaunch into that pod reaches Envoy for none, writes
+// each claim's line once and tells the controller nothing. Once one of them registers again, the
+// daemon relaunches the other.
+func TestAPodWhoseEveryClaimIsOutOfReachIsACaseForAPerson(t *testing.T) {
+	r := newReachRig(t, false)
+	pod := func(c supervise.Claim) supervise.Claim {
+		c.ActivityAt = reachBoot
+		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: c.Token, Incarnation: "pod-a:3",
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-208", PodUID: "pod-a", Container: "roles", Generation: 3}}
+		return c
+	}
+	worker := pod(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	tester := pod(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleTester, "ses_tester"))
+	for minute := 21; minute <= 30; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(worker), r.with(tester))
+	}
+	if len(r.relaunched) != 0 {
+		t.Fatalf("the daemon relaunched %+v into a pod whose every claim is out of reach, want none", r.relaunched)
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 2 {
+		t.Fatalf("R6 wrote %d refused lines for the pod's two claims over ten sweeps, want one for each", lines)
+	}
+	if told := r.toldCount(); told != 0 {
+		t.Fatalf("the controller was told %d notices, want none", told)
+	}
+
+	// The tester registers again: the pod reaches Envoy for one claim, and the worker is relaunched.
+	r.at(31 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 31 * time.Minute, "ses_tester": 31 * time.Minute})
+	r.sweep(r.with(worker), r.with(tester))
+	if len(r.relaunched) != 1 || r.relaunched[0].Token != worker.Token {
+		t.Fatalf("with the tester back in reach the daemon relaunched %+v, want the implementer's claim once", r.relaunched)
+	}
 }

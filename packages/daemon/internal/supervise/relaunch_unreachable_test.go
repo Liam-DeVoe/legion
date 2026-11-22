@@ -13,14 +13,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The relaunch of a claim Envoy cannot reach (R5): the controller's `relaunch`, or the daemon's own
-// of its controller, stops the claim's process and resumes its same session, charging nothing, once
+// The relaunch of a claim Envoy cannot reach (R5): the daemon's own, of a claim its reach keeper
+// marked, stops the claim's process and resumes its same session, charging nothing, once
 // the guard lets it through: no step in the last 20 minutes, no activity report in the last 20
 // minutes of a turn the claim is still in, an open call that is a `wait` if there is one, and an
 // activity report since the launch that shows no background job and no subagent running.
 
 // relaunchCause is the cause a relaunch's caller hands the machine, which the claim records.
-const relaunchCause = "Envoy could not reach its session for 20 minutes, so the project's controller relaunched it"
+const relaunchCause = "Envoy could not reach its session for 20 minutes, so the daemon relaunched it on the same session"
 
 // inPlaceRuntime is the fake runtime answering the relaunch's two questions as a case sets them,
 // recording each call, as the Sandbox runtime answers them for a role in an issue pod.
@@ -602,12 +602,11 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 // The tree lifecycle's recheck is a transaction of the store's (Store.CheckLaunch), and a store
 // that does not answer it — a dropped connection, a pool that timed out, a lock wait past the
 // request's time — is no refusal of the tree's. The relaunch stops nothing then either, and says
-// so with a sentinel of its own, which the API answers with a code that asks for the relaunch
-// again. The machine writes no line of its own for it: each caller writes the one line, the API's
-// route (api's claimRelaunch) and the daemon's relaunch of its own controller (internal/daemon's
-// relaunchOwnController), so one failed check is one line. Read as the tree's refusal, the
-// controller would leave the claim to a close or a start of its tree that nothing is about to
-// make, and the claim would stay out of reach with nobody acting.
+// so with a sentinel of its own, which asks for the relaunch again. The machine writes no line of
+// its own for it: its caller, the daemon's relaunch (internal/daemon's relaunchClaim), writes it
+// and asks again at its next sweep. Read as the tree's refusal, the daemon would leave the claim
+// to a close or a start of its tree that nothing is about to make, and the claim would stay out of
+// reach with nobody acting.
 func TestARelaunchWhoseTreeCheckTheStoreDoesNotAnswerStopsNothingAndIsAskedAgain(t *testing.T) {
 	store := &epochStore{epoch: 1}
 	h := lifecycleHarness(t, store, queuedClaim())

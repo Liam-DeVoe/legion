@@ -5,13 +5,11 @@ package daemon
 // beside judgeController's rules. The rig is reach_test.go's.
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -273,42 +271,35 @@ func inTurnWaiting(c supervise.Claim, reportedAt time.Time) supervise.Claim {
 	return c
 }
 
-// The notice that the guard would now let a refused claim through reads the guard's own rule, its
-// turn heartbeat included (R5): while the claim's session sends its report every 5 minutes in its
-// turn, no notice goes, and the notice goes 20 minutes after the last report, once the process has
+// The daemon's relaunch of a workflow claim reads the guard's own rule, its turn heartbeat
+// included (R5): while the claim's session sends its report every 5 minutes in its turn, the claim
+// is not relaunched, and it is relaunched 20 minutes after the last report, once the process has
 // frozen.
-func TestTheRelaunchReadyNoticeWaitsUntilTheTurnsReportsStopFor20Minutes(t *testing.T) {
+func TestTheDaemonDoesNotRelaunchAWorkerThatReportsInItsTurn(t *testing.T) {
 	r := newReachRig(t, false)
-	worker := inTurnWaiting(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"), reachBoot)
-	r.at(21 * time.Minute)
-	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-	worker.ActivityAt = reachBoot.Add(20 * time.Minute)
-	r.sweep(worker)
-	if err := r.k.guardRefused(context.Background(), worker.Token, reachBoot.Add(21*time.Minute)); err != nil {
-		t.Fatalf("record the guard's refusal: %v", err)
-	}
-	for minute := 22; minute <= 60; minute++ {
-		if minute%5 == 0 {
-			worker.ActivityAt = reachBoot.Add(time.Duration(minute) * time.Minute)
+	worker := inTurnWaiting(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"), reachBoot.Add(20*time.Minute))
+	sweepTo := func(from, last int, reports bool) {
+		for minute := from; minute <= last; minute++ {
+			if reports && minute%5 == 0 {
+				worker.ActivityAt = reachBoot.Add(time.Duration(minute) * time.Minute)
+			}
+			r.at(time.Duration(minute) * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+			r.sweep(r.with(worker))
 		}
-		r.at(time.Duration(minute) * time.Minute)
-		r.sweep(r.with(worker))
 	}
-	if ready := r.notices(record.RelaunchReadyNotice); len(ready) != 0 {
-		t.Fatalf("relaunch-ready notices = %+v while the session still reports in its turn, want none", ready)
+	sweepTo(21, 60, true)
+	if len(r.relaunched) != 0 {
+		t.Fatalf("relaunches = %+v while the session still reports in its turn, want none", r.relaunched)
 	}
 	// The process froze after its report at 60 minutes: nothing arrives from then on.
-	for minute := 61; minute <= 79; minute++ {
-		r.at(time.Duration(minute) * time.Minute)
-		r.sweep(r.with(worker))
+	sweepTo(61, 79, false)
+	if len(r.relaunched) != 0 {
+		t.Fatalf("relaunches = %+v 19 minutes after the turn's last report, want none", r.relaunched)
 	}
-	if ready := r.notices(record.RelaunchReadyNotice); len(ready) != 0 {
-		t.Fatalf("relaunch-ready notices = %+v 19 minutes after the turn's last report, want none", ready)
-	}
-	r.at(80 * time.Minute)
-	r.sweep(r.with(worker))
-	if ready := r.notices(record.RelaunchReadyNotice); len(ready) != 1 || ready[0].notice.Claim != string(worker.Token) {
-		t.Fatalf("relaunch-ready notices = %+v, want one 20 minutes after the turn's last report", ready)
+	sweepTo(80, 80, false)
+	if len(r.relaunched) != 1 || r.relaunched[0].Token != worker.Token {
+		t.Fatalf("relaunches = %+v, want the worker relaunched 20 minutes after the turn's last report", r.relaunched)
 	}
 }
 

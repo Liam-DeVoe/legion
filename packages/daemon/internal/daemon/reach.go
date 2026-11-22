@@ -443,16 +443,20 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 		readings[c.Token] = read{rec, verdict}
 		watched = append(watched, c)
 	}
-	marked := func(other supervise.Claim) bool {
-		if r, ok := readings[other.Token]; ok {
-			return r.verdict == reachMarked
+	// The pod reaches Envoy for another of its claims only while Envoy lists that claim's session
+	// as live: a claim marked this minute does not, nor does one whose session has not registered
+	// in the listener's live window, which goes out of reach with c when the pod's path to Envoy is
+	// what broke, and is marked within the minute after c's mark.
+	reaches := func(other supervise.Claim) bool {
+		if r, ok := readings[other.Token]; ok && r.verdict == reachMarked {
+			return false
 		}
-		return k.recordOf(other).Unreachable()
+		return k.sessions[other.Session].Live()
 	}
 	pods := podsOf(claims)
 	for _, c := range watched {
 		r := readings[c.Token]
-		k.storeEach(ctx, c.Token, k.judge(ctx, c, r.rec, r.verdict, pods.siblings(c), marked, now))
+		k.storeEach(ctx, c.Token, k.judge(ctx, c, r.rec, r.verdict, pods.siblings(c), reaches, now))
 	}
 	for token := range k.dirty {
 		k.storeEach(ctx, token, k.records[token])
@@ -515,9 +519,9 @@ const (
 // judge is c's record once the daemon has acted on this minute's reading of it (rec, verdict): an
 // episode that is over closes the claim's lines, and a claim marked out of reach has its
 // architect told, where it has one to tell, and is relaunched (relaunchMarked). siblings is the
-// live claims of c's pod, c among them, and marked whether one of them is marked this minute. The
-// caller holds mu.
-func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervise.Reach, verdict reachVerdict, siblings []supervise.Claim, marked func(supervise.Claim) bool, now time.Time) supervise.Reach {
+// live claims of c's pod, c among them, and reaches whether Envoy reaches one of them this minute.
+// The caller holds mu.
+func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervise.Reach, verdict reachVerdict, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) supervise.Reach {
 	switch verdict {
 	case reachNotDue:
 		return rec
@@ -532,7 +536,7 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervis
 	if c.Role != claim.RoleController && !rec.ArchitectTold {
 		rec.ArchitectTold = k.tellArchitect(ctx, c, rec)
 	}
-	return k.relaunchMarked(ctx, c, rec, siblings, marked, now)
+	return k.relaunchMarked(ctx, c, rec, siblings, reaches, now)
 }
 
 // reading is c's record after this minute's read and what it says (reachVerdict): it takes in
@@ -621,16 +625,16 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 }
 
 // relaunchMarked is the daemon's relaunch of c, marked out of reach, on its same session (R5): no
-// agent is asked to relaunch it. It relaunches it at most once in 6 hours, under the same guard as
-// `relaunch`. A workflow claim's relaunch replaces no pod, since that would end every other role
-// of the pod; the controller's replaces its pod where the launch needs it or its launcher is not
-// connected, since no other role runs there (supervise.RequestRelaunch's MayReplacePod). Each
-// case it cannot get past writes R6's line for c, once until c is reachable again
-// (fleetalert.Writer.Open, whose store keeps which lines are open):
+// agent is asked to relaunch it. It relaunches it at most once in 6 hours, under the relaunch
+// guard (supervise.RelaunchGuard). A workflow claim's relaunch replaces no pod, since that would
+// end every other role of the pod; the controller's replaces its pod where the launch needs it or
+// its launcher is not connected, since no other role runs there (supervise.RequestRelaunch's
+// MayReplacePod). Each case it cannot get past writes R6's line for c, once until c is reachable
+// again (fleetalert.Writer.Open, whose store keeps which lines are open):
 //
 //   - the relaunch did not bring c back within 20 minutes, or c is out of reach a second time
 //     within the 6 hours (the first of linesOf);
-//   - every claim of c's pod, two or more, is out of reach; the runtime refuses the relaunch,
+//   - Envoy reaches no claim of c's pod, two or more; the runtime refuses the relaunch,
 //     because the role's launcher is not connected or because the launch would replace the pod;
 //     the process outlived the relaunch's stop; or the guard refuses it, at once for the
 //     controller, which nobody else can relaunch, and for 60 minutes for a workflow claim, whose
@@ -641,7 +645,7 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 // The relaunch it made is the one c's claim records (supervise.Claim.LastRelaunch), which the
 // record has taken in by now (relaunchTakenIn), so a daemon that ended before its own write of
 // the record does not relaunch c a second time within the 6 hours. The caller holds mu.
-func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, marked func(supervise.Claim) bool, now time.Time) supervise.Reach {
+func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) supervise.Reach {
 	lines, token := linesOf(c), string(c.Token)
 	if rec.Relaunched {
 		if now.Sub(rec.RelaunchedAt) >= notBackAfter {
@@ -649,7 +653,7 @@ func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec
 		}
 		return rec
 	}
-	err := refusalOf(c, rec, siblings, marked, now)
+	err := refusalOf(c, rec, siblings, reaches, now)
 	switch {
 	case errors.Is(err, supervise.ErrRelaunchedRecently):
 		k.alerts.Open(lines[0], token, "relaunchedAt", rec.RelaunchedAt, "reason", fmt.Sprintf(
@@ -692,11 +696,15 @@ func notBack(c supervise.Claim) string {
 }
 
 // guardRefuses is rec once the guard has refused c's relaunch at at, for why: the episode's first
-// refusal is kept, and R6's line is written once the guard has refused c for long enough, at once
-// for the controller (R6) and after 60 minutes for a workflow claim (R5). The caller holds mu.
+// refusal is kept, and logged with its reason, since the daemon asks again at each sweep and says
+// nothing more until R6's line; that line is written once the guard has refused c for long enough,
+// at once for the controller (R6) and after 60 minutes for a workflow claim (R5). The caller
+// holds mu.
 func (k *reachKeeper) guardRefuses(c supervise.Claim, rec supervise.Reach, why string, at time.Time) supervise.Reach {
 	if rec.GuardRefusedAt.IsZero() {
 		rec.GuardRefusedAt = at
+		k.log.Info("reach: the relaunch guard holds the daemon's relaunch of a claim Envoy cannot reach; it asks again at each sweep",
+			"claim", c.Token, "reason", why)
 	}
 	held := guardHeldAfter
 	if c.Role == claim.RoleController {
@@ -810,9 +818,9 @@ func (k *reachKeeper) tellController(ctx context.Context, notice record.Controll
 // is asked, and nil where it goes on. c must be marked out of reach; its last relaunch — the later
 // of the one rec has taken in and the one c's own row records, which the relaunch's launch wrote —
 // must be at least 6 hours old; and of siblings, the live claims of c's pod with c among them, two
-// or more must not every one be marked, since a relaunch into a pod that reaches Envoy for none of
-// them fails each worker at its deaths limit and recovers none.
-func refusalOf(c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, marked func(supervise.Claim) bool, now time.Time) error {
+// or more, Envoy must reach one besides c (reaches), since a relaunch into a pod that reaches
+// Envoy for none of them fails each worker at its deaths limit and recovers none.
+func refusalOf(c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) error {
 	last := rec.RelaunchedAt
 	switch {
 	case !rec.Unreachable():
@@ -824,13 +832,13 @@ func refusalOf(c supervise.Claim, rec supervise.Reach, siblings []supervise.Clai
 	}
 	tokens := make([]claim.Token, 0, len(siblings))
 	for _, other := range siblings {
-		if other.Token != c.Token && !marked(other) {
+		if other.Token != c.Token && reaches(other) {
 			return nil
 		}
 		tokens = append(tokens, other.Token)
 	}
 	slices.Sort(tokens)
-	return fmt.Errorf("%w: pod %s holds %d live claims, every one out of reach: %v", supervise.ErrPodUnreachable, c.Locator.Sandbox.PodUID, len(tokens), tokens)
+	return fmt.Errorf("%w: pod %s holds %d live claims, and Envoy reaches none of them: %v", supervise.ErrPodUnreachable, c.Locator.Sandbox.PodUID, len(tokens), tokens)
 }
 
 // podClaims is the live claims of each pod, by its UID (podsOf).

@@ -2,13 +2,13 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -28,9 +28,10 @@ func TestTheStreamsCloseCarriesItsGenerationToTheMachine(t *testing.T) {
 	}
 }
 
-// relaunchRig is the controller's `relaunch` over a bare supervisor on the fake runtime and the
-// reach rig's keeper, as the API route reaches it (supervision.relaunch).
-func relaunchRig(t *testing.T) (*supervision, *reachRig, *supervisor, *runtime.Locator) {
+// relaunchRig is the daemon's relaunch of a claim it has marked out of reach (relaunchByDaemon)
+// over a bare supervisor on the fake runtime and the reach rig's keeper, as openSupervision wires
+// it: the keeper's relaunch posts RequestRelaunch to the claim's machine.
+func relaunchRig(t *testing.T) (*reachRig, *supervisor) {
 	t.Helper()
 	sup, _ := newPluginSupervisor(t, api.DaemonAPIVersion, true)
 	// The store's report of the launch, which the machine's own guard reads: the activity the
@@ -46,7 +47,8 @@ func relaunchRig(t *testing.T) (*supervision, *reachRig, *supervisor, *runtime.L
 	}
 	r := newReachRig(t, false)
 	s := &supervision{log: quietLogger(), supervisor: sup, reach: r.k}
-	return s, r, sup, nil
+	r.k.relaunch = s.relaunchByDaemon
+	return r, sup
 }
 
 // waitingQuietly is c in a long wait with nothing running and a report of its launch, which the
@@ -62,61 +64,76 @@ func waitingQuietly(c supervise.Claim) supervise.Claim {
 	return c
 }
 
-func TestTheControllersRelaunchChecksWhatOnlyTheDaemonKnowsFirst(t *testing.T) {
-	s, r, sup, _ := relaunchRig(t)
+// The daemon's relaunch reaches the claim's machine once the keeper has marked the claim: its
+// launch moves the claim's generation and records the relaunch, which the keeper takes in, and no
+// later sweep within 6 hours relaunches it again.
+func TestTheDaemonsRelaunchReachesTheClaimsMachineOnce(t *testing.T) {
+	r, sup := relaunchRig(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
 	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := sup.Machine(worker.Token)
-
-	if err := s.relaunch(context.Background(), m); !errors.Is(err, supervise.ErrClaimReachable) {
-		t.Fatalf("relaunch of a claim not marked = %v, want ErrClaimReachable", err)
-	}
-
-	r.at(21 * time.Minute)
-	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-	r.sweep(worker)
-	if !r.reach(worker.Token).Unreachable() {
-		t.Fatal("the worker was not marked")
-	}
 	generation := m.Claim().Generation
-	if err := s.relaunch(context.Background(), m); err != nil {
-		t.Fatalf("relaunch of a marked claim the guard lets through = %v", err)
+
+	r.at(19 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 19 * time.Minute})
+	r.sweep(worker)
+	if got := m.Claim().Generation; got != generation || r.reach(worker.Token).Unreachable() {
+		t.Fatalf("at 19 minutes the claim is at generation %d with the record %+v, want %d and no mark", got, r.reach(worker.Token), generation)
 	}
+
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+	r.sweep(worker)
 	testwait.Eventually(t, "the relaunch to move the claim's generation", func() bool { return m.Claim().Generation > generation })
-	if got := r.reach(worker.Token); !got.Relaunched || got.RelaunchedAt.IsZero() || got.Generation != m.Claim().Generation {
-		t.Fatalf("the keeper's record after the relaunch = %+v, want the relaunch recorded", got)
+	if got := r.reach(worker.Token); !got.Unreachable() || !got.Relaunched || !got.RelaunchedAt.Equal(m.Claim().LastRelaunch) {
+		t.Fatalf("the keeper's record after the relaunch = %+v, want the claim marked and the relaunch at %v recorded", got, m.Claim().LastRelaunch)
 	}
-	if err := s.relaunch(context.Background(), m); !errors.Is(err, supervise.ErrRelaunchedRecently) {
-		t.Fatalf("a second relaunch within 6 hours = %v, want ErrRelaunchedRecently", err)
+	relaunched := m.Claim().Generation
+	for minute := 22; minute <= 30; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(m.Claim()))
+	}
+	if got := m.Claim().Generation; got != relaunched {
+		t.Fatalf("after nine more sweeps the claim is at generation %d, want %d: one relaunch", got, relaunched)
 	}
 }
 
-func TestTheControllersRelaunchRefusedByTheGuardIsRecordedForItsNotices(t *testing.T) {
-	s, r, sup, _ := relaunchRig(t)
+// A relaunch the machine's own guard refuses, reading a later activity report than the sweep
+// read, is recorded as the guard's refusal, relaunches nothing and writes no line before the
+// guard has held the claim for 60 minutes.
+func TestTheDaemonsRelaunchRefusedByTheMachinesGuardIsRecorded(t *testing.T) {
+	r, sup := relaunchRig(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-	worker.ActivityBackground, worker.ActivityKinds = true, []string{"subagent"}
-	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
+	busy := worker
+	busy.ActivityBackground, busy.ActivityKinds = true, []string{"subagent"}
+	if _, err := sup.restore(context.Background(), []supervise.Claim{busy}); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := sup.Machine(worker.Token)
+	generation := m.Claim().Generation
 	r.at(21 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
 	r.sweep(worker)
 
-	if err := s.relaunch(context.Background(), m); !errors.Is(err, supervise.ErrRelaunchGuard) {
-		t.Fatalf("relaunch of a claim whose report shows a subagent = %v, want the guard's refusal", err)
-	}
 	if got := r.reach(worker.Token); got.GuardRefusedAt.IsZero() || got.Relaunched {
-		t.Fatalf("the keeper's record after the refusal = %+v, want the refusal recorded and no relaunch", got)
+		t.Fatalf("the keeper's record after the machine's refusal = %+v, want the refusal recorded and no relaunch", got)
+	}
+	if got := m.Claim().Generation; got != generation {
+		t.Fatalf("the refused relaunch moved the claim to generation %d, want %d", got, generation)
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines at the guard's first refusal, want none", lines)
 	}
 }
 
-// A pod that holds two or more live claims, every one out of reach, is a case for a person: a
-// relaunch into it reaches Envoy for none of them.
-func TestTheControllersRelaunchRefusesAPodWhoseEveryClaimIsOutOfReach(t *testing.T) {
-	s, r, sup, _ := relaunchRig(t)
+// The daemon's path refuses a pod that holds two or more live claims, every one out of reach,
+// before the machine is asked: neither claim's generation moves. Once one of them registers again,
+// the other is relaunched through its machine.
+func TestTheDaemonsRelaunchRefusesAPodWhoseEveryClaimIsOutOfReach(t *testing.T) {
+	r, sup := relaunchRig(t)
 	pod := func(c supervise.Claim) supervise.Claim {
 		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: c.Token, Incarnation: "pod-a:3",
 			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-208", PodUID: "pod-a", Container: "roles", Generation: 3}}
@@ -128,12 +145,13 @@ func TestTheControllersRelaunchRefusesAPodWhoseEveryClaimIsOutOfReach(t *testing
 		t.Fatal(err)
 	}
 	m, _ := sup.Machine(worker.Token)
+	generation := m.Claim().Generation
 	r.at(21 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
 	r.sweep(worker, tester)
-
-	if err := s.relaunch(context.Background(), m); !errors.Is(err, supervise.ErrPodUnreachable) {
-		t.Fatalf("relaunch into a pod whose two claims are both out of reach = %v, want ErrPodUnreachable", err)
+	if got := m.Claim().Generation; got != generation || r.lines(fleetalert.ClaimRelaunchRefused.Word) != 2 {
+		t.Fatalf("a pod whose two claims are out of reach: the worker at generation %d and %d refused lines, want %d and 2",
+			got, r.lines(fleetalert.ClaimRelaunchRefused.Word), generation)
 	}
 
 	// The tester registers again: the pod reaches Envoy for one claim, and the worker's relaunch
@@ -141,9 +159,7 @@ func TestTheControllersRelaunchRefusesAPodWhoseEveryClaimIsOutOfReach(t *testing
 	r.at(22 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_tester": 22 * time.Minute})
 	r.sweep(r.with(worker), r.with(tester))
-	if err := s.relaunch(context.Background(), m); errors.Is(err, supervise.ErrPodUnreachable) {
-		t.Fatalf("relaunch with one claim of the pod reachable = %v, want no pod refusal", err)
-	}
+	testwait.Eventually(t, "the worker's relaunch to move its generation", func() bool { return m.Claim().Generation > generation })
 }
 
 // lockOutRig is a supervisor holding worker, and the reach rig's lock-out notices the lock-out is

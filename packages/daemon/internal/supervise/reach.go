@@ -185,7 +185,7 @@ func (c Claim) inTurn() bool {
 }
 
 // RequestRelaunch is a relaunch of a claim Envoy cannot reach, on its same session (R5): the
-// controller's `relaunch`, or the daemon's own of its controller, once the daemon has checked what
+// daemon's own relaunch of a claim its reach keeper marked, once the daemon has checked what
 // the machine does not hold — that the claim is marked out of reach, its last relaunch is 6 hours
 // old, and its pod holds a claim Envoy can reach (internal/daemon's reach keeper). Step is the step
 // record the store holds as the daemon read it before posting, the freshest durable reading of the
@@ -238,8 +238,8 @@ type RequestRelaunch struct {
 // (RefusedError), and the tree lifecycle's recheck answers one of two: the tree's own refusal
 // (treelifecycle.Refuses) is ErrTreeRefusesLaunch, which its tree's close or next start decides,
 // and any other error of that check — a store that did not answer — is ErrTreeCheckFailed, which
-// says nothing was stopped and the relaunch may be asked for again, and which its caller writes
-// to the log once (api's claimRelaunch, internal/daemon's relaunchOwnController). A launch left to
+// says nothing was stopped and the relaunch may be asked for again, which its caller does at its
+// next sweep (internal/daemon's relaunchClaim). A launch left to
 // be tried again after the stop (relaunchLater, whose error says so: launchRetried) is no refusal:
 // the process is stopped, the relaunch is recorded and the daemon makes the launch itself, so the
 // relaunch answers as one that ran, with the error the launch met written to the log (launchMade).

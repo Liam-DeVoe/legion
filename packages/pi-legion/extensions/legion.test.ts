@@ -5736,7 +5736,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       .map((request) => request.body);
 
   // R5: Envoy cannot reach a controller nobody else can relaunch, so the daemon relaunches its own,
-  // under the guard a `relaunch` of any claim runs under, which reads the claim's last activity
+  // under the guard its relaunch of any claim runs under, which reads the claim's last activity
   // report since its launch and refuses a claim that has made none. The controller the daemon
   // launched therefore reports as a worker does, with the claim token, session and secret its
   // registration answered: at every settle, whatever it says, and between turns on its interval

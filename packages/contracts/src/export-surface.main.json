@@ -797,8 +797,6 @@
     "LegionReadyRequestBody": "type",
     "LegionRegisterResponse": "schema:tolerant",
     "LegionRegistration": "type",
-    "LegionRelaunchRequest": "schema:strict",
-    "LegionRelaunchResponse": "schema:tolerant",
     "LegionReleaseRecords": "type",
     "LegionReleaseRecordsRequest": "schema:strict",
     "LegionReleaseRecordsRequestBody": "type",

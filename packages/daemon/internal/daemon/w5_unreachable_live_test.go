@@ -1,9 +1,10 @@
 //go:build e2e
 
-// Check w5 of this change's verification (R5: a claim Envoy cannot reach is marked, reported and
-// relaunched; R6: a person is told what no agent can hear), run on the rig (RIG.md) as the check
-// states it. scripts/e2e/unreachable-claims.sh builds this driver and runs it; with --base-commit
-// it runs the first block against the base's code, the check's negative control.
+// Check w5 of this change's verification (R5: a claim Envoy cannot reach is marked, and the daemon
+// relaunches it on its same session; R6: a person is told what no agent can hear or act on), run on
+// the rig (RIG.md) as the check states it. scripts/e2e/unreachable-claims.sh builds this driver and
+// runs it; with --base-commit it runs the first block against the base's code, the check's negative
+// control.
 //
 // Three runs, each on a rig of its own, as the check's own text has them:
 //
@@ -32,12 +33,20 @@
 // never its shim) once its stand-in has answered with `wait` and the call's start has reached the
 // daemon, and lets it run again (SIGCONT) where the check has its job end or its subagent end.
 //
+// Where the rig's block of a claim's registrations stands for a cause in that claim's own process
+// (the implementer and the seventh, each frozen in its wait, and the architect, idle), the daemon's
+// relaunch replaces the process, and the rig lets the new process's registrations through at the
+// relaunch's stop (podRuntime.liftOnStop). Where it stands for a cause outside the process (the
+// eighth's, the fifth's, the implementer's second block), the block stays through the relaunch.
+//
 // What a step reads: read_state and read_record (GET /legion/v1/state) and the operator's claim
-// listing once a minute (the sampler), the controller's and the architect's notices as the stream
-// stored them, the outbox's rows as an audit trigger copies them, the daemon's own log (its
-// out-of-reach lines and R6's `LEGION FLEET ALERT` lines), the runtime's launches and the rig's
-// relaunch calls, and each claim's stand-in's requests. Every daemon text a step matches is a
-// literal here, so the first block builds against the base.
+// listing once a minute (the sampler), and every 5 s around the first block's marks
+// (watchMarks), the controller's and the architect's notices as the stream stored them, the
+// outbox's rows as an audit trigger copies them, the daemon's own log (its out-of-reach lines, its
+// relaunch guard's lines and R6's `LEGION FLEET ALERT` lines), the runtime's launches and the
+// relaunch calls the daemon made of it, and each claim's stand-in's requests. Every daemon text a
+// step matches is a literal here, so the first block builds against the base, where the script
+// sets W5_BASE_RUN (w5BaseRunEnv).
 package daemon
 
 import (
@@ -66,10 +75,9 @@ const (
 	w5Unreachable    = 20 * time.Minute
 	w5MarkWindow     = 22 * time.Minute
 	w5GuardHeld      = 60 * time.Minute
-	w5NoticeSlack    = 2 * time.Minute
-	w5FirstRelaunch  = 10 * time.Minute
-	w5GuardRelaunch  = 25 * time.Minute
-	w5ImplRelaunch   = 30 * time.Minute
+	w5LineSlack      = 2 * time.Minute
+	w5FirstRead      = 10 * time.Minute
+	w5GuardRead      = 25 * time.Minute
 	w5NinthBlocked   = 85 * time.Minute
 	w5ReadFor        = 25 * time.Minute
 	w5AllBlocked     = 30 * time.Minute
@@ -79,6 +87,9 @@ const (
 	w5PaneReady      = 6 * time.Minute
 )
 
+// w5BaseRunEnv is set by the script's negative control, which runs the first block over the base.
+const w5BaseRunEnv = "W5_BASE_RUN"
+
 // The daemon's words a step matches.
 const (
 	w5MarkLine        = "reach: the claim's session has not registered with Envoy for 20 minutes; it is out of reach, and keeps its state"
@@ -87,43 +98,53 @@ const (
 	w5NoHolderFinish  = "outbox role message finished undelivered: its role has no live holder"
 	w5PhaseChanged    = "workflow: phase changed"
 	w5R2Note          = "Your previous turn was interrupted."
-	// The cause the daemon's cut-turn note names for a relaunch the controller made of a claim
-	// Envoy could not reach, as the resumed session's transcript shows it (main4, 16:24:26Z): "Your
-	// process ended because Envoy could not reach its session for 20 minutes, so the project's
-	// controller relaunched it on the same session."
-	w5RelaunchCause = "Envoy could not reach its session for 20 minutes, so the project's controller relaunched it on the same session"
-	w5CasePerson    = "This is a case for a person."
+	// The cause the daemon's cut-turn note names for its own relaunch of a claim Envoy could not
+	// reach (internal/daemon's relaunchedByDaemon), as the resumed session's transcript shows it:
+	// "Your process ended because Envoy could not reach its session for 20 minutes, so the daemon
+	// relaunched it on the same session."
+	w5RelaunchCause = "Envoy could not reach its session for 20 minutes, so the daemon relaunched it on the same session"
+	// The reasons R6's line gives for a claim out of reach a second time within 6 hours of its
+	// relaunch, and for a pod none of whose claims Envoy reaches.
+	w5SecondTime = "a second time within 6 hours"
+	w5PodReason  = "Envoy reaches none of them"
 )
 
 // w5Run is one run of w5's main rig.
 type w5Run struct {
 	*w5Rig
-	suffix  string
-	names   map[claim.Token]string
-	files   string
-	t0      time.Time
+	suffix string
+	names  map[claim.Token]string
+	files  string
+	t0     time.Time
+
+	blockMu sync.Mutex
 	blocked map[string]time.Time
 
 	envoyMu  sync.Mutex
 	lastSeen map[string]time.Time
 
+	// firstMarks is each claim's first view in read_state that shows it marked (watchMarks), and
+	// seventhSvcGone when the seventh's named service ended (watchSeventhService).
+	marksMu        sync.Mutex
+	firstMarks     map[claim.Token]w5View
+	seventhSvcGone time.Time
+
 	roleRow, hookRow int64
-	refusalsMu       sync.Mutex
-	refusals         []relaunchAnswer
 
 	// The facts the later steps read of the first block.
 	fifthMessageRow, fourthMessageRow int64
-	fourthRetired                     time.Time
-	ninthFirstRefusal                 time.Time
+	fourthRetired, fifthJobEnded      time.Time
+	ninthHeld                         time.Time
 	fourthCallStarted                 time.Time
 	implFrozen                        time.Time
 	allBlockedAt, listFailedFrom      time.Time
 	listAnswered                      time.Time
 
 	// The stand-ins' answers a step waits on: each the moment the claim's turn was answered with
-	// wait, and the eighth's subagent's own request, held until the eighth's step lets it go.
+	// wait, the moment the resumed fifth's turn moved its issue's phase, and the eighth's
+	// subagent's own request, held until the eighth's step lets it go.
 	implWait, fifthWait, seventhWait, eighthWait, implAgainWait chan time.Time
-	twelfthWaits                                                chan time.Time
+	twelfthWaits, fifthMoved                                    chan time.Time
 	eighthSubagent                                              *heldRequest
 }
 
@@ -174,7 +195,7 @@ func newW5Run(t *testing.T) *w5Run {
 	suffix := randomSuffix(t)[:6]
 	w := newW5Rig(t, w5Options{script: "scripts/e2e/unreachable-claims.sh", claims: w5MainClaims(suffix)})
 	r := &w5Run{w5Rig: w, suffix: suffix, names: map[claim.Token]string{}, files: t.TempDir(),
-		blocked: map[string]time.Time{}, lastSeen: map[string]time.Time{}}
+		blocked: map[string]time.Time{}, lastSeen: map[string]time.Time{}, firstMarks: map[claim.Token]w5View{}}
 	for name, c := range w.claims {
 		r.names[c.token] = name
 	}
@@ -333,15 +354,6 @@ func (r *w5Run) awaitLive(token claim.Token) {
 	})
 }
 
-// noteRefusal keeps a relaunch answer for the totals' read of the notices around it.
-func (r *w5Run) noteRefusal(answer relaunchAnswer) {
-	r.refusalsMu.Lock()
-	defer r.refusalsMu.Unlock()
-	if !answer.reached() {
-		r.refusals = append(r.refusals, answer)
-	}
-}
-
 // held is token as the operator's listing shows it, read without failing the step, so a flow of
 // afterTheFirstBlock may read it from its own goroutine; the zero claim when it cannot be read.
 func (r *w5Run) held(token claim.Token) api.OperatorClaim {
@@ -459,7 +471,9 @@ func (r *w5Run) block(names ...string) time.Time {
 	for _, name := range names {
 		session := r.session(r.c(name).token)
 		r.front.blockRegistrations(session)
+		r.blockMu.Lock()
 		r.blocked[name] = at
+		r.blockMu.Unlock()
 		r.record("blocked the registrations of %s (%s, session %s) at %s", name, r.c(name).token, session, clockAt(at))
 	}
 	return at
@@ -469,8 +483,37 @@ func (r *w5Run) unblock(names ...string) {
 	for _, name := range names {
 		session := r.session(r.c(name).token)
 		r.front.unblock(session)
+		r.blockMu.Lock()
 		delete(r.blocked, name)
+		r.blockMu.Unlock()
 		r.record("let the registrations of %s (session %s) through again at %s", name, session, clockAt(time.Now()))
+	}
+}
+
+// blockedNames is every claim whose registrations the rig blocks now.
+func (r *w5Run) blockedNames() []string {
+	r.blockMu.Lock()
+	defer r.blockMu.Unlock()
+	names := make([]string, 0, len(r.blocked))
+	for name := range r.blocked {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// liftOnRelaunch lets each of names' registrations through at the first stop of its process that
+// a relaunch makes (podRuntime.liftOnStop): its block stands for a cause in that process.
+func (r *w5Run) liftOnRelaunch(names ...string) {
+	for _, name := range names {
+		session := r.session(r.c(name).token)
+		r.pods.liftOnStop(r.c(name).token, func() {
+			r.front.unblock(session)
+			r.blockMu.Lock()
+			delete(r.blocked, name)
+			r.blockMu.Unlock()
+			r.record("let the registrations of %s (session %s) through at its relaunch's stop, %s", name, session, clockAt(time.Now()))
+		})
 	}
 }
 
@@ -485,6 +528,99 @@ func (w *w5Rig) markOf(token claim.Token, from time.Time) *loggedRecord {
 	return nil
 }
 
+// guardLineOf is the daemon's line that its relaunch guard holds its relaunch of token, written at
+// or after from, nil for none.
+func (w *w5Rig) guardLineOf(token claim.Token, from time.Time) *loggedRecord {
+	for _, rec := range w.logs(func(rec loggedRecord) bool { return rec.Message == w5GuardLine && rec.Attrs["claim"] == string(token) }) {
+		if !rec.at.Before(from) {
+			found := rec
+			return &found
+		}
+	}
+	return nil
+}
+
+// claimLines is every R6 line of the case word names that names token, written at or after from.
+func (w *w5Rig) claimLines(word string, token claim.Token, from time.Time) []loggedRecord {
+	return w.logs(func(rec loggedRecord) bool {
+		return strings.HasPrefix(rec.Message, w5FleetAlertPrefix) && fmt.Sprint(rec.Attrs["case"]) == word &&
+			fmt.Sprint(rec.Attrs["claim"]) == string(token) && !rec.at.Before(from)
+	})
+}
+
+// reasonOf is the reason a logged line gives, "" for none.
+func reasonOf(rec *loggedRecord) string {
+	if rec == nil || rec.Attrs["reason"] == nil {
+		return ""
+	}
+	return fmt.Sprint(rec.Attrs["reason"])
+}
+
+// describeLine is one logged line as a note prints it, "none" for no line.
+func describeLine(rec *loggedRecord) string {
+	if rec == nil {
+		return "none"
+	}
+	return w5Describe(*rec)
+}
+
+// relaunchStops is every stop of token's process that a relaunch made from from and that ended
+// it, as the rig's runtime answered it.
+func (r *w5Run) relaunchStops(token claim.Token, from time.Time) []podRelaunchCall {
+	var stops []podRelaunchCall
+	for _, c := range r.pods.relaunchCalls(token, from) {
+		if c.call == "StopForRelaunch" && c.answer == "ok" {
+			stops = append(stops, c)
+		}
+	}
+	return stops
+}
+
+// describeCalls is each relaunch call as a note prints it.
+func describeCalls(calls []podRelaunchCall) []string {
+	described := make([]string, 0, len(calls))
+	for _, c := range calls {
+		described = append(described, fmt.Sprintf("%s %s may=%t launcher=%q answered %q running=%t", clockAt(c.at), c.call, c.mayReplacePod, c.launcher, c.answer, c.running))
+	}
+	return described
+}
+
+// watchMarks reads read_state every 5 s from from to to and keeps each claim's first view that
+// shows it marked: a claim the daemon relaunches at its mark, whose new process registers again,
+// shows its mark for about a minute only.
+func (r *w5Run) watchMarks(from, to time.Time) {
+	sleepUntil(from)
+	for time.Now().Before(to) {
+		snap := r.snapshot()
+		r.marksMu.Lock()
+		for token, v := range snap.views {
+			if _, kept := r.firstMarks[token]; !kept && v.marked() {
+				r.firstMarks[token] = v
+			}
+		}
+		r.marksMu.Unlock()
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// firstMark is token's first view watchMarks kept that shows it marked.
+func (r *w5Run) firstMark(token claim.Token) (w5View, bool) {
+	r.marksMu.Lock()
+	defer r.marksMu.Unlock()
+	v, ok := r.firstMarks[token]
+	return v, ok
+}
+
+// watchSeventhService keeps when the seventh's named service, running at pid, ends.
+func (r *w5Run) watchSeventhService(pid int) {
+	for pid > 0 && syscall.Kill(pid, 0) == nil {
+		time.Sleep(time.Second)
+	}
+	r.marksMu.Lock()
+	r.seventhSvcGone = time.Now()
+	r.marksMu.Unlock()
+}
+
 func sleepUntil(at time.Time) {
 	if d := time.Until(at); d > 0 {
 		time.Sleep(d)
@@ -495,9 +631,20 @@ func sleepUntil(at time.Time) {
 
 func (r *w5Run) firstBlock() {
 	before := r.answeredSnapshot("first block, before the block")
+	impl := r.c("implementer")
+	// The resumed implementer is put back in a wait loop on its owed task's turn (implementerAgain);
+	// the old process's own loop is spent first, since its rules would take the resumed session's
+	// turns too, whose conversation still carries the old task's marker. The daemon relaunches the
+	// implementer at its mark, so both are in place before the block.
+	impl.stand.captureFrom()
+	impl.stand.dropRules()
+	r.implAgainWait = r.scriptBackInAWait(impl, "impl-svc2", w5RelaunchCause)
+	seventhPid := readPid(r.file("seventh-svc.pid"))
+	r.record("first block: the seventh's named service runs as pid %d: %t", seventhPid, seventhPid > 0 && syscall.Kill(seventhPid, 0) == nil)
+	go r.watchSeventhService(seventhPid)
 	r.t0 = r.block(append([]string{"twelfth"}, w5FirstBlock...)...)
 	t0 := r.t0
-	impl := r.c("implementer")
+	r.liftOnRelaunch("implementer", "architect", "seventh")
 	r.roleRow = r.enqueueRow(impl.key, record.RoleMessage{Role: string(impl.token), Body: fmt.Sprintf("W5-ROLEMSG-%s: a role message the daemon publishes to the implementer while Envoy cannot reach it.", r.suffix)})
 	r.hookRow = r.enqueueRow(impl.key, record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 		Count: 1, Counts: map[string]int{"reviewing-implementing": 1}, Prompt: fmt.Sprintf("W5-HOOK-%s: read the review before you write anything.", r.suffix)})
@@ -508,70 +655,68 @@ func (r *w5Run) firstBlock() {
 		session := r.session(r.c(name).token)
 		r.record("first block: %s's last registration as the listener's own list shows it: %s", name, clockAt(r.lastSeenOf(session)))
 	}
+	if os.Getenv(w5BaseRunEnv) != "" {
+		r.baseFirstBlock()
+		return
+	}
 
-	sleepUntil(t0.Add(w5FirstRelaunch))
+	sleepUntil(t0.Add(w5FirstRead))
 	at10 := r.answeredSnapshot("first block, at 10 minutes")
-	var marked []string
+	var marked, relaunched []string
 	for _, name := range w5FirstBlock {
 		if at10.views[r.c(name).token].marked() {
 			marked = append(marked, name)
 		}
-	}
-	answer := r.relaunch(impl.token)
-	if answer.status == http.StatusNotFound && strings.Contains(answer.body, "no route") {
-		r.baseFirstBlock(answer)
-		return
+		if calls := r.pods.relaunchCalls(r.c(name).token, t0); len(calls) > 0 {
+			relaunched = append(relaunched, fmt.Sprintf("%s %v", name, describeCalls(calls)))
+		}
 	}
 	r.check("at-10m-no-blocked-claim-marked", len(marked) == 0, "at %s (%s after the block) the marked blocked claims are %v", clockAt(at10.at), at10.at.Sub(t0).Round(time.Second), marked)
-	r.check("at-10m-relaunch-refuses-the-implementer", answer.status == http.StatusConflict && answer.code == "CLAIM_REACHABLE", "relaunch answered %s", answer)
-	r.noteRefusal(answer)
+	r.check("at-10m-no-blocked-claim-relaunched", len(relaunched) == 0, "by %s the daemon asked the runtime to relaunch %v", clockAt(at10.at), relaunched)
 
-	sleepUntil(t0.Add(w5MarkWindow + 30*time.Second))
+	r.watchMarks(t0.Add(w5Unreachable-time.Minute), t0.Add(w5MarkWindow+30*time.Second))
 	at22 := r.answeredSnapshot("first block, at 22 minutes")
 	r.recordEmptyReads("first block", t0.Add(-5*time.Minute))
 	if at22.err != "" {
 		r.check("read-state-answers-at-22m", false, "read_state did not answer from %s for 5 minutes: %s", clockAt(at22.at), at22.err)
 	}
 	for _, name := range w5FirstBlock {
-		r.checkMarked(name, before, at22, t0)
+		r.checkMarked(name, before, t0)
 	}
-	r.checkListNotices(w5FirstBlock, t0, "first-block")
+	r.checkNoControllerNotice(w5FirstBlock, t0, "first-block")
 	r.checkArchitectRows(t0)
+	r.checkRelaunchedAtTheMark(before, t0)
 
-	sleepUntil(t0.Add(w5GuardRelaunch))
-	r.guardRelaunches()
-	r.twelfthRelaunch()
+	sleepUntil(t0.Add(w5GuardRead))
+	r.guardHolds()
+	r.twelfthHeld(before)
 
-	sleepUntil(t0.Add(w5GuardRelaunch + 30*time.Second))
+	sleepUntil(t0.Add(w5GuardRead + 30*time.Second))
 	r.afterTheRefusals()
-
-	sleepUntil(t0.Add(w5ImplRelaunch))
-	r.implementerRelaunch()
+	r.implementerRelaunched(before)
 }
 
 // checkMarked reads name's mark: between 20 and 22 minutes after its session's last registration,
-// with that time, and its state kept.
-func (r *w5Run) checkMarked(name string, before, after w5Snapshot, from time.Time) {
+// shown in read_state with that time, and its state kept, as the daemon's line of the mark names
+// it, since a claim the daemon relaunches at its mark leaves that state at once.
+func (r *w5Run) checkMarked(name string, before w5Snapshot, from time.Time) {
 	c := r.c(name)
 	mark := r.markOf(c.token, from)
-	session := r.session(c.token)
-	seen := r.lastSeenOf(session)
-	v := after.views[c.token]
+	seen := r.lastSeenOf(r.session(c.token))
 	if mark == nil {
-		r.check("marked-20-to-22m-"+name, false, "the daemon wrote no out-of-reach line for %s; the state reads %s", c.token, v)
+		r.check("marked-20-to-22m-"+name, false, "the daemon wrote no out-of-reach line for %s", c.token)
 		return
 	}
-	logged := fmt.Sprint(mark.Attrs["lastSeen"])
-	since := fmt.Sprint(mark.Attrs["since"])
 	gap := mark.at.Sub(seen)
 	r.check("marked-20-to-22m-"+name, !seen.IsZero() && gap >= w5Unreachable && gap <= w5MarkWindow,
-		"%s marked at %s, %s after its session's last registration %s (the daemon logged since %s, lastSeen %s)",
-		c.token, clockAt(mark.at), gap.Round(time.Second), clockAt(seen), since, logged)
+		"%s marked at %s, %s after its session's last registration %s (the daemon logged since %v, lastSeen %v)",
+		c.token, clockAt(mark.at), gap.Round(time.Second), clockAt(seen), mark.Attrs["since"], mark.Attrs["lastSeen"])
+	v, shown := r.firstMark(c.token)
 	sinceAt, _ := time.Parse(time.RFC3339Nano, v.since)
-	r.check("reads-unreachable-with-that-time-"+name, v.marked() && absDuration(sinceAt.Sub(seen)) < 2*time.Second,
-		"read_state shows %s %s; its session's last registration was %s", c.token, v, clockAt(seen))
-	r.check("keeps-its-state-"+name, v.state == before.views[c.token].state,
-		"%s was %s before the block and is %s marked", c.token, before.views[c.token].state, v.state)
+	r.check("reads-unreachable-with-that-time-"+name, shown && absDuration(sinceAt.Sub(seen)) < 2*time.Second,
+		"read_state first showed %s %s; its session's last registration was %s", c.token, v, clockAt(seen))
+	r.check("keeps-its-state-"+name, fmt.Sprint(mark.Attrs["state"]) == before.views[c.token].state,
+		"%s was %s before the block and %v at its mark, as the daemon's line names it", c.token, before.views[c.token].state, mark.Attrs["state"])
 }
 
 func absDuration(d time.Duration) time.Duration {
@@ -581,34 +726,22 @@ func absDuration(d time.Duration) time.Duration {
 	return d
 }
 
-// checkListNotices holds that each of names is in exactly one unreachable-claims notice from from.
-func (r *w5Run) checkListNotices(names []string, from time.Time, label string) {
-	lists := r.listNotices(from)
-	for _, n := range lists {
-		r.record("%s: unreachable-claims notice %s", label, n)
-	}
-	for _, name := range names {
-		token := string(r.c(name).token)
-		count := 0
-		for _, n := range lists {
-			for _, row := range n.rows {
-				if row == token {
-					count++
-				}
+// checkNoControllerNotice holds that no notice to the controller from from names a claim of names:
+// the daemon relaunches each, and what it cannot get past goes to R6's line.
+func (r *w5Run) checkNoControllerNotice(names []string, from time.Time, label string) {
+	var naming []string
+	for _, n := range r.controllerNoticesW5() {
+		if n.at.Before(from) {
+			continue
+		}
+		for _, name := range names {
+			token := string(r.c(name).token)
+			if n.claim == token || containsString(n.rows, token) || strings.Contains(n.reason, token) {
+				naming = append(naming, n.String())
 			}
 		}
-		r.check(label+"-one-list-notice-"+name, count == 1, "%s is named in %d unreachable-claims notices from %s", token, count, clockAt(from))
 	}
-}
-
-func (r *w5Run) listNotices(from time.Time) []w5Notice {
-	var out []w5Notice
-	for _, n := range r.controllerNoticesW5() {
-		if n.kind == w5NoticeUnreachable && !n.at.Before(from) {
-			out = append(out, n)
-		}
-	}
-	return out
+	r.check(label+"-no-controller-notice-names-a-claim-out-of-reach", len(naming) == 0, "controller notices from %s that name one of %v: %v", clockAt(from), names, naming)
 }
 
 // checkArchitectRows reads the architect's notice rows the outbox wrote from from: one names the
@@ -640,9 +773,43 @@ func (r *w5Run) checkArchitectRows(from time.Time) {
 	r.check("no-architect-row-names-its-own-claim", namesOwn == 0, "%d architect rows name the architect's own claim %s", namesOwn, arch)
 }
 
-// guardRelaunches is the 25-minute relaunches: the third, fourth, fifth, eighth and ninth refused
-// by the guard with their reasons, and the seventh reached, its service stopping with its process.
-func (r *w5Run) guardRelaunches() {
+// checkRelaunchedAtTheMark reads the daemon's own relaunch of the implementer, the architect and
+// the seventh, each with nothing running in its process: one stop of its process within 2 minutes
+// of its mark, a launch at a later generation on the same session, and no charge. The architect is
+// a claim alone in its pod. The seventh's named service, which no activity report names, ends with
+// its old process.
+func (r *w5Run) checkRelaunchedAtTheMark(before w5Snapshot, from time.Time) {
+	for _, name := range []string{"implementer", "architect", "seventh"} {
+		c := r.c(name)
+		b := before.views[c.token]
+		mark := r.markOf(c.token, from)
+		stops := r.relaunchStops(c.token, from)
+		atMark := mark != nil && len(stops) == 1 && !stops[0].at.Before(mark.at) && stops[0].at.Sub(mark.at) <= w5LineSlack
+		r.check("relaunched-at-its-mark-"+name, atMark, "%s marked at %s; the stops of its process a relaunch made: %v", c.token, describeLine(mark), describeCalls(stops))
+		live := waitFor(w5PaneReady, func() bool {
+			held := r.claim(c.token)
+			return held.Generation > b.generation && (held.State == string(supervise.StateReady) || held.State == string(supervise.StateIdle) || held.State == string(supervise.StateWorking))
+		})
+		after := r.claim(c.token)
+		r.check("relaunch-reaches-it-on-its-session-with-no-charge-"+name, live && after.Session == b.session &&
+			after.Budgets.LaunchFailures == b.launchFailures && after.Budgets.Deaths == b.deaths,
+			"before the block %s; after the relaunch %s gen %d on session %s, budgets %+v", b, after.State, after.Generation, after.Session, after.Budgets)
+	}
+	r.marksMu.Lock()
+	gone := r.seventhSvcGone
+	r.marksMu.Unlock()
+	stops := r.relaunchStops(r.c("seventh").token, from)
+	r.check("seventh-service-stops-with-the-old-process", len(stops) > 0 && !gone.IsZero() && !gone.Before(stops[0].at.Add(-time.Second)) && gone.Sub(stops[0].at) <= w5LineSlack,
+		"the seventh's named service ended at %s; its relaunch's stops: %v", clockAt(gone), describeCalls(stops))
+}
+
+// guardHolds reads, 25 minutes after the block, the claims the daemon's relaunch guard holds: the
+// third, whose worker stream shows steps, the fourth, whose open call is not a wait, the fifth,
+// whose activity report shows background work, the eighth, whose report shows a subagent, and the
+// ninth, which has no activity report since its launch. The daemon asks the runtime nothing of any
+// of them, and its guard line for each names its reason. The third's registrations then go
+// through again: its process still takes its steps, and nothing of the check waits on it.
+func (r *w5Run) guardHolds() {
 	cases := []struct {
 		name, want string
 	}{
@@ -653,68 +820,38 @@ func (r *w5Run) guardRelaunches() {
 		{"ninth", "no activity report"},
 	}
 	for _, tc := range cases {
-		answer := r.relaunch(r.c(tc.name).token)
-		r.noteRefusal(answer)
-		r.check("at-25m-relaunch-refuses-"+tc.name, answer.status == http.StatusConflict && answer.code == "RELAUNCH_GUARD" && strings.Contains(answer.body, tc.want),
-			"relaunch answered %s; want RELAUNCH_GUARD naming %q", answer, tc.want)
-		if tc.name == "ninth" {
-			r.ninthFirstRefusal = answer.at
+		c := r.c(tc.name)
+		line := r.guardLineOf(c.token, r.t0)
+		calls := r.pods.relaunchCalls(c.token, r.t0)
+		r.check("at-25m-guard-holds-"+tc.name, line != nil && len(calls) == 0 && strings.Contains(reasonOf(line), tc.want),
+			"the daemon's guard line for %s: %s; its relaunch calls from the block: %v; want none and a reason naming %q", c.token, describeLine(line), describeCalls(calls), tc.want)
+		if tc.name == "ninth" && line != nil {
+			r.ninthHeld = line.at
 		}
 		if tc.name == "eighth" {
-			r.check("eighth-refusal-names-a-subagent", strings.Contains(strings.ToLower(answer.body), "agent"), "the eighth's refusal: %s", answer.body)
+			r.check("eighth-hold-names-a-subagent", strings.Contains(strings.ToLower(reasonOf(line)), "agent"), "the eighth's guard line: %s", describeLine(line))
 		}
 	}
-	seventh := r.c("seventh")
-	pid := readPid(r.file("seventh-svc.pid"))
-	alive := pid > 0 && syscall.Kill(pid, 0) == nil
-	before := r.claim(seventh.token)
-	oldLaunch := r.runtime.current(seventh.token)
-	answer := r.relaunch(seventh.token)
-	r.check("at-25m-relaunch-reaches-the-seventh", answer.reached(), "relaunch answered %s", answer)
-	r.unblock("seventh")
-	gone := false
-	var goneAt time.Time
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		if pid > 0 && syscall.Kill(pid, 0) != nil {
-			gone, goneAt = true, time.Now()
-			break
-		}
-		time.Sleep(time.Second)
-	}
-	ended := "still alive 2 minutes after the relaunch"
-	if gone {
-		ended = fmt.Sprintf("gone %s after the relaunch", goneAt.Sub(answer.at).Round(time.Second))
-	}
-	r.check("seventh-service-stops-with-the-old-process", alive && gone,
-		"the seventh's named service (pid %d) ran before the relaunch: %t; it was %s (old process pid %d ended: %t)",
-		pid, alive, ended, oldLaunch.pane.pid, !oldLaunch.running())
-	after := r.claim(seventh.token)
-	r.record("the seventh before the relaunch: %s gen %d, budgets %+v; after: %s gen %d, budgets %+v",
-		before.State, before.Generation, before.Budgets, after.State, after.Generation, after.Budgets)
+	r.unblock("third")
 }
 
-// twelfthRelaunch is the amended check's twelfth claim, in a live wait on a named bash service the
-// rig never stopped, its registrations stopped with the first block's: its plugin sends its
-// activity report in its turn every 5 minutes (and on a build whose wait returns, the wait is
-// called again), so relaunch 25 minutes after the block is refused as a claim whose process still
-// runs its turn, by either rule of the guard that reads one (twelfthRefusedInItsTurn), its process
-// keeps running, and it is charged nothing. It records each report the twelfth sent in its turn and
-// each step its worker stream carried, with their times, the step record the daemon stores and its
-// mark, then lets its registrations through again.
-func (r *w5Run) twelfthRelaunch() {
+// twelfthHeld reads the twelfth claim, in a live wait on a named bash service the rig never
+// stopped, its registrations stopped with the first block's: its plugin sends its activity report
+// in its turn every 5 minutes (and on a build whose wait returns, the wait is called again), so the
+// daemon's relaunch guard holds it as a claim whose process still runs its turn, by either rule of
+// the guard that reads one (twelfthHeldInItsTurn); the daemon asks the runtime nothing of it, its
+// process keeps running, and it is charged nothing. It records each report the twelfth sent in its
+// turn and each step its worker stream carried, with their times, the step record the daemon stores
+// and its mark, then lets its registrations through again.
+func (r *w5Run) twelfthHeld(before w5Snapshot) {
 	c := r.c("twelfth")
 	var stepAt, started, ended *time.Time
 	var tool string
 	_ = r.st.Pool().QueryRow(context.Background(), "select step_at, step_tool, step_started_at, step_ended_at from claims where token = $1", string(c.token)).
 		Scan(&stepAt, &tool, &started, &ended)
 	mark := r.markOf(c.token, r.t0)
-	before := r.claim(c.token)
+	line := r.guardLineOf(c.token, r.t0)
 	launch := r.runtime.current(c.token)
-	answer := r.relaunch(c.token)
-	r.noteRefusal(answer)
-	// What the run saw is read once the answer is in, so a step or a report the daemon stamped while
-	// the request was on its way is among them.
 	var steps []string
 	var stepTimes []time.Time
 	var turnAt time.Time
@@ -736,19 +873,22 @@ func (r *w5Run) twelfthRelaunch() {
 	for _, at := range reportTimes {
 		reports = append(reports, clockAt(at))
 	}
-	time.Sleep(liveSettle)
-	after := r.claim(c.token)
+	after := r.snapshot().views[c.token]
+	b := before.views[c.token]
 	r.record("twelfth (never stopped, in a live wait on its named service, registrations blocked at %s): its turn began at %s; %d activity reports in its turn: %v", clockAt(r.t0), clockAt(turnAt), len(reports), reports)
 	r.record("twelfth: %d worker-stream steps from the block: %v", len(steps), steps)
-	r.record("twelfth: the daemon's step record: at %s, tool %q, started %s, ended %s; marked unreachable at %s",
-		clockAtPtr(stepAt), tool, clockAtPtr(started), clockAtPtr(ended), clockAtLine(mark))
-	r.check("at-25m-relaunch-refuses-the-twelfth-whose-process-still-runs-its-turn",
-		twelfthRefusedInItsTurn(twelfthAnswer{status: answer.status, code: answer.code, body: answer.body,
-			sent: answer.at, answered: answer.answered, steps: stepTimes, reports: reportTimes}),
-		"relaunch answered %s", answer)
-	r.check("twelfth-keeps-running", launch != nil && launch.running() && r.runtime.current(c.token) == launch,
-		"its process (generation %d) still runs: %t, the claim's current launch unchanged: %t", launch.spec.Generation, launch.running(), r.runtime.current(c.token) == launch)
-	r.check("twelfth-charged-nothing", after.Budgets == before.Budgets, "budgets before %+v, after %+v", before.Budgets, after.Budgets)
+	r.record("twelfth: the daemon's step record: at %s, tool %q, started %s, ended %s; marked unreachable at %s; the guard's line %s",
+		clockAtPtr(stepAt), tool, clockAtPtr(started), clockAtPtr(ended), clockAtLine(mark), describeLine(line))
+	hold := twelfthHold{reason: reasonOf(line), steps: stepTimes, reports: reportTimes}
+	if line != nil {
+		hold.at = line.at
+	}
+	calls := r.pods.relaunchCalls(c.token, r.t0)
+	r.check("at-25m-guard-holds-the-twelfth-whose-process-still-runs-its-turn", twelfthHeldInItsTurn(hold) && len(calls) == 0,
+		"the guard's line %s; the twelfth's relaunch calls from the block: %v", describeLine(line), describeCalls(calls))
+	runs := launch != nil && launch.running() && launch.spec.Generation == b.generation
+	r.check("twelfth-keeps-running", runs, "its process of the block's generation %d still runs: %t", b.generation, runs)
+	r.check("twelfth-charged-nothing", after.launchFailures == b.launchFailures && after.deaths == b.deaths, "before the block %s; at 25 minutes %s", b, after)
 	r.unblock("twelfth")
 }
 
@@ -813,7 +953,13 @@ func (r *w5Run) afterTheRefusals() {
 	// names, as the seventh's — and waits on it, so once its report shows no job the rig stops it
 	// again inside that wait, as the check says: a wait with nothing to wait on returns at once
 	// (Oh My Pi's wait.ts, "Nothing to wait for"), and one on a service blocks.
+	// The resumed fifth's turn on its owed task, after the daemon relaunches it, moves its issue's
+	// phase on (fifthFlow): only a relaunched session's prompt carries the relaunch's cause.
+	r.fifthMoved = fifth.stand.script(func(seen seenRequest) bool {
+		return seen.prompt && anyTurn(seen) && (strings.Contains(seen.last, w5RelaunchCause) || strings.Contains(seen.conversation, w5RelaunchCause))
+	}, 0, "legion", map[string]any{"op": "request_backward_move", "to": "implementing", "reason": "w5: the review asks for changes"})
 	writeProofFile(r.t, r.file("fifth-job.done"), "done\n")
+	r.fifthJobEnded = time.Now()
 	serviceStarted := fifth.stand.script(func(seen seenRequest) bool {
 		return anyTurn(seen) && strings.Contains(seen.last, "FIFTH-JOB-DONE")
 	}, 0, "bash", serviceCall("fifth-svc", r.file("fifth-svc.pid")))
@@ -868,41 +1014,39 @@ func diffMarks(before, after w5Snapshot) []string {
 	return changed
 }
 
-// implementerRelaunch is the 30-minute relaunch of the implementer: its old process stopped, the
-// claim reached with no charge, and the resumed session given R2's note, the role message, the hook
-// prompt, and its owed task behind the daemon's cut-turn note naming the relaunch.
-func (r *w5Run) implementerRelaunch() {
+// implementerRelaunched reads the daemon's own relaunch of the implementer at its mark: its old
+// process stopped, the claim reached on its same session with no charge, and the resumed session
+// given R2's note, the role message, the hook prompt, and its owed task behind the daemon's
+// cut-turn note naming the relaunch.
+func (r *w5Run) implementerRelaunched(before w5Snapshot) {
 	impl := r.c("implementer")
-	before := r.claim(impl.token)
-	old := r.runtime.current(impl.token)
-	impl.stand.captureFrom()
-	// The resumed session is put back in a wait loop on its owed task's turn (the next step); the
-	// old process's own loop is spent first, since its rules would take the resumed session's
-	// turns too, whose conversation still carries the old task's marker.
-	impl.stand.dropRules()
-	r.implAgainWait = r.scriptBackInAWait(impl, "impl-svc2", w5RelaunchCause)
-	answer := r.relaunch(impl.token)
-	r.unblock("implementer")
-	r.check("at-30m-relaunch-reaches-the-implementer", answer.reached(), "relaunch answered %s", answer)
-	ended := false
-	select {
-	case <-old.pane.done:
-		ended = true
-	case <-time.After(30 * time.Second):
+	b := before.views[impl.token]
+	stops := r.relaunchStops(impl.token, r.t0)
+	if len(stops) == 0 {
+		r.check("relaunch-reaches-the-implementer", false, "the daemon made no relaunch of %s from the block at %s", impl.token, clockAt(r.t0))
+		return
 	}
-	r.check("at-30m-relaunch-stops-the-old-process", ended, "the old process (pid %d, generation %d) ended: %t", old.pane.pid, old.spec.Generation, ended)
+	stoppedAt := stops[0].at
+	var old *rigLaunch
+	for _, launch := range r.runtime.launchesOf(impl.token) {
+		if launch.spec.Generation == b.generation {
+			old = launch
+		}
+	}
+	r.check("relaunch-stops-the-implementers-old-process", old != nil && !old.running(), "the old process of generation %d ended: %t; its relaunch's stop at %s",
+		b.generation, old != nil && !old.running(), clockAt(stoppedAt))
 	r.await("the implementer live on its resumed session", w5PaneReady, func() bool {
 		held := r.claim(impl.token)
-		return held.Generation > before.Generation && (held.State == string(supervise.StateReady) || held.State == string(supervise.StateIdle) || held.State == string(supervise.StateWorking))
+		return held.Generation > b.generation && (held.State == string(supervise.StateReady) || held.State == string(supervise.StateIdle) || held.State == string(supervise.StateWorking))
 	})
 	after := r.claim(impl.token)
-	r.check("at-30m-relaunch-charges-nothing", after.Budgets.LaunchFailures == before.Budgets.LaunchFailures && after.Budgets.Deaths == before.Budgets.Deaths,
-		"budgets before %+v, after %+v", before.Budgets, after.Budgets)
-	r.check("at-30m-relaunch-keeps-the-session", after.Session == before.Session, "session before %s, after %s", before.Session, after.Session)
+	r.check("relaunch-charges-the-implementer-nothing", after.Budgets.LaunchFailures == b.launchFailures && after.Budgets.Deaths == b.deaths,
+		"before the block %s; after the relaunch budgets %+v", b, after.Budgets)
+	r.check("relaunch-keeps-the-implementers-session", after.Session == b.session, "session before %s, after %s", b.session, after.Session)
 	var conversation strings.Builder
 	r.await("the resumed implementer's turns to carry the role message, the hook prompt and its task", 6*time.Minute, func() bool {
 		conversation.Reset()
-		for _, seen := range impl.stand.requestsAfter(answer.at) {
+		for _, seen := range impl.stand.requestsAfter(stoppedAt) {
 			conversation.WriteString(seen.whole)
 			conversation.WriteString(seen.last)
 		}
@@ -914,7 +1058,7 @@ func (r *w5Run) implementerRelaunch() {
 	r.check("resumed-session-gets-the-role-message", strings.Contains(text, "W5-ROLEMSG-"+r.suffix), "carried")
 	r.check("resumed-session-gets-the-hook-prompt", strings.Contains(text, "W5-HOOK-"+r.suffix), "carried")
 	r.check("resumed-session-gets-its-task-behind-the-cut-turn-note", strings.Contains(text, w5RelaunchCause), "carried %q", w5RelaunchCause)
-	r.record("the resumed implementer's requests from the relaunch: %d; the note's context: %s", len(impl.stand.requestsAfter(answer.at)), excerpt(text, w5R2Note, 400))
+	r.record("the resumed implementer's requests from the relaunch: %d; the note's context: %s", len(impl.stand.requestsAfter(stoppedAt)), excerpt(text, w5R2Note, 400))
 	r.record("the cut-turn note's context: %s", excerpt(text, w5RelaunchCause, 600))
 	lives := r.rowLives()
 	r.record("the role message row %+v; the hook prompt row %+v", lives[r.roleRow], lives[r.hookRow])
@@ -949,14 +1093,14 @@ func (r *w5Run) scriptBackInAWait(c *w5Claim, service, marker string) chan time.
 	})
 }
 
-// baseFirstBlock is the first block where the daemon has no relaunch route, which is the base's
+// baseFirstBlock is the first block where the daemon has no reach keeper, which is the base's
 // code: at 22 minutes read_state shows the implementer's claim working with no mark, no notice
 // names it, fresh_session refuses it CLAIM_IN_A_TURN, and the role message is finished undelivered
 // once Envoy reads the session gone. It reads each and fails the step at the mark with all of it,
 // which the script's negative control reads back.
-func (r *w5Run) baseFirstBlock(at10 relaunchAnswer) {
+func (r *w5Run) baseFirstBlock() {
 	impl := r.c("implementer")
-	r.record("base: relaunch at 10 minutes answered %s: this daemon has no relaunch route", at10)
+	r.record("base: the first block over the base's daemon, which marks no claim and relaunches none")
 	sleepUntil(r.t0.Add(w5MarkWindow))
 	snap := r.answeredSnapshot("base, at 22 minutes")
 	v := snap.views[impl.token]
@@ -1019,21 +1163,16 @@ func (r *w5Run) afterTheFirstBlock() {
 		}()
 	}
 	tenthDone := make(chan struct{})
-	treeDone := make(chan struct{}, 2)
 	podsDone := make(chan struct{})
-	run("implementer-again", func(f *w5Flows) { defer func() { treeDone <- struct{}{} }(); r.implementerAgain(f) })
+	run("implementer-again", r.implementerAgain)
 	run("tenth", func(f *w5Flows) { defer close(tenthDone); r.tenthFlow(f) })
-	run("eighth", func(f *w5Flows) { defer func() { treeDone <- struct{}{} }(); r.eighthFlow(f) })
+	run("eighth", r.eighthFlow)
 	run("fifth", r.fifthFlow)
 	run("ninth", r.ninthFlow)
-	// The architect is the claim alone in its pod, and the relaunch guard lets a claim through only
-	// after 20 minutes with no step: the pods wait for every flow of the architect's tree (the
-	// implementer's and the eighth's), whose notices wake it (main4: the eighth's failure notice
-	// woke it at 17:01:33Z, inside its block, and its relaunch was refused RELAUNCH_GUARD).
+	// The pod of two holds the tenth and the sixth: the pods wait for the tenth's flow, and the
+	// sixth's three runs for the pods.
 	run("pods", func(f *w5Flows) {
 		<-tenthDone
-		<-treeDone
-		<-treeDone
 		defer close(podsDone)
 		r.podsFlow(f)
 	})
@@ -1093,24 +1232,10 @@ func waitFor(within time.Duration, want func() bool) bool {
 	}
 }
 
-// noticeFor is the first notice of kind on the controller's topic naming token, from from.
-func (r *w5Run) noticeFor(kind string, token claim.Token, from time.Time) (w5Notice, int) {
-	var first w5Notice
-	count := 0
-	for _, n := range r.controllerNoticesW5() {
-		if n.kind == kind && n.claim == string(token) && !n.at.Before(from) {
-			if count == 0 {
-				first = n
-			}
-			count++
-		}
-	}
-	return first, count
-}
-
 // implementerAgain blocks the resumed implementer's registrations again once it is back in a wait
-// call, and relaunches it 25 minutes after that block: refused as a second relaunch within 6
-// hours, with no launch failure charged, the claim still marked, and a case for a person.
+// call, which the rig freezes, and reads it 25 minutes after that block: out of reach a second time
+// within 6 hours of its relaunch, it is not relaunched, R6's line names it once with that reason,
+// no launch failure is charged, and the claim stays marked.
 func (r *w5Run) implementerAgain(f *w5Flows) {
 	impl := r.c("implementer")
 	served, ok := r.nextOpenWait(impl.token, r.implAgainWait, 10*time.Minute)
@@ -1121,23 +1246,31 @@ func (r *w5Run) implementerAgain(f *w5Flows) {
 	r.record("the resumed implementer is in a wait call answered at %s", clockAt(served))
 	pid := r.stopProcess(impl.token)
 	r.record("the resumed implementer (Oh My Pi pid %d) stopped inside its wait call at %s", pid, clockAt(time.Now()))
-	t1 := r.block("implementer")
-	sleepUntil(t1.Add(w5GuardRelaunch))
 	before := r.held(impl.token)
-	answer := r.relaunch(impl.token)
-	r.noteRefusal(answer)
+	t1 := r.block("implementer")
+	sleepUntil(t1.Add(w5GuardRead))
 	after := r.snapshot()
-	r.observe(f, "second-relaunch-within-6h-refused", answer.status == http.StatusConflict && answer.code == "RELAUNCHED_RECENTLY", "relaunch answered %s", answer)
-	r.observe(f, "second-relaunch-names-a-case-for-a-person", strings.Contains(answer.body, w5CasePerson), "the answer: %s", answer.body)
 	held := r.held(impl.token)
-	r.observe(f, "second-relaunch-charges-no-launch-failure", held.Budgets.LaunchFailures == before.Budgets.LaunchFailures,
+	calls := r.pods.relaunchCalls(impl.token, t1)
+	lines := r.claimLines(w5CaseClaimGone, impl.token, t1)
+	var described []string
+	for _, line := range lines {
+		described = append(described, w5Describe(line))
+	}
+	r.observe(f, "second-out-of-reach-within-6h-not-relaunched", len(calls) == 0 && held.Generation == before.Generation,
+		"the implementer's relaunch calls from its second block at %s: %v; generation before %d, at 25 minutes %d", clockAt(t1), describeCalls(calls), before.Generation, held.Generation)
+	r.observe(f, "second-out-of-reach-r6-line-once", len(lines) == 1 && strings.Contains(fmt.Sprint(lines[0].Attrs["reason"]), w5SecondTime),
+		"%d %s lines name %s from %s: %v", len(lines), w5CaseClaimGone, impl.token, clockAt(t1), described)
+	r.observe(f, "second-out-of-reach-charges-no-launch-failure", held.Budgets.LaunchFailures == before.Budgets.LaunchFailures,
 		"launch failures before %d, after %d", before.Budgets.LaunchFailures, held.Budgets.LaunchFailures)
-	r.observe(f, "second-relaunch-claim-stays-marked", after.views[impl.token].marked(), "read_state: %s", after.views[impl.token])
+	r.observe(f, "second-out-of-reach-claim-stays-marked", after.views[impl.token].marked(), "read_state: %s", after.views[impl.token])
 }
 
 // tenthFlow blocks the tenth claim's registrations while it owes no task, kills its process so the
-// daemon's own supervision relaunches it, and reads its marks, its relaunches, its charges and the
-// controller's notices for 25 minutes.
+// daemon's own supervision relaunches it, and reads its marks, its launches, its charges and the
+// daemon's relaunch guard for 25 minutes: none of its processes sends an activity report, so the
+// guard holds the daemon's relaunch of it, whose R6 line comes 60 minutes after the guard's first
+// hold, as the ninth's does.
 func (r *w5Run) tenthFlow(f *w5Flows) {
 	tenth := r.c("tenth")
 	time.Sleep(2 * time.Minute)
@@ -1169,8 +1302,8 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	mark := r.markOf(tenth.token, start)
 	r.recordEmptyReads("tenth", start)
 	seen := r.lastSeenOf(session)
-	r.record("tenth: %d relaunches by the daemon in %s; its readings: %s", relaunches, w5ReadFor, strings.Join(series, "; "))
-	r.observe(f, "tenth-relaunch-count", relaunches > 0, "the daemon relaunched the tenth %d times in the 25 minutes", relaunches)
+	r.record("tenth: %d launches by the daemon's supervision in %s; its readings: %s", relaunches, w5ReadFor, strings.Join(series, "; "))
+	r.observe(f, "tenth-relaunch-count", relaunches > 0, "the daemon's supervision launched the tenth %d times in the 25 minutes", relaunches)
 	r.observe(f, "tenth-nets-no-charge", maxDeaths == 0 && final.launchFailures == 0 && final.state != string(supervise.StateFailed),
 		"deaths at most %d; at the end %s", maxDeaths, final)
 	if mark == nil {
@@ -1181,9 +1314,10 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 			"marked at %s, %s after its last registration %s", clockAt(mark.at), gap.Round(time.Second), clockAt(seen))
 	}
 	r.observe(f, "tenth-stays-marked-through-relaunches", !markedAt.IsZero() && !unmarkedAfterMark, "first read marked at %s; unmarked again after: %t", clockAt(markedAt), unmarkedAfterMark)
-	exitNotice, count := r.noticeFor(w5NoticeExit, tenth.token, start)
-	r.observe(f, "tenth-exit-notice-once-a-case-for-a-person", count == 1 && strings.Contains(exitNotice.reason, w5CasePerson) && (mark == nil || exitNotice.at.After(mark.at)),
-		"%d unreachable-exit notices name the tenth; the first %s", count, exitNotice)
+	line := r.guardLineOf(tenth.token, start)
+	calls := r.pods.relaunchCalls(tenth.token, start)
+	r.observe(f, "tenth-guard-holds-the-daemons-relaunch", line != nil && (mark == nil || !line.at.Before(mark.at)) && strings.Contains(reasonOf(line), "activity report") && len(calls) == 0,
+		"the daemon's guard line for the tenth: %s; its relaunch calls from the block: %v", describeLine(line), describeCalls(calls))
 	r.unblock("tenth")
 	waitFor(5*time.Minute, func() bool {
 		v := r.snapshot().views[tenth.token]
@@ -1192,10 +1326,11 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	r.record("tenth after its registrations go through again: %s", r.snapshot().views[tenth.token])
 }
 
-// eighthFlow lets the eighth's subagent end and puts the claim back in a wait, then relaunches it
-// when the controller's notice says the guard would let it through, with its registrations still
-// blocked and its task owed: each exit at its role claim is charged a death, it fails at the
-// deaths limit with today's failure notice to its architect, and stays marked until then.
+// eighthFlow lets the eighth's subagent end and puts the claim back in a wait, which the rig
+// freezes, with its registrations still blocked and its task owed: the daemon's guard lets its
+// relaunch through once 20 minutes pass with no step, and each relaunched process exits at its
+// role claim and is charged a death, so it fails at the deaths limit with today's failure notice to
+// its architect, and stays marked until then.
 func (r *w5Run) eighthFlow(f *w5Flows) {
 	eighth := r.c("eighth")
 	time.Sleep(3 * time.Minute)
@@ -1213,31 +1348,32 @@ func (r *w5Run) eighthFlow(f *w5Flows) {
 		return
 	}
 	r.record("the eighth is in a wait call answered at %s", clockAt(waitAt))
-	pid := r.stopProcess(eighth.token)
-	r.record("the eighth (Oh My Pi pid %d) stopped inside its wait call", pid)
-	backInWait := time.Now()
-	r.observe(f, "eighth-back-in-a-wait", true, "stopped inside its wait at %s, its subagent ended", clockAt(backInWait))
-	var ready w5Notice
-	if !waitFor(45*time.Minute, func() bool {
-		n, count := r.noticeFor(w5NoticeRelaunchReady, eighth.token, backInWait)
-		ready = n
-		return count > 0
-	}) {
-		r.observe(f, "eighth-ready-notice", false, "no relaunch-ready notice for the eighth within 45 minutes")
-		return
-	}
-	r.record("eighth: relaunch-ready notice %s", ready)
 	// Each relaunched process's task turn is open when the process exits at its role claim, as a
 	// real agent's is a second into its turn, its model not having answered. The stand-in answers a
 	// turn at once, so the turn had ended at each exit and the claim owed no task at it (main5:
-	// gen 3's turn ended at 23:12:20.309Z, its process exited at 23:12:20.827Z, no death, and the
-	// controller's notice read the eighth as owing no task); its turns are held from here on, each
-	// until its process ends.
+	// gen 3's turn ended at 23:12:20.309Z, its process exited at 23:12:20.827Z, no death); its turns
+	// are held from here on, each until its process ends, and the daemon may relaunch it at any
+	// sweep from here.
+	pid := r.stopProcess(eighth.token)
 	eighth.stand.dropRules()
 	eighth.stand.holdEvery(anyTurn)
+	r.record("the eighth (Oh My Pi pid %d) stopped inside its wait call", pid)
+	backInWait := time.Now()
 	before := r.held(eighth.token)
-	answer := r.relaunch(eighth.token)
-	r.observe(f, "eighth-relaunch-reaches-it-on-the-ready-notice", answer.reached(), "relaunch answered %s", answer)
+	r.observe(f, "eighth-back-in-a-wait", true, "stopped inside its wait at %s, its subagent ended", clockAt(backInWait))
+	var stop podRelaunchCall
+	if !waitFor(45*time.Minute, func() bool {
+		stops := r.relaunchStops(eighth.token, backInWait)
+		if len(stops) > 0 {
+			stop = stops[0]
+		}
+		return len(stops) > 0
+	}) {
+		r.observe(f, "eighth-relaunched-once-its-guard-lets-it-through", false, "the daemon made no relaunch of the eighth within 45 minutes of %s", clockAt(backInWait))
+		return
+	}
+	r.observe(f, "eighth-relaunched-once-its-guard-lets-it-through", true, "the daemon stopped its process for a relaunch at %s, %s after it was frozen in its wait",
+		clockAt(stop.at), stop.at.Sub(backInWait).Round(time.Second))
 	var series []string
 	failed := waitFor(40*time.Minute, func() bool {
 		v := r.snapshot().views[eighth.token]
@@ -1267,7 +1403,7 @@ func (r *w5Run) eighthFlow(f *w5Flows) {
 				Failure json.RawMessage `json:"failure"`
 			}
 			_ = json.Unmarshal([]byte(life.payload), &payload)
-			if life.issue == eighth.key && payload.Kind == "worker-died" && len(payload.Failure) > 0 && life.written.After(answer.at) {
+			if life.issue == eighth.key && payload.Kind == "worker-died" && len(payload.Failure) > 0 && life.written.After(stop.at) {
 				failureRows = append(failureRows, fmt.Sprintf("row %d written %s finished %s: %s", life.id, clockAt(life.written), clockAt(life.finished), truncate(life.payload, 300)))
 			}
 		}
@@ -1306,50 +1442,49 @@ func (r *w5Run) activityOf(token claim.Token) (bool, time.Time) {
 	return background, *at
 }
 
-// fifthFlow waits for the controller's notice that the guard would now let the fifth through, once
-// its job has ended and it waits on its named service, and relaunches it: reached with no charge.
-// The resumed session's turn on its owed task then moves the issue's phase on, its registrations
-// still blocked, and the role message the outbox held for it is finished undelivered then, not
-// before.
+// fifthFlow waits for the daemon's relaunch of the fifth, which its guard lets through once the
+// fifth's job has ended and it waits on its named service, with nothing in its activity report:
+// reached with no charge. The resumed session's turn on its owed task then moves the issue's phase
+// on, its registrations still blocked, and the role message the outbox held for it is finished
+// undelivered then, not before. Its registrations then go through again.
 func (r *w5Run) fifthFlow(f *w5Flows) {
 	fifth := r.c("fifth")
-	var ready w5Notice
-	count := 0
+	defer r.unblock("fifth")
+	before := r.held(fifth.token)
+	var stop podRelaunchCall
 	if !waitFor(50*time.Minute, func() bool {
-		ready, count = r.noticeFor(w5NoticeRelaunchReady, fifth.token, r.t0)
-		return count > 0
+		stops := r.relaunchStops(fifth.token, r.t0)
+		if len(stops) > 0 {
+			stop = stops[0]
+		}
+		return len(stops) > 0
 	}) {
-		r.observe(f, "fifth-ready-notice-once", false, "no relaunch-ready notice for the fifth within 50 minutes")
+		r.observe(f, "fifth-relaunched-with-no-charge-once-its-job-ends", false, "the daemon made no relaunch of the fifth within 50 minutes")
 		return
 	}
-	moved := fifth.stand.script(func(seen seenRequest) bool {
-		return seen.prompt && anyTurn(seen) && (strings.Contains(seen.last, w5RelaunchCause) || strings.Contains(seen.conversation, w5RelaunchCause))
-	}, 0, "legion", map[string]any{"op": "request_backward_move", "to": "implementing", "reason": "w5: the review asks for changes"})
-	before := r.held(fifth.token)
-	answer := r.relaunch(fifth.token)
 	time.Sleep(time.Minute)
 	after := r.held(fifth.token)
-	_, count = r.noticeFor(w5NoticeRelaunchReady, fifth.token, r.t0)
-	r.observe(f, "fifth-ready-notice-once", count == 1, "%d relaunch-ready notices name the fifth; the first %s", count, ready)
-	r.observe(f, "fifth-relaunch-reaches-it-with-no-charge", answer.reached() && after.Budgets.LaunchFailures == before.Budgets.LaunchFailures && after.Budgets.Deaths == before.Budgets.Deaths,
-		"relaunch answered %s; budgets before %+v, a minute after %+v", answer, before.Budgets, after.Budgets)
+	r.observe(f, "fifth-relaunched-with-no-charge-once-its-job-ends", stop.at.After(r.fifthJobEnded) && after.Generation > before.Generation &&
+		after.Budgets.LaunchFailures == before.Budgets.LaunchFailures && after.Budgets.Deaths == before.Budgets.Deaths,
+		"its job ended at %s; the daemon stopped its process for a relaunch at %s; generation before %d, a minute after %d; budgets before %+v, a minute after %+v",
+		clockAt(r.fifthJobEnded), clockAt(stop.at), before.Generation, after.Generation, before.Budgets, after.Budgets)
 	select {
-	case at := <-moved:
+	case at := <-r.fifthMoved:
 		r.record("the resumed fifth's turn called request_backward_move at %s", clockAt(at))
 	case <-time.After(10 * time.Minute):
 		r.observe(f, "fifth-message-finished-at-phase-move", false, "the resumed fifth's turn did not move its phase within 10 minutes of its relaunch")
 		return
 	}
 	// The moment the phase moved is the daemon's own line of the move, not the first read of
-	// read_state that shows it: the read came a minute after the relaunch, and main5 took the move
-	// of 23:08:18.140Z for 23:09:16.396Z, which put the row's finish at 23:08:38.845Z before it.
-	// The line is written once the move has committed (engine.logOnCommit), so a finish the outbox
-	// made between the commit and the line reads as up to a second before it.
+	// read_state that shows it: main5 took the move of 23:08:18.140Z for the read at 23:09:16.396Z,
+	// which put the row's finish at 23:08:38.845Z before it. The line is written once the move has
+	// committed (engine.logOnCommit), so a finish the outbox made between the commit and the line
+	// reads as up to a second before it.
 	var movedAt time.Time
 	waitFor(3*time.Minute, func() bool {
 		moves := r.logs(func(rec loggedRecord) bool {
 			return rec.Message == w5PhaseChanged && fmt.Sprint(rec.Attrs["issue"]) == fifth.key &&
-				fmt.Sprint(rec.Attrs["from"]) == string(phase.Reviewing) && !rec.at.Before(answer.at)
+				fmt.Sprint(rec.Attrs["from"]) == string(phase.Reviewing) && !rec.at.Before(stop.at)
 		})
 		if len(moves) == 0 {
 			return false
@@ -1370,132 +1505,135 @@ func (r *w5Run) fifthFlow(f *w5Flows) {
 		"the fifth's row %d finished %s; its phase moved at %s; finished-at-phase-move lines %d", r.fifthMessageRow, clockAt(life.finishedOrZero()), clockAt(movedAt), len(lines))
 }
 
-// ninthFlow waits for the controller's notice, 60 minutes after the ninth's first refusal, that
-// names it as a case for a person, then lets its registrations through again at 85 minutes.
+// ninthFlow waits for R6's line that names the ninth, 60 minutes after the daemon's relaunch guard
+// first held its relaunch, then lets its registrations through again at 85 minutes, and reads that
+// the line was written once.
 func (r *w5Run) ninthFlow(f *w5Flows) {
 	ninth := r.c("ninth")
-	var held w5Notice
-	got := waitFor(time.Until(r.t0.Add(w5NinthBlocked+3*time.Minute)), func() bool {
-		n, count := r.noticeFor(w5NoticeGuardHeld, ninth.token, r.t0)
-		held = n
-		return count > 0
+	var lines []loggedRecord
+	waitFor(time.Until(r.t0.Add(w5NinthBlocked)), func() bool {
+		lines = r.claimLines(w5CaseClaimRefused, ninth.token, r.t0)
+		return len(lines) > 0
 	})
-	_, count := r.noticeFor(w5NoticeGuardHeld, ninth.token, r.t0)
-	gap := held.at.Sub(r.ninthFirstRefusal)
-	r.observe(f, "ninth-guard-held-notice-at-60m", got && count == 1 && gap >= w5GuardHeld && gap <= w5GuardHeld+w5NoticeSlack && strings.Contains(held.reason, w5CasePerson),
-		"%d relaunch-guard-held notices name the ninth; the first %s, %s after its first refusal at %s", count, held, gap.Round(time.Second), clockAt(r.ninthFirstRefusal))
 	sleepUntil(r.t0.Add(w5NinthBlocked))
+	lines = r.claimLines(w5CaseClaimRefused, ninth.token, r.t0)
 	r.unblock("ninth")
-}
-
-// podsFlow blocks every claim of one pod of two at once (the sixth and the tenth) and a claim alone
-// in its pod (the architect), and once read_state shows them unreachable relaunches one of the pod
-// (refused, naming the pod, nothing stopped) and the one alone (reached).
-func (r *w5Run) podsFlow(f *w5Flows) {
-	sixth, tenth, arch := r.c("sixth"), r.c("tenth"), r.c("architect")
-	waitFor(5*time.Minute, func() bool { return !r.snapshot().views[tenth.token].marked() })
-	// Every notice the outbox owes the architect is written for an issue of its tree; the block
-	// starts once none is left, so nothing of the run wakes the architect inside it. A notice
-	// re-held for a session that did not confirm it is copied at most three times
-	// (noticeReholdDelays), so the outbox runs dry.
-	treeIssues := []string{arch.key, r.c("implementer").key, r.c("eighth").key}
-	quiet := waitFor(30*time.Minute, func() bool { return r.pendingRows("notice", treeIssues...) == 0 })
-	r.record("pods: the outbox owes the architect no notice of %v: %t; the architect is %s", treeIssues, quiet, r.snapshot().views[arch.token])
-	start := r.block("sixth", "tenth", "architect")
-	if !waitFor(30*time.Minute, func() bool {
-		snap := r.snapshot()
-		return snap.views[sixth.token].marked() && snap.views[tenth.token].marked() && snap.views[arch.token].marked()
-	}) {
-		r.observe(f, "pod-claims-read-unreachable", false, "the three claims were not all marked within 30 minutes of %s", clockAt(start))
-		r.unblock("sixth", "tenth", "architect")
+	if len(lines) == 0 {
+		r.observe(f, "ninth-r6-line-at-60m", false, "no %s line names the ninth in the 85 minutes of its block; the guard first held it at %s", w5CaseClaimRefused, clockAt(r.ninthHeld))
 		return
 	}
-	snap := r.snapshot()
-	r.record("pods: %s %s, %s %s, %s %s", sixth.token, snap.views[sixth.token], tenth.token, snap.views[tenth.token], arch.token, snap.views[arch.token])
-	sixthLaunch, tenthLaunch := r.runtime.current(sixth.token), r.runtime.current(tenth.token)
-	callsFrom := time.Now()
-	answer := r.relaunch(sixth.token)
-	r.noteRefusal(answer)
-	nothingStopped := sixthLaunch.running() && tenthLaunch.running() && r.runtime.current(sixth.token) == sixthLaunch &&
-		r.runtime.current(tenth.token) == tenthLaunch && len(r.pods.relaunchCalls(sixth.token, callsFrom)) == 0
-	r.observe(f, "pod-of-two-relaunch-refused-naming-the-pod", answer.status == http.StatusConflict && answer.code == "POD_UNREACHABLE" &&
-		strings.Contains(answer.body, snap.views[sixth.token].pod) && strings.Contains(answer.body, w5CasePerson), "relaunch answered %s", answer)
-	r.observe(f, "pod-of-two-nothing-stopped", nothingStopped, "the sixth's process (pid %d) runs: %t; the tenth's (pid %d): %t; the runtime was asked nothing of the sixth: %t",
-		sixthLaunch.pane.pid, sixthLaunch.running(), tenthLaunch.pane.pid, tenthLaunch.running(), len(r.pods.relaunchCalls(sixth.token, callsFrom)) == 0)
-	alone := r.relaunch(arch.token)
-	if !alone.reached() {
-		// Name every notice the outbox wrote the architect's tree inside the block, the run's own
-		// wakes of it, so a refusal reads as the run's or as the daemon's.
-		var woke []string
-		for _, life := range r.rowLives("notice") {
-			if containsString(treeIssues, life.issue) && life.written.After(start) {
-				woke = append(woke, fmt.Sprintf("row %d %s written %s finished %s", life.id, life.issue, clockAt(life.written), clockAt(life.finished)))
-			}
-		}
-		sort.Strings(woke)
-		r.record("pods: the notices the outbox wrote the architect's tree after its block at %s: %v", clockAt(start), woke)
+	gap := lines[0].at.Sub(r.ninthHeld)
+	r.observe(f, "ninth-r6-line-at-60m", !r.ninthHeld.IsZero() && len(lines) == 1 && gap >= w5GuardHeld && gap <= w5GuardHeld+w5LineSlack,
+		"%d %s lines name the ninth; the first %s, %s after the guard first held it at %s", len(lines), w5CaseClaimRefused, w5Describe(lines[0]), gap.Round(time.Second), clockAt(r.ninthHeld))
+}
+
+// podsFlow blocks every claim of one pod of two at once (the sixth and the tenth): once read_state
+// shows both unreachable, the daemon relaunches neither, since a relaunch into a pod that reaches
+// Envoy for none of its claims recovers none, writes R6's line for each, naming the pod, and stops
+// nothing.
+func (r *w5Run) podsFlow(f *w5Flows) {
+	sixth, tenth := r.c("sixth"), r.c("tenth")
+	waitFor(5*time.Minute, func() bool { return !r.snapshot().views[tenth.token].marked() })
+	start := r.block("sixth", "tenth")
+	if !waitFor(30*time.Minute, func() bool {
+		snap := r.snapshot()
+		return snap.views[sixth.token].marked() && snap.views[tenth.token].marked()
+	}) {
+		r.observe(f, "pod-claims-read-unreachable", false, "the two claims were not both marked within 30 minutes of %s", clockAt(start))
+		r.unblock("sixth", "tenth")
+		return
 	}
-	r.observe(f, "claim-alone-in-its-pod-relaunch-reaches-it", alone.reached(), "relaunch answered %s", alone)
-	r.unblock("sixth", "tenth", "architect")
+	sixthLaunch, tenthLaunch := r.runtime.current(sixth.token), r.runtime.current(tenth.token)
+	// The sweeps that judge both marks, and the line of each.
+	time.Sleep(2 * time.Minute)
+	snap := r.snapshot()
+	r.record("pods: %s %s, %s %s", sixth.token, snap.views[sixth.token], tenth.token, snap.views[tenth.token])
+	for _, c := range []*w5Claim{sixth, tenth} {
+		lines := r.claimLines(w5CaseClaimRefused, c.token, start)
+		reason := ""
+		if len(lines) > 0 {
+			reason = reasonOf(&lines[0])
+		}
+		r.observe(f, "pod-of-two-r6-line-naming-the-pod-"+c.name, len(lines) == 1 && strings.Contains(reason, snap.views[c.token].pod) && strings.Contains(reason, w5PodReason),
+			"%d %s lines name %s; the reason: %q", len(lines), w5CaseClaimRefused, c.token, reason)
+	}
+	sixthCalls, tenthCalls := r.pods.relaunchCalls(sixth.token, start), r.pods.relaunchCalls(tenth.token, start)
+	nothingStopped := sixthLaunch.running() && tenthLaunch.running() && r.runtime.current(sixth.token) == sixthLaunch &&
+		r.runtime.current(tenth.token) == tenthLaunch && len(sixthCalls) == 0 && len(tenthCalls) == 0
+	r.observe(f, "pod-of-two-nothing-relaunched-or-stopped", nothingStopped, "the sixth's process (pid %d) runs: %t; the tenth's (pid %d): %t; the runtime was asked of the sixth %v and of the tenth %v",
+		sixthLaunch.pane.pid, sixthLaunch.running(), tenthLaunch.pane.pid, tenthLaunch.running(), describeCalls(sixthCalls), describeCalls(tenthCalls))
+	r.unblock("sixth", "tenth")
 	waitFor(10*time.Minute, func() bool {
 		snap := r.snapshot()
-		return !snap.views[sixth.token].marked() && !snap.views[tenth.token].marked() && !snap.views[arch.token].marked()
+		return !snap.views[sixth.token].marked() && !snap.views[tenth.token].marked()
 	})
 	r.record("pods after: %s", describeSnapshot(r.snapshot(), r.names))
 }
 
 // sixthFlow blocks the sixth claim's registrations three times, the rig's runtime reporting its
 // launcher not connected, then that the launch would replace the pod, then answering the stop
-// while the process outlives it, and relaunches it each time once read_state shows it unreachable.
+// while the process outlives it: each time, once read_state shows it unreachable, the daemon's
+// relaunch of it is refused with its reason, which R6's line names once, in the first two before
+// anything is stopped and in the third after the stop, and no other claim of the pod is touched.
+// The launcher's state is put back only once the claim reads reachable again, so no sweep relaunches
+// it in between.
 func (r *w5Run) sixthFlow(f *w5Flows) {
 	sixth, tenth := r.c("sixth"), r.c("tenth")
 	runs := []struct {
-		state, code string
-		afterStop   bool
+		state, reason string
+		afterStop     bool
 	}{
-		{w5LauncherNotConnected, "LAUNCHER_NOT_CONNECTED", false},
-		{w5LauncherReplacesPod, "RELAUNCH_REPLACES_POD", false},
-		{w5LauncherOutlivesStop, "PROCESS_OUTLIVED_STOP", true},
+		{w5LauncherNotConnected, "no launcher of it in pod", false},
+		{w5LauncherReplacesPod, "its launch needs a new pod", false},
+		{w5LauncherOutlivesStop, "the process still runs", true},
 	}
 	for i, run := range runs {
 		label := fmt.Sprintf("sixth-run-%d-%s", i+1, run.state)
 		r.pods.setLauncher(sixth.token, run.state)
+		launch, mate := r.runtime.current(sixth.token), r.runtime.current(tenth.token)
 		start := r.block("sixth")
 		if !waitFor(30*time.Minute, func() bool { return r.snapshot().views[sixth.token].marked() }) {
 			r.observe(f, label, false, "the sixth was not marked within 30 minutes of %s", clockAt(start))
 			r.unblock("sixth")
+			waitFor(10*time.Minute, func() bool { return !r.snapshot().views[sixth.token].marked() })
+			r.pods.setLauncher(sixth.token, "")
 			continue
 		}
-		launch, mate := r.runtime.current(sixth.token), r.runtime.current(tenth.token)
-		callsFrom := time.Now()
-		answer := r.relaunch(sixth.token)
-		r.noteRefusal(answer)
-		calls := r.pods.relaunchCalls(sixth.token, callsFrom)
-		var described []string
+		var lines []loggedRecord
+		waitFor(3*time.Minute, func() bool {
+			lines = r.claimLines(w5CaseClaimRefused, sixth.token, start)
+			return len(lines) > 0
+		})
+		time.Sleep(2 * time.Minute)
+		lines = r.claimLines(w5CaseClaimRefused, sixth.token, start)
+		calls := r.pods.relaunchCalls(sixth.token, start)
 		stopped := false
 		for _, c := range calls {
-			described = append(described, fmt.Sprintf("%s %s may=%t launcher=%q answered %q running=%t", clockAt(c.at), c.call, c.mayReplacePod, c.launcher, c.answer, c.running))
 			if c.call == "StopForRelaunch" {
 				stopped = true
 			}
 		}
-		r.record("%s: the runtime's relaunch calls: %v", label, described)
-		r.observe(f, label+"-refused-with-its-reason", answer.status == http.StatusConflict && answer.code == run.code && strings.Contains(answer.body, w5CasePerson),
-			"relaunch answered %s", answer)
-		r.observe(f, label+"-refused-before-or-after-the-stop", stopped == run.afterStop && launch.running() && r.runtime.current(sixth.token) == launch,
+		reason := ""
+		if len(lines) > 0 {
+			reason = reasonOf(&lines[0])
+		}
+		r.record("%s: the runtime's relaunch calls: %v", label, describeCalls(calls))
+		r.observe(f, label+"-refused-with-its-reason", len(lines) == 1 && strings.Contains(reason, run.reason),
+			"%d %s lines name the sixth; the reason: %q; want it to name %q", len(lines), w5CaseClaimRefused, reason, run.reason)
+		r.observe(f, label+"-refused-before-or-after-the-stop", len(calls) > 0 && stopped == run.afterStop && launch.running() && r.runtime.current(sixth.token) == launch,
 			"the stop was asked: %t (want %t); the process (pid %d) still runs: %t", stopped, run.afterStop, launch.pane.pid, launch.running())
-		r.observe(f, label+"-no-other-claim-of-the-pod-touched", mate.running() && r.runtime.current(tenth.token) == mate && len(r.pods.relaunchCalls(tenth.token, callsFrom)) == 0,
+		r.observe(f, label+"-no-other-claim-of-the-pod-touched", mate.running() && r.runtime.current(tenth.token) == mate && len(r.pods.relaunchCalls(tenth.token, start)) == 0,
 			"the tenth's process (pid %d) runs: %t, unchanged: %t", mate.pane.pid, mate.running(), r.runtime.current(tenth.token) == mate)
-		r.pods.setLauncher(sixth.token, "")
 		r.unblock("sixth")
 		waitFor(10*time.Minute, func() bool { return !r.snapshot().views[sixth.token].marked() })
+		r.pods.setLauncher(sixth.token, "")
 	}
 }
 
 // ---- the daemon's restart ------------------------------------------------------------------------
 
 // daemonRestart restarts the daemon and reads the marks and the notices for 25 minutes: a claim
-// reported before the restart gets no new notice.
+// marked before the restart gets no new notice, no new R6 line and no relaunch after it.
 func (r *w5Run) daemonRestart() {
 	snap := r.answeredSnapshot("restart, before it")
 	var reported []claim.Token
@@ -1513,8 +1651,7 @@ func (r *w5Run) daemonRestart() {
 		time.Sleep(time.Minute)
 		r.record("restart: %s", describeSnapshot(r.snapshot(), r.names))
 	}
-	// The controller's notices and the architect's, each naming a claim by its token or in an
-	// unreachable list.
+	// The controller's notices and the architect's, each naming a claim by its token.
 	notices := append(r.controllerNoticesW5(), r.roleNotices(r.c("architect").token)...)
 	var renewed []string
 	for _, n := range notices {
@@ -1527,7 +1664,19 @@ func (r *w5Run) daemonRestart() {
 			}
 		}
 	}
-	r.check("after-restart-no-new-notice-for-a-claim-reported-before", len(renewed) == 0, "notices to the controller and the architect after the restart at %s naming a claim marked before it: %v", clockAt(stopped), renewed)
+	r.check("after-restart-no-new-notice-for-a-claim-marked-before", len(renewed) == 0, "notices to the controller and the architect after the restart at %s naming a claim marked before it: %v", clockAt(stopped), renewed)
+	var again []string
+	for _, token := range reported {
+		for _, word := range []string{w5CaseClaimGone, w5CaseClaimRefused} {
+			for _, line := range r.claimLines(word, token, stopped) {
+				again = append(again, w5Describe(line))
+			}
+		}
+		for _, call := range describeCalls(r.pods.relaunchCalls(token, stopped)) {
+			again = append(again, string(token)+" "+call)
+		}
+	}
+	r.check("after-restart-no-new-line-or-relaunch-for-a-claim-marked-before", len(again) == 0, "R6 lines and relaunch calls after the restart at %s naming a claim marked before it: %v", clockAt(stopped), again)
 }
 
 // ---- every session blocked -----------------------------------------------------------------------
@@ -1541,9 +1690,7 @@ func (r *w5Run) everySessionBlocked() {
 			r.thaw(c.token)
 		}
 	}
-	for name := range r.blocked {
-		r.unblock(name)
-	}
+	r.unblock(r.blockedNames()...)
 	unmarked := waitFor(10*time.Minute, func() bool {
 		snap := r.answeredSnapshot("every session blocked, before the block")
 		if snap.err != "" {
@@ -1653,57 +1800,58 @@ func (r *w5Run) everySessionBlocked() {
 
 // ---- totals --------------------------------------------------------------------------------------
 
-// totals reads what holds over the whole run: each blocked claim named in exactly one
-// unreachable-list notice for each time it went out of reach, no controller notice for a
-// relaunch's refusal, and R6's lines: one for the list with no live session, one for the 25
-// minutes of failed reads, and no other, each starting with the fixed text and naming its case and
-// project.
+// totals reads what holds over the whole run: no notice to the controller names a claim of the
+// run, and R6's lines are exactly these, each starting with the fixed text and naming its case and
+// project: one for the list with no live session, one for the 25 minutes of failed reads, the
+// ninth's after 60 minutes of the guard's hold, one for each claim of the pod of two, one for each
+// of the sixth's three runs, and the implementer's, out of reach a second time within 6 hours.
 func (r *w5Run) totals() {
-	episodes := map[string]int{}
-	for _, rec := range r.logs(func(rec loggedRecord) bool { return rec.Message == w5MarkLine }) {
-		episodes[fmt.Sprint(rec.Attrs["claim"])]++
-	}
-	listed := map[string]int{}
-	for _, n := range r.listNotices(time.Time{}) {
-		for _, row := range n.rows {
-			listed[row]++
-		}
-	}
-	for token, count := range episodes {
-		if token == string(r.ctl.token) {
-			continue
-		}
-		r.check("one-list-notice-per-episode-"+r.names[claim.Token(token)], listed[token] == count,
-			"%s went out of reach %d times and is named in %d unreachable-claims notices", token, count, listed[token])
-	}
 	for _, n := range r.controllerNoticesW5() {
 		r.record("controller notice %s", n)
 	}
-	r.refusalsMu.Lock()
-	refusals := append([]relaunchAnswer{}, r.refusals...)
-	r.refusalsMu.Unlock()
-	for _, refusal := range refusals {
-		var after []string
-		for _, n := range r.controllerNoticesW5() {
-			if n.at.After(refusal.at) && n.at.Before(refusal.at.Add(45*time.Second)) && strings.Contains(strings.ToLower(n.reason), "refus") && !strings.Contains(n.kind, "ready") && !strings.Contains(n.kind, "held") {
-				after = append(after, n.String())
-			}
-		}
-		r.check("no-notice-for-a-relaunch-refusal-at-"+clockAt(refusal.at), len(after) == 0, "the refusal %s; notices of a refusal within 45 s: %v", refusal, after)
+	var names []string
+	for _, c := range r.ordered {
+		names = append(names, c.name)
 	}
+	r.checkNoControllerNotice(names, r.t0, "whole-run")
 	alerts := r.fleetAlerts()
 	var described []string
-	cases := map[string]int{}
+	got := map[string]int{}
 	for _, rec := range alerts {
 		described = append(described, w5Describe(rec))
-		cases[fmt.Sprint(rec.Attrs["case"])]++
+		key := fmt.Sprint(rec.Attrs["case"])
+		if rec.Attrs["claim"] != nil {
+			key += " " + r.names[claim.Token(fmt.Sprint(rec.Attrs["claim"]))]
+		}
+		got[key]++
 		r.check("r6-line-fixed-text-case-project-"+fmt.Sprint(rec.Attrs["case"]), strings.HasPrefix(rec.Message, w5FleetAlertPrefix) && rec.Attrs["case"] != nil && rec.Attrs["project"] == r.cfg.Project,
 			"%s", w5Describe(rec))
 	}
 	r.record("R6 lines: %v", described)
-	r.check("r6-once-for-no-live-session", cases[w5CaseNoLive] == 1, "%d lines for %s", cases[w5CaseNoLive], w5CaseNoLive)
-	r.check("r6-once-for-the-failed-reads", cases[w5CaseListUnreadable] == 1, "%d lines for %s", cases[w5CaseListUnreadable], w5CaseListUnreadable)
-	r.check("r6-no-other-line", len(alerts) == cases[w5CaseNoLive]+cases[w5CaseListUnreadable], "%d lines in all: %v", len(alerts), described)
+	want := map[string]int{
+		w5CaseNoLive:                     1,
+		w5CaseListUnreadable:             1,
+		w5CaseClaimRefused + " ninth":    1,
+		w5CaseClaimRefused + " tenth":    1,
+		w5CaseClaimRefused + " sixth":    4,
+		w5CaseClaimGone + " implementer": 1,
+	}
+	keys := make([]string, 0, len(want))
+	for key := range want {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		r.check("r6-lines-"+strings.ReplaceAll(key, " ", "-"), got[key] == want[key], "%d lines of %s, want %d", got[key], key, want[key])
+	}
+	var other []string
+	for key, n := range got {
+		if _, expected := want[key]; !expected {
+			other = append(other, fmt.Sprintf("%s x%d", key, n))
+		}
+	}
+	sort.Strings(other)
+	r.check("r6-no-other-line", len(other) == 0, "lines of no expected case and claim: %v (all: %v)", other, described)
 }
 
 // ---- the fresh runs ------------------------------------------------------------------------------
@@ -1808,7 +1956,7 @@ func (f *w5Fresh) controllerWithAJob() {
 	t0 := time.Now()
 	f.front.blockRegistrations(session)
 	f.record("blocked the controller's registrations (session %s) at %s; it is %s with %d launches", session, clockAt(t0), before, launches)
-	sleepUntil(t0.Add(w5GuardRelaunch))
+	sleepUntil(t0.Add(w5GuardRead))
 	refused := f.alertsOf(w5CaseControllerRefused, t0)
 	mark := f.markOf(ctl.token, t0)
 	f.check("controller-with-a-job-not-relaunched-while-it-runs", len(f.runtime.launchesOf(ctl.token)) == launches,
@@ -1892,7 +2040,7 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 	f.record("blocked the controller's registrations (session %s) at %s with its launcher reported not connected; it is %s", session, clockAt(t0), before)
 	var relaunched time.Time
 	var newPod string
-	waitFor(w5GuardRelaunch, func() bool {
+	waitFor(w5GuardRead, func() bool {
 		if len(f.runtime.launchesOf(ctl.token)) > launches {
 			launch := f.runtime.current(ctl.token)
 			relaunched = launch.at
@@ -1981,7 +2129,7 @@ func (f *w5Fresh) controllerAgain(relaunchedAt time.Time) {
 	t0 := time.Now()
 	f.front.blockRegistrations(session)
 	f.record("blocked the controller's registrations a second time (session %s) at %s, %s after the daemon's relaunch of it", session, clockAt(t0), t0.Sub(relaunchedAt).Round(time.Second))
-	sleepUntil(t0.Add(w5GuardRelaunch))
+	sleepUntil(t0.Add(w5GuardRead))
 	snap := f.answeredSnapshot("second out-of-reach, at 25 minutes")
 	gone := f.alertsOf(w5CaseControllerGone, t0)
 	f.recordEmptyReads("second out-of-reach", t0)

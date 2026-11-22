@@ -206,7 +206,7 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 var ErrPodGone = errors.New("the pod the locator records is not there")
 
 // The three reasons a relaunch of an unreachable claim refuses (R5), which a runtime answers
-// through InPlaceRelauncher and the daemon's `relaunch` names to its caller as a case for a person.
+// through InPlaceRelauncher and the daemon writes to R6's line as a case for a person.
 // ErrLauncherNotConnected and ErrRelaunchReplacesPod are answered before anything is stopped: a
 // start through a launcher that does not connect waits out the launch bound and is charged, and a
 // launch that replaces the pod for a reason of its own (a drift, a lost binding, a disk to

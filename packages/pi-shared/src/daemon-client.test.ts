@@ -380,7 +380,6 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
-    readonly relaunch: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
@@ -431,13 +430,6 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/claims/compact",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
-    ],
-    // The relaunch names its claim by token, not by issue and role, and answers an empty object.
-    [
-      "relaunch",
-      "/legion/v1/claims/relaunch",
-      { grantId: "grant-208", claim: "legion-legion-legion-209-implementer" },
-      "relaunch.json",
     ],
     // The controller's pause and resume name no project: the daemon pauses its own. Each
     // answers the pause as the daemon's golden wrote it, the resume with how many held rows it
