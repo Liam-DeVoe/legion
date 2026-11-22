@@ -28,14 +28,17 @@ import (
 const approvalWait = "only once the reviewer's approval of"
 
 // plannedConflictIssue is seedConflictIssue on a run with plan rows: the owner's plan whose steps
-// are steps, with task a running at the place of at (its retro or its merge), and pr as the record
-// holds the pull request.
+// are steps, with task a running at the place of at (its first step, its retro or its merge), the
+// Dispatch status of at, and pr as the record holds the pull request.
 func plannedConflictIssue(t *testing.T, at phase.Phase, pr record.PullRequest, steps ...string) *pgxpool.Pool {
 	t.Helper()
-	pool := seedConflictIssue(t, at, "retro", pr)
+	pool := seedConflictIssue(t, at, PhaseStatus(at), pr)
 	seedStepsPlan(t, pool, "LEGION-208", 1, steps...)
 	place := record.TaskPlace{Kind: record.PlaceRetro}
-	if at == phase.Merging {
+	switch at {
+	case phase.Implementing:
+		place = record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+	case phase.Merging:
 		place = record.TaskPlace{Kind: record.PlaceMerge}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -120,6 +123,80 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 					t.Fatalf("the merger's task reads %q; want a wait for the reviewer's approval: %t", task, tc.review)
 				}
 			})
+		})
+	}
+}
+
+// An ask of the implementer made in implementing covers implementing alone, so the move out of
+// implementing asks again where the next phase comes before the review (mergeForwardOnEntry).
+// Past the review the conflict waits for the merger (cybermonklabs/legion#4979). An owner's plan
+// with no tester and no reviewer step, `implementer` or `implementer acceptance:owner`, takes the
+// implementer's completion at the conflicting head without the merge straight into retro or
+// accepting: that move asks nothing, holds nobody and tells the architect nothing, the ask of
+// implementing stays on the record, and the move into merging asks the merger. The control,
+// `implementer tester`, asks again in testing, with the tester's hold and the checks-red notice.
+func TestAnAskOfImplementingIsAskedAgainOnlyBeforeTheReview(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	ask := func(role claim.Role, step record.MergeForwardStep, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
+		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
+	}
+	inImplementing := ask(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing, record.ConflictCheckNotGreen)
+	for _, tc := range []struct {
+		name  string
+		steps []string
+		next  phase.Phase
+		// again is what the move out of implementing queues.
+		again []record.MergeForwardMessage
+	}{
+		{name: "the plan implementer", steps: []string{"implementer"}, next: phase.Retro},
+		{name: "the plan implementer acceptance:owner", steps: []string{"implementer", "acceptance:owner"}, next: phase.Accepting},
+		{name: "control: the plan implementer tester", steps: []string{"implementer", "tester"}, next: phase.Testing,
+			again: []record.MergeForwardMessage{ask(claim.RoleImplementer, record.MergeForwardAsk, phase.Testing, record.ConflictCheckNotGreen),
+				ask(claim.RoleTester, record.MergeForwardHold, phase.Testing, record.ConflictCheckNotGreen)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), tc.steps...)
+			confirmsConflict(t, pool, requiresCI)
+			askedOnce(t, pool, phase.Implementing, "in_progress", record.ConflictCheckNotGreen, "")
+			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: conflictHead, HandoffRecord: "implement-1", HandoffVersion: 1})
+			if got := issuePhase(t, pool); got != tc.next {
+				t.Fatalf("after the implementer's completion the issue is in %s, want %s", got, tc.next)
+			}
+			want := append([]record.MergeForwardMessage{inImplementing}, tc.again...)
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
+				t.Fatalf("after the move into %s the merge-forward messages are %+v, want %+v", tc.next, got, want)
+			}
+			told := 0
+			if len(tc.again) > 0 {
+				told = 1
+			}
+			if got := capNotices(t, pool, "checks-red"); got != told {
+				t.Fatalf("after the move into %s the architect has %d checks-red notices, want %d", tc.next, got, told)
+			}
+			if len(tc.again) > 0 {
+				return
+			}
+			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Role != claim.RoleImplementer || mf.Phase != phase.Implementing {
+				t.Fatalf("the record's merge forward = %+v, want the implementer's ask of implementing", mf)
+			}
+
+			if tc.next == phase.Accepting {
+				engine := readsAfter(3 * time.Minute)
+				applyRefusingNothing(t, pool, engine, rootsSignOff(t, pool, engine, "LEGION-208"))
+				if got := issuePhase(t, pool); got != phase.Retro {
+					t.Fatalf("after the owner's sign-off the issue is in %s, want retro", got)
+				}
+			}
+			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+			if got := issuePhase(t, pool); got != phase.Merging {
+				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
+			}
+			want = append(want, ask(claim.RoleMerger, record.MergeForwardAsk, phase.Merging, record.ConflictMergeNext))
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
+				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked", got, want)
+			}
 		})
 	}
 }

@@ -34,9 +34,10 @@ import (
 // role first asked of a head keeps that merge until it lands and two roles are never sent to merge
 // one base forward. The one exception is an ask made in implementing, which covers implementing
 // only: an implementer that completes at that head without the merge leaves the issue's next phase
-// to ask again, with its hold and its notice. An ask of the implementer that has not landed when
-// the issue reaches merging stays the implementer's, and the merger is held instead
-// (mergeForwardOnEntry).
+// to ask again, with its hold and its notice, where that phase comes before the review, and the
+// move into merging to ask the merger where it does not. An ask of the implementer made after
+// implementing that has not landed when the issue reaches merging stays the implementer's, and the
+// merger is held instead (mergeForwardOnEntry).
 //
 // The ask replaces the one the record holds, and keeps what that one kept of the merge forwards
 // that landed before it in the same stretch of work (record.MergeForward.Earlier), with that ask
@@ -120,10 +121,14 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     an ask of that head, made of another role in a phase before merging and not landed, that
 //     role keeps the merge, since it may already be at work on it, and the merger is held until it
 //     lands (holdMerger) rather than asked.
-//   - At such a head, a move out of implementing into a later phase asks again what was asked in
-//     implementing, for the reason it was asked for (record.MergeForward.Why): an ask made there
-//     covers implementing alone, so an implementer that completes at that head without the merge
-//     leaves the next phase to ask, with its hold and its notice.
+//   - At such a head, a move out of implementing into a later phase before the review (testing or
+//     reviewing) asks again what was asked in implementing, for the reason it was asked for
+//     (record.MergeForward.Why): an ask made there covers implementing alone, so an implementer
+//     that completes at that head without the merge leaves the next phase to ask, with its hold
+//     and its notice. A plan with no tester and no reviewer step moves out of implementing into
+//     accepting or retro, past the review (record.PastReview): that move asks nothing, as any move
+//     into those phases at a conflicting head does, the ask of implementing stays on the record,
+//     and the move into merging asks the merger.
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
@@ -142,7 +147,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 			return e.holdMerger(ctx, tx, issue, pr)
 		}
 		return e.mergeForward(ctx, tx, issue, pr, record.ConflictMergeNext)
-	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) &&
+	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) && !record.PastReview(issue) &&
 		asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing:
 		return e.mergeForward(ctx, tx, issue, pr, asked.Why)
 	}
