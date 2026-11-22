@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 221,
-    "caller": 221
+    "daemon": 222,
+    "caller": 222
   },
   "admission": {
     "cap": 6,
@@ -683,22 +683,26 @@
     {
       "issue": "LEGION-210",
       "role": "implementer",
-      "state": "failed"
+      "state": "failed",
+      "token": "legion-legion-legion-210-implementer"
     },
     {
       "issue": "LEGION-211",
       "role": "implementer",
-      "state": "suspended"
+      "state": "suspended",
+      "token": "legion-legion-legion-211-implementer"
     },
     {
       "issue": "LEGION-212",
       "role": "tester",
-      "state": "retired"
+      "state": "retired",
+      "token": "legion-legion-legion-212-tester"
     },
     {
       "issue": "LEGION-241",
       "role": "checker",
-      "state": "failed"
+      "state": "failed",
+      "token": "legion-legion-legion-241-checker"
     }
   ],
   "wakesWaiting": [

@@ -374,8 +374,10 @@ func valueStripCases() map[string]valueStripCase {
 				for _, entry := range every {
 					// The pod is below deploymentRolesContract too, so a claim of a role outside
 					// Legion's six is no entry of its body either (shaping.go's
-					// withoutDeploymentRoleClaims).
+					// withoutDeploymentRoleClaims), and below strandedTokenContract, so no entry
+					// carries its `token` (withoutStrandedTokens).
 					if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
+						delete(entry, "token")
 						kept = append(kept, entry)
 					}
 				}

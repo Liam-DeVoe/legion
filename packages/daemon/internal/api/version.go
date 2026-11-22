@@ -3104,4 +3104,20 @@ package api
 // and #4540, 217 by #2230, #4273, #4590 and #4771, and nothing at 212, from 218 to 220, or at 221
 // or above. Read the base's own number and every open pull request again at the next merge rather
 // than from this line.)
-const DaemonAPIVersion = 221
+//
+// 222: a claim of `GET /legion/v1/state`'s `strandedClaims` names its claim token in a new key,
+// `strandedClaims.*.token`. Two claims of one issue can hold one role, a keyed agent's on another
+// role's step among them, so the issue and the role no longer name one claim; the boot's log line
+// and `legion state` read who suspended each stranded claim by that token (api.Suspenders), so
+// each takes the move its own suspender calls for. A caller whose contract is below 222 is served
+// each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
+// plugin before INFRA-1048 reads a stranded claim as a strict object and would refuse the whole
+// state over it. From this entry the last number of answers.go's SupportedContracts is
+// `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
+// (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
+// open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
+// contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull
+// requests, made between 2026-11-22T04:42:58Z and 04:46:33Z, found 220 the highest number
+// declared and none at 222. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+const DaemonAPIVersion = 222
