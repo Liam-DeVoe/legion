@@ -816,7 +816,9 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
 			reportAgentWake(d.wakes, logger, targetSession)
-			// The wake is what this message costs its sender, whatever is answered below.
+			// The wake is what this message costs its sender, whatever is answered below, but for
+			// a publish the bus refused because the deployed stream does not capture the target's
+			// agent subject, which sent nothing and costs nothing (senderCharge.published).
 			charge.woke()
 			var recorded bool
 			if known, recorded = d.known.Get(targetSession); !recorded {
@@ -2500,17 +2502,22 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 }
 
 // splitUncapturedTopics splits a registration's requested topics into the ones it plans and
-// stores and the set it leaves out: a notification topic no stream subject captures that is no
-// role lane (bus.ReachesNoSession). A session receives what its own consumer delivers, which is
-// what the stream stored, so an interest in such a topic would be stored and deliver nothing.
+// stores and the set it leaves out: a notification topic that neither the deployed stream nor
+// this build captures and that is no role lane (bus.ReachesNoSession). A session receives what
+// its own consumer delivers, which is what the stream stored, so an interest in such a topic would
+// be stored and deliver nothing. A topic this build stores is planned also while the deployed
+// stream does not capture it, as during a hub move's quiesce: the stream stores it again once the
+// narrowing ends, and the session's consumer, whose filter holds every topic of the row whatever
+// the deployed stream captures (sessionConsumerFilter), then delivers it.
 // It is asked once per topic, here, and the answer carries to the plan as well as to the warning
 // each dropped topic earns (contracts.UncapturedTopicRefusal) — the warning a topic in this set
 // earns only when the private rule has nothing to say about it, since a wildcard such as
 // notifications.> is both, and what it earns is the private warning (subscribeHandler).
 //
-// It judges the topics on m.stream, the client the consumer's filter is judged on
-// (sessionConsumerFilter), so a topic a registration stores is one its consumer filters on. A nil
-// m judges the subjects this build compiles; such a listener refuses every registration anyway.
+// It judges the topics on m.stream, the listener's own client, whose last read of the deployed
+// subjects keeps a topic only a newer build's subjects capture. The consumer's filter reads no
+// such subjects. A nil m judges the subjects this build compiles; such a listener refuses every
+// registration anyway.
 //
 // Both plugins refuse an explicit subscribe to one in those same words (envoy_subscribe in
 // pi-envoy's extensions/envoy.ts and follow in claude-envoy's src/envoy-channel-server.ts, both

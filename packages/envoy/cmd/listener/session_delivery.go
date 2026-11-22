@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,11 +145,13 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	// stream is the client whose read of the deployed stream's subjects decides both which
-	// topics /v1/interests/subscribe stores (splitUncapturedTopics) and which stored topics a
-	// consumer's filter carries (sessionConsumerFilter), so a topic a registration stores is one
-	// its consumer filters on. main gives it the listener's own client. nil judges the subjects
-	// this build compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
+	// stream is the client whose verdict decides which topics /v1/interests/subscribe adds to a
+	// session's row (splitUncapturedTopics, bus.Client.ReachesNoSession): every topic but one
+	// neither the deployed stream, as the client last read its subjects, nor this build captures.
+	// A consumer's filter does not read it: the filter carries every topic of the row whatever the
+	// deployed stream captures (sessionConsumerFilter), so a narrowing of the stream takes no
+	// topic out of it. main gives it the listener's own client. nil judges the subjects this build
+	// compiles, which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
 	// relay hears each registration that records consumer delivery. A sessionDelivery with
@@ -260,9 +263,10 @@ type sessionDelivery struct {
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream). options are the connection's own beside
-// its name: in edge mode, the listener's inbox prefix (edgeGrant.connectOptions).
+// whose verdict decides which requested topics a registration adds to the session's row
+// (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
+// are the connection's own beside its name: in edge mode, the listener's inbox prefix
+// (edgeGrant.connectOptions).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
@@ -727,7 +731,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(body.SessionID, topics), startSeq)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(body.SessionID, topics), startSeq)
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -972,36 +976,130 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 	}
 }
 
-// sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
-// every one of topics the deployed stream stores, as m.stream last read its subjects
-// (bus.Client.DeployedStreamCaptures), a team topic among them. Those are the subjects
-// /v1/interests/subscribe judges a registration's topics on (m.splitUncapturedTopics), so a
-// topic only a newer build's subjects capture, which this build stores on the session's row
-// while the two builds run, is in the filter too, and a message stored on it is delivered. A
-// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
-// topics while the session holds that project's controller role, and this filter is the whole of
-// how it now reaches the controller: the lane's live core subscription, which handed the session
-// only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
-// when it returns. A topic the stream does not store reaches the session on no path of its own: a
-// role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
-// build's row still names, which /v1/interests/subscribe drops from a registration with a
-// warning now, reaches nothing.
-// SessionConsumers reduces the list to filters that do not overlap.
+// sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject in the
+// old form (contracts.LegacyAgentSubject), and every one of topics, the topics of the session's
+// interest row, whatever the deployed stream captures. It reads no subjects of the deployed
+// stream, so every build of the filter - a registration's (consumerFor), each rebuild from the
+// stored row (storedRowFilter: storedFilterStep, sessionRelays.storedFilter, registeredTarget)
+// and both passes of a fenced write - builds the same filter from the same row, and a narrowing of
+// the stream, a hub move's quiesce or an operator's edit, takes no topic out of it. nats-server
+// takes a filter subject the stream does not capture, on a create and on an update, and delivers
+// on it once the stream captures it again, so a message stored on a topic of the row after a
+// narrowing ends reaches the session (internal/bus's
+// TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream). A topic only a newer
+// build's subjects capture, which this build stores on the session's row while the two builds
+// run, is in the filter too, and a topic an earlier build's row left that no subject captures
+// enters it and matches nothing stored. A Legion controller's notice lane
+// (notifications.legion.<project>.controller) is one of the row's topics while the session holds
+// that project's controller role, and this filter is the whole of how it reaches the controller,
+// so a notice published while the controller was away is delivered from the stream when it
+// returns. SessionConsumers reduces the list to filters that do not overlap.
 //
-// A topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token, as
-// in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
-// left out, though the row stores it: with it in the list the server refuses the whole call and
-// the session gets no consumer at all, and no message can reach such a subject anyway.
-func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
+// These kinds of topic are left out, though the row may store them:
+//
+//   - a topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token,
+//     as in a GitHub topic that spells a repository name with a dot, or a `>` before the last
+//     token): with it in the list the server refuses the whole call and the session gets no
+//     consumer at all, and no message can reach such a subject anyway;
+//   - a role lane or the exception lane of one (bus.RoleLane): the stream never stores either, and
+//     a role message reaches its holder as a forward on the holder's agent subject;
+//   - a topic with a `*` or `>` token that reaches a private stream subject other than the
+//     session's own (wildcardReachesAnotherSession), such as notifications.> or
+//     notifications.agent.*.<another session>, which would hand the session another's messages. A
+//     registration never stores one (store.MergedTopics), but an earlier build's row can still
+//     hold one until a write of the row drops it. A literal topic is never of this kind, so a
+//     controller notice lane the session holds stays;
+//   - a topic outside bus.NotificationTopicPrefix: the stream stores nothing outside it, so such a
+//     topic delivers nothing, and one with a wildcard first token, such as *.team.foo, which a
+//     registration stores, would merge with a notification topic it overlaps
+//     (notifications.team.*) into a filter over every subject;
+//   - every wildcard topic that the reduction of the rest (bus.SessionConsumerFilters) merges into
+//     a filter reaching another session's private subjects (leaveOutLeakingWildcards): the
+//     reduction replaces two overlapping topics neither contains with their common prefix and `>`,
+//     so two wildcards that each pass the private rule alone, such as
+//     notifications.envoy.exceptions.foo.* and notifications.envoy.exceptions.*.bar, which an
+//     earlier build's row may hold, would reduce to notifications.envoy.exceptions.>.
+func sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
-		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
-			filter = append(filter, topic)
+		if bus.CheckFilterSubject(topic) != nil || bus.RoleLane(topic) || wildcardReachesAnotherSession(sessionID, topic) ||
+			!strings.HasPrefix(topic, bus.NotificationTopicPrefix) {
+			continue
 		}
+		filter = append(filter, topic)
 	}
-	return filter
+	return leaveOutLeakingWildcards(sessionID, filter)
+}
+
+// wildcardReachesAnotherSession reports whether topic, a topic of sessionID's interest row, has a
+// `*` or `>` token and reaches a private stream subject that is not the session's own
+// (bus.ReachesPrivateStreamSubject, read with no roles). The session's own agent subject in the
+// new form under a wildcard project (notifications.agent.*.<session>) is its own and does not. A
+// literal topic never does here: the rule read with no roles counts a controller notice lane as
+// private whatever the session holds, and the row keeps such a lane only while its claim names the
+// session (store.MergedTopics), which is the rule's own reading with the session's roles.
+func wildcardReachesAnotherSession(sessionID, topic string) bool {
+	return hasWildcardToken(topic) && bus.ReachesPrivateStreamSubject(sessionID, topic, nil)
+}
+
+// hasWildcardToken reports whether topic has a `*` or `>` token.
+func hasWildcardToken(topic string) bool {
+	tokens := strings.Split(topic, ".")
+	return slices.Contains(tokens, "*") || slices.Contains(tokens, ">")
+}
+
+// leaveOutLeakingWildcards is filter without the wildcard topics that its reduction
+// (bus.SessionConsumerFilters, the filter set the consumer carries) merges into a filter with a
+// wildcard token reaching a private stream subject other than sessionID's own. The reduction
+// replaces two overlapping topics neither contains with their longest common prefix and `>`, which
+// contains both, and only two wildcards can be such a pair: a literal topic that overlaps another
+// topic is contained by it. So of the topics that wide filter contains, each wildcard that overlaps
+// another of them without either containing the other is left out, and the reduction is made again
+// until no such filter is left; a wildcard the wide filter contains that merged with nothing, such
+// as notifications.envoy.exceptions.notifications.github.> beside the pair above, stays. Each pass
+// leaves out at least one wildcard, so the loop ends; a wide filter in which no such pair is found
+// leaves out every wildcard it contains, since what made it is then not known; and a row with no
+// such filter is reduced once and left as it is.
+func leaveOutLeakingWildcards(sessionID string, filter []string) []string {
+	for {
+		leak := ""
+		for _, reduced := range bus.SessionConsumerFilters(filter) {
+			if hasWildcardToken(reduced) && bus.ReachesPrivateStreamSubject(sessionID, reduced, nil) {
+				leak = reduced
+				break
+			}
+		}
+		if leak == "" {
+			return filter
+		}
+		var inLeak []string
+		for _, topic := range filter {
+			if bus.SubjectContains(leak, topic) {
+				inLeak = append(inLeak, topic)
+			}
+		}
+		merged := func(topic string) bool {
+			return hasWildcardToken(topic) && slices.ContainsFunc(inLeak, func(other string) bool {
+				return other != topic && bus.SubjectsOverlap(topic, other) &&
+					!bus.SubjectContains(topic, other) && !bus.SubjectContains(other, topic)
+			})
+		}
+		kept := slices.DeleteFunc(slices.Clone(filter), func(topic string) bool {
+			return slices.Contains(inLeak, topic) && merged(topic)
+		})
+		if len(kept) == len(filter) {
+			kept = slices.DeleteFunc(slices.Clone(filter), func(topic string) bool {
+				return hasWildcardToken(topic) && slices.Contains(inLeak, topic)
+			})
+		}
+		if len(kept) == len(filter) {
+			// No wildcard topic of the filter is in the wide filter, so it is no merge of this
+			// filter's topics: nothing here can narrow it, and looping would not end.
+			return filter
+		}
+		filter = kept
+	}
 }
 
 // storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
@@ -1011,7 +1109,7 @@ func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []strin
 // here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
 // does not, since the subscribe route counted its old forms as it took them.
 func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
-	filter := m.sessionConsumerFilter(sessionID, topics)
+	filter := sessionConsumerFilter(sessionID, topics)
 	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter
 }

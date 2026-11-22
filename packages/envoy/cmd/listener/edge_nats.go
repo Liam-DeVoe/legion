@@ -28,20 +28,31 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// connectListenerBus opens the listener's main client. Every listener but an edge one (edge nil)
-// owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it creates it when the server
-// has none and keeps its configuration. An edge listener's grant holds no create or update of the
-// stream, so its client owns none (bus.Connect), names its inboxes under its machine's prefix, and
-// its start reads the stream and refuses, naming it, when the server has none
-// (edgeStreamPresent). Its grant creates and raises no bucket's stream either, so each bucket is
+// connectListenerBus opens the listener's main client. Its start, every listener's, an edge one's
+// included, waits out a refusal of its credential for up to start's wait (natsStart.option,
+// bus.WithCredentialWait), handing each refusal to start, which /healthz answers 503 naming while
+// it lasts and which forgets it once the start has succeeded. Every listener but an edge one (edge
+// nil) owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it creates it when the
+// server has none and keeps its configuration, and its start waits out a refusal of the connect
+// and one of a request of the stream's reconcile. An edge listener's grant holds no create or
+// update of the stream, so its client owns none (bus.Connect), names its inboxes under its
+// machine's prefix, and its start waits out a refusal of the connect, then reads the stream and
+// refuses, naming it, when the server has none (edgeStreamPresent); that read is not waited out,
+// so a grant that refuses it ends the start at once. A failed read closes the client, which stops
+// everything it runs. Its grant creates and raises no bucket's stream either, so each bucket is
 // found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
 // than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server refused; no
 // keeper raises a bucket after.
-func connectListenerBus(cfg config.Service, edge *edgeGrant) (*bus.Client, error) {
+func connectListenerBus(cfg config.Service, edge *edgeGrant, start *natsStart) (*bus.Client, error) {
 	if edge == nil {
-		return bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
+		client, err := bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), start.option())...)
+		if err != nil {
+			return nil, err
+		}
+		start.succeeded()
+		return client, nil
 	}
-	client, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection())...)
+	client, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), start.option())...)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +60,7 @@ func connectListenerBus(cfg config.Service, edge *edgeGrant) (*bus.Client, error
 		client.Close()
 		return nil, err
 	}
+	start.succeeded()
 	return client, nil
 }
 

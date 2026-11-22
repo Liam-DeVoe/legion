@@ -282,7 +282,7 @@ func serverList(urls []string) string {
 // (onAsyncError).
 func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
 	// The throttle is built here, one per call, so it is per connection and has its own mutex:
-	// options is rebuilt for every dial attempt in connectWithContext's loop and only the attempt
+	// options is rebuilt for every dial attempt in connectTrying's loop and only the attempt
 	// that connects leaves its closures on the *nats.Conn, so one live connection has exactly one
 	// throttle and a second client's first failure is never swallowed by this one's minute.
 	throttle := newReconnectErrThrottle(now)
@@ -315,7 +315,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// written without its userinfo (natsURLWithoutUserinfo), because nats.go authenticates with a
 	// URL's userinfo, a token or a user and password, when the URL carries one. The NATS credential
 	// never reaches a line: options never sees it, since credential is applied to the options
-	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer, or a
+	// value afterwards (connect.go, connectTrying) and holds a public key and a signer, or a
 	// token reader, only.
 	reconnectAttemptFailed := func(err error) {
 		if !throttle.allow() {
@@ -396,6 +396,16 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 // deadline cuts either to what remains of it.
 const connectTimeout = 5 * time.Second
 
+// connectTries is how many times a connect dials before it ends with the last dial's error, and
+// connectRetryWait the wait between two of its dials: a server that is restarting, or a network
+// that dropped a dial, answers within them, and a start that ends after them is restarted by
+// whatever runs the process. A start with WithCredentialWait holds the tries of its own that fail
+// other than by a refusal of the credential to the same two (waitOutCredentialRefusals).
+const (
+	connectTries     = 10
+	connectRetryWait = time.Second
+)
+
 func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
 	return connectWithContext(context.Background(), name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
 }
@@ -404,7 +414,10 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // credential the environment names (credential), and what the client's options add (connectOpts.connectionSettings,
 // connectInBackground). When dialer is not nil it dials through the SOCKS5 proxy it names
 // (socks5Proxy): every connection then, the first and each one nats.go dials to reconnect, goes
-// through the proxy, handed the server's host name as the URL spells it.
+// through the proxy, handed the server's host name as the URL spells it. It dials up to
+// connectTries times, waiting connectRetryWait after each dial that fails, the last one included,
+// whatever each dial failed on, a refusal of the credential included, and returns the first
+// connection that connects (connectTrying).
 //
 // A connect through a proxy that fails names the setting and the proxy, whatever failed: its ten
 // attempts ran out, the credential was refused, or ctx ended first (a publish's own deadline). A
@@ -412,7 +425,17 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
 // or a DNS name.
-func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
+func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+	return connectTrying(ctx, connectTries, connectRetryWait, name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
+}
+
+// connectTrying is connectWithContext dialling up to tries times in place of connectTries, and
+// waiting wait after each dial that fails, the last one included, in place of connectRetryWait:
+// every connect but one dials connectTries times connectRetryWait apart and ends that long after
+// its last failed dial, as it always has. The one is a try of a start that waits out refusals of
+// its credential, which dials once with no wait (tries 1, wait 0) and waits between its tries
+// itself (waitOutCredentialRefusals).
+func connectTrying(ctx context.Context, tries int, wait time.Duration, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
 			if err != nil {
@@ -421,7 +444,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 		}()
 	}
 	var lastErr error
-	for range 10 {
+	for range tries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -476,12 +499,14 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 			}()
 			return nil, ctx.Err()
 		}
-		timer := time.NewTimer(time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {

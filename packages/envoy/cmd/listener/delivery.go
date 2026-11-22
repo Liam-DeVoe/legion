@@ -841,7 +841,13 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
 	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
-	// capture is the deployed stream's, which the session's consumer filter is judged on too.
+	// capture is the deployed stream's as the listener's client last read it: a topic the stream
+	// stored is in the session's consumer, whose filter holds every topic of the session's row
+	// whatever the deployed stream captures (sessionConsumerFilter). A read of a narrowing that
+	// falls between this message's publish and this judgement judges the stored copy uncaptured,
+	// so this path reports a failure (listener agent delivery failed, a delivery_failed exception
+	// where the stream captures its lane) and NAKs the copy, while the session's consumer still
+	// hands the session the message once.
 	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr,
 		gone, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
@@ -1094,9 +1100,13 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		deliveryTimer := metrics.NewTimer()
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own. The capture is the deployed stream's, which the session's consumer filter is
-		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
-		// is one that consumer relays.
+		// of its own. The capture is the deployed stream's as the listener's client last read it,
+		// so a topic only a newer build's subjects capture is one the session's consumer relays;
+		// that consumer's filter holds every topic of the session's row whatever the deployed
+		// stream captures (sessionConsumerFilter). A read of a narrowing that falls between the
+		// message's publish and this resolution judges the stored copy uncaptured, so this path
+		// logs listener delivery failed and NAKs it for a session whose entry it holds, while the
+		// session's consumer still hands the session the message once.
 		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// Refusals are decided before the take case, since the session whose own consumer relays

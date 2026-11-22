@@ -491,9 +491,10 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // in the record (releaseRoleClaims answers which topics those are), because one interest record
 // serves every process running under one session id and that topic is the interest half of a
 // claim that still stands, written there by the grant (SetRoleWithPrevious). No delivery rides
-// on it - a role lane is not stream-captured, so it never enters a session's consumer filter
-// (cmd/listener's sessionConsumerFilter), and a role message reaches its holder's agent subject
-// with the holder read off the claim (cmd/listener's resolveCoreRoleHolder) - but the record is
+// on it - a session's consumer filter leaves every role lane out (bus.RoleLane, which
+// cmd/listener's sessionConsumerFilter reads), since the stream never stores one, and a role
+// message reaches its holder's agent subject with the holder read off the claim (cmd/listener's
+// resolveCoreRoleHolder) - but the record is
 // where a deregistration of this session finds the role claims it frees (the empty-topics
 // branch below, releaseAllRoleClaims), so a release from a process that does not hold the claim
 // would otherwise take the lane topic out from under the process that does and leave the claim
