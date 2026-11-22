@@ -44,6 +44,8 @@ import {
   STATE_LINES,
   sentenceCase,
 } from "./page-words";
+import { commentNode as commentTreeNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
 
 const KEY = "CORE-1";
 
@@ -86,14 +88,40 @@ const OWN_COMMENT = {
   suggestion: null,
 } as unknown as Comment;
 
-/** A client holding every read the facts and the writer make, so the drawing sends none. */
+/** The tree read's answer for an issue that holds `comments` and nothing else, as
+ *  `outline-reads.test.tsx` answers it: the issue, and each comment a node under the comment it
+ *  replies to, else under the issue. */
+function treeOf(comments: readonly Comment[]): TreeAnswer {
+  return treeAnswer(
+    [treeNode(KEY, "issue", null), ...comments.map((comment) => commentTreeNode(comment))],
+    [],
+    { issue: KEY }
+  );
+}
+
+/** Holds `comments` as the issue's comments in `client`, each read with `options`, and the tree
+ *  read's answer that holds them (`treeOf`). The outline lands an address by the tree read too
+ *  (`useOutlineReads`), so the client holds it as it holds the outline's other reads, and it
+ *  holds the comments the client holds: a case that sets other comments sets their tree with
+ *  them. */
+function holdComments(
+  client: QueryClient,
+  comments: readonly Comment[],
+  options: { readonly updatedAt?: number } = {}
+): void {
+  client.setQueryData(["comments", KEY], comments, options);
+  client.setQueryData(issueTreeQuery(KEY).queryKey, treeOf(comments), options);
+}
+
+/** A client holding every read the facts and the writer make, and the tree read the outline
+ *  lands an address by (`holdComments`), so the drawing sends none. */
 function readsHeld(): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["agents"], []);
   client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["comments", KEY], [OWN_COMMENT]);
+  holdComments(client, [OWN_COMMENT]);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["whoami"], { login: "alice" });
   // Details' Steps draws the issue's step records held here before its own read answers.
@@ -204,20 +232,16 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
     // row tells it: their login in any casing, and never words an agent wrote for them, which
     // the row calls the agent's.
     act(() => {
-      client.setQueryData(
-        ["comments", KEY],
-        [{ ...OWN_COMMENT, author: { id: "Alice", kind: "user" } }]
-      );
+      holdComments(client, [{ ...OWN_COMMENT, author: { id: "Alice", kind: "user" } }]);
     });
     expect(
       screen.queryByRole("button", { name: CONTROL_LABELS.edit }),
       "the reader's own comment under their login in another casing draws no Edit"
     ).not.toBeNull();
     act(() => {
-      client.setQueryData(
-        ["comments", KEY],
-        [{ ...OWN_COMMENT, author: { ...OWN_COMMENT.author, act: { session: "planner" } } }]
-      );
+      holdComments(client, [
+        { ...OWN_COMMENT, author: { ...OWN_COMMENT.author, act: { session: "planner" } } },
+      ]);
     });
     expect(
       screen.queryByRole("button", { name: CONTROL_LABELS.edit }),
@@ -755,7 +779,7 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     return { ...accepted, lost: false };
   });
   const client = readsHeld();
-  client.setQueryData(["comments", KEY], comments);
+  holdComments(client, comments);
   client.setQueryData(["user-state"], readTo(0));
   const node = commentNode(suggested);
   const view = render(
@@ -852,7 +876,7 @@ test("a keyboard Resolve keeps the focus on its control while its write is out a
     return resolved;
   });
   const client = readsHeld();
-  client.setQueryData(["comments", KEY], comments);
+  holdComments(client, comments);
   const restoreFocus = emulateChromiumFocusFixup();
   const view = render(
     <MemoryRouter>
@@ -987,7 +1011,7 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
   // (`main.tsx`): the facts read them from the cache all the same, so the focus landing on the
   // comment costs no request.
   client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
-  client.setQueryData(["comments", KEY], [mentioned], { updatedAt: Date.now() - 60_000 });
+  holdComments(client, [mentioned], { updatedAt: Date.now() - 60_000 });
   client.setQueryData(["issue-messages", KEY], [thread]);
   const drawn = (focused: FocusedNode) => (
     <MemoryRouter>
