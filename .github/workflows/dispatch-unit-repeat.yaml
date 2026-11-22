@@ -157,7 +157,7 @@ jobs:
     # web leg (run 44500465080, round 1), 29 s in a web-cold leg (run 44622961898, round 2) and
     # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1 and 1
     # minutes: 14 + 1 = 15 minutes for a web leg and 4 + 1 = 5 for a web-cold leg. A harness leg's
-    # step and job are the open #4629's numbers (the test step's comment says why): 64 and 72
+    # step and job are the open #4629's numbers (the test step's comment says why): 132 and 140
     # minutes, the job's margin over the step covering other steps that #4629 read at 28 to 229 s,
     # most of it the zsh install. The slowest whole jobs took 707 s for a web leg
     # (run 44749684592, round 3, shard 1/2), 192 s for a web-cold leg (run 44749684592, round 3)
@@ -197,8 +197,8 @@ jobs:
           - lane: harness
             shards: 1
             reruns: 20
-            step_minutes: 64
-            job_minutes: 72
+            step_minutes: 132
+            job_minutes: 140
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -268,13 +268,15 @@ jobs:
       # Harness: the open #4629's numbers, which it reads from CI and which replace these lines when
       # it lands, at the harness maximum since main's #4659. 66 legs took 967 to 1,529 s up to
       # 2026-11-19 (run 44389203951, round 1), for which the rule above gave 30 minutes. #4659 then
-      # added the outside-agent rows of e2e/__tests__/outside-agent-*.test.ts, 10 to 12 s each, run 20
-      # times a leg: run 44941119180 at 1eace347 took up to 1,767 s (round 1, job 136958329043), and
-      # run 44961469504 at 530be4de had all three legs stopped at the 30 minutes, after 1,812 and
-      # 1,813 s, with no row failing and 19,045 to 19,075 of their 19,300 results written. So the
-      # maximum is 1,812 x 19,300 / 19,045 = 1,836 s, a floor that takes the results to come at an
-      # even rate, and #4629's rule, twice the maximum, gives a deadline of 3,720 s: a step of 64
-      # minutes and a job of 72.
+      # added e2e/__tests__/outside-agent-acceptance.test.ts, whose 18 rows take about 7 s each and
+      # whose 20 runs go one after another in one worker, about 2,500 s, so a leg ends about that
+      # long after the file starts, and the seed decides when it starts. Run 44941119180 at 1eace347
+      # took up to 1,767 s (round 1, job 136958329043), and run 44961469504 at 530be4de had all
+      # three legs stopped at the 30 minutes, after 1,812 and 1,813 s, with no row failing. #4629's
+      # run 44963607247, the first with #4659 in its merge, took 2,571 s and 3,241 s in two legs and
+      # stopped the third at 3,300 s at the file's run 17 of 20, which projects to 3,882 s. #4629's
+      # rule, twice the maximum, gives a deadline of 7,800 s (at #4629's head 06dd4bb977): a step of
+      # 132 minutes and a job of 140.
       #
       # Web-cold: the legs of the three runs since the lane's last derivation took 97 to 161 s,
       # the most in run 44749684592, round 3, so 161 x 1.15 = 186 s, 4 minutes. The 78 legs before
