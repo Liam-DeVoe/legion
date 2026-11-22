@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"os/exec"
+	"slices"
 	"strings"
+	"syscall"
 	"unsafe"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
@@ -11,7 +16,9 @@ import (
 // This file holds the step's reads (jjStep, jj.go): a read of commits with jjCommitTemplate (read,
 // readEach) and of commit ids (ids, eachID), each with --ignore-working-copy (jjStep.jj), and the
 // revsets of a list of commit or change ids in as few words as keep each under jjWordBound bytes
-// (jjWords, jjChanges, jjCommitIDs), with the bytes Linux counts against jjArgMax (jjSize).
+// (jjWords, jjChanges, jjCommitIDs), with the bytes Linux counts against jjArgMax (jjSize); and
+// how the step and the expansion run a jj command and name its failure (jj, output, command,
+// runJJCommand, jjErrorLine).
 
 // jjCommitTemplate prints, for each commit, its change id, its commit id, whether it is hidden,
 // whether it is the working-copy commit of the workspace the command runs in
@@ -177,4 +184,89 @@ func jjWords(prefix string, terms []string, suffix string) []string {
 		words = append(words, word.String()+suffix)
 	}
 	return words
+}
+
+// jj runs one jj command of the step that takes no snapshot and answers what it printed on
+// standard output (output): next, with the caller's options (jjPush.options), then
+// --ignore-working-copy, then args, in env.
+func (s *jjStep) jj(env []string, args ...string) (string, error) {
+	stdout, _, err := s.output(env, slices.Concat(s.push.options, []string{"--ignore-working-copy"}, args))
+	return stdout, err
+}
+
+// output runs next with args in env (command) and answers what it printed on standard output and
+// on standard error. A command that cannot start or exits non-zero is a jjStepFailure, with what
+// it printed on standard error.
+func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
+	stdout, stderr, code, err := s.command(env, args)
+	if err != nil {
+		return "", "", err
+	}
+	if code != 0 {
+		return "", "", jjStepFailure{code: code, output: stderr}
+	}
+	return stdout, stderr, nil
+}
+
+// command runs next with args in env and waits for it (runJJCommand).
+func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, err error) {
+	return runJJCommand(s.next, env, args)
+}
+
+// runJJCommand runs next with args in env and waits for it, as a child in this process's group,
+// with no standard input: each command of the step (jjStep.command) and the read of the aliases
+// (readJJAliases). It answers what the command printed and its status, a death by a signal being
+// 128 and the signal's number, as a shell reads it. A file the kernel refuses to run runs with
+// /bin/sh, as execWrapped runs it. A command that cannot start is a jjStepFailure whose status is
+// execWrapped's for the same failure.
+func runJJCommand(next string, env, args []string) (stdout, stderr string, code int, err error) {
+	var out, errOut bytes.Buffer
+	run := func(path string, argv []string) error {
+		out.Reset()
+		errOut.Reset()
+		cmd := &exec.Cmd{Path: path, Args: argv, Env: env, Stdout: &out, Stderr: &errOut}
+		return cmd.Run()
+	}
+	err = run(next, append([]string{next}, args...))
+	if errors.Is(err, syscall.ENOEXEC) {
+		err = run("/bin/sh", append([]string{"/bin/sh", next}, args...))
+	}
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		code = exit.ExitCode()
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			code = 128 + int(status.Signal())
+		}
+		return out.String(), errOut.String(), code, nil
+	case err != nil:
+		code = 126
+		if errors.Is(err, syscall.ENOENT) {
+			code = 127
+		}
+		return "", "", 0, jjStepFailure{code: code, output: fmt.Sprintf("legion jj: run %s: %v\n", next, err)}
+	}
+	return out.String(), errOut.String(), 0, nil
+}
+
+// jjErrorLine is the line that names the failure of a jj command that exited code, command being
+// what stands for the command: the first line of output, its standard error, that starts with
+// `Error: `, jj's error, which may follow a notice such as the `Creating bookmark push-<change> for
+// revision <change>` of `jj git push -c`; else the first line that is not blank, or a line that
+// says it printed nothing. The step names it where it cannot read a dry run, and the expansion
+// where its read of the aliases fails (readJJAliases).
+func jjErrorLine(output, command string, code int) string {
+	first := ""
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.HasPrefix(line, "Error: ") {
+			return strings.TrimSpace(line)
+		}
+		if first == "" {
+			first = strings.TrimSpace(line)
+		}
+	}
+	if first != "" {
+		return first
+	}
+	return fmt.Sprintf("%s exited %d and printed nothing", command, code)
 }
