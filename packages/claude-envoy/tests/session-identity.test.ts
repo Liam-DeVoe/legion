@@ -86,7 +86,12 @@ test("pruning removes handoff directories whose Claude process is gone and keeps
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-prune-"))
   try {
     const live = sessionHandoffDirectory(stateDirectory, process.pid)
-    const dead = sessionHandoffDirectory(stateDirectory, 2 ** 22 - 1)
+    // The id of a process that is gone, and that no process can hold while the sweep runs: Linux
+    // gives a process an id below pid_max, which cannot be set above 2 ** 22, and macOS one below
+    // 100000. 2 ** 22 - 1 is no such id: Linux hands it out wherever pid_max is at that ceiling,
+    // as systemd sets it, and a busy machine whose ids wrap around gives it to a process now and
+    // then, which the sweep then rightly keeps.
+    const dead = sessionHandoffDirectory(stateDirectory, 2 ** 22)
     const junk = join(stateDirectory, "sessions", "not-a-pid")
     for (const directory of [live, dead, junk]) await mkdir(directory, { recursive: true })
     await writeFile(join(dead, "session-id"), "ses_dead")
