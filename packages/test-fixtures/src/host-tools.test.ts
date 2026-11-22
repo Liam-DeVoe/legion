@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "./host-tools";
+import { type HostFile, hostFile, hostTool, skipWithout } from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
@@ -81,3 +81,59 @@ test("the warning names the calling file under a path that holds a space", () =>
   expect(run.exitCode).toBe(0);
   expect(run.stderr.toString()).toContain(`Skipped the tests in ${caller}.`);
 });
+
+test("hostFile reads a file this host can read as there, and prints nothing", () => {
+  const path = join(makeDirectory("readable"), "file");
+  writeFileSync(path, "");
+  let file: HostFile | undefined;
+  const warnings = warningsFrom(() => {
+    file = hostFile(path, "the row that reads it");
+  });
+  expect({ file, warnings }).toEqual({ file: { missing: false, failed: undefined }, warnings: [] });
+});
+
+test("hostFile reads a file whose lookup fails with ENOENT as missing, and prints one warning of it", () => {
+  const path = join(makeDirectory("missing"), "no-such-file");
+  let file: HostFile | undefined;
+  const warnings = warningsFrom(() => {
+    file = hostFile(path, "the row that reads it");
+  });
+  expect(file).toEqual({ missing: true, failed: undefined });
+  expect(warnings).toEqual([
+    `Skipped the row that reads it in ${import.meta.path}. This host has no ${path}.`,
+  ]);
+});
+
+// Root reads a file whatever its directory's mode, so there the lookup is not refused and the row
+// proves nothing; it skips, saying so.
+const root = process.getuid?.() === 0;
+if (root) console.warn(`Skipped the refused-lookup row in ${import.meta.path}: it runs as root.`);
+
+test.skipIf(root)(
+  "hostFile reads a file whose lookup is refused (EACCES) as there, not missing, and keeps the error for the row to throw",
+  () => {
+    // The file is there, under a directory no one may search: the lookup fails with EACCES,
+    // where `existsSync` answers false, as it does for a file that is not there.
+    const closed = makeDirectory("refused");
+    const path = join(closed, "file");
+    writeFileSync(path, "");
+    chmodSync(closed, 0o000);
+    let file: HostFile | undefined;
+    let warnings: string[] = [];
+    let exists: boolean | undefined;
+    try {
+      exists = existsSync(path);
+      warnings = warningsFrom(() => {
+        file = hostFile(path, "the row that reads it");
+      });
+    } finally {
+      chmodSync(closed, 0o700);
+    }
+    expect({
+      exists,
+      missing: file?.missing,
+      code: (file?.failed as NodeJS.ErrnoException | undefined)?.code,
+      warnings,
+    }).toEqual({ exists: false, missing: false, code: "EACCES", warnings: [] });
+  }
+);

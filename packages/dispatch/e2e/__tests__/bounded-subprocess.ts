@@ -1,5 +1,5 @@
 /** The module that starts every one-shot subprocess a row or hook of this directory waits for,
- *  but the two stated edges below: the argv, the working directory, the environment the caller
+ *  but the stated edges below: the argv, the working directory, the environment the caller
  *  chose, how the pipes are read, the bound that stops a child that is stuck, and the line the
  *  run that started a child prints on its own stderr when that child ends. It also holds the
  *  limit a row states for itself, which is read from the bounds of what that row waits for, and
@@ -26,18 +26,38 @@
  * ones asks for, the processes `local-instance-support.test.ts` starts through its `Supervisor`,
  * the stand-in Dispatches `prepareStandIn` of `outside-agent-tailnet-stand-ins.ts` starts, and the
  * squatters each of the two `squat`s leaves running until its row ends, that of
- * `round-robin-proxy.test.ts` and that of `outside-agent-acceptance.test.ts`. Three subprocesses a
- * row can wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and
- * hooks of `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`),
- * whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that
- * psql would reach past `e2e/__tests__/`. Another is the `ps` that reads the process table on a
- * machine with no `/proc`, here (`processTable`) and in `bounded-subprocess.test.ts`, which runs
- * with no bound. Linux lists its processes under `/proc` and never runs that `ps`. The third is
- * the shell of three synchronous waits for a port, each ended by its own clock within 11 s: the
- * one each `squat` waits for while it takes a port over, that of `round-robin-proxy.test.ts` after
- * a server stop and that of `outside-agent-acceptance.test.ts` after a listener stop, synchronous
- * because that stop is and the port must be taken before the stop returns, and the stand-in
- * Dispatch's readiness wait in `outside-agent-tailnet-stand-ins.ts`.
+ * `round-robin-proxy.test.ts` and that of `outside-agent-acceptance.test.ts`.
+ *
+ * The stated edges are the subprocesses a row, a hook or a test file's load waits for that this
+ * module does not start. No bound of it stops one that is stuck: the limit of its row or hook
+ * does, or the lane's `--timeout` where that states none, or the child's own timer where one is
+ * named below:
+ *
+ * - children of the harness's own modules outside `e2e/__tests__/`, which a bound here would reach
+ *   past: the psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch
+ *   databases of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ *   `e2e/local-instance.ts` call too, and the `cc` that `buildStallLibrary` of `e2e/disk-stall.ts`
+ *   runs for the hook and a row of `fsync-stall.test.ts`;
+ * - the `ps` that reads the process table on a machine with no `/proc`, here (`processTable`) and
+ *   in `bounded-subprocess.test.ts`. Linux lists its processes under `/proc` and never runs it;
+ * - the shell of three synchronous waits for a port, each ended by its own clock within 11 s: the
+ *   one each `squat` waits for while it takes a port over, that of `round-robin-proxy.test.ts`
+ *   after a server stop and that of `outside-agent-acceptance.test.ts` after a listener stop,
+ *   synchronous because that stop is and the port must be taken before the stop returns, and the
+ *   stand-in Dispatch's readiness wait in `outside-agent-tailnet-stand-ins.ts`;
+ * - the `git` commands that `checkout` of `outside-agent-tailnet-stand-ins.ts` runs, one after
+ *   another and synchronously, to make the repository `prepareStandIn` hands each stand-in run;
+ * - the runs of `e2e/acceptance/outside-path-reach.sh` that `drive` and `driveEach` of
+ *   `outside-path-reach-fixtures.ts` start for the rows of the four `outside-path-reach*` test
+ *   files, whose limits are that module's hang guards (`rowTimeout`, `probingRowTimeout`);
+ * - the curl that `outside-path-reach-blackhole.test.ts` runs once as it loads, before it
+ *   registers its rows, to learn whether this network drops a packet; curl's own `--max-time 5`
+ *   ends it;
+ * - the bash that reads its own version in a row of `outside-path-reach-input.test.ts`;
+ * - the bash runs of `psql-password.test.ts`: the functions of `run-broker.sh` and
+ *   `acceptance/ci-check.sh` against a stand-in psql (`runScriptPsql`), `exec_broker`,
+ *   `run-server.sh` against a stand-in server, and the prefix of the hand-over's command
+ *   (`pastedDatabaseUrl`).
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`

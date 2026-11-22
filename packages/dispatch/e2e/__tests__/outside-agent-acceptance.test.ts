@@ -28,7 +28,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostFile, hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
@@ -494,16 +494,14 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
   }
 }
 
-/** Whether this host shows each process's environment at `/proc/<pid>/environ`, as Linux does.
- *  The prepared-run row reads the stand-in Dispatch's settings there, so on a host without it that
- *  row skips, and this says so once. */
-const procEnviron = existsSync("/proc/self/environ");
-if (!procEnviron) {
-  console.warn(
-    `Skipped the prepared-run row "a prepared run's origin serves its own stand-in Dispatch under the squat" in ${import.meta.path}. ` +
-      "This host has no /proc/<pid>/environ, from which that row reads the stand-in Dispatch's settings."
-  );
-}
+/** Whether this host shows a process's environment at `/proc/<pid>/environ`, as Linux does. The
+ *  prepared-run row reads the stand-in Dispatch's settings there, so it skips where that file is
+ *  missing (ENOENT), and this says so once; any other failure of the lookup fails the row, naming
+ *  the error. */
+const procEnviron = hostFile(
+  "/proc/self/environ",
+  `the prepared-run row "a prepared run's origin serves its own stand-in Dispatch under the squat", which reads the stand-in Dispatch's settings at /proc/<pid>/environ,`
+);
 
 describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
   "the stand-in Dispatch's port and readiness",
@@ -598,9 +596,10 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
       }
     );
 
-    test.skipIf(!procEnviron)(
+    test.skipIf(procEnviron.missing)(
       "a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed",
       async () => {
+        if (procEnviron.failed !== undefined) throw procEnviron.failed;
         const { result, squatted } = await withSquat(async () => {
           let prepared: PreparedStandIn;
           try {

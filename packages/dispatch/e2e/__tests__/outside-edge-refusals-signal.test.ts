@@ -6,9 +6,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool } from "@legion/test-fixtures/host-tools";
+import { hostFile, hostTool } from "@legion/test-fixtures/host-tools";
 import { rowLimit } from "./bounded-subprocess";
 import {
   canaryBody,
@@ -32,6 +32,14 @@ import {
 import { bash, closedPort, curl, verdict } from "./outside-path-reach-fixtures";
 
 const { check, directoryOf, listFile, planLists } = edgeFixtures(import.meta.url);
+
+/** `/proc/<pid>/stat`, which `signallingCurl`'s curl reads to find the script's own bash. The two
+ *  rows that use that curl skip where it is missing (ENOENT), and this says so once; any other
+ *  failure of the lookup fails them, naming the error. */
+const procStat = hostFile(
+  "/proc/self/stat",
+  "the two rows whose curl signals the script's own bash, found through /proc/<pid>/stat,"
+);
 
 // The rows run one after another, not concurrently, for the reason `outside-edge-refusals.test.ts`
 // gives: the end of each bounded child reads the whole process table and holds this process's
@@ -149,9 +157,10 @@ describe(`${scriptName}: a signal`, () => {
     return `${directory}:${process.env.PATH ?? ""}`;
   }
 
-  test.skipIf(withoutTools || !existsSync("/proc/self/stat"))(
+  test.skipIf(withoutTools || procStat.missing)(
     "reads UNKNOWN, never PASS, when a signal stops the run before its verdict, and leaves no scratch behind",
     async () => {
+      if (procStat.failed !== undefined) throw procStat.failed;
       const edge = await standIn(production);
       try {
         const tmp = directoryOf("tmp");
@@ -180,9 +189,10 @@ describe(`${scriptName}: a signal`, () => {
   // was reached ends it at FAIL, exit 1, naming that line, never at UNKNOWN. Here a route is
   // planted for the first refusal line, and the run's `curl` sends the signal at the probe of the
   // second line itself, after that line's unrouted control.
-  test.skipIf(withoutTools || !existsSync("/proc/self/stat"))(
+  test.skipIf(withoutTools || procStat.missing)(
     "fails naming the line reached, never reads UNKNOWN, when a signal stops the run after a line was reached",
     async () => {
+      if (procStat.failed !== undefined) throw procStat.failed;
       const [first, second] = refusals as [Line, Line];
       const edge = await standIn([planted(first), ...production]);
       try {

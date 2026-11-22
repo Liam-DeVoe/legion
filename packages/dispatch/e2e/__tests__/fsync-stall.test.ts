@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hostTool } from "@legion/test-fixtures/host-tools";
+import { hostFile, hostTool } from "@legion/test-fixtures/host-tools";
 
 import {
   buildStallLibrary,
@@ -34,14 +34,20 @@ import { eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
  *  reach past `e2e/__tests__/`. Every `dd` these rows wait for is a bounded child. */
 
 const dd = "/usr/bin/dd";
+/** `/proc/<pid>/wchan`, which names the call a sleeping process is in, and which the rows that
+ *  hold dd in the library's wait read. Where it is missing (ENOENT) the tests skip, as on a host
+ *  missing one of the rest; any other failure of its lookup fails those rows, naming the error. */
+const wchan = hostFile(
+  "/proc/self/wchan",
+  "the tests, whose wait rows read /proc/<pid>/wchan, the call a sleeping process is in,"
+);
 const missing = [
   ...(process.platform === "linux" ? [] : ["Linux, whose loader reads LD_PRELOAD"]),
   ...(existsSync(dd) ? [] : [dd]),
-  ...(existsSync("/proc/self/wchan") ? [] : ["/proc/<pid>/wchan, which names a sleeping call"]),
   ...(hostTool("cc") === null ? ["cc on this host's PATH"] : []),
 ];
-const live = missing.length === 0;
-if (!live) {
+const live = missing.length === 0 && !wchan.missing;
+if (missing.length > 0) {
   console.warn(
     `Skipped the tests in ${import.meta.path}. This host does not have: ${missing.join("; ")}.`
   );
@@ -111,6 +117,7 @@ for (const conv of ["fsync", "fdatasync"] as const) {
   test.skipIf(!live)(
     `dd conv=${conv} waits while the stall file exists, and goes through once it is removed`,
     async () => {
+      if (wchan.failed !== undefined) throw wchan.failed;
       stallDisk(dir);
       try {
         const { output, run } = runDd(conv, stallEnvironment(dir));
