@@ -64,9 +64,8 @@ export async function goToRow(page: Page, index: number): Promise<void> {
   await row.focus();
 }
 
-/** The Snooze the reader reaches for one question: the row's own control, or - with the
- *  reading column on, where the row carries none - the column head's, the column being given
- *  that row first. */
+/** The Snooze the reader reaches for one question: the head's, of the pane its row opens -
+ *  beside the list from 1280 px, in place of it below - since a short row carries none. */
 export async function rowSnooze(page: Page, askId: string): Promise<Locator> {
   return (await askControls(page, askId)).locator("[data-inbox-snooze]");
 }

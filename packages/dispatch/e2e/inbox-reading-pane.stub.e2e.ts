@@ -1,5 +1,6 @@
 /** The Inbox's reading column over one fixed list: the two shapes of card it draws, the keys
- *  and the address that drive the selection, and what the narrow widths and the drawer keep.
+ *  and the address that drive the selection, the row the narrow widths read in place of the
+ *  list, and the card the drawer keeps.
  *
  *  Each reads what the page draws, so each runs against a recording rather than against a
  *  harness (packages/dispatch/README.md, "The stubbed layer"). The rows that answer or approve,
@@ -92,28 +93,67 @@ test("the arrow keys, j, k, Enter and ?item= drive the reading pane @pr", async 
   await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.decisionAskId);
 });
 
-test("the Inbox keeps today's card below 1280 px and in the drawer @phone @pr", async ({
+test("below 1280 px the Inbox reads the row it opens in place of the list, and the drawer keeps the card @phone @pr", async ({
   page,
   scene,
 }) => {
-  // One pixel below the column's width the Inbox is the list of cards it has always been.
+  // One pixel below the column's width the Inbox lists the short rows it lists beside the
+  // column, with no card in them and no pane beside them.
   await page.setViewportSize({ height: 900, width: 1279 });
   await page.goto(INBOX);
   await expect(inboxList(page)).toBeVisible();
   await expect(inboxPane(page)).toHaveCount(0);
-  const decisionCard = page.getByTestId(`ask-${scene.decisionAskId}`);
-  await expect(decisionCard.locator("[data-ask-answer]")).toBeVisible();
-  await expect(decisionCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+  await expect(page.getByTestId(`ask-${scene.plainAskId}`)).toHaveCount(0);
+  await expect(page).toHaveURL(INBOX);
 
-  // And so it is on a phone.
+  // The row the reader opens is read in place of the list, its card under the view's own Inbox
+  // control, which takes the reader back to the list at that row.
+  const row = page.locator(`[data-inbox-row="${scene.plainAskId}"]`);
+  await row.locator("time").first().click();
+  const view = page.getByTestId("inbox-reading-view");
+  await expect(view).toBeVisible();
+  await expect(inboxList(page)).toBeHidden();
+  await expect(
+    view.getByTestId(`ask-${scene.plainAskId}`).locator("[data-ask-answer]")
+  ).toBeVisible();
+  await expect(page).toHaveURL(inboxAt(scene.plainAskId));
+  await view.getByRole("button", { exact: true, name: "Inbox" }).click();
+  await expect(view).toHaveCount(0);
+  await expect(row).toBeFocused();
+  await expect(page).toHaveURL(INBOX);
+
+  // And so it is on a phone, where the browser's Back leaves the view as the control does.
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto(INBOX);
-  await expect(inboxPane(page)).toHaveCount(0);
-  await expect(decisionCard.locator("[data-ask-answer]")).toBeVisible();
-  await expect(decisionCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+  await row.locator("time").first().click();
+  await expect(
+    view.getByTestId(`ask-${scene.plainAskId}`).locator("[data-ask-answer]")
+  ).toBeVisible();
+  const widths = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(widths.scroll).toBe(widths.client);
+  await page.goBack();
+  await expect(view).toHaveCount(0);
+  await expect(row).toBeFocused();
 
-  // The approval card's own diff is the change view, with the same marks the column draws.
-  const approvalCard = page.getByTestId(`ask-${scene.approvalAskId}`);
+  // The drawer is a peek beside the page it covers, so it keeps the card at every width, and the
+  // approval card's own diff is the change view, with the same marks the column draws.
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto(`/issues/${scene.decisionIssueKey}`);
+  await page
+    .getByRole("navigation", { name: "Navigation" })
+    .getByRole("button", { name: "Peek at the inbox without leaving this page" })
+    .click();
+  const drawer = page.getByRole("dialog", { name: "Inbox" });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByTestId("inbox-pane")).toHaveCount(0);
+  const drawerCard = drawer.getByTestId(`ask-${scene.decisionAskId}`);
+  await expect(drawerCard.locator("[data-ask-answer]")).toBeVisible();
+  await expect(drawerCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+
+  const approvalCard = drawer.getByTestId(`ask-${scene.approvalAskId}`);
   await approvalCard.getByRole("button", { name: "Show diff" }).click();
   const diff = approvalCard.getByTestId("change-view");
   const changed = diff.locator('[data-change="changed"]');
@@ -133,18 +173,4 @@ test("the Inbox keeps today's card below 1280 px and in the drawer @phone @pr", 
   expect(blocks[at - 1]).toBe(SCOPE_ANCHOR);
   expect(blocks[at + 1]).toBe(WINDOW_ANCHOR);
   await expect(diff.locator('[data-change="removed"] del')).toHaveText([RETIRED_BLOCK]);
-
-  // The drawer is a peek beside the page it covers, so it keeps the card at every width.
-  await page.setViewportSize({ height: 900, width: 1440 });
-  await page.goto(`/issues/${scene.decisionIssueKey}`);
-  await page
-    .getByRole("navigation", { name: "Navigation" })
-    .getByRole("button", { name: "Peek at the inbox without leaving this page" })
-    .click();
-  const drawer = page.getByRole("dialog", { name: "Inbox" });
-  await expect(drawer).toBeVisible();
-  await expect(drawer.getByTestId("inbox-pane")).toHaveCount(0);
-  const drawerCard = drawer.getByTestId(`ask-${scene.decisionAskId}`);
-  await expect(drawerCard.locator("[data-ask-answer]")).toBeVisible();
-  await expect(drawerCard.getByRole("link", { name: "Open in document" })).toBeVisible();
 });
