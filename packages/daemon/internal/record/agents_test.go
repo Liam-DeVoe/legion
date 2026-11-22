@@ -61,18 +61,3 @@ func TestAKeyKeepsItsNameWhenALaterVersionGivesItsRoleToAFreshStep(t *testing.T)
 		t.Errorf("step 3 of version 2: name %q, want reviewer", v2[2].Agent)
 	}
 }
-
-// A row that a release before the column wrote has no name, and reads as its role, which named its
-// agent then. A step of the key owner has no name whatever it holds: its agent is the tree's
-// architect, whose token names the tree, not the issue.
-func TestARowWrittenBeforeTheColumnReadsAsItsRole(t *testing.T) {
-	if got := (PlanStep{Role: "reviewer"}).AgentName(); got != "reviewer" {
-		t.Errorf("AgentName = %q, want reviewer", got)
-	}
-	if got := (PlanStep{Role: "acceptance", AgentKey: "owner"}).AgentName(); got != "" {
-		t.Errorf("AgentName = %q, want none: the owner is the tree's architect", got)
-	}
-	if got := (PlanStep{Role: "tester", AgentKey: "a", Agent: "implementer"}).AgentName(); got != "implementer" {
-		t.Errorf("AgentName = %q, want the name the row holds", got)
-	}
-}

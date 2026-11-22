@@ -14,14 +14,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The agents of an issue's plan the sandbox runtime builds its pod's slots from are the names the
-// issue's own record gives the steps of its plan in force (record.PlanStep.AgentName): store and
-// record import neither each other, so the store names them a second time (PlanAgents), and this
-// holds the two to one answer. The plan in force is the issue's generation's, so a step of an
-// earlier generation names no agent; a step of the key owner names none; a step written before the
-// column held the name reads as its role; and each agent carries the role of its first step. An
-// issue of another project's record, and one with no plan rows, have none.
-func TestThePlanAgentsAreTheNamesTheRecordGives(t *testing.T) {
+// The agents of an issue's plan the sandbox runtime builds its pod's slots from are the agents of
+// the plan in force, each named by the one rule of a stored step (plan.StoredAgentName): the plan in
+// force is the issue's generation's, so a step of an earlier generation names no agent; a step of
+// the key owner names none; a step written before the column held the name reads as its role; and
+// each agent carries the role of its first step. An issue of another project's record, and one with
+// no plan rows, have none.
+func TestThePlanAgentsAreTheAgentsOfThePlanInForce(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
@@ -74,25 +73,6 @@ func TestThePlanAgentsAreTheNamesTheRecordGives(t *testing.T) {
 	got, err := st.PlanAgents(ctx, "legion", "LEGION-208")
 	if err != nil || !maps.Equal(got, want) {
 		t.Fatalf("PlanAgents(LEGION-208) = %v, %v; want %v", got, err, want)
-	}
-	var stored *record.StoredPlan
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		var err error
-		stored, err = records.Plan(ctx, tx, "LEGION-208", 2)
-		return err
-	}); err != nil || stored == nil {
-		t.Fatalf("read the plan of LEGION-208 at generation 2: %v", err)
-	}
-	named := map[claim.Agent]claim.Role{}
-	for _, step := range stored.Steps["t"] {
-		if name := step.AgentName(); name != "" {
-			if _, seen := named[name]; !seen {
-				named[name] = claim.Role(step.Role)
-			}
-		}
-	}
-	if !maps.Equal(got, named) {
-		t.Errorf("PlanAgents(LEGION-208) = %v, and the record names the agents %v; want one answer", got, named)
 	}
 	for _, key := range []string{"LEGION-209", "OTHER-7"} {
 		if got, err := st.PlanAgents(ctx, "legion", key); err != nil || len(got) != 0 {

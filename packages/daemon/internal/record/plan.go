@@ -152,19 +152,11 @@ type PlanStep struct {
 	Agent claim.Agent
 }
 
-// AgentName is the name of the step's agent: the last part of its claim token, and the one reader
-// of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
-// names the tree and no name on the issue. A step a release before the column wrote holds none and
-// reads as its role: that release ran each role at most once in a task and refused every key but
-// the owner's, so its role named its agent.
+// AgentName is the name of the step's agent, by the one rule every reader of a stored step names
+// it by (plan.StoredAgentName), and the one reader of Agent: none for a step of the key owner, the
+// stored name, or the role on a step a release before the column wrote.
 func (s PlanStep) AgentName() claim.Agent {
-	switch {
-	case plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}).Owner():
-		return ""
-	case s.Agent != "":
-		return s.Agent
-	}
-	return claim.Agent(s.Role)
+	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by

@@ -85,6 +85,28 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 	}
 }
 
+// A stored step names its agent by one rule, which the record and the store both read: the name
+// stored with the step, or, on a row a release before the stored names wrote, its role, which
+// named its agent then. A step of the key owner names none whatever it holds: its agent is the
+// tree's architect, whose token names the tree, not the issue.
+func TestAStoredStepNamesItsAgent(t *testing.T) {
+	for _, tc := range []struct {
+		step   Step
+		stored string
+		want   string
+	}{
+		{Step{Role: "reviewer"}, "", "reviewer"},
+		{Step{Role: "acceptance", Key: "owner"}, "", ""},
+		{Step{Role: "acceptance", Key: "owner"}, "acceptance", ""},
+		{Step{Role: "tester", Key: "a"}, "implementer", "implementer"},
+		{Step{Role: "implementer"}, "implementer-2", "implementer-2"},
+	} {
+		if got := StoredAgentName("t", 3, tc.step, tc.stored); got != tc.want {
+			t.Errorf("StoredAgentName(%s, %q) = %q, want %q", tc.step, tc.stored, got, tc.want)
+		}
+	}
+}
+
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {

@@ -314,14 +314,12 @@ func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (st
 
 // PlanAgents satisfies the sandbox runtime's Store: each agent of issue's plan in force by its name,
 // with the role of its first step. The plan in force is the plan_steps rows of the issue's
-// generation, which a version replaces task by task (record.Postgres.PutPlan). A step's agent is
-// named as record.PlanStep.AgentName names it, written here a second time since store and record
-// import neither each other (record's tests import this package), and
-// TestThePlanAgentsAreTheNamesTheRecordGives holds the two to one answer: a step of the key owner
-// names none (plan.Agent.Owner), so it is passed over, and a row written before the column holds
-// its role. Steps are read in the order of their task and place, so an agent's role is the role of
-// its first one. The record is the project's own (lower(project) = project), as IssueSandboxHome
-// reads it; an issue with no plan rows at its generation, or no record, has none.
+// generation, which a version replaces task by task (record.Postgres.PutPlan). Each step's agent is
+// named by the one rule every reader of a stored step names it by (plan.StoredAgentName): a step of
+// the key owner names none, so it is passed over. Steps are read in the order of their task and
+// place, so an agent's role is the role of its first one. The record is the project's own
+// (lower(project) = project), as IssueSandboxHome reads it; an issue with no plan rows at its
+// generation, or no record, has none.
 func (s *Store) PlanAgents(ctx context.Context, project, issue string) (map[claim.Agent]claim.Role, error) {
 	rows, err := s.pool.Query(ctx, `select s.task, s.position, s.role, s.agent_key, s.agent
 		from plan_steps s join issues i on i.key = s.issue and i.generation = s.generation
@@ -333,19 +331,13 @@ func (s *Store) PlanAgents(ctx context.Context, project, issue string) (map[clai
 	defer rows.Close()
 	agents := map[claim.Agent]claim.Role{}
 	for rows.Next() {
-		var task, role, key string
+		var task, role, key, stored string
 		var position int
-		var name claim.Agent
-		if err := rows.Scan(&task, &position, &role, &key, &name); err != nil {
+		if err := rows.Scan(&task, &position, &role, &key, &stored); err != nil {
 			return nil, fmt.Errorf("read the agents of the plan of %s: %w", issue, err)
 		}
-		if plan.AgentOf(task, position, plan.Step{Role: role, Key: key}).Owner() {
-			continue
-		}
-		if name == "" {
-			name = claim.Agent(role)
-		}
-		if _, named := agents[name]; !named {
+		name := claim.Agent(plan.StoredAgentName(task, position, plan.Step{Role: role, Key: key}, stored))
+		if _, named := agents[name]; name != "" && !named {
 			agents[name] = claim.Role(role)
 		}
 	}
