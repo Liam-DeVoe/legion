@@ -640,6 +640,38 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 	}
 }
 
+// With DISPATCH_DEV_SIGNIN=1 the fence that holds the database to this machine parses DATABASE_URL
+// before the store opens it. A DSN pgdsn refuses (a password holding an "@", or digits and a "/",
+// which pgx reads as the host or the port) is refused first, by the setting alone, and one pgx
+// cannot parse (a keyword DSN's `password = <secret>`, a password holding an escaped space) is
+// named through pgdsn.ConnectError, never by pgx's text, which quotes the DSN. Each password is
+// made up and built from parts.
+func TestDevSignInRefusesADatabaseURLPrintingNoPartOfItsPassword(t *testing.T) {
+	at := "@"
+	for name, row := range map[string]struct{ dsn, want string }{
+		"a password holding an @": {"postgres://dispatch:madeuphead0123" + at + "zqtail0123" + at + "127.0.0.1:5432/dispatch",
+			`DATABASE_URL cannot be read: it holds an "@" after its user name and password`},
+		"digits and a / in the password": {"postgres://dispatch:48213579/zqtail0123" + at + "127.0.0.1:5432/dispatch",
+			`DATABASE_URL cannot be read: it holds an "@" after its user name and password`},
+		"spaces around password's =": {"host=127.0.0.1 user=dispatch password = zqsecret0123 dbname=dispatch sslmode=requir",
+			"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN"},
+		"an escaped space in the password": {`host=127.0.0.1 password=zqhead\ zqtail0123 sslmode=bogus`,
+			"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DATABASE_URL": row.dsn}))
+			if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+				t.Fatalf("resolveBootConfig = %v, want %q", err, row.want)
+			}
+			for _, part := range []string{"madeuphead", "zqtail", "zqsecret", "zqhead", "48213579"} {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("the refusal %q holds %q of the password", err, part)
+				}
+			}
+		})
+	}
+}
+
 // A broker URL with no token file must refuse to boot rather than construct a client that
 // authenticates with an empty bearer.
 func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *testing.T) {
@@ -1880,15 +1912,30 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 
 // With the flag a loopback client acts as any person it names, and a person can have the App probe
 // and import any repository it is installed on, so an App private key from the environment may
-// sign calls only to a loopback host.
+// sign calls only to a loopback host. The refusal quotes the base through redact.URL: a plain
+// http(s) URL as written, and anything else, a URL with user info included, as redact.NotPrinted,
+// so a made-up token written into the base prints in no refusal.
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
+	const token = "madeUpGitHubToken0123"
+	at := "@"
 	// Unset, the App calls https://api.github.com.
-	for _, base := range []string{"", "https://api.github.com", "http://10.0.0.5:9022", "http://127.0.0.1@api.github.com"} {
+	for base, shown := range map[string]string{
+		"":                       "",
+		"https://api.github.com": "https://api.github.com",
+		"http://10.0.0.5:9022":   "http://10.0.0.5:9022",
+		"http://127.0.0.1" + at + "api.github.com":                           redact.NotPrinted,
+		"https://ghuser:" + token + at + "ghe.invalid/api/v3":                redact.NotPrinted,
+		"https://" + token + at + "ghe.invalid/api/v3?access_token=" + token: redact.NotPrinted,
+	} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
-		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(base)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
-			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", base, err)
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(shown)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
+			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE=%q and DISPATCH_APP_PEM_B64", base, err, shown)
+			continue
+		}
+		if strings.Contains(err.Error(), token[:10]) {
+			t.Errorf("the refusal %q holds part of the token", err)
 		}
 	}
 	// The e2e harness points the App at its fake GitHub on 127.0.0.1 (packages/dispatch/e2e/run-server.sh).

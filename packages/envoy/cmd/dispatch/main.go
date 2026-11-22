@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 const (
@@ -1418,6 +1419,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
+	// Before the dev sign-in fence parses it (loopbackDatabase), which would print part of a
+	// password a refused DSN leaves in its host or in pgx's quote of it.
+	if err := pgdsn.Refusal(store.DSNSetting, boot.DatabaseURL); err != nil {
+		return bootConfig{}, err
+	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
 		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
 	}
@@ -1665,18 +1671,20 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
 }
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
-// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will. A
+// DSN pgx cannot parse is named through pgdsn.ConnectError, never by pgx's text, which quotes it;
+// resolveBootConfig has refused one whose host would hold part of a password (pgdsn.Refusal).
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return pgdsn.ConnectError(store.DSNSetting, databaseURL, err)
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
