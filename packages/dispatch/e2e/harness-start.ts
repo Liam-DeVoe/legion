@@ -44,7 +44,7 @@ import { fileURLToPath } from "node:url";
 
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
-import { type PipedRunning, Supervisor } from "./local-instance-support";
+import { Interrupted, type PipedRunning, Supervisor } from "./local-instance-support";
 
 const dispatchPackage = fileURLToPath(new URL("..", import.meta.url));
 const heldPortScript = fileURLToPath(
@@ -52,8 +52,6 @@ const heldPortScript = fileURLToPath(
 );
 /** How many of a process's last lines a refusal quotes. */
 const tailLines = 20;
-/** How long a port keeper may take to hold its port. */
-const keeperBootMs = 30_000;
 
 export interface HarnessProcess {
   readonly listener: HarnessListener;
@@ -155,41 +153,64 @@ function refusal(watched: Watched, given: number, what: string): Error {
   );
 }
 
+/** The Interrupted a wait of the start throws when the caller's signal aborts it: it names what
+ *  the start was waiting for and for how long, so a start whose caller ended it at that caller's
+ *  deadline says which process never came up. */
+function interruptedBefore(fact: string, since: number): Interrupted {
+  const seconds = ((Date.now() - since) / 1000).toFixed(1);
+  return new Interrupted(`interrupted ${seconds} s into the wait, before ${fact}`);
+}
+
 /** Waits for the listener's report and, for a listener with a health path, for that path to
  *  answer 200, and returns the port it serves on. It fails as soon as the process exits, so a
- *  server whose build failed is reported at once rather than when the wait runs out. */
+ *  server whose build failed is reported at once.
+ *
+ *  The wait has no bound of its own. How long a process takes to start and print its line is
+ *  the machine's, and a loaded machine can hold a start past any fixed bound: a bun listener's
+ *  start held 35 s failed the 30 s each listener was once given, under a test whose own deadline
+ *  was 30 minutes away. So the wait ends on the report, the 200, the process's exit, or the
+ *  caller's abort (`signal`), and the caller's deadline is the only hang guard: a test's bounded
+ *  child (`e2e/__tests__/bounded-subprocess.ts`), a CI job's limit, a person's Ctrl-C. An abort
+ *  names the process the start was waiting for (`interruptedBefore`). */
 async function serving(watched: Watched, given: number, supervisor: Supervisor): Promise<number> {
   const { child, listener } = watched;
-  const deadline = Date.now() + listener.bootMs;
-  const check = async (waitingFor: string) => {
+  const since = Date.now();
+  const check = async (fact: string) => {
     if (child.exitCode !== null || child.signalCode !== null) {
       // The last lines are the reason; let the output reach the tail first.
       await Promise.race([watched.drained, sleep(1000)]);
-      throw refusal(watched, given, `exited ${child.exitCode ?? child.signalCode} ${waitingFor}`);
+      throw refusal(
+        watched,
+        given,
+        `exited ${child.exitCode ?? child.signalCode} before it ${fact}`
+      );
     }
-    if (Date.now() > deadline) {
-      throw refusal(watched, given, `did not ${waitingFor} within ${listener.bootMs / 1000} s`);
+    try {
+      await supervisor.untilInterrupted(sleep(100));
+    } catch (error) {
+      if (error instanceof Interrupted) throw interruptedBefore(`${listener.name} ${fact}`, since);
+      throw error;
     }
-    await supervisor.untilInterrupted(sleep(100));
   };
   let port = watched.reported();
   while (port === undefined) {
-    await check("before it reported its port");
+    await check("reported its port");
     port = watched.reported();
   }
   if (listener.health === undefined) return port;
   const url = `http://127.0.0.1:${port}${listener.health}`;
+  const answered = `answered 200 at ${url}`;
   for (;;) {
     try {
       const response = await supervisor.untilInterrupted(
         fetch(url, { signal: AbortSignal.timeout(5000) })
       );
       if (response.ok) return port;
-    } catch (error) {
-      if (supervisor.signal.aborted) throw error;
+    } catch {
+      if (supervisor.signal.aborted) throw interruptedBefore(`${listener.name} ${answered}`, since);
       // not answering yet
     }
-    await check(`answer 200 at ${url}`);
+    await check(answered);
   }
 }
 
@@ -200,7 +221,8 @@ interface Kept {
 }
 
 /** Starts a `held-port.py keep` in `dir` that holds a port the OS chose for `listener` until the
- *  harness stops, and returns once the keeper has written the port. */
+ *  harness stops, and returns once the keeper has written the port. Like `serving`, it waits with
+ *  no bound of its own: until the port file, the keeper's exit, or the caller's abort. */
 async function keepPort(
   listener: HarnessListener,
   dir: string,
@@ -221,7 +243,7 @@ async function keepPort(
   // rather than `new Response(...)`, which takes no node stream.
   const stderr = text(child.stderr).catch(() => "");
   text(child.stdout).catch(() => "");
-  const deadline = Date.now() + keeperBootMs;
+  const since = Date.now();
   // The keeper writes the file through a rename once it serves its socket, so a file that exists
   // holds the whole port.
   while (!existsSync(portFile)) {
@@ -231,13 +253,12 @@ async function keepPort(
           `${child.exitCode ?? child.signalCode}: ${(await stderr).trim()}`
       );
     }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `The Dispatch e2e harness cannot start: ${name} did not hold a port within ` +
-          `${keeperBootMs / 1000} s`
-      );
+    try {
+      await supervisor.untilInterrupted(sleep(100));
+    } catch (error) {
+      if (error instanceof Interrupted) throw interruptedBefore(`${name} held a port`, since);
+      throw error;
     }
-    await supervisor.untilInterrupted(sleep(100));
   }
   return { port: Number(readFileSync(portFile, "utf8").trim()), socket };
 }
