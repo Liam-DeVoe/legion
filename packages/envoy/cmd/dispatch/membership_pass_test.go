@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -404,8 +403,8 @@ func requireSame(t *testing.T, what string, got, want []string) {
 // pass. When the broker never answers the first step's asks, each is cut at 5 seconds and the
 // step starts none 10 seconds or more after the pass began, and the refresh step, timed from its
 // own start, still starts two slow refreshes. Over an hour of passes, by the clock the test moves,
-// 25 rows that the hourly check kept signed out (auth.EndKeep) are each asked about once, by the
-// broker and by Google.
+// 25 rows signed out with their refresh tokens kept (KeepAfterSignOut) are each asked about once,
+// by the broker and by Google.
 func TestMembershipPassBoundsEachRun(t *testing.T) {
 	t.Run("of 25 overdue rows a pass asks 20, the row due longest first", func(t *testing.T) {
 		f := newPassFixture(t)
@@ -506,15 +505,11 @@ func TestMembershipPassBoundsEachRun(t *testing.T) {
 		}
 	})
 
-	t.Run("25 rows the hourly check kept are each asked once in an hour of passes", func(t *testing.T) {
+	t.Run("25 rows signed out with their tokens kept are each asked once in an hour of passes", func(t *testing.T) {
 		f := newPassFixture(t)
-		rows := numbered("kept", 25)
+		rows := numbered("out", 25)
 		f.signIn(t, rows...)
-		for _, email := range rows {
-			if ended, err := f.people.EndSubject(context.Background(), email, "google-"+email, "refresh-"+email, auth.EndKeep); err != nil || !ended {
-				t.Fatalf("keep %s's sign-in: ended %t, %v", email, ended, err)
-			}
-		}
+		f.signOut(t, rows...)
 		f.broker.keep(rows...)
 		f.clock = newPassClock(f.database.Pool)
 		f.clock.advance(t, time.Hour)
@@ -541,7 +536,7 @@ func TestMembershipPassBoundsEachRun(t *testing.T) {
 			}
 		}
 		if !t.Failed() {
-			t.Logf("in an hour of passes each of the %d kept rows was asked about once by the broker and once by Google", len(rows))
+			t.Logf("in an hour of passes each of the %d signed-out rows was asked about once by the broker and once by Google", len(rows))
 		}
 	})
 }
@@ -591,9 +586,9 @@ func workspaceClaims(email string) map[string]any {
 // boots on that database with the same signing key, the broker stand-in in its environment, and
 // nobody makes a request. Its boot logs the census: 4 rows it can check, 0 held, 2 it cannot. Its
 // first pass, with Google refusing ada, confirming bob and answering 503 for gina, logs 1 confirmed,
-// 1 held, 0 kept, 1 unasked and 1 forgotten; ada is then held, the row with no token is unchanged,
-// and carol's signed-out row has no refresh token. The next pass asks Google about none of the
-// three rows the first tried.
+// 1 held, 1 unasked and 1 forgotten; ada is then held, the row with no token is unchanged, and
+// carol's signed-out row has no refresh token. The next pass asks Google about none of the three
+// rows the first tried.
 func TestMembershipPassChecksEveryStoredToken(t *testing.T) {
 	ctx := context.Background()
 	const (
@@ -692,7 +687,7 @@ func TestMembershipPassChecksEveryStoredToken(t *testing.T) {
 	passesAtFirst := len(second.logLines(leaseLine...))
 	if !second.logged(passLine) {
 		t.Errorf("no membership pass logged %s within 90s:\n%s", passLine, second.Output.String())
-	} else if want := passLine + ` confirmed=1 held=1 kept=0 unasked=1 forgotten=1`; !second.logged(want) {
+	} else if want := passLine + ` confirmed=1 held=1 unasked=1 forgotten=1`; !second.logged(want) {
 		t.Errorf("the first membership pass logged %q, want %s", second.logLines(passLine), want)
 	} else {
 		t.Logf("the first membership pass logged %s, as wanted", want)

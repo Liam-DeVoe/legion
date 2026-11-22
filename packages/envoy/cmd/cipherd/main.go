@@ -359,13 +359,18 @@ func main() {
 	// before the loader, which serves a tagged secret only when this broker can ask whether its
 	// project is private (policy.Loader.ProjectChecks). projectClient is the same client as
 	// projectAccess, for the hold gate below, which reads its person answers (hold.Config.Access)
-	// from the cache the token exchange fills.
+	// from the cache the token exchange fills. The client keeps the member kind of each person
+	// answer it fetches in person_member_kind, so that while Dispatch cannot be asked a person last
+	// answered a full member is served as one and everyone else is refused 503
+	// MEMBER_KIND_UNCHECKABLE, as before, and each project answer in project_standing for the
+	// request machine's person rule (projectaccess.Client.Keep).
 	var projectAccess projectaccess.Access
 	var projectRepositories api.ProjectRepositoriesReader
 	var projectClient *projectaccess.Client
 	if cfg.ProjectAccessURL != "" {
 		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
 		projectClient = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		projectClient.Keep(st, slog.Default(), registry)
 		projectAccess = projectClient
 		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 	}

@@ -108,16 +108,6 @@ func (s *outsideSignIn) inTx(t *testing.T, write func(tx pgx.Tx) error) {
 	}
 }
 
-// restrictedMember signs email in through handler as the Workspace account subject (hd
-// example.com), then records its row as a restricted member's (restrict), and returns the sign-in's
-// answer, whose cookie is that member's.
-func (s *outsideSignIn) restrictedMember(t *testing.T, handler http.Handler, email, subject string) *httptest.ResponseRecorder {
-	t.Helper()
-	signedIn := s.workspaceSignIn(t, handler, email, subject)
-	s.restrict(t, email, subject)
-	return signedIn
-}
-
 // restrict records email's row as a restricted member's under subject and the refresh token the
 // row holds, as a Google sign-in from outside the domain that an earlier build admitted left it.
 func (s *outsideSignIn) restrict(t *testing.T, email, subject string) {
@@ -261,28 +251,6 @@ func TestOutsideSignInAnEndedDomainMemberIsAPlainNoIdentity(t *testing.T) {
 	requirePlainNoIdentity(t, "GET /api/v1/projects after it", requestWith(s.handler, http.MethodGet, "/api/v1/projects", signedIn))
 	if membership, _, err := s.people.Membership(context.Background(), privOwner); err != nil || membership.RefreshToken != "" {
 		t.Fatalf("%s's membership %+v (%v), want the refresh token the check ended gone", privOwner, membership, err)
-	}
-}
-
-// A restricted member's Google sign-in that an earlier build admitted from outside the domain ends
-// at its next hourly confirmation on a deployment that admits no restricted member, and the 401
-// says why (OUTSIDE_SIGNIN_OFF, naming the address) there and at every request after: the
-// refreshed account is of no Workspace, and no rule this deployment runs admits it. The end is a
-// restricted member's refusal, so it holds nobody: the row keeps its refresh token for membership
-// checks and reads signed out, and the session generation the end advanced refuses the cookie.
-func TestOutsideSignInARestrictedGoogleSignInEndsAtTheHourlyCheck(t *testing.T) {
-	s := newOutsideSignIn(t, nil)
-	response := s.restrictedMember(t, s.handler, outsiderEmail, "google-outsider")
-	s.pool.UpdateGrants(func(claims map[string]any) { delete(claims, "hd") })
-	ageConfirmation(t, s.people, outsiderEmail)
-	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "OUTSIDE_SIGNIN_OFF", Login: outsiderEmail}
-	for _, read := range []string{"the whoami that ran the hourly check", "the whoami after it"} {
-		if got := signedOutOf(t, read, requestWith(s.handler, http.MethodGet, "/auth/whoami", response)); got != want {
-			t.Fatalf("%s: %+v, want %+v", read, got, want)
-		}
-	}
-	if membership, _, err := s.people.Membership(context.Background(), outsiderEmail); err != nil || membership.RefreshToken == "" || !membership.SignedOut || membership.Held {
-		t.Fatalf("the restricted member's membership %+v (%v), want its refresh token kept, the row signed out and not held", membership, err)
 	}
 }
 

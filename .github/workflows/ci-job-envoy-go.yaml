@@ -149,7 +149,7 @@ jobs:
           go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
-      # Everything the three race jobs run is left out here, since they run it under the detector,
+      # Everything the race lane's jobs run is left out here, since they run it under the detector,
       # and so is internal/integration, which the integration step below tests, and
       # internal/textcheck, whose tests are the text-check job's: that job runs them in a job
       # with no database and no Bun, and a change to only what they read must not start this
@@ -179,7 +179,7 @@ jobs:
       # (LEAVER_BOUND_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestIAPLeaverHoldThroughTheRealBroker|TestLeaverHoldBound|TestLeaverHoldBoundByThePass|TestLeaverHoldRelease|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/store($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestIAPLeaverHoldThroughTheRealBroker|TestLeaverHoldBound|TestLeaverHoldBoundByThePass|TestLeaverHoldRelease|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # The leaver hold's four real-time tests of cmd/dispatch (LEAVER_BOUND_TESTS in
       # .github/scripts/ci_job_reads.py, which builds this run: and the unit step's -skip): a

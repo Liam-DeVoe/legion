@@ -32,13 +32,15 @@ const standingWait = 2 * time.Second
 // graceWithoutGoogle is how long a person stays not held while Google cannot be reached.
 const graceWithoutGoogle = 24 * time.Hour
 
-// unavailablePause is how long Standing starts no new refresh, and answers as that refresh's outcome did, after a
-// refresh of a person in this process ended with Google not reached or access lists that could not be read.
+// unavailablePause is how long Standing starts no new refresh, and answers by the 24-hour rule,
+// after a refresh of a person in this process ended with Google not reached. Under IAP identity
+// directoryStanding takes the same pause after a Failed Directory check of the person in this
+// process, and answers by the deadline (byDeadline).
 const unavailablePause = 60 * time.Second
 
 // errOtherAccount is a refreshed ID token that names another Google account or another address
 // than the row the refresh read: under a Google rule refresh compares both before the rule runs,
-// and the rule's own ConfirmSubject refusal wraps it too. It holds the person (endModeFor).
+// and the rule's own ConfirmSubject refusal wraps it too. It holds the person (endMode).
 var errOtherAccount = errors.New("the refreshed sign-in names another Google account or another address")
 
 // Refresher renews a sign-in with its refresh token; *oidc.CodeFlow is the one Dispatch uses. Its
@@ -56,8 +58,7 @@ type Refresher interface {
 // clocks disagree still agree on when a confirmation lapses. A refresh the issuer refuses
 // (oidc.ErrGrantRefused), or one whose ID token no longer names this person under Rule, ends
 // every session the person holds: it advances their session generation and, under a Google rule
-// (Rule.Holds), records a hold or, for a restricted member's list refusals, keeps the refresh
-// token with the row signed out (endModeFor); under the sign-in pool's rule it forgets the refresh
+// (Rule.Holds), records a hold (endMode); under the sign-in pool's rule it forgets the refresh
 // token. Either way they sign in again or not at all. Under a domain the refreshed token must also
 // name the Google account and the address the row records: an address Google gave to another
 // account ends the same way, and a row no domain sign-in recorded ends forgetting its token. A
@@ -106,21 +107,14 @@ type Membership struct {
 	// checks holds one Directory check per person in flight in this process, which Standing and
 	// the membership pass share, as refreshes does for a refresh.
 	checks singleflight.Group
-	// unavailable maps an email to the unavailable outcome (its time and error) of the last
-	// refresh of that person in this process, while that refresh ended with ErrSignInUnavailable
-	// or ErrMembershipUnreadable, or of the last Directory check while it was Failed: Standing
-	// starts no refresh or check for unavailablePause after it.
+	// unavailable maps an email to the time of the last refresh of that person in this process,
+	// while that refresh ended with ErrSignInUnavailable, or of the last Directory check while it
+	// was Failed: Standing starts no refresh or check for unavailablePause after it.
 	unavailable sync.Map
 	// started maps an email to the start time of the refresh, or the Directory check, running for
 	// that person in this process, so Standing does not wait on one that has already run past
 	// standingWait.
 	started sync.Map
-}
-
-// unavailableOutcome is what refresh stores in Membership.unavailable.
-type unavailableOutcome struct {
-	at  time.Time
-	err error
 }
 
 // RefreshOutcome is what a refresh of a person did, for the membership pass's counts.
@@ -137,22 +131,18 @@ const (
 	// is a Held Directory outcome, and an Active one that wrote nothing because another check recorded
 	// a hold after this one read the row, so the person stays held (ConfirmDirectory).
 	RefreshHeld
-	// RefreshKept is an end with auth.EndKeep whose EndSubject answered true.
-	RefreshKept
 	// RefreshForgot is an end with auth.EndForget whose EndSubject answered true.
 	RefreshForgot
 	// RefreshEndMissed is an end whose EndSubject answered false: the row was signed in to again
 	// since the refresh read it.
 	RefreshEndMissed
-	// RefreshFailed is ErrSignInUnavailable, a token that does not open, ErrMembershipUnreadable,
-	// or another error.
+	// RefreshFailed is ErrSignInUnavailable, a token that does not open, or another error.
 	RefreshFailed
 )
 
 // endOutcomes is the outcome of an end in each mode whose EndSubject answered true.
 var endOutcomes = map[auth.EndMode]RefreshOutcome{
 	auth.EndHold:   RefreshHeld,
-	auth.EndKeep:   RefreshKept,
 	auth.EndForget: RefreshForgot,
 }
 
@@ -302,17 +292,17 @@ func outcomeOf(result singleflight.Result) (RefreshOutcome, error) {
 }
 
 // refresh renews email's confirmation with the issuer and answers what it did. It records its
-// start in m.started while it runs, and, as it ends, stores its outcome in m.unavailable when it
-// is ErrSignInUnavailable or ErrMembershipUnreadable, and deletes any entry otherwise. A write of
-// its outcome that fails, the confirmation's (SignInRule.WriteConfirm) or an end's (endSubject), is
-// logged at WARN, as a Directory check's is, and answers RefreshFailed with the write's error: the
-// membership pass counts that unasked and drops the error, so there the log line is its one record.
+// start in m.started while it runs, and, as it ends, stores its time in m.unavailable when it is
+// ErrSignInUnavailable, and deletes any entry otherwise. A write of its outcome that fails, the
+// confirmation's (SignInRule.WriteConfirm) or an end's (endSubject), is logged at WARN, as a
+// Directory check's is, and answers RefreshFailed with the write's error: the membership pass
+// counts that unasked and drops the error, so there the log line is its one record.
 func (m *Membership) refresh(ctx context.Context, email string) (outcome RefreshOutcome, err error) {
 	m.started.Store(email, time.Now())
 	defer func() {
 		m.started.Delete(email)
-		if errors.Is(err, ErrSignInUnavailable) || errors.Is(err, ErrMembershipUnreadable) {
-			m.unavailable.Store(email, unavailableOutcome{at: time.Now(), err: err})
+		if errors.Is(err, ErrSignInUnavailable) {
+			m.unavailable.Store(email, time.Now())
 		} else {
 			m.unavailable.Delete(email)
 		}
@@ -337,33 +327,33 @@ func (m *Membership) refresh(ctx context.Context, email string) (outcome Refresh
 	}
 	session, err := m.SignIn.Refresh(ctx, membership.RefreshToken)
 	if errors.Is(err, oidc.ErrGrantRefused) {
-		return m.end(ctx, email, membership, err.Error(), m.endMode(membership, err))
+		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	if err != nil {
 		slog.Warn("dispatch: the sign-in issuer could not confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
 		return RefreshFailed, fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
 	}
 	// Under a Google rule the refreshed token must name the address and the account the row
-	// records, compared before the rule runs: a restricted member's new address that no list
-	// names is then held, not kept as a list refusal. The sign-in pool's rule takes the address
-	// from the pool's username and records no subject, so it compares neither.
+	// records, compared before the rule runs, so the end's reason names that change whatever the
+	// rule would say of the new sign-in. The sign-in pool's rule takes the address from the pool's
+	// username and records no subject, so it compares neither.
 	if m.Rule.Holds() {
 		if login := model.CanonicalLogin(session.Claims.Email); login != email || session.Claims.Subject != membership.Subject {
 			err := fmt.Errorf("%w: the refreshed sign-in is %q under Google account %q, and the address's sign-in recorded %q", errOtherAccount, login, session.Claims.Subject, membership.Subject)
-			return m.end(ctx, email, membership, err.Error(), auth.EndHold)
+			return m.end(ctx, email, membership, err.Error(), m.endMode())
 		}
 	}
 	person, err := m.Rule.Person(ctx, session.Claims)
 	if err != nil {
-		return m.end(ctx, email, membership, err.Error(), m.endMode(membership, err))
+		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	if person.Email != email {
 		err := fmt.Errorf("%w: the refreshed sign-in names %s", errOtherAccount, person.Email)
-		return m.end(ctx, email, membership, err.Error(), m.endMode(membership, err))
+		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	subject, err := m.Rule.ConfirmSubject(session.Claims, membership.Subject)
 	if err != nil {
-		return m.end(ctx, email, membership, err.Error(), m.endMode(membership, err))
+		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	if err := m.Rule.WriteConfirm(ctx, m.People, membership, person, subject, session.RefreshToken); err != nil {
 		slog.Warn("dispatch: the sign-in issuer confirmed a lapsed membership, and its write failed; the request is refused and the confirmation stays lapsed", "email", email, "error", err)
@@ -387,30 +377,15 @@ func (m *Membership) end(ctx context.Context, email string, read auth.PersonMemb
 	}
 }
 
-// endMode is how a refresh's end for err ends the sign-in read: endModeFor under a Google rule,
-// and auth.EndForget under the sign-in pool's, which holds nobody.
-func (m *Membership) endMode(read auth.PersonMembership, err error) auth.EndMode {
+// endMode is how a refused refresh ends the sign-in, whether the issuer refused it, the refreshed
+// token named another account or address, or the rule refused it: auth.EndHold under a Google rule
+// (Rule.Holds), whatever the refusal, and auth.EndForget under the sign-in pool's, which holds
+// nobody.
+func (m *Membership) endMode() auth.EndMode {
 	if !m.Rule.Holds() {
 		return auth.EndForget
 	}
-	return endModeFor(read, err)
-}
-
-// endModeFor is how an end of the sign-in read, for err, ends it. Google's own
-// refusal of the account holds anyone. A restricted member's admission refusals are the restricted
-// admission rule's (RestrictedAdmission), which admits them again with no sign-in, so they keep the
-// token for membership checks and hold nobody. Any other refusal holds a full member.
-func endModeFor(read auth.PersonMembership, err error) auth.EndMode {
-	switch {
-	case errors.Is(err, oidc.ErrGrantRefused), errors.Is(err, errOtherAccount),
-		errors.Is(err, ErrNoPerson), errors.Is(err, ErrNoEmail), errors.Is(err, ErrEmailNotVerified):
-		return auth.EndHold
-	case read.Kind == model.MemberRestricted &&
-		(errors.Is(err, ErrNotInDomain) || errors.Is(err, ErrNotListed) || errors.Is(err, ErrWorkspaceAddress)):
-		return auth.EndKeep
-	default:
-		return auth.EndHold
-	}
+	return auth.EndHold
 }
 
 // Standing answers whether Dispatch holds email's personal tokens and broker credentials. It reads
@@ -424,16 +399,15 @@ func endModeFor(read auth.PersonMembership, err error) auth.EndMode {
 //     on a row that records a Google account, answers by the unopenable rule;
 //  4. a confirmation younger than MembershipMaxAge: not held;
 //  5. within unavailablePause after a refresh of this person in this process ended with Google not
-//     reached or with access lists that could not be read: no new refresh, and the answer that
-//     outcome gives in step 6; and while a refresh of this person in this process has run for more
-//     than standingWait, the 24-hour rule at once;
+//     reached: no new refresh, and the 24-hour rule; and while a refresh of this person in this
+//     process has run for more than standingWait, the 24-hour rule at once;
 //  6. otherwise it starts, or joins, the person's refresh (the flight Confirm shares) and waits for
 //     it at most standingWait from its own call. A refresh that confirmed the person or ended the
 //     sign-in re-reads the row and answers its recorded hold, since another process can record a
 //     hold while this refresh's guarded write misses; Google not reached answers the 24-hour rule;
-//     any other failure, ErrMembershipUnreadable among them, is returned while the confirmation is
-//     younger than graceWithoutGoogle, and the 24-hour rule answers after; and the wait running out
-//     answers the 24-hour rule, and starts no pause.
+//     any other failure is returned while the confirmation is younger than graceWithoutGoogle, and
+//     the 24-hour rule answers after; and the wait running out answers the 24-hour rule, and starts
+//     no pause.
 //
 // The 24-hour rule is not held while the last confirmation is younger than graceWithoutGoogle, and
 // held, ByGrace, after; the unopenable rule is the same, with Unopenable set. Neither records
@@ -469,10 +443,8 @@ func (m *Membership) Standing(ctx context.Context, email string) (Standing, erro
 	if m.fresh(membership) {
 		return answer, nil
 	}
-	if paused, ok := m.unavailable.Load(email); ok {
-		if outcome := paused.(unavailableOutcome); time.Since(outcome.at) < unavailablePause {
-			return failureAnswer(answer, membership, outcome.err)
-		}
+	if paused, ok := m.unavailable.Load(email); ok && time.Since(paused.(time.Time)) < unavailablePause {
+		return graceRule(answer, membership), nil
 	}
 	if started, ok := m.started.Load(email); ok && time.Since(started.(time.Time)) > standingWait {
 		return graceRule(answer, membership), nil
@@ -497,8 +469,7 @@ func (m *Membership) Standing(ctx context.Context, email string) (Standing, erro
 
 // failureAnswer is Standing's answer, on answer and read, the first read, to a refresh that failed
 // with err: the 24-hour rule for Google not reached (ErrSignInUnavailable); for any other failure,
-// ErrMembershipUnreadable among them, err while read's confirmation is younger than
-// graceWithoutGoogle, and the 24-hour rule after.
+// err while read's confirmation is younger than graceWithoutGoogle, and the 24-hour rule after.
 func failureAnswer(answer Standing, read auth.PersonMembership, err error) (Standing, error) {
 	if !errors.Is(err, ErrSignInUnavailable) && read.ConfirmedAge < graceWithoutGoogle {
 		return Standing{}, err

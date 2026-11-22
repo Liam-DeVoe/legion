@@ -39,6 +39,8 @@ const (
 var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidGrant, "%s revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "%s's sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this box key was made by another Google account, and a sign-in belongs to the account that made it. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "The Google account this token was minted for no longer holds %s: another account holds that address now, and the broker takes no sign-in of the account it replaced.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The machine login the subject token belongs to has ended.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The machine login has ended.", nil, "provider.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A machine makes a key of its own.", nil, "exchange.go"},

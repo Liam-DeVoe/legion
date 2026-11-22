@@ -300,7 +300,10 @@ func routes() []apiRoute {
 		// BROKER_PROJECT_ACCESS_URL is set, an enrollment under a person's machine login or pod
 		// login is made only once Dispatch has said what kind of member that person is: a
 		// restricted member's is refused 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, and every one is
-		// refused 503 MEMBER_KIND_UNCHECKABLE while that cannot be read from Dispatch.
+		// refused 503 MEMBER_KIND_UNCHECKABLE while that cannot be read from Dispatch. The broker
+		// keeps the kind Dispatch last answered for each person, so while Dispatch does not answer
+		// a person it last answered a full member enrolls as one; a person it last answered a
+		// restricted member, or of whom it keeps no kind, is refused 503.
 		{http.MethodPost, "/v1/enrollments", launcherAuth((*server).createEnrollment)},
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
@@ -362,7 +365,9 @@ func routes() []apiRoute {
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
 		// Where BROKER_PROJECT_ACCESS_URL is set, a session whose person Dispatch calls a
 		// restricted member is denied every secret, restricted-member, and a session whose person's
-		// kind cannot be read from Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE, no request written.
+		// kind cannot be read from Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE, no request
+		// written; while Dispatch does not answer, a person it last answered a full member is read
+		// as one, from the kind the broker keeps.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
 		// Read a request the calling session's owner made: its person, its Legion claim or its
 		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole
@@ -383,7 +388,8 @@ func routes() []apiRoute {
 		// while Dispatch cannot say; neither releases anything. Where BROKER_PROJECT_ACCESS_URL is
 		// set, a restricted member's session is refused 403 GRANT_NOT_LIVE and the grant ended, and
 		// one whose person's kind cannot be read from Dispatch is refused 503
-		// MEMBER_KIND_UNCHECKABLE with nothing released.
+		// MEMBER_KIND_UNCHECKABLE with nothing released; while Dispatch does not answer, a person it
+		// last answered a full member is read as one, from the kind the broker keeps.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
 		// End a grant the calling session holds. Every other session is 403 NOT_YOURS, but one the
 		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
@@ -403,7 +409,8 @@ func routes() []apiRoute {
 		// a service's machine login, so their list holds no secret request and no service's login
 		// an older broker opened, even one naming them, and while Dispatch cannot say what kind of
 		// member the person is it holds none of those either; the person's own machine logins stay
-		// on it.
+		// on it. While Dispatch does not answer, a person it last answered a full member is read as
+		// one, from the kind the broker keeps, and is listed as while it answers.
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount
@@ -423,7 +430,8 @@ func routes() []apiRoute {
 		// service's login a broker from before token logins opened is denied by anyone signed in
 		// but a person Dispatch calls a restricted member, who is no approver of a secret: 403
 		// NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of
-		// member the person is, denying nothing. A
+		// member the person is, denying nothing; while Dispatch does not answer, a person it last
+		// answered a full member is read as one, from the kind the broker keeps. A
 		// secret request is refused the same way, writing nothing: 404 NOT_FOUND to a person its
 		// private project hides it from, as for an id no record has, 503 PROJECT_ACCESS_UNAVAILABLE
 		// while Dispatch cannot answer for it, and otherwise 403 JUDGE_DECIDES or 403
@@ -441,7 +449,8 @@ func routes() []apiRoute {
 		// secret request, or a service's login an older broker opened, even one naming them, is 403
 		// NOT_APPROVER to them, saying why, and while Dispatch cannot say what kind of member the
 		// person whose list holds such a record is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE,
-		// dismissing nothing. The
+		// dismissing nothing; while Dispatch does not answer, a person it last answered a full
+		// member is read as one, from the kind the broker keeps. The
 		// person is the login the body names, which the broker takes on the caller's word: a
 		// dismissal decides nothing and releases nothing.
 		{http.MethodPost, "/v1/credential-requests/{record}/dismiss", accountAuth(relaysDecisions, (*server).dismissRecord)},
@@ -455,7 +464,9 @@ func routes() []apiRoute {
 		// one bound to no pod. It carries a service and a subject, but only that person's list holds
 		// it, and its person field names that person. A person Dispatch calls a restricted member
 		// is listed their own machines' and pods' logins alone, and so is anyone while Dispatch
-		// cannot say what kind of member the person is. The person is the one the caller names.
+		// cannot say what kind of member the person is, but for a person it last answered a full
+		// member, read as one from the kind the broker keeps while Dispatch does not answer. The
+		// person is the one the caller names.
 		{http.MethodGet, "/v1/launcher-credentials", accountAuth(relaysDecisions, (*server).listLauncherCredentials)},
 		// End a machine login, expired or not: a service's (its token login, or one a person approved
 		// before token logins) as anyone signed in, a person's machine's as the person who approved
@@ -467,8 +478,10 @@ func routes() []apiRoute {
 		// still maps the account to the person. A person Dispatch calls a restricted member ends
 		// their own logins alone: a service's is 404 NOT_FOUND to them, as an id no login has, and
 		// so it is to anyone while Dispatch cannot say what kind of member the person is, who still
-		// ends their own. The revoking person is the login the request names, which the broker
-		// still takes on the caller's word: a revoke only takes power away.
+		// ends their own, but for a person it last answered a full member, read as one from the
+		// kind the broker keeps while Dispatch does not answer. The revoking person is the login
+		// the request names, which the broker still takes on the caller's word: a revoke only takes
+		// power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
 		// List the live grants the named person's Live grants page shows: those the person
 		// approved, those of their own sessions, those the model judge approved in anyone's stead,
@@ -483,7 +496,9 @@ func routes() []apiRoute {
 		// alone: no grant they approved or could approve, no grant of a service's pod, and none of
 		// a person's pod that BROKER_POD_OPERATORS no longer maps to them. While Dispatch cannot
 		// say what kind of member the person is, the list holds no grant of a session that does not
-		// act for them either. The person is the one the caller names.
+		// act for them either; while Dispatch does not answer, a person it last answered a full
+		// member is read as one, from the kind the broker keeps. The person is the one the caller
+		// names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
 		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
 		// pod acts for no one), whatever project it touches and whether or not Dispatch answers for it,
@@ -501,9 +516,11 @@ func routes() []apiRoute {
 		// NOT_APPROVER, saying why. Each of these revokes nothing. While Dispatch does not answer
 		// what kind of member the person is (a timeout, a failed connection, a gateway's 502, 503
 		// or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming
-		// no code or INTERNAL, which Dispatch answers while its database fails), only the person
-		// the grant names as its approver ends it as an approver. Every revoke through a group or
-		// as anyone then, whatever session holds the grant, and every revoke while Dispatch answers
+		// no code or INTERNAL, which Dispatch answers while its database fails), a person it last
+		// answered a full member is read as one, from the kind the broker keeps, and revokes as
+		// while it answers; for anyone else, only the person the grant names as its approver ends
+		// it as an approver. Every revoke through a group or as anyone by such a person then,
+		// whatever session holds the grant, and every revoke while Dispatch answers
 		// anything else the broker cannot read (a refused account, a kind this broker does not
 		// know, another code, a certificate or a name that does not resolve), is 503
 		// MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be

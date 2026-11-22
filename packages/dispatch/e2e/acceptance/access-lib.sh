@@ -540,3 +540,129 @@ $(<"$work/differences")"
 # statuses prints how many of the answers compared came back with each status, so a run whose
 # every answer is the same refusal reads as that rather than as a pass over the seed.
 statuses() { sort "$work/statuses" | uniq -c | awk '{ printf "%s%s %s", sep, $2, $1; sep = ", " }'; }
+
+# The blob driver holds this build to a base build, route by route, and a route this build serves
+# that the base does not has no answer there to be held to: the base answers its router's no-route
+# 404 where this build answers the route, so every read of it would differ. Such a route is read at
+# neither build, and named (new_route). Neither the status nor the body can say a route is new: a
+# hidden object's 404 is a 404 too, and a served route's gate writes the router's no-route body on
+# purpose, so the route reads as unserved (routes/router.go, writeNoRoute). Only each build's own
+# route index can, GET /api/v1, which lists every method and path pattern its route table serves
+# (api/routes_table.go). A route is new when this build's index lists it and the base's does not:
+# a hidden object stands at a route the base lists, so its answer is compared as before, and so is
+# a route neither index lists (/auth/whoami and the GitHub proxy, which that table does not serve).
+
+# The jq program read_route_indexes turns a route index into lines of `METHOD<tab>REGEX<tab>PATTERN`,
+# one for each row: REGEX matches every path PATTERN serves, a `{name}` segment one segment, a
+# `{name...}` the rest of the path, `{$}` nothing more, and a PATTERN that ends in `/` every path
+# under it, as Go's ServeMux reads a pattern. It joins with a tab rather than @tsv, which would
+# write each backslash of REGEX twice. An answer with no array of routes is an error.
+readonly route_index_lines='.routes | if type == "array" and length > 0 then .[] else error("the answer holds no array of routes") end
+  | select((.method | type) == "string" and (.path | type) == "string")
+  | [.method,
+     ("^" + (.path | split("/") | map(
+         if test("^\\{[^}]*\\.\\.\\.\\}$") then ".*"
+         elif . == "{$}" then ""
+         elif test("^\\{[^}]*\\}$") then "[^/]+"
+         else gsub("(?<c>[\\[\\].()*+?^$|\\\\{}])"; "\\\(.c)") end) | join("/"))
+      + (if (.path | endswith("/")) then ".*" else "" end) + "$"),
+     .path] | join("\t")'
+
+# read_route_indexes reads the route index of the base build and of this one, each as carol, into
+# $work/route-index-BUILD (route_index_lines). An index it cannot read - an answer that is not 200,
+# that holds no array of routes, or that does not list GET /api/v1 itself - leaves no route that can
+# be told new, so the run is UNKNOWN: it prints why on stderr and exits 2, and skips no route.
+read_route_indexes() {
+  local build
+  for build in base head; do
+    send "$build" carol GET /api/v1
+    [ "$status" = 200 ] ||
+      route_index_unknown "$build" "GET /api/v1 answered HTTP $status: $(head -c 300 "$work/body")"
+    jq -r "$route_index_lines" "$work/body" >"$work/route-index-$build" 2>"$work/route-index-$build.err" ||
+      route_index_unknown "$build" "GET /api/v1 answered no route index: $(head -c 300 "$work/route-index-$build.err")"
+    grep -qxF "$(printf 'GET\t^/api/v1$\t/api/v1')" "$work/route-index-$build" ||
+      route_index_unknown "$build" "its route index does not list GET /api/v1 itself: $(head -c 300 "$work/body")"
+  done
+}
+
+# route_index_unknown BUILD WHY ends the run UNKNOWN, exit 2, naming the build and why.
+route_index_unknown() {
+  echo "UNKNOWN ${check:-route index}: the $1 build's route index could not be read, so no route can be told new: $2" >&2
+  exit 2
+}
+
+# served_route BUILD METHOD PATH prints the pattern of the first row of BUILD's route index
+# (read_route_indexes) that serves METHOD PATH, PATH's query left out; it returns 1 when none does.
+# A {LABEL} in PATH stands for one segment, as the id resolve puts there does.
+served_route() {
+  local method regex pattern path=${3%%\?*}
+  while IFS=$'\t' read -r method regex pattern; do
+    if [ "$method" = "$2" ] && [[ "$path" =~ $regex ]]; then
+      printf '%s\n' "$pattern"
+      return 0
+    fi
+  done <"$work/route-index-$1"
+  return 1
+}
+
+# new_route METHOD PATH is true when PATH, as METHOD, is a route this build's index lists and the
+# base's does not (served_route). The first time it meets each such route it prints
+# `SKIP new route: METHOD PATTERN`, PATTERN as this build's index writes it, and counts the route in
+# new_routes; each request it is true of counts in skipped_requests. A route's answer is read once
+# for each METHOD and PATH, and kept.
+declare -A route_is_new=() new_route_named=()
+new_routes=0
+skipped_requests=0
+new_route() {
+  local key="$1 ${2%%\?*}" pattern=''
+  if [ -z "${route_is_new[$key]+set}" ]; then
+    if ! served_route base "$1" "$2" >/dev/null && pattern=$(served_route head "$1" "$2"); then
+      route_is_new[$key]=$pattern
+    else
+      route_is_new[$key]=''
+    fi
+  fi
+  pattern=${route_is_new[$key]}
+  [ -n "$pattern" ] || return 1
+  if [ -z "${new_route_named[$1 $pattern]+set}" ]; then
+    new_route_named[$1 $pattern]=1
+    new_routes=$((new_routes + 1))
+    echo "SKIP new route: $1 $pattern"
+  fi
+  skipped_requests=$((skipped_requests + 1))
+}
+
+# record_lists PATH writes, for every list in this build's last answer to PATH (each JSON array,
+# the answer itself included), one `ROUTE<tab>WHERE<tab>LENGTH` line to $work/lists.tsv. ROUTE is
+# PATH's template: each seeded object's label ({PUB comment}), issue key (PUB-1), project key,
+# person's login and agent session is written {}, and the query is dropped, so a list is one list
+# of its route whichever object the route was read for: the mention's deliveries fill the comments
+# route's .comment.deliveries, which the seed's own comment, sent to no one, leaves empty, and
+# ses-pub-session's messages fill the messages route's list, which ses-priv-session's leaves empty.
+# WHERE names the list by its members with `[]` for each row of a list above it, as `.[].roles`.
+# An answer that is no JSON holds no list. The blob driver's lists check reads the file.
+record_lists() {
+  local route
+  route=$(sed -E 's/\?.*//; s/\{[^}]*\}/{}/g; s#/(PUB|PRIV)-[0-9]+#/{}#g; s#/projects/(PUB|PRIV)(/|$)#/projects/{}\2#; s#/people/[^/]+/#/people/{}/#; s#/agents/ses-[^/]+/#/agents/{}/#' <<<"$1")
+  jq -r --arg route "$route" 'path(.. | arrays) as $at
+    | [$route, ($at | map(if type == "number" then "[]" else "." + tostring end) | join("") | if . == "" then "." else . end),
+       (getpath($at) | length | tostring)] | @tsv' "$work/answers/head.raw" >>"$work/lists.tsv" 2>/dev/null || true
+}
+
+# compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
+# made as CALLER, are the same status, the same headers but the declared addition (the blob
+# driver's declared_header, empty for none) and, masked, the same bytes (same_answers). A route
+# only this build serves is read at neither build (new_route).
+compare() {
+  local caller=$1 method=$2 path=$3 body=${4:-} build target
+  if new_route "$method" "$path"; then
+    return 0
+  fi
+  for build in base head; do
+    target=$(resolve "$build" "$path")
+    send "$build" "$caller" "$method" "$target" "$body"
+    keep_answer "$build" "$build"
+  done
+  same_answers "$caller $method $path" base head '' "${declared_header:-}"
+  [ "$method" != GET ] || record_lists "$path"
+}

@@ -2,7 +2,7 @@ kind: Added
 body: |-
   Dispatch checks every stored refresh token about once an hour, whether or not its person makes
   a request: the maintenance sweep ends with a membership pass, at most 20 refreshes a run, and
-  logs `dispatch: membership pass confirmed=<n> held=<n> kept=<n> unasked=<n> forgotten=<n>` for
+  logs `dispatch: membership pass confirmed=<n> held=<n> unasked=<n> forgotten=<n>` for
   each run that checked a row. Under `DISPATCH_SIGNIN_DOMAIN` each sign-in and confirmation records
   the ID token's `hd`, and the boot logs `dispatch: people census checkable=<n> held=<n>
   uncheckable=<n>`; it refuses to start when the full members' rows that hold a refresh token

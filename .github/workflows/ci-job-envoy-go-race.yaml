@@ -1,13 +1,14 @@
 name: CI job envoy-go-race
 
-# The steps of ci.yaml's `envoy-go-race` job, in a file of its own.
+# The jobs of ci.yaml's `envoy-go-race` job, in a file of its own: envoy-go-race and
+# envoy-go-race-store, each on a runner of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# Each job's last step reports ci-ok for the caller: on a merge-group run its own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
@@ -73,8 +74,10 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the sign-in code flow
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/oidc/
+      # The Dispatch store is not here: it runs in envoy-go-race-store below, on a runner of its
+      # own.
+      - name: Race-test delivery, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the sign-in code flow
+        run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/oidc/
         working-directory: packages/envoy
       # The NATS auth service runs through the skip counter (packages/envoy/scripts/database-skips.sh),
       # which fails on any skip of it: its broker-database test skips without
@@ -82,6 +85,60 @@ jobs:
       # (.github/scripts/ci_job_reads.py, RACE_COUNTED_SCRIPT).
       - name: Race-test the NATS auth service and count its skips
         run: scripts/database-skips.sh --var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/
+        working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-race
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The Dispatch store alone, under the race detector, beside envoy-go-race rather than in its
+  # race step: ci.yaml calls this file for both, so both run on every change that selects
+  # envoy-go-race, and a failure of either fails that job.
+  # why: .github/ci-notes/ci.md#why-the-dispatch-store-runs-alone-under-the-race-detector
+  envoy-go-race-store:
+    runs-on: ubuntu-24.04-arm
+    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
+    # then the step's own 60 minutes, which is 66 under this limit of 70. 60 minutes is twice and
+    # more the package's longest run alone on 4 vCPU and 16 GiB beside its own Postgres, 1509.6 s
+    # (1129.5 s on another run of the same tests); in envoy-go-race's 30-minute race step, beside
+    # the other packages, it had reached go test's deadline at 1800 s with a 2 s test running
+    # (.github/ci-notes/ci.md#why-the-dispatch-store-runs-alone-under-the-race-detector).
+    timeout-minutes: 70
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    # Load-bearing, not boilerplate: the store's tests take their databases from storetest.Open
+    # (internal/dispatch/store/storetest/storetest.go), which skips every test that opens the store
+    # when DISPATCH_TEST_DATABASE_URL is unset. A skip is a pass, so without the service this job
+    # would be green having run almost nothing.
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      - name: Race-test the Dispatch store
+        run: go test -count=1 -race -timeout 60m ./internal/dispatch/store/...
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

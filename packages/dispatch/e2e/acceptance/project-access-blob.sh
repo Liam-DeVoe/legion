@@ -53,6 +53,16 @@
 #     App key, the refusal both answer before any repository is read. Whether the App is installed
 #     on a repository, and what the proxy forwards, are held by github_app_installation_test.go
 #     and the githubapi package's tests, and by project-access.sh's proxy section.
+#   - A route this build serves that the base does not: the base has no answer to hold it to, only
+#     its router's no-route 404. A route is new when this build's own route index (`GET /api/v1`)
+#     lists it and the base's does not, never by an answer's status or body, since a hidden
+#     object's 404 is a 404 too and a served route's gate answers the no-route body on purpose; a
+#     hidden object stands at a route the base lists, and a route neither index lists, as
+#     /auth/whoami and the GitHub proxy, is compared. Each new route is read at neither build and
+#     named once on a line `SKIP new route: METHOD PATTERN`, and the reads section counts them.
+#     A base whose index cannot be read is UNKNOWN (exit 2), never a skip (access-lib.sh's
+#     read_route_indexes and new_route). A change that merges in another line's routes, which its
+#     base lacks, names that line's commit with --base-commit to be compared against it.
 # The lists check reads JSON arrays only: a member that is null or absent in every answer (an
 # object no seed fills, an omitempty member) is compared as that null or absence, and holds no row.
 #
@@ -72,7 +82,8 @@
 # after the seed, and the run must fail naming a route. --control private-header is the negative
 # control of the headers: it starts the head with DISPATCH_PRIVATE_PROJECTS=PRIV, so every answer
 # says `Dispatch-Private-Projects: 1` where the declared addition is `0`, and the run must fail
-# naming the header.
+# naming the header. It exits 0 on a pass, 1 on a failure, and 2 when a build's route index
+# cannot be read (UNKNOWN: whether a route is new cannot be told).
 #
 # The ports are the kernel's, each chosen as its service starts and held by that service from the
 # choice on. The work directory, under TMPDIR, holds the base tree, both binaries, every process's
@@ -630,6 +641,15 @@ fi
 note "both builds hold PUB-1 and PRIV-1 with a comment, an ask, a message and two documents each"
 pass
 
+begin route-index
+# Each build's own route index, read as carol: a route this build's index lists and the base's does
+# not is read at neither build below, and named on a line `SKIP new route: METHOD PATTERN` the first
+# time a read reaches it (access-lib.sh's new_route); every other route is compared. An index that
+# cannot be read is UNKNOWN, exit 2, and no route is skipped.
+read_route_indexes
+note "the base build's route index lists $(wc -l <"$work/route-index-base") routes, this build's $(wc -l <"$work/route-index-head")"
+pass
+
 # The fixed list, read as every caller. {LABEL} is the id the build's seed recorded under LABEL,
 # so each build is asked for its own object; the route is named as written here. The repository
 # mappings (GET /api/v1/settings/repo-projects) are on it: the route answers only the rows of
@@ -721,38 +741,8 @@ readonly project_reads=(
 # from before it does not send, so it must be on this build's answer, and it is dropped from both
 # builds' headers before they are compared: a base that already holds this change sends it too,
 # and only the exact `: 0` line is dropped, so a base or a build that sends `: 1` still differs.
+# access-lib.sh's compare, which every read below goes through, reads it.
 readonly declared_header='dispatch-private-projects: 0'
-
-# record_lists PATH writes, for every list in this build's last answer to PATH (each JSON array,
-# the answer itself included), one `ROUTE<tab>WHERE<tab>LENGTH` line to $work/lists.tsv. ROUTE is
-# PATH's template: each seeded object's label ({PUB comment}), issue key (PUB-1), project key,
-# person's login and agent session is written {}, and the query is dropped, so a list is one list
-# of its route whichever object the route was read for: the mention's deliveries fill the comments
-# route's .comment.deliveries, which the seed's own comment, sent to no one, leaves empty, and
-# ses-pub-session's messages fill the messages route's list, which ses-priv-session's leaves empty.
-# WHERE names the list by its members with `[]` for each row of a list above it, as `.[].roles`.
-# An answer that is no JSON holds no list. The lists check reads the file.
-record_lists() {
-  local route
-  route=$(sed -E 's/\?.*//; s/\{[^}]*\}/{}/g; s#/(PUB|PRIV)-[0-9]+#/{}#g; s#/projects/(PUB|PRIV)(/|$)#/projects/{}\2#; s#/people/[^/]+/#/people/{}/#; s#/agents/ses-[^/]+/#/agents/{}/#' <<<"$1")
-  jq -r --arg route "$route" 'path(.. | arrays) as $at
-    | [$route, ($at | map(if type == "number" then "[]" else "." + tostring end) | join("") | if . == "" then "." else . end),
-       (getpath($at) | length | tostring)] | @tsv' "$work/answers/head.raw" >>"$work/lists.tsv" 2>/dev/null || true
-}
-
-# compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
-# made as CALLER, are the same status, the same headers but the declared addition and, masked, the
-# same bytes (same_answers).
-compare() {
-  local caller=$1 method=$2 path=$3 body=${4:-} build target
-  for build in base head; do
-    target=$(resolve "$build" "$path")
-    send "$build" "$caller" "$method" "$target" "$body"
-    keep_answer "$build" "$build"
-  done
-  same_answers "$caller $method $path" base head '' "$declared_header"
-  [ "$method" != GET ] || record_lists "$path"
-}
 
 begin create-projects
 # Each caller makes a project of its own, in the callers' order, on both builds, and the two
@@ -771,6 +761,10 @@ begin session-groups
 # each build, so it is remembered under one label at both before its answer is kept. A make that
 # either build refuses leaves nothing to rename or delete, and its refusal is the compare.
 for caller in "${callers[@]}"; do
+  # A route only this build serves is held to nothing at the base (access-lib.sh's new_route).
+  if new_route POST /api/v1/delivery/session-groups; then
+    continue
+  fi
   for build in base head; do
     send "$build" "$caller" POST /api/v1/delivery/session-groups \
       "$(with_actor "$caller" "$(jq -cn --arg c "$caller" '{name: ("Group of " + $c), sessions: ["ses-priv-session"]}')")"
@@ -823,6 +817,7 @@ no_difference
 [ "$compared" -gt 0 ] || fail "no answer was compared: the fixed list or the callers held none"
 note "$compared answers compared, each the same status and the same masked bytes at both builds;" \
   "by this build's status: $(statuses)"
+note "$new_routes new routes skipped, $skipped_requests requests to them read at neither build (each route named on its SKIP line above)"
 pass
 
 # A list that is empty in every answer compares no row, so a field this build added to its rows

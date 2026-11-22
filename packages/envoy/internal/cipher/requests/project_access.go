@@ -622,7 +622,7 @@ func (m *Machine) maySee(ctx context.Context, row, login string, projects []stri
 	slices.Sort(asking)
 	var asked time.Time
 	for _, project := range slices.Compact(asking) {
-		answer, err := m.Projects.Access(ctx, project, record.CanonicalLogin(login))
+		answer, err := m.Projects.Access(projectaccess.OrKept(ctx), project, record.CanonicalLogin(login))
 		var missing *projectaccess.ProjectNotFoundError
 		switch {
 		case errors.As(err, &missing):
