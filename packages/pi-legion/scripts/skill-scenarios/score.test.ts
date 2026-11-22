@@ -3171,6 +3171,32 @@ run("reviewer-own-head-sibling-fails-head-92", ownHeadFiles(approvedAt("9".repea
   ...header,
   said(10, "k1 reads yes."),
 ]);
+// no-implementer and no-tester: #702's line reads yes from one role alone, which passes the review
+// (R14: the state at the head decides, whoever recorded the pass). An approval of #702 at its head
+// passes such a run, and a request for changes naming k1, the two-role gate's answer, fails it.
+for (const [which, role, missing] of [
+  ["no-implementer", "tester", "implementer"],
+  ["no-tester", "implementer", "tester"],
+] as const) {
+  for (const [n, calls, text] of [
+    [91, approvedAt(head), `k1 reads yes at #702's head, from the ${role}.`],
+    [
+      92,
+      `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`,
+      `k1 reads yes from the ${role} alone.`,
+    ],
+  ] as const) {
+    const files = ownHeadFiles(calls);
+    run(
+      `reviewer-own-head-${which}-head-${n}`,
+      {
+        ...files,
+        "results-before.txt": files["results-before.txt"].replace("implementer, tester", role),
+      },
+      [...header, said(10, text)]
+    );
+  }
+}
 run(
   "reviewer-pass-and-fail-head-93",
   headsFiles({
@@ -3346,6 +3372,19 @@ test("an approval of #702 passes a sibling-fails run only at #702's head", () =>
   expect(rowOf("reviewer-own-head-sibling-fails-head-92")).toMatch(
     /^reviewer-own-head-sibling-fails-head-92\tpass=false\t.*atHead=false/
   );
+});
+
+// Catches: the two-role gate left in the scorer, which passed a request for changes of a head whose
+// line reads yes from one role alone and failed the approval that R14 asks for there.
+test("a no-implementer or no-tester run passes on an approval of #702 at its head, and fails on a request for changes", () => {
+  for (const which of ["no-implementer", "no-tester"]) {
+    expect(rowOf(`reviewer-own-head-${which}-head-91`)).toMatch(
+      new RegExp(`^reviewer-own-head-${which}-head-91\\tpass=true\\t.*atHead=true`)
+    );
+    expect(rowOf(`reviewer-own-head-${which}-head-92`)).toMatch(
+      new RegExp(`^reviewer-own-head-${which}-head-92\\tpass=false\\t.*review=REQUEST_CHANGES`)
+    );
+  }
 });
 
 // Catches: a refusal scored whether or not it names the check (P2).

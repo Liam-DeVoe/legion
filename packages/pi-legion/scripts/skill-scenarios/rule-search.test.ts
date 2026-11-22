@@ -60,9 +60,9 @@ const UNREAD = "packages/daemon/internal/prompts/roles/implementer.md";
 // legion-retro/references/learnings.md no longer names the tester's prompt), so the two-link plant
 // is the deepest, and the row below holds it there.
 const PLANTS: Record<string, { sentence: string; at: Record<1 | 2, string> }> = {
-  "ablate-two-roles": {
+  "restore-two-roles": {
     sentence:
-      "A check has a pass at a head only when the implementer and the tester each recorded one there.",
+      "A check passes at a head when that head's line reads yes, whoever recorded the pass.",
     at: {
       1: "skills/legion-worker/references/tools.md",
       2: "skills/legion-controller/references/triage.md",
@@ -223,7 +223,7 @@ describe("rule-search", () => {
     expect(Object.keys(RULES).sort()).toEqual([
       "ablate-architect-later-fail",
       "ablate-later-fail",
-      "ablate-two-roles",
+      "restore-two-roles",
     ]);
   });
 

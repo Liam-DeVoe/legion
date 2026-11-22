@@ -634,10 +634,26 @@ func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 		{"architect.md", "At acceptance, read each CI-proved check's derived result and each result its CI job recorded."},
 		{"architect-root.md", "At acceptance, read each CI-proved check's derived result and each result its CI job recorded."},
 		{"implementer.md", "For a check CI proves, copy the `Pull request line` under this pull request's head from `dispatch results` into the body's `Checks` line; record no result for it."},
+		// R14: the state at the head decides, whoever recorded the pass, so the reviewer's gate asks
+		// no pass of a named role, and its merge-gate order reads the testing step by its states.
+		{"core/reviewer.md", "every `before_merge` check of the issue's Verification document reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it."},
+		{"core/reviewer.md", "A check carrying `ci_check` is CI's, and its state comes from its results from CI:"},
+		{"reviewer.md", "refuse it while any such check does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none."},
+		{"reviewer.md", "(the testing step passed, each check reading yes at the head it tested → your approval"},
 	} {
 		text := strings.Join(strings.Fields(rolePart(t, pin.file)), " ")
 		if !strings.Contains(text, pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
+		}
+	}
+	// Words that ask a pass of a named role, and the testing step named by its role: a reviewer
+	// part that holds one again sets a gate that R14 does not set.
+	for _, file := range []string{"core/reviewer.md", "reviewer.md"} {
+		text := foldWhitespace(rolePart(t, file))
+		for _, gate := range []string{"from the implementer and from the tester", "one of the two roles alone", "stand for both roles", "tester green"} {
+			if strings.Contains(text, gate) {
+				t.Errorf("%s still asks a pass of a named role: %q", file, gate)
+			}
 		}
 	}
 }

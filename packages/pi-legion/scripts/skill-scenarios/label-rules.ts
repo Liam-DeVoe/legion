@@ -30,6 +30,14 @@ const LATER_FAIL: readonly RegExp[] = [
   /\bfail(s|ed)?\b[^.]{0,80}\bpass(es)?\b|\bpass(es)?\b[^.]{0,80}\bfail(s|ed)?\b/i,
 ];
 
+/** The words that ask a pass of the two roles: the implementer and the tester in one sentence, and
+ * a pass named by its role. restore-two-roles searches for them, and gate-search.ts flags a gate
+ * that states both, which R14 rules out: the state at the head decides, whoever recorded the pass. */
+export const TWO_ROLES: readonly RegExp[] = [
+  /implementer[^.]*\btester|tester[^.]*\bimplementer/i,
+  /\b(both|two|which|each) roles?\b|implementer.s own|from the implementer\b|from the tester\b/i,
+];
+
 const GUIDE_TWO_ROLES: readonly Entry[] = [];
 
 const GUIDE_LATER_FAIL: readonly Entry[] = [];
@@ -77,13 +85,15 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    has: "from the implementer and from the tester both",
-    cut: "Remove the two-role requirement.",
+    has: "whoever recorded the pass: Dispatch's state decides your approval",
+    cut: "Restore the two-role requirement.",
+    restore: "from the implementer and from the tester both",
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    has: "results from CI stand for both roles",
-    cut: "Remove the two-role comparison from the CI sentence.",
+    has: "its state comes from its results from CI",
+    cut: "Restore the two-role comparison in the CI sentence.",
+    restore: "results from CI stand for both roles",
   },
   {
     file: "packages/daemon/internal/prompts/roles/mechanics/headless.md",
@@ -92,8 +102,9 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
-    has: "from the implementer and from the tester both",
-    cut: "Remove the two-role requirement.",
+    has: "That state decides, whoever recorded the pass",
+    cut: "Restore the two-role requirement.",
+    restore: "from the implementer and from the tester both",
   },
   {
     file: "skills/legion-controller/references/daily-report.md",
@@ -269,13 +280,13 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
 ];
 
 export const RULES: Record<string, Rule> = {
-  "ablate-two-roles": {
+  "restore-two-roles": {
     role: "reviewer",
-    rule: "A check with no `ci_check` has a pass at a head only from the implementer and from the tester both.",
+    rule: "A check passes the reviewer's gate when its line at the head reads yes, whoever recorded the pass.",
     patterns: [
-      /implementer[^.]*\btester|tester[^.]*\bimplementer/i,
-      /\b(both|two|which|each) roles?\b|implementer.s own|from the implementer\b|from the tester\b/i,
+      ...TWO_ROLES,
       /implementer records|tester records|records? (its|their|your) own/i,
+      /\bwhoever recorded the pass\b|\bits state comes from\b/i,
     ],
     entries: ENTRIES_TWO_ROLES,
   },

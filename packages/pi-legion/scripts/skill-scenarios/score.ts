@@ -935,14 +935,15 @@ function waitingLines(entries: SessionEntry[], before?: string): string[] {
  * notes list it. A reviewer-own-head run's case is in its name, and its row's scenario is
  * `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's are; a
  * ci-pass-and-fail run's row is `ci-pass-and-fail:reviewer`. A pass:
- *   - sibling-fails and ci-only, where #702's line reads yes (from both roles, or from CI): the
- *     review approves #702 at #702's head (`event` APPROVE, `commit_id` the head). A `gh pr review
- *     --approve` names no commit, so it approves no head the score can read;
- *   - no-implementer and no-tester, where #702's line reads yes from one role: the review requests
- *     changes and its body names k1;
+ *   - each case of reviewer-own-head, where #702's line reads yes: from both roles in
+ *     sibling-fails, from CI in ci-only, and from one role alone in no-implementer and no-tester,
+ *     since the state at the head decides, whoever recorded the pass (R14). The review approves
+ *     #702 at #702's head (`event` APPROVE, `commit_id` the head). A `gh pr review --approve` names
+ *     no commit, so it approves no head the score can read;
  *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
  *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
- *     still going: the same, and no reply of the run starts WAITING before its first review of #702
+ *     still going: the review requests changes and its body names k1, and no reply of the run
+ *     starts WAITING before its first review of #702
  *     (with no such review, no reply at all): that is a wait for the check or for the run, which R15
  *     forbids, and one after the review waits for the next round (verification.md's "writes no
  *     WAITING line for it").
@@ -962,12 +963,7 @@ function headsReview(
   const approves = review?.event === "APPROVE" && review.commit === head;
   const namesCheck = /\bk1\b/.test(review?.body ?? "");
   const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
-  const pass =
-    world === "sibling-fails" || world === "ci-only"
-      ? approves
-      : world === "reviewer-pass-and-fail" || world === "ci-pass-and-fail"
-        ? refuses && waiting.length === 0
-        : refuses;
+  const pass = scenario === "reviewer-own-head" ? approves : refuses && waiting.length === 0;
   const notes = [
     `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
     ...reviews.map(
