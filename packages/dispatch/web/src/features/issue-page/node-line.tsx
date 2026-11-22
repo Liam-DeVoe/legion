@@ -1,7 +1,9 @@
 import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 
+import type { DisplayTree } from "../../api/types";
 import { pageQuietText } from "../../theme/classes";
+import { useLoadedEngine } from "../refs/parsed-references";
 import { usePlainHeadline } from "../refs/plain-text";
 import { parseNodeReference, referenceHref } from "../refs/routes";
 import { drawnLine, firstLineOf, lineReading, type ParentLine, type TreeNode } from "./issue-tree";
@@ -43,10 +45,26 @@ export function useNodeLine(
     () => lineReading({ id, text: stored, tree, type }),
     [id, stored, tree, type]
   );
+  const markdown = "markdown" in reading ? reading.markdown : undefined;
+  // A stored text with no reading is parsed here, once for as long as the line draws it, as the
+  // row's own words are (`RowText.tsx`'s `ParsedText`), and its parse is drawn as a reading is:
+  // the projection runs again on every name the page publishes, and handed the text alone it
+  // would parse it again each time. The parse keeps soft breaks as line breaks, as the
+  // projection's parse of a first line does, and the text goes beside it, so the line names only
+  // what the text cites. Until the engine loads, and for a text it refuses, the line is
+  // `undefined`, as the projection answers for either.
+  const { engine } = useLoadedEngine();
+  const parsed = useMemo(
+    () =>
+      markdown === undefined || engine === undefined
+        ? undefined
+        : (engine.parse(markdown, "line")?.toJSON() as DisplayTree | undefined),
+    [engine, markdown]
+  );
   const { reads, text } = usePlainHeadline(
-    "tree" in reading ? reading.tree : undefined,
-    "markdown" in reading ? reading.markdown : undefined,
-    { firstLine: "markdown" in reading, issue: source?.issue, surface }
+    "tree" in reading ? reading.tree : parsed,
+    parsed === undefined ? undefined : markdown,
+    { firstLine: markdown !== undefined, issue: source?.issue, surface }
   );
   const words = "none" in reading ? "" : text?.text;
   const key = "key" in reading ? reading.key : undefined;

@@ -472,9 +472,10 @@ export function nodeWords(node: TreeNode): string {
 }
 
 /** What a node's one line is projected from (`lineReading`): a reading, with the issue's key
- *  the page writes before the words it projects to (`key`); the stored text, which the
- *  projection parses and reads the first line of (`usePlainHeadline`'s `firstLine`), where the
- *  node carries no reading; or nothing, for a reading none of whose blocks holds a word. */
+ *  the page writes before the words it projects to (`key`); the stored text, where the node
+ *  carries no reading, which the line parses once (`useNodeLine`) and the projection reads the
+ *  first line of (`usePlainHeadline`'s `firstLine`); or nothing, for a reading none of whose
+ *  blocks holds a word. */
 export type LineReading =
   | { readonly key?: string; readonly tree: DisplayTree }
   | { readonly markdown: string }
@@ -504,7 +505,8 @@ export type LineReading =
  *   key is written before its line (`key`), where R1's rule reads a label after it
  *   (`firstLineOf`'s `lead`) and no name of the issue takes its place.
  * - **A node whose read sent no reading** - a result from a server of the build before - by its
- *   stored text, which the projection parses, reading its first line.
+ *   stored text, which the line parses once for as long as it draws it (`node-line.tsx`'s
+ *   `useNodeLine`), the projection reading the parse's first line.
  */
 export function lineReading(node: {
   readonly id: string;
