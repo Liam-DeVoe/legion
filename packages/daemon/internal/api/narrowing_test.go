@@ -170,7 +170,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 		want := narrowingsExpected(state, recordFieldsContract-1)
 		if len(narrowings) != len(want) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the lines narrowingsExpected names, the mark's own among them: %+v",
 				len(narrowings), recordFieldsContract-1, len(want), narrowings)
 		}
 		line := narrowings[0]
@@ -228,12 +228,13 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 					recordFieldsContract, key, body)
 			}
 		}
-		// A caller at this contract stands below the contracts above it and is narrowed by those
-		// alone: the log names every one of them and never the mark's own arm, whose line would
-		// mean the record had been taken out of the body just read.
+		// A caller at this contract stands below the contracts above it: the log names each of
+		// them, then each value strip that took a value off this state (narrowingsExpected), and
+		// never the mark's own arm, whose line would mean the record had been taken out of the body
+		// just read.
 		wantLines := narrowingsExpected(state, recordFieldsContract)
 		if len(narrowings) != len(wantLines) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the lines narrowingsExpected names: %+v",
 				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
 		}
 		for i, line := range narrowings {
@@ -315,7 +316,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 		want := narrowingsExpected(state, repositoriesLiveContract-1)
 		if len(narrowings) != len(want) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the lines narrowingsExpected names: %+v",
 				len(narrowings), repositoriesLiveContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
@@ -346,10 +347,11 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// The assignments narrowing is a row of the table like every other, so a caller below it is
 	// told what it lost: a caller one contract below assignmentsContract stands below that row and
-	// every row above it, so the log holds those rows' lines and nothing else. This subtest does
-	// not catch a strip applied beside the loop, because it reads both its expectation and its
-	// answer from stateNarrowings; the subtest below, which names the line as a literal, is what
-	// catches that.
+	// every row above it, so the log holds what narrowingsExpected names for it: those rows' lines,
+	// then the line of each value strip that took a value off this state, the caches source's among
+	// them. This subtest does not catch a strip applied beside the loop, because it reads both its
+	// expectation and its answer from stateNarrowings and valueStrips; the subtest below, which
+	// names the line as a literal, is what catches that.
 	t.Run("the narrowings above a caller write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(assignmentsContract-1))
@@ -360,7 +362,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 		want := narrowingsExpected(state, assignmentsContract-1)
 		if len(narrowings) != len(want) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the lines narrowingsExpected names: %+v",
 				len(narrowings), assignmentsContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
