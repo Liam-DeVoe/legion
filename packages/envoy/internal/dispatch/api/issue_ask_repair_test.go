@@ -473,14 +473,6 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 	}
 }
 
-// otherProcessCloseMargin is the append gate's close margin on the other process's store in the
-// rows below (docs.Deps.CloseMargin): an hour, past any run. That process stands for one that never
-// hears of the close, and its rooms store the browser writes the rows make after the close; on the
-// deployment's two seconds (the docs package's closeMargin) a loaded machine that took that long
-// over the close's answer and the writes had the gate refuse a write, which was then never stored
-// and never owed, and the row failed for nothing the repair did.
-const otherProcessCloseMargin = time.Hour
-
 // A browser on another process's room - one that never hears of the close, as a process of an
 // older build does not, or has not yet when its room stores the write - writes an ask block into a
 // closed issue's document, leaving it owing a settlement that the other process, whose settle
@@ -495,7 +487,12 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	swept := createInteractionIssue(t, f.handler, "TEST", "Written after its close", "Context\n")
 	untouched := createInteractionIssue(t, f.handler, "OTHER", "Settled after its close", "Context\n")
 	awaitSettled(t, f.database, swept.PrimaryArtifactID, untouched.PrimaryArtifactID)
-	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour, CloseMargin: otherProcessCloseMargin})
+	// The other process's append gate keeps a close margin of pastTheRun (docs.Deps.CloseMargin):
+	// it stands for a process that never hears of the close, whose rooms store the writes below. On
+	// the deployment's two seconds (the docs package's closeMargin) a loaded machine that took that
+	// long over the closes' answers and the writes had the gate refuse a write, which was then never
+	// stored and never owed, and the row failed for nothing the repair did.
+	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour, CloseMargin: pastTheRun})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
 		swept.PrimaryArtifactID:     connectBrowserPeer(t, other, swept.PrimaryArtifactID),
@@ -508,7 +505,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
 	// Both browsers write before either write is waited for. The other process's gate stores each,
-	// though the issue is closed, within otherProcessCloseMargin of the close.
+	// though the issue is closed, within its pastTheRun margin of the close.
 	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
@@ -560,7 +557,9 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	stale := createInteractionIssue(t, f.handler, "TEST", "Marked before the bound", "Context\n")
 	fresh := createInteractionIssue(t, f.handler, "OTHER", "Marked after the bound", "Context\n")
 	awaitSettled(t, f.database, stale.PrimaryArtifactID, fresh.PrimaryArtifactID)
-	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour, CloseMargin: otherProcessCloseMargin})
+	// The other process's close margin is pastTheRun, as in
+	// TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess.
+	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour, CloseMargin: pastTheRun})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
 		stale.PrimaryArtifactID: connectBrowserPeer(t, other, stale.PrimaryArtifactID),
@@ -573,7 +572,7 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
 	// Both browsers write before either write is waited for, on the other process's gate with its
-	// otherProcessCloseMargin, as in TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess.
+	// pastTheRun margin, as in TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess.
 	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)

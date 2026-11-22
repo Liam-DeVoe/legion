@@ -172,7 +172,7 @@ type testServerOptions struct {
 	duplicateBound time.Duration
 	// inboxStatementBound is the mark-all's and the dismissal's statement_timeout
 	// (server.inboxStatementBound); zero keeps production's inboxReadStatementTimeout. A case that
-	// holds a dismissal behind a lock of its own passes heldInboxStatementBound (seedHeldInboxRead).
+	// holds a dismissal behind a lock of its own passes pastTheRun (seedHeldInboxRead).
 	inboxStatementBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
