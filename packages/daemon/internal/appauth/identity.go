@@ -60,10 +60,11 @@ func SetFor(role claim.Role) (TokenSet, error) {
 }
 
 // setForStep is the default set of the type of def, a role a step can name (plan.RoleDef.Type):
-// the implementer's for the type implementation, the tester's for the type testing, and the
-// review set for the types planning, design and review, under the name of the role that does
-// that type's work in Legion's own line: the planner's, the architect's and the reviewer's. A
-// type outside these has no set: ErrNoTokenSet, naming the role and its type.
+// the implementer's for the type implementation, the tester's for the type testing, the
+// planner's for the type planning, and the reviewer's, the review set, for the types design and
+// review. A set's name is also the word a token command's profile is chosen by (TokenSet), so a
+// design role's token is the reviewer's with the key and with a token command alike. A type
+// outside these has no set: ErrNoTokenSet, naming the role and its type.
 func setForStep(def plan.RoleDef) (TokenSet, error) {
 	switch def.Type {
 	case plan.TypeImplementation:
@@ -72,9 +73,7 @@ func setForStep(def plan.RoleDef) (TokenSet, error) {
 		return SetTester, nil
 	case plan.TypePlanning:
 		return SetPlanner, nil
-	case plan.TypeDesign:
-		return SetArchitect, nil
-	case plan.TypeReview:
+	case plan.TypeDesign, plan.TypeReview:
 		return SetReviewer, nil
 	}
 	return "", fmt.Errorf("%w for the role %q: its type %q is none of implementation, testing, planning, design and review", ErrNoTokenSet, def.Name, def.Type)

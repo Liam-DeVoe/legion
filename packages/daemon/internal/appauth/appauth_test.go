@@ -1620,11 +1620,13 @@ func mintedOnce(t *testing.T, mint func(*Manager) (Lease, error)) (string, map[s
 // scanning and read attestations, checks, metadata and commit statuses; and the type testing
 // writes actions, issues, pull requests and code scanning and reads attestations, checks,
 // contents, metadata and commit statuses, so the code it runs under its token cannot push a
-// commit. Of the roles no step names, the merger takes the implementation set, and the owner (the
-// architect) and the controller take the review set. The verdict token writes checks and commit
-// statuses and reads contents, metadata and pull requests. No set beside these eight exists, and
-// no request names a repository: what a token reaches is what the account chose when it installed
-// the App.
+// commit. Each type's set is the set of the role that does that type's work, which names the
+// profile a token-mode daemon asks for it: the implementer's, the planner's, the reviewer's for
+// both design and review, and the tester's. Of the roles no step names, the merger takes the
+// implementation set, and the owner (the architect) and the controller take the review set. The
+// verdict token writes checks and commit statuses and reads contents, metadata and pull requests.
+// No set beside these eight exists, and no request names a repository: what a token reaches is
+// what the account chose when it installed the App.
 func TestRoleWritePermissions(t *testing.T) {
 	implementation := map[string]string{
 		"actions": "write", "contents": "write", "issues": "write", "pull_requests": "write", "workflows": "write",
@@ -1634,15 +1636,19 @@ func TestRoleWritePermissions(t *testing.T) {
 		"actions": "write", "contents": "write", "issues": "write", "pull_requests": "write", "security_events": "write",
 		"attestations": "read", "checks": "read", "metadata": "read", "statuses": "read",
 	}
-	types := map[plan.Type]map[string]string{
-		plan.TypeImplementation: implementation,
-		plan.TypePlanning:       review,
-		plan.TypeDesign:         review,
-		plan.TypeReview:         review,
-		plan.TypeTesting: {
-			"actions": "write", "issues": "write", "pull_requests": "write", "security_events": "write",
-			"attestations": "read", "checks": "read", "contents": "read", "metadata": "read", "statuses": "read",
-		},
+	tested := map[string]string{
+		"actions": "write", "issues": "write", "pull_requests": "write", "security_events": "write",
+		"attestations": "read", "checks": "read", "contents": "read", "metadata": "read", "statuses": "read",
+	}
+	types := map[plan.Type]struct {
+		set  TokenSet
+		asks map[string]string
+	}{
+		plan.TypeImplementation: {SetImplementer, implementation},
+		plan.TypePlanning:       {SetPlanner, review},
+		plan.TypeDesign:         {SetReviewer, review},
+		plan.TypeReview:         {SetReviewer, review},
+		plan.TypeTesting:        {SetTester, tested},
 	}
 	verdict := map[string]string{"checks": "write", "statuses": "write", "contents": "read", "metadata": "read", "pull_requests": "read"}
 	asks := func(t *testing.T, what string, set TokenSet, want map[string]string) {
@@ -1669,7 +1675,10 @@ func TestRoleWritePermissions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the set of the type %s: %v", typ, err)
 			}
-			asks(t, "the set of the type "+string(typ), set, want)
+			if set != want.set {
+				t.Errorf("the type %s takes the set %s, want %s", typ, set, want.set)
+			}
+			asks(t, "the set of the type "+string(typ), set, want.asks)
 		})
 	}
 	// Each role a step names (plan.BuiltinRoles) is given its type's set by SetFor, the one
@@ -1680,7 +1689,7 @@ func TestRoleWritePermissions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SetFor(%q): %v", name, err)
 			}
-			asks(t, "the "+name+"'s token, of the type "+string(def.Type), set, types[def.Type])
+			asks(t, "the "+name+"'s token, of the type "+string(def.Type), set, types[def.Type].asks)
 		})
 	}
 	for role, want := range map[claim.Role]map[string]string{
