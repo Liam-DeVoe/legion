@@ -474,6 +474,9 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	}
 	review, reviewEvents, err := s.queueApprovalReviews(documentCtx, tx, ledger, artifact, request, reviewed, state, actor, reason, askID)
 	if err != nil {
+		// A stale change request's owner is told once the approval's own writes are rolled back.
+		_ = tx.Rollback(r.Context())
+		s.recordStaleRequest(r.Context(), err, actor)
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -498,7 +501,9 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 // each of those documents, as the carry of an approval judges them (spec_form.go). It returns the
 // named document's review with one event per document, all filled in once Commit has run the
 // write phase (docs.QueueReview). Each is a person's review (docs.ReviewKindPerson): a plan review
-// writes its own, on one document.
+// writes its own, on one document. An approval of an issue's spec whose repository is a spec source
+// also writes the change request it covers into the approved spec, after the reviews, or is
+// refused (applySpecChange).
 //
 // A second document's row is read here, in the read phase. This transaction does write artifacts:
 // an event on a document no issue holds is owned by that document (docs.documentAskEvent), and the
@@ -545,6 +550,11 @@ func (s *server) queueApprovalReviews(
 			return nil, nil, err
 		}
 		appended = append(appended, reviewEvent)
+	}
+	if state == "approved" {
+		if err := s.applySpecChange(ctx, tx, ledger, request, documents, actor, askID); err != nil {
+			return nil, nil, err
+		}
 	}
 	return named, appended, nil
 }

@@ -311,6 +311,8 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
 	if err != nil {
+		// closeAsk's transaction has rolled back: a stale change request's owner is told now.
+		s.recordStaleRequest(r.Context(), err, actor)
 		s.writeHandlerError(w, err)
 		return
 	}

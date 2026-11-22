@@ -2053,7 +2053,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused.",
+        "description": "Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused. An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports), APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it) or SPEC_REQUEST_UNREAD (a version with no record of the revision it was read at). A request for changes writes nothing into it.",
         "operationId": "postApiV1ArtifactsByIdReviews",
         "parameters": [
           {
@@ -2460,7 +2460,7 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}/reviews": {
       "post": {
-        "description": "Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused.",
+        "description": "Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused. An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports), APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it) or SPEC_REQUEST_UNREAD (a version with no record of the revision it was read at). A request for changes writes nothing into it.",
         "operationId": "postApiV1ArtifactsByIdVersionsByNumberReviews",
         "parameters": [
           {
@@ -2703,7 +2703,7 @@
     },
     "/api/v1/asks/{id}/answer": {
       "post": {
-        "description": "Answer an ask with selected options and/or text. An Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec.",
+        "description": "Answer an ask with selected options and/or text. An Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec. An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports), APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it) or SPEC_REQUEST_UNREAD (a version with no record of the revision it was read at). A request for changes writes nothing into it.",
         "operationId": "postApiV1AsksByIdAnswer",
         "parameters": [
           {
@@ -8228,6 +8228,64 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/issues/{key}/spec-import-level": {
+      "post": {
+        "description": "Import the approved level the issue holds into the approved spec of its repository, which must be an enabled spec source of its project (409 SPEC_SOURCE_REQUIRED otherwise) {notes}: the level is the issue's spec at the version of the person's newest approval of it (409 LEVEL_NOT_APPROVED where none), and notes names the level's notes document, read at the version that approval's request names, else at the newest written by the time of the approval. Each component and interface of the level's Components table, and each statement whose kind, about, supports and parent resolve, is written as a node with that approval as provenance; each other statement is kept as a hold with its text, its provenance and the fields it lacks; and the open holds of the level that name no repair issue get one, a child issue of the issue assigned to its assignee, whose spec lists them. A node the approved spec already holds or held, and a statement already held, is left as it stands, so a second run writes what the first could not. Answers {issue, repo, written, held, repair_issue}.",
+        "operationId": "postApiV1IssuesByKeySpecImportLevel",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportLevelInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecLevelImport"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/issues/{key}/steps": {
       "get": {
         "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
@@ -12350,6 +12408,265 @@
         },
         "x-auth": "any",
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/spec-sources": {
+      "get": {
+        "description": "A project's spec sources, the repositories whose approved spec it holds, by repository; [] when it names none, 404 for a project that does not exist. An issue whose repository is an enabled spec source of its project holds a change request, which a person's approval writes into that repository's approved spec.",
+        "operationId": "getApiV1ProjectsByKeySpecSources",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpecSource"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/projects/{key}/spec-sources/{owner}/{repo}": {
+      "put": {
+        "description": "Name a repository a spec source of a project {branch}, or change the branch of the one it is, and turn it on: from then on an issue of that repository holds a change request, and the approval of its spec writes the request into the repository's approved spec or is refused. A blank branch is 400 SOURCE_INPUT.",
+        "operationId": "putApiV1ProjectsByKeySpecSourcesByOwnerByRepo",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSpecSourceInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecSource"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
+      "delete": {
+        "description": "Remove a repository from a project's spec sources; 404 SOURCE_NOT_FOUND when it is none. Its approved spec stays, and an issue of it holds no change request from then on.",
+        "operationId": "deleteApiV1ProjectsByKeySpecSourcesByOwnerByRepo",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {
+      "get": {
+        "description": "One node of the approved spec of a spec source of a project - a statement, check, component or interface - with each approved text, oldest first, printed as The Spec's files hold it, and the provenance of each: the act (approval, brought_back or import), the issue, the documents and versions the person's approval named with their digests, the approval request, the review row and the person; and each removal. 404 SPEC_NODE_NOT_FOUND when the approved spec never held the id.",
+        "operationId": "getApiV1ProjectsByKeySpecByOwnerByRepoNodesById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecNodeRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/reference-targets": {
@@ -22763,6 +23080,27 @@
         ],
         "type": "object"
       },
+      "ImportLevelInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "notes"
+        ],
+        "type": "object"
+      },
       "InboxDismissRequest": {
         "properties": {
           "artifact": {
@@ -29068,6 +29406,27 @@
         ],
         "type": "object"
       },
+      "PutSpecSourceInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "type": "object"
+      },
       "QueuedMessage": {
         "properties": {
           "dedupe_key": {
@@ -30788,6 +31147,28 @@
         ],
         "type": "object"
       },
+      "SpecDocumentRead": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "version",
+          "digest"
+        ],
+        "type": "object"
+      },
       "SpecFormError": {
         "properties": {
           "changes_reason": {
@@ -31043,6 +31424,242 @@
           "issue",
           "version",
           "line"
+        ],
+        "type": "object"
+      },
+      "SpecImportHold": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "lacks": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/SpecProvenance"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "lacks",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "SpecLevelImport": {
+        "properties": {
+          "held": {
+            "items": {
+              "$ref": "#/components/schemas/SpecImportHold"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          },
+          "repair_issue": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "written": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "repo",
+          "written",
+          "held",
+          "repair_issue"
+        ],
+        "type": "object"
+      },
+      "SpecNodeRead": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "removals": {
+            "items": {
+              "$ref": "#/components/schemas/SpecNodeRemoval"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/SpecNodeVersion"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "repo",
+          "id",
+          "kind",
+          "removed",
+          "versions",
+          "removals"
+        ],
+        "type": "object"
+      },
+      "SpecNodeRemoval": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/SpecProvenance"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "at",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "SpecNodeVersion": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "block": {
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/SpecProvenance"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "at",
+          "block",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "SpecProvenance": {
+        "properties": {
+          "act": {
+            "type": "string"
+          },
+          "ask": {
+            "type": "string"
+          },
+          "brought_back_with": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "notes": {
+            "$ref": "#/components/schemas/SpecDocumentRead"
+          },
+          "person": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "review": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/SpecDocumentRead"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/SpecDocumentRead"
+          }
+        },
+        "required": [
+          "act",
+          "issue",
+          "person"
+        ],
+        "type": "object"
+      },
+      "SpecSource": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "repo",
+          "branch",
+          "enabled",
+          "created_by",
+          "created_at",
+          "updated_at"
         ],
         "type": "object"
       },

@@ -589,6 +589,17 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
+	"GET /api/v1/projects/{key}/spec-sources":                              {Status: http.StatusOK, Response: []model.SpecSource{}},
+	"PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo}": {
+		Status: http.StatusOK, Response: model.SpecSource{}, Request: putSpecSourceInput{},
+	},
+	"DELETE /api/v1/projects/{key}/spec-sources/{owner}/{repo}": {
+		Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true,
+	},
+	"GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {Status: http.StatusOK, Response: model.SpecNodeRead{}},
+	"POST /api/v1/issues/{key}/spec-import-level": {
+		Status: http.StatusOK, Response: model.SpecLevelImport{}, Request: importLevelInput{},
+	},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
 	// tree, so the row names that read: the document describes the body the handler sends, and
 	// a client generated from it holds the field a reader draws.

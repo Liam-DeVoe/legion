@@ -322,6 +322,33 @@ export const IssueDeployedEventPayloadSchema = z.strictObject({
 
 export type IssueDeployedEventPayload = z.output<typeof IssueDeployedEventPayloadSchema>;
 
+/**
+ * `spec.request_stale`: a person's approval of the issue's change request was refused because the
+ * approved spec changed one of its nodes after the owner wrote it. Appended on the issue (so it is
+ * published on `notifications.dispatch.issue.<KEY>.spec.request_stale`) with the approving person
+ * as its actor, once the refused approval has rolled back. `statements` names each stale node: the
+ * version the request read (`base`, 0 for none) and the approved spec's current one (`current`, 0
+ * where it holds none or removed it, which `removed` says). The owner writes the request again
+ * against the approved spec and opens a new approval request. Strict: the Go writer
+ * (`SpecRequestStaleEventPayload` in `packages/envoy/internal/dispatch/model`) emits exactly these
+ * fields.
+ */
+export const SpecRequestStaleEventPayloadSchema = z.strictObject({
+  issue: z.string(),
+  approval_request: z.string().nullable(),
+  statements: z.array(
+    z.strictObject({
+      id: z.string(),
+      base: z.number().int().nonnegative(),
+      current: z.number().int().nonnegative(),
+      removed: z.boolean().optional(),
+    })
+  ),
+  reason: z.string(),
+});
+
+export type SpecRequestStaleEventPayload = z.output<typeof SpecRequestStaleEventPayloadSchema>;
+
 export const childStatusEventPayloadFields = {
   child_key: z.string(),
   from: z.string(),

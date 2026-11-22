@@ -148,16 +148,31 @@ type State struct {
 // Read reads the approved spec of the repository repo of project, every node with its whole
 // history, in one statement.
 func Read(ctx context.Context, q graphstore.Queryer, project, repo string) (State, error) {
+	return read(ctx, q, project, repo, "")
+}
+
+// ReadNode reads the whole history of the node id of the approved spec of the repository repo of
+// project, nil where the approved spec never held it.
+func ReadNode(ctx context.Context, q graphstore.Queryer, project, repo, id string) (*History, error) {
+	state, err := read(ctx, q, project, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	return state.Nodes[id], nil
+}
+
+// read is Read, of the one node id where id is not "".
+func read(ctx context.Context, q graphstore.Queryer, project, repo, id string) (State, error) {
 	state := State{Project: project, Repo: repo, Nodes: map[string]*History{}}
 	prefix := Address(project, repo, "")
 	rows, err := q.Query(ctx, `
 		select n.id, t.kind, t.to_id
 		from graph_nodes n
 		join graph_tuples t on t.from_kind = n.kind and t.from_id = n.id
-		where n.kind = $1 and n.supertag = $1 and starts_with(n.id, $2)
+		where n.kind = $1 and n.supertag = $1 and starts_with(n.id, $2) and ($5 = '' or n.id = $2 || $5)
 		  and t.kind = any($3) and t.to_kind = $4 and t.asserted
 		order by t.seq
-	`, KindNode, prefix, []string{AttributeVersion, AttributeRemoved}, graphstore.KindValue)
+	`, KindNode, prefix, []string{AttributeVersion, AttributeRemoved}, graphstore.KindValue, id)
 	if err != nil {
 		return State{}, fmt.Errorf("read the approved spec of %s: %w", prefix, err)
 	}

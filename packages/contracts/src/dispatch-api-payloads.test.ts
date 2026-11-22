@@ -60,6 +60,7 @@ const PAYLOAD_TYPES = [
   "ProjectDefaultAssigneeUpdatedEventPayload",
   "ReferenceChangesPayload",
   "RepoProjectUpdatedEventPayload",
+  "SpecRequestStaleEventPayload",
   "SubscriptionRemovedEventPayload",
   "ThreadLoginsPayload",
   "UserAgentStateUpdatedEventPayload",
