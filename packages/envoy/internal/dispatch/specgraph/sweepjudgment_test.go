@@ -76,8 +76,25 @@ const (
 	rightNamed   = "a right that names the place"
 )
 
-// rightForms is each form of an input's right at one place.
-func rightForms() []string { return []string{rightNone, rightEach, rightLeftOut, rightNamed} }
+// rightRules is the judgment's rule for each form of an input's right at one place: whether the right
+// allows the state that the input reads there, input. No right and a place that a right leaves out
+// allow no state; a right that names no place allows each; a right that names the place allows the
+// one state that it names there. It is the one list of the forms: movedBeyond judges a form by its
+// rule here and refuses a form that has none, and rightForms, which the domain test generates the
+// rights from, is its forms. So a form that the judgment reads is a form that the domain test
+// generates, and the definition's silence on a new one fails that test by name.
+func rightRules() map[string]func(right placeRight, input string) bool {
+	return map[string]func(placeRight, string) bool{
+		rightNone:    func(placeRight, string) bool { return false },
+		rightEach:    func(placeRight, string) bool { return true },
+		rightLeftOut: func(placeRight, string) bool { return false },
+		rightNamed:   func(right placeRight, input string) bool { return right.state == input },
+	}
+}
+
+// rightForms is each form of an input's right at one place: the forms that the judgment has a rule
+// for (rightRules), in the order of their words.
+func rightForms() []string { return slices.Sorted(maps.Keys(rightRules())) }
 
 // placeRight is what an input's right holds at one place: its form (rightForms), and for a right
 // that names the place, the state that it allows there.
@@ -102,17 +119,20 @@ func rightAt(hasRight bool, allowed map[string]string, at string) placeRight {
 // movedBeyond is the judgment of the sweeps at one place: whether the input's state there, input,
 // moved toward true beyond the input's right there, right, from base, the state that the base reads
 // there ("" where it reads none), for a state of the kind kind. A move toward true reads the kind's
-// top where the base reads another state or none, and it is within the right only where the right
-// names no place, or names this one with the state that the input reads. It reads its arguments
-// alone: no base, no words of an input or reason of its right, and of the place only its kind. A
-// state that is no state of the kind, at the input, the base or the right, and a form of right that
-// rightForms does not hold, is an error, so a sweep fails by name where the reader writes a state of
-// no kind. Its callers are movesBeyond and
+// top where the base reads another state or none, and it is beyond the right unless the right's rule
+// (rightRules) allows the input's state there. It reads its arguments alone: no base, no words of an
+// input or reason of its right, and of the place only its kind. A form of right that has no rule, and
+// a state that is no state of the kind, at the input, the base or the right, is an error, so a sweep
+// fails by name where the reader writes a state of no kind or a right reads a form that the judgment
+// has no rule for. Its callers are movesBeyond and
 // TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain, which holds it to definedBeyond at
 // each kind, each state that the base reads and none, each state that the input reads, and each form
 // of right with each state of the kind.
 func movedBeyond(kind judgedKind, base, input string, right placeRight) (bool, error) {
+	allows, ruled := rightRules()[right.form]
 	switch {
+	case !ruled:
+		return false, fmt.Errorf("the right is of the form %q, which the judgment has no rule for (rightRules)", right.form)
 	case !slices.Contains(kind.states, input):
 		return false, fmt.Errorf("the input reads %q, which is no state of %s (judgedKinds)", input, kind.name)
 	case base != "" && !slices.Contains(kind.states, base):
@@ -121,15 +141,7 @@ func movedBeyond(kind judgedKind, base, input string, right placeRight) (bool, e
 		return false, fmt.Errorf("the right allows %q, which is no state of %s (judgedKinds)", right.state, kind.name)
 	}
 	toward := input == kind.top && base != input
-	switch right.form {
-	case rightNone, rightLeftOut:
-		return toward, nil
-	case rightEach:
-		return false, nil
-	case rightNamed:
-		return toward && right.state != input, nil
-	}
-	return false, fmt.Errorf("the right is of the form %q, which the judgment does not know (rightForms)", right.form)
+	return toward && !allows(right, input), nil
 }
 
 // movesBeyond is the judgment of one answer of the reader, got, against the states of the base,
@@ -243,8 +255,8 @@ func TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec(t *testing.T) {
 	}
 }
 
-// rightsOf is each right at one place of a state of the kind k: each form of rightForms, and for a
-// right that names the place, one for each state of k.
+// rightsOf is each right at one place of a state of the kind k: each form that the judgment has a
+// rule for (rightForms), and for a right that names the place, one for each state of k.
 func rightsOf(k judgedKind) []placeRight {
 	var rights []placeRight
 	for _, form := range rightForms() {
@@ -321,11 +333,12 @@ func cell(kind, base, input string, right placeRight) string {
 // of "The states of a statement (R10)." in statementstate.go, a statement's own state's too, and of
 // "The states of a wait (R29)." in sweepreader's main.go. The test generates each case: each kind,
 // each state that the base reads and none, each state that the input reads, and each form of right
-// (rightForms) with each state of the kind for a right that names the place; it fails where the
-// definition does not cover a case, where the judgment refuses one, and where the two disagree, by
-// the case. So a state, a kind or a form of right that the code gains with no word of the definition
-// for it fails by name. Outside the domain, the judgment refuses a state of no kind, a place of no
-// kind and a form of right that it does not know. And it reads each base of the sweeps (sweepBases)
+// that the judgment has a rule for (rightForms, rightRules) with each state of the kind for a right
+// that names the place; it fails where the definition does not cover a case, where the judgment
+// refuses one, and where the two disagree, by the case. So a state, a kind or a form of right that
+// the code gains with no word of the definition for it fails by name. Outside the domain, the
+// judgment refuses a state of no kind, a place of no kind and a form of right that it has no rule
+// for. And it reads each base of the sweeps (sweepBases)
 // in the reader's process: each place of each base is of a kind, each state that it reads is a state
 // of that kind, and at each place the judgment of one answer (movesBeyond) agrees with the definition
 // in each case of its kind, so a judgment of an answer that is blind at some places, by their subject
@@ -391,7 +404,7 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 		{"an input that reads a state of no kind", stateCheck, "", statementMet, placeRight{form: rightNone}},
 		{"a base that reads a state of no kind", stateCheck, statementMet, checkTrue, placeRight{form: rightNone}},
 		{"a right that allows a state of no kind", stateCheck, "", checkTrue, placeRight{form: rightNamed, state: statementMet}},
-		{"a form of right that no list holds", stateCheck, "", checkTrue, placeRight{form: "a right that names the place twice"}},
+		{"a form of right that the judgment has no rule for", stateCheck, "", checkTrue, placeRight{form: "a right that names the place twice"}},
 		{"a kind that no list holds", "a deploy", "", checkTrue, placeRight{form: rightNone}},
 	} {
 		if _, err := movedBeyond(check, out.base, out.input, out.right); err == nil && out.kind == stateCheck {
