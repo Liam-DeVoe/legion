@@ -46,11 +46,13 @@ func listedSources(listed []DaemonDeployment) []string {
 // namespace legion and then each retired project's entry of ConfigMap
 // envoy-operator/envoy-operator-retired-stores, by its project key, its two keys read as the
 // annotations a Deployment carries: an entry with one key missing is listed without that
-// annotation, for the readers of the daemon stores to refuse by name. A ConfigMap that does not
-// exist holds no retired project, and the Deployments are still listed. A ConfigMap read the API
-// server refuses, and a key of neither form (<project>.database, <project>.instance), are the
-// reader's error, naming the ConfigMap. Control: 2b1d598844's reader, which lists the Deployments
-// alone and never reads the ConfigMap, fails each part but the one with no ConfigMap.
+// annotation, for the readers of the daemon stores to refuse by name. The deployment renders that
+// ConfigMap always, with `data: {}` when no project is retired, which holds no retired project; a
+// ConfigMap that does not exist holds none either, and the Deployments are still listed. A
+// ConfigMap read the API server refuses, and a key of neither form (<project>.database,
+// <project>.instance), are the reader's error, naming the ConfigMap. Controls: 2b1d598844's
+// reader, which lists the Deployments alone and never reads the ConfigMap, fails each part but the
+// ones with no entry; a reader that refuses a ConfigMap with no entry fails the empty one.
 func TestKubeDaemonDeploymentsReadsTheRetiredStores(t *testing.T) {
 	ctx := context.Background()
 	live := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "legion-daemon-live", Namespace: DaemonNamespace,
@@ -73,6 +75,12 @@ func TestKubeDaemonDeploymentsReadsTheRetiredStores(t *testing.T) {
 	listed, err = KubeDaemonDeployments(fake.NewClientset(live))(ctx)
 	require.NoError(t, err, "a missing ConfigMap is no error")
 	require.Equal(t, []string{deployment}, listedSources(listed), "a missing ConfigMap holds no retired project")
+
+	for _, data := range []map[string]string{{}, nil} {
+		listed, err = KubeDaemonDeployments(fake.NewClientset(live, retiredStores(data)))(ctx)
+		require.NoError(t, err, "a ConfigMap with data %v", data)
+		require.Equal(t, []string{deployment}, listedSources(listed), "a ConfigMap with data %v holds no retired project", data)
+	}
 
 	_, err = KubeDaemonDeployments(fake.NewClientset(live, retiredStores(map[string]string{"RETIRED.database": "daemon_retired", "RETIRED.url": "x"})))(ctx)
 	require.ErrorContains(t, err, `"RETIRED.url"`)

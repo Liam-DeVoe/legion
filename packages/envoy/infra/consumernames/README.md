@@ -106,8 +106,9 @@ of namespace `envoy-operator` instead, as two data keys for each retired project
 | `P.instance` | the connection name of the Cloud SQL instance that holds it |
 
 A key of neither form makes every reading of the addresses fail, naming the key, and so does a
-read of the ConfigMap that Kubernetes refuses. A ConfigMap that does not exist holds no retired
-project.
+read of the ConfigMap that Kubernetes refuses. The deployment renders the ConfigMap always, with no
+data when no project is retired; a retired private project has no entry. A ConfigMap that does not
+exist holds no retired project either.
 
 `envoy-infra streams census`, `cleanup`, `cleanup --gone` and `enroll` read a daemon's store only
 at the address its one source names, and `status` calls a store gone only at that address: the
