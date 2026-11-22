@@ -219,10 +219,11 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// events= is how many events the tick read after its build's event cursor, marked= and
 		// comments= the documents it marked owed and the comments it gave their nodes from those
 		// events, object_nodes=, orphans_gone= and inbox_rows= the rows the object pass gave their
-		// nodes, the orphaned document nodes it stated gone and the inbox cache rows another build
-		// left unmarked it marked, and another_build= whether a live server process of another
-		// build served, which decides nothing of which events the tick reads and makes it owe the
-		// object pass (readEventsAfterCursor).
+		// nodes, the orphaned document nodes it stated gone, and the inbox cache rows another build
+		// left unmarked it marked with the declines and sessions the events it read gave their
+		// writes, and another_build= whether a live server process of another build served, which
+		// decides nothing of which events the tick reads and makes it owe the object pass
+		// (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
@@ -266,9 +267,10 @@ type liveAheadDocuments map[string]owedDocument
 // gives every comment they name whose row names no node its node (readEventsAfterCursor), then,
 // while this build owes it, the object pass: the nodes of the issues, documents, asks and messages
 // whose rows another build wrote with none, and the gone statement of each document node another
-// build left behind no row (writeObjectNodesAnotherBuildWrote), which reads those four tables whole
-// where every other read of the tick reads only what is owed; then one batch of the documents owed
-// a block index past
+// build left behind no row (writeObjectNodesAnotherBuildWrote), which reads those four tables whole,
+// and, once a backfill has run, the asks and the published fallback copies whole beside the inbox
+// rows it still owes (graphcensus.CatchUpOwedRows), where every other read of the tick reads only
+// what is owed; then one batch of the documents owed a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first

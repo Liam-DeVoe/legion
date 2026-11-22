@@ -381,31 +381,12 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 		return batchResult{}, fmt.Errorf("keyword fill: begin a batch: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, batchBoundsQuery, statementTimeout(0)); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: bound the batch: %w", err)
-	}
-	cursor, cursorAt, stored, err := f.lockCursor(ctx, tx)
+	locked, err := f.lockBatch(ctx, tx, "batch")
 	if err != nil {
 		return batchResult{}, err
 	}
-	if f.holder != uuid.Nil {
-		var holds bool
-		if err := tx.QueryRow(ctx, holdCheckQuery, fillHoldName, f.holder).Scan(&holds); err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: check the hold %q: %w", fillHoldName, err)
-		}
-		if !holds {
-			return batchResult{}, fmt.Errorf("keyword fill: write a batch under the hold %q: %w", fillHoldName, duty.ErrHoldLost)
-		}
-	}
-	newest, atCursor, err := events.EventCursorCheck(ctx, tx, cursor)
-	if err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: check the event log against the cursor: %w", err)
-	}
-	var at time.Time
-	if cursorAt != nil {
-		at = *cursorAt
-	}
-	if events.EventLogWasReset(cursor, at, newest, atCursor) {
+	cursor, cursorAt, stored, newest := locked.cursor, locked.cursorAt, locked.stored, locked.newest
+	if locked.reset {
 		if err := f.empty(ctx, tx); err != nil {
 			return batchResult{}, err
 		}
@@ -479,6 +460,49 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	return result, nil
 }
 
+// batchLocks is what a batch's locks read (lockBatch): the cursor, the moment of its event and the
+// reach it stores, the log's newest event, and whether the log was reset under the cursor.
+type batchLocks struct {
+	cursor           int64
+	cursorAt, stored *time.Time
+	newest           int64
+	reset            bool
+}
+
+// lockBatch takes a batch's locks in tx, once it has begun, in the fill's order: its bounds
+// (batchBoundsQuery), the cursor row `for update`, creating it at no event where none is
+// (lockCursor), under a hold the check that the hold is still this holder's (duty.ErrHoldLost
+// otherwise), and the event log against the cursor (events.EventLogWasReset). The fill's batch and
+// the first-body repair's (repairBatch) both take them so; what names the batch in the errors.
+func (f *filler) lockBatch(ctx context.Context, tx pgx.Tx, what string) (batchLocks, error) {
+	if _, err := tx.Exec(ctx, batchBoundsQuery, statementTimeout(0)); err != nil {
+		return batchLocks{}, fmt.Errorf("keyword fill: bound the %s: %w", what, err)
+	}
+	cursor, cursorAt, stored, err := f.lockCursor(ctx, tx)
+	if err != nil {
+		return batchLocks{}, err
+	}
+	if f.holder != uuid.Nil {
+		var holds bool
+		if err := tx.QueryRow(ctx, holdCheckQuery, fillHoldName, f.holder).Scan(&holds); err != nil {
+			return batchLocks{}, fmt.Errorf("keyword fill: check the hold %q: %w", fillHoldName, err)
+		}
+		if !holds {
+			return batchLocks{}, fmt.Errorf("keyword fill: write a %s under the hold %q: %w", what, fillHoldName, duty.ErrHoldLost)
+		}
+	}
+	newest, atCursor, err := events.EventCursorCheck(ctx, tx, cursor)
+	if err != nil {
+		return batchLocks{}, fmt.Errorf("keyword fill: check the event log against the cursor: %w", err)
+	}
+	var at time.Time
+	if cursorAt != nil {
+		at = *cursorAt
+	}
+	return batchLocks{cursor: cursor, cursorAt: cursorAt, stored: stored, newest: newest,
+		reset: events.EventLogWasReset(cursor, at, newest, atCursor)}, nil
+}
+
 // issueVectorSQL is the vector of an issue's row r of the keyword table: issue_search_vector over
 // its key, its title and the markdown of the version of its primary document the row names, as
 // the issue's own search column is made (20261105145242), and over no markdown where that version
@@ -528,10 +552,8 @@ const restateIssueVectorsQuery = `
 // numbers of artifact, its primary document, by the expression the fill makes an issue's vector
 // with (issueVectorSQL), and answers how many rows it wrote. The erase calls it once it has deleted
 // those versions, so each vector reads no markdown for its version and keeps the key and the title
-// its row holds. Of the rows the fill writes, a new version being a new row, two writers update
-// one: the erase, here and in its delete of an erased node's rows, and the fill's own first-body
-// repair (repairFirstBodyQuery), which rewrites the body, body_from and vector of a comment.created
-// version marked cut whose revision 1 proves the comment's own transaction.
+// its row holds. A row is otherwise written again only by the erase's delete of an erased node's
+// rows and by the first-body repair (repairFirstBodyQuery): a new version is a new row.
 func RestateIssueVectors(ctx context.Context, tx pgx.Tx, issue, artifact string, numbers []int32) (int64, error) {
 	tag, err := tx.Exec(ctx, restateIssueVectorsQuery, issue, artifact, numbers)
 	if err != nil {

@@ -167,7 +167,7 @@ type KindReport struct {
 	// (projection.emptyAgrees).
 	EmptyAgrees bool
 	// RowsDigest and StoreDigest digest each side as the census read it, every entry in order
-	// (sideDigest), so the report carries a figure of each side and not only a count of where the
+	// (sideFigures), so the report carries a figure of each side and not only a count of where the
 	// two part.
 	RowsDigest, StoreDigest string
 	// CountsPopulations says the kind reports its marked rows as two populations
@@ -221,7 +221,7 @@ type StoreReport struct {
 	Decisions *DecisionsCensus
 	// KeywordCutFirstBodies is how many comment.created versions of the keyword table keep their
 	// event's cut text although revision 1 of the comment's blocks proves the comment's own
-	// transaction wrote it (textversions.ProvenCutFirstBodiesQuery): versions a fill of the release
+	// transaction wrote it (textversions.CountProvenCutFirstBodies): versions a fill of the release
 	// before this one decided, which this release's fill rebuilds with its first-body repair when it
 	// takes its hold. It reads 0 once the repair has run, and refuses nothing, as the collision census
 	// refuses nothing: the driver that watches it holds it to zero.
@@ -1168,9 +1168,9 @@ var ProvedSessionComments = `
 //
 // A message whose row names its node names people too: its author, read as a comment's is, and
 // the owner the server proved of a session that wrote it. A message's author is recorded from this
-// release on (graphstore.Authored, api's writeMessageNode), by the write that names the message's
-// node on its row, so only a messages row whose node_kind is set names anybody here: an older
-// build's row recorded no author.
+// release on (graphstore.QueueAuthored, api's createStoredMessage), by the write that names the
+// message's node on its row, so only a messages row whose node_kind is set names anybody here: an
+// older build's row recorded no author.
 //
 // An ask whose row names its node names people too: its author, read as a
 // comment's is (graphstore.AskFacts states its authored_by), and the person whose answer it holds,
@@ -1195,7 +1195,7 @@ var ProvedSessionComments = `
 // A row of the one inbox names people too: this release's writers state
 // what each such row says as a tuple to or from the person's node, and make that node in the same
 // statement, so the person a row marked by them names is a node the store must hold. They are the
-// login of each user_threads row the one writer of a thread marked (marked_version set,
+// login of each user_threads row the one writer of a thread marked (marked_seq set,
 // inboxwrite.Record through graphstore.ToPerson, which states the row's participates_in and
 // delivered_to); the login of each row of the five read-state tables whose mark the store holds
 // (tuples_stored_at set, graphstore.FromPerson, which states read_through, cleared, reply_read,
@@ -1231,11 +1231,9 @@ func commentPeople(authors string) string {
 		union all
 		select m.author->>'owner'
 		from messages m
-		where ` + MessagesNameTheirNode + ` and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
-		  and m.author->'act'->>'session' = m.author->>'id'
-		  and octet_length(m.author->>'id') <= ` + addressBound + `
+		where ` + MessagesNameTheirNode + ` and ` + provedSessionOwner("m.author") + `
 		union all
-		select t.login from user_threads t where t.marked_version is not null
+		select t.login from user_threads t where t.marked_seq is not null
 		union all
 		select r.login from user_agent_read r where r.tuples_stored_at is not null
 		union all
@@ -1250,7 +1248,7 @@ func commentPeople(authors string) string {
 		select waiting.login
 		from asks a` + asks.AskedOfPersonJoins + `
 		cross join lateral (select ` + asks.AskedOfPersonExpression + ` as login) waiting
-		where a.tuples_stored_at is not null and a.state = 'open'
+		where a.tuples_stored_at is not null and a.state = '` + asks.StateOpen + `'
 		  and octet_length(user_threads_login(waiting.login)) <= ` + addressBound
 	return `
 	select distinct user_threads_login(author.login) as login
@@ -1518,7 +1516,7 @@ func recordedSessions(authors, messagesNamed string) string {
 		select d.session_id, null, d.created_at from message_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
 		union all
-		select substring(f.destination from ` + strconv.Itoa(len(contracts.AgentTopicPrefix)+1) + `), null, f.created_at
+		select substring(f.destination from ` + agentTopicFrom + `), null, f.created_at
 		from comment_fallback_copies f
 		where f.published and f.destination like '` + contracts.AgentTopicPrefix + `%'
 		union all
@@ -2048,13 +2046,14 @@ func blockLinkKinds() []string {
 
 // censusOfKind reads one kind: how many rows and nodes not gone there are, the differences in
 // each direction with the first reportedDifferences of them, the digest of each side
-// (sideDigests), and, for a kind that has them, its two populations and its narrowings. args are
+// (sideFigures), and, for a kind that has them, its two populations and its narrowings. args are
 // what the kind's rows bind, none but for a kind that binds its names (projection.names) or its
 // link kinds (projection.linked).
 //
-// The counts and the digests are scalar subqueries of one statement rather than a round trip
-// each, so a census of seven kinds costs seven reads here and not forty. Each subquery is the
-// statement it was on its own, so each is planned and streamed exactly as before.
+// The counts and the digests are read in one statement rather than a round trip each, and each
+// side is read once for its count and its digest both (sideFigures); the populations and each
+// narrowing are a read of their own. Each difference count is the statement it was on its own, so
+// each is planned and streamed exactly as before.
 func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note,
 		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", EmptyAgrees: held.emptyAgrees,
@@ -2069,16 +2068,14 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	if unmarked == "" {
 		unmarked = "select 0"
 	}
-	rowsDigest, storeDigest := sideDigests(held, read)
-	if err := tx.QueryRow(ctx, `select
-		(select count(*) from (`+held.rows+`) rows_read),
-		(select count(*) from (`+read.nodes+`) nodes_read),
+	rowsSide, storeSide := sideFigures(held, read)
+	if err := tx.QueryRow(ctx, `select rows_read.counted, nodes_read.counted,
 		(select count(*) from (`+read.rowsFound+`) rows_found),
 		(select count(*) from (`+read.nodesFound+`) nodes_found),
 		(`+pastBound+`),
 		(`+unmarked+`),
-		(`+rowsDigest+`),
-		(`+storeDigest+`)`, args...,
+		rows_read.digest, nodes_read.digest
+		from (`+rowsSide+`) rows_read, (`+storeSide+`) nodes_read`, args...,
 	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences, &kind.PastBound, &kind.Unmarked,
 		&kind.RowsDigest, &kind.StoreDigest); err != nil {
 		return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
@@ -2111,24 +2108,25 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	return kind, nil
 }
 
-// sideDigests is the digest of each side of held as the census reads it (its rows, and read.nodes:
-// its live nodes or its tuples), each the md5 of every entry of that side in order, one line each:
-// a node's or a row's kind, address and digest, or a relation written from_kind:from_id kind ->
+// sideFigures is the read of each side of held as the census reads it (its rows, and read.nodes:
+// its live nodes or its tuples), each one aggregate of one row: how many entries the side holds
+// (counted), and its digest, the md5 of every entry of that side in order, one line each: a node's
+// or a row's kind, address and digest, or a relation written from_kind:from_id kind ->
 // to_kind:to_id. Two sides that agree entry for entry digest alike, and the empty side digests as
 // md5 of the empty string.
-func sideDigests(held projection, read kindSides) (rows, store string) {
-	digest := func(entry, from string) string {
-		return `select md5(coalesce(string_agg(` + entry + `, E'\n' order by ` + entry + `), '')) from (` + from + `)`
+func sideFigures(held projection, read kindSides) (rows, store string) {
+	figures := func(entry, from string) string {
+		return `select count(*) as counted, md5(coalesce(string_agg(` + entry + `, E'\n' order by ` + entry + `), '')) as digest from (` + from + `)`
 	}
 	if held.tuples != "" {
-		return digest(`coalesce(side.node_kind, '') || ':' || coalesce(side.node_address, '') || ' ' || side.kind || ' -> ' || side.to_kind || ':' || side.to_id`,
+		return figures(`coalesce(side.node_kind, '') || ':' || coalesce(side.node_address, '') || ' ' || side.kind || ' -> ' || side.to_kind || ':' || side.to_id`,
 				held.rows+`) side (row_label, node_kind, node_address, kind, to_kind, to_id`),
-			digest(`side.from_kind || ':' || side.from_id || ' ' || side.kind || ' -> ' || side.to_kind || ':' || side.to_id`,
+			figures(`side.from_kind || ':' || side.from_id || ' ' || side.kind || ' -> ' || side.to_kind || ':' || side.to_id`,
 				read.nodes+`) side (from_kind, from_id, kind, to_kind, to_id`)
 	}
-	return digest(`coalesce(side.node_kind, '') || ':' || coalesce(side.node_address, '') || ' ' || coalesce(side.digest, '')`,
+	return figures(`coalesce(side.node_kind, '') || ':' || coalesce(side.node_address, '') || ' ' || coalesce(side.digest, '')`,
 			held.rows+`) side (row_label, node_kind, node_address, digest`),
-		digest(`side.kind || ':' || side.id || ' ' || side.digest`, read.nodes+`) side (kind, id, digest`)
+		figures(`side.kind || ':' || side.id || ' ' || side.digest`, read.nodes+`) side (kind, id, digest`)
 }
 
 // kindSides are the reads censusOfKind counts of one kind besides its rows: its node side, and the
@@ -2283,7 +2281,7 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 // after them, ending with the verdict. A kind held triple by triple prints the store's tuple count
 // and its rows' triple count, and the differences as the rows no tuple states and the tuples no row
 // projects; a store-only kind prints the far ends it leaves out as left_out. Each kind's line ends
-// with the digest of each side (sideDigests); a kind with two populations prints them on a line of
+// with the digest of each side (sideFigures); a kind with two populations prints them on a line of
 // their own, and each narrowing of a kind on a line of its own. It prints counts, digests, kinds
 // and the addresses of rows and nodes; no body, no actor and no value of an attribute leaves the
 // database.

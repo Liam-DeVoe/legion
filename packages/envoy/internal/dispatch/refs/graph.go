@@ -323,7 +323,7 @@ func keyedItemBlockTupleArm(item ItemKind, blockKind string) string {
 func blockRepliesArm(owner ItemKind) string {
 	replies := repliesFrom(owner)
 	tables, _ := replies.tables()
-	return `select '` + string(replies) + `', x.id::text, 'replies_to', '` + owner.BlockKind() + `', x.replies_to_block, x.created_at, null::bigint
+	return `select '` + string(replies) + `', x.id::text, '` + graphstore.TupleRepliesTo + `', '` + owner.BlockKind() + `', x.replies_to_block, x.created_at, null::bigint
 				from ` + tables.items + ` x where x.replies_to_block = k.node_id` + repliesPrefix(owner) + ` and ` + repliesNotStored(replies, "x")
 }
 

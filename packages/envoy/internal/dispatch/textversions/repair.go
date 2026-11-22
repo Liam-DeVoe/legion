@@ -6,11 +6,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -94,8 +91,8 @@ var ProvenCutFirstBodiesQuery = `
 	                    and (t.text is null or ` + firstRevisionWrittenAt + ` is distinct from e.created_at))`
 
 // versionComment is the comment a comment version v names, as a uuid, and null where its id is no
-// uuid.
-const versionComment = `case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end`
+// uuid (store.CastableUUID).
+var versionComment = store.CastableUUID(`v.id`)
 
 // repairKey is where the repair's walk stands: the key of the last cut comment version it read.
 type repairKey struct {
@@ -103,13 +100,13 @@ type repairKey struct {
 	seq int32
 }
 
-// repairResult is what one repair batch did: how many cut comment versions it read and rebuilt,
-// the key the next batch reads after, whether the walk is over, and how long the batch ran.
+// repairResult is what one repair batch did: how many cut comment versions it rebuilt, the key the
+// next batch reads after, whether the walk is over, and how long the batch ran.
 type repairResult struct {
-	read, rebuilt int
-	next          repairKey
-	done          bool
-	took          time.Duration
+	rebuilt int
+	next    repairKey
+	done    bool
+	took    time.Duration
 }
 
 // repairCutFirstBodies walks the keyword table's comment versions marked cut in (id, event_seq)
@@ -122,9 +119,10 @@ type repairResult struct {
 // it rebuilt. It is idempotent: a version it rebuilt holds blocks, which takes it out of the index,
 // and a cut version it does not rebuild stays where the next walk reads it and leaves it again.
 //
-// The fill's runner walks once each time it takes the hold, before its first pass
-// (runner.fillUnder): a version the repair concerns is written only by a fill of the release
-// before this one, which writes only while it holds the hold, so this build takes the hold after it.
+// The fill's runner walks it each time it takes the hold, before its first pass, and again before
+// each later pass until a walk succeeds (runner.fillUnder): a version the repair concerns is
+// written only by a fill of the release before this one, which writes only while it holds the
+// hold, so this build takes the hold after it.
 func (f *filler) repairCutFirstBodies(ctx context.Context) (int, error) {
 	key := repairKey{seq: math.MinInt32}
 	rebuilt := 0
@@ -154,7 +152,7 @@ func (f *filler) repairCutFirstBodies(ctx context.Context) (int, error) {
 }
 
 // repairBatch is one batch of the repair, in one READ COMMITTED transaction under the fill's own
-// locks, as a batch of the fill takes them (filler.batch): its bounds, the cursor row `for update`
+// locks, taken as a batch of the fill takes them (lockBatch): its bounds, the cursor row `for update`
 // (creating it at no event where none is), so it writes between two batches and never beside one
 // or beside the erase, which holds that row `for share` (HoldFillBack); under a hold, the check
 // that the hold is still this holder's (duty.ErrHoldLost otherwise); and the event log against the
@@ -172,38 +170,18 @@ func (f *filler) repairBatch(ctx context.Context, after repairKey) (repairResult
 		return repairResult{}, fmt.Errorf("keyword fill: begin a first-body repair batch: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, batchBoundsQuery, statementTimeout(0)); err != nil {
-		return repairResult{}, fmt.Errorf("keyword fill: bound the first-body repair batch: %w", err)
-	}
-	cursor, cursorAt, _, err := f.lockCursor(ctx, tx)
+	locked, err := f.lockBatch(ctx, tx, "first-body repair batch")
 	if err != nil {
 		return repairResult{}, err
 	}
-	if f.holder != uuid.Nil {
-		var holds bool
-		if err := tx.QueryRow(ctx, holdCheckQuery, fillHoldName, f.holder).Scan(&holds); err != nil {
-			return repairResult{}, fmt.Errorf("keyword fill: check the hold %q: %w", fillHoldName, err)
-		}
-		if !holds {
-			return repairResult{}, fmt.Errorf("keyword fill: write a first-body repair batch under the hold %q: %w", fillHoldName, duty.ErrHoldLost)
-		}
-	}
-	newest, atCursor, err := events.EventCursorCheck(ctx, tx, cursor)
-	if err != nil {
-		return repairResult{}, fmt.Errorf("keyword fill: check the event log against the cursor: %w", err)
-	}
-	var at time.Time
-	if cursorAt != nil {
-		at = *cursorAt
-	}
-	if events.EventLogWasReset(cursor, at, newest, atCursor) {
+	if locked.reset {
 		return repairResult{done: true, took: time.Since(started)}, nil
 	}
 	window, err := readRepairWindow(ctx, tx, after, f.repairWindow)
 	if err != nil {
 		return repairResult{}, err
 	}
-	result := repairResult{read: len(window), next: after, done: len(window) < f.repairWindow}
+	result := repairResult{next: after, done: len(window) < f.repairWindow}
 	var rebuilt []repairVersion
 	var bytes int64
 	for index, v := range window {

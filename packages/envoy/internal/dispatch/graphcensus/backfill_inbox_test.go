@@ -90,15 +90,11 @@ func joinLines(lines []string) string {
 	if len(lines) == 0 {
 		return "(none)"
 	}
-	joined := lines[0]
-	for _, line := range lines[1:] {
-		joined += "\n  " + line
-	}
-	return joined
+	return strings.Join(lines, "\n  ")
 }
 
-// backfillInboxOnce runs the backfill and fails unless every kind of this child's passes reports
-// complete, answering the report.
+// backfillInboxOnce runs the backfill and fails unless every kind the run reports is complete,
+// answering the report.
 func backfillInboxOnce(t *testing.T, database *store.Store) BackfillReport {
 	t.Helper()
 	report, err := Backfill(context.Background(), database, io.Discard)
@@ -181,8 +177,8 @@ func readThreadRow(t *testing.T, database *store.Store, login, thread string) th
 }
 
 // requireMarkedAtItsVersion fails unless login's row of thread is marked at the version it holds,
-// and marked above every delivery to login out of the thread, so R6's equation counts none of
-// them: they are in the version already.
+// and marked above every delivery to login the store holds, of this thread or any other, so R6's
+// equation counts none of this thread's: they are in the version already.
 func requireMarkedAtItsVersion(t *testing.T, database *store.Store, login, thread string, version int64) {
 	t.Helper()
 	row := readThreadRow(t, database, login, thread)
@@ -398,7 +394,7 @@ func TestTheBackfillStatesAnOlderBuildsItemBlocksLinksAndCitations(t *testing.T)
 		"ask": {from: refs.BlockNodeKind + ":ask/" + ask.id + "#b2", kind: graphstore.TuplePartOf,
 			to: "ask:" + ask.id, event: ask.event, at: partAt},
 	}
-	for _, held := range items {
+	for index, held := range items {
 		block := refs.BlockNodeKind + ":" + held.kind + "/" + held.written.id + "#b1"
 		node := held.kind + ":" + held.written.id
 		requireTuples(t, writes.database, "the "+held.kind+"'s block", []string{graphstore.TuplePartOf, graphstore.TupleMentions},
@@ -409,6 +405,8 @@ func TestTheBackfillStatesAnOlderBuildsItemBlocksLinksAndCitations(t *testing.T)
 			others[held.kind],
 		)
 		requireBlockNode(t, writes.database, held.kind+"/"+held.written.id+"#b1", graphstore.StateLive, "alice", blockAt[held.kind], held.written.event)
+		// Each tuple carries its row's source_seq: both rows of this item were written at 100+index.
+		want := int64(100 + index)
 		var seqs []*int64
 		rows, err := writes.database.Pool.Query(ctx, `
 			select legacy_source_seq from graph_tuples
@@ -417,8 +415,14 @@ func TestTheBackfillStatesAnOlderBuildsItemBlocksLinksAndCitations(t *testing.T)
 		if err == nil {
 			seqs, err = pgx.CollectRows(rows, pgx.RowTo[*int64])
 		}
-		if err != nil || len(seqs) != 2 || seqs[0] == nil || seqs[1] == nil {
-			t.Errorf("the %s's link and citation carry legacy_source_seq %v (%v), want their rows' source_seq each", held.kind, seqs, err)
+		carried := make([]any, len(seqs))
+		for at, seq := range seqs {
+			if carried[at] = "null"; seq != nil {
+				carried[at] = *seq
+			}
+		}
+		if err != nil || len(seqs) != 2 || seqs[0] == nil || *seqs[0] != want || seqs[1] == nil || *seqs[1] != want {
+			t.Errorf("the %s's link and citation carry legacy_source_seq %v (%v), want their rows' source_seq %d each", held.kind, carried, err, want)
 		}
 	}
 	requireBlockNode(t, writes.database, "comment/"+comment.id+"#b2", graphstore.StateGone, "alice", removedAt, comment.event)

@@ -36,9 +36,9 @@ import (
 // read marks, dismissals, clears and snoozes append naming the person, where a user_threads row or
 // a row of the five other read-state tables of that person is owed; an ask's ask.opened, ask.edited
 // or ask.answered, a comment's comment.created, comment.answered or comment.edited and a message's
-// message.created or message.answered, where that item's row, its blocks, their links, its
-// citations or its attempts are owed, or a comment's delivery routes (comment_mentions), or, for an
-// answer, a user_threads row of the ask's thread; and
+// message.created or message.answered, where that item's blocks, their links or its citations are
+// owed, an ask's or a message's row, a message's attempts, or a comment's delivery routes
+// (comment_mentions), or, for an answer, a user_threads row of the ask's thread; and
 // a comment.delivery, a message.delivery or a message.accepted, the receipt of an attempt its
 // sender settled or its session accepted, where an attempt row of that item is owed. Its claims
 // append no event, so only a pass started for another reason reaches an attempt one moved.

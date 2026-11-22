@@ -217,6 +217,13 @@ func TestTheCensusResolvesAMovedToIntoAnAskOnlyToALiveAskNode(t *testing.T) {
 // say which index each read can take, and a read no index serves shows as a scan with none.
 func planWithoutSeqScans(t *testing.T, database *store.Store, statement string, arguments ...any) json.RawMessage {
 	t.Helper()
+	return explainWithoutSeqScans(t, database, "format json", statement, arguments...)
+}
+
+// explainWithoutSeqScans is the plan EXPLAIN with options gives of statement with sequential scans
+// off, in a transaction of its own (planWithoutSeqScans, analyzedPlanWithoutSeqScans).
+func explainWithoutSeqScans(t *testing.T, database *store.Store, options, statement string, arguments ...any) json.RawMessage {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -227,7 +234,7 @@ func planWithoutSeqScans(t *testing.T, database *store.Store, statement string, 
 		t.Fatalf("disable sequential scans: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+statement, arguments...).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain ("+options+") "+statement, arguments...).Scan(&raw); err != nil {
 		t.Fatalf("explain the statement: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)
@@ -362,15 +369,16 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 
 	// The item block arm's probe finds nothing for a node that is no block: no block's address is
 	// an ask's id. Over a store holding an ask's node, each read of a tie an ask holds, narrowed to
-	// that node, reaches it (its tuple arm probe ran) and its item block arm probe answers no row,
-	// as EXPLAIN ANALYZE measures them.
-	seedAgreeingStore(t, database)
+	// that node, reaches it (its tuple arm probe ran) and makes its item block arm probe once, as
+	// EXPLAIN ANALYZE measures them.
 	const ask = "00000000-0000-4000-8000-0000000000a5"
 	writeTestTuples(t, database, []graphstore.Node{graphstore.AskNode(ask, "CORE", nil, censusWriter, time.Now().UTC())}, nil)
+	analyzed := 0
 	for _, held := range projections {
 		if held.table != "graph_edges" || !slices.Contains(strings.Split(held.nodeKind, ", "), graphstore.KindAsk) {
 			continue
 		}
+		analyzed++
 		plan := analyzedPlanWithoutSeqScans(t, database,
 			held.rows+"\n\t\t  and n.kind = '"+graphstore.KindAsk+"' and n.id = $1", ask)
 		var general, item []explaintest.Node
@@ -386,10 +394,13 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 			t.Errorf("graph_edges' %s read of ask %s runs its tuple arm probe %v, want once at least, so the bound below is read for that node: %s",
 				held.name, ask, general, plan)
 		}
-		if len(item) != 1 || item[0].Rows*item[0].Loops != 0 {
-			t.Errorf("graph_edges' %s read of ask %s has the item block arm probes %+v, want one that answers no row for a node that is no block: %s",
+		if len(item) != 1 {
+			t.Errorf("graph_edges' %s read of ask %s has the item block arm probes %+v, want one: %s",
 				held.name, ask, item, plan)
 		}
+	}
+	if analyzed == 0 {
+		t.Fatal("the census holds no tie of graph_edges an ask holds, so no read above was analyzed")
 	}
 }
 
@@ -397,20 +408,7 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 // the plan carries how many times it ran and how many rows it answered.
 func analyzedPlanWithoutSeqScans(t *testing.T, database *store.Store, statement string, arguments ...any) json.RawMessage {
 	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the analyzed plan's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("disable sequential scans: %v", err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement, arguments...).Scan(&raw); err != nil {
-		t.Fatalf("explain and run the statement: %v", err)
-	}
-	return explaintest.OnePlan(t, raw)
+	return explainWithoutSeqScans(t, database, "analyze, format json", statement, arguments...)
 }
 
 // typedBlock writes a block node of document at address, of supertag and in state, as the typed

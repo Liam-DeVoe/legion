@@ -480,11 +480,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			openLookups = r.holdLookups()
 			t.Cleanup(openLookups)
 			go func() {
-				response, err := r.serve(http.MethodPost, "/api/v1/comments/"+overtaken+"/deliveries",
+				// serve answers a nil response with its error, which the drive reads as no answer.
+				response, _ := r.serve(http.MethodPost, "/api/v1/comments/"+overtaken+"/deliveries",
 					map[string]any{"delivery": "btw"}, "alice", "")
-				if err != nil {
-					response = nil
-				}
 				retried <- response
 			}()
 			r.awaitTrue(t, "the Retry of comment "+overtaken+" opening its second attempt", `

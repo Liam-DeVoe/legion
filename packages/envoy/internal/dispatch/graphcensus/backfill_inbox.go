@@ -95,7 +95,7 @@ func askOpenedOf(alias string) string {
 		order by e.id limit 1), ` + noEvent + `)`
 }
 
-// inboxPass is one pass of this child's backfill: the kind it reports, the read of one batch of the
+// inboxPass is one pass of the inbox backfill: the kind it reports, the read of one batch of the
 // keys of the rows it owes after the last key read - $1 to $n the key, $n+1 the batch's size - each
 // key column read as text, the key the walk starts after, the write of one batch inside its
 // transaction, and the count of the rows it still owes.
@@ -128,23 +128,7 @@ func runInboxPass(ctx context.Context, database *store.Store, pass inboxPass, gr
 	done := KindBackfill{Kind: pass.kind}
 	after := slices.Clone(pass.start)
 	for {
-		args := make([]any, 0, len(after)+1)
-		for _, column := range after {
-			args = append(args, column)
-		}
-		args = append(args, backfillBatch)
-		rows, err := database.Pool.Query(ctx, pass.batch, args...)
-		if err != nil {
-			return done, fmt.Errorf("read the %s rows the backfill owes: %w", pass.kind, err)
-		}
-		keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([]string, error) {
-			key := make([]string, len(after))
-			targets := make([]any, len(key))
-			for index := range key {
-				targets[index] = &key[index]
-			}
-			return key, row.Scan(targets...)
-		})
+		keys, err := readKeys(ctx, database.Pool, len(after), pass.batch, batchArgs(after)...)
 		if err != nil {
 			return done, fmt.Errorf("read the %s rows the backfill owes: %w", pass.kind, err)
 		}
@@ -177,6 +161,16 @@ func runInboxPass(ctx context.Context, database *store.Store, pass inboxPass, gr
 	return done, nil
 }
 
+// batchArgs is the arguments of a pass's read of one batch (inboxPass.batch): the key the batch
+// starts after, then the batch's size.
+func batchArgs(after []string) []any {
+	args := make([]any, 0, len(after)+1)
+	for _, key := range after {
+		args = append(args, key)
+	}
+	return append(args, backfillBatch)
+}
+
 // column is the column-th of each key.
 func column(keys [][]string, index int) []string {
 	values := make([]string, len(keys))
@@ -186,9 +180,9 @@ func column(keys [][]string, index int) []string {
 	return values
 }
 
-// backfillInbox runs this child's passes in the order their facts hang on each other, and answers
-// what each did, once it has taken the statistics of every table they walk (analyzeInboxTables),
-// and taking the store's again as the passes grow it (storeGrowth).
+// backfillInbox runs the inbox backfill's passes in the order their facts hang on each other, and
+// answers what each did, once it has taken the statistics of every table they walk
+// (analyzeInboxTables), and taking the store's again as the passes grow it (storeGrowth).
 func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	if err := analyzeInboxTables(ctx, database); err != nil {
 		return nil, err
@@ -208,8 +202,8 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 	return done, nil
 }
 
-// inboxPasses is this child's passes in the order backfillInbox runs them, the order their facts
-// hang on each other.
+// inboxPasses is the inbox backfill's passes in the order backfillInbox runs them, the order their
+// facts hang on each other.
 func inboxPasses() []inboxPass {
 	passes := []inboxPass{messagesPass(), commentPointersPass(), commentMentionsPass(), pastBoundRowsPass(pastBoundComments),
 		pastBoundRowsPass(pastBoundMessages)}
@@ -224,9 +218,9 @@ func inboxPasses() []inboxPass {
 	return passes
 }
 
-// inboxTables is every table this child's passes read or write: the rows each pass walks, with its
-// item and block tables, the store's two tables, the log each row's event is read from, and the
-// owner rows a batch takes and an ask's waiting person is read under.
+// inboxTables is every table the inbox backfill's passes read or write: the rows each pass walks,
+// with its item and block tables, the store's two tables, the log each row's event is read from,
+// and the owner rows a batch takes and an ask's waiting person is read under.
 func inboxTables() []string {
 	tables := []string{"messages", "comments", "comment_mentions", "asks", "refs", "user_threads", "graph_nodes", "graph_tuples",
 		"events", "issues", "artifacts", "projects"}
@@ -368,10 +362,10 @@ func writeNodesOnce(nodes []graphstore.Node) []graphstore.Node {
 // writeRelations appends tuples in tx: those that name a person on the end ToPerson keeps them to
 // through graphstore.ToPerson, and every other through graphstore.Write, which refuses a person
 // tuple handed to it (personTuples).
-func writeRelations(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node, tuples []graphstore.Tuple) error {
+func writeRelations(ctx context.Context, tx pgx.Tx, tuples []graphstore.Tuple) error {
 	people, others := personTuples(tuples)
-	if len(nodes) > 0 || len(others) > 0 {
-		if err := graphstore.Write(ctx, tx, writeNodesOnce(nodes), others); err != nil {
+	if len(others) > 0 {
+		if err := graphstore.Write(ctx, tx, nil, others); err != nil {
 			return err
 		}
 	}
@@ -404,7 +398,7 @@ var messagesOwed = `
 	  and octet_length(coalesce(m.replies_to_block, '')) <= ` + addressBound
 
 // messagesPass states each messages row an older build wrote as this release's message writer
-// states it (api's writeMessageNode, createStoredMessage): one tuple per pointer the row holds and
+// states it (api's planMessageNode, createStoredMessage): one tuple per pointer the row holds and
 // the page a message on no issue hangs from (graphstore.MessageFacts), who wrote it
 // (graphstore.AuthorFacts), and what it owed its thread (inboxwrite.RecordOlder), under the
 // message.created or message.answered that stored it, dated at its created_at; and names its node
@@ -469,16 +463,24 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 	var nodes []graphstore.Node
 	var tuples []graphstore.Tuple
 	marked := make([]string, 0, len(read))
+	// The page of each message that sits on an agent's page, every session among their targets read
+	// in one statement (graphstore.AgentPages); the batch writes nothing before its facts below.
+	var targets []string
+	for _, held := range read {
+		if held.row.OnAgentPage() {
+			targets = append(targets, held.row.Target)
+		}
+	}
+	var pages map[string]string
+	if len(targets) > 0 {
+		if pages, err = graphstore.AgentPages(ctx, tx, targets); err != nil {
+			return inboxWrote{}, err
+		}
+	}
 	for index := range read {
 		held := &read[index]
-		if held.row.OnAgentPage() {
-			page, ok, err := graphstore.AgentPage(ctx, tx, held.row.Target)
-			if err != nil {
-				return inboxWrote{}, err
-			}
-			if ok {
-				held.row.Page = page
-			}
+		if page, ok := pages[held.row.Target]; ok && held.row.OnAgentPage() {
+			held.row.Page = page
 		}
 		var projected bool
 		if nodes, tuples, projected = graphstore.MessageFacts(nodes, tuples, held.row, held.author, held.at, held.event); !projected {
@@ -779,11 +781,7 @@ func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, erro
 	}
 	var failed []error
 	for _, pass := range rollPasses() {
-		args := make([]any, 0, len(pass.start)+1)
-		for _, key := range pass.start {
-			args = append(args, key)
-		}
-		keys, err := readKeys(ctx, database.Pool, len(pass.start), pass.batch, append(args, backfillBatch)...)
+		keys, err := readKeys(ctx, database.Pool, len(pass.start), pass.batch, batchArgs(pass.start)...)
 		if err != nil {
 			failed = append(failed, fmt.Errorf("read the %s rows another build left unmarked: %w", pass.kind, err))
 			continue
@@ -813,17 +811,21 @@ func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, erro
 // and the node of each session they name that holds none (the session pass's arm over the log,
 // eventSessions). The tick reads each event once, so each is given that write once, where a pass
 // over declines would read the log again on every tick. Until a run of the backfill has recorded
-// its horizon (backfillRan) it writes nothing: every such write is the backfill's then. It answers
-// how many declines and sessions it wrote.
+// its horizon (backfillRan) it writes nothing: every such write is the backfill's then. Its first
+// statement reads that beside whether any event in (after, through] is of a type its two reads
+// read (catchUpEventTypes), and where none is it reads nothing more, since both would answer
+// nothing: so a tick whose events hold no decline and name no session costs one statement here.
+// It answers how many declines and sessions it wrote.
 func CatchUpEvents(ctx context.Context, tx pgx.Tx, after, through int64) (int, error) {
 	if through <= after {
 		return 0, nil
 	}
-	var ran bool
-	if err := tx.QueryRow(ctx, `select `+backfillRan).Scan(&ran); err != nil {
+	var owed bool
+	if err := tx.QueryRow(ctx, `select `+backfillRan+` and exists (
+		select 1 from events e where e.id > $1 and e.id <= $2 and e.type in `+catchUpEventTypes+`)`, after, through).Scan(&owed); err != nil {
 		return 0, fmt.Errorf("read whether the backfill has run: %w", err)
 	}
-	if !ran {
+	if !owed {
 		return 0, nil
 	}
 	sessions, err := eventSessions(ctx, tx, after, through)
@@ -847,6 +849,11 @@ func CatchUpEvents(ctx context.Context, tx pgx.Tx, after, through int64) (int, e
 	}
 	return len(sessions) + int(declined.rows), nil
 }
+
+// catchUpEventTypes are the types of the events CatchUpEvents gives a write: the ask.follower_added,
+// ask.opened and comment.delivery that name a session (eventSessions), and a decline's
+// ask.resolved (declinesOwed). A read it adds over another type adds that type here.
+const catchUpEventTypes = `('ask.follower_added', 'ask.opened', 'comment.delivery', 'ask.resolved')`
 
 // InboxRowsOwed is, by the kind of each pass the block-index tick catches up (rollPasses) and of the
 // decline pass, how many rows that pass still owes: the backfill's own count of what it has left
@@ -999,8 +1006,8 @@ var pastBoundMessages = pastBoundTable{
 // of one (inboxwrite's Write.Unstored), and the trigger that fired on its insert wrote its
 // user_threads rows then, each moved row unmarked by its depth test (migration 20261116160000),
 // which the thread pass marks. The mark is what passes the row by the triggers' marker test, which
-// the root's drop of those triggers reads: without it such a row would stand
-// unmarked for good, the one row no pass takes, and the triggers would never go.
+// the release that drops those triggers reads: without it such a row would stand unmarked for
+// good, the one row no pass takes, and the triggers would never go.
 func pastBoundRowsPass(table pastBoundTable) inboxPass {
 	return inboxPass{
 		kind:      table.kind,
@@ -1140,7 +1147,7 @@ func writeCommentMentions(ctx context.Context, tx pgx.Tx, keys [][]string) (inbo
 			})
 		}
 	}
-	if err := writeRelations(ctx, tx, nil, tuples); err != nil {
+	if err := writeRelations(ctx, tx, tuples); err != nil {
 		return inboxWrote{}, fmt.Errorf("state the delivery routes of a batch of comments: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1178,7 +1185,7 @@ var inboxItemKinds = []inboxItemKind{
 }
 
 // eventOf is the event that recorded the item of this kind whose id the SQL itemID spells (a
-// uuid), read off the item's own row, which no marker of this child's is a column of.
+// uuid), read off the item's own row, which no marker of the inbox backfill is a column of.
 func (kind inboxItemKind) eventOf(itemID string) string {
 	return `(select ` + kind.event("i") + ` from ` + kind.items + ` i where i.id = ` + itemID + `)`
 }
@@ -1205,7 +1212,7 @@ func (kind inboxItemKind) lockItems(ctx context.Context, tx pgx.Tx, ids []string
 
 // blocksOwed is the block rows of kind the block pass owes: each that names no node (migration
 // 20261116140000) of an item whose node the store holds, at an address the store can key
-// (refs' itemScope.blockNodeOf).
+// (refs' ItemScope.blockNodeOf).
 func (kind inboxItemKind) blocksOwed() string {
 	return `
 	from ` + kind.blocks + ` b
@@ -1214,7 +1221,7 @@ func (kind inboxItemKind) blocksOwed() string {
 }
 
 // itemBlocksPass states each block row of kind an older build wrote as refs' item index states a
-// block it writes or takes over (indexItemBlocks): the block's node, read under its item's
+// block it writes or takes over (planItemBlocks): the block's node, read under its item's
 // visibility, project and parties and made by the block's maker at the row's created_at - live
 // where the block stands at a position, gone where the item no longer holds it - and its part_of to
 // the item, dated by the row, where the store does not place it there now; under the event that
@@ -1328,9 +1335,9 @@ func (kind inboxItemKind) linksOwed() string {
 }
 
 // itemLinksPass states each link row of kind an older build wrote as refs' item index states a link
-// it inserts (replaceItemBlockRefs): one tuple out of the block's node, under the row's own kind and
-// to its own far end, dated by the row and carrying its source_seq, made by the block's maker, under
-// the event that recorded the item; and names the block's node on the row.
+// it inserts (ItemIndexing.queueBlockRefs): one tuple out of the block's node, under the row's own
+// kind and to its own far end, dated by the row and carrying its source_seq, made by the block's
+// maker, under the event that recorded the item; and names the block's node on the row.
 func itemLinksPass(kind inboxItemKind) inboxPass {
 	return inboxPass{
 		kind: kind.links,
@@ -1409,7 +1416,7 @@ func (kind inboxItemKind) writeLinks(ctx context.Context, tx pgx.Tx, keys [][]st
 
 // citationsOwed is the refs rows out of an item of kind the citation pass owes: each whose
 // tuples_stored is false (migration 20261116135959), out of an item whose node the store holds, to
-// a far end the store can key (refs' replaceRefsOf, inboxwrite's markCitations).
+// a far end the store can key (refs' planItemReplaceOver, inboxwrite's queueMarkCitations).
 func (kind inboxItemKind) citationsOwed() string {
 	return `
 	from refs r
@@ -1418,10 +1425,10 @@ func (kind inboxItemKind) citationsOwed() string {
 }
 
 // itemCitationsPass states each refs row out of an item of kind an older build wrote as refs'
-// replaceRefsOf states a citation, and as an answer's catch-up states an older ask's (markCitations):
-// the mentions tuple of the row's own kind out of the item's node to its far end, dated by the
-// row and carrying its source_seq, made by who made the item's node, under the event that recorded
-// the item; and sets the row's tuples_stored.
+// PlanItemReplace states a citation, and as an answer's catch-up states an older ask's
+// (queueMarkCitations): the mentions tuple of the row's own kind out of the item's node to its far
+// end, dated by the row and carrying its source_seq, made by who made the item's node, under the
+// event that recorded the item; and sets the row's tuples_stored.
 func itemCitationsPass(kind inboxItemKind) inboxPass {
 	return inboxPass{
 		kind: kind.kind + "_refs",
@@ -1472,7 +1479,7 @@ func (kind inboxItemKind) writeCitations(ctx context.Context, tx pgx.Tx, keys []
 	if len(tuples) == 0 {
 		return inboxWrote{}, nil
 	}
-	if err := writeRelations(ctx, tx, nil, tuples); err != nil {
+	if err := writeRelations(ctx, tx, tuples); err != nil {
 		return inboxWrote{}, fmt.Errorf("state a batch of %s citations: %w", kind.kind, err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1490,11 +1497,11 @@ func (kind inboxItemKind) writeCitations(ctx context.Context, tx pgx.Tx, keys []
 
 // attemptTable is one of the two attempt tables: its name, the item it attempts to deliver, the
 // key columns of a row, the address of a row's node as SQL over d (graphstore.AttemptKey.ID), the
-// read of a row's key and the item's author and event, the key of a scanned row, and the join that
-// reads the receipt of a row the listener took, which recordedSessions reads the session it reached
-// by too: the first comment.delivery saying so under the comment's owner for a comment's mention,
-// and none for a message's attempt, whose receipt recordedSessions reads nothing of
-// (reachedSessions).
+// event that recorded the item, as SQL over an alias of its row, the key of a scanned row, and the
+// join that reads the receipt of a row the listener took, which recordedSessions reads the session
+// it reached by too: the first comment.delivery saying so under the comment's owner for a
+// comment's mention, and none for a message's attempt, whose receipt recordedSessions reads
+// nothing of (reachedSessions).
 type attemptTable struct {
 	table, items, item string
 	keys, address      string

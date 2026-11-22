@@ -1181,15 +1181,17 @@ func approvedVersion(ctx context.Context, q Queryer, artifactID string, number i
 // it, which set the request's edited_at (RewriteApprovalAsk). The approver took part in the
 // request's thread and the answer reached everyone else in it, which the one writer of that
 // thread records in the same step right after the event (inboxwrite.Recording.Queue), planned
-// here with what the request still owed the store, read before the answer's update marks it
-// (inboxwrite.ReadAsk); the event names the row the approver is about to hold.
+// here with what the request still owed the store, read before the answer's update marks it, and
+// the members of its thread, read in the same statement (inboxwrite.ReadAskAndMembers): nothing
+// between that read and the record's plan writes, so the record reads no members of its own; the
+// event names the row the approver is about to hold.
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
 		return err
 	}
 	answer := model.AskAnswer{User: actor.ID, Selected: []string{ApprovalOptionApprove}, Text: &reason, At: answeredAt.UTC()}
-	before, err := inboxwrite.ReadAsk(ctx, tx, ask.ID)
+	before, err := inboxwrite.ReadAskAndMembers(ctx, tx, ask.ID)
 	if err != nil {
 		return fmt.Errorf("answer approval ask: %w", err)
 	}

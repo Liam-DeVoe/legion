@@ -180,9 +180,10 @@ var markVersionedDocuments = `
 // after it commits, or later while a transaction on the instance stays open across those ticks.
 //
 // The tick reads everything first and writes after, in one batch back to back before its commit
-// (queueWrites), so its transaction holds a transaction id for those statements alone: the safe
-// horizon, the cursor and the page of events (readEventPage), which keeps, read with no lock, only
-// the comments the events name whose row names no node; then the owner locks of those comments
+// (queueWrites), so its transaction holds a transaction id for those statements and the catch-ups
+// that follow them before the commit (below) alone. It reads first: the safe horizon, the cursor
+// and the page of events (readEventPage), which keeps, read with no lock, only the comments the
+// events name whose row names no node; then the owner locks of those comments
 // alone (refs.LockCommentOwners), the lock every writer of a comments row takes, and those
 // comments' rows under them (refs.CommentsNamingNoNode), which decides again under the locks, so a
 // comment another writer gave its node between the two reads is left alone; then the rest of the
@@ -216,7 +217,10 @@ var markVersionedDocuments = `
 // takes the item rows and the user_threads rows it writes `for no key update` before it writes
 // them, and every owner and project lock it takes is one the read phase took. So the tick gives a
 // comment written after the backfill, and the rows written with it, what the backfill gives one it
-// read, with no second backfill.
+// read, with no second backfill. Last, before the commit too, each decline among the events and
+// each session they name take what the backfill gives one (graphcensus.CatchUpEvents), whose first
+// statement reads whether a backfill has run and whether any of those events is of a type its
+// writes read, and which reads nothing more where none is.
 //
 // It answers, as owed, the time since which this build owes the object pass
 // (writeObjectNodesAnotherBuildWrote), nil where it owes none. The tick owes the pass while a

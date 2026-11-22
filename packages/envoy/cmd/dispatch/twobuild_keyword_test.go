@@ -62,14 +62,15 @@ func TestTheFirstBodyRepairRebuildsACutVersionThePreviousBuildsFillWrote(t *test
 	stop(t, builds.previous())
 	stop(t, current)
 	builds.startCurrent(t, nil)
-	from, body := awaitKeywordVersion(t, builds, comment.ID, event, "blocks", 2*time.Minute)
+	// awaitKeywordVersion answers only once the version holds its body from blocks.
+	_, body := awaitKeywordVersion(t, builds, comment.ID, event, "blocks", 2*time.Minute)
 	blocks := itemblocks.Split(first)
 	texts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		texts = append(texts, block.Text)
 	}
-	if want := strings.Join(texts, "\n\n"); from != "blocks" || body != want {
-		t.Fatalf("after this build took the hold the version holds %d bytes from %q, want revision 1's %d bytes from \"blocks\"", len(body), from, len(want))
+	if want := strings.Join(texts, "\n\n"); body != want {
+		t.Fatalf("after this build took the hold the version holds %d bytes from blocks, want revision 1's %d bytes", len(body), len(want))
 	}
 	if counted := cutFirstBodiesCensus(t, builds); counted != 0 {
 		t.Fatalf("after the repair the census counts %d cut first bodies revision 1 proves, want none", counted)

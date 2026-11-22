@@ -636,8 +636,8 @@ func (a edgesBlockArm) String() string {
 	return a.arm.String() + ": " + strings.Join(strings.Fields(a.from), " ")
 }
 
-// edgesBlockArms is the list "The arms that can end at a block" of the plan of this change, as
-// this branch's view (migration 20261121120000) holds them: the arms of graph_edges whose to_kind
+// edgesBlockArms is the arms that can end at a block as migration 20261121120000 defines the view
+// graph_edges: the arms of graph_edges whose to_kind
 // is a column or one of blockNodeKinds. Over the projection tables they are refs; block_refs,
 // whose typed pointer is listed only where block_ref_listed allows its target; comment_block_refs,
 // message_block_refs and ask_block_refs, each joined to its source block, which must hold a

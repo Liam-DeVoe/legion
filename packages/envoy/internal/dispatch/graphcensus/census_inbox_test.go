@@ -149,8 +149,8 @@ func newUUID(t *testing.T, f *inboxCensus) string {
 	return id
 }
 
-// requireKindAgrees fails unless kind read rows, no difference in either direction, and the
-// counts want names of its unmarked class and its populations.
+// requireKindAgrees fails unless kind read rows, holds no difference either way, digests its rows
+// and the store alike, and counts earlier rows of the release before and this of this release.
 func requireKindAgrees(t *testing.T, report *StoreReport, name string, earlier, this int64) KindReport {
 	t.Helper()
 	kind := censusKind(t, report, name)
@@ -410,7 +410,7 @@ func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 	}
 }
 
-// The five read-state tables, through two of them: a row the backfill marked, whose mark stands at
+// The five read-state tables, through user_ask_snooze: a row the backfill marked, whose mark stands at
 // the sentinel, is the release before's, and a row a route marked under its event this release's;
 // a row with no marker is the unmarked class; a mark whose row a build of the release before
 // deleted - the log holds that build's deleting event, under which no tuple of this release stands
@@ -616,7 +616,7 @@ func TestTheCensusSnapshotIsBoundedByItsDeadline(t *testing.T) {
 		t.Fatalf("read the snapshot's settings: %v", err)
 	}
 	_ = tx.Rollback(ctx)
-	if isolation != "repeatable read" || readOnly != "on" || !strings.HasSuffix(timeout, "s") || timeout == "0" {
+	if isolation != "repeatable read" || readOnly != "on" || !strings.HasSuffix(timeout, "s") {
 		t.Errorf("the census snapshot is %q, read only %q, statement_timeout %q; want repeatable read, read only and a bound of the deadline's",
 			isolation, readOnly, timeout)
 	}

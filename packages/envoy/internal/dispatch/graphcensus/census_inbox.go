@@ -9,18 +9,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The census of the one inbox (R6, R9): every projection the one inbox read uses, held
 // to the store the way the kinds of census.go are, with the store on the expected side. Each kind
 // is held triple by triple (projection.tuples) but the two attempt tables, whose node carries
 // values as well as relations and is held digest against digest. Each reports a row no tuple
-// states and a tuple no row projects; each counts the rows a build of the release before this one
-// wrote and the backfill has not marked yet as a class of its own (unmarked), which reads zero
-// once the backfill ends; each reports its marked rows as two populations (populations), the
-// rows that release wrote and the backfill marked and the rows this release's writers wrote; and
-// each counts the tuples its projection does not hold by design as figures of their own
-// (narrowings).
+// states and a tuple no row projects; each kind of a table that holds a marker counts the rows a
+// build of the release before this one wrote and the backfill has not marked yet as a class of
+// its own (unmarked), which reads zero once the backfill ends, where published_destinations, which
+// holds no marker, and user_threads_version, which reads the marked user_threads rows alone, count
+// none; each reports its marked rows as two populations (populations), the rows that release
+// wrote and the backfill marked and the rows this release's writers wrote; and each counts the
+// tuples its projection does not hold by design as figures of their own (narrowings).
 //
 // How a kind tells its two populations apart:
 //
@@ -38,7 +40,7 @@ import (
 //     the release before's.
 //   - user_threads: the backfill states a row's read_through before it marks the row, so at or
 //     below marked_seq, and the one writer of a thread states the read_through of a row it begins
-//     after that row's insert, so above it (inboxwrite.Record's keepRow). A marked row whose
+//     after that row's insert, so above it (inboxwrite.Record's queueKeepRow). A marked row whose
 //     person's newest read_through into the thread at or below marked_seq asserts is the release
 //     before's.
 //
@@ -96,19 +98,15 @@ func fits(expr string) string {
 	return `octet_length(` + expr + `) <= ` + addressBound
 }
 
-// authorEnd is the node graphstore.AuthorOf reads off the actor column holds, as the kind and the
-// id of the far end of the authored_by tuple graphstore.AuthorFacts states: the canonical login
-// of a user, a session, or the canonical login of a personal token's owner; both null for an
-// actor that names nobody, and the id null past the store's bound, of which nothing is stated.
+// authorEnd is the node graphstore.AuthorOf reads off the actor column holds (actorAuthor), as the
+// kind and the id of the far end of the authored_by tuple graphstore.AuthorFacts states: the
+// canonical login of a user, a session, or the canonical login of a personal token's owner; both
+// null for an actor that names nobody, and the id null past the store's bound, of which nothing is
+// stated.
 func authorEnd(column string) (kind, id string) {
-	user := `(` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> '')`
-	session := `(` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> '')`
-	owner := `coalesce(` + column + `->>'owner', '') <> ''`
-	kind = `case when ` + user + ` then '` + graphstore.KindPerson + `' when ` + session + ` then '` + graphstore.KindSession +
-		`' when ` + owner + ` then '` + graphstore.KindPerson + `' end`
-	named := `case when ` + user + ` then user_threads_login(` + column + `->>'id') when ` + session + ` then ` + column +
-		`->>'id' when ` + owner + ` then user_threads_login(` + column + `->>'owner') end`
-	return kind, `case when ` + fits(named) + ` then ` + named + ` end`
+	author := `(` + actorAuthor(column) + `)`
+	named := author + `[2]`
+	return author + `[1]`, `case when ` + fits(named) + ` then ` + named + ` end`
 }
 
 // routeEnd is the session or role a route column names as model.ParseRoute reads it, as kind and
@@ -296,21 +294,19 @@ var commentMentionProjection = func() projection {
 // --- an item's blocks and their links ----------------------------------------------------------
 
 // itemProjections are the six block and link tables of an item's body (refs' item index): for each
-// of a comment, a message and an ask, its blocks, each the node of one block and its part_of the
-// item, and its links, each a tuple out of a block's node under the row's own kind.
+// of a comment, a message and an ask (inboxItemKinds), its blocks, each the node of one block and
+// its part_of the item, and its links, each a tuple out of a block's node under the row's own kind.
 func itemProjections() []projection {
 	var kinds []projection
-	for _, item := range []struct{ kind, column string }{
-		{graphstore.KindComment, "comment_id"}, {graphstore.KindMessage, "message_id"}, {graphstore.KindAsk, "ask_id"},
-	} {
-		blocks, links := item.kind+"_blocks", item.kind+"_block_refs"
+	for _, item := range inboxItemKinds {
+		blocks, links := item.blocks, item.links
 		ofItem := `n.kind = '` + graphstore.KindBlock + `' and n.id like '` + item.kind + `/%'`
 		kinds = append(kinds, projection{
 			name: item.kind + "_block", nodeKind: graphstore.KindBlock, table: blocks,
-			note: "an " + item.kind + "'s body blocks: the row side is every " + blocks + " row naming its node at a position" +
-				" the item still holds, as the triple of that node, part_of and the " + item.kind + ", against the part_of" +
-				" every live block node of a " + item.kind + " states now; a block the item no longer holds is a node the" +
-				" store holds gone, counted apart",
+			note: "the body blocks of each " + item.kind + ": the row side is every " + blocks + " row naming its node at a" +
+				" position the item still holds, as the triple of that node, part_of and the " + item.kind + ", against the" +
+				" part_of every live block node of each " + item.kind + " states now; a block the item no longer holds is a" +
+				" node the store holds gone, counted apart",
 			rows: `
 		select '` + item.kind + `_block ' || b.node_id, b.node_kind, b.node_address,
 		       '` + graphstore.TuplePartOf + `', '` + item.kind + `', b.` + item.column + `::text
@@ -328,9 +324,9 @@ func itemProjections() []projection {
 			emptyAgrees: true,
 		}, projection{
 			name: item.kind + "_block_ref", nodeKind: graphstore.KindBlock, table: links,
-			note: "the links out of an " + item.kind + "'s blocks: the row side is every " + links + " row naming its block's" +
-				" node, as the triple of that node, the row's kind and its far end, against every relation but part_of a" +
-				" live block node of a " + item.kind + " states now",
+			note: "the links out of the blocks of each " + item.kind + ": the row side is every " + links + " row naming its" +
+				" block's node, as the triple of that node, the row's kind and its far end, against every relation but" +
+				" part_of a live block node of each " + item.kind + " states now",
 			rows: `
 		select '` + item.kind + `_block_ref ' || r.from_node, r.node_kind, r.node_address, r.kind, r.to_kind, r.to_id
 		from ` + links + ` r
@@ -527,7 +523,7 @@ var publishedDeliveries = `
 	              where subject.kind = d.from_kind and subject.id = d.from_id and subject.state = '` + graphstore.StateLive + `')`
 
 var publishedDestinationsProjection = projection{
-	name: "published_destinations", nodeKind: "comment, message", table: "events.published_destinations",
+	name: "published_destinations", nodeKind: graphstore.KindComment + ", " + graphstore.KindMessage, table: "events.published_destinations",
 	note: "the session half of the outbox's record: the row side is every session and role topic of an event's" +
 		" published_destinations whose event delivered a comment or a message the store holds, as the triple of that" +
 		" item, delivered_to and the session or role, under that event, against every delivered_to a live comment or" +
@@ -545,11 +541,7 @@ var publishedDestinationsProjection = projection{
 	pastBound: `
 		select count(*) from (` + publishedPairs + `) p
 		where p.reached_kind is not null and (not ` + fits(`coalesce(p.reached_id, '')`) + ` or not ` + fits(`coalesce(p.item_id, '')`) + `)`,
-	populations: `
-		select count(*) filter (where p.created_at < ` + inboxRelease + `),
-		       count(*) filter (where ` + inboxRelease + ` is null or p.created_at >= ` + inboxRelease + `)
-		from (` + publishedPairs + `) p
-		where ` + publishedOfAStoredItem,
+	populations: createdPopulations(`(`+publishedPairs+`) p`, `p.created_at`, publishedOfAStoredItem),
 	narrowings: []narrowing{{
 		name: "owner_topics",
 		note: "topics of an issue's, a project's or a document's family, which name no node, so no tuple records who" +
@@ -613,11 +605,18 @@ var userThreadsKeyed = fits(`u.login`) + `
 		where c.id = u.thread_id and not (` + refs.CommentInTheStore + `)))`
 
 // userThreadsRowOf is true where the person n.id holds a user_threads row of the thread held names,
-// with more predicates over that row u.
+// with more predicates over that row u. The thread's id is cast only where it is a uuid
+// (store.CastableUUID), whatever order the planner reads the predicates in.
 func userThreadsRowOf(more string) string {
 	return `exists (select 1 from user_threads u
-		where u.login = n.id and pg_input_is_valid(held.to_id, 'uuid') and u.thread_id = held.to_id::uuid` + more + `)`
+		where u.login = n.id and u.thread_id = ` + store.CastableUUID(`held.to_id`) + more + `)`
 }
+
+// agentThreadRoot is true of a relation held into a message on no issue, the root of an Agent
+// thread, which user_agent_thread_dismissed projects; a dismissed into an issue message's root is a
+// Reply thread's, which user_threads projects.
+var agentThreadRoot = `exists (select 1 from messages m
+	where m.id = ` + store.CastableUUID(`held.to_id`) + ` and m.issue_key is null)`
 
 // userThreadsHeld is the store side of user_threads before its narrowings: every participates_in,
 // read_through and dismissed a live person node states now into a thread's root, read as a current
@@ -632,8 +631,7 @@ func userThreadsHeld(extra string) string {
 		  and t.to_kind in `+threadRootKinds, render, `
 		  not `+userThreadsRowOf(` and u.marked_seq is null`)+`
 		  and not (held.kind = '`+graphstore.TupleDismissed+`' and held.to_kind = '`+graphstore.KindMessage+`'
-		           and exists (select 1 from messages m
-		                       where pg_input_is_valid(held.to_id, 'uuid') and m.id = held.to_id::uuid and m.issue_key is null))
+		           and `+agentThreadRoot+`)
 		  and `+extra)
 }
 
@@ -684,7 +682,7 @@ var userThreadsNarrowings = []struct{ name, note, test string }{{
 	test: `exists (select 1 from events e
 		where e.type = 'artifact.removed' and e.id > held.source_event and exists (
 			select 1 from graph_tuples placed
-			where placed.from_kind = held.to_kind and placed.from_id = held.to_id and placed.to_kind = 'artifact'
+			where placed.from_kind = held.to_kind and placed.from_id = held.to_id and placed.to_kind = '` + graphstore.KindArtifact + `'
 			  and placed.to_id = e.payload->'artifact'->>'ref_key'))`,
 }}
 
@@ -744,7 +742,8 @@ var userThreadsProjection = func() projection {
 // userThreadsPopulations splits the marked user_threads rows: a row whose person's newest
 // read_through into the thread at or below marked_seq asserts is one the backfill marked, which
 // stated that read_through before it marked the row; the one writer of a thread states the
-// read_through of a row it begins after the row's insert, above marked_seq (inboxwrite's keepRow).
+// read_through of a row it begins after the row's insert, above marked_seq (inboxwrite's
+// queueKeepRow).
 var userThreadsPopulations = `
 	select count(*) filter (where earlier.marked), count(*) filter (where not coalesce(earlier.marked, false))
 	from user_threads u
@@ -765,15 +764,16 @@ var userThreadsPopulations = `
 const replyWrites = `('comment.created', 'comment.answered', 'message.created', 'message.answered', 'ask.answered')`
 
 // replyCaused is true of a delivered_to tuple d into a person that a reply caused, the deliveries
-// user_threads.version counts (R6, R9, P13):
+// user_threads.version counts (R6, R9):
 //
 //   - a tuple whose event is a reply's write (replyWrites). A delivered_to from an ask's create or
 //     from a move of who it waits on is caused by that create's or that move's event, and raises no
-//     version, as today's trigger raises none (0096 passes p_reply false for an ask's create, and
-//     a move fires no user_threads trigger). A delivery appended under an edit's event - the
-//     delivery to a person an edit's new mention reaches, which T13's writer states - is caused by
-//     the edit and raises no version either: an edit fires no user_threads trigger (0095 fires on
-//     a comment's insert alone), so T13's writer moves no row for it.
+//     version, as 0096's trigger raises none (it passes p_reply false for an ask's create, and a
+//     move fires no user_threads trigger). A delivery appended under an edit's event - the delivery
+//     to a person an edit's new mention reaches, which inboxwrite.Record states
+//     (Write.ReachesMentioned) - is caused by the edit and raises no version either: an edit fires
+//     no user_threads trigger (0095 fires on a comment's insert alone), so that writer moves no row
+//     for it.
 //   - a tuple with no event (graphstore.NoEvent): the backfill's, where the log holds no event of
 //     the write it states, and the seed's, which records no event at all. Such a tuple is judged
 //     by its near end and its moment. Only a reply delivers from a comment or a message - no create
@@ -857,13 +857,13 @@ func versionTriple(thread, version, repliedAt, lastReply string) string {
 // userThreadsVersionProjection proves R6's equation on every marked user_threads row: version is
 // marked_version plus the delivered_to tuples into that person from that thread with seq above
 // marked_seq that a reply caused (replyCaused), and replied_at and last_reply_id are the moment and
-// the near end of the newest of those same tuples (P13: the plan's reading of the same rule for the
-// two columns), newest by moment and then by seq, as the writer's update takes the later of two
-// writes at one moment (inboxwrite's moveRows). A row the backfill marked carried its replied_at
-// and last_reply_id across its mark; that reply is held to a delivery the backfill stated at or
-// below marked_seq, a reply-caused delivered_to from last_reply_id at replied_at, and enters the
-// newest as one more candidate. A row this release's writer began carried none: it records
-// replied_at null, and a delivery to its person before it began is no reply to its row.
+// the near end of the newest of those same tuples, newest by moment and then by seq, as the
+// writer's update takes the later of two writes at one moment (inboxwrite's queueMoveRows). A row
+// the backfill marked carried its replied_at and last_reply_id across its mark; that reply is held
+// to a delivery the backfill stated at or below marked_seq, a reply-caused delivered_to from
+// last_reply_id at replied_at, and enters the newest as one more candidate. A row this release's
+// writer began carried none: it records replied_at null, and a delivery to its person before it
+// began is no reply to its row.
 //
 // The store's side of a row is computed from that row's marked_version and marked_seq, which are the
 // mark the rule is stated from; nothing else of the row is read to answer it but last_reply_id and
@@ -927,10 +927,8 @@ var readStateKinds = []readStateKind{
 	// one state their marks under too.
 	{table: "user_agent_thread_dismissed", kind: graphstore.TupleDismissed, toKind: graphstore.KindMessage, toID: `r.message_id::text`,
 		moment: `r.dismissed_at`, deleter: "user_agent_state.updated", note: "a person's dismissal of an Agent thread's root",
-		// A dismissed into an issue message's root is a Reply thread's, which user_threads projects.
-		toFilter: `exists (select 1 from messages m
-			where pg_input_is_valid(held.to_id, 'uuid') and m.id = held.to_id::uuid and m.issue_key is null)`},
-	// A snooze's tuple carries its snoozed_until (decision 13).
+		toFilter: agentThreadRoot},
+	// A snooze's tuple carries its snoozed_until.
 	{table: "user_ask_snooze", kind: graphstore.TupleSnoozed, toKind: graphstore.KindAsk, toID: `r.ask_id::text`,
 		moment: `r.snoozed_until`, deleter: "user_state.updated", note: "a person's snooze of an ask"},
 }

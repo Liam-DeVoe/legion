@@ -838,7 +838,8 @@ func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockI
 			}
 		}
 	}
-	d.held = BlockIndex{blocks: blocks, links: held, stand: index.stand, placed: placed, mentioned: index.mentioned}
+	d.held = index
+	d.held.blocks, d.held.links, d.held.placed = blocks, held, placed
 	return nil
 }
 
@@ -1027,7 +1028,8 @@ func PlanOpenedAskTies(ctx context.Context, q Queryer, index BlockIndex, artifac
 		return OpenedAskTies{}, err
 	}
 	plan.stated = graphstore.Uncaused{Tuples: tuples}
-	plan.held = BlockIndex{blocks: index.blocks, links: held, stand: index.stand, placed: index.placed, mentioned: index.mentioned}
+	plan.held = index
+	plan.held.links = held
 	reached := make(map[Target]struct{}, len(plan.blocks.moved))
 	for _, target := range plan.blocks.moved {
 		reached[target] = struct{}{}

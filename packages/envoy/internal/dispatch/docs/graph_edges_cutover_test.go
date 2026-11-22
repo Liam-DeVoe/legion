@@ -312,7 +312,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	rolledBack := readEachArm(t, database, "after the rollback", moved, stores)
 	for _, edge := range deleted {
 		if view, arms, tupled := rolledBack.answering(edge); view != 0 || tupled != 0 || slices.ContainsFunc(arms, func(n int) bool { return n != 0 }) {
-			t.Errorf("after the rollback the view answers the deleted row %s %d times (the four arms %v, the tuple arm %d), want no arm: a build of the previous release deleted it",
+			t.Errorf("after the rollback the view answers the deleted row %s %d times (the moved arms %v, the store's arms %d), want no arm: a build of the previous release deleted it",
 				edge, view, arms, tupled)
 		}
 	}
@@ -389,16 +389,18 @@ func movedArms(t *testing.T, read []graphEdgesArm, deletedBy, movedBy string, wa
 	return moved
 }
 
-// statedRowTests are the per-row tests that keep a stated arm to the rows of its own table the
-// store does not answer, as the catalogue prints them, by the projection the arm is declared with:
-// a messages row that names no node, and a comments row whose pointers are no tuples, a comment
-// naming its node whether its pointers are tuples or not (migration 20261116124447).
+// notTuplesStored matches the test that keeps an arm to the rows of its own table whose tuples are
+// not stored, as the catalogue prints it.
+var notTuplesStored = regexp.MustCompile(`\bNOT (?:[a-z_]+\.)?tuples_stored\b`)
+
+// statedRowTests are the per-row tests that differ from nodelessRowTest, by the projection an arm
+// over a moved kind is declared with (movedArms) or the projection a stated arm is declared
+// stated as (requireTheStatedArmsTestTheirRows): a comments row whose pointers are no tuples, a
+// comment naming its node whether its pointers are tuples or not (migration 20261116124447), and
+// an item's refs row whose citation is no tuple.
 var statedRowTests = map[string]*regexp.Regexp{
-	"message":         nodelessRowTest,
-	"comment_pointer": regexp.MustCompile(`\bNOT (?:[a-z_]+\.)?tuples_stored\b`),
-	"citation":        regexp.MustCompile(`\bNOT (?:[a-z_]+\.)?tuples_stored\b`),
-	"item_block":      nodelessRowTest,
-	"item_link":       nodelessRowTest,
+	"comment_pointer": notTuplesStored,
+	"citation":        notTuplesStored,
 }
 
 // requireTheStatedArmsTestTheirRows holds each arm the store has begun to answer (stated) to the
@@ -422,7 +424,7 @@ func requireTheStatedArmsTestTheirRows(t *testing.T, read []graphEdgesArm) {
 		}
 	}
 	if stated == 0 {
-		t.Fatal("this test declares no arm the store has begun to answer, so the store's message and comment rows are held to nothing")
+		t.Fatal("this test declares no arm the store has begun to answer, so the refs arm's citations out of an item are held to nothing")
 	}
 }
 
@@ -492,6 +494,13 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 			continue
 		}
 		folded := strings.Join(strings.Fields(arm.text), " ")
+		// The view's own arms over graph_tuples are counted by the split each states, whatever
+		// their declaration says, so a second arm that answers the item blocks' tuples is found.
+		for _, filter := range []*regexp.Regexp{itemBlocksLeftOut, itemBlocksAlone} {
+			if filter.MatchString(folded) {
+				split[filter]++
+			}
+		}
 		joins := graphEdgesArms[index].joins
 		if len(joins) == 0 {
 			t.Errorf("arm %d (graph_tuples) is declared with no projection table it joins", index+1)
@@ -513,7 +522,6 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 			if !slices.Contains(joins, side.joins) {
 				continue
 			}
-			split[side.filter]++
 			if !side.filter.MatchString(folded) {
 				t.Errorf("arm %d (graph_tuples) %s, so a block tuple is answered twice or not at all:\n%s", index+1, side.says, arm.text)
 			}
@@ -524,7 +532,7 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 		t.Fatal("graph_edges has no arm over graph_tuples")
 	}
 	if split[itemBlocksLeftOut] != 1 || split[itemBlocksAlone] != 1 {
-		t.Errorf("graph_edges holds %d tuple arms and %d item block arms, want one of each splitting the block tuples",
+		t.Errorf("graph_edges holds %d arms over graph_tuples that leave the item blocks' tuples out and %d that read them alone, want one of each splitting the block tuples",
 			split[itemBlocksLeftOut], split[itemBlocksAlone])
 	}
 	return stores
@@ -554,8 +562,8 @@ func createViewFrom(t *testing.T, database *store.Store, migration, name string)
 
 // graphEdgesReading is one reading of the view: the whole view, the previous release's view over
 // the same rows, each of the arms over a moved kind on its own in the order movedArms
-// answers them, the tuple arm on its own, and refs.BacklinkCounts for every node kind its arm
-// table declares, kind by kind.
+// answers them, the store's arms over graph_tuples (storeArms) on their own, and
+// refs.BacklinkCounts for every node kind its arm table declares, kind by kind.
 type graphEdgesReading struct {
 	view, previous []graphEdgeRow
 	arms           [][]graphEdgeRow
@@ -564,7 +572,7 @@ type graphEdgesReading struct {
 }
 
 // answering is how often the reading answers edge: from the whole view, from each of the moved
-// arms and from the tuple arm.
+// arms and from the store's arms.
 func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tuple int) {
 	count := func(rows []graphEdgeRow) int {
 		n := 0
@@ -718,7 +726,7 @@ func carriesItsNode(t *testing.T, database *store.Store, projection string, row 
 }
 
 // requireAnsweredOnceByItsOldArm fails unless the reading answers edge once, from the arm over
-// its table, and not from the tuple arm.
+// its table, and not from the store's arms.
 func requireAnsweredOnceByItsOldArm(t *testing.T, what string, reading graphEdgesReading, moved []movedArm, edge graphEdge) {
 	t.Helper()
 	index, ok := movedArmOf(moved, graphEdgeRow{fromKind: edge.fromKind, fromID: edge.fromID, kind: edge.kind, toKind: edge.toKind, toID: edge.toID})
@@ -1383,25 +1391,25 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	// link at a type it does not allow is made by retyping the target below.
 	target := createOwedDocument(t, database, service, "CORE-1", "", "target", graphEdgeTarget, "")
 	settle(t, database, target)
-	if ticks := drainBlockIndex(t, service, "the target document"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the target document"); ticks < 2 {
 		t.Fatal("the fixture indexed no document")
 	}
 	plan := createOwedDocument(t, database, service, "CORE-1", "", "plan", graphEdgePlanWhole, "")
 	settle(t, database, plan)
-	if ticks := drainBlockIndex(t, service, "the document that points at it"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the document that points at it"); ticks < 2 {
 		t.Fatal("the fixture indexed no document holding a pointer")
 	}
 
 	legacy := createOwedDocument(t, database, service, "CORE-1", "", "legacy", graphEdgeLegacy, "")
 	settle(t, database, legacy)
-	if ticks := drainBlockIndex(t, service, "the document the store is unwritten of"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the document the store is unwritten of"); ticks < 2 {
 		t.Fatal("the fixture indexed no document to unwrite the store of")
 	}
 
 	// The retype, which no pass over plan.md follows: its stored link at r2 stands and is
 	// listed by neither arm while r2 is a callout.
 	writeVersionAsAnOlderBuild(t, database, service, target, "target.md", graphEdgeRetyped)
-	if ticks := drainBlockIndex(t, service, "the version that retypes r2"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the version that retypes r2"); ticks < 2 {
 		t.Fatal("the version that retypes r2 was not indexed")
 	}
 
@@ -1410,11 +1418,11 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	// tuple arm's join and its gone test each keep out. Version 3 brings one of them back under
 	// its own id.
 	writeVersionAsAnOlderBuild(t, database, service, plan, "plan.md", graphEdgePlanPointers)
-	if ticks := drainBlockIndex(t, service, "the version that drops two blocks"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the version that drops two blocks"); ticks < 2 {
 		t.Fatal("the version that drops two blocks was not indexed")
 	}
 	writeVersionAsAnOlderBuild(t, database, service, plan, "plan.md", graphEdgePlanRestored)
-	if ticks := drainBlockIndex(t, service, "the version that brings one back"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the version that brings one back"); ticks < 2 {
 		t.Fatal("the version that brings one back was not indexed")
 	}
 
@@ -1479,21 +1487,25 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	// The same kinds as a build before inboxArmsMovedBy writes them, one row per arm of that
 	// child's thirteen, which name no marker of its own until its backfill marks them.
 	writeItemsAsAnOlderBuild(t, database, thread, reply, ask, root)
-	var blocks, links, citations int
-	if err := database.Pool.QueryRow(ctx, `
-		select (select count(*) from comment_blocks where node_kind is not null)
-		     + (select count(*) from message_blocks where node_kind is not null)
-		     + (select count(*) from ask_blocks where node_kind is not null),
-		       (select count(*) from comment_block_refs where node_kind is not null)
-		     + (select count(*) from message_block_refs where node_kind is not null)
-		     + (select count(*) from ask_block_refs where node_kind is not null),
-		       (select count(*) from refs where tuples_stored and from_kind in ('comment', 'message', 'ask'))
-	`).Scan(&blocks, &links, &citations); err != nil {
-		t.Fatalf("count the items' marked blocks, links and citations: %v", err)
-	}
-	if blocks == 0 || links < 3 || citations < 3 {
-		t.Fatalf("the fixture's items left %d blocks naming their node, %d links and %d citations the store holds; want a block, a link and a citation of each item sort",
-			blocks, links, citations)
+	// Each item sort's marked blocks, links and citations, read table by table, so a sort that
+	// holds none of one fails here rather than passing on another sort's rows.
+	for _, sort := range []struct{ kind, blocks, links string }{
+		{"comment", "comment_blocks", "comment_block_refs"},
+		{"message", "message_blocks", "message_block_refs"},
+		{"ask", "ask_blocks", "ask_block_refs"},
+	} {
+		var blocks, links, citations int
+		if err := database.Pool.QueryRow(ctx, `
+			select (select count(*) from `+sort.blocks+` where node_kind is not null),
+			       (select count(*) from `+sort.links+` where node_kind is not null),
+			       (select count(*) from refs where tuples_stored and from_kind = $1)
+		`, sort.kind).Scan(&blocks, &links, &citations); err != nil {
+			t.Fatalf("count the %s items' marked blocks, links and citations: %v", sort.kind, err)
+		}
+		if blocks == 0 || links == 0 || citations == 0 {
+			t.Fatalf("the fixture's %s items left %d blocks naming their node, %d links and %d citations the store holds; want a block, a link and a citation of each item sort",
+				sort.kind, blocks, links, citations)
+		}
 	}
 	return graphEdgeFixture{target: target, plan: plan, anchored: anchored}
 }
@@ -1889,7 +1901,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	}
 	for _, edge := range fixture.made {
 		if view, arms, tupled := before.answering(edge); view != 1 || tupled != 1 || slices.ContainsFunc(arms, func(n int) bool { return n != 0 }) {
-			t.Errorf("before the backfill the view answers %s, which this release's writer marked, %d times (the moved arms %v, the tuple arm %d); want once, from the tuple arm",
+			t.Errorf("before the backfill the view answers %s, which this release's writer marked, %d times (the moved arms %v, the store's arms %d); want once, from the store's arms",
 				edge, view, arms, tupled)
 		}
 	}
@@ -1949,7 +1961,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	rolledBack := readEachArm(t, database, "after the rollback", moved, stores)
 	for _, edge := range deleted {
 		if view, arms, tupled := rolledBack.answering(edge); view != 0 || tupled != 0 || slices.ContainsFunc(arms, func(n int) bool { return n != 0 }) {
-			t.Errorf("after the rollback the view answers the deleted row %s %d times (the moved arms %v, the tuple arm %d), want no arm: a build of the previous release deleted it",
+			t.Errorf("after the rollback the view answers the deleted row %s %d times (the moved arms %v, the store's arms %d), want no arm: a build of the previous release deleted it",
 				edge, view, arms, tupled)
 		}
 	}

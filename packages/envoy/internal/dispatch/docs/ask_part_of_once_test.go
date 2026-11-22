@@ -78,7 +78,7 @@ func TestASettlementThatRestoresAndRewordsAnAskStatesEachPartOfOnce(t *testing.T
 		if err := rows.Scan(&part, &asserted); err != nil {
 			t.Fatalf("count the part_of of ask %s's parts: %v", askID, err)
 		}
-		if part > "ask/"+askID+"#b1" && len(part) == len("ask/"+askID+"#b10") {
+		if len(part) == len("ask/"+askID+"#b10") {
 			placedAnew++
 		}
 		if asserted != 1 {

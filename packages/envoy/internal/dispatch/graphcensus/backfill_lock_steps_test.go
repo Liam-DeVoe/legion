@@ -29,9 +29,9 @@ import (
 //
 // Each subtest seeds the rows one batch writes from, then holds, each in a transaction of its own,
 // a row of every step the batch takes and a row of every step it does not take, and runs the real
-// Backfill, or the one pass the batch is of, on a connection of its own (startBackfill). It lets go
+// Backfill, or the one pass the batch is of, on a connection of its own (startRun). It lets go
 // of each hold the run's backend queues behind, one at a time, and reads the order the run queued
-// in (followTheBackfill, followThePass). Each time the run queues it also reads, in
+// in (followTheBackfill, followTheRun, followThePass). Each time the run queues it also reads, in
 // pg_stat_activity, the statement the run waits at and, in pg_locks, the tables the run's
 // transaction holds a lock on, so a step the run took ahead of one an invariant puts first shows as
 // a lock on that step's table. The run must never queue behind a step's row the batch does not

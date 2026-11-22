@@ -3,7 +3,6 @@ package graphcensus
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -80,16 +79,7 @@ func readSessionRows(ctx context.Context, database *store.Store) ([]sessionRow, 
 	if err != nil {
 		return nil, fmt.Errorf("read the sessions the store holds no node of: %w", err)
 	}
-	defer rows.Close()
-	var missing []sessionRow
-	for rows.Next() {
-		var row sessionRow
-		if err := rows.Scan(&row.id, &row.event, &row.at); err != nil {
-			return nil, fmt.Errorf("read a session the store holds no node of: %w", err)
-		}
-		missing = append(missing, row)
-	}
-	return missing, rows.Err()
+	return scanSessionRows(rows)
 }
 
 // reachedSessions reads, of the attempt rows of table keys names (the attempt pass's keys), each
@@ -152,7 +142,7 @@ func eventSessions(ctx context.Context, q graphstore.Queryer, after, through int
 // of, each with the earliest copy that reached it, as (id, at) over s.
 var fallbackSessionsOwed = `
 	from (
-		select substring(f.destination from ` + strconv.Itoa(len(contracts.AgentTopicPrefix)+1) + `) as id, min(f.created_at) as at
+		select substring(f.destination from ` + agentTopicFrom + `) as id, min(f.created_at) as at
 		from comment_fallback_copies f
 		where f.published and f.destination like '` + contracts.AgentTopicPrefix + `%'
 		group by 1
@@ -200,7 +190,7 @@ func scanSessionRows(rows pgx.Rows) ([]sessionRow, error) {
 	for rows.Next() {
 		var row sessionRow
 		if err := rows.Scan(&row.id, &row.event, &row.at); err != nil {
-			return nil, fmt.Errorf("read a session that holds no node: %w", err)
+			return nil, fmt.Errorf("read a session the store holds no node of: %w", err)
 		}
 		missing = append(missing, row)
 	}

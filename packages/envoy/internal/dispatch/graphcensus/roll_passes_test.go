@@ -213,21 +213,21 @@ func TestAnEventOwesTheCatchUpWhileItLeavesAnInboxRowOwed(t *testing.T) {
 				Payload: model.AskEventPayload{Ask: model.Ask{ID: id, IssueKey: issue, Author: alice, CreatedAt: at}}}, err
 		}},
 	} {
-		after := newestEvent(t, writes.database)
+		after := newestEventID(t, writes.database)
 		writes.write(t, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
 			if _, err := tx.Exec(ctx, `select set_config($1, 'off', true)`, store.StoreMarkerWriterSetting); err != nil {
 				return model.Event{}, err
 			}
 			return event.write(ctx, tx)
 		})
-		through := newestEvent(t, writes.database)
+		through := newestEventID(t, writes.database)
 		if _, err := WriteOwedObjectNodes(ctx, writes.database, 4); err != nil {
 			t.Fatalf("%s: run the object pass: %v", event.name, err)
 		}
 		if owed := eventsOwe(t, writes.database, after, through); !owed {
 			t.Errorf("%s leaves an inbox row owed and owes the catch-up nothing, want it owed", event.name)
 		}
-		for {
+		for round := 1; ; round++ {
 			caught, err := CatchUpOwedRows(ctx, writes.database)
 			if err != nil {
 				t.Fatalf("%s: catch the inbox's rows up: %v", event.name, err)
@@ -235,21 +235,14 @@ func TestAnEventOwesTheCatchUpWhileItLeavesAnInboxRowOwed(t *testing.T) {
 			if !caught.More {
 				break
 			}
+			if round == 100 {
+				t.Fatalf("%s: the catch-up still reads a full batch after %d rounds, want it done", event.name, round)
+			}
 		}
 		if owed := eventsOwe(t, writes.database, after, through); owed {
 			t.Errorf("%s still owes the catch-up once it has marked the rows, want nothing owed", event.name)
 		}
 	}
-}
-
-// newestEvent is the id of the log's newest event.
-func newestEvent(t *testing.T, database *store.Store) int64 {
-	t.Helper()
-	var id int64
-	if err := database.Pool.QueryRow(context.Background(), `select coalesce(max(id), 0) from events`).Scan(&id); err != nil {
-		t.Fatalf("read the log's newest event: %v", err)
-	}
-	return id
 }
 
 // eventsOwe is EventsOweObjectPass over (after, through], failing the test on its error.

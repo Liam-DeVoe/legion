@@ -94,9 +94,10 @@ const movedParents = "block_parent_moved"
 //     gone state a document's removal states of its node, each written by its own create or
 //     removal on this branch;
 //   - the blocks child's text value and rank value of each block whose text a version wrote;
-//   - the inbox child's delivered_to of a message, and one tuple for each read mark, clear,
-//     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
-//     a key and no earlier one, so its term counts every key marked inside the window once;
+//   - the inbox child's delivered_to of a message; one tuple for each read mark, clear and snooze;
+//     and a dismissal's dismissed, with at most the retraction that ends it. Each of the tables
+//     those marks are written to keeps the newest mark of a key and no earlier one, so its term
+//     counts every key marked inside the window once;
 //   - the person, session, role and page nodes the first write that records each makes
 //     (graphstore.AuthorFacts, graphstore.QueueReached, outbox.deliveredGraph), each with its two
 //     base attributes: a page's part_of its role, and a session's part_of the role it claimed,
@@ -157,8 +158,7 @@ func storeKinds(messagesNamed string) []StoreKind {
 		// own, out of its node, which its settle states (graphstore.Attempted), and the comment's,
 		// out of the comment's node, which the outbox states under the attempt's comment.delivery
 		// receipt (outbox's mentionReached) - or, for an attempt a session's reply flipped to sent,
-		// which no receipt follows, the reply's write states (api's queueAnsweredDelivery). The
-		// base's term counted the comment's alone, the attempt being no node of its store.
+		// which no receipt follows, the reply's write states (api's queueAnsweredDelivery).
 		Name: "delivery", MovedBy: movedHere, Tuples: 2,
 		Driver: "comment_deliveries.created_at, taken by the listener: the attempt's delivered_to and the comment's" +
 			" for each attempt that reached its destination",
@@ -291,9 +291,7 @@ func storeKinds(messagesNamed string) []StoreKind {
 		// A person's part in a thread, read off user_threads, which holds one row for each person and
 		// thread, and a session's, which this branch's thread record states too
 		// (inboxwrite.Recording.Queue) with every write the session records there and no row of
-		// it, so each comment, message and ask a session wrote in the window counts one. The base's
-		// sizing counted the persons' rows alone: it was written before the thread record, from the
-		// user_threads rows a person's part was to become.
+		// it, so each comment, message and ask a session wrote in the window counts one.
 		Name: "participation", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "user_threads rows whose thread's root ask, comment or message was written in the window: a" +
 			" participates_in from the person to that root; and each comment, message and ask a session wrote in the" +
@@ -303,16 +301,13 @@ func storeKinds(messagesNamed string) []StoreKind {
 			left join comments c on u.kind = 'comment' and c.id = u.thread_id
 			left join messages m on u.kind = 'message' and m.id = u.thread_id
 			where coalesce(a.created_at, c.created_at, m.created_at) > ` + sizingWindow + `)
-			+ (select count(*) from comments where author->>'kind' = '` + graphstore.KindSession + `'
-			   and created_at > ` + sizingWindow + `)
+			+ (select count(*) from sized_comments where author_kind = '` + graphstore.KindSession + `')
 			+ (select count(*) from sized_messages where author_kind = '` + graphstore.KindSession + `')
 			+ (select count(*) from sized_ask_events where type = 'ask.opened' and actor_kind = '` + graphstore.KindSession + `'))`,
 	}, {
 		// An item's citations: each refs row of a comment, a message or an ask, which this branch's
 		// item index states as a mentions tuple out of the item's node (refs.IndexItem, and the
-		// refs grammar's re-index and rebuild-refs, which restate them). The base's sizing has no
-		// such term because the base's item index states none of them: there the refs rows were
-		// no tuples of the store.
+		// refs grammar's re-index and rebuild-refs, which restate them).
 		Name: "citation", MovedBy: movedWithInbox, Tuples: 2,
 		Driver: "refs rows of the comments, messages and asks written or edited in the window: the item's mentions" +
 			" tuple for each, and at most the retraction that ends it",
@@ -582,6 +577,7 @@ var sizingWritesWith = `
 	with recursive sized_comments as (
 		select c.id, coalesce(c.ask_id, c.reply_to, c.id) as thread,
 		       case when c.author->>'kind' = 'user' then user_threads_login(c.author->>'id') end as writer,
+		       c.author->>'kind' as author_kind,
 		       (c.reply_to is not null or c.ask_id is not null or c.answers is not null
 		        or c.replies_to_block is not null) as replies,
 		       (case when c.author->>'kind' <> '` + graphstore.KindSession + `'

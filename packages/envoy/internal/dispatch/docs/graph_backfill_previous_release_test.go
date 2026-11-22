@@ -379,8 +379,14 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // stored its comment - and where it is taken it reads the same id: it moves no row in or out of
 // what a pass owes, and no build of rule 1 has shipped. With the old text of causeOf the statements
 // give the digest recorded before.
+//
+// It was re-recorded a fourth time when causeOf came to name store.LatestEventID, itself the
+// scalar subquery `(select currval(...))`, with no select of its own around it: the case arm reads
+// the same id, once per statement as before, so it moves no row in or out of what a pass owes, and
+// no build of rule 1 has shipped. With the third text of causeOf the statements give the digest
+// recorded before.
 var markingStatementDigests = map[int]string{
-	1: "679c10edd4212c062277fcac31826bc8d371b27ebddd3e898f63e38675302f64",
+	1: "646218ee6bbd08e2be3542bf8d02a30c9d934a0191338816fcbb043054ee3c2e",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
