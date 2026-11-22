@@ -47,19 +47,19 @@ export interface DispatchStack {
  *
  * Every test file that starts a stack calls this once per stack, at its own module scope, as
  * `const stackDirectory = useDispatchStackDirectory()`, and hands the path to `startDispatchStack`.
- * The call cannot live in this module's body, and belongs at module scope rather than in the
- * `describe` body that starts the stack, for the reasons `useEnvoyStackDirectory` states.
+ * The call cannot live in this module's body, and the `afterAll` hands the directory to a removal
+ * it does not wait for, both for the reasons `useEnvoyStackDirectory` states.
  */
 export function useDispatchStackDirectory(): string {
-  return temporaryDirectory("dispatch-stack");
+  return temporaryDirectory("dispatch-stack", { removeInBackground: true });
 }
 
 /** What a caller may change about the stack it starts. */
 export interface DispatchStackOptions {
   /**
    * The directory the stack works in, which the caller reserved with
-   * {@link useDispatchStackDirectory} and the fixture removes again. It exists and is empty when
-   * `startDispatchStack` is called, and one stack has it to itself.
+   * {@link useDispatchStackDirectory}, whose `afterAll` hands it to a removal of its own. It exists
+   * and is empty when `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
   /**
@@ -110,7 +110,7 @@ export function testDatabaseServer(): string {
  * so no other program can take the port before it serves.
  *
  * The stack works in `options.work`, which the caller reserved with
- * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
+ * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it once the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
  */
 export async function startDispatchStack(options: DispatchStackOptions): Promise<DispatchStack> {

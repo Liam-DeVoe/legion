@@ -57,7 +57,8 @@ function commit(digit: string): string {
 }
 
 // Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
-// `describe` below has stopped every process writing into it.
+// `describe` below has stopped every process writing into it, and hands the two stack directories
+// to a removal it does not wait for (`useCIResultsStackDirectory`).
 const stackDirectory = useCIResultsStackDirectory();
 const cliState = temporaryDirectory("ci-results-cli-state");
 const specFiles = temporaryDirectory("ci-results-spec");

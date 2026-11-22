@@ -261,10 +261,12 @@ export interface CIResultsStackOptions {
 /**
  * Reserves the directory one stack works in, as dispatch-stack.ts's `useDispatchStackDirectory`
  * does: call it once, at a test file's module scope, and hand the path to
- * {@link startCIResultsStack}.
+ * {@link startCIResultsStack}. The directory holds the four binaries the stack builds, and its
+ * `afterAll` hands it to a removal it does not wait for, for the reason `useEnvoyStackDirectory`
+ * states.
  */
 export function useCIResultsStackDirectory(): string {
-  return temporaryDirectory("ci-results-stack");
+  return temporaryDirectory("ci-results-stack", { removeInBackground: true });
 }
 
 // The broker migrates a database of its own as it boots, after a cold build of four commands.
