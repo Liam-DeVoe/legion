@@ -139,11 +139,22 @@ var consumerSettings = map[string]consumerSetting{
 	"priority_timeout":   settingCorrected,
 }
 
-// replyInbox reports whether subject is a reply inbox as nats.NewInbox makes one: nats.InboxPrefix
-// and one token.
-func replyInbox(subject string) bool {
-	token, ok := strings.CutPrefix(subject, nats.InboxPrefix)
+// replyInbox reports whether subject is a reply inbox as a connection whose inboxes begin inbox
+// names one (nats.Conn.NewInbox): inbox, then one token.
+func replyInbox(subject, inbox string) bool {
+	token, ok := strings.CutPrefix(subject, inbox)
 	return ok && token != "" && !strings.ContainsAny(token, ".*> ")
+}
+
+// replyInboxPrefix is what every inbox the client's connections name begins with: its inbox prefix
+// (WithInboxPrefix, nats.CustomInboxPrefix) and a dot, or nats.go's _INBOX. for a client with none.
+// The listener's durable delivers to an inbox its own connection names (cmd/listener's
+// listenerDurableConfig), so an edge listener's is under _INBOX_envoy_edge_<machine id>.
+func (c *Client) replyInboxPrefix() string {
+	if prefix := c.Connection().Opts.InboxPrefix; prefix != "" {
+		return prefix + "."
+	}
+	return nats.InboxPrefix
 }
 
 // ConsumerAdoptable reads consumer name of the stream on c, as every consumer API request of this
@@ -151,9 +162,11 @@ func replyInbox(subject string) bool {
 // compares its configuration, as the server answers it, with create, the configuration its
 // family's create sends: a candidate that differs in a setting no update changes, or that holds a
 // setting this build does not know (consumerSettings), is refused as
-// consumernames.ErrUnexpectedConsumer, naming it and each such setting (adoptionRefusals). A read
-// that fails is its own error, never a refusal. A family's consumernames.Config.Adopt asks here;
-// every setting an update changes is the correction's to write after it (CorrectedConfig).
+// consumernames.ErrUnexpectedConsumer, naming it and each such setting (adoptionRefusals). A push
+// candidate must deliver to a reply inbox of c's own connections (replyInboxPrefix), as the
+// family's create on c names it. A read that fails is its own error, never a refusal. A family's
+// consumernames.Config.Adopt asks here; every setting an update changes is the correction's to
+// write after it (CorrectedConfig).
 func (c *Client) ConsumerAdoptable(ctx context.Context, name string, create jetstream.ConsumerConfig) error {
 	var response struct {
 		Config map[string]json.RawMessage `json:"config"`
@@ -165,7 +178,7 @@ func (c *Client) ConsumerAdoptable(ctx context.Context, name string, create jets
 	if response.Error != nil {
 		return fmt.Errorf("bus: read consumer %s: %w", name, response.Error)
 	}
-	why, err := adoptionRefusals(response.Config, create)
+	why, err := adoptionRefusals(response.Config, create, c.replyInboxPrefix())
 	if err != nil {
 		return fmt.Errorf("bus: compare consumer %s with its family's create: %w", name, err)
 	}
@@ -181,8 +194,10 @@ func (c *Client) ConsumerAdoptable(ctx context.Context, name string, create jets
 // not name, and a setting no update changes (settingFixed) whose value is not create's. A setting
 // absent from one side reads as its zero value, as the server and nats.go leave a zero value out.
 // A deliver subject is compared by its kind, since the create gives a fresh reply inbox each time:
-// none for a pull consumer, and a reply inbox (replyInbox) for a push one.
-func adoptionRefusals(held map[string]json.RawMessage, create jetstream.ConsumerConfig) ([]string, error) {
+// none for a pull consumer, and for a push one a reply inbox under inbox, the prefix every inbox of
+// the adopting connection begins with (replyInbox): one under another client's prefix, nats.go's
+// default or another edge machine's, delivers where the adopting client may not subscribe.
+func adoptionRefusals(held map[string]json.RawMessage, create jetstream.ConsumerConfig, inbox string) ([]string, error) {
 	create = serverDefaulted(create)
 	data, err := json.Marshal(create)
 	if err != nil {
@@ -214,8 +229,8 @@ func adoptionRefusals(held map[string]json.RawMessage, create jetstream.Consumer
 				}
 			}
 			switch push := !zero(want[key]); {
-			case push && !replyInbox(subject):
-				why = append(why, fmt.Sprintf("deliver_subject %s, not a reply inbox", shown(held[key])))
+			case push && !replyInbox(subject, inbox):
+				why = append(why, fmt.Sprintf("deliver_subject %s, not a reply inbox under %s", shown(held[key]), inbox))
 			case !push && subject != "":
 				why = append(why, fmt.Sprintf("deliver_subject %s, as a push consumer, not none", shown(held[key])))
 			}

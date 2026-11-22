@@ -16,8 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// durableRig is a lone server with the stream, a listener client in the given naming mode, the
-// selection bucket with its sentinel saying the cutover is done, and a plain connection.
+// durableRig is a lone server with the stream, a listener client in the given naming mode with
+// options (an edge listener's, edgeGrant.connectOptions), the selection bucket with its sentinel
+// saying the cutover is done, and a plain connection.
 type durableRig struct {
 	uri     string
 	client  *bus.Client
@@ -25,10 +26,10 @@ type durableRig struct {
 	durable string
 }
 
-func newDurableRig(t *testing.T, mode consumernames.Mode) *durableRig {
+func newDurableRig(t *testing.T, mode consumernames.Mode, options ...bus.ConnectOption) *durableRig {
 	t.Helper()
 	_, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConsumerNames(mode))
+	client, err := bus.ConnectOwningStream([]string{uri}, append([]bus.ConnectOption{bus.WithConsumerNames(mode)}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the listener's client: %v", err)
 	}

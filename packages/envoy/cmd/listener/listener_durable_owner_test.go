@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // The listener's durable record takes a consumer only when that consumer's own metadata names the
@@ -135,6 +136,71 @@ func TestAPrecreatedDurableCandidateIsAdoptedOnlyAsTheListenerCreatesIt(t *testi
 			}
 			if info, err := js.ConsumerInfo(bus.Stream, name); err != nil || info.PushBound {
 				t.Fatalf("the refused candidate = %+v, %v; want it held and bound to no one", info, err)
+			}
+		})
+	}
+}
+
+// An edge listener's durable delivers to its connection's own inbox, under its machine's prefix
+// (natsgrant.EdgeInboxPrefix, edgeGrant.connectOptions). So a candidate of its durable that an open
+// create names, made exactly as its create makes it (durableCreateConfig on its client, at the
+// record's start), is adopted by the fresh mode's create (ensureFreshDurable): the candidate a
+// crash between the create and the publish leaves, or a create whose answer was lost. A candidate
+// delivering under another prefix, nats.go's default, under which a shared listener's durable
+// delivers, or another edge machine's, is the listener's refusal of the durable
+// (errListenerDurableRefused), an ErrUnexpectedConsumer naming its deliver subject, and is not
+// published. Before, the adoption took only an _INBOX. deliver subject, so the edge listener
+// refused its own candidate and exited at every start until an operator replaced the durable. The
+// control is a shared listener, with nats.go's default prefix, adopting its own candidate.
+func TestAnEdgeListenerAdoptsItsOwnDurableCandidateOnly(t *testing.T) {
+	edge := &edgeGrant{inboxPrefix: natsgrant.EdgeInboxPrefix("m")}
+	for _, tc := range []struct {
+		name    string
+		edge    *edgeGrant
+		deliver string
+		adopted bool
+	}{
+		{name: "the edge listener's own candidate", edge: edge, adopted: true},
+		{name: "control: a shared listener's own candidate", adopted: true},
+		{name: "a shared listener's candidate, at the edge", edge: edge, deliver: "_INBOX.PRECREATED"},
+		{name: "another edge machine's candidate, at the edge", edge: edge, deliver: natsgrant.EdgeInboxPrefix("n") + ".PRECREATED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newDurableRig(t, consumernames.ModeFresh, tc.edge.connectOptions()...)
+			ctx := context.Background()
+			js, err := r.conn.JetStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := r.durable + "~PRECREATEDBYTHELISTENER"
+			made := durableCreateConfig(r.client, name, r.durable, bus.StreamSubjects())
+			if tc.edge != nil && !strings.HasPrefix(made.DeliverSubject, tc.edge.inboxPrefix+".") {
+				t.Fatalf("setup: the edge listener's durable delivers to %s, not under %s", made.DeliverSubject, tc.edge.inboxPrefix)
+			}
+			if tc.deliver != "" {
+				made.DeliverSubject = tc.deliver
+			}
+			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
+			if _, err := js.AddConsumer(bus.Stream, &made); err != nil {
+				t.Fatal(err)
+			}
+			op := &consumernames.Op{Kind: consumernames.OpCreate, Owner: "the listener before its crash", Candidate: name, ReservedAt: time.Now().Add(-time.Minute)}
+			if _, err := r.client.SelectionStore().Write(ctx, consumernames.DurableKey(r.durable), consumernames.Record{Start: 1, Op: op}, 0); err != nil {
+				t.Fatal(err)
+			}
+			current, err := ensureFreshDurable(ctx, r.client, r.durable, bus.StreamSubjects())
+			if tc.adopted {
+				if err != nil || current != name || r.current(t) != name {
+					t.Fatalf("ensureFreshDurable over its own candidate delivering to %s = %q, %v, record current %q; want %s adopted", made.DeliverSubject, current, err, r.current(t), name)
+				}
+				return
+			}
+			if !errors.Is(err, errListenerDurableRefused) || !errors.Is(err, consumernames.ErrUnexpectedConsumer) ||
+				!strings.Contains(err.Error(), `deliver_subject "`+made.DeliverSubject+`"`) {
+				t.Fatalf("ensureFreshDurable over %s delivering to %s = %q, %v; want the listener's refusal, ErrUnexpectedConsumer naming the deliver subject", name, made.DeliverSubject, current, err)
+			}
+			if current := r.current(t); current != "" {
+				t.Fatalf("the refused candidate was published: current %q", current)
 			}
 		})
 	}

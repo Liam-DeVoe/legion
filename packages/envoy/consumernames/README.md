@@ -166,8 +166,10 @@ revision:
     configuration). That means explicit acks, no start time, instant replay, the stream's storage,
     no deliver group, no flow control, no heartbeat, no pause, neither direct nor sourcing. For a
     session it also means a pull consumer at the server's default max waiting; for the listener's
-    durable, a push consumer delivering to a reply inbox. The comparison is an allowlist: a setting
-    the server answers that this build does not know is refused too.
+    durable, a push consumer delivering to a reply inbox under the adopting connection's own inbox
+    prefix (`_INBOX.`, or an edge listener's `_INBOX_envoy_edge_<machine id>`), where its create
+    names one. The comparison is an allowlist: a setting the server answers that this build does
+    not know is refused too.
   - A paused candidate is refused, never corrected. nats-server v2.15.1 sets a consumer's own
     pause back on every create or update of a consumer that exists (server/jetstream_api.go
     :5261-5264, server/jetstream_cluster.go :12678-12680), so only a `CONSUMER.PAUSE` request

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -58,11 +59,11 @@ func TestAnAdoptionRefusesASettingThisBuildDoesNotKnow(t *testing.T) {
 	consumers := &SessionConsumers{ackWait: time.Minute}
 	create := consumers.freshConfig("session~A", "ses_a", 3, nil)
 	held := sessionCreateAsAnswered(t, create)
-	if why, err := adoptionRefusals(held, create); err != nil || len(why) != 0 {
+	if why, err := adoptionRefusals(held, create, natsgo.InboxPrefix); err != nil || len(why) != 0 {
 		t.Fatalf("control: the candidate as its family creates it = %v, %v; want it adopted", why, err)
 	}
 	held["future_setting"] = json.RawMessage(`"on"`)
-	why, err := adoptionRefusals(held, create)
+	why, err := adoptionRefusals(held, create, natsgo.InboxPrefix)
 	if err != nil || len(why) != 1 || !strings.Contains(why[0], `future_setting "on"`) {
 		t.Fatalf("a candidate with a setting this build does not know = %v, %v; want it refused naming the setting", why, err)
 	}

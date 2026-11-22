@@ -89,8 +89,9 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 		Owner:       fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 		// The candidate as the server answers it, against the whole configuration the durable's
 		// create gives (durableCreateConfig, bus.Client.ConsumerAdoptable): one that differs in a
-		// setting no update changes, a push consumer delivering to a reply inbox, explicit acks,
-		// instant replay and no idle heartbeat among them, is refused. Its start Names checks, and
+		// setting no update changes, a push consumer delivering to a reply inbox under this
+		// client's own inbox prefix (an edge listener's machine prefix), explicit acks, instant
+		// replay and no idle heartbeat among them, is refused. Its start Names checks, and
 		// every setting an update changes is corrected in place before the bind
 		// (ensureFreshDurable). A refusal is the listener's refusal of the durable
 		// (errListenerDurableRefused), since no retry gets past a candidate only an operator can
