@@ -140,7 +140,8 @@ func (w *Workspace) WorkingCopy() string {
 	return w.Run(w.Dir, "jj", "log", "-R", w.Dir, "-r", "@", "--no-graph", "-T", "commit_id")
 }
 
-// bundleBudget bounds one Bundle: the shim's dial, its build of the bundle and its answer.
+// bundleBudget bounds one Bundle whose ctx names no deadline: the shim's dial, its build of the
+// bundle and its answer.
 const bundleBudget = 2 * time.Minute
 
 // Bundle runs the real shim against the workspace and answers the bundle it built: the daemon's
@@ -152,10 +153,15 @@ const bundleBudget = 2 * time.Minute
 // It fails no test, because the daemon's cadence asks for a bundle from a goroutine of its own,
 // where no test may be failed: every way the exchange comes to nothing, the shim's refusal among
 // them, is its error. The shim runs only while Bundle does. It is stopped, and its wrapped process
-// with it, before Bundle returns, and the end of ctx ends the exchange.
+// with it, before Bundle returns, and the end of ctx ends the exchange. A deadline ctx carries
+// bounds the exchange, and the shim's own budget for the build with it, as a test row's binary
+// deadline or the daemon's own copy budget does; a ctx with none is bounded by bundleBudget.
 func (w *Workspace) Bundle(ctx context.Context, maxBytes int) (shimwire.WorkspaceBundle, error) {
-	ctx, cancel := context.WithTimeout(ctx, bundleBudget)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, bundleBudget)
+		defer cancel()
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return shimwire.WorkspaceBundle{}, fmt.Errorf("listen for the shim: %w", err)
@@ -210,7 +216,10 @@ func (w *Workspace) ask(ctx context.Context, listener net.Listener, maxBytes int
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		return shimwire.WorkspaceBundle{}, fmt.Errorf("ack the shim's hello: %w", err)
 	}
-	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: w.Issue, MaxBytes: maxBytes, TimeoutMs: int(bundleBudget.Milliseconds())}
+	// The shim's own budget for the build is what is left of the exchange's, as the daemon hands
+	// it what is left of its own (runtime/sandbox's workspaceBundleBound).
+	budget := max(time.Millisecond, time.Until(deadline))
+	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: w.Issue, MaxBytes: maxBytes, TimeoutMs: int(budget.Milliseconds())}
 	if err := writer.WriteFrame(request); err != nil {
 		return shimwire.WorkspaceBundle{}, fmt.Errorf("ask the shim for the bundle: %w", err)
 	}

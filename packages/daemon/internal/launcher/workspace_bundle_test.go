@@ -455,13 +455,18 @@ func (f *bundleFixture) workOne() {
 }
 
 // bundleWorkspaceOne runs the real shim against the released pod's workspace and returns the
-// bundle it built (shimtest.Workspace.Bundle), under the bound the daemon asks with, failing the
-// test where the shim built none.
+// bundle it built (shimtest.Workspace.Bundle), with the bundle's byte bound the daemon asks with,
+// failing the test where the shim built none. The exchange runs until beforeDeadline runs out, as
+// the launcher's other waits do: a save that runs a while with real git and jj on a loaded machine
+// is merely slow, and one that never comes fails here, naming the bound.
 func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	f.t.Helper()
-	saved, err := f.Bundle(context.Background(), runtime.MaxWorkspaceBundleBytes)
+	bound := beforeDeadline(f.t)
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	saved, err := f.Bundle(ctx, runtime.MaxWorkspaceBundleBytes)
 	if err != nil {
-		f.t.Fatal(err)
+		f.t.Fatalf("the shim's bundle: %v (the exchange waited up to %s, to 30 s before the test binary's deadline)", err, bound.Round(time.Second))
 	}
 	return saved
 }
