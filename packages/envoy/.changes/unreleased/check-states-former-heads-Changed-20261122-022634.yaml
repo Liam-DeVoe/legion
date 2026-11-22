@@ -77,8 +77,12 @@ body: |-
     reopened pull request visits, count in the new lifecycle; the delete of an
     open row stored under a repository's old name, the re-key, keeps that row's head in the one
     history, and its trigger marks the canonical row's issue owed in the delete's own transaction,
-    whichever build deletes it, so that head's states are published. A former head's rows in
-    `check_states` go once no open pull
+    whichever build deletes it, so that head's states are published; and every application that
+    changes a pull request's history, the drain's, a pass's or a verification's, marks owed in its
+    own transaction each issue that holds an open row of the pull request when it applies, so a
+    head applied after the pull request moved to an issue that had already settled is published
+    there too, with no lock of an event owner taken and the writers' triggers still only
+    appending. A former head's rows in `check_states` go once no open pull
     request is or was at it. A check CI proves is read at the former heads after the open heads, in
     a batch of their own under its own 10 s bound, at most eight reads at a time, the head whose
     read started longest ago first (`check_states.ci_read_at`, migration `20261122042853`); a

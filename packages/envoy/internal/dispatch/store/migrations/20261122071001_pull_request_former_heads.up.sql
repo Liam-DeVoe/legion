@@ -117,21 +117,26 @@
 -- writer holds the row's lock from its write to its commit, so the next writer of the row draws
 -- its place after that commit.
 --
--- pull_request_former_heads_apply(pull request) applies a pull request's records, the records of
--- every name it goes by, under its lock, in the order of their places, before any read of its
--- former heads: an open row that moves on from a head keeps that head, verified, with the place
--- at which it reached it; an open row that goes, as the re-key's delete of the row stored under a
--- name the repository was renamed away from, keeps the head it stood at the same way, since the
--- pull request it stood for is the one its other name stands for; a close or a merge under any
--- name ends the pull request's lifecycle, so it raises the pull request's ended place, starts the
--- next generation and drops every row of history reached before it, candidates whose result was
--- recorded before it included; and a head reached before the last end is of a lifecycle that
--- ended, so a move on from it keeps nothing. A row stored under an old name can stay open, unread,
--- while the row under the canonical name closes and reopens, and the head it stands at is of the
--- lifecycle the close ended. A record of another name can commit after a record of a later place
--- was applied; whatever the order, a row of history stays only where its place is after the pull
--- request's last end, so the settler answers as it would have, had every record committed in the
--- order of its places.
+-- pull_request_former_heads_apply(pull request, issue) applies a pull request's records, the
+-- records of every name it goes by, under its lock, in the order of their places, before any read
+-- of its former heads: an open row that moves on from a head keeps that head, verified, with the
+-- place at which it reached it; an open row that goes, as the re-key's delete of the row stored
+-- under a name the repository was renamed away from, keeps the head it stood at the same way,
+-- since the pull request it stood for is the one its other name stands for; a close or a merge
+-- under any name ends the pull request's lifecycle, so it raises the pull request's ended
+-- place, starts the next generation and drops every row of history reached before it,
+-- candidates whose result was recorded before it included; and a head reached before the last
+-- end is of a lifecycle that ended, so a move on from it keeps nothing. A row stored under an old
+-- name can stay open, unread, while the row under the canonical name closes and reopens, and the
+-- head it stands at is of the lifecycle the close ended. A record of another name can commit
+-- after a record of a later place was applied; whatever the order, a row of history stays only
+-- where its place is after the pull request's last end, so the settler answers as it would have,
+-- had every record committed in the order of its places. An application that changes the
+-- history owes the issue that holds the pull request when it applies, in its own transaction,
+-- not only the issue a writer saw when it recorded the change: a record's own trigger marks the
+-- issue its writer saw, which may have given the pull request up, and settled, before the record
+-- was applied. So apply, like the answer (below), marks owed each issue an open row of the pull
+-- request is at, but the issue whose settle applies it, which reads the history next anyway.
 --
 -- pull_request_former_heads_resolve(name, number) is the identity of a pull request a name and a
 -- number stand for today: the identity of that name where the settler met it before, else the
@@ -442,8 +447,15 @@ end $$;
 
 -- Applies the records of the pull request of an identity, the records of each of its names, in the
 -- order of their places, and deletes them (above); each close or merge it applies starts the next
--- generation. The caller holds its lock. Answers how many it applied.
-create function pull_request_former_heads_apply(integer) returns integer language plpgsql as $$
+-- generation. Where that changes the pull request's history, it marks owed, in the same
+-- transaction, each issue that holds an open row of the pull request now, but $2, the issue whose
+-- settle applies it and computes its states next: the issue a writer saw when it recorded the
+-- change may hold the pull request no more, and the issue that holds it now may have settled
+-- before this application. A move of the row to another issue that commits after this read marks
+-- that issue owed itself (pull_request_former_heads_begin, check_states_owe_head), and that issue's
+-- drain waits for this transaction's lock of the pull request, so it reads this history. The
+-- caller holds the pull request's lock. Answers how many records it applied.
+create function pull_request_former_heads_apply(integer, text) returns integer language plpgsql as $$
 declare
   taken pull_request_former_heads_moves[];
   seqs bigint[];
@@ -451,6 +463,7 @@ declare
   last_end bigint;
   last_generation integer;
   entered bigint;
+  changed boolean := false;
 begin
   select coalesce(array_agg(applied order by applied.seq), '{}'), coalesce(array_agg(applied.seq), '{}')
   into taken, seqs
@@ -475,11 +488,13 @@ begin
         values ($1, fact.old_head, fact.moved_at, true, entered)
         on conflict (pull, head_sha) do update set left_at = greatest(pull_request_former_heads.left_at, excluded.left_at),
           verified = true, since = greatest(pull_request_former_heads.since, excluded.since);
+        changed := true;
       end if;
     elsif fact.op = 'UPDATE' and fact.old_open and not fact.new_open then
       last_end := greatest(last_end, fact.seq);
       last_generation := last_generation + 1;
       delete from pull_request_former_heads former where former.pull = $1 and (former.since is null or former.since < last_end);
+      changed := changed or found;
     end if;
     if fact.op = 'DELETE' or not fact.new_open then
       delete from pull_request_former_heads_rows where pull = $1 and repo = fact.repo;
@@ -489,6 +504,13 @@ begin
     end if;
   end loop;
   update pull_request_former_heads_pulls set ended = last_end, generation = last_generation where pull = $1;
+  if changed then
+    perform check_states_owe(holder.issue_key) from (
+      select distinct head.issue_key from pull_request_heads head
+      join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+      where alias.pull = $1 and head.state = 'open' and head.issue_key is not null and head.issue_key is distinct from $2
+    ) holder;
+  end if;
   return cardinality(taken);
 end $$;
 
@@ -509,7 +531,7 @@ begin
   perform pg_advisory_xact_lock_shared(hashtext('pull-request-former-heads'), 0);
   pull := pull_request_former_heads_pull_of($1, $2);
   perform pull_request_former_heads_lock(pull);
-  return pull_request_former_heads_apply(pull);
+  return pull_request_former_heads_apply(pull, null);
 end $$;
 
 -- The issue whose settle reads the results recorded against a check of a document: the issue
@@ -725,7 +747,7 @@ begin
     where stored.issue_key = $1 and stored.state = 'open' order by 1
   loop
     perform pull_request_former_heads_lock(held);
-    perform pull_request_former_heads_apply(held);
+    perform pull_request_former_heads_apply(held, $1);
     if taken > 0 then
       perform pull_request_former_heads_leave(held, $1, results ||
         case when exists (
