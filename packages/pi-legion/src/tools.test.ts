@@ -10,10 +10,7 @@ import {
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
-import {
-  createLegionDaemonClient,
-  type LegionDaemonClient,
-} from "@legion/pi-shared/daemon-client";
+import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   findHandoffReport,
   type JjRunner,
