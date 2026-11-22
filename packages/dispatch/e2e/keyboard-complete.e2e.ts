@@ -1806,6 +1806,44 @@ test("k-link-click: in the spec the reader edits and in a project document, a pl
   }
 });
 
+// SLOW(>=2s): the spec and a project document each opened once, a text selected in each and one
+// move in place from each.
+test("k-link-click: in the spec the reader edits and in a project document, one plain click on a link inside text the reader selected opens it", async ({
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  const runbook = await createProjectDocument("CORE", {
+    content: `# Replay runbook\n\nSee [the other issue](dispatch://${seed.other.key}) for the handover.\n`,
+    name: "replay-runbook.md",
+  });
+  await page.setViewportSize(WIDE);
+  for (const [view, path] of [
+    ["the editable spec", `/issues/${seed.issueKey}/spec`],
+    ["the project document", `/projects/CORE/documents/${runbook.artifact.slug}`],
+  ] as const) {
+    const step = (text: string) => `k-link-click: in ${view}, ${text}`;
+    await page.goto(path);
+    await expect(page.getByRole("status", { name: "connected" })).toHaveText("connected");
+    const link = documentEditor(page).getByRole("link", { exact: true, name: "the other issue" });
+    await expect(link, step("the document draws the dispatch:// link")).toBeVisible();
+    // The reader selects the sentence the link stands in, as to comment on it, and then clicks
+    // the link: a press and a release on the link, with no drag between them.
+    await selectEditorText(page, "the other issue for the handover");
+    expect(
+      await page.evaluate(() => document.getSelection()?.isCollapsed),
+      step("the sentence is selected")
+    ).toBe(false);
+    // R1: a primary click with no modifier key on a link opens it.
+    await markDocument(page);
+    await link.click();
+    await expect(
+      page,
+      step("one plain click on the link inside the selected text moves the page to the other issue")
+    ).toHaveURL(new RegExp(`/issues/${seed.other.key}(/|$)`));
+    expect(await reloaded(page), step("the plain click loads no new document")).toBe(false);
+  }
+});
+
 for (const view of ["the past version", "the reading pane", "the comment"] as const) {
   // SLOW(>=2s): the view opened twice, a new page loaded and two moves to the other issue.
   test(`k-link-click: in ${view}, a plain click opens each link`, async ({ context, page }) => {
