@@ -471,6 +471,19 @@ func TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt(t *testing.T)
 // renderer change spells otherwise (respellVersion).
 const listDecision = "Ship the notices in three steps"
 
+// listSection is the section of the decision headed heading in the decisions.md of issue key:
+// its paragraph links that issue's spec block hold-it, and it ends in a loose list, its items each
+// after a blank line.
+func listSection(heading, key string) string {
+	return "## " + heading + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
+}
+
+// respellList is text with the first two items of listSection's loose list written with no blank
+// line between them, as a build of another renderer version could have spelled the list.
+func respellList(text string) string {
+	return strings.Replace(text, "- first\n\n- second", "- first\n- second", 1)
+}
+
 // keptAcrossARendererChange is newDecisionsFixture with listDecision written into decisions.md,
 // kept by alice, and then left as a build of another renderer version leaves a decision it kept:
 // the version that wrote the decision stored in that renderer's spelling of the same tree,
@@ -485,7 +498,7 @@ func keptAcrossARendererChange(t *testing.T, stamp *int) (decisionsFixture, mode
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
 		"op":       "insert",
-		"markdown": "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third",
+		"markdown": listSection(listDecision, key),
 		"before":   "## Replaced",
 	}})
 	written := decisionNamed(t, readIssueDecisions(t, handler, key), listDecision)
@@ -641,83 +654,134 @@ func TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote(t *testing
 	}
 }
 
-// calloutDecision is the decision of the typed block test: an agent decision whose paragraph
-// links the spec block hold-it and which ends in a loose list, standing inside a callout in one
-// version and outside it in the other.
+// calloutDecision is the decision of the typed block tests: an agent decision whose paragraph
+// links the spec block hold-it and which ends in a loose list, standing inside a callout in some
+// versions and outside it in others.
 const calloutDecision = "Ship the notices beside the callout"
 
-// A heading line inside a typed block starts at column 0, as the typed block's lines carry no
-// prefix, so a decision cut from a stored version can start inside one, and its text read alone
-// loses the callout it stood in. alice keeps a decision at a version that a build of another
-// renderer version stored, its loose list spelled otherwise: inside a callout, a heading inside
-// the callout ending it, where the decision now stands outside the callout; or outside it, where
-// the decision now stands inside. Each text reads alone as the other, though the decision moved
-// across the callout, so the decision is compared by its text's sum: it waits for review, and
-// the spec block it links is out of date. So it does where a paragraph opening with a code span
-// of three backticks, which holds two in a row, stands before the callout and another inside it
-// before the decision: such a line opens no fenced code, and the callout's opening line between
-// them is read. So it does too where a list item opening with fenced code stands before the
-// callout and another inside it before the decision: each item's code ends at its own closing
-// line, indented two spaces, which read alone would open code, and the parser places the callout
-// and the decision inside it as they stand.
-func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testing.T) {
+// keptAsAnotherRendererStoredIt inserts now into the fixture's decisions.md, where the view must
+// read calloutDecision as text, has alice keep that decision, and then leaves the version that
+// wrote it as a build of another renderer version could have stored it: now replaced by then,
+// whose cut must give the decision as kept, and the keep holding kept's sum. kept must read alone
+// as text (pmdoc.FragmentReadsAs), so whether the decision stays kept turns only on whether each
+// text stands alone (decisionCut.alone). It answers the decision as the view then reads it, and
+// the version it was kept at.
+func keptAsAnotherRendererStoredIt(t *testing.T, fixture decisionsFixture, now, then, text, kept string) (model.Decision, int) {
+	t.Helper()
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	if !pmdoc.FragmentReadsAs(kept, text) {
+		t.Fatalf("%q does not read alone as %q; the test needs it to", kept, text)
+	}
+	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op": "insert", "markdown": now, "before": "## Replaced",
+	}})
+	written := decisionNamed(t, readIssueDecisions(t, handler, key), calloutDecision)
+	if written.ChangedVersion != version.Number || written.Text != text || fmt.Sprint(linkTargets(written)) != "[hold-it]" {
+		t.Fatalf("the decision = %#v, want it changed at version %d, written %q and linking hold-it", written, version.Number, text)
+	}
+	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
+
+	stored := versionText(t, database, id, version.Number)
+	if !strings.Contains(stored, now+"\n") {
+		t.Fatalf("version %d = %q; the test needs it to hold %q", version.Number, stored, now)
+	}
+	stored = strings.Replace(stored, now+"\n", then+"\n", 1)
+	if cuts, _ := decisionCuts(stored); cuts[sectionKey{heading: calloutDecision}].text != kept {
+		t.Fatalf("the cut of %q = %#v; the test needs it to write the decision %q", stored, cuts, kept)
+	}
+	another := pmdoc.RendererVersion - 1
+	storeVersionAs(t, database, id, version.Number, stored, &another)
+	if _, err := database.Pool.Exec(context.Background(), `
+		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
+		t.Fatalf("keep the decision as that version spelled it: %v", err)
+	}
+
+	decision := decisionNamed(t, readIssueDecisions(t, handler, key), calloutDecision)
+	if decision.Text != text {
+		t.Fatalf("the decision's text = %q, want %q", decision.Text, text)
+	}
+	return decision, version.Number
+}
+
+// A typed block writes its lines with no prefix, so a decision cut from wholly inside one reads
+// alone as it stands, as a decision outside every container does: both stand alone
+// (decisionCut.alone). alice keeps a decision at a version that a build of another renderer
+// version stored, its loose list spelled otherwise, where the decision stood inside a callout, a
+// heading inside the callout ending it, or outside the callout; and the decision now stands
+// inside the callout or outside it. The kept text and the text now each stand alone and read alone
+// as one, so the renderer's spelling is all that changed the decision's sum: the decision stays
+// kept, waiting for no review, and the spec block it links is not out of date.
+func TestADecisionKeptInsideOrOutsideATypedBlockStaysKeptAcrossARendererChange(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		keptInside bool
-		// prefix stands before the callout and inside it before the decision.
-		prefix string
+		name                  string
+		keptInside, nowInside bool
 	}{
-		{"kept inside a callout and standing outside it now", true, ""},
-		{"kept outside a callout and standing inside it now", false, ""},
-		{"kept inside a callout after paragraphs opening with a code span, and standing outside it now", true, "```a``b``` x\n\n"},
-		{"kept inside a callout after list items opening with fenced code, and standing outside it now", true, "- ```\n  code\n  ```\n\n"},
+		{"kept inside a callout and standing outside it now", true, false},
+		{"kept outside a callout and standing inside it now", false, true},
+		{"kept inside a callout and standing inside it now", true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newDecisionsFixture(t)
-			handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
-			section := "## " + calloutDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
-			kept := strings.Replace(section, "- first\n\n- second", "- first\n- second", 1)
-			inside := func(text string) string {
-				return test.prefix + ":::callout{#aside kind=\"note\" title=\"\"}\n" + test.prefix + text + "\n\n# Notes\n:::"
+			section := listSection(calloutDecision, fixture.issue.Key)
+			place := func(text string, inside bool) string {
+				if inside {
+					return ":::callout{#aside kind=\"note\" title=\"\"}\n" + text + "\n\n# Notes\n:::"
+				}
+				return text + "\n\n# Notes"
 			}
-			outside := func(text string) string { return text + "\n\n# Notes" }
-			now, then := outside(section), inside(kept)
-			if !test.keptInside {
-				now, then = inside(section), outside(kept)
+			kept := respellList(section)
+			decision, version := keptAsAnotherRendererStoredIt(t, fixture,
+				place(section, test.nowInside), place(kept, test.keptInside), section, kept)
+			if decision.Kept == nil || decision.Kept.ChangedVersion != version || decision.WaitingReview {
+				t.Errorf("the decision kept as another renderer version spelled it = %#v, want it kept at version %d and waiting for no review",
+					decision, version)
 			}
-			version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
-				"op": "insert", "markdown": now, "before": "## Replaced",
-			}})
-			written := decisionNamed(t, readIssueDecisions(t, handler, key), calloutDecision)
-			if written.ChangedVersion != version.Number || written.Text != section || fmt.Sprint(linkTargets(written)) != "[hold-it]" {
-				t.Fatalf("the decision = %#v, want it changed at version %d, written %q and linking hold-it", written, version.Number, section)
+			if stale := staleTargets(decision); len(stale) != 0 {
+				t.Errorf("the decision kept as another renderer version spelled it marks %v out of date", stale)
 			}
-			keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
+		})
+	}
+}
 
-			ctx := context.Background()
-			stored := versionText(t, database, id, version.Number)
-			// The kept text and the text now read alone as one, which is the case a cut inside a
-			// typed block refuses.
-			if !strings.Contains(stored, now+"\n") {
-				t.Fatalf("version %d = %q; the test needs it to hold %q", version.Number, stored, now)
+// A decision whose heading stands inside a callout and which no heading inside the callout ends
+// runs past the callout's closing line: its text holds that line without the callout's opening
+// line, so it does not stand alone (decisionCut.alone). alice keeps such a decision at a version
+// that a build of another renderer version stored, its loose list spelled otherwise, and the
+// decision stands so now: a paragraph after the callout is its last block, so the view's text of
+// it holds the callout's closing line, as the version's cut does. The kept text reads alone as
+// the text now, so where the parser places the callout is what decides: the decision waits for
+// review, and the spec block it links is out of date. So it does where a paragraph opening with a
+// code span of three backticks, which holds two in a row, stands before the callout and another
+// inside it before the decision: such a line opens no fenced code, and the callout's opening line
+// between them is read. So it does too where a list item opening with fenced code stands before
+// the callout and another inside it before the decision: each item's code ends at its own closing
+// line, indented two spaces, which read alone would open code, and the parser places the callout
+// and the decision inside it as they stand.
+func TestADecisionKeptRunningPastItsCalloutsClosingLineWaitsAcrossARendererChange(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// prefix stands before the callout and inside it before the decision.
+		prefix string
+	}{
+		{"a callout", ""},
+		{"a callout after paragraphs opening with a code span", "```a``b``` x\n\n"},
+		{"a callout after list items opening with fenced code", "- ```\n  code\n  ```\n\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newDecisionsFixture(t)
+			text := listSection(calloutDecision, fixture.issue.Key) + "\n:::\n\nAfter the callout."
+			place := func(text string) string {
+				return test.prefix + ":::callout{#aside kind=\"note\" title=\"\"}\n" + test.prefix + text + "\n\n# Notes"
 			}
-			another := pmdoc.RendererVersion - 1
-			storeVersionAs(t, database, id, version.Number, strings.Replace(stored, now+"\n", then+"\n", 1), &another)
-			if _, err := database.Pool.Exec(ctx, `
-				update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
-			`, id, written.BlockID, decisionTextSum(kept)); err != nil {
-				t.Fatalf("keep the decision as that version spelled it: %v", err)
-			}
-
-			decision := decisionNamed(t, readIssueDecisions(t, handler, key), calloutDecision)
-			if decision.Text != section {
-				t.Fatalf("the decision's text = %q, want %q", decision.Text, section)
-			}
-			if decision.Kept == nil || decision.Kept.ChangedVersion != version.Number || !decision.WaitingReview {
-				t.Errorf("the decision kept across the callout = %#v, want it kept at version %d and waiting for review", decision, version.Number)
+			kept := respellList(text)
+			decision, version := keptAsAnotherRendererStoredIt(t, fixture, place(text), place(kept), text, kept)
+			if decision.Kept == nil || decision.Kept.ChangedVersion != version || !decision.WaitingReview {
+				t.Errorf("the decision kept past its callout's closing line = %#v, want it kept at version %d and waiting for review",
+					decision, version)
 			}
 			if got := fmt.Sprint(staleTargets(decision)); got != "[hold-it]" {
-				t.Errorf("the decision kept across the callout marks %v out of date, want hold-it", staleTargets(decision))
+				t.Errorf("the decision kept past its callout's closing line marks %v out of date, want hold-it", staleTargets(decision))
 			}
 		})
 	}
@@ -726,13 +790,16 @@ func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testi
 // A version is cut into its decisions at the headings and typed blocks pmdoc's parser places
 // (decisionCuts), so a heading inside fenced code is the code's text. A paragraph that opens with a
 // code span of three backticks holding two in a row opens no code: the decision after it is cut,
-// and a callout opened after another such paragraph holds a decision inside it. A line of backticks
-// that also holds an info string closes no code: a heading after it inside the code opens no
-// decision. A list item, bullet or ordered, that opens with fenced code ends its code at its own
-// closing line, indented past the item's marker, which read alone would open code: a decision
-// after the item is cut, standing alone, and a callout after another such item holds a decision
-// inside it. A list item's typed block inside a callout ends at its own indented fence, which
-// leaves the callout, whose fence the renderer writes longer, holding the decision after it.
+// and a callout opened after another such paragraph holds a decision inside it, which runs past
+// the callout's closing line and so does not stand alone. A line of backticks that also holds an
+// info string closes no code: a heading after it inside the code opens no decision. A list item,
+// bullet or ordered, that opens with fenced code ends its code at its own closing line, indented
+// past the item's marker, which read alone would open code: a decision after the item is cut,
+// standing alone, and a callout after another such item holds a decision inside it, which a
+// heading inside the callout ends, so it stands alone too, as a typed block writes its lines with
+// no prefix. A list item's typed block inside a callout ends at its own indented fence, which
+// leaves the callout, whose fence the renderer writes longer, holding the decision after it, which
+// runs past that fence.
 func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 	for _, test := range []struct {
 		name, markdown, heading, text string
@@ -763,6 +830,7 @@ func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 			markdown: "- ```\n  code\n  ```\n\n:::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n\nText.\n\n# Notes\n:::",
 			heading:  "D",
 			text:     "## D\n\nText.",
+			alone:    true,
 		},
 		{
 			name:     "a decision after a list item that opens with fenced code",
@@ -796,6 +864,92 @@ func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 	}
 }
 
+// A decision's cut stands alone (decisionCut.alone) where each typed block of the markdown holds
+// the whole cut, lies wholly inside it, or lies outside it. A typed block writes its lines with no
+// prefix, so a cut inside a callout that a heading inside the callout ends, one inside a callout
+// inside a callout, one inside a callout that the outer callout's closing line closes, and one
+// that holds a whole callout each read alone as they stand, as they do beside other cuts of the
+// same markdown. A cut that starts inside a callout and runs past its closing line, to a heading
+// after it or to the markdown's end, one that starts inside an inner callout and ends in the outer
+// one, and one that starts outside a callout and ends inside it each hold one of a callout's
+// fences without the other, and none of them stands alone.
+func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T) {
+	const (
+		aside  = ":::callout{#aside kind=\"note\" title=\"\"}\n"
+		second = ":::callout{#second kind=\"note\" title=\"\"}\n"
+		outer  = "::::callout{#outer kind=\"note\" title=\"\"}\n"
+		inner  = ":::callout{#inner kind=\"note\" title=\"\"}\n"
+	)
+	for _, test := range []struct {
+		name, markdown string
+		// alone is whether each decision of the markdown, by its heading, stands alone.
+		alone map[string]bool
+	}{
+		{
+			name:     "a cut inside a callout that a heading inside the callout ends",
+			markdown: aside + "## D\n\nText.\n\n# Notes\n:::\n",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut inside a callout that runs past its closing line",
+			markdown: aside + "## D\n\nText.\n:::\n\n# Notes\n",
+			alone:    map[string]bool{"D": false},
+		},
+		{
+			name:     "a cut inside a callout that runs to the markdown's end at its closing line",
+			markdown: aside + "## D\n\nText.\n:::",
+			alone:    map[string]bool{"D": false},
+		},
+		{
+			name:     "a cut that holds a whole callout",
+			markdown: "## D\n\n" + aside + "Inside.\n:::\n\nText.\n",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut inside a callout inside a callout, both closed after it",
+			markdown: outer + inner + "## D\n\nText.\n\n# Notes\n:::\n::::\n",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut inside a callout that the outer callout's closing line closes",
+			markdown: outer + inner + "## D\n\nText.\n\n# Notes\n::::\n",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut that starts inside an inner callout and ends in the outer one",
+			markdown: outer + inner + "## D\n\nText.\n:::\n\n# Notes\n::::\n",
+			alone:    map[string]bool{"D": false},
+		},
+		{
+			name:     "a cut that starts outside a callout and ends inside it",
+			markdown: "## D\n\nText.\n\n" + aside + "Inside.\n\n# Notes\n:::\n",
+			alone:    map[string]bool{"D": false},
+		},
+		{
+			name:     "cuts inside a callout, past its closing line and after it",
+			markdown: aside + "## D\n\nText.\n\n## E\n\nText.\n:::\n\n## F\n\nText.\n",
+			alone:    map[string]bool{"D": true, "E": false, "F": true},
+		},
+		{
+			name:     "a cut that holds a whole callout and a cut inside the next",
+			markdown: "## D\n\n" + aside + "Inside.\n:::\n\n# Notes\n\n" + second + "## E\n\nText.\n\n# More\n:::\n",
+			alone:    map[string]bool{"D": true, "E": true},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cuts, read := decisionCuts(test.markdown)
+			if !read || len(cuts) != len(test.alone) {
+				t.Fatalf("decisionCuts(%q) = %#v, %t, want the decisions %v", test.markdown, cuts, read, test.alone)
+			}
+			for heading, alone := range test.alone {
+				if cut, ok := cuts[sectionKey{heading: heading}]; !ok || cut.alone != alone {
+					t.Errorf("decisionCuts(%q) cuts %s as %#v, want it alone %t", test.markdown, heading, cut, alone)
+				}
+			}
+		})
+	}
+}
+
 // sharedHeading is the heading of the tests whose decisions.md writes one heading twice: once
 // inside a quote or a list item, and once at the document's level.
 const sharedHeading = "Ship the notices once"
@@ -819,7 +973,7 @@ func afterAQuotedHeading(t *testing.T) (decisionsFixture, model.Version, model.D
 	t.Helper()
 	fixture := newDecisionsFixture(t)
 	key := fixture.issue.Key
-	section := "## " + sharedHeading + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
+	section := listSection(sharedHeading, key)
 	version := editIssueDocument(t, fixture.handler, key, fixture.decisions.Slug, []map[string]any{{
 		"op": "insert", "markdown": "> ## " + sharedHeading + "\n>\n> Quoted.\n\n" + section, "before": "## Replaced",
 	}})
@@ -843,7 +997,7 @@ func TestADecisionAfterAQuotedHeadingOfItsNameStaysKeptAcrossARendererChange(t *
 	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
 	another := pmdoc.RendererVersion - 1
 	respellVersion(t, database, id, version.Number, &another)
-	kept := strings.Replace(written.Text, "- first\n\n- second", "- first\n- second", 1)
+	kept := respellList(written.Text)
 	if _, err := database.Pool.Exec(context.Background(), `
 		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
 	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
@@ -885,7 +1039,7 @@ func TestADecisionAfterAQuotedHeadingOfItsNameMarksItsLinkOnceItsContentChanges(
 func TestADecisionAfterAListItemOpeningWithCodeMarksItsLinkOnceItsContentChanges(t *testing.T) {
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
-	section := "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
+	section := listSection(listDecision, key)
 	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
 		"op": "insert", "markdown": "- ```\n  code\n  ```\n\n" + section, "before": "## Replaced",
 	}})
@@ -962,7 +1116,7 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
 		"op":       "insert",
-		"markdown": "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third",
+		"markdown": listSection(listDecision, key),
 		"before":   "## Replaced",
 	}})
 	parsed := map[string]int{}

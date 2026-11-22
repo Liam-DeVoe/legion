@@ -74,7 +74,8 @@ func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
 
 // RenderingOutline answers offsets into the markdown its caller wrote too, as
 // ParseWithSourceStarts does: a heading's and a typed block's offsets after a U+0000 are not two
-// bytes late for each one before them, so a caller cutting the markdown at them cuts whole lines.
+// bytes late for each one before them, so a caller cutting the markdown at them cuts whole lines,
+// and each heading still names the typed block that holds it.
 func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
 	const callout = ":::callout{#c kind=\"note\" title=\"\"}\n\x00 in the callout.\n\n## B\n:::"
 	markdown := "\x00\x00 first.\n\n# A \x00\n\n" + callout + "\n\n## C\n"
@@ -83,9 +84,9 @@ func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
 		t.Fatalf("RenderingOutline(%q): %v", markdown, err)
 	}
 	want := []OutlineHeading{
-		{Start: strings.Index(markdown, "# A")},
-		{Start: strings.Index(markdown, "## B"), Typed: true},
-		{Start: strings.Index(markdown, "## C")},
+		{Start: strings.Index(markdown, "# A"), Within: -1},
+		{Start: strings.Index(markdown, "## B"), Within: 0},
+		{Start: strings.Index(markdown, "## C"), Within: -1},
 	}
 	start := strings.Index(markdown, callout)
 	if !slices.Equal(outline.Headings, want) ||

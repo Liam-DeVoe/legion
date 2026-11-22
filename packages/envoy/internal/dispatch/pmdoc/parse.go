@@ -138,10 +138,11 @@ type Outline struct {
 }
 
 // OutlineHeading is one heading of an Outline: Start is where its line starts in the markdown,
-// and Typed reports whether a typed block holds it.
+// and Within is the index in the Outline's TypedBlocks of the innermost typed block that holds
+// it, or -1 where none does.
 type OutlineHeading struct {
-	Start int
-	Typed bool
+	Start  int
+	Within int
 }
 
 // OutlineTypedBlock is one typed block of an Outline: Start is where its opening line starts in
@@ -423,9 +424,10 @@ func sourceStarts(doc *Node, root ast.Node, offset int) []int {
 // blocks alone, at offsets mapped back to markdown's bytes (startsInMarkdown).
 func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline {
 	var outline Outline
-	// walk reads parent's blocks, which typed says a typed block holds, and which end by end.
-	var walk func(parent ast.Node, typed bool, end int)
-	walk = func(parent ast.Node, typed bool, end int) {
+	// walk reads parent's blocks, which the typed block at index within of outline.TypedBlocks
+	// holds, or none where within is -1, and which end by end.
+	var walk func(parent ast.Node, within, end int)
+	walk = func(parent ast.Node, within, end int) {
 		for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
 			start := sourceStart(child)
 			if start < 0 {
@@ -434,7 +436,7 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 			switch block := child.(type) {
 			case *ast.Heading:
 				if opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Typed: typed})
+					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Within: within})
 				}
 			case *typedDirective:
 				closed := end
@@ -443,11 +445,11 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 					closed = block.closer + len(line)
 				}
 				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closed})
-				walk(block, true, closed)
+				walk(block, len(outline.TypedBlocks)-1, closed)
 			}
 		}
 	}
-	walk(root, false, len(source))
+	walk(root, -1, len(source))
 	if strings.IndexByte(markdown, 0) < 0 {
 		return outline
 	}

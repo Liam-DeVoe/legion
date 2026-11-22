@@ -733,17 +733,18 @@ func TestParseWithSourceStartsPlacesEveryTopLevelBlock(t *testing.T) {
 }
 
 // RenderingOutline places each heading and typed block where the parser does: an ATX heading the
-// document holds, or a typed block holds at the document's level, from the start of its line, and
-// a typed block from its opening line to the end of its closing line, past front matter. A heading
-// in a quote, a list item, fenced code or a footnote definition is none, nor is a setext heading,
-// and a typed block in a list item is none. A list item that opens with fenced code ends its code
-// at its own indented closing line, so the callout after it, and a heading in the callout and after
-// it, are the document's. A typed block no line of its own closes ends where the typed block
-// holding it ends.
+// document holds, or a typed block holds at the document's level, from the start of its line,
+// naming the innermost typed block that holds it by its index among the typed blocks, and a typed
+// block from its opening line to the end of its closing line, past front matter. A heading in a
+// quote, a list item, fenced code or a footnote definition is none, nor is a setext heading, and a
+// typed block in a list item is none. A list item that opens with fenced code ends its code at its
+// own indented closing line, so the callout after it, and a heading in the callout and after it,
+// are the document's. A typed block no line of its own closes ends where the typed block holding
+// it ends, and holds the heading after its opening line.
 func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.T) {
 	type heading struct {
-		line  string
-		typed bool
+		line   string
+		within int
 	}
 	for _, test := range []struct {
 		name, markdown string
@@ -754,7 +755,7 @@ func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.
 			name: "headings and typed blocks at the document's level",
 			markdown: "---\ntitle: x\n---\n\n# Top\n\n::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n" +
 				":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::\n\n## After\n",
-			headings: []heading{{"# Top", false}, {"## Inside", true}, {"### Nested", true}, {"## After", false}},
+			headings: []heading{{"# Top", -1}, {"## Inside", 0}, {"### Nested", 1}, {"## After", -1}},
 			typedBlocks: []string{
 				"::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n:::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::",
 				":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::",
@@ -769,13 +770,13 @@ func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.
 			name: "list items that open with fenced code",
 			markdown: "- ```\n  code\n  ```\n\n:::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::\n\n" +
 				"1. ```\n   code\n   ```\n\n## E\n",
-			headings:    []heading{{"## D", true}, {"## E", false}},
+			headings:    []heading{{"## D", 0}, {"## E", -1}},
 			typedBlocks: []string{":::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::"},
 		},
 		{
 			name:     "a typed block no line of its own closes",
 			markdown: "::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::\n\n## After\n",
-			headings: []heading{{"## Inner", true}, {"## After", false}},
+			headings: []heading{{"## Inner", 1}, {"## After", -1}},
 			typedBlocks: []string{
 				"::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::",
 				":::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::",
@@ -793,7 +794,7 @@ func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.
 				if at.Start > 0 && test.markdown[at.Start-1] != '\n' {
 					line = "mid-line " + line
 				}
-				headings = append(headings, heading{line, at.Typed})
+				headings = append(headings, heading{line, at.Within})
 			}
 			typedBlocks := []string{}
 			for _, block := range outline.TypedBlocks {
