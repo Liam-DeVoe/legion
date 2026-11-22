@@ -359,8 +359,9 @@ func shapedComments(comments []model.Comment, reader *displayTreeReader) []shape
 
 // shapedMessage is a message as the dashboard reads it, shaped exactly as a comment is. It is not
 // called messageRead, which is main's own name for the conversation this package answers at
-// GET /api/v1/messages/{id} (messages.go): both carry a Message field, so code written against
-// one name under the other's meaning type-checks and decodes nothing (INFRA-635).
+// GET /api/v1/messages/{id} (messages.go), and which GET /api/v2/messages/{id} reshapes
+// (messageThreadOf): both carry a Message field, so code written against one name under the
+// other's meaning type-checks and decodes nothing (INFRA-635).
 type shapedMessage struct {
 	model.Message
 	BodyTree   model.DisplayTree `json:"body_tree,omitempty"`
@@ -491,8 +492,9 @@ func (n *graphNodeRead) shape(reader *displayTreeReader) {
 	reader.text(&n.TextTree, n.GraphNode.Text)
 }
 
-// graphReferencesRead is what GET /api/v1/references answers: the queried node shaped to carry
-// its trees, and the edges, which carry no stored text of their own.
+// graphReferencesRead is what GET /api/v1/references answers, and the read GET /api/v2/references
+// pages (readReferences, referencesV2): the queried node shaped to carry its trees, and the edges,
+// which carry no stored text of their own.
 type graphReferencesRead struct {
 	Node  graphNodeRead     `json:"node"`
 	Edges []model.GraphEdge `json:"edges"`
