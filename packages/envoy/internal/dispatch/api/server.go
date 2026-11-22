@@ -1696,11 +1696,12 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // proven.
 //
 // Only those routes read it: a route whose input struct declares no actor never sees one - off the
-// network decodeJSON ignores a member its input does not declare, and logs it at debug, and only a
-// request the command bar sends in-process refuses one, 400 (judgeUndeclaredMembers) - and four of
-// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
-// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
-// ignored here as it always was.
+// network decodeJSON ignores a member its input does not declare, logs it at debug and decodes the
+// rest, and only a request the command bar sends in-process refuses one, 400
+// (judgeUndeclaredMembers) - so the caller's credential alone decides the act, and four of the
+// mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor names no
+// agent (act is nil), so there is nothing for a body to name, and its body actor is ignored here as
+// it always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {

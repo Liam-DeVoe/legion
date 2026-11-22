@@ -1430,6 +1430,32 @@ export const dispatchRouteToolSpecs = [
     routes: get("/api/v1/artifacts/{id}/references", { params: { id: "document" } }),
   },
   {
+    name: "dispatch_read_document_changes",
+    example: { document: "0190c7d2-1111-7222-8333-444444444444", from: 1, to: 2 },
+    description: `Read what changed between two stored versions of one document: the ## sections and the blocks whose text differs, that moved, or that one version alone holds, with every ask block cut out of both; decision_only says the two differ only in their asks, unchanged that they differ in nothing a section or block holds. A version the document does not have is 404 NOT_FOUND, and an artifact that is no document 400 NOT_DOCUMENT. ${AS_DATA}`,
+    arguments: (z) => ({
+      document: z.string().describe("The document's whole id."),
+      from: z
+        .number({ int: true, min: 1, max: 2147483647 })
+        .describe("The earlier version's number; below to (400 INVALID_VERSION)."),
+      to: z
+        .number({ int: true, min: 2, max: 2147483647 })
+        .describe("The later version's number; above from."),
+    }),
+    validation: crossFieldRule(
+      "from is below to.",
+      (input) =>
+        typeof input["from"] !== "number" ||
+        typeof input["to"] !== "number" ||
+        input["from"] < input["to"]
+    ),
+    strict: true,
+    routes: get("/api/v1/artifacts/{id}/changes", {
+      params: { id: "document" },
+      query: ["from", "to"],
+    }),
+  },
+  {
     name: "dispatch_list_document_subscribers",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:

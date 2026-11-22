@@ -890,6 +890,7 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_comment_blocks":               {},
 	"dispatch_list_document_events":              {},
 	"dispatch_read_document_references":          {},
+	"dispatch_read_document_changes":             {},
 	"dispatch_list_document_subscribers":         {},
 	"dispatch_read_document":                     {},
 	"dispatch_list_reviews":                      {},
