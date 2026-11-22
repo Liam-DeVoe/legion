@@ -273,7 +273,8 @@ func holderNews(news News) []string {
 			list = append(list, "- "+nothingChanged(item))
 			continue
 		}
-		list = append(list, fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, "your phase"), basisWords(news.Gates, item)))
+		basis := basisWords(news.Gates, item)
+		list = append(list, fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, "your phase", basis != ""), basis))
 		list = append(list, indented(changeLines(news.Tree, item, "your phase"))...)
 	}
 	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
@@ -342,7 +343,8 @@ func architectNews(news News) []string {
 			if own[item.key()] {
 				taker = "you"
 			}
-			line := fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, taker), basisWords(news.Gates, item))
+			basis := basisWords(news.Gates, item)
+			line := fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, taker, basis != ""), basis)
 			if item.Changes.WorkUnchanged() {
 				why := "Only its decision blocks changed"
 				if item.Changes.Unchanged {
@@ -359,7 +361,7 @@ func architectNews(news News) []string {
 	if len(news.Members) > 0 {
 		list := []string{fmt.Sprintf("Each issue of the tree of %s, with its phase and what it is told:", news.Tree)}
 		for _, member := range news.Members {
-			list = append(list, fmt.Sprintf("- %s, in %s: %s", member.Issue, member.Phase, memberWords(member)))
+			list = append(list, fmt.Sprintf("- %s, in %s: %s", member.Issue, member.Phase, memberWords(member, news.Gates)))
 		}
 		paragraphs = append(paragraphs, strings.Join(list, "\n"))
 	}
@@ -403,13 +405,14 @@ func distinctPairs(news News) []NewsChange {
 // memberWords is what the architect's summary says of one member: what it is owed, and who tells
 // it, or that it is told nothing and why. The holder of a member in accepting that another
 // architect than the tree root's owns is that architect (NewsMember.Architect): the member's own,
-// or the architect of the issue above it that the summary names.
-func memberWords(member NewsMember) string {
+// or the architect of the issue above it that the summary names. gates is the tree root's gate
+// rows, which say whether an item's new version stands on an ancestor's approval (basisWords).
+func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGate) string {
 	owes := "owed news of the approved design"
 	if len(member.Items) > 0 {
 		owed := make([]string, len(member.Items))
 		for i, item := range member.Items {
-			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.to(), item.Step, sinceWords(item, "its phase"))
+			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.to(), item.Step, sinceWords(item, "its phase", basisWords(gates, item) != ""))
 		}
 		owes = "owed " + strings.Join(owed, ", and ")
 	}
@@ -458,26 +461,32 @@ func memberWords(member NewsMember) string {
 }
 
 // pairWords is the version an item tells as news says it: the new version, then what taker took
-// before it (sinceWords).
-func pairWords(item NewsChange, taker string) string {
-	return fmt.Sprintf("version %d, %s", item.to(), sinceWords(item, taker))
+// before it (sinceWords, with onBasis).
+func pairWords(item NewsChange, taker string, onBasis bool) string {
+	return fmt.Sprintf("version %d, %s", item.to(), sinceWords(item, taker, onBasis))
 }
 
 // sinceWords is the version taker last took as news says it: the change set's From, or that no
 // version was approved before the new one (From 0). From 0 is only ever a version the told row
 // held or the review history read and found none before: a history that could not be read names
 // no pair (NewsChange.HistoryUnread), and is said as a version the daemon could not read, never as
-// a first approval. An empty taker names nobody's taking.
-func sinceWords(item NewsChange, taker string) string {
+// a first approval. An empty taker names nobody's taking. onBasis says the new version stands
+// approved on an ancestor's approval (basisWords), which no person gave, so its first approval is
+// said as the first approved version, never as the first version a person approved.
+func sinceWords(item NewsChange, taker string, onBasis bool) string {
 	if item.HistoryUnread != nil {
 		return "since a version the daemon could not read"
+	}
+	first := "the first version a person approved"
+	if onBasis {
+		first = "the first approved version"
 	}
 	from := item.Changes.From
 	switch {
 	case from == 0 && taker == "":
-		return "the first version a person approved"
+		return first
 	case from == 0:
-		return fmt.Sprintf("the first version a person approved; %s took none before it", taker)
+		return fmt.Sprintf("%s; %s took none before it", first, taker)
 	case taker == "":
 		return fmt.Sprintf("since version %d", from)
 	}
