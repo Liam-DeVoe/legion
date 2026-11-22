@@ -212,12 +212,12 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	},
 
 	// Settings, projects and credentials.
-	reflect.TypeFor[createProjectInput]():          {"key": markIdentifier, "name": markName, "default_assignee": markPerson},
-	reflect.TypeFor[putRepoProjectInput]():         {"project": markIdentifier, "renamed_to": markConfig},
-	reflect.TypeFor[putArchitectureSourceInput]():  {"branch": markConfig},
-	reflect.TypeFor[projectDefaultAssigneeInput](): {"assignee": markPerson},
-	reflect.TypeFor[projectGatedStepsInput]():      {"steps": markEnum},
-	reflect.TypeFor[putLegionSettingInput]():       {"state_url": markConfig},
+	reflect.TypeFor[createProjectInput]():            {"key": markIdentifier, "name": markName, "default_assignee": markPerson},
+	reflect.TypeFor[putArchitectureSourceInput]():    {"branch": markConfig},
+	reflect.TypeFor[projectDefaultAssigneeInput]():   {"assignee": markPerson},
+	reflect.TypeFor[projectDefaultRepositoryInput](): {"repo": markConfig},
+	reflect.TypeFor[projectGatedStepsInput]():        {"steps": markEnum},
+	reflect.TypeFor[putLegionSettingInput]():         {"state_url": markConfig},
 	reflect.TypeFor[deliverySettingsInput](): {
 		"deploy_repo": markConfig, "deploy_workflow_path": markConfig, "production_job_names": markConfig,
 		"production_apply_step_name": markConfig, "pr_checks_workflow_path": markConfig,
