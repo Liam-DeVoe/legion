@@ -512,3 +512,139 @@ test("an ancestor's ask event marks stale a descendant's view that carries the a
   refreshQueries(client, eventRefreshTargets(reworded, "alice"));
   expect(client.getQueryState(childView)?.isInvalidated, "the child's view").toBe(true);
 });
+
+/** The parent CORE-1's outline, which holds its child CORE-2's node, and its Verification view,
+ *  which holds its requirement and no node of the child, whose documents hold no check serving
+ *  the requirement yet; the view's query made first where `viewFirst` says so. */
+function holdingChildNode(
+  client: QueryClient,
+  viewFirst = false
+): { readonly outline: readonly unknown[]; readonly verification: readonly unknown[] } {
+  const requirement = treeNode("r1", "requirement", "CORE-1", {
+    in: "spec",
+    text: "Every child is drawn.",
+  });
+  const outline = issueTreeKey("CORE-1");
+  const verification = viewKey("CORE-1", "verification");
+  const reads = [
+    [
+      outline,
+      treeAnswer([
+        treeNode("CORE-1", "issue", null),
+        requirement,
+        treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
+      ]),
+    ],
+    [
+      verification,
+      treeAnswer([treeNode("CORE-1", "issue", null), requirement], [], { view: "verification" }),
+    ],
+  ] as const;
+  for (const [queryKey, answer] of viewFirst ? [...reads].reverse() : reads) {
+    client.setQueryData(queryKey, answer);
+  }
+  return { outline, verification };
+}
+
+/** A version of the child CORE-2's Verification document, which can add its first check serving
+ *  the parent's requirement. */
+const CHILD_VERSION = eventOf(
+  "artifact.version",
+  { artifact_id: "artifact-2", number: 2 },
+  "CORE-2"
+);
+
+// A view holds only the nodes its view takes, so a child's version that adds the child's first
+// check serving the parent's requirement moves the parent's Verification view, which holds no
+// node of the child yet, as it moves the parent's outline, which holds the child's node: whatever
+// marks an issue's outline stale marks every view of that issue the page holds.
+test("a child's document version marks stale the parent's Verification view that holds no node of the child, where the parent's outline holds the child's node", () => {
+  const client = new QueryClient();
+  const { outline, verification } = holdingChildNode(client);
+  refreshQueries(client, eventRefreshTargets(CHILD_VERSION, "alice"));
+  expect({
+    outline: client.getQueryState(outline)?.isInvalidated,
+    verification: client.getQueryState(verification)?.isInvalidated,
+  }).toEqual({ outline: true, verification: true });
+});
+
+// The scheduler judges each query of a refresh once, on its own answer: one that is idle at
+// once, in the order the cache made them, and one with a fetch out on the response that lands.
+// A view is judged by the answer its outline holds when the view is judged, so it is marked
+// whether its query was made before the outline's; while the outline is out for a read the event
+// lands during, whose response the outline alone waits for; and when the view's own read, out as
+// the event lands, answers, since the cache is handed to its check then too.
+test("a parent's view is marked with its outline where the view's query was made first, where the outline is being read, and where the view is", async () => {
+  const made = new QueryClient();
+  const viewFirst = holdingChildNode(made, true);
+  refreshQueries(made, eventRefreshTargets(CHILD_VERSION, "alice"));
+  expect(
+    made.getQueryState(viewFirst.verification)?.isInvalidated,
+    "the view whose query was made before the outline's"
+  ).toBe(true);
+
+  const reading = new QueryClient();
+  const out = holdingChildNode(reading);
+  const response = Promise.withResolvers<unknown>();
+  const read = reading.fetchQuery({ queryFn: () => response.promise, queryKey: out.outline });
+  expect(reading.getQueryState(out.outline)?.fetchStatus, "the outline's read").toBe("fetching");
+  refreshQueries(reading, eventRefreshTargets(CHILD_VERSION, "alice"));
+  expect(
+    reading.getQueryState(out.verification)?.isInvalidated,
+    "the view, while the outline is being read"
+  ).toBe(true);
+  response.resolve(reading.getQueryData(out.outline));
+  await read;
+
+  const viewing = new QueryClient();
+  const { verification } = holdingChildNode(viewing);
+  const viewResponse = Promise.withResolvers<unknown>();
+  const viewRead = viewing.fetchQuery({
+    queryFn: () => viewResponse.promise,
+    queryKey: verification,
+  });
+  refreshQueries(viewing, eventRefreshTargets(CHILD_VERSION, "alice"));
+  viewResponse.resolve(viewing.getQueryData(verification));
+  await viewRead;
+  expect(
+    viewing.getQueryState(verification)?.isInvalidated,
+    "the view, once the read it was out for as the event landed answers"
+  ).toBe(true);
+});
+
+// An outline whose first read is out holds no answer yet, so the page cannot tell whether it
+// holds the node an event moves: a view of its issue that holds an answer is read again on an
+// event that moves a kind of node, and not on one that moves none, such as a child's comment.
+test("a parent's view is marked while its outline's first read is out, on an event that moves a node and on none that moves none", async () => {
+  const client = new QueryClient();
+  const verification = viewKey("CORE-1", "verification");
+  client.setQueryData(
+    verification,
+    treeAnswer(
+      [
+        treeNode("CORE-1", "issue", null),
+        treeNode("r1", "requirement", "CORE-1", { in: "spec", text: "Every child is drawn." }),
+      ],
+      [],
+      { view: "verification" }
+    )
+  );
+  const outline = issueTreeKey("CORE-1");
+  const response = Promise.withResolvers<unknown>();
+  const read = client.fetchQuery({ queryFn: () => response.promise, queryKey: outline });
+  expect(client.getQueryState(outline)?.data, "the outline's answer").toBeUndefined();
+  const comment = eventOf(
+    "comment.created",
+    { body: "A reply.", id: "comment-2", kind: "comment" },
+    "CORE-2"
+  );
+  refreshQueries(client, eventRefreshTargets(comment, "alice"));
+  expect(client.getQueryState(verification)?.isInvalidated, "after a child's comment").toBe(false);
+  refreshQueries(client, eventRefreshTargets(CHILD_VERSION, "alice"));
+  expect(
+    client.getQueryState(verification)?.isInvalidated,
+    "after a child's document version"
+  ).toBe(true);
+  response.resolve(treeAnswer([treeNode("CORE-1", "issue", null)]));
+  await read;
+});

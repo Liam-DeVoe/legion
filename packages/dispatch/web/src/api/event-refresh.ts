@@ -653,14 +653,17 @@ function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boo
           blocks.push(block);
         }
       }
-      for (const document of [block_artifact, anchor_artifact]) {
-        if (document !== undefined) {
-          documents.push(document.id);
-          addresses.push(`${key}/${document.slug}`);
-        }
+      // An issue's ask is written and anchored in that issue's documents alone, so each is at
+      // `<KEY>/<slug>`; the anchor names its document's id, and `anchor_artifact` its slug.
+      if (block_artifact !== undefined) {
+        documents.push(block_artifact.id);
+        addresses.push(`${key}/${block_artifact.slug}`);
       }
       if (anchor != null) {
         documents.push(anchor.artifact_id);
+      }
+      if (anchor_artifact !== undefined) {
+        addresses.push(`${key}/${anchor_artifact.slug}`);
       }
       break;
     }
@@ -682,8 +685,12 @@ function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boo
  *  descendant's view carries its ancestors' requirements as context. A node of another issue than
  *  the tree's is of that issue (`ofIssue`) - it names it (`issue`), or it is the issue's own node
  *  - and is judged by its own kind; a node standing under one names it as its parent, and is
- *  judged by its parent's kind. An event that moves no kind reaches none: a child's comment or
- *  message reads nothing of its parent's tree, nor does its plain ask. */
+ *  judged by its parent's kind. A view is judged by the outline of its issue as well: whatever
+ *  marks an issue's outline stale marks every view of that issue the page holds, and a view whose
+ *  outline's first read is out, which holds no answer to judge yet, is marked on every event that
+ *  reaches this far. An event that moves no kind reaches none: a child's comment or message reads
+ *  nothing of its parent's tree. A child's plain ask is on no node its parent's answers hold, so
+ *  it reads none of them that hold an answer. */
 function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
   if (moved !== ON_ITS_TARGET && moved.length === 0) {
@@ -694,12 +701,31 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
       ? onItsTarget(key, event)
       : (node: HeldNode) =>
           ofIssue(node, key) && moved.includes(heldKind(node.kind, node.supertag));
+  const holds = (data: unknown) =>
+    rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes).some(
+      (node) => moves(node) || (node.parent != null && moves(node.parent))
+    );
   return {
     queryKey: ["issue-tree"],
-    when: (data) =>
-      rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes).some(
-        (node) => moves(node) || (node.parent != null && moves(node.parent))
-      ),
+    // A view (`["issue-tree", key, view]`) holds only the nodes its view takes, so the node an
+    // event of a child moves can be in the outline (`["issue-tree", key]`) and in no view yet: a
+    // child's first check serving the issue's requirement. The view is read again where the
+    // outline in the same cache holds one, whichever of the two was read last, or is being read,
+    // and where the outline's first read is out: it holds no answer yet that could say it does
+    // not.
+    when: (data, query, cache) => {
+      if (holds(data)) {
+        return true;
+      }
+      const outline =
+        query.queryKey.length > 2
+          ? cache?.find({ exact: true, queryKey: query.queryKey.slice(0, 2) })?.state
+          : undefined;
+      if (outline === undefined) {
+        return false;
+      }
+      return outline.data === undefined ? outline.fetchStatus !== "idle" : holds(outline.data);
+    },
   };
 }
 

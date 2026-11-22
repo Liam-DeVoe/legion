@@ -1,3 +1,4 @@
+import type { QueryCache } from "@tanstack/react-query";
 import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { ApiError } from "./client";
@@ -45,6 +46,8 @@ export const MIN_REFETCH_INTERVAL_MS = 1_000;
  * out - a first load or a refetch - it runs on the response that lands, not on the data that
  * response replaces, which is then fetched again if `when` accepts it; a body composed after the
  * event is not.
+ * Beside the query a check is handed the query cache of the client the refresh runs on, whenever
+ * it runs, so it can judge a query by another query's answer in that cache as well.
  */
 export interface RefreshTarget {
   readonly queryKey: QueryKey;
@@ -52,7 +55,10 @@ export interface RefreshTarget {
   readonly when?: RefreshCheck;
 }
 
-export type RefreshCheck = (data: unknown, query: Query) => boolean;
+/** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the query cache
+ *  of the client the refresh runs on, which `refreshQueries` always hands it; a test called apart
+ *  from a refresh may be handed none. */
+export type RefreshCheck = (data: unknown, query: Query, cache?: QueryCache) => boolean;
 
 interface DeferredCheck {
   readonly requestedAt: number;
@@ -284,12 +290,17 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
     }
   } else {
     for (const target of targets) {
+      // Each check is handed this client's cache, whenever it runs: at once below, or on the
+      // response of a fetch out, which the cache's subscription judges it by.
+      const { when } = target;
+      const check: RefreshCheck | undefined =
+        when === undefined ? undefined : (data, query) => when(data, query, cache);
       for (const query of cache.findAll({ exact: target.exact, queryKey: target.queryKey })) {
         const current = reached.get(query);
         if (current === true) {
           continue;
         }
-        reached.set(query, target.when === undefined ? true : [...(current ?? []), target.when]);
+        reached.set(query, check === undefined ? true : [...(current ?? []), check]);
       }
     }
   }
