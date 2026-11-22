@@ -34,18 +34,20 @@ type holdRestoreBody struct {
 // errHoldLogUnknown is a restore refused because a record it judges by reads as unknown: the log's
 // latest entry does not verify, or the log is empty under a row this broker served, read or wrote
 // (restoreTrusted); or a hold's done record, which heldByRecord judges, is below this broker's
-// record floor, does not verify, or holds an entry whose hold row the verified log does not hold
-// or that names none (boundToLog). It is answered 409 below_floor, naming the entry or the record,
-// and nothing is stored.
+// record floor, does not verify, or holds an entry whose hold row the verified log does not hold,
+// whose log entry does not verify, or that names none (boundToLog). It is answered 409
+// below_floor, naming the entry or the record, and nothing is stored.
 var errHoldLogUnknown = errors.New("a record the restore judges by reads as unknown")
 
 // handRepair is what a restore refusal names when no route can clear it: a database writer added
 // a done record that does not verify, put an older one back (an ended hold's included), put
-// another history's journal in this one's place, deleted a live hold's done record or an ended
-// hold's released entry, cut the log back under a hold's entries, or put an entry from another
-// history back above a live hold (the log's latest entry, which the refusal names by its gen and
-// hold id), and no route can tell those from a live hold's record a writer broke, so freeing the
-// restore would free every client mid-hold.
+// another history's journal in this one's place without the log entries it names, deleted a live
+// hold's done record or an ended hold's released entry, cut the log back under a hold's entries,
+// or put an entry from another history back above a live hold (the log's latest entry, which the
+// refusal names by its gen and hold id), and no route can tell those from a live hold's record a
+// writer broke, so freeing the restore would free every client mid-hold. Another history's journal
+// put back with the log entries it names is no such case: it binds, and the restore stores it
+// (infra/README.md's cases that still store).
 const handRepair = `no route can clear this, so a database admin deletes or restores the rows named here (infra/README.md, "Restoring a lost hold row")`
 
 // restoreNATSHold writes the hold row while there is none, once its signature verifies, judging
@@ -198,10 +200,11 @@ func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Re
 
 // heldByRecord refuses a released restore while a hold's own record holds it. It first judges
 // every hold's done record, an ended hold's included: one below this replica's record floor (an
-// older signed version put back), one that does not verify, or one bound to another history of
-// the tables (boundToLog: an entry whose hold row the verified log does not hold, or that names
-// none) is unknown (409 below_floor). It then skips a hold whose journal shows it ended (a done
-// hold release or hold abort), and a hold the verified log names released (a released entry
+// older signed version put back), one that does not verify, or one whose entries name rows this
+// log does not hold as verified entries (boundToLog: another history's journal put back without
+// the log entries it names, a cut log, or entries a key no longer listed signed, or an entry that
+// names none) is unknown (409 below_floor). It then skips a hold whose journal shows it ended (a
+// done hold release or hold abort), and a hold the verified log names released (a released entry
 // naming it, at any gen) while its journal shows hold release's or hold abort's intent as that
 // command's latest entry and no other command's intent pending: the end that history admitted,
 // cut before its done entry. A released entry ends nothing else: a live hold's own released entry
@@ -226,7 +229,7 @@ func (s *server) heldByRecord(log []natshold.LogEntry, latest *natshold.LogEntry
 		if err != nil {
 			return unknownJournal(holdID, err)
 		}
-		if err := boundToLog(holdID, d, ix.rows); err != nil {
+		if err := boundToLog(holdID, d, ix); err != nil {
 			return err
 		}
 		if journalEnded(d) {
@@ -307,58 +310,76 @@ func runningCommand(d holdrecord.Done) string {
 }
 
 // boundToLog answers errHoldLogUnknown, naming holdID, the entry and the hand repair, for the
-// first entry of d whose hold row (Operation.Row, the row it was written under) rows, the log's
-// verified entries by gen with their signing times, does not hold at that gen with that signing
-// time, or that names no row. The operator's client names the row of every entry it writes, and
-// every such row is a log entry of the history the journal was written in, so a journal of another
-// history put in this one's place, which a database writer can do at a higher gen on every replica
-// with no restart, names a row this log does not hold; so does a journal whose hold's log entries
-// a writer cut back or deleted, which the restore cannot tell from it. This PR writes the first
-// journals, so no journal the routes wrote names no row.
-func boundToLog(holdID string, d holdrecord.Done, rows map[uint64]time.Time) error {
+// first entry of d whose hold row (Operation.Row, the row it was written under) ix, the log's
+// entries by gen, does not hold as a verified entry at that gen with that signing time, or that
+// names no row. The operator's client names the row of every entry it writes, and every such row
+// is a log entry of the history the journal was written in, so a journal of another history put
+// in this one's place without the log entries it names names a row this log does not hold when
+// that history moved the row; so does a journal whose hold's log entries a writer cut back or
+// deleted, which the restore cannot tell from it. A journal from a fork taken while the row was
+// held, put back together with that history's later log entries, binds: every row its entries name
+// is then in the log (infra/README.md states that case among those that still store). An entry
+// whose row is in the log but does not verify names that log entry's Verify error, and the key id
+// of a key the list no longer holds with the step-4 repair (keyRepair): a log entry a retired key
+// signed is not a missing one. This PR writes the first journals, so no journal the routes wrote
+// names no row.
+func boundToLog(holdID string, d holdrecord.Done, ix logIndex) error {
 	for i, o := range d.Ops {
 		entry := fmt.Sprintf("hold %q's journal entry %d (%s %s)", holdID, i, o.Command, o.State)
 		if o.Row == nil {
 			return fmt.Errorf("%w: %s names no hold row it was written under, which every entry the operator's client writes names; %s", errHoldLogUnknown, entry, handRepair)
 		}
-		if at, ok := rows[o.Row.Gen]; !ok || !at.Equal(o.Row.SignedAt) {
-			return fmt.Errorf("%w: %s was written under the hold row at gen %d signed at %s, which the verified log does not hold: a journal of another history of the tables put in this one's place, or a log cut back or with entries deleted; %s",
-				errHoldLogUnknown, entry, o.Row.Gen, o.Row.SignedAt.UTC().Format(time.RFC3339Nano), handRepair)
+		if at, ok := ix.rows[o.Row.Gen]; ok && at.Equal(o.Row.SignedAt) {
+			continue
 		}
+		if err, ok := ix.unverified[o.Row.Gen]; ok {
+			return fmt.Errorf("%w: %s was written under the hold row at gen %d, whose log entry does not verify: %v; %s",
+				errHoldLogUnknown, entry, o.Row.Gen, err, keyRepair(err))
+		}
+		return fmt.Errorf("%w: %s was written under the hold row at gen %d signed at %s, which the verified log does not hold: a journal of another history of the tables put in this one's place without the log entries it names, or a log cut back or with entries deleted; %s",
+			errHoldLogUnknown, entry, o.Row.Gen, o.Row.SignedAt.UTC().Format(time.RFC3339Nano), handRepair)
 	}
 	return nil
 }
 
 // unknownJournal is heldByRecord's refusal of holdID's done record, which err says does not
-// verify. A record signed by a key no longer listed names that key's id: the log and the journals
+// verify, with the repair keyRepair names.
+func unknownJournal(holdID string, err error) error {
+	return fmt.Errorf("%w: hold %q's done record does not verify: %v; %s", errHoldLogUnknown, holdID, err, keyRepair(err))
+}
+
+// keyRepair is the repair a restore refusal names for a record or log entry that err says does
+// not verify. One signed by a key no longer listed names that key's id: the log and the journals
 // are kept, so a retired key stays listed, verify-only, until the hand repair deletes what it
 // signed. Every refusal names the hand repair, the only one for a record a database writer added
 // or broke, or one a leaked key signed.
-func unknownJournal(holdID string, err error) error {
-	repair := handRepair
+func keyRepair(err error) string {
 	var unlisted *signedrecord.UnlistedKeyError
 	if errors.As(err, &unlisted) {
-		repair = fmt.Sprintf("if key id %s is a retired key's, it goes back in BROKER_NATS_HOLD_SIGNING_KEYS, verify-only: the log and the journals are kept, so a retired key stays listed until the hand repair deletes what it signed (infra/README.md, \"Rotating the hold signing key\", step 4); otherwise %s", unlisted.KeyID, handRepair)
+		return fmt.Sprintf("if key id %s is a retired key's, it goes back in BROKER_NATS_HOLD_SIGNING_KEYS, verify-only: the log and the journals are kept, so a retired key stays listed until the hand repair deletes what it signed (infra/README.md, \"Rotating the hold signing key\", step 4); otherwise %s", unlisted.KeyID, handRepair)
 	}
-	return fmt.Errorf("%w: hold %q's done record does not verify: %v; %s", errHoldLogUnknown, holdID, err, repair)
+	return handRepair
 }
 
-// logIndex is what heldByRecord reads from the log's verified entries, each verified once: each
-// entry's signing time by its gen, and the gen of each hold's latest released and latest held
-// entry. A prepare of another hold at a higher gen says nothing about a hold: it may be an entry of
-// another history of the log (a point-in-time restore, or a log cut back and saved rows put back),
-// and gens and signing times say nothing across holds.
+// logIndex is what heldByRecord reads from the log, each entry verified once: each verified
+// entry's signing time by its gen, the Verify error of each entry that does not verify by its gen,
+// and the gen of each hold's latest verified released and latest verified held entry. A prepare of
+// another hold at a higher gen says nothing about a hold: it may be an entry of another history of
+// the log (a point-in-time restore, or a log cut back and saved rows put back), and gens and
+// signing times say nothing across holds.
 type logIndex struct {
-	rows     map[uint64]time.Time
-	released map[string]uint64
-	held     map[string]uint64
+	rows       map[uint64]time.Time
+	unverified map[uint64]error
+	released   map[string]uint64
+	held       map[string]uint64
 }
 
-// indexLog is log's logIndex, reading only the entries that verify.
+// indexLog is log's logIndex: only the entries that verify count as rows, ends and held entries.
 func (s *server) indexLog(log []natshold.LogEntry) logIndex {
-	ix := logIndex{rows: map[uint64]time.Time{}, released: map[string]uint64{}, held: map[string]uint64{}}
+	ix := logIndex{rows: map[uint64]time.Time{}, unverified: map[uint64]error{}, released: map[string]uint64{}, held: map[string]uint64{}}
 	for _, e := range log {
-		if !s.verifiedLogEntry(e) {
+		if err := s.logEntryVerified(e); err != nil {
+			ix.unverified[e.Gen] = err
 			continue
 		}
 		ix.rows[e.Gen] = e.SignedAt

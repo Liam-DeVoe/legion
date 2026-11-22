@@ -59,6 +59,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -159,7 +160,10 @@ func (e *RouteError) Error() string {
 	return fmt.Sprintf("holdrecord: %s %s answered %d %s", e.method, e.path, e.Status, e.Code)
 }
 
-// New refuses an empty BrokerURL, a nil Token and an empty VerifyKeys.
+// New refuses an empty BrokerURL, a nil Token and an empty VerifyKeys. A BrokerURL that is not an
+// absolute URL is refused printed through redact.URL, which prints it only when it is a plain
+// http(s) URL with no place a credential can sit: a password in its user info, or the operator's
+// token pasted where the URL goes, reaches no error.
 func New(cfg Config) (*Client, error) {
 	switch {
 	case cfg.BrokerURL == "":
@@ -170,7 +174,7 @@ func New(cfg Config) (*Client, error) {
 		return nil, errors.New("holdrecord: the configuration holds no key to verify an answer with, so every row would read as unknown")
 	}
 	if u, err := url.Parse(cfg.BrokerURL); err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("holdrecord: the broker URL %q is not an absolute URL", cfg.BrokerURL)
+		return nil, fmt.Errorf("holdrecord: the broker URL %s is not an absolute URL", redact.URL(cfg.BrokerURL))
 	}
 	for i, key := range cfg.VerifyKeys {
 		if len(key) != ed25519.PublicKeySize {

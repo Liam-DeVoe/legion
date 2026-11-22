@@ -16,7 +16,8 @@ import (
 // read when a done or stop entry is written), and the restore reads a journal as unknown (409
 // below_floor, naming the hold, the entry and the hand repair) when an entry's row is not in the
 // verified log, or when an entry names no row. Another history's journal of the live hold, written
-// over this one's at a higher gen, then frees no client.
+// over this one's at a higher gen without the log entries it names, then frees no client; put back
+// together with them, it binds and stores (residualRows' FORK-WHOLE, which B5-JOURNAL controls).
 func journalBindingRows(t *testing.T) {
 	ctx := context.Background()
 	exec := func(t *testing.T, r rig, sql string, args ...any) {
@@ -110,17 +111,24 @@ func journalBindingRows(t *testing.T) {
 		}
 	})
 
-	t.Run("a log cut back below an ended hold's entries, its journal kept: refused, naming the row the log lost", func(t *testing.T) {
+	t.Run("a log cut back below an ended hold's entries, its journal kept: refused, naming the row the log lost; the README's repair stores on every replica", func(t *testing.T) {
 		// A database writer's residual infra/README.md lists: the log cut back below h-a's
 		// entries leaves h-a's journal naming rows the log no longer holds, which the restore
-		// cannot tell from another history's journal, so it reads it as unknown; the hand repair
-		// restores the log from a backup or deletes the journal by name. Fails with no binding
-		// check, as at 886868daac: released is stored.
+		// cannot tell from another history's journal put back alone, so it reads it as unknown;
+		// the hand repair deletes the journal by name, then restarts each replica that served the
+		// row before the cut (the Legion reviewer's round-11 M-6: the second replica, which served
+		// the row and did not start again, keeps refusing the cut log under it). Fails with no
+		// binding check, as at 886868daac: released is stored; and on a0a2c7622f's README, which
+		// names no restart after the delete.
+		readmeSays(t, cutLogRestart)
 		r := newRig(t)
 		c := r.client(t)
 		hold(t, c, "h-a", holdrecord.WorkflowBucketsCreate, nil)
 		run(t, c, "h-a", cmd("buckets create"), nil, nil)
 		release(t, c, "h-a")
+		r.UseReplica(true)
+		row(t, r.client(t))
+		r.UseReplica(false)
 		exec(t, r, `delete from nats_hold_log where gen > 1`)
 		loseRow(t, r)
 		r.Restart()
@@ -130,9 +138,25 @@ func journalBindingRows(t *testing.T) {
 			t.Errorf("the released restore answered %s; want 409 below_floor naming h-a's entry written under the row at gen 2 and the hand repair", refusalText(got))
 		}
 		exec(t, r, `delete from nats_hold_records where hold_id = 'h-a' and kind = 'done'`)
-		fresh = r.client(t)
-		if got := restoreRefusal(t, fresh, lostRowGen(t, fresh), natsgrant.OperatorPhaseReleased, ""); got != nil {
-			t.Errorf("after h-a's journal was deleted by name, the released restore answered %s; want it stored", refusalText(got))
+		gen := lostRowGen(t, r.client(t))
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		if got := restoreRefusal(t, r.client(t), gen, natsgrant.OperatorPhaseReleased, ""); got == nil || got.Code != "below_floor" {
+			t.Errorf("after the delete, on the replica that served the row and did not start again, the released restore at gen %d answered %s; want 409 below_floor", gen, refusalText(got))
+		}
+		r.RestartSecond()
+		second := r.client(t)
+		if got := restoreRefusal(t, second, lostRowGen(t, second), natsgrant.OperatorPhaseReleased, ""); got != nil {
+			t.Errorf("after the delete and each replica's restart, the released restore answered %s; want it stored", refusalText(got))
+		}
+		for _, onSecond := range []bool{false, true} {
+			if p, known := r.HoldView(onSecond).State(ctx); !known || p != natsgrant.OperatorPhaseReleased {
+				t.Errorf("after the repair, replica second=%v reads %q, known %v; want released, known", onSecond, p, known)
+			}
 		}
 	})
 }
+
+// cutLogRestart is infra/README.md's step after the cut-back log's delete by name, which the row
+// above follows.
+const cutLogRestart = "then restart each broker replica that served the row before the cut, since a replica that did not start again keeps refusing the cut log under the row it served"
