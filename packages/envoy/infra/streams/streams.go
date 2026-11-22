@@ -63,6 +63,10 @@ type Finding struct {
 	Stream, Consumer string
 	// What is the finding: "missing", a setting's difference, "made", "raised", "removed" and so on.
 	What string
+	// Err is the error a failure came from, kept whole so a caller can read the server's own answer
+	// (errors.As to *nats.APIError, its ErrorCode), and nil for a finding no error made. What
+	// already holds its text; String prints What alone.
+	Err error
 }
 
 func (f Finding) String() string {
@@ -298,7 +302,7 @@ func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, p
 			}
 		}
 		if err := streamset.Ensure(ctx, conn, js, stream); err != nil {
-			report.Failures = append(report.Failures, Finding{Stream: stream.Name, What: err.Error()})
+			report.Failures = append(report.Failures, Finding{Stream: stream.Name, What: err.Error(), Err: err})
 			return report, nil
 		}
 		what := "made"
