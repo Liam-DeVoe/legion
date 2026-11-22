@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // visibilityAnswerBound is the longest `legion gh` takes to answer the shared check's own
@@ -17,7 +18,7 @@ import (
 // refusal, comes before the check stops waiting, and no read made for it outlives the check's
 // wait. The guard waits for a near rate-limit reset only where its caller's bound has room for
 // the wait and the reads after it, and this bound has room for none. It is a variable so that
-// this package's tests can give it their own deadline (programBound).
+// this package's tests can give it their own deadline (programbound).
 var visibilityAnswerBound = 15 * time.Second
 
 // sharedCheckVisibilityRead is the repository the shared public leak check's own visibility read
@@ -70,7 +71,7 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 	if status, ok := signalled(ctx); ok {
 		return status
 	}
-	bounded, cancel := context.WithTimeout(ctx, programBound(&visibilityAnswerBound))
+	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&visibilityAnswerBound))
 	defer cancel()
 	visibility, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).FreshVisibility(bounded, repo.String())
 	if status, ok := signalled(ctx); ok {

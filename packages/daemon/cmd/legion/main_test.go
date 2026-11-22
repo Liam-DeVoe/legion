@@ -59,7 +59,7 @@ func TestMain(m *testing.M) {
 			leakguardCurl = curl
 		}
 		// The bounds legion sets on a program it starts, at what is left of the deadline of the
-		// test binary that started this run (testBounds). Only this test binary reads the
+		// test binary that started this run (boundByTheDeadline). Only this test binary reads the
 		// variable; the legion binary has none.
 		if err := boundByTheEnvironment(); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
@@ -78,8 +78,8 @@ func TestMain(m *testing.M) {
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
 	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
-	// here and in every run of it as `legion` (testBounds). After MustGuard, which takes LEGION_*
-	// variables out of the environment.
+	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
+	// LEGION_* variables out of the environment.
 	if deadline, ok := testBinaryDeadline(); ok {
 		if err := boundByTheDeadline(deadline); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)

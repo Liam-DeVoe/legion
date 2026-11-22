@@ -138,7 +138,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// fail its handshake with GitHub rather than reach it.
 		testGhChildEnv + "=" + strings.Join([]string{"SSL_CERT_FILE=" + proxy.caFile, "SSL_CERT_DIR=" + t.TempDir(), "GIT_SSL_CAINFO=" + proxy.caFile}, "\n"),
 	}
-	// This binary's deadline, which bounds what each `legion gh` here waits for (testBounds).
+	// This binary's deadline, which bounds what each `legion gh` here waits for (boundByTheDeadline).
 	base = append(base, testDeadlineEnviron()...)
 	runIn := func(dir string, env []string, name string, args ...string) (int, string) {
 		cmd := exec.Command(name, args...)

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -1254,25 +1255,14 @@ func refuseLegionGhAsRealGh(gh string) error {
 // that never returns. A test shortens it to read that the stop comes.
 var ghHelpTimeout = 30 * time.Second
 
-// programBound is the bound a read of legion's gives a program it starts and waits for, at the
-// moment the read starts: *bound, the read's own (ghGitReadBound, ghHelpTimeout,
-// visibilityAnswerBound, forkReadBound), in the legion binary. A binary this package's tests
-// build and run (legionBuild) carries their deadline (linkedDeadline), and each read takes what is
-// left of it less 30 s instead; in the test binary itself TestMain makes it that for each bound no
-// test has set (testBounds). So a program a loaded machine makes slow is waited for, and one that
-// never answers still fails its row before the test binary's deadline.
-var programBound = func(bound *time.Duration) time.Duration {
-	if deadline, err := time.Parse(time.RFC3339Nano, linkedDeadline); err == nil {
-		return time.Until(deadline) - 30*time.Second
-	}
-	return *bound
+// The bounds legion sets on a program it starts and waits for, which this package's tests give
+// their own deadline through programbound: the git reads of `legion gh` (ghGitReadBound), its read
+// of gh's help (ghHelpTimeout), its answer to the shared check's own visibility read
+// (visibilityAnswerBound), the credential helper's fork read (forkReadBound), and the worker shim's
+// grace for its agent (workerShimGrace). Each wait reads its bound through programbound.Of.
+func init() {
+	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace)
 }
-
-// linkedDeadline is the deadline of the test binary that built this one, in RFC 3339 with
-// nanoseconds, linked in by this package's tests alone (`-ldflags "-X main.linkedDeadline=<t>"`,
-// legionBuild); empty in every other build, release and image builds included, which no
-// environment or flag can change.
-var linkedDeadline string
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
 // gh's own), run with env (runGh's ghChildEnviron of the caller's GH_CONFIG_DIR) and refused when
@@ -1286,7 +1276,7 @@ var linkedDeadline string
 // never as an answer of gh's. It runs under leakguard.RunByRealGhVar, so a gh that leads back to
 // `legion gh` is refused there.
 func readGhHelp(ctx context.Context, gh string, env, path []string) (string, error) {
-	bound := programBound(&ghHelpTimeout)
+	bound := programbound.Of(&ghHelpTimeout)
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)

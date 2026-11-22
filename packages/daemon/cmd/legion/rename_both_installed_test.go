@@ -173,7 +173,7 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 			"PUBLIC_LEAK_CHECK=" + check,
 		}
 		// This binary's deadline, which bounds what the `legion gh` the wrapper runs waits for
-		// (testBounds).
+		// (boundByTheDeadline).
 		cmd.Env = append(cmd.Env, testDeadlineEnviron()...)
 		out, err := cmd.CombinedOutput()
 		if exit, ok := err.(*exec.ExitError); ok {

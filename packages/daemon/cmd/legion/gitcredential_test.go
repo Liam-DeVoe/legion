@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -671,8 +672,8 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 // reach it. The fake GitHub answers 401 to any other header, so the answer, acme's token from
 // either directory, proves which token went. curl's last argument is the repository git named at
 // https://api.github.com, and the value after its --max-time is seconds of one decimal inside the
-// read's bound (programBound of forkReadBound: the product's 10 s, and in this binary what is left
-// of its deadline when the read starts, read here before the read so it is no less than the read's);
+// read's bound (programbound.Of of forkReadBound: the product's 10 s, and in this binary what is
+// left of its deadline when the read starts, read here before the read so it is no less than the read's);
 // leakguard's own tests read the guard's other curl options (Guard.CurlGet).
 func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
@@ -688,7 +689,7 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 			github := newFakeGitHub(t, tc.token, printsAnswer(forkOfAcme, 0))
 			useForkRead(t, github.program, forkReadBound)
 			forkReadPane(t, root, tc.configDir)
-			bound := programBound(&forkReadBound)
+			bound := programbound.Of(&forkReadBound)
 			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
 			if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
 				t.Fatalf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
