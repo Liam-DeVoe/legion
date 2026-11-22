@@ -1011,7 +1011,8 @@ func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
 }
 
 // One walk of the tracked panes builds one gh bundle per App role and repository
-// (appauth.Bundles): a bundle is that pair and no more, and each build opens with a live read
+// (appauth.Bundles): a bundle of Legion's roles is that pair and no more (a role that is none of
+// Legion's is held under its own name too), and each build opens with a live read
 // of every page of its App's installations under a fresh JWT (appauth.GitHubCredential), so
 // the panes of one issue running as one App cost the tick one read rather than one apiece. The
 // memo is the walk's own: the next walk builds afresh, which is what a bundle's directories

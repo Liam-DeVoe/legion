@@ -197,8 +197,8 @@ func deployedRuntime(deployed appauth.DeploymentApps) *Runtime {
 
 // The Apps a pod holds a bundle of are the Apps its roles act as, each named once, a role of the
 // deployment's acting as the App its setting names (appauth.AppRoleFor). A role that neither
-// Legion nor the deployment defines is an error, never a pod read as holding fewer Apps than its
-// roles act as.
+// Legion, the deployment nor the issue's plan defines is an error, never a pod read as holding
+// fewer Apps than its roles act as.
 func TestAPodsAppsAreItsRolesAppsAndARoleNobodyDefinesIsAnError(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

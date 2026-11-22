@@ -55,7 +55,7 @@ type roleForReader struct {
 // (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
 // where the role does not work the issue's), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
-// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported takes
+// first step: a planner's, an implementer's, or a role's of the deployment or of the plan, as plan.Supported takes
 // the acceptance only after an implementer), or reads the retro's own phase (retroHeldNotice and
 // Engine.startHeldRetro, which run only for a parent held before its retro for the issues beneath
 // it), or answers RoleFor's role for every phase but step to the readers this list holds
@@ -251,7 +251,7 @@ func functionName(fn *ast.FuncDecl) string {
 // RoleFor, a selector naming either through its package, in a call or passed as a value, or a call
 // of the bare name inside the package that declares it; and record.Issue.RoleAt and
 // internal/workflow's Walk.RoleAt, each of which answers phase.RoleFor for every phase but step
-// (the issue's) or of every place but a step of a deployment's role (the walk's), and so the
+// (the issue's) or of every place but a step of a role of the deployment or of the plan (the walk's), and so the
 // architect for admitted and accepting, a selector of RoleAt on any value. A bare RoleFor that is
 // no call is a field key and not a read, and appauth.AppRoleFor is another function and is not one
 // of these.
