@@ -47,12 +47,12 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
 }
 
 /** The row of one run: its kind and its edge in the page's words, its question read to plain
- *  words, when it was made - no time where the read answers none - and the run's own page. Only
- *  the key and the link hold the run's id. */
+ *  words, when it was made - no `at` where the read answers no time, so the row draws none - and
+ *  the run's own page. Only the key and the link hold the run's id. */
 function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   const excerpt = plainWords(run.text);
   return {
-    at: run.made_at ?? "",
+    ...(run.made_at === null ? {} : { at: run.made_at }),
     edge: NODE_REFERENCES_WORDS.edges.changed_by_run,
     ...(excerpt.trim() === "" ? {} : { excerpt }),
     href: buildRunPath(run.id),

@@ -173,11 +173,10 @@ export const agentArtifactQuery = (session: string | undefined, slug: string | u
   queryOptions({
     queryKey: ["agent-artifacts", session, slug],
     queryFn: () => api.getAgentArtifact(session ?? "", slug ?? ""),
-    // Fetched again only by an event that can change it - an issue-less message of the agent's
-    // conversation, since an upload there appends no event of its own - or on focus after it
-    // failed (`refetchFailedOnFocus`).
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: refetchFailedOnFocus,
+    // Kept fresh by events (`EVENT_FRESH`): fetched again only by an event that can change it -
+    // an issue-less message of the agent's conversation, since an upload there appends no event
+    // of its own - or on focus after it failed.
+    ...EVENT_FRESH,
   });
 
 /** A document's live text, or one immutable version of it when the reference pins a version. */

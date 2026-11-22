@@ -116,7 +116,7 @@ test("a run the read answers no made_at for stands after the runs it answers one
     )
   );
   expect(rows.map((row) => row.key)).toEqual([FIRST_RUN, OTHER_RUN, RUN]);
-  expect(rows[2]?.at, "the run with no time reads a time").toBe("");
+  expect(rows[2]?.at, "the run with no time reads a time").toBeUndefined();
 });
 
 test("a tree read with no run draws no row", () => {

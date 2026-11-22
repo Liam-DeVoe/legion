@@ -543,3 +543,27 @@ test("extra rows are drawn after the list's own, and the list says nothing refer
   expect(await within(panel).findByText("Nothing references this yet.")).toBeTruthy();
   expect(panel.querySelector("[data-extra-references]")).toBeNull();
 });
+
+test("an extra row with no time draws its edge with no separator and no time", async () => {
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1",
+    issue_key: "CORE-1",
+    kind: "issue",
+    ref: "dispatch://CORE-1",
+  } satisfies GraphReferences["node"];
+  const { getReferences, view } = renderPanelWithExtraRows({ edges: [], node }, [
+    { edge: "extra edge", href: "/somewhere/r1", key: "r1", kind: "Extra kind" },
+  ]);
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByRole("heading", { name: "Referenced by (0)" });
+  const extraList = panel.querySelector<HTMLElement>("[data-extra-references]");
+  expect(extraList).not.toBeNull();
+  const edgeLine = within(extraList as HTMLElement).getByText("extra edge").parentElement;
+  expect(edgeLine).toHaveTextContent(/^extra edge$/);
+  expect(extraList?.querySelector("time")).toBeNull();
+});

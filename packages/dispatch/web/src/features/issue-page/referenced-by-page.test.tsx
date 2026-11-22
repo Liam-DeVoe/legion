@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
-import { issueQuery, issueTreeKey, userStateQuery } from "../../api/queries";
+import { issueQuery, userStateQuery } from "../../api/queries";
 import type { GraphEdge, GraphReferences, IssueDetails, UserState } from "../../api/types";
 import {
   borderDefault,
@@ -30,7 +30,7 @@ import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
 import { treeAnswer } from "./tree-read/tree-fixtures";
-import type { TreeAnswer } from "./tree-read/tree-read";
+import { issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 // On the new page the outline is the issue's conversation, so Details' list of what references
@@ -238,7 +238,7 @@ function renderDetails(drawer: MarginDrawer) {
   // The outline's tree read, as the page holds it by the time Details draws, here with no run in
   // it: Details' run rows only observe it (`useRunRows`), so Details drawn alone would wait on a
   // read nothing sends.
-  queryClient.setQueryData<TreeAnswer>(issueTreeKey("CORE-1"), treeAnswer([]));
+  queryClient.setQueryData<TreeAnswer>(issueTreeQuery("CORE-1").queryKey, treeAnswer([]));
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>

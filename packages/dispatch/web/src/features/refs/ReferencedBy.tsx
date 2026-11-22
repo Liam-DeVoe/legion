@@ -354,8 +354,8 @@ export function ReferencedByToggle({
 /** A row a host adds after the list's own, with its words already made: the list draws it as it
  *  draws its own rows and says nothing of what it is. */
 export interface ExtraReferenceRow {
-  /** The time the row reads, as `Timestamp` draws it. */
-  readonly at: string;
+  /** The time the row reads, as `Timestamp` draws it; a row with none draws its edge alone. */
+  readonly at?: string;
   /** The relation the row's item stands in to the node, in the host's words. */
   readonly edge: string;
   /** The item's own words, drawn as the list draws an edge's excerpt. */
@@ -558,8 +558,12 @@ export function ReferencedBy({
               </div>
               <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
                 <span>{row.edge}</span>
-                <span aria-hidden="true">·</span>
-                <Timestamp at={row.at} />
+                {row.at === undefined ? null : (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <Timestamp at={row.at} />
+                  </>
+                )}
               </div>
               {row.excerpt === undefined ? null : <Excerpt text={row.excerpt} tokens={tokens} />}
             </li>
