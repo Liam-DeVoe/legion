@@ -376,7 +376,12 @@ func (s *PgPeopleStore) signInAccountTx(ctx context.Context, tx pgx.Tx, email st
 	// account under the wrong one. The transaction is marked a writer that knows the binding either
 	// way (markBindingWriterSQL, per transaction), so the trigger keeps nothing for this change and a
 	// later catch-up owes nothing more for it, while an unmarked change by a build without the
-	// binding, to the same address in the same window, is still kept and caught up.
+	// binding, to the same address in the same window, is still kept and caught up. Its limit: the
+	// catch-up owes the account that unmarked change replaced under the deployment's issuer, even
+	// where that account was a passkey's, since account_binding_replacements keeps no issuer
+	// (TestTheCatchUpOwesExactlyTheUnmarkedChangeBesideAMarkedPasskeyChange shows it). No build
+	// without the binding signs a person from outside the Workspace in, so it has no Google sign-in
+	// to make at such an address, but a write that did would be owed under the wrong issuer.
 	revokesNow := binding || account.issuer != "" || storedIssuer != ""
 	recorded.revoked = revokesNow
 	if binding {
