@@ -124,6 +124,32 @@ export function canSubmitComposer(
   return refusal === undefined && !isSaving && pendingUploads === 0;
 }
 
+/** The question Close and Escape raise over a draft the reader has not sent, with Discard and
+ *  Keep. The composer asks it over its own draft, and the Inbox's compose dialog over the message
+ *  it keeps, so both ask in the same words. */
+export function DiscardDraftPrompt({
+  onDiscard,
+  onKeep,
+}: {
+  onDiscard: () => void;
+  onKeep: () => void;
+}): ReactNode {
+  return (
+    <div
+      className={`flex items-center gap-3 rounded-lg border p-2 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+      role="alert"
+    >
+      <span>Discard draft?</span>
+      <button className="font-semibold underline" onClick={onDiscard} type="button">
+        Discard
+      </button>
+      <button className="underline" onClick={onKeep} type="button">
+        Keep
+      </button>
+    </div>
+  );
+}
+
 /**
  * Why Send refuses a draft it is not busy with, or undefined when it would take it: an empty
  * draft, and a delivery command with nothing after it - `/btw ` alone, where the box holds text
@@ -217,6 +243,17 @@ interface MentionComposerProps {
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
   readonly edit?: { readonly body: string; readonly id: string };
+  /** A host that keeps the draft itself, as the Inbox's compose dialog keeps the message across
+   *  its change from one recipient to several and back: the field starts from `starting`, with
+   *  the channel's own mentions written in front of it (`seededDraft`), even where a held send
+   *  has a draft of its own, since the host holds what the person wrote last; every body the
+   *  field holds is reported to `onChange`; and the composer keeps no draft of its own under its
+   *  send name for an address it leaves, so a remount shows the host's body and never an older
+   *  one. */
+  readonly hostDraft?: {
+    readonly starting: string;
+    readonly onChange: (body: string) => void;
+  };
   /** Holds Send by `aria-disabled` while a send is out, as every composer's Send is held then,
    *  with why on the line under it, and past the send: after it lands the hold goes on until the
    *  read the send changes has come back - the promise `onSent` answers - and it ends at the
@@ -261,9 +298,11 @@ interface MentionComposerProps {
    *  when the thread opens again shows it, and the host decides where the reader goes. */
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
-  /** Told that a send landed. A host whose composer holds Send (`heldSend`) answers the read the
-   *  send changes, a promise the hold waits for; whatever else it answers is not read. */
-  readonly onSent: () => unknown;
+  /** Told that a send landed, with Dispatch's answer (`null` for a landing with none): the
+   *  message, the comment or the ask it made. A host whose composer holds Send (`heldSend`)
+   *  answers the read the send changes, a promise the hold waits for; whatever else it answers is
+   *  not read. */
+  readonly onSent: (answer: unknown) => unknown;
   readonly owner: ComposerOwner;
   /** How many times the reader has moved this composer's address with a control its host draws
    *  for it - an Agents row's issue picker - counted by the host in the press that makes the
@@ -336,6 +375,7 @@ export function MentionComposer({
   frame,
   edit,
   heldSend = false,
+  hostDraft,
   seedMentions = [],
   inline = false,
   intake,
@@ -358,7 +398,7 @@ export function MentionComposer({
   // composer that mounts where a send is out, or was refused, shows that send and its draft.
   // `landed` and `replaceDraft` are declared below, and run only once a send settles.
   const outgoing = useComposerSend(mutationKey, {
-    landed: (sent) => landed(sent),
+    landed: (sent, answer) => landed(sent, answer),
     refused: (held) => replaceDraft(held.draft.draft),
   });
   // A held Send's hold (`heldSend`): when the newest press was made (0 before any) and the press
@@ -383,12 +423,17 @@ export function MentionComposer({
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : composerNameOf(mutationKey);
+  /** The name the reader's unsent drafts are kept under (`useKeptDrafts`): none where the host
+   *  keeps the draft itself (`hostDraft`). */
+  const keptName = hostDraft === undefined ? composerName : undefined;
   const unsent = useUnsentDrafts();
   // Only the mount reads it, so it is computed once rather than on every keystroke (`mountDraft`).
-  const [initial] = useState(() =>
-    mountDraft({
+  // A host that keeps the draft gives the field its body, over a held send's draft too: a refused
+  // or out send keeps its own request, and Send composes from the field as it stands.
+  const [initial] = useState(() => {
+    const mounted = mountDraft({
       anchor,
-      composerName,
+      composerName: keptName,
       edit,
       held: outgoing.held,
       inline,
@@ -397,8 +442,17 @@ export function MentionComposer({
       seedMentions,
       standing,
       unsent,
-    })
-  );
+    });
+    return hostDraft === undefined
+      ? mounted
+      : {
+          ...mounted,
+          ask: undefined,
+          body: seededDraft(seedMentions, hostDraft.starting, owner),
+          replacement: "",
+          taken: false,
+        };
+  });
   /** The body field and, for a suggestion, the replacement field, each reached through the
    *  handle it hands back: the text as the reader left it, and the focus. */
   const field = useRef<MentionFieldHandle | null>(null);
@@ -418,6 +472,10 @@ export function MentionComposer({
   // arrives at an address that keeps one (`shown` in `useKeptDrafts`).
   const mountedHeld = useRef(initial.taken);
   const [body, setBody] = useState(initial.body);
+  // Every body the field holds goes to a host that keeps the draft itself (`hostDraft`).
+  const reportBody = useRef(hostDraft?.onChange);
+  reportBody.current = hostDraft?.onChange;
+  useEffect(() => reportBody.current?.(body), [body]);
   const [replacement, setReplacement] = useState(initial.replacement);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
    *  answered them; Save carries their ids (`carriedBlocks`). */
@@ -582,10 +640,11 @@ export function MentionComposer({
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
-   *  seeds. A held Send waits for the read the host answers (`heldSend`). */
-  const landed = ({ edit: sentEdit }: SentRequest) => {
+   *  seeds. The host is told with Dispatch's answer, and a held Send waits for the read the host
+   *  answers (`heldSend`). */
+  const landed = ({ edit: sentEdit }: SentRequest, answer: unknown) => {
     clearDraft();
-    const read = onSent();
+    const read = onSent(answer);
     if (heldSend && read instanceof Promise) setAwaitedRead(read);
     if (!inline && sentEdit === undefined) onClose();
   };
@@ -676,7 +735,7 @@ export function MentionComposer({
     takeOffered,
   } = useKeptDrafts({
     anchor,
-    composerName,
+    composerName: keptName,
     discard: discardNow,
     edit,
     field: { askOptions, body, multiple, replacement, urgency },
@@ -1094,25 +1153,13 @@ export function MentionComposer({
         </>
       ) : null}
       {confirmingDiscard ? (
-        <div
-          className={`flex items-center gap-3 rounded-lg border p-2 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
-          role="alert"
-        >
-          <span>Discard draft?</span>
-          <button className="font-semibold underline" onClick={discard} type="button">
-            Discard
-          </button>
-          <button
-            className="underline"
-            onClick={() => {
-              setConfirmingDiscard(false);
-              lastFocusedField.current?.focus();
-            }}
-            type="button"
-          >
-            Keep
-          </button>
-        </div>
+        <DiscardDraftPrompt
+          onDiscard={discard}
+          onKeep={() => {
+            setConfirmingDiscard(false);
+            lastFocusedField.current?.focus();
+          }}
+        />
       ) : null}
       {kind === "suggestion" ? (
         <MentionField

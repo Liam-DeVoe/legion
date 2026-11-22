@@ -108,6 +108,7 @@ import {
   closeControlPanel,
   drawnControlNames,
   heightOf,
+  INBOX_TOP,
   isPhoneProject,
   openDisplay,
   openIssuesTab,
@@ -130,10 +131,8 @@ import { assertPageFits } from "./unclipped";
  *  on: one more line of chips, a 44 px control and the row's own 8 px gap. */
 const CHIP_LINE = 52;
 
-/** The Inbox's own ceiling: the first item starts this far down the window or less, with no
- *  narrowing on, with a panel open and with the display menu open. */
-const INBOX_TOP = 203;
-/** And this far down with three narrowings on, which is a second line of chips. */
+/** The Inbox's own ceiling (`INBOX_TOP`) with three narrowings on, which is a second line of
+ *  chips. */
 const INBOX_TOP_NARROWED = 255;
 
 /** The window the delivery fixture's two pull requests were merged in, with the list drawn. */

@@ -2137,8 +2137,8 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "selectionSummary(selection)",
   },
   {
-    file: `${FEATURES}/agents/AgentsPage.tsx`,
-    holds: "the page's own word for why a selected session gets no broadcast",
+    file: `${FEATURES}/agents/BroadcastComposer.tsx`,
+    holds: "the composer's own word for why a selected session gets no broadcast",
     written: "note.reason",
   },
   {
@@ -2175,6 +2175,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     file: `${FEATURES}/inbox/AskHandOn.tsx`,
     holds: "the waiting-on badge's text colour, a class of the theme's badge tone",
     written: "tone.text",
+  },
+  {
+    file: `${FEATURES}/inbox/ComposeDialog.tsx`,
+    holds: "the server's or the send's own words for why a broadcast leaves a recipient out",
+    written: "outcome.reason",
   },
   {
     file: `${FEATURES}/inbox/useInboxSelection.ts`,

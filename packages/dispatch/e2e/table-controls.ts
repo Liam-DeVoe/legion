@@ -195,6 +195,11 @@ export const DESKTOP_WIDTHS: readonly { height: number; width: number }[] = [
   { height: 800, width: 1280 },
 ];
 
+/** The Inbox's own ceiling: the first item starts this far down the window or less, with no
+ *  narrowing on, with a panel open and with the display menu open. The New message control in its
+ *  control row adds no height under it (`e2e/inbox-compose.e2e.ts`). */
+export const INBOX_TOP = 203;
+
 /** Whether the row is running in one of the suite's phone projects (`iphone`, `stub-phone`),
  *  where R1's third width is that project's own and the row sets no viewport of its own. */
 export function isPhoneProject(testInfo: { project: { name: string } }): boolean {

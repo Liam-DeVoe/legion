@@ -5762,17 +5762,19 @@ test("the Inbox's range and compose keys", async () => {
       .filter(
         (entry) =>
           entry.scope === scope &&
-          ["select-range", "next-in-range", "previous-in-range"].includes(entry.id)
+          ["select-range", "next-in-range", "previous-in-range", "compose"].includes(entry.id)
       )
       .map((entry) => [entry.id, entry.keys]);
   const page = renderInbox();
   try {
     await screen.findByText("Which owner?");
-    // The page registers the three keys in its own scope, where the help lists them.
+    // The page registers the three range keys and `n` in its own scope, where the help lists
+    // them.
     expect(rangeKeys("inbox")).toEqual([
       ["select-range", ["Shift+X"]],
       ["next-in-range", ["Shift+J"]],
       ["previous-in-range", ["Shift+K"]],
+      ["compose", ["n"]],
     ]);
 
     // Below the column's width the keys act on the focused row, and no row holds the focus: each
@@ -5817,11 +5819,13 @@ test("the Inbox's range and compose keys", async () => {
       .map((action) => action.id);
     expect(offered).toContain("search");
     expect(offered.filter((id) => rangeAndMark.includes(id))).toEqual([]);
+    // `n` is a palette row, as a single key is unless it says otherwise.
+    expect(offered).toContain("compose");
   } finally {
     page.unmount();
   }
 
-  // The drawer registers the same three in its dialog scope.
+  // The drawer registers the same four in its dialog scope.
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -5838,6 +5842,7 @@ test("the Inbox's range and compose keys", async () => {
       ["select-range", ["Shift+X"]],
       ["next-in-range", ["Shift+J"]],
       ["previous-in-range", ["Shift+K"]],
+      ["compose", ["n"]],
     ]);
   } finally {
     drawer.unmount();

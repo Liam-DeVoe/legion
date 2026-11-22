@@ -286,6 +286,42 @@ alone, which is also what the address `/replies` opens.
 Where there is no second column each thread row is a card, with **Open**, which goes to the
 thread's own page, **Mark read** and **Dismiss**.
 
+## Writing to agents
+
+You can write to one or more agent sessions from the Inbox, as you can from the Agents page.
+Press `n`, or **New message** in the bar between **Filter** and **View**. The Inbox drawer has
+both too. The dialog sends through the same requests as the Agents page.
+
+Pick the recipients in **Recipients**. The list holds the live sessions, and its box narrows
+them as you type. Under the list, each recipient shows its state before you send:
+
+- **Running**: the session is live.
+- **Not running**: the session has missed its heartbeats. The message is stored and reaches it
+  when it runs again.
+- **Not listed**: the live list does not hold the session. It may be stopped, and then the Envoy
+  listener knows it and the message is stored for it. Or the listener may not know it at all,
+  and then a message to two or more leaves it out. Only the server can tell the two apart, so
+  the dialog says which happened once you send. A message to one session leaves nobody out, so
+  it only says the message is stored for it.
+
+To one recipient, the dialog shows the Agents page's own composer: its **Issue** picker above
+the message box. With no issue picked, the message goes to the session directly. With an issue
+picked, it is a comment on that issue that mentions the session. To two or more, the dialog shows
+the Agents page's broadcast composer: its **Delivery mode** and its message, with no **Issue**
+picker. That is one broadcast, and each session gets its own copy, so each one replies in its own
+thread, and each such thread is an **Agent message** row of its own. One send reaches at most 100
+sessions; the dialog refuses more before it sends anything. What you write stays when you add or
+remove a recipient. If you close the dialog with **Cancel**, `Escape` or a click outside it while
+it holds a message, it asks **Discard draft?** first, and **Keep** leaves the message as it was.
+While a message is on its way, the recipients cannot change.
+
+**Send** stays where you pressed it while the message is on its way, and takes no second press.
+If the server refuses the message, **Send** comes back with the error. Once the server answers,
+the dialog shows where the message went, for each recipient: sent, stored for later, failed with
+its error, or left out with its reason. It updates as each delivery settles. **Done** closes the
+dialog and puts the focus back where you were: the **New message** control, or the row you were
+on.
+
 ## Answering an ask
 
 An ask card holds the question and the answer. The Inbox draws it in the right column for a

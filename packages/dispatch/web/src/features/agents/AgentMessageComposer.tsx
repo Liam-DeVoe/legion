@@ -13,6 +13,7 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
+import { seededDraft } from "../conversation/composer-draft";
 import type { ListedReplies, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
@@ -55,9 +56,11 @@ export function AgentMessageComposer({
   agent,
   heldSend = false,
   hold,
+  hostDraft,
   listed,
   onCancelReply,
   onClose,
+  onSent,
   replyTo,
   sendKey,
   standing = false,
@@ -74,6 +77,14 @@ export function AgentMessageComposer({
    *  addressed, so the picker holds until it lands, from Send's own task on. The send's request is
    *  frozen at Send either way. */
   hold: Sending;
+  /** A host that keeps the message itself (`MentionComposer`'s `hostDraft`): the box starts from
+   *  `starting`, and every message it holds is reported to `onChange` as the person wrote it,
+   *  without the mention of this session an issue's channel writes in front of it. The Inbox's
+   *  compose dialog passes it, so the message stays when the person adds or removes a recipient. */
+  hostDraft?: {
+    readonly starting: string;
+    readonly onChange: (body: string) => void;
+  };
   /** The messages of the session's conversation the row lists (`MentionComposer`'s `listed`),
    *  or none where its host has not read them, or where the box answers only its own thread's
    *  newest message (`standing`), which leaves the page with the box. */
@@ -83,6 +94,10 @@ export function AgentMessageComposer({
    *  Escape from an untouched draft and on Discard - and also right after a successful send,
    *  which is NOT one level out; that case is filtered below. */
   onClose: () => void;
+  /** Told that a send landed, with Dispatch's answer: the message to the session, or the comment
+   *  on the issue picked that mentions it. A host that passes it draws what follows the send
+   *  itself, so a held Send waits for no read once the answer is in. */
+  onSent?: (answer: unknown) => void;
   replyTo: AgentReply | null;
   /** The name of the composer's send: the row's `agentSendKey`, or the Inbox thread's own. */
   sendKey: MutationKey;
@@ -230,6 +245,18 @@ export function AgentMessageComposer({
   const composerOwner = useDirectChannel
     ? { kind: "session" as const, sessionId: agent.session_id }
     : { issueKey: replyIssueKey ?? issueKey, kind: "issue" as const };
+  // The host keeps the message the person wrote; the mention of this session is the issue
+  // channel's, which the box writes in front of it again at its next mount.
+  const keptDraft =
+    hostDraft === undefined
+      ? undefined
+      : {
+          onChange: (body: string) =>
+            hostDraft.onChange(
+              seededDraft([], body, { kind: "session", sessionId: agent.session_id })
+            ),
+          starting: hostDraft.starting,
+        };
 
   return (
     <div className={`mt-3 border-t pt-3 ${borderDefault}`} ref={box}>
@@ -285,6 +312,7 @@ export function AgentMessageComposer({
             : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }]
         }
         heldSend={heldSend}
+        hostDraft={keptDraft}
         listed={listed}
         mutationKey={sendKey}
         onCancelReply={onCancelReply}
@@ -295,7 +323,7 @@ export function AgentMessageComposer({
           }
           onClose();
         }}
-        onSent={() => {
+        onSent={(answer) => {
           sentJustNow.current = true;
           onCancelReply();
           void queryClient.invalidateQueries({
@@ -304,6 +332,10 @@ export function AgentMessageComposer({
           // Focus went to the document when the field disabled itself; take it back. A held
           // Send disables nothing, and its focus stays where it is.
           refocusComposer();
+          if (onSent !== undefined) {
+            onSent(answer);
+            return undefined;
+          }
           return heldSend ? meInboxReadsBack(queryClient) : undefined;
         }}
         owner={composerOwner}

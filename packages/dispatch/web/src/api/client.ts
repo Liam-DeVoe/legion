@@ -1515,6 +1515,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/broadcasts/{id}", { id });
   }
 
+  /** `GET /api/v1/messages/{id}`: the conversation a message belongs to, by any message id in it,
+   *  issue-less or not - its root with its deliveries, and every reply. */
+  getMessageThread(id: string) {
+    return this.read("/api/v1/messages/{id}", { id });
+  }
+
   createMessageDelivery(id: string, delivery: "btw" | "aside" | "steer", bounds: WriteBounds) {
     return this.post("/api/v1/messages/{id}/deliveries", { id }, { delivery }, bounds);
   }

@@ -6,7 +6,7 @@ import { retriesUnderItsKey } from "../writes/keyed-write";
 import type { RestoredBroadcast } from "./broadcast-plan";
 import type { BroadcastSend } from "./broadcast-queue";
 
-/** The broadcast being composed on the Agents page. */
+/** The broadcast being composed on the Agents page, or in the Inbox's compose dialog. */
 export interface BroadcastComposition {
   /** The mode the sender picked, or null until they pick one: the page then sends in the mode
    *  the selection takes (`broadcastDelivery`). */
@@ -26,20 +26,25 @@ export interface BroadcastComposition {
   readonly restore: (send: BroadcastSend, refusal: Error) => void;
   /** Send handed the request to the queue: the composer empties, and the next send gets a key. */
   readonly sent: () => void;
+  /** Send handed the request to a host that keeps the composition on screen while the request is
+   *  out, the Inbox's compose dialog: the message, the mode and the selection stay, and the next
+   *  send gets a key. A refusal puts the request back with its key's rule (`restore`). */
+  readonly pressed: () => void;
 }
 
 type CompositionState = Omit<
   BroadcastComposition,
-  "restore" | "sent" | "setDelivery" | "setDraft" | "setSelected"
+  "pressed" | "restore" | "sent" | "setDelivery" | "setDraft" | "setSelected"
 >;
 
 /**
  * The composition is page state, not the composer's: the composer unmounts whenever the selection
  * empties, and clearing a selection to pick again must not throw away a typed message or its mode.
  * Its only mutators are an edit, a restore and a send, so the rules live here. One key per send
- * (`Idempotency-Key`): the key changes only once Send has handed it to the queue, so two presses
- * of one composition name one broadcast on the server, and the send after it never reuses its
- * key. Every edit - the message, the mode, the selection - drops a restored request: until then
+ * (`Idempotency-Key`): the key changes only once Send has handed the request on - to the queue
+ * (`sent`), or to the Inbox's compose dialog's own write (`pressed`) - so two presses of one
+ * composition name one broadcast on the server, and the send after it never reuses its key.
+ * Every edit - the message, the mode, the selection - drops a restored request: until then
  * Send re-sends it word for word, so the server sees the request it refused even after the
  * registry changed (`composedBroadcast`), under its own key when it ended without Dispatch's
  * verdict and under a new one when Dispatch refused it.
@@ -54,6 +59,7 @@ export function useBroadcastComposition(): BroadcastComposition {
   }));
   return {
     ...state,
+    pressed: () => setState((current) => ({ ...current, sendKey: newSendKey() })),
     restore: (send, refusal) =>
       setState((current) => ({
         ...current,

@@ -71,6 +71,7 @@ the right column is showing. Below that width, and in the Inbox drawer, they act
 | `Shift+J` / `Shift+K` | Next / previous row, with that range carried to it; with no row to run from, they only move |
 | `h` | Snooze the selected ask, or every ticked ask |
 | `f` | Move the focus to the **Search asks** box above the list |
+| `n` | Write a message to one or more agents (the **New message** dialog); in a text field it types the letter |
 | `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; from the bulk snooze menu, back to the list; with no row focused, drop every tick |
 
 `Enter`, `1` – `9` and `h` are an open question's: a thread row has no options, no answer box and

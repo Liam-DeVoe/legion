@@ -70,7 +70,7 @@ import {
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
-import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
+import { type KeyBinding, type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -91,6 +91,7 @@ import { type AskOrdinal, askOrdinals } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { useInboxWrites } from "./ask-writes";
 import { blockedOnYouText, needsYou, waitingOnHuman } from "./BlockedOnYou";
+import { ComposeDialog } from "./ComposeDialog";
 import { declineRefusal } from "./DeclineControl";
 import { DismissControl, RowDismissContext } from "./DismissControl";
 import {
@@ -161,8 +162,8 @@ import { useInboxThreadRows } from "./useInboxThreadRows";
  *  filter fields, or the assignee control beside them. */
 type InboxFilterPanel = InboxFilterField | "assignee";
 
-/** The chrome of the page's own controls - **Mark all read** and the needs-you control - so
- *  each keeps the row's 44 px line and nothing in the row can grow it. */
+/** The chrome of the page's own controls - **New message**, **Mark all read** and the needs-you
+ *  control - so each keeps the row's 44 px line and nothing in the row can grow it. */
 const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 ${controlPadding.comfortable} ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
 
 /** One action of the selection bar, as the bar's own line draws it. */
@@ -960,7 +961,9 @@ export interface InboxProps {
 }
 
 /** The Inbox under its own ask writes (`InboxAskWrites`). Every control it draws for an ask shows
- *  that ask's one write of its kind, which the Inbox holds, whichever control pressed it. */
+ *  that ask's one write of its kind, which the Inbox holds, whichever control pressed it. The
+ *  compose dialog that **New message** and `n` open stands here, over the list rather than in it,
+ *  so neither the list's loading line nor its error takes the message the person is writing. */
 export function Inbox({
   filter,
   keymapScope,
@@ -968,15 +971,19 @@ export function Inbox({
   pane,
   scroller,
 }: InboxProps = {}): ReactNode {
+  const [composing, setComposing] = useState(false);
   return (
     <InboxAskWrites>
       <InboxBody
+        composing={composing}
         filter={filter}
         keymapScope={keymapScope}
+        onCompose={() => setComposing(true)}
         onFilterChange={onFilterChange}
         pane={pane}
         scroller={scroller}
       />
+      {composing ? <ComposeDialog onClose={() => setComposing(false)} /> : null}
     </InboxAskWrites>
   );
 }
@@ -1014,12 +1021,19 @@ function InboxAskWrites({ children }: { children: ReactNode }): ReactNode {
 }
 
 function InboxBody({
+  composing,
   filter: filterOverride,
   keymapScope = "inbox",
+  onCompose,
   onFilterChange,
   pane = true,
   scroller,
-}: InboxProps): ReactNode {
+}: InboxProps & {
+  /** Whether the compose dialog stands open (`ComposeDialog`). */
+  readonly composing: boolean;
+  /** Opens the compose dialog: **New message** and `n`. */
+  readonly onCompose: () => void;
+}): ReactNode {
   const [addressRoute, goToRoute] = useInboxRoute();
   const filter = filterOverride ?? addressRoute;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
@@ -1629,7 +1643,7 @@ function InboxBody({
   // has no row to fall back through - is one level out rather than a dead end.
   const pickerOrigin = useRef<string | null>(null);
   useKeymapScope(keymapScope);
-  useKeymap(keymapScope, [
+  const inboxKeys: KeyBinding[] = [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
     // With the reading column on, movement is the selection's: the column follows it, and the
     // focus stays where the reader left it in the list.
@@ -1911,6 +1925,14 @@ function InboxBody({
       when: () => searchRef.current !== null,
     },
     {
+      // A message to one or more agents, from the page and from the drawer alike. In a text field
+      // the key types the letter, as every single-key binding does.
+      id: "compose",
+      keys: "n",
+      label: "Write a message to one or more agents",
+      run: onCompose,
+    },
+    {
       // Escape is one level out, and out of the box is the list: the row the column is showing
       // on the page, and the first row in the drawer, where nothing is selected. It is offered
       // only while the focus is in the box, so the three Escapes above are untouched - `back`
@@ -1924,7 +1946,11 @@ function InboxBody({
       run: () => (paneSelection.selectedRow() ?? rows()[0])?.focus(),
       when: () => searchRef.current !== null && document.activeElement === searchRef.current,
     },
-  ]);
+  ];
+  // While the compose dialog is open, every key is the dialog's: in the drawer this list's keys
+  // stand in the dialog scope beside the dialog's, where `j` or Escape would act on the list
+  // under it, so the list lets its keys go until the dialog closes.
+  useKeymap(keymapScope, composing ? [] : inboxKeys);
 
   // The bar's hand-off where the row marked last cannot take the focus, with no scroll. After a
   // press that took that row away: a row the reader can see at its place, else before it. With no
@@ -2283,39 +2309,48 @@ function InboxBody({
         {waitingCounted ? `Blocked on you · ${waiting.count}` : "Blocked on you"}
       </button>
     );
-  // The page's own controls, or nothing at all: an empty slot would still cost the row a gap.
-  const pageControls =
-    !markAll.offered && markAll.failure === undefined && needsYouControl === null ? undefined : (
-      <>
-        {/* Only while the list holds an unread Reply or Agent row. It asks nothing first: the
-            rows go, and a refusal brings them back; a press the reader stopped may have marked
-            them, so the list is read again rather than brought back. */}
-        {markAll.offered ? (
-          <button
-            className={PAGE_CONTROL_CLASS}
-            data-inbox-mark-all=""
-            onClick={markAll.markAll}
-            type="button"
-          >
-            Mark all read
-          </button>
-        ) : null}
-        {markAll.failure === "refused" ? (
-          <p
-            className={`text-sm whitespace-nowrap ${dangerText}`}
-            data-inbox-mark-all-refused=""
-            role="alert"
-          >
-            {MARK_ALL_REFUSED_TEXT}
-          </p>
-        ) : markAll.failure === "stopped" ? (
-          <p className={`text-sm ${dangerText}`} data-inbox-mark-all-stopped="" role="alert">
-            {MARK_ALL_STOPPED_TEXT}
-          </p>
-        ) : null}
-        {needsYouControl}
-      </>
-    );
+  // The page's own controls. **New message** is always among them, so the slot is never empty.
+  const pageControls = (
+    <>
+      {/* A message to one or more agents, as `n` opens it (`ComposeDialog`). The dialog gives the
+          focus back to this control when it closes. */}
+      <button
+        className={PAGE_CONTROL_CLASS}
+        data-inbox-compose=""
+        onClick={onCompose}
+        type="button"
+      >
+        New message
+      </button>
+      {/* Only while the list holds an unread Reply or Agent row. It asks nothing first: the rows
+          go, and a refusal brings them back; a press the reader stopped may have marked them, so
+          the list is read again rather than brought back. */}
+      {markAll.offered ? (
+        <button
+          className={PAGE_CONTROL_CLASS}
+          data-inbox-mark-all=""
+          onClick={markAll.markAll}
+          type="button"
+        >
+          Mark all read
+        </button>
+      ) : null}
+      {markAll.failure === "refused" ? (
+        <p
+          className={`text-sm whitespace-nowrap ${dangerText}`}
+          data-inbox-mark-all-refused=""
+          role="alert"
+        >
+          {MARK_ALL_REFUSED_TEXT}
+        </p>
+      ) : markAll.failure === "stopped" ? (
+        <p className={`text-sm ${dangerText}`} data-inbox-mark-all-stopped="" role="alert">
+          {MARK_ALL_STOPPED_TEXT}
+        </p>
+      ) : null}
+      {needsYouControl}
+    </>
+  );
 
   // How the list is ordered, how it is banded, which of the reader's two lists is showing, and
   // which way a thread's own replies read. The first three are the list's, so they ride in the
