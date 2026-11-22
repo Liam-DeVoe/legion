@@ -24,7 +24,8 @@ import (
 // issue's own record when it runs.
 //
 // Each parking row asserts the whole set of rows the departure queued, not the release alone: the
-// park suspends every role of what it parks, and queues the suspension and, for a root, the
+// park suspends each claim of what it parks (one row per stored claim, and one by role for each
+// role no stored claim works), and queues the suspension and, for a root, the
 // linger's close. That set is how the test shows the release was added to the park and replaced
 // nothing. No row disarms a pull request, since the daemon changes no merge setting of any
 // (dispatch://INFRA-714 R2).
