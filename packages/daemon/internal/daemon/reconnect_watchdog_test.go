@@ -18,6 +18,7 @@ import (
 type fakeConnStatus struct {
 	mu        sync.Mutex
 	connected bool
+	closed    bool
 	err       error
 }
 
@@ -27,8 +28,12 @@ func (c *fakeConnStatus) IsConnected() bool {
 	return c.connected
 }
 
-// IsClosed is false: a test ends the watchdog with its context.
-func (c *fakeConnStatus) IsClosed() bool { return false }
+// IsClosed reports closed, which a test sets to end the watchdog as a closed connection does.
+func (c *fakeConnStatus) IsClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
 
 func (c *fakeConnStatus) LastError() error {
 	c.mu.Lock()
@@ -40,6 +45,34 @@ func (c *fakeConnStatus) set(connected bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connected, c.err = connected, err
+}
+
+// The watchdog of a connection ends when the connection closes, with no context to end it: a
+// fresh generation's watchdog is started from its dial with none (workflowRuntime.connect), and
+// the consumers close that connection when the record stops selecting it. A closed connection
+// reports itself disconnected, so a watchdog that did not stop would warn about it forever, and
+// one goroutine would be left for each generation the daemon ever dialled. The control is the
+// watchdog without its IsClosed exit, under which this row's watchdog never returns.
+func TestReconnectWatchdogEndsWhenItsConnectionCloses(t *testing.T) {
+	logBuf := &syncBuffer{}
+	w := &workflowRuntime{log: slog.New(slog.NewTextHandler(logBuf, nil)), reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: 20 * time.Millisecond}
+	conn := &fakeConnStatus{connected: true}
+	done := make(chan struct{})
+	go func() {
+		w.reconnectWatchdogWith(context.Background(), conn, "legion-go-CAPTURE-github/RFuDfoOI3HLgXUdIZvZnZx")
+		close(done)
+	}()
+	conn.mu.Lock()
+	conn.connected, conn.closed = false, true
+	conn.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the watchdog of a closed connection was still watching after 5 s; it logged:\n%s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "NATS has not reconnected") {
+		t.Fatalf("the watchdog warned about a connection that closed: %q", logBuf.String())
+	}
 }
 
 // A NATS reconnect that keeps failing a non-auth handshake — a server that accepts the TCP
