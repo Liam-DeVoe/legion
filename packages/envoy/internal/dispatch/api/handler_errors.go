@@ -334,11 +334,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
 		return
 	}
-	// A live write the document service refused under the document owner's lock because the
-	// document is retired (docs.RetiredDocumentError): a write api did not test the row for
-	// itself - a comment's mark, an ask block - is refused as an edit or an upload of the retired
-	// document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, or 409 DECISIONS_ARE_NODES for
-	// an issue's decisions document, not 500.
+	// A write the document service refused under the document owner's lock because the document
+	// is retired (docs.RetiredDocumentError): a write api did not test the row for itself - a
+	// comment's mark, an ask block, a named version, a rebuild - is refused as an edit or an upload
+	// of the retired document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, or 409
+	// DECISIONS_ARE_NODES for an issue's decisions document, not 500.
 	var retired *docs.RetiredDocumentError
 	if errors.As(err, &retired) {
 		s.writeHandlerError(w, retiredDocumentRefusal(model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}, retired.Name))

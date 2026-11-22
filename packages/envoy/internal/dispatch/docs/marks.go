@@ -469,8 +469,23 @@ func suggestionKind(attrs pmdoc.Attrs, id string) (string, error) {
 
 // ProjectMark writes a comment or suggestion record for Proof's margin projection. Under
 // WithCommentMarks - a comment's own record, or its thread root's that a reply adds itself to -
-// it is written on a closed issue's document too.
+// it is written on a closed issue's document too. A document that is retired (RetireDocument),
+// read under its owner's lock (retiredUnderOwnerLock), is written nothing: a thread's resolve,
+// reopen, edit and reply change the thread's own rows, and the retired document, which takes no new
+// text, keeps the record it holds. A transaction that holds its write to the document already read
+// the document standing under that lock (joinLiveWrite), which no retirement passes before the
+// transaction ends, so it reads nothing again.
 func (s *Service) ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return errUnjoined
+	}
+	if joinedLiveWrite(ctx, artifactID) == nil {
+		retired, err := retiredUnderOwnerLock(ctx, tx, artifactID)
+		if err != nil || retired {
+			return err
+		}
+	}
 	plain, err := toPlain(record)
 	if err != nil {
 		return err
