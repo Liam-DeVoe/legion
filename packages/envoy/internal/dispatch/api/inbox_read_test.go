@@ -665,15 +665,18 @@ func holdGateThread(t *testing.T, database *store.Store, gate string) gateHold {
 // the first was just given, and Postgres breaks the cycle with a 40P01 its caller answers 500.
 // With it the two queue at the same row in the same order, and one simply follows the other.
 //
-// The wait for the queue counts the presses' own backends alone (racingPools): the issue's spec
-// settles 20 ms after its create, on the server's own pool, and its exclusive take of the issue's
-// owner lock can queue behind the first press's shared one and ahead of the second's, a third
-// backend behind the gate that a count of every backend would read.
+// The issue's spec never settles during the run (settle: pastTheRun): a settlement takes the
+// issue's owner lock exclusively, and one that queued behind the first press's shared take and
+// ahead of the second's would keep the second from the gate row, so the round would release
+// without its crossing. The wait for the queue counts the presses' own backends alone
+// (racingPools), so any other backend queued behind the gate - one of the server's own pool -
+// neither ends the wait nor changes the count. One such backend that queued between the presses
+// on the owner lock would still leave its round without the crossing, never failing it.
 //
 // The two presses carry marks a millisecond apart, so one of them moves every row whichever
 // order they commit in.
 func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: pastTheRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Two presses", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
 	threads := make([]string, 0, inboxReadRaceThreads)

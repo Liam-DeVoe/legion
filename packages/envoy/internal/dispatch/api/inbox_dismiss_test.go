@@ -727,12 +727,13 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 // them - which is the lock order markInboxReadThreads writes down, taken by this route too. The
 // crossing is made rather than waited for, exactly as TestInboxReadRacingAnotherMarkAll makes it:
 // the two dismisses run on servers whose plans are forced apart (markAllOnPlan), so they reach the
-// caller's rows in two orders, and both queue behind a row the test holds. The wait for that queue
-// counts the dismisses' own backends alone (racingPools): the issue's spec settles 20 ms after its
-// create, on the server's own pool, and its exclusive take of the issue's owner lock can queue
-// among the dismisses, which hold it shared, a third backend behind the gate.
+// caller's rows in two orders, and both queue behind a row the test holds. The issue's spec never
+// settles during the run (settle: pastTheRun), since a settlement's exclusive take of the issue's
+// owner lock, queued between the two dismisses' shared takes, would keep the second from the gate
+// row and release the round without its crossing; and the wait for the queue counts the
+// dismisses' own backends alone (racingPools), so no other backend ends it or changes its count.
 func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: pastTheRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Two dismisses", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
 	threads := make([]string, 0, inboxReadRaceThreads)
