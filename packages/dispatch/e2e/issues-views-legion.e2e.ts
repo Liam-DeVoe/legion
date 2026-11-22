@@ -1835,11 +1835,12 @@ test("each pick of a Legion filter writes its own value to the address, lists th
   }
 });
 
-// R14, found by INFRA-3221's tester: a second tab does not end the first tab's bulk action
-// without a word. While tab one's Start next is still writing, tab two either offers nothing to
-// end that live move, or tab one says its move stopped; tab one never stops part-way in silence.
+// R14 and D12, found by INFRA-3221's tester, with the architect's decision: a second tab does not
+// end the first tab's bulk action. While tab one's Start next holds the move's Web Lock, tab two
+// offers no Finish and no Dismiss; once tab one closes, its lock goes, and tab two offers both, as
+// D12 offers a record a tab left behind, and its Finish moves every selected issue.
 // SLOW(>=2s): four issues seeded and moved by Start next in one tab while a second tab is open.
-test("a second tab leaves a Start next that is still writing to finish, or the first tab says it stopped", async ({
+test("a second tab offers no Finish or Dismiss while the first tab's Start next holds its lock, and both once that tab closes", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
@@ -1854,7 +1855,7 @@ test("a second tab leaves a Start next that is still writing to finish, or the f
     }
     const [stays, ...moved] = keys;
     if (stays === undefined) throw new Error("the seed has no issue");
-    // Tab one's writes are held until tab two has done what it offers, so its move is live then.
+    // Tab one's writes are held, so its move is live, and its lock held, until it closes.
     const { promise: gate, resolve: release } = Promise.withResolvers<void>();
     const { promise: writing, resolve: wrote } = Promise.withResolvers<void>();
     const one = await context.newPage();
@@ -1863,7 +1864,7 @@ test("a second tab leaves a Start next that is still writing to finish, or the f
         wrote();
         await gate;
       }
-      await route.continue();
+      await route.continue().catch(() => undefined);
     });
     await one.goto(`/projects/${ACME}/issues`);
     await expect(one.locator("[data-issue-row]").first()).toBeVisible();
@@ -1877,29 +1878,41 @@ test("a second tab leaves a Start next that is still writing to finish, or the f
     const two = await context.newPage();
     await two.goto(`/projects/${ACME}/issues`);
     await expect(two.locator("[data-issue-row]").first()).toBeVisible();
-    // Tab two decides whether to offer Dismiss once it has asked the browser whether tab one holds
-    // the move's lock, which answers within milliseconds of the rows. A Dismiss it offers is
-    // pressed; none within 3 s is no offer, and the click's timeout is that answer.
-    await two
-      .getByRole("button", { exact: true, name: "Dismiss" })
-      .first()
-      .click({ timeout: 3_000 })
-      .catch(() => undefined);
-    release();
+    // Tab two has its answer from the lock once it has asked for the lock tab one holds: its
+    // request then waits in the browser's lock manager, which the page shares with tab one. The
+    // lock is named for the stored record (`actionLockName` in issues-table-recovery.ts).
+    await expect
+      .poll(
+        () =>
+          two.evaluate(async () => {
+            const locks = await navigator.locks.query();
+            const named = (lock: LockInfo) =>
+              lock.name?.startsWith("dispatch-table-action:") === true;
+            return (locks.held ?? []).some(named) && (locks.pending ?? []).some(named);
+          }),
+        { message: "tab one holds the move's lock and tab two waits for it" }
+      )
+      .toBe(true);
+    const finish = two.getByRole("button", { exact: true, name: "Finish" });
+    const dismiss = two.getByRole("button", { exact: true, name: "Dismiss" });
+    await expect(finish).toHaveCount(0);
+    await expect(dismiss).toHaveCount(0);
 
+    // Tab one closes with its move unfinished: the lock goes, and tab two offers both.
+    await one.close();
+    release();
+    await expect(finish).toBeVisible();
+    await expect(dismiss).toBeVisible();
+    await finish.click();
     const rankOf = async (key: string) => (await getIssue(key)).rank;
-    const said = one
-      .getByRole("region", { exact: true, name: "Project issues" })
-      .getByRole("alert")
-      .filter({ hasText: "Start next" });
     await expect
       .poll(
         async () => {
           const bottom = await rankOf(stays);
           const ranks = await Promise.all(moved.map((key) => rankOf(key)));
-          return ranks.every((rank) => rank < bottom) || (await said.count()) > 0;
+          return ranks.every((rank) => rank < bottom);
         },
-        { message: "every selected issue moved ahead, or tab one says its move stopped" }
+        { message: "tab two's Finish moves every selected issue ahead of the one left out" }
       )
       .toBe(true);
   } finally {
