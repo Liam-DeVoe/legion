@@ -360,13 +360,9 @@ export function planMove(
   // One neighbour, so the server takes the rank whatever order the neighbours' own ranks run in:
   // the daemon gives Places in an order of its own, so two cards next to each other by Place need
   // not be in rank order, and the server refuses a rank between two that are not.
-  const rank = !ranked
-    ? undefined
-    : below !== undefined
-      ? { before: below.issue.key }
-      : above !== undefined
-        ? { after: above.issue.key }
-        : undefined;
+  let rank: UpdateIssueInput["rank"] | undefined;
+  if (ranked && below !== undefined) rank = { before: below.issue.key };
+  else if (ranked && above !== undefined) rank = { after: above.issue.key };
   const input: UpdateIssueInput = {
     ...(status === undefined ? {} : { status }),
     ...(priority === undefined ? {} : { priority: priority.lane }),

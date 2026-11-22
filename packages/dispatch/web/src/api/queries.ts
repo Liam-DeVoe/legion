@@ -3,7 +3,9 @@ import { INBOX_THREAD_KINDS } from "@legion/contracts";
 import {
   infiniteQueryOptions,
   keepPreviousData,
+  partialMatchKey,
   type QueryFunctionContext,
+  type QueryKey,
   queryOptions,
   replaceEqualDeep,
 } from "@tanstack/react-query";
@@ -510,6 +512,11 @@ export const projectDonePageQuery = (
     },
   });
 };
+
+/** Whether two keys of `projectDonePageQuery` read one window of one project's done issues: they
+ *  differ in no part but the page's size and offset, the key's last two. */
+export const sameDoneWindow = (key: QueryKey, other: QueryKey): boolean =>
+  partialMatchKey(key, other.slice(0, -2));
 
 /** How many open issues a project has: the `total` of a one-row page of its open listing, which
  *  Open's tab counts by on a view that reads no open listing (Done). Under the project listing's

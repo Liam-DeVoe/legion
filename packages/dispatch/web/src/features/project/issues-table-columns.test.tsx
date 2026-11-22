@@ -246,6 +246,7 @@ function Columns({
     false,
     noMark,
     layoutColumns,
+    sorting,
     undefined,
     tab?.hasLegion
   );

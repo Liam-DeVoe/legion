@@ -5,6 +5,7 @@ import type {
   RowData,
   RowModel,
   SortingFn,
+  SortingState,
   Table,
 } from "@tanstack/react-table";
 import { type ReactNode, useMemo, useRef } from "react";
@@ -149,6 +150,9 @@ interface EmptyLastSort {
   readonly sortUndefined: false;
 }
 
+/** Whether the table sorts the column `id` descending now, by its sorting state. */
+type SortsDescending = (id: string) => boolean;
+
 /**
  * The sort of a column whose cells can be empty (an undefined accessor value): two values by
  * `compare`, the empty cells last whichever way the column is sorted, and two empty cells tied,
@@ -157,9 +161,12 @@ interface EmptyLastSort {
  * the empty cells last but answers for two of them too, before the next key is asked, and its
  * default puts them first in a descending sort. The table turns a sorting function's answer round
  * for a descending sort, so the answer for an empty cell is turned round here first, by the
- * direction the column is sorted in.
+ * direction the table sorts the column in (`descending`).
  */
-function emptyLast<V>(compare: (left: V, right: V) => number): EmptyLastSort {
+function emptyLast<V>(
+  compare: (left: V, right: V) => number,
+  descending: SortsDescending
+): EmptyLastSort {
   return {
     sortUndefined: false,
     sortingFn: (a, b, id) => {
@@ -168,17 +175,19 @@ function emptyLast<V>(compare: (left: V, right: V) => number): EmptyLastSort {
       if (left !== undefined && right !== undefined) return compare(left, right);
       if (left === right) return 0;
       const last = left === undefined ? 1 : -1;
-      return a._getAllCellsByColumnId()[id]?.column.getIsSorted() === "desc" ? -last : last;
+      return descending(id) ? -last : last;
     },
   };
 }
 
 /** Two numbers, the smaller first, and the empty cells last. */
-const smallestFirst = emptyLast((left: number, right: number) => left - right);
+const smallestFirst = (descending: SortsDescending) =>
+  emptyLast((left: number, right: number) => left - right, descending);
 
 /** Two runs of a card's time by the moment each started, as lengths: the later start is the
  *  shorter time, so it sorts first, and the empty cells last. */
-const shortestFirst = emptyLast((left: number, right: number) => right - left);
+const shortestFirst = (descending: SortsDescending) =>
+  emptyLast((left: number, right: number) => right - left, descending);
 
 /** What a facts cell draws while the read of its facts is out, or after it failed: a loading
  *  mark or an error mark, and never the empty cell of an issue with no Legion work. */
@@ -287,15 +296,16 @@ function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): Reac
  *  Everything else about a column — whether it filters, what a row files under, what it groups
  *  by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the
  *  two never disagree. A row's own checkbox tells `onMark` the row it marks. A column whose rows
- *  can have no value sorts those rows last whichever way it is sorted, and by the next sort key
- *  among themselves (`emptyLast`).
+ *  can have no value sorts those rows last whichever way the table sorts it (`descending`), and
+ *  by the next sort key among themselves (`emptyLast`).
  *  Time per phase draws in the reader's mode (`usePhaseHoursMode`), which its header's control
  *  switches. */
 const renderings = (
   userState: UserState | undefined,
   onMark: (key: string) => void,
   phaseMode: PhaseHoursMode,
-  setPhaseMode: (mode: PhaseHoursMode) => void
+  setPhaseMode: (mode: PhaseHoursMode) => void,
+  descending: SortsDescending
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -324,7 +334,7 @@ const renderings = (
   priority: {
     header: "Priority",
     accessorFn: (item) => item.issue.priority ?? undefined,
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: false,
     cell: ({ row }) => (
       <PriorityControl
@@ -423,7 +433,7 @@ const renderings = (
     header: "Legion phase",
     // The board's order, the rows with no card last.
     accessorFn: (item) => placeIn(LEGION_PHASE_PICKS, item.card?.column),
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: false,
     cell: ({ row }) =>
       row.original.card === undefined ? null : (
@@ -474,12 +484,9 @@ const renderings = (
     header: "Created",
     accessorFn: (item) => createdAt(item.issue),
     // A server of the release before the one that added `created_at` sends none, and the table
-    // sorts such a row last in either direction, as every column whose cells can be empty does
-    // (`emptyLast`); a sorting function blind to the direction would put those rows first under
-    // `?sort=-created`, since TanStack reverses its answer for a descending sort. What
-    // `compareTimestamps` then compares is always a time it can parse. `IssuesTable.test.tsx`
-    // sorts a row without a time in both directions.
-    ...emptyLast(compareTimestamps),
+    // sorts such a row last (`emptyLast`), so what `compareTimestamps` compares is always a time
+    // it can parse. `IssuesTable.test.tsx` sorts a row without a time in both directions.
+    ...emptyLast(compareTimestamps, descending),
     cell: ({ row }) => {
       // The cell is empty for a row that server sent, which carries no time to show, which the
       // same row of `IssuesTable.test.tsx` reads.
@@ -504,7 +511,7 @@ const renderings = (
   closed: {
     header: "Closed",
     accessorFn: (item) => item.issue.closed_at ?? undefined,
-    ...emptyLast(compareTimestamps),
+    ...emptyLast(compareTimestamps, descending),
     cell: ({ row }) =>
       row.original.issue.closed_at === null ? null : (
         <Timestamp
@@ -528,7 +535,7 @@ const renderings = (
         if (step !== 0) return step;
       }
       return left.length - right.length;
-    }),
+    }, descending),
     sortDescFirst: false,
     cell: ({ row }) => (
       <span className={`text-xs ${textSecondaryOnCanvas}`}>
@@ -542,7 +549,7 @@ const renderings = (
   activity: {
     header: "Worker state",
     accessorFn: (item) => placeIn(WORKER_STATE_PICKS, item.card?.card.slot_use),
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: false,
     cell: ({ row }) => {
       const use = row.original.card?.card.slot_use;
@@ -554,7 +561,7 @@ const renderings = (
   waited: {
     header: "Time waiting",
     accessorFn: (item) => sinceMs(item.card?.card.waiting?.since),
-    ...shortestFirst,
+    ...shortestFirst(descending),
     sortDescFirst: true,
     cell: ({ row }) => (
       <CardTime nowMs={row.original.at} since={row.original.card?.card.waiting?.since} />
@@ -563,7 +570,7 @@ const renderings = (
   waiting_reason: {
     header: "Why it waits",
     accessorFn: (item) => placeIn(WAITING_REASON_PICKS, item.card?.card.waiting?.reason),
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: false,
     cell: ({ row }) => {
       const waiting = row.original.card?.card.waiting;
@@ -590,7 +597,7 @@ const renderings = (
   time_in_phase: {
     header: "Time in Legion phase",
     accessorFn: (item) => sinceMs(item.card?.card.phase_since),
-    ...shortestFirst,
+    ...shortestFirst(descending),
     sortDescFirst: true,
     cell: ({ row }) => (
       <CardTime nowMs={row.original.at} since={row.original.card?.card.phase_since} />
@@ -599,7 +606,7 @@ const renderings = (
   work_hours: {
     header: "Work time",
     accessorFn: workHoursOf,
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: true,
     cell: ({ row }) =>
       factsCell(row.original, () => {
@@ -614,7 +621,7 @@ const renderings = (
   review_rounds: {
     header: "Review rounds",
     accessorFn: (item) => item.facts?.review_rounds,
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: true,
     // A counted zero reads 0: Legion worked the issue and no review round reached it.
     cell: ({ row }) =>
@@ -627,8 +634,9 @@ const renderings = (
     // The roots first, then the children by their root.
     accessorFn: (item) =>
       item.facts === undefined ? undefined : item.facts.tree_depth === 0 ? "" : item.facts.root_key,
-    ...emptyLast((left: string, right: string) =>
-      left.localeCompare(right, undefined, { numeric: true })
+    ...emptyLast(
+      (left: string, right: string) => left.localeCompare(right, undefined, { numeric: true }),
+      descending
     ),
     sortDescFirst: false,
     cell: ({ row }) =>
@@ -670,13 +678,16 @@ const renderings = (
  * The cells a table another page draws (the priority pages') draws as today, where the Issues
  * tab's differ: Queue, Start next's number with the rows that have none after the rest in the
  * listing's order (where the Issues tab's is the daemon's own number), Assignee whole on one
- * line, and Created by at every line its name takes.
+ * line, and Created by at every line its name takes. Queue sorts its empty cells last by
+ * `descending`, as the Issues tab's columns do.
  */
-const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<Item>>>>> = {
+const embeddedRenderings = (
+  descending: SortsDescending
+): Readonly<Partial<Record<ColumnId, Partial<ColumnDef<Item>>>>> => ({
   queue: {
     header: "Queue",
     accessorFn: (item) => item.queue,
-    ...smallestFirst,
+    ...smallestFirst(descending),
     sortDescFirst: false,
     cell: ({ row }) => <QueuePlace place={row.original.queue} queued={false} />,
   },
@@ -692,7 +703,7 @@ const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<I
     accessorFn: (item) => item.author,
     cell: ({ row }) => <Author clamp={false} issue={row.original.issue} />,
   },
-};
+});
 
 /** The columns only some listings have a use for: which project a row is in, which priorities
  *  it advances, when it was moved into backlog or icebox and by whom, and why. A table has each
@@ -862,7 +873,9 @@ export function issueTableLayout(
  * stable one, as it does `layout` and `priorityTitles`. A column starts at the layout's width and
  * goes no narrower than its minimum there (`compact`: a phone's). `hasLegion` is set on the
  * Issues tab's own table, and a table without it draws today's cells. Time per phase's mode is
- * the reader's (`usePhaseHoursMode`), and a switch of it draws the columns anew.
+ * the reader's (`usePhaseHoursMode`), and a switch of it draws the columns anew. A column whose
+ * cells can be empty reads the direction it is sorted in from `sorting` (`emptyLast`), through a
+ * ref set at each draw, so a change of sort draws no column anew.
  */
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -870,6 +883,8 @@ export function useIssueTableColumns(
   onMark: (key: string) => void,
   /** The table's layout: which columns it has, their widths and their minimums. */
   layout: LayoutColumns,
+  /** The sorting state the table is given, which the table sorts its rows by. */
+  sorting: SortingState,
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
   priorityTitles?: ReadonlyMap<string, string>,
@@ -879,10 +894,14 @@ export function useIssueTableColumns(
   hasLegion?: boolean
 ): ColumnDef<Item>[] {
   const [phaseMode, setPhaseMode] = usePhaseHoursMode();
+  const sorted = useRef(sorting);
+  sorted.current = sorting;
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState, onMark, phaseMode, setPhaseMode);
+    const descending = (id: string) => sorted.current.find((sort) => sort.id === id)?.desc === true;
+    const rendering = renderings(userState, onMark, phaseMode, setPhaseMode, descending);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
     const embedded = hasLegion === undefined;
+    const embeddedRendering = embedded ? embeddedRenderings(descending) : undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
       const column = columnSpec.get(id);
       if (column === undefined) return [];
@@ -903,7 +922,7 @@ export function useIssueTableColumns(
           ? embeddedPhoneMin(column.id)
           : phoneMin(column.id)
         : (layout.minimums?.[column.id] ?? column.min);
-      const drawn = (embedded ? EMBEDDED_RENDERINGS[column.id] : undefined) ?? rendering[column.id];
+      const drawn = embeddedRendering?.[column.id] ?? rendering[column.id];
       return [
         {
           ...drawn,

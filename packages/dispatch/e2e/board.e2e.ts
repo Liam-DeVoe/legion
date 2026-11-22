@@ -940,7 +940,7 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
   }
 });
 
-test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
+test("a filtered drag names the visible card it lands above and the hidden card interleaves without error", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

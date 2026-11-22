@@ -16,7 +16,7 @@ import {
   userStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { UserState } from "../../api/types";
+import type { IssueSummary, UserState } from "../../api/types";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import {
   DataTable,
@@ -261,10 +261,8 @@ function narrowsByBoard(filters: View["filters"], excluded: readonly string[]): 
 
 /** What the page holds that the view tabs count from. */
 interface TabReads {
-  /** The view the tabs have open. */
+  /** The view the tabs have open, whose count `tabCounts` leaves to the rows the table lists. */
   readonly active: ActiveView;
-  /** The rows the table lists now, once every read they wait on has answered. */
-  readonly listed: number | undefined;
   /** Every row the page holds, with its facts. */
   readonly items: readonly Item[];
   /** The open listing has answered, on a view that reads it. */
@@ -288,6 +286,29 @@ interface TabCounts {
 
 const NO_TAB_COUNTS: TabCounts = { built: new Map(), saved: new Map() };
 
+/** What a view narrows its rows by beside its filters and its search: the issues a link names,
+ *  the Needs you and Unread flags, the reader's read state that Unread reads, and the trees it
+ *  leaves out. */
+interface Narrowings {
+  readonly selection: View["selection"];
+  readonly needsYou: boolean;
+  readonly unread: boolean;
+  readonly userState: UserState | undefined;
+  readonly excluded: readonly string[];
+}
+
+/** Whether `item` is a row that every one of `narrowings` lists. The table's rows and the tab
+ *  counts taken from the open listing (`openListingCount`) both narrow by it. */
+function passesNarrowings({ facts, issue }: Item, narrowings: Narrowings): boolean {
+  const { excluded, needsYou, selection, unread, userState } = narrowings;
+  return (
+    (selection === null || selection.keys.has(issue.key)) &&
+    (!needsYou || issue.open_asks > 0) &&
+    (!unread || issueIsUnread(issue, userState?.[issue.key]?.last_read_seq ?? 0)) &&
+    !inExcludedTree(issue.key, facts?.root_key, excluded)
+  );
+}
+
 /**
  * The count of the view at `query` from the open listing: the rows it lists by every narrowing
  * it holds, its filters, its search, the issues a link names, the Needs you and Unread flags and
@@ -297,44 +318,59 @@ const NO_TAB_COUNTS: TabCounts = { built: new Map(), saved: new Map() };
  * reader's read state has.
  */
 function openListingCount(query: URLSearchParams, reads: TabReads): number | undefined {
+  if (!reads.openIn) return undefined;
   const own = readUrl(expandView(query));
   const excluded = readExcludedTrees(query);
-  const needsYou = query.get("needs-you") === "1";
   const unread = query.get("unread") === "1";
-  if (!reads.openIn || listingsOf(picksOf(own.filters, "status")).done) return undefined;
+  if (listingsOf(picksOf(own.filters, "status")).done) return undefined;
   if (!reads.boardIn && narrowsByBoard(own.filters, excluded)) return undefined;
   if (unread && reads.userState === undefined) return undefined;
+  const narrowings: Narrowings = {
+    selection: own.selection,
+    needsYou: query.get("needs-you") === "1",
+    unread,
+    userState: reads.userState,
+    excluded,
+  };
   return reads.items.filter(
     (item) =>
       matchesFilters(item, own.filters) &&
       matchesSearch(item, own.search) &&
-      (own.selection === null || own.selection.keys.has(item.issue.key)) &&
-      (!needsYou || item.issue.open_asks > 0) &&
-      (!unread ||
-        issueIsUnread(item.issue, reads.userState?.[item.issue.key]?.last_read_seq ?? 0)) &&
-      !inExcludedTree(item.issue.key, item.facts?.root_key, excluded)
+      passesNarrowings(item, narrowings)
   ).length;
 }
 
 /**
- * The count each view tab shows, or none where the page cannot count that view now (the spec's
- * Design, "The views"). The open tab counts the rows the table lists, the reader's own changes
- * included. Open counts its own view from the open listing, and on a view that reads none by the
- * `total` of `open=true&limit=1`. Done counts by its own read, once it has been opened in the
- * page. A saved view counts from the open listing (`openListingCount`).
+ * The count each view tab but the open one shows, or none where the page cannot count that view
+ * now (the spec's Design, "The views"). Open counts its own view from the open listing, and on a
+ * view that reads none by the `total` of `open=true&limit=1`. Done counts by its own read, once
+ * it has been opened in the page. A saved view counts from the open listing
+ * (`openListingCount`). The open tab counts the rows the table lists, which its caller sets, so
+ * its count is not worked out here.
  */
 function tabCounts(reads: TabReads): TabCounts {
+  const { active } = reads;
+  let open: number | undefined;
+  if (active.kind !== "built-in" || active.id !== "open")
+    open = reads.openIn ? openListingCount(OPEN_ADDRESS, reads) : reads.openTotal;
   const built = new Map<string, number | undefined>([
-    ["open", reads.openIn ? openListingCount(OPEN_ADDRESS, reads) : reads.openTotal],
+    ["open", open],
     ["done", reads.doneKept],
   ]);
   const saved = new Map<string, number | undefined>(
-    reads.saved.map((view) => [view.name, openListingCount(copyAddress(view.query), reads)])
+    reads.saved.map((view) => [
+      view.name,
+      active.kind === "saved" && active.name === view.name
+        ? undefined
+        : openListingCount(copyAddress(view.query), reads),
+    ])
   );
-  if (reads.active.kind === "built-in") built.set(reads.active.id, reads.listed);
-  else saved.set(reads.active.name, reads.listed);
   return { built, saved };
 }
+
+/** How many issues a listing holds: Done's tab's count by the read of every done issue. A module
+ *  function, so the read's `select` keeps one identity and runs again only when the read does. */
+const issueCount = (issues: readonly IssueSummary[]): number => issues.length;
 
 /** The table's grouping on the Board, whose Group by picks the Board's columns instead: its rows
  *  are then the view's rows in the view's sort alone. */
@@ -455,8 +491,8 @@ interface IssuesTabPlace {
   readonly lanes: boolean;
   readonly setLanes: (shown: boolean) => void;
   /** Done's own read once Done has been opened in the page, which counts Done's tab. */
-  readonly doneRead: HeldDoneRead | undefined;
-  readonly rememberDoneRead: (read: HeldDoneRead) => void;
+  readonly heldDone: HeldDoneRead | undefined;
+  readonly holdDone: (read: HeldDoneRead) => void;
 }
 
 /** Done's own read with no Closed window: one page of it, in the table in its own sort, or every
@@ -619,10 +655,10 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
       run: () => setLayout(layout === "board" ? "table" : "board"),
     },
   ]);
-  const [doneRead, setDoneRead] = useState<HeldDoneRead | undefined>(undefined);
-  const rememberDoneRead = useCallback(
+  const [heldDone, setHeldDone] = useState<HeldDoneRead | undefined>(undefined);
+  const holdDone = useCallback(
     (read: HeldDoneRead) =>
-      setDoneRead((held) => (JSON.stringify(held) === JSON.stringify(read) ? held : read)),
+      setHeldDone((held) => (JSON.stringify(held) === JSON.stringify(read) ? held : read)),
     []
   );
   if (daemon.isPending) return <LoadingSkeleton label="Loading issues" />;
@@ -646,8 +682,8 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
     setShowIcebox,
     lanes,
     setLanes,
-    doneRead,
-    rememberDoneRead,
+    heldDone,
+    holdDone,
   };
   // One table per view's stored layout, and per daemon answer: the columns a view opens with,
   // and the key its widths and order are kept under, are read once as the table mounts.
@@ -953,18 +989,16 @@ function IssueTableBody({
   // removed. The narrowing is the reader's, so it outranks nothing: every other filter still
   // applies to what is left.
   const picked = view.selection;
-  const items = useMemo(
-    () =>
-      allItems.filter(
-        ({ facts, issue }) =>
-          (picked === null || picked.keys.has(issue.key)) &&
-          (!flags.needsYou || issue.open_asks > 0) &&
-          (!flags.unread ||
-            issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
-          !inExcludedTree(issue.key, facts?.root_key, excluded)
-      ),
-    [allItems, excluded, flags.needsYou, flags.unread, picked, userState.data]
-  );
+  const items = useMemo(() => {
+    const narrowings: Narrowings = {
+      selection: picked,
+      needsYou: flags.needsYou,
+      unread: flags.unread,
+      userState: userState.data,
+      excluded,
+    };
+    return allItems.filter((item) => passesNarrowings(item, narrowings));
+  }, [allItems, excluded, flags.needsYou, flags.unread, picked, userState.data]);
   // Each tree left out, as a chip of the control row and a line of the Filters panel, each with
   // the remove that gives its rows back.
   const excludedChips = useMemo<FilterChip[]>(
@@ -1011,6 +1045,7 @@ function IssueTableBody({
     boxWidth < 640,
     recordMark,
     columnsLayout,
+    sorting,
     priorityTitles,
     tab === undefined ? undefined : hasLegion
   );
@@ -1178,16 +1213,16 @@ function IssueTableBody({
     ...projectOpenCountQuery(project ?? ""),
     enabled: tab !== undefined && !readsOpen,
   });
-  const rememberDoneRead = tab?.rememberDoneRead;
+  const holdDone = tab?.holdDone;
   useEffect(() => {
     if (onDone && done !== undefined && done.window === undefined)
-      rememberDoneRead?.(
+      holdDone?.(
         done.kind === "page"
           ? { kind: "page", offset: done.offset, size: done.size }
           : { kind: "all" }
       );
-  }, [onDone, done, rememberDoneRead]);
-  const heldDone = tab?.doneRead;
+  }, [onDone, done, holdDone]);
+  const heldDone = tab?.heldDone;
   // Done's own read, held: leaving Done reads it no more until a live event does.
   const donePageCount = useQuery({
     ...projectDonePageQuery(project ?? "", {
@@ -1200,27 +1235,26 @@ function IssueTableBody({
   });
   const doneAllCount = useQuery({
     ...projectDoneIssuesQuery(project ?? "", undefined),
+    select: issueCount,
     refetchOnMount: false,
     enabled: tab !== undefined && heldDone?.kind === "all" && !onDone,
   });
-  const doneKept =
-    heldDone?.kind === "page"
-      ? donePageCount.data
-      : heldDone?.kind === "all"
-        ? doneAllCount.data?.length
-        : undefined;
+  let doneKept: number | undefined;
+  if (heldDone?.kind === "page") doneKept = donePageCount.data;
+  else if (heldDone?.kind === "all") doneKept = doneAllCount.data;
   const openTotal = readsOpen ? undefined : openCount.data;
   const openIn = readsOpen && issues.data !== undefined;
   const boardIn = !hasLegion || board.data !== undefined;
   const listedCount = counted ? (doneTotal ?? listedRows.length) : undefined;
   const savedViews = tab?.saved.views;
-  const counts = useMemo(
+  // Every tab's count but the open one's, worked out again only when what they count from
+  // changes: not at each change of the rows the table lists, which the open tab alone counts.
+  const otherCounts = useMemo(
     () =>
       active === undefined || savedViews === undefined
         ? NO_TAB_COUNTS
         : tabCounts({
             active,
-            listed: listedCount,
             items: allItems,
             openIn,
             openTotal,
@@ -1229,18 +1263,18 @@ function IssueTableBody({
             userState: userState.data,
             saved: savedViews,
           }),
-    [
-      active,
-      allItems,
-      boardIn,
-      doneKept,
-      listedCount,
-      openIn,
-      openTotal,
-      savedViews,
-      userState.data,
-    ]
+    [active, allItems, boardIn, doneKept, openIn, openTotal, savedViews, userState.data]
   );
+  // The open tab counts the rows the table lists now, the reader's own changes included.
+  const counts = useMemo<TabCounts>(() => {
+    if (active === undefined) return NO_TAB_COUNTS;
+    return active.kind === "built-in"
+      ? { built: new Map(otherCounts.built).set(active.id, listedCount), saved: otherCounts.saved }
+      : {
+          built: otherCounts.built,
+          saved: new Map(otherCounts.saved).set(active.name, listedCount),
+        };
+  }, [active, listedCount, otherCounts]);
 
   const header = board.data?.header;
   const tabs =

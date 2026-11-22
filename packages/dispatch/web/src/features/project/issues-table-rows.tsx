@@ -86,8 +86,8 @@ export function GroupRow({
   shown?: number;
   index: number;
   /** Whether the heading names the first Place in the Legion queue, the Queue column's number,
-   *  as the Issues tab does. A table another page draws keeps today's words and the number
-   *  Start next reads. */
+   *  as the Issues tab does. A table another page draws keeps `next in queue` and Start next's
+   *  number (`queue`). */
   legionQueue: boolean;
   measure: (element: Element | null) => void;
   row: Row<Item>;
@@ -107,7 +107,10 @@ export function GroupRow({
     here === leaves.length
       ? `${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}`
       : `${here} of ${leaves.length} issues`;
-  // The first place among the group's rows, whether or not its issue is labelled legion.
+  // The first number among the group's rows. With `legionQueue` it is the Queue column's
+  // (`place`): the board's Place, which an issue has whether or not it is labelled legion, or
+  // Start next's number in a project with no daemon. Without it, it is Start next's number
+  // (`queue`), which only a Todo issue labelled legion has.
   let next = Number.POSITIVE_INFINITY;
   for (const { original } of leaves) {
     const number = legionQueue ? original.place : original.queue;

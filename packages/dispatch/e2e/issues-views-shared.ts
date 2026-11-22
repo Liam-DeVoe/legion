@@ -170,6 +170,11 @@ export function tabNames(page: Page): Promise<string[]> {
     .evaluateAll((tabs) => tabs.map((tab) => tab.getAttribute("aria-label") ?? ""));
 }
 
+/** The view tabs' titles, in their order: each tab's name without its count and its mark. */
+export async function tabTitles(page: Page): Promise<string[]> {
+  return (await tabNames(page)).map((tab) => tab.split(",")[0]);
+}
+
 /** The count a tab's name gives, or undefined where it shows none. */
 export async function tabCount(page: Page, name: string): Promise<number | undefined> {
   // This helper reads the tab names at one instant, by design. Each caller polls it or calls it
@@ -248,6 +253,13 @@ export function boardFacts(board: Board, key: string): Facts | undefined {
   const held = board.issues?.[key];
   return held === undefined ? undefined : { ...held, hours_by_phase: held.hours_by_phase ?? {} };
 }
+
+/** The work time a facts row measured, or undefined where none was: no facts, or `work_first_at`
+ *  null with no hours. */
+export const measuredWork = (facts: Facts | undefined): number | undefined =>
+  facts === undefined || (facts.work_first_at === null && !(facts.work_hours > 0))
+    ? undefined
+    : facts.work_hours;
 
 /** A span of whole minutes in the page's words: minutes under an hour, hours and minutes under a
  *  day, then days and hours. */

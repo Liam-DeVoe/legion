@@ -38,6 +38,7 @@ import {
   hoursWords,
   issuesTable,
   itemFacts,
+  measuredWork,
   queueSorted,
   readFilter,
   routeLive,
@@ -173,13 +174,6 @@ function durationPick(ms: number | undefined): string {
   if (ms === undefined) return "none";
   return DURATIONS.find(([, , below]) => ms < below)?.[0] ?? "over-7d";
 }
-
-/** The work time a facts row measured, or undefined where none was: no facts, or `work_first_at`
- *  null with no hours. */
-const measuredWork = (facts: Facts | undefined): number | undefined =>
-  facts === undefined || (facts.work_first_at === null && !(facts.work_hours > 0))
-    ? undefined
-    : facts.work_hours;
 
 /** The phases of `facts` with hours, in Time per phase's order, a key no phase names as Other. */
 function phasesWithHours(facts: Facts | undefined): string[] {

@@ -31,9 +31,11 @@ import { control, controlRow } from "./filters";
 import {
   ACME,
   type BoardParts,
+  boardFacts,
   cardsOf,
   EVERY_COL,
   issuesTable,
+  measuredWork,
   readFilter,
   routeLive,
   rowKeys,
@@ -42,6 +44,7 @@ import {
   seedMeasuredAcme,
   tabName,
   tabNames,
+  tabTitles,
 } from "./issues-views-shared";
 import { waitForIssueFacts, writeRoleEvent } from "./legion-facts-seed";
 import { pushLegionObservation } from "./legion-seed";
@@ -660,9 +663,7 @@ test("a view saved from Open with status=triage draws as a tab after Done and li
     const panel = page.getByRole("dialog", { name: "Save view" });
     await panel.getByLabel("Name of the view").fill("Triage");
     await panel.getByRole("button", { exact: true, name: "Save" }).click();
-    await expect
-      .poll(async () => (await tabNames(page)).map((name) => name.split(",")[0]))
-      .toEqual(["Open", "Done", "Triage"]);
+    await expect.poll(() => tabTitles(page)).toEqual(["Open", "Done", "Triage"]);
     await expect(page.getByRole("tab", { name: /^Triage/ })).toHaveAccessibleName(
       tabName("Triage", triage.length)
     );
@@ -868,17 +869,12 @@ test("a saved view keeps its filter, sort, grouping, columns and layout through 
     await panel.getByRole("button", { exact: true, name: "Save" }).click();
     await expect(panel.getByRole("alert")).toHaveText("Use 14 characters or fewer.");
     await panel.getByRole("button", { exact: true, name: "Cancel" }).click();
-    expect((await tabNames(page)).map((tab) => tab.split(",")[0])).toEqual([
-      "Open",
-      "Done",
-      "Test",
-      "Mine",
-    ]);
+    expect(await tabTitles(page)).toEqual(["Open", "Done", "Test", "Mine"]);
 
     // The other project has no Test tab.
     await page.goto(`/projects/${PLAIN}/issues`);
     await expect(page.locator("[data-issue-row]").first()).toBeVisible();
-    expect((await tabNames(page)).map((tab) => tab.split(",")[0])).toEqual(["Open", "Done"]);
+    expect(await tabTitles(page)).toEqual(["Open", "Done"]);
 
     // Deleted, Test is gone after a reload.
     await page.goto(`/projects/${ACME}/issues`);
@@ -886,11 +882,7 @@ test("a saved view keeps its filter, sort, grouping, columns and layout through 
     await page.getByRole("button", { exact: true, name: "Delete saved view Test" }).click();
     await page.reload();
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    expect((await tabNames(page)).map((tab) => tab.split(",")[0])).toEqual([
-      "Open",
-      "Done",
-      "Mine",
-    ]);
+    expect(await tabTitles(page)).toEqual(["Open", "Done", "Mine"]);
 
     // A second tab of the same browser saves Two while the first is open. The first draws Two
     // with no reload, and its own save of One keeps Two. After a reload both tabs show both; a
@@ -902,30 +894,23 @@ test("a saved view keeps its filter, sort, grouping, columns and layout through 
     await saveView(second, "Two");
     await expect(page.getByRole("tab", { name: /^Two(?:,|$)/ })).toBeVisible();
     await saveView(page, "One");
-    for (const on of [page, second]) {
-      await on.reload();
-      await expect(on.getByRole("tab", { name: /^One(?:,|$)/ })).toBeVisible();
-      expect((await tabNames(on)).map((tab) => tab.split(",")[0])).toEqual([
-        "Open",
-        "Done",
-        "Mine",
-        "Two",
-        "One",
-      ]);
-    }
+    await Promise.all(
+      [page, second].map(async (on) => {
+        await on.reload();
+        await expect(on.getByRole("tab", { name: /^One(?:,|$)/ })).toBeVisible();
+        expect(await tabTitles(on)).toEqual(["Open", "Done", "Mine", "Two", "One"]);
+      })
+    );
     await second.getByRole("tab", { name: /^Two(?:,|$)/ }).click();
     await second.getByRole("button", { exact: true, name: "Delete saved view Two" }).click();
     await expect(second.getByRole("tab", { name: /^Two(?:,|$)/ })).toHaveCount(0);
-    for (const on of [page, second]) {
-      await on.reload();
-      await expect(on.getByRole("tab", { name: /^One(?:,|$)/ })).toBeVisible();
-      expect((await tabNames(on)).map((tab) => tab.split(",")[0])).toEqual([
-        "Open",
-        "Done",
-        "Mine",
-        "One",
-      ]);
-    }
+    await Promise.all(
+      [page, second].map(async (on) => {
+        await on.reload();
+        await expect(on.getByRole("tab", { name: /^One(?:,|$)/ })).toBeVisible();
+        expect(await tabTitles(on)).toEqual(["Open", "Done", "Mine", "One"]);
+      })
+    );
     await second.close();
 
     // A stored value that does not parse is dropped, and the built-in views draw.
@@ -934,7 +919,7 @@ test("a saved view keeps its filter, sort, grouping, columns and layout through 
     );
     await page.reload();
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    expect((await tabNames(page)).map((tab) => tab.split(",")[0])).toEqual(["Open", "Done"]);
+    expect(await tabTitles(page)).toEqual(["Open", "Done"]);
   } finally {
     await context.close();
     await daemon.close();
@@ -982,17 +967,11 @@ test("a saved view is kept per login in the reader's browser, and its link opens
     await signIn(first, "bob");
     await page.goto(`/projects/${ACME}/issues`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    expect((await tabNames(page)).map((tab) => tab.split(",")[0])).toEqual(["Open", "Done"]);
+    expect(await tabTitles(page)).toEqual(["Open", "Done"]);
     await signIn(first, "alice");
     await page.reload();
     await expect(page.getByRole("tab", { name: /^Unread/ })).toBeVisible();
-    expect((await tabNames(page)).map((tab) => tab.split(",")[0])).toEqual([
-      "Open",
-      "Done",
-      "Test",
-      "Mine",
-      "Unread",
-    ]);
+    expect(await tabTitles(page)).toEqual(["Open", "Done", "Test", "Mine", "Unread"]);
 
     // The second login's own browser: no saved tab, and each link opens its view for them.
     second = await asUser(browser, "bob");
@@ -1000,7 +979,7 @@ test("a saved view is kept per login in the reader's browser, and its link opens
     await other.setViewportSize({ height: 1000, width: 1440 });
     await other.goto(`/projects/${ACME}/issues`);
     await expect(other.locator("[data-issue-row]").first()).toBeVisible();
-    expect((await tabNames(other)).map((tab) => tab.split(",")[0])).toEqual(["Open", "Done"]);
+    expect(await tabTitles(other)).toEqual(["Open", "Done"]);
     await other.goto(testUrl);
     await expect(other.getByRole("region", { name: "Project board" })).toBeVisible();
     expect(viewParams(other.url())).toEqual(viewParams(testUrl));
@@ -1614,12 +1593,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
     const open = await listIssuesWhere({ open: true, project: ACME });
     const cards = cardsOf(board);
     const factsOf = (key: string) => board.issues?.[key];
-    const work = (key: string) => {
-      const facts = factsOf(key);
-      return facts === undefined || (facts.work_first_at === null && !(facts.work_hours > 0))
-        ? undefined
-        : facts.work_hours;
-    };
+    const work = (key: string) => measuredWork(boardFacts(board, key));
     const none = (picked: (key: string) => boolean) =>
       open.filter((issue) => picked(issue.key)).length;
     const workTime = (await readFilter(page, "Work time")).options;

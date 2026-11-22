@@ -7,6 +7,7 @@ import {
   projectDoneIssuesQuery,
   projectDonePageQuery,
   projectIssuesQuery,
+  sameDoneWindow,
 } from "../../api/queries";
 import type { IssueSummary, IssueSummaryPage, LegionBoardResponse } from "../../api/types";
 import { claimIsTakeable } from "../issue/ClaimChip";
@@ -102,8 +103,8 @@ export const CLOSE_ITEMS_AGAIN_MS = 60_000;
 
 /**
  * The count of every done issue a page read of Done holds, which Done's tab and its pager count:
- * the read's `total`, or none where the page lists none of the rows it answered
- * (`listedDoneRows`), since that `total` then counts rows that no view lists.
+ * the read's `total`, or 0 where the page lists none of the rows it answered (`listedDoneRows`),
+ * since that `total` then counts rows that no view lists.
  */
 export function donePageTotal(page: IssueSummaryPage): number {
   const rows = page.issues ?? NO_ISSUES;
@@ -160,13 +161,11 @@ export function useIssueTableItems(
   const donePage = useQuery({
     ...pageRead,
     // A step of the pager keeps the page on screen until the next one answers: a read of the
-    // same window, whose key differs from the last one's in no part but the page's size and
-    // offset, the last two. A read of another window keeps nothing of the last one, whose rows
-    // and `total` are not this window's: the view shows its loading state until it answers.
+    // same window (`sameDoneWindow`). A read of another window keeps nothing of the last one,
+    // whose rows and `total` are not this window's: the view shows its loading state until it
+    // answers.
     placeholderData: (previous, previousQuery) =>
-      previousQuery !== undefined &&
-      JSON.stringify(previousQuery.queryKey.slice(0, -2)) ===
-        JSON.stringify(pageRead.queryKey.slice(0, -2))
+      previousQuery !== undefined && sameDoneWindow(previousQuery.queryKey, pageRead.queryKey)
         ? previous
         : undefined,
     enabled: paged,

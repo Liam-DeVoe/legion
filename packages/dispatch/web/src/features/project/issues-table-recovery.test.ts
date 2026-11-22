@@ -26,7 +26,7 @@ afterEach(() => {
 function tableIn(tab: string, client: QueryClient, locks?: LockManager) {
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
-  const drawn = renderHook(() => useTableRecovery("CORE", () => undefined, tab, locks), {
+  const drawn = renderHook(() => useTableRecovery("CORE", () => undefined, { tab, locks }), {
     wrapper,
   });
   undraws.push(() => drawn.unmount());

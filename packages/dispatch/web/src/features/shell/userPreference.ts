@@ -141,9 +141,8 @@ function subscribeStore(listener: () => void): () => void {
  * change is handed the value as it is stored at the moment it writes, so it changes only its own
  * part. A write whose value is the one already stored is not made, and a write the browser refuses
  * (private mode, a full quota) changes nothing, as `recordRecent` in `features/search/recents.ts`
- * does. With no signed-in login the value is `read(null)` and a change writes nothing. The issue
- * page choice (`features/issue-page/choice.ts`) is one such value too. Pass a module-level `read`:
- * the value is read again each time `read` is a new function.
+ * does. With no signed-in login the value is `read(null)` and a change writes nothing. Pass a
+ * module-level `read`: the value is read again each time `read` is a new function.
  */
 export function useStoredUserPreference<T>(
   preference: UserPreference,

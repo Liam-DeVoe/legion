@@ -183,7 +183,9 @@ export function useIssueTableActions({
     }
     return recovery.active(record.id);
   };
-  /** Sends a start-next action for queued issues already checked by `startNext`. */
+  /** Sends a start-next action for queued issues already checked by `startNext`. The action is
+   *  performed only once it is begun, so a begin that is refused sets nothing busy and reads
+   *  nothing again: it changed nothing, and its notice says why. */
   const runQueued = (queued: readonly string[]) => {
     if (!startNextWrites(items, queued).length) {
       setNotice({
@@ -192,25 +194,31 @@ export function useIssueTableActions({
       });
       return;
     }
-    void perform(
-      `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
-      async () => {
-        // Refused here too: another tab can begin a move while the confirm is open.
-        const begun = await recovery.begin({ kind: "startNext", keys: queued }, async (record) => {
-          const ran = await runStartNext(
-            record,
-            items,
-            (remaining, error) =>
-              `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
-          );
-          // Ended while this tab still holds the record's lock, so no tab finds it left behind.
-          if (ran) recovery.end();
-          return ran;
-        });
-        if (begun.kind === "refused") throw new Error(begun.text);
-        return begun.moved ? queued : undefined;
-      }
-    );
+    // Refused here too: another tab can begin a move while the confirm is open.
+    void recovery
+      .begin({ kind: "startNext", keys: queued }, (record) =>
+        perform(
+          `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
+          async () => {
+            const ran = await runStartNext(
+              record,
+              items,
+              (remaining, error) =>
+                `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
+            );
+            // Ended while this tab still holds the record's lock, so no tab finds it left behind.
+            if (ran) recovery.end();
+            return ran ? queued : undefined;
+          }
+        )
+      )
+      .then(
+        (begun) => {
+          if (begun.kind === "refused") setNotice({ kind: "error", text: begun.text });
+        },
+        (error: unknown) =>
+          setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) })
+      );
   };
   /**
    * Starts `keys` next. Start next keeps its own set, the Todo issues labelled `legion` in rank

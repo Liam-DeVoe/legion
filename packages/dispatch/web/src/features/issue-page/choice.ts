@@ -15,13 +15,9 @@ const writeChoice = (choice: IssuePageChoice): string => choice;
 
 /**
  * The reader's issue page and the one way to change it, kept in this browser for the signed-in
- * login (`dispatch.issue.page:<login>`); Dispatch holds nothing of it.
- *
- * It is `useStoredUserPreference`'s: every caller reads one store for the tab on each render, a
- * write tells every caller at once, and the window's `storage` event brings another tab's write,
- * so two callers never disagree. Nothing else reads the stored value: whatever needs the choice
- * calls this hook. With nobody signed in the choice is `tabs` and a write stores nothing, and a
- * write the browser refuses (private mode, a full quota) changes nothing.
+ * login (`dispatch.issue.page:<login>`) through `useStoredUserPreference`; Dispatch holds nothing
+ * of it. With nobody signed in the choice is `tabs`. Nothing else reads the stored value:
+ * whatever needs the choice calls this hook.
  */
 export function useIssuePageChoice(): [IssuePageChoice, (next: IssuePageChoice) => void] {
   const [choice, change] = useStoredUserPreference("issue.page", readChoice, writeChoice);

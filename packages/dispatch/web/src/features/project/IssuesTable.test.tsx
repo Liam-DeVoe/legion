@@ -1882,7 +1882,7 @@ test("the Todo group's heading names the first Place in the Legion queue, labell
   );
 });
 
-// A priority's table keeps the group heading's words of today, and the number Start next reads.
+// A priority's table keeps `next in queue` and Start next's number (`queue`) in its group heading.
 test("a priority's table names the next issue in Start next's queue in its group heading", async () => {
   const advancing = { advances: [{ id: "PRI-7", inherited: false }] };
   table(

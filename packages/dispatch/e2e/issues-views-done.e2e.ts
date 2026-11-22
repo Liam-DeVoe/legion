@@ -39,6 +39,7 @@ import {
   issuesTable,
   itemFacts,
   listingReads,
+  measuredWork,
   type Recorded,
   recordRequests,
   routeLive,
@@ -1141,12 +1142,7 @@ test("Open sorts by Time waiting, Time in Legion phase and Worker state as the b
     // are written an hour apart in the listing's own order with its first two swapped, so neither
     // that order nor its reverse is Created's.
     const facts = await getLegionBoard(ACME);
-    const measured = (key: string) => {
-      const held = boardFacts(facts, key);
-      return held === undefined || (held.work_first_at === null && !(held.work_hours > 0))
-        ? undefined
-        : held.work_hours;
-    };
+    const measured = (key: string) => measuredWork(boardFacts(facts, key));
     const unmeasured = open.filter((issue) => measured(issue.key) === undefined);
     expect(unmeasured.length, "Open's rows with no Work time").toBeGreaterThan(2);
     const firstCreated = Date.now() - 30 * DAY;

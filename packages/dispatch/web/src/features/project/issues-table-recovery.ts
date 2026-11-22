@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { readStore, writeStore } from "../../components/table-storage";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import { PAGE_LOCKS } from "../shell/sign-in-channel";
 import { useWrites } from "../writes/write-store";
 import { tableStorageKey, WRITES_IN_FLIGHT } from "./issues-table-model";
 
@@ -97,10 +98,6 @@ function actionLockName(id: string): string {
   return `dispatch-table-action:${id}`;
 }
 
-/** The browser's lock manager. A page outside a secure context has none (`navigator.locks` is
- *  `undefined` there, and `null` where nothing implements it, as in the unit DOM). */
-const PAGE_LOCKS = typeof navigator === "undefined" ? undefined : (navigator.locks ?? undefined);
-
 /** A bulk action begun, with what its move answered, or refused, with the text that says why. */
 export type Begun<T> =
   | { readonly kind: "begun"; readonly moved: T }
@@ -121,8 +118,7 @@ export type Begun<T> =
 export function useTableRecovery(
   project: string,
   report: (text: string) => void,
-  tab?: string,
-  locks: LockManager | undefined = PAGE_LOCKS
+  { tab, locks = PAGE_LOCKS }: { readonly tab?: string; readonly locks?: LockManager } = {}
 ) {
   const writes = useWrites();
   const [action, setAction] = useState(() => readTableAction(project));
@@ -132,8 +128,15 @@ export function useTableRecovery(
   reportRef.current = report;
   const owned = useRef(new Map<number, { issue: string; step?: string; action?: string }>());
   const failed = useRef(new Map<number, string>());
-  /** The id of the stored record whose lock no tab held when this tab last looked (`look`). */
-  const [unheld, setUnheld] = useState<string>();
+  /** The id of the stored record whose lock no tab held when this tab last looked (`look`). It is
+   *  read through the ref, which `setUnheld` keeps with the state, so a `begin` an older render
+   *  made reads it as it is now. The state draws the table again when it changes. */
+  const unheld = useRef<string | undefined>(undefined);
+  const [, drawUnheld] = useState<string>();
+  const setUnheld = useCallback((id: string | undefined) => {
+    unheld.current = id;
+    drawUnheld(id);
+  }, []);
   /** Calls off this tab's wait for the lock of the record it looked at last. */
   const waiting = useRef<AbortController | undefined>(undefined);
   /** Looks at whether a tab holds the lock of `record`, the record in hand. A lock held is waited
@@ -167,7 +170,7 @@ export function useTableRecovery(
           // The wait was called off: the record in hand changed, or the table went.
         });
     },
-    [locks]
+    [locks, setUnheld]
   );
   const remember = useCallback(
     (next: TableAction | undefined) => {
@@ -277,7 +280,7 @@ export function useTableRecovery(
    *  A browser with no lock manager cannot tell a running move from one left behind, so there
    *  every record counts as left behind, for any tab to finish or dismiss. This one rule decides
    *  what this tab offers and what it refuses a bulk action with. */
-  const isLeftBehind = (record: TableAction) => locks === undefined || unheld === record.id;
+  const isLeftBehind = (record: TableAction) => locks === undefined || unheld.current === record.id;
   /** Takes `stored`, the record the store holds now, into this table, and looks at its lock. */
   const adopt = (stored: TableAction | undefined) => {
     if (stored?.id !== current.current?.id) {
