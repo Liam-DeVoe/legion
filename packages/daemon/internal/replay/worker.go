@@ -754,26 +754,17 @@ func (d *driver) pausedPiece(key string, role claim.Role) *piece {
 }
 
 // neverStarted says whether the record never started key's work: an issue of the trace with no
-// slot and no work segment.
+// slot and no work segment (neverStartedIn).
 func (d *driver) neverStarted(key string) bool {
-	iss, ok := d.trace.Issues[key]
-	if !ok {
-		return true
-	}
-	if len(iss.Slots) > 0 {
-		return false
-	}
-	return !slices.ContainsFunc(iss.Visits, func(visit Visit) bool { return visit.Segment != nil })
+	return neverStartedIn(d.trace, key)
 }
 
-// neverStartedWork is the work of an issue the record never started, which the replay starts: the
-// scenario the branch names for it (Branch.NeverStarted, assumption 8). Under `none` the start
-// opens a segment with no turn and no end, which holds what the start took to the window's end.
+// neverStartedWork is the work of an issue the record never started, which the replay starts and
+// whose script holds no work the branch's scenario gave it (Branch.NeverStarted, assumption 8:
+// drawNeverStarted gives it the drawn work under drawn and drawn-done): under none, or where the
+// window holds no issue to draw from, the start opens a segment with no turn and no end, which
+// holds what the start took to the window's end.
 func (d *driver) neverStartedWork(key string, role claim.Role, served phase.Phase) error {
-	if scenario := cmp.Or(d.cfg.Branch.NeverStarted, MainBranch.NeverStarted); scenario != MainBranch.NeverStarted {
-		return fmt.Errorf("the branch's never-started scenario %q gives %s, which the record never started, work this replay does not draw: it runs %q alone",
-			scenario, key, MainBranch.NeverStarted)
-	}
 	d.used[8] = true
 	p := &piece{issue: key, index: len(d.script.pieces[key]), phase: served, role: role, opens: opensOnStart, ends: endOpen,
 		start: d.clock.Instant(), m: d.script.inFlightAt(d.clock.Instant())}

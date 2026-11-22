@@ -292,19 +292,20 @@ func capturedEventReadings(t *testing.T) map[string]DispatchEvent {
 // capturedMergeReadings is the first-parent commits the trace reads from each captured page of
 // capturedBranch's commit listing, by its file under github/, oldest first, written out by hand
 // from the page: five commits listed newest first, each the first parent of the one before it, the
-// oldest's first parent on no page.
+// oldest's first parent on no page, each the squash merge of the pull request its subject's
+// suffix names.
 func capturedMergeReadings(t *testing.T) map[string][]Merge {
 	t.Helper()
-	merge := func(sha, stamp string) Merge {
-		return Merge{SHA: sha, At: capturedTime(t, stamp), Branch: capturedBranch}
+	merge := func(sha, stamp string, pr int) Merge {
+		return Merge{SHA: sha, At: capturedTime(t, stamp), Branch: capturedBranch, PR: pr}
 	}
 	return map[string][]Merge{
 		"commits.json": {
-			merge("282a49f20ac5b24d9c30925646c9d0438905fd0e", "2026-11-20T04:56:30Z"),
-			merge("6d50ef31bf220fb231e46d9264eddd77ef921078", "2026-11-20T05:15:42Z"),
-			merge("0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a", "2026-11-20T05:29:02Z"),
-			merge("e967604ded2c6bcd03d676ad64e449f7275991c0", "2026-11-20T05:34:11Z"),
-			merge("651db8d54c55d5e78e092ece50a047c09108ebd7", "2026-11-20T05:36:33Z"),
+			merge("282a49f20ac5b24d9c30925646c9d0438905fd0e", "2026-11-20T04:56:30Z", 4577),
+			merge("6d50ef31bf220fb231e46d9264eddd77ef921078", "2026-11-20T05:15:42Z", 4541),
+			merge("0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a", "2026-11-20T05:29:02Z", 4552),
+			merge("e967604ded2c6bcd03d676ad64e449f7275991c0", "2026-11-20T05:34:11Z", 4551),
+			merge("651db8d54c55d5e78e092ece50a047c09108ebd7", "2026-11-20T05:36:33Z", 4516),
 		},
 	}
 }

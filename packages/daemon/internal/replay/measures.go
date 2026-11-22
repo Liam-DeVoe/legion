@@ -69,6 +69,7 @@ func measureSpan(tl Timeline, from, to time.Time) Scorecard {
 			card.WorkLeft++
 		}
 		measureLoops(&card, key, c.Moves, from, to)
+		measureRounds(&card, c.Rounds, from, to)
 		for _, wait := range c.Waits {
 			start, end := maxTime(wait.Start, from), to
 			if !wait.End.IsZero() {
@@ -131,6 +132,24 @@ func measureLoops(card *Scorecard, key string, moves []CourseMove, from, to time
 		loop.Rounds++
 		loop.Hours += end.Sub(move.At).Hours()
 		card.Loops[string(move.Cause)] = loop
+	}
+}
+
+// measureRounds adds to card each round of a send-back loop that moved no phase (Course.Rounds)
+// beginning in [from, to): one round of its cause, its hours from its start to its end, or to to.
+func measureRounds(card *Scorecard, rounds []CourseRound, from, to time.Time) {
+	for _, round := range rounds {
+		if round.Start.Before(from) || !round.Start.Before(to) {
+			continue
+		}
+		end := to
+		if !round.End.IsZero() && round.End.Before(to) {
+			end = round.End
+		}
+		loop := card.Loops[string(round.Cause)]
+		loop.Rounds++
+		loop.Hours += end.Sub(round.Start).Hours()
+		card.Loops[string(round.Cause)] = loop
 	}
 }
 

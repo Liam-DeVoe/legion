@@ -35,8 +35,20 @@ type Course struct {
 	Given []time.Time
 	// Moves is each move of the issue's phase, in order.
 	Moves []CourseMove
+	// Rounds is each round of a send-back loop that moved no phase, in order: a conflicting head
+	// merged forward while the issue kept its phase (record.ConflictMergeForward).
+	Rounds []CourseRound
 	// Waits is each wait of the issue on another issue, by the moment it began.
 	Waits []CourseWait
+}
+
+// CourseRound is one round of a send-back loop that moved no phase: from the merge forward's ask
+// to its landing (End zero while it stands), and its cause, a head that conflicts with its base
+// (the windows' README, "The measures": under main a drawn conflict that keeps its phase is one
+// round of conflict, its hours the merge-forward segment).
+type CourseRound struct {
+	Start, End time.Time
+	Cause      Cause
 }
 
 // Stint is one state of an issue and the moment it began.
@@ -423,11 +435,14 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 			c.set(at, state)
 		}
 		moves, waits := iss.Moves(), issueWaits(iss)
-		if c == nil && len(moves)+len(waits) > 0 {
+		if c == nil && len(moves)+len(waits)+len(iss.MergeForwards) > 0 {
 			c = tl.course(key)
 		}
 		for _, move := range moves {
 			c.Moves = append(c.Moves, moveOf(move.At, move.From, move.To, move.Trigger, move.Drop))
+		}
+		for _, round := range iss.MergeForwards {
+			c.Rounds = append(c.Rounds, CourseRound{Start: round.Start, End: round.End, Cause: CauseConflict})
 		}
 		if len(waits) > 0 {
 			c.Waits = waits

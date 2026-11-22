@@ -157,8 +157,11 @@ func newReplayCollectMergesCommand(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Read a base branch's first-parent history in [--from, --to) from GitHub's commit listing, with
 GET alone, and write it into the window collect wrote in --out as merges/<owner>__<name>.jsonl,
 beside the commits of the repository's other base branches, with window.json's digest of the
-file written again. The token is read from the environment variable --github-token-env names,
-and is never printed. Run it once for each base branch the window's pull requests name.`,
+file written again. Each commit keeps the pull request it merged ("pr") where the first line of
+its message ends with GitHub's squash suffix " (#<n>)", which a replay's conflict draw reads to
+leave a stretch's own merge out of its count. The token is read from the environment variable
+--github-token-env names, and is never printed. Run it once for each base branch the window's
+pull requests name.`,
 		Args: noArguments,
 	}
 	flags := cmd.Flags()
@@ -249,14 +252,18 @@ cannot make a database on, with the server's reason.
 The window's Dispatch events, its recorded phase moves, ticks and boots are applied at their
 recorded times or offsets, a worker stub runs the outbox rows the daemon's lanes would take after
 each fact, and each work segment runs its recorded length times f^((n − m)/42) at --slowdown f.
+Each stretch of an issue's work from testing to merging draws whether its head conflicts with its
+base, with --seed, from a model fitted on the window's own recorded stretches; the run prints the
+model with its intervals. --branch sets one knob the record does not give: timing, answer,
+afterSendBack, firstStarts, neverStarted or merges (main+<knob>=<value>).
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
 measures read from the states the daemon's own admission passes left), scorecard-line.json (the
 same measures read back from log.jsonl and the replay's Dispatch events, as a record's are),
-run.json (what ran, what it counted and the gap of each measure between the two scorecards) and,
-with --trace-segments, segments.jsonl. The output names each assumption the run rests on and the
-scenario it gave the work of an issue that never started.`
+run.json (what ran, what it counted, the gap of each measure between the two scorecards and the
+conflict model) and, with --trace-segments, segments.jsonl. The output names the branch, each
+assumption the run rests on and the scenario it gave the work of an issue that never started.`
 
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -316,6 +323,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 				refused.At.Format(time.RFC3339), refused.Reason)
 		}
 		fmt.Fprintf(stdout, "legion replay run: the scenario of the work of an issue that never started: %s\n", result.Scorecard.Scenario)
+		fmt.Fprintf(stdout, "legion replay run: the conflict model each stretch drew by: %s\n", result.Conflicts)
 		if widest, ok := widestGap(result.Gaps); ok && widest.Gap() != 0 {
 			fmt.Fprintf(stdout, "legion replay run: the widest gap between the snapshot and the line scorecards is %s: %v and %v\n",
 				widest.Measure, widest.Snapshot, widest.Line)

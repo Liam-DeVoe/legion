@@ -51,8 +51,11 @@ type MergesConfig struct {
 // header, then the walk along first parents ParseMerges makes) and writes it into the window in
 // cfg.Window as merges/<owner>__<name>.jsonl, in place of the commits of that branch the file held
 // and beside those of the repository's other base branches, with window.json's sha256 of the file
-// written again. It sends GET alone, each read GitHub refuses for now (429, a 5xx, no answer) tried
-// again with a growing wait. It returns the branch's commits as written, oldest first.
+// written again. Each commit keeps the pull request it merged (Merge.PR) where the first line of
+// its message ends with GitHub's squash suffix ` (#<n>)`, and none where it does not, so the
+// conflict draw can leave a stretch's own merge out of its count. It sends GET alone, each read
+// GitHub refuses for now (429, a 5xx, no answer) tried again with a growing wait. It returns the
+// branch's commits as written, oldest first.
 func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	owner, name, ok := strings.Cut(cfg.Repo, "/")
 	switch {

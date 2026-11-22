@@ -1,7 +1,9 @@
 package replay
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -34,6 +36,23 @@ type Branch struct {
 	Merges string `json:"merges"`
 }
 
+// The values of the knobs other than the main branch's, as the driver reads them.
+const (
+	// valueWall is Timing's and Answer's value that keeps an event at its recorded time.
+	valueWall = "wall"
+	// lessSlotWait is AfterSendBack's value that takes the recorded wait for a slot off the work
+	// after a send-back.
+	lessSlotWait = "less-slot-wait"
+	// firstStartsRank is FirstStarts' value that keeps the board's own ranks.
+	firstStartsRank = "rank"
+	// neverStartedDrawn and neverStartedDrawnDone are NeverStarted's values that draw the work of a
+	// started, or a finished, issue of the window.
+	neverStartedDrawn     = "drawn"
+	neverStartedDrawnDone = "drawn-done"
+	// mergesZero is Merges' value that sets the merges term of the conflict draw to zero.
+	mergesZero = "zero"
+)
+
 // MainBranch is the branch a replay runs unless it is asked for another: events and answers at
 // their recorded offsets, work after a send-back and first starts as recorded, no work for an
 // issue that never started, and the fitted merges term.
@@ -47,25 +66,96 @@ var MainBranch = Branch{
 	Merges:        "fitted",
 }
 
+// knob is one knob of a branch: its JSON name, the field of a Branch it sets, and its values,
+// the main branch's first.
+type knob struct {
+	name   string
+	field  func(*Branch) *string
+	values []string
+}
+
+// knobs is every knob of a branch, in the order of design section 7, each with its values.
+var knobs = []knob{
+	{name: "timing", field: func(b *Branch) *string { return &b.Timing }, values: []string{MainBranch.Timing, valueWall}},
+	{name: "answer", field: func(b *Branch) *string { return &b.Answer }, values: []string{MainBranch.Answer, valueWall}},
+	{name: "afterSendBack", field: func(b *Branch) *string { return &b.AfterSendBack }, values: []string{MainBranch.AfterSendBack, lessSlotWait}},
+	{name: "firstStarts", field: func(b *Branch) *string { return &b.FirstStarts }, values: []string{MainBranch.FirstStarts, firstStartsRank}},
+	{name: "neverStarted", field: func(b *Branch) *string { return &b.NeverStarted },
+		values: []string{MainBranch.NeverStarted, neverStartedDrawn, neverStartedDrawnDone}},
+	{name: "merges", field: func(b *Branch) *string { return &b.Merges }, values: []string{MainBranch.Merges, mergesZero}},
+}
+
+// Slowdowns is the slowdown factors f every branch is run at (design section 7; spec R3): 1.0,
+// which keeps the recorded lengths, and two that slow work as more issues are in flight.
+var Slowdowns = []float64{1.0, 1.2, 1.6}
+
+// BranchAt is one branch at one slowdown factor: one of the runs a comparison of rules makes of
+// each rule and window (Branches).
+type BranchAt struct {
+	Branch   Branch  `json:"branch"`
+	Slowdown float64 `json:"slowdown"`
+}
+
+// Branches is every branch of design section 7 at every slowdown factor, 24 in all: at each
+// factor of Slowdowns, the main branch and each change of one knob to one of its other values.
+func Branches() []BranchAt {
+	changed := []Branch{MainBranch}
+	for _, k := range knobs {
+		for _, value := range k.values[1:] {
+			branch := MainBranch
+			*k.field(&branch), branch.Name = value, MainBranch.Name+"+"+k.name+"="+value
+			changed = append(changed, branch)
+		}
+	}
+	branches := make([]BranchAt, 0, len(Slowdowns)*len(changed))
+	for _, f := range Slowdowns {
+		for _, branch := range changed {
+			branches = append(branches, BranchAt{Branch: branch, Slowdown: f})
+		}
+	}
+	return branches
+}
+
 // BranchNamed is the branch name names: "main", the main branch, or "main+<knob>=<value>", the
 // main branch with the one knob whose JSON name is <knob> set to <value>. It refuses any other
-// name, and a knob no Branch holds.
+// name, a knob no Branch holds and a value its knob does not take.
 func BranchNamed(name string) (Branch, error) {
 	branch := MainBranch
 	if name == MainBranch.Name {
 		return branch, nil
 	}
 	change, ok := strings.CutPrefix(name, MainBranch.Name+"+")
-	knob, value, set := strings.Cut(change, "=")
+	knobName, value, set := strings.Cut(change, "=")
 	if !ok || !set || value == "" {
 		return Branch{}, fmt.Errorf("replay: the branch %q is neither main nor main+<knob>=<value>", name)
 	}
-	knobs := map[string]*string{"timing": &branch.Timing, "answer": &branch.Answer, "afterSendBack": &branch.AfterSendBack,
-		"firstStarts": &branch.FirstStarts, "neverStarted": &branch.NeverStarted, "merges": &branch.Merges}
-	field, known := knobs[knob]
-	if !known {
+	at := slices.IndexFunc(knobs, func(k knob) bool { return k.name == knobName })
+	if at < 0 {
 		return Branch{}, fmt.Errorf("replay: the branch %q names no knob of a replay's branch", name)
 	}
-	*field, branch.Name = value, name
+	if !slices.Contains(knobs[at].values, value) {
+		return Branch{}, fmt.Errorf("replay: the branch %q sets %s to %q, which is none of its values %v", name, knobName, value, knobs[at].values)
+	}
+	*knobs[at].field(&branch), branch.Name = value, name
 	return branch, nil
+}
+
+// check refuses a branch with a knob set to a value it does not take; a knob left empty takes the
+// main branch's value.
+func (b Branch) check() error {
+	for _, k := range knobs {
+		if value := *k.field(&b); value != "" && !slices.Contains(k.values, value) {
+			return fmt.Errorf("replay: the branch %s sets %s to %q, which is none of its values %v", b.Name, k.name, value, k.values)
+		}
+	}
+	return nil
+}
+
+// orMain is b with each knob it leaves empty at the main branch's value.
+func (b Branch) orMain() Branch {
+	for _, k := range knobs {
+		field := k.field(&b)
+		*field = cmp.Or(*field, k.values[0])
+	}
+	return b
 }

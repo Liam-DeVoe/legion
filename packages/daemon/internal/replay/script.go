@@ -69,6 +69,10 @@ const (
 	// unended at the window's end; neither has an end the replay enters.
 	endLeft
 	endOpen
+	// endMergeForward is the merge-forward segment a conflict drawn under a rule whose conflicting
+	// head keeps its phase adds (record.ConflictMergeForward, assumption 23): at its end the merge
+	// forward lands, and the work of the stretch that drew goes on (driver.mergedForward).
+	endMergeForward
 )
 
 // pieceState is where a piece stands in a replay.
@@ -101,6 +105,20 @@ type piece struct {
 	hold       *Wait
 	// m is the issues in flight in the record at its start.
 	m int
+	// cut is how much of its recorded length the branch takes off its work: under AfterSendBack
+	// less-slot-wait, the recorded wait for a slot before the first piece of a visit a send-back
+	// began (assumption 13).
+	cut time.Duration
+	// drawn says the piece is another recorded piece's work given to this issue by a draw: the
+	// never-started scenario's work, or a conflict loop drawn from the window's loops. Its moves
+	// are entered at the generation the issue stands at, its registration names the issue's own
+	// document, and the Dispatch events of the work it copies stay the copied issue's.
+	drawn bool
+	// stretchDrawn says the stretch the piece's move ends drew its conflict already: the piece
+	// goes on with a stretch past its recorded end (stretchEnds), which is not drawn a second
+	// time. drew is, for a merge-forward piece, the piece whose stretch drew the conflict.
+	stretchDrawn bool
+	drew         *piece
 	// acts is every act of the piece, by its offset from the start.
 	acts []act
 
@@ -123,6 +141,15 @@ func (p *piece) recorded() time.Duration {
 		return 0
 	}
 	return p.end.Sub(p.start)
+}
+
+// worked is the length of the piece's work in a replay before the slowdown: its recorded length
+// less what the branch takes off it (cut), and zero for one the record shows unended.
+func (p *piece) worked() time.Duration {
+	if p.end.IsZero() {
+		return 0
+	}
+	return max(0, p.recorded()-p.cut)
 }
 
 // actKind is one kind of act inside a piece.

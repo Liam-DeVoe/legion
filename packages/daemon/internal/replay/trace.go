@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,6 +154,16 @@ const (
 // checkClosedLine is the msg of the line the close of an issue's production check writes
 // (workflow's markCheckClosed, CheckClosed), in every release since the check began (d321c422).
 const checkClosedLine = "workflow: production check closed"
+
+// mergeForwardAskedLine and mergeForwardLandedLine are the msgs of the lines a conflicting head's
+// merge forward writes under a rule whose conflicting head keeps its phase
+// (record.ConflictMergeForward): the engine's ask of the implementer to merge the base forward
+// (workflow's mergeForward) and the head that merge left arriving (mergeForwardLanded), the round
+// of conflict a merge forward is (MergeForwardRound).
+const (
+	mergeForwardAskedLine  = "workflow: merge forward asked"
+	mergeForwardLandedLine = "workflow: the merge forward landed"
+)
 
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
 // daemon wrote it under and the time the daemon wrote it, the line's own time attribute. A Cloud
@@ -497,6 +509,23 @@ type QueueLeftReadOnce struct {
 	HeadSHA     string
 }
 
+// MergeForwardAsked is a `workflow: merge forward asked` line (workflow's mergeForward): the
+// engine asked the implementer of Issue, standing in Phase, to merge the base forward onto a head
+// that conflicts with it, the issue keeping its phase.
+type MergeForwardAsked struct {
+	LineHead
+	Issue string
+	Phase phase.Phase
+}
+
+// MergeForwardLanded is a `workflow: the merge forward landed` line (workflow's
+// mergeForwardLanded): the first head after the one a merge forward was asked of arrived on Issue's
+// pull request.
+type MergeForwardLanded struct {
+	LineHead
+	Issue string
+}
+
 // PassMovedSlots is an `admission: a pass moved slots` line (admit's logPassMoves), the record of
 // one admission pass that gave out or took back at least one slot, written once its fact
 // committed: the slots in use after the pass, the cap it ran with, each slot it took back with
@@ -809,6 +838,12 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	},
 	"workflow: a closed tree's member joined a live tree": func(h LineHead, a *lineAttrs) LogLine {
 		return RootJoined{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), Generation: a.generation("generation")}
+	},
+	mergeForwardAskedLine: func(h LineHead, a *lineAttrs) LogLine {
+		return MergeForwardAsked{LineHead: h, Issue: a.str("issue"), Phase: phase.Phase(a.str("phase"))}
+	},
+	mergeForwardLandedLine: func(h LineHead, a *lineAttrs) LogLine {
+		return MergeForwardLanded{LineHead: h, Issue: a.str("issue")}
 	},
 }
 
@@ -1162,15 +1197,17 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 // ParseMerges reads pages of GitHub's commit listing of one base branch
 // (GET /repos/<owner>/<name>/commits?sha=<branch>&since=<t>&until=<t>, each page newest first, as
 // GitHub serves them) and returns the branch's first-parent commits among them, oldest first, each
-// at its committer's time, which is when a merge landed it on the branch, and with branch as its
-// Branch: the walk from the first page's first commit along each commit's first parent, which ends
-// at the first commit whose first parent no page holds. No page, or an empty first page, is a
-// branch that did not move in the span. A page that is not a list of commits, or a commit without
-// its sha or committer's time, is refused.
+// at its committer's time, which is when a merge landed it on the branch, with branch as its
+// Branch and, where the first line of its message ends with GitHub's squash suffix ` (#<n>)`, the
+// pull request it merged as its PR: the walk from the first page's first commit along each
+// commit's first parent, which ends at the first commit whose first parent no page holds. No page,
+// or an empty first page, is a branch that did not move in the span. A page that is not a list of
+// commits, or a commit without its sha or committer's time, is refused.
 func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
 	type listed struct {
 		SHA    string `json:"sha"`
 		Commit struct {
+			Message   string `json:"message"`
 			Committer struct {
 				Date time.Time `json:"date"`
 			} `json:"committer"`
@@ -1203,7 +1240,7 @@ func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
 			break
 		}
 		delete(bySHA, sha) // a commit is walked once, whatever a page says of its parents
-		merges = append(merges, Merge{SHA: commit.SHA, At: commit.Commit.Committer.Date, Branch: branch})
+		merges = append(merges, Merge{SHA: commit.SHA, At: commit.Commit.Committer.Date, Branch: branch, PR: squashedPullRequest(commit.Commit.Message)})
 		sha = ""
 		if len(commit.Parents) > 0 {
 			sha = commit.Parents[0].SHA
@@ -1211,4 +1248,22 @@ func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
 	}
 	slices.Reverse(merges)
 	return merges, nil
+}
+
+// squashSuffix is GitHub's suffix of a squash merge's subject, the pull request's number.
+var squashSuffix = regexp.MustCompile(` \(#([0-9]+)\)$`)
+
+// squashedPullRequest is the pull request a commit message's first line names by GitHub's squash
+// suffix ` (#<n>)`, 0 for a first line that does not end with one.
+func squashedPullRequest(message string) int {
+	subject, _, _ := strings.Cut(message, "\n")
+	found := squashSuffix.FindStringSubmatch(strings.TrimRight(subject, "\r"))
+	if found == nil {
+		return 0
+	}
+	number, err := strconv.Atoi(found[1])
+	if err != nil {
+		return 0
+	}
+	return number
 }

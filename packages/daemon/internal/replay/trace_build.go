@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -145,6 +147,15 @@ type IssueTrace struct {
 	Ready []time.Time
 	// QueueDrops is each line of the issue's pull request leaving the merge queue.
 	QueueDrops []QueueDrop
+	// MergeForwards is each merge forward of the issue's conflicting head, in order, the issue
+	// keeping its phase.
+	MergeForwards []MergeForwardRound
+	// LinkedPullRequests is the number of the pull request the issue's Dispatch events link, by
+	// its repository as owner/repo in lower case: the newest issue event's link of the form
+	// https://github.com/<owner>/<repo>/pull/<n> among its external links, for each repository.
+	// The conflict draw leaves the merge of that pull request out of the issue's stretches
+	// (Stretch); nil where no event links one.
+	LinkedPullRequests map[string]int
 	// PullRequest is when the trace first sees the issue's pull request: its first move by
 	// implementation_ready, its first visit past implementing, or the first line that names its
 	// pull request, whichever is first; zero for none. A replay keeps a synthetic open pull
@@ -152,6 +163,15 @@ type IssueTrace struct {
 	// PullRequestNumber is the number a line names, 0 where none does.
 	PullRequest       time.Time
 	PullRequestNumber int
+}
+
+// MergeForwardRound is one merge forward of an issue's conflicting head under a rule whose
+// conflicting head keeps its phase, a round of conflict that moves no phase: from the engine's
+// ask (MergeForwardAsked) to the landing of the head it left (MergeForwardLanded), or to the
+// issue's leave; End zero while it stands at the window's end. An ask while one stands is of the
+// same round.
+type MergeForwardRound struct {
+	Start, End time.Time
 }
 
 // Entry is one entry of an issue into the workflow at admitted: the Dispatch event that made it a
@@ -704,6 +724,12 @@ func (b *traceBuilder) onEvent(read readEvent) {
 		if iss.Repo == "" {
 			iss.Repo = repo
 		}
+		for linked, number := range linkedPullRequests(read.raw) {
+			if iss.LinkedPullRequests == nil {
+				iss.LinkedPullRequests = map[string]int{}
+			}
+			iss.LinkedPullRequests[linked] = number
+		}
 		b.childFiled(iss, event)
 		b.maybeEnter(iss, event)
 	case event.Verdict != nil:
@@ -737,6 +763,50 @@ func issueSubject(raw json.RawMessage) (title, repo string) {
 		repo = *event.Payload.Repo
 	}
 	return event.Payload.Title, repo
+}
+
+// pullRequestLink is a link to a GitHub pull request: https://github.com/<owner>/<repo>/pull/<n>.
+var pullRequestLink = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$`)
+
+// linkedPullRequests reads the pull requests an issue event's payload links among its external
+// links, which ParseDispatchEvent leaves out: each link's number by its repository as owner/repo
+// in lower case, the last one listed where it lists two of one repository. A link is an object
+// with its url, as Dispatch serves it, or the url alone.
+func linkedPullRequests(raw json.RawMessage) map[string]int {
+	var event struct {
+		Payload struct {
+			ExternalLinks []json.RawMessage `json:"external_links"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(raw, &event) != nil {
+		return nil
+	}
+	var linked map[string]int
+	for _, link := range event.Payload.ExternalLinks {
+		var url string
+		if json.Unmarshal(link, &url) != nil {
+			var object struct {
+				URL string `json:"url"`
+			}
+			if json.Unmarshal(link, &object) != nil {
+				continue
+			}
+			url = object.URL
+		}
+		found := pullRequestLink.FindStringSubmatch(url)
+		if found == nil {
+			continue
+		}
+		number, err := strconv.Atoi(found[2])
+		if err != nil {
+			continue
+		}
+		if linked == nil {
+			linked = map[string]int{}
+		}
+		linked[strings.ToLower(found[1])] = number
+	}
+	return linked
 }
 
 // childFiled records event's issue on its parent's trace where the event filed it there or moved
@@ -913,6 +983,16 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
 	case QueueLeftReadOnce:
 		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
+	case MergeForwardAsked:
+		iss := b.issue(l.Issue)
+		if n := len(iss.MergeForwards); n == 0 || !iss.MergeForwards[n-1].End.IsZero() {
+			iss.MergeForwards = append(iss.MergeForwards, MergeForwardRound{Start: at})
+		}
+	case MergeForwardLanded:
+		iss := b.issue(l.Issue)
+		if n := len(iss.MergeForwards); n > 0 && iss.MergeForwards[n-1].End.IsZero() {
+			iss.MergeForwards[n-1].End = at
+		}
 	case ProcessStop:
 		if boot := &b.t.Boots[len(b.t.Boots)-1]; boot.Stopped.IsZero() {
 			boot.Stopped = at
@@ -1166,6 +1246,9 @@ func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
 	}
 	if wait := iss.openWait(WaitHeld); wait != nil {
 		wait.End, wait.EndedBy = at, WaitLeft
+	}
+	if n := len(iss.MergeForwards); n > 0 && iss.MergeForwards[n-1].End.IsZero() {
+		iss.MergeForwards[n-1].End = at
 	}
 	for _, token := range slices.Sorted(maps.Keys(b.turns)) {
 		if b.turns[token].issue == iss.Key {

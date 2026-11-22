@@ -129,6 +129,8 @@ var tapped = []string{
 	"admission: slot released",
 	"admission: an issue waits for the Dispatch children under it",
 	"workflow: design gate closed",
+	mergeForwardAskedLine,
+	mergeForwardLandedLine,
 }
 
 // driver is one replay's run: the window and its reading, the replay's database, its simulated
@@ -207,6 +209,23 @@ type driver struct {
 	paused   bool
 	pauseID  int64
 	unplaced []Unplaced
+
+	// conflicts is the conflict model the run draws by (with its merges term set to zero under
+	// the branch's Merges zero), merges the window's commits of each base branch it counts a
+	// stretch's M from, loops the recorded conflict loops a drawn conflict's work is drawn from,
+	// draws the run's seeded source of every conflict draw, and stretchFrom the replay's start of
+	// the stretch each issue stands in. heads counts the heads the replay's own pull request
+	// records moved to, which names each.
+	conflicts   ConflictModel
+	merges      baseMerges
+	loops       []conflictLoop
+	draws       *rand.Rand
+	stretchFrom map[string]time.Time
+	heads       int
+	// timingWall and answerWall say the branch keeps the events that end a wait, and a person's
+	// answers, at their recorded times (Branch.Timing and Branch.Answer wall), not at their
+	// recorded offsets from their anchors.
+	timingWall, answerWall bool
 }
 
 // Divergence is what a replay counts of where it left the record's course, which a replay under
@@ -388,6 +407,9 @@ func (d *driver) observe() error {
 			if phase.MovesBack(from, to) {
 				d.used[3], d.used[13] = true, true
 			}
+			if startsStretch(from, to) {
+				d.stretchFrom[key] = d.clock.Instant()
+			}
 			if to == phase.Done {
 				delete(d.inFlight, key)
 			}
@@ -425,6 +447,10 @@ func (d *driver) observe() error {
 			}
 		case "workflow: design gate closed":
 			d.used[4] = true
+		case mergeForwardAskedLine:
+			d.snap.roundBegins(key, d.clock.Instant())
+		case mergeForwardLandedLine:
+			d.snap.roundEnds(key, d.clock.Instant())
 		}
 	}
 	return d.placeAnchored()
@@ -458,12 +484,15 @@ func (d *driver) recorded(key string) (*record.Issue, error) {
 // its end, the worker stub after each.
 func (d *driver) run() error {
 	w, t := d.window, d.trace
-	if err := d.refuseUnbuiltKnobs(); err != nil {
-		return err
-	}
 	d.clock.advance(w.From)
 	if err := d.seed(); err != nil {
 		return err
+	}
+	// An issue that stands in a stretch at the window's start began it where the record shows.
+	for _, key := range sortedKeys(t.Issues) {
+		if start, standing := stretchStartAt(t.Issues[key], w.From); standing {
+			d.stretchFrom[key] = start
+		}
 	}
 	// The process that runs at the window's start is the newest that started before it; a boot
 	// at the start itself is applied as a boot.
@@ -494,10 +523,14 @@ func (d *driver) run() error {
 		switch {
 		case event.at.Before(w.From):
 			continue
-		case event.anchor == anchorTime:
+		case event.anchor == anchorTime, event.anchor == anchorWait && d.timingWall, event.anchor == anchorEvent && d.answerWall:
 			d.placeEvent(i, event.at)
 		case event.anchor == anchorWait:
 			d.anchored = append(d.anchored, i)
+			d.push(&item{at: event.at, class: classAct, rec: event.at, order: int64(event.order), run: func() error {
+				d.placeUnbegun(i)
+				return nil
+			}})
 		}
 	}
 	d.openSeeded()
@@ -688,6 +721,9 @@ func (d *driver) placeEvent(i int, at time.Time) {
 			return err
 		},
 		run: func() error { return d.applyEvent(i, applied) }})
+	if d.answerWall {
+		return
+	}
 	for _, dependent := range event.dependents {
 		d.placeEvent(dependent, at.Add(d.script.events[dependent].offset))
 	}
@@ -718,6 +754,28 @@ func (d *driver) placeAnchored() error {
 	}
 	d.anchored = kept
 	return nil
+}
+
+// placeUnbegun places the recorded event events[i], whose place waits for the replay's start of
+// the wait it ended (Branch.Timing offset), at its recorded time, the clock's instant, where that
+// wait cannot begin (the windows' README, "The knobs": an event whose wait never begins in the
+// replay happens at its recorded time): a link wait of an issue the replay has not started, its
+// link standing, since an issue whose blocker is unfinished does not start, and so never waits on
+// it as a started issue does.
+func (d *driver) placeUnbegun(i int) {
+	event := &d.script.events[i]
+	if event.placed || event.wait.kind != WaitLink {
+		return
+	}
+	if _, started := d.started[event.wait.issue]; started {
+		return
+	}
+	if event.wait.added >= 0 {
+		if added, placed := d.placed[event.wait.added]; !placed || added.After(d.clock.Instant()) {
+			return
+		}
+	}
+	d.placeEvent(i, d.clock.Instant())
 }
 
 // waitStart is the replay's start of the wait an anchor names, and whether the replay has reached

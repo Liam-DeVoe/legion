@@ -124,7 +124,7 @@ func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 // it.
 func (d *driver) sizePiece(p *piece, at time.Time, n int, seeded bool) {
 	p.n = n
-	p.length = slowed(p.recorded(), d.cfg.Slowdown, p.n, p.m)
+	p.length = slowed(p.worked(), d.cfg.Slowdown, p.n, p.m)
 	if d.cfg.TraceSegments {
 		d.segments = append(d.segments, Segment{Issue: p.issue, Phase: p.phase, Start: p.at, N: p.n, M: p.m, Recorded: Duration(p.recorded()),
 			Length: Duration(p.length)})
@@ -165,7 +165,7 @@ func (d *driver) queueAct(p *piece, a act, when time.Time) {
 		d.placePieceEvent(a.event, when, p)
 	case actRegistration:
 		d.push(&item{at: when, class: classAct, rec: a.rec, order: lineOrder + int64(a.order), piece: p,
-			run: func() error { return d.register(p.issue, a.gate) }})
+			run: func() error { return d.register(p.issue, d.gateFor(p, a.gate)) }})
 	case actClaimFailed:
 		d.push(&item{at: when, class: classAct, rec: a.rec, order: lineOrder, piece: p, run: func() error { return d.claimFailed(a.failed) }})
 	case actAdoption:
@@ -194,6 +194,9 @@ func (d *driver) placePieceEvent(i int, when time.Time, p *piece) {
 			return err
 		},
 		run: func() error { return d.applyEvent(i, applied) }})
+	if d.answerWall {
+		return
+	}
 	for _, dependent := range event.dependents {
 		d.placeEvent(dependent, when.Add(d.script.events[dependent].offset))
 	}
@@ -286,6 +289,8 @@ func (d *driver) endPiece(p *piece) error {
 		return d.enterMove(p)
 	case endHeldSignOff:
 		return d.signOff(p.issue)
+	case endMergeForward:
+		return d.mergedForward(p)
 	}
 	return nil
 }
@@ -300,16 +305,30 @@ func (d *driver) generationAt(key string, at time.Time) uint64 {
 	return 1
 }
 
-// enterMove enters the recorded move that ends p's visit, by its source (MoveSources): through the
-// engine's ReplayTransition, or through the daemon's own handler of the fact the API or GitHub
-// applies. A move whose source is the conflict draw is no move this replay enters: the stretch
-// that ends in it is a stretch of a head that can conflict (stretchEnds). Every move the daemon's
-// code refuses is counted with its reason.
+// enterMove enters the recorded move that ends p's visit. Where the move ends a stretch in which
+// a head can conflict (spec R2, assumption 3), the stretch first draws whether its head conflicts
+// (drawConflict), and a drawn conflict the daemon acts on takes the move's place; otherwise the
+// move enters as recorded (enterRecorded).
 func (d *driver) enterMove(p *piece) error {
-	move := p.visit.Out
-	if move == nil {
+	if p.visit == nil || p.visit.Out == nil {
 		return nil
 	}
+	if d.drawsAtEnd(p) {
+		conflicted, err := d.drawConflict(p)
+		if err != nil || conflicted {
+			return err
+		}
+	}
+	return d.enterRecorded(p)
+}
+
+// enterRecorded enters the recorded move that ends p's visit, by its source (MoveSources):
+// through the engine's ReplayTransition, or through the daemon's own handler of the fact the API
+// or GitHub applies. A move whose source is the conflict draw is no move this replay enters: the
+// stretch it ended drew no conflict, and goes on past the loop the record ran for it
+// (stretchEnds). Every move the daemon's code refuses is counted with its reason.
+func (d *driver) enterRecorded(p *piece) error {
+	move := p.visit.Out
 	if move.Source.Way == MoveDraw {
 		return d.stretchEnds(p)
 	}
@@ -328,9 +347,12 @@ func (d *driver) enterMove(p *piece) error {
 	}
 	switch move.Source.Way {
 	case MoveTransition:
-		d.used[assumeCompletionPassed] = true
+		generation, err := d.moveGeneration(p, move)
+		if err != nil {
+			return err
+		}
 		result, err := d.apply("replay", d.factID("move", p.issue, move.Trigger), RecordedMove{Issue: p.issue,
-			Generation: d.generationAt(p.issue, move.At), From: move.From, To: to, Trigger: move.Trigger})
+			Generation: generation, From: move.From, To: to, Trigger: move.Trigger})
 		if err != nil {
 			return err
 		}
@@ -391,18 +413,18 @@ func (d *driver) refusedUnlessMoved(key string, move *Move, to phase.Phase, refu
 }
 
 // stretchEnds is the end of a stretch in which a head can conflict whose recorded end is a
-// conflict (MoveDraw, assumption 3): the hook where a replay draws whether the stretch's head
-// conflicts. This replay draws none, as a window whose fitted rate gives no stretch a conflict
-// does: the stretch goes on as one that did not conflict, past the loop the record ran for its
-// conflict, with the work the record shows after the loop returned to the phase it left, which
-// opens at once.
+// conflict (MoveDraw, assumption 3), where the replay's stretch did not conflict, or merged its
+// base forward and kept its phase (mergedForward): the stretch goes on past the loop the record
+// ran for its conflict, with the work the record shows after the loop returned to the phase it
+// left, which opens at once and is not drawn a second time.
 func (d *driver) stretchEnds(p *piece) error {
 	pieces := d.script.pieces[p.issue]
 	for _, next := range pieces[p.index+1:] {
 		if next.state != pieceWaiting {
 			continue
 		}
-		if next.phase == p.phase && next.visit.In != nil && next.visit.In.To == p.phase {
+		if next.phase == p.phase && next.visit != nil && next.visit.In != nil && next.visit.In.To == p.phase {
+			next.stretchDrawn = true
 			d.openPiece(next, d.clock.Instant(), false)
 			return nil
 		}

@@ -136,6 +136,8 @@ var FactSources = map[string]FactSource{
 	"LingerExpired":            {Way: FactProduced, From: "the stub's execution of a linger_close row at its next_at"},
 	"Handover":                 {Way: FactProduced, From: "the stub's execution of a hand-over status write whose issue the shadow shows handed over already"},
 	"GateAboveDispatch":        {Way: FactProduced, From: "the stub's execution of a gate_seed row that reads the document below the version it was queued at in the shadow"},
+	"PullRequestMergeability":  {Way: FactProduced, From: "a conflict a stretch draws (spec R2): the replay's own pull request record read as conflicting at its head, the conflict confirmed"},
+	"PullRequestSynchronized":  {Way: FactProduced, From: "the end of a drawn conflict's merge-forward segment: the head the merge forward left, on the replay's own pull request record"},
 
 	// Left out, each under the assumption it rests on.
 	"HandoffComplete":         {Way: FactLeftOut, Assumption: assumeCompletionPassed},
@@ -157,10 +159,8 @@ var FactSources = map[string]FactSource{
 	"CheckWakeDue":            {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
 	"CheckBound":              {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
 	"PullRequestOpened":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
-	"PullRequestSynchronized": {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestReview":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestChecks":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
-	"PullRequestMergeability": {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestClosed":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestDequeued":     {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestMissing":      {Way: FactLeftOut, Assumption: assumeNoGitHub},

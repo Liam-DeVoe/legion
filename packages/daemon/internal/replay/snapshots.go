@@ -85,6 +85,25 @@ func (s *snapshots) moved(key string, at time.Time, from, to phase.Phase, trigge
 	c.Moves = append(c.Moves, moveOf(at, from, to, trigger, drop))
 }
 
+// roundBegins records that key's conflicting head was asked to merge its base forward at at, the
+// issue keeping its phase: a round of conflict begins, unless one stands already (the engine asks
+// again on a later move at a head it asked of).
+func (s *snapshots) roundBegins(key string, at time.Time) {
+	c := s.timeline.course(key)
+	if n := len(c.Rounds); n > 0 && c.Rounds[n-1].End.IsZero() {
+		return
+	}
+	c.Rounds = append(c.Rounds, CourseRound{Start: at, Cause: CauseConflict})
+}
+
+// roundEnds records that key's merge forward landed at at, which ends the round that stands.
+func (s *snapshots) roundEnds(key string, at time.Time) {
+	c := s.timeline.course(key)
+	if n := len(c.Rounds); n > 0 && c.Rounds[n-1].End.IsZero() {
+		c.Rounds[n-1].End = at
+	}
+}
+
 // read reads the newest view once: its records and its own slots by key, its line and what holds
 // each member back, admission.blocked and admission.held over its judgement (blockers.Blocked,
 // record.HeldList), as the state's projection reads them; and whether an issue not yet started,

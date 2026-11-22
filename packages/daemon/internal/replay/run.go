@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -100,6 +101,11 @@ type RunResult struct {
 	// turn out, finished an outbox row without acting or seeded a slot the trace inferred, which
 	// run.json names beside them.
 	Assumptions []int
+	// Conflicts is the conflict model the run drew each stretch's conflict by (spec R2): fitted on
+	// the window's own recorded stretches with each coefficient's interval, its merges term set to
+	// zero where the branch's Merges is zero, and how many stretches, of the window's and of the
+	// replay's, counted a merge in M that may be their own.
+	Conflicts ConflictModel
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
 	snapshot Timeline
@@ -150,14 +156,21 @@ const specAssumptionsTop = 25
 // RunResult.LineScorecard), with the gap between the two per measure. It makes no request
 // outside the database: no Dispatch, no GitHub and no NATS.
 //
-// It runs the main branch (MainBranch) and draws no conflict: a knob set to another value is
-// refused, with its name, where the window gives it something to decide.
+// The branch's knobs (design section 7) shape the record's work before the replay runs it: the
+// anchors of the events that end a wait and of a person's answers (Timing, Answer), the length of
+// the work after a send-back (AfterSendBack), the ranks the replay's copy of Dispatch shows
+// (FirstStarts, design 10.7), the work of an issue the record never started (NeverStarted), and
+// the conflict model each stretch draws by (Merges), fitted on the window's own stretches.
 func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	began := time.Now()
 	w := cfg.Window
 	if cfg.Branch == (Branch{}) {
 		cfg.Branch = MainBranch
 	}
+	if err := cfg.Branch.check(); err != nil {
+		return RunResult{}, err
+	}
+	cfg.Branch = cfg.Branch.orMain()
 	if cfg.Slowdown <= 0 {
 		return RunResult{}, fmt.Errorf("replay: the slowdown factor is %v; it must be above zero (1 keeps the recorded lengths)", cfg.Slowdown)
 	}
@@ -176,8 +189,20 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	if firstStarts := cmp.Or(cfg.Branch.FirstStarts, MainBranch.FirstStarts); firstStarts != MainBranch.FirstStarts {
-		return RunResult{}, unbuiltKnob("firstStarts", firstStarts, MainBranch.FirstStarts)
+	if cfg.Branch.AfterSendBack == lessSlotWait {
+		script.cutSlotWaits()
+	}
+	if cfg.Branch.NeverStarted != MainBranch.NeverStarted {
+		script.drawNeverStarted(trace, cfg.Branch.NeverStarted, rand.New(rand.NewPCG(uint64(cfg.Seed), neverStartedStream)))
+	}
+	ranks := firstStartRanks(trace)
+	if cfg.Branch.FirstStarts == firstStartsRank {
+		ranks = nil
+	}
+	merges := newBaseMerges(w, trace)
+	conflicts := FitConflicts(recordedStretches(trace, merges))
+	if cfg.Branch.Merges == mergesZero {
+		conflicts = conflicts.WithoutTerm()
 	}
 	token, err := claim.ProjectToken(w.Project)
 	if err != nil {
@@ -197,7 +222,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	result := RunResult{Database: db.name}
+	result := RunResult{Database: db.name, Conflicts: conflicts}
 	closeDB := func() error {
 		st.Close()
 		if cfg.KeepDB {
@@ -213,13 +238,16 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		ctx: ctx, cfg: cfg, window: w, trace: trace, script: script, lines: lines, rule: cfg.Rule.OrMain(),
 		clock: clock, st: st, pool: st.Pool(), records: record.NewStoreWithClock(clock.Now), tap: tap,
 		log:    slog.New(&clockHandler{inner: slog.NewJSONHandler(written, &slog.HandlerOptions{Level: slog.LevelInfo}), clock: clock, tap: tap}),
-		shadow: newShadow(w.Project, firstStartRanks(trace)), token: token,
+		shadow: newShadow(w.Project, ranks), token: token,
 		claims: map[claim.Token]supervise.Claim{}, working: map[claim.Token]*piece{},
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
 		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true},
 		snap:     newSnapshots(w.From, w.To, ranksOf(trace)),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
 	}
+	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, merges, recordedLoops(script), map[string]time.Time{}
+	d.draws = rand.New(rand.NewPCG(uint64(cfg.Seed), conflictStream))
+	d.timingWall, d.answerWall = cfg.Branch.Timing == valueWall, cfg.Branch.Answer == valueWall
 	runErr := d.run()
 	flushErr := written.Flush()
 	if err := errors.Join(runErr, flushErr); err != nil {
@@ -239,6 +267,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		d.used[7] = true
 	}
 	result.Unplaced, result.Divergence, result.Assumptions = d.unplaced, d.counters, d.assumptionsUsed(len(Assumptions))
+	result.Conflicts = d.conflicts
 	if cfg.TraceSegments {
 		result.Segments = d.segments
 	}
@@ -254,53 +283,6 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		return result, err
 	}
 	return result, nil
-}
-
-// unbuiltKnob is the refusal of a branch knob set to a value this replay does not run: it runs the
-// main branch's value alone.
-func unbuiltKnob(knob, value, main string) error {
-	return fmt.Errorf("replay: the branch sets %s to %q, and this replay runs %q alone, the main branch's", knob, value, main)
-}
-
-// refuseUnbuiltKnobs refuses the run where its branch sets a knob to a value this replay does not
-// run and the window gives that knob something to decide: Timing where an event ends a wait in
-// the record, Answer where a person answers a question, AfterSendBack where work follows a send-back,
-// Merges where a stretch's head can conflict.
-func (d *driver) refuseUnbuiltKnobs() error {
-	branch := d.cfg.Branch
-	for _, event := range d.script.events {
-		if event.at.Before(d.window.From) {
-			continue
-		}
-		switch event.anchor {
-		case anchorWait:
-			if timing := cmp.Or(branch.Timing, MainBranch.Timing); timing != MainBranch.Timing {
-				return unbuiltKnob("timing", timing, MainBranch.Timing)
-			}
-		case anchorEvent:
-			if answer := cmp.Or(branch.Answer, MainBranch.Answer); answer != MainBranch.Answer {
-				return unbuiltKnob("answer", answer, MainBranch.Answer)
-			}
-		}
-	}
-	for _, key := range sortedKeys(d.script.pieces) {
-		for _, p := range d.script.pieces[key] {
-			if p.visit == nil {
-				continue
-			}
-			if in := p.visit.In; in != nil && phase.MovesBack(in.From, in.To) {
-				if after := cmp.Or(branch.AfterSendBack, MainBranch.AfterSendBack); after != MainBranch.AfterSendBack {
-					return unbuiltKnob("afterSendBack", after, MainBranch.AfterSendBack)
-				}
-			}
-			if out := p.visit.Out; out != nil && out.Source.Way == MoveDraw {
-				if merges := cmp.Or(branch.Merges, MainBranch.Merges); merges != MainBranch.Merges {
-					return unbuiltKnob("merges", merges, MainBranch.Merges)
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // traceAssumptions names the assumptions the run rests on that the window's own record shows
@@ -448,28 +430,29 @@ func (d *driver) lineTimeline() (Timeline, error) {
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
 // scenario and every assumption it used by number — and what it counted: the facts it applied and
 // the passes they ran, the mean time of a pass, the run's wall time and peak memory, the issues the
-// start state could not place, the segments it ran, its divergence counters and the gap of each
-// measure between its snapshot and line timelines. It holds numbers and names alone, never an
-// assumption's text.
+// start state could not place, the segments it ran, its divergence counters, the gap of each
+// measure between its snapshot and line timelines, and the conflict model it drew by. It holds
+// numbers and names alone, never an assumption's text.
 type runRecord struct {
-	Rule            string       `json:"rule"`
-	RuleCommit      string       `json:"ruleCommit"`
-	Branch          Branch       `json:"branch"`
-	Seed            int64        `json:"seed"`
-	Slowdown        float64      `json:"slowdown"`
-	Scenario        string       `json:"scenario"`
-	Assumptions     []int        `json:"assumptions"`
-	Database        string       `json:"database"`
-	KeptDatabase    bool         `json:"keptDatabase"`
-	Facts           int          `json:"facts"`
-	Passes          int          `json:"passes"`
-	MeanPassMillis  float64      `json:"meanPassMillis"`
-	WallSeconds     float64      `json:"wallSeconds"`
-	PeakMemoryBytes uint64       `json:"peakMemoryBytes"`
-	Unplaced        int          `json:"unplaced"`
-	Segments        int          `json:"segments"`
-	Divergence      Divergence   `json:"divergence"`
-	Gaps            []MeasureGap `json:"gaps"`
+	Rule            string        `json:"rule"`
+	RuleCommit      string        `json:"ruleCommit"`
+	Branch          Branch        `json:"branch"`
+	Seed            int64         `json:"seed"`
+	Slowdown        float64       `json:"slowdown"`
+	Scenario        string        `json:"scenario"`
+	Assumptions     []int         `json:"assumptions"`
+	Database        string        `json:"database"`
+	KeptDatabase    bool          `json:"keptDatabase"`
+	Facts           int           `json:"facts"`
+	Passes          int           `json:"passes"`
+	MeanPassMillis  float64       `json:"meanPassMillis"`
+	WallSeconds     float64       `json:"wallSeconds"`
+	PeakMemoryBytes uint64        `json:"peakMemoryBytes"`
+	Unplaced        int           `json:"unplaced"`
+	Segments        int           `json:"segments"`
+	Divergence      Divergence    `json:"divergence"`
+	Gaps            []MeasureGap  `json:"gaps"`
+	Conflicts       ConflictModel `json:"conflicts"`
 }
 
 // writeOutputs writes the run's scorecard.json (its snapshot timeline's), scorecard-line.json (its
@@ -484,7 +467,7 @@ func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
 		Scenario: result.Scorecard.Scenario, Assumptions: d.assumptionsUsed(len(Assumptions)), Database: result.Database,
 		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, WallSeconds: wall.Seconds(),
 		PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments), Divergence: result.Divergence,
-		Gaps: result.Gaps}
+		Gaps: result.Gaps, Conflicts: result.Conflicts}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

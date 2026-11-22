@@ -116,11 +116,14 @@ type Part struct {
 }
 
 // Merge is one first-parent commit of a repository's base branch: what the conflict draw reads
-// the rate of the base's movement from.
+// the rate of the base's movement from. PR is the pull request the commit merged, where the first
+// line of its message ends with GitHub's squash suffix ` (#<n>)`, and 0 for a commit with no such
+// suffix; the draw reads it to leave a stretch's own merge out of the stretch's count (Stretch).
 type Merge struct {
 	SHA    string    `json:"sha"`
 	At     time.Time `json:"at"`
 	Branch string    `json:"branch"`
+	PR     int       `json:"pr,omitempty"`
 }
 
 // Duration is a time.Duration written in a window as Go's duration text ("90m", "1h30m0s"), so a

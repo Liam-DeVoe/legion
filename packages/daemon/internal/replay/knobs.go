@@ -1,0 +1,179 @@
+package replay
+
+import (
+	"math/rand/v2"
+	"slices"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/phase"
+)
+
+// The streams of the run's seed: each draw of a replay reads a source of its own, seeded by the
+// run's seed on its own stream, so a draw of one kind never moves the draws of another (the
+// experiments' source is newChain's).
+const (
+	conflictStream     = 0x636f6e666c696374 // "conflict"
+	neverStartedStream = 0x6e65766572       // "never"
+)
+
+// cutSlotWaits is the branch's AfterSendBack less-slot-wait (assumption 13): the first piece of
+// the work of each visit a send-back began takes its recorded length less the visit's recorded
+// wait for a slot, from the move back into the visit to its worker start, the bound of the time a
+// worker that never went cold would take; a visit whose worker started at the move keeps its
+// length.
+func (s *script) cutSlotWaits() {
+	for _, pieces := range s.pieces {
+		for _, p := range pieces {
+			visit := p.visit
+			if visit == nil || visit.Before || visit.In == nil || visit.Segment == nil || !phase.MovesBack(visit.In.From, visit.In.To) ||
+				!p.start.Equal(visit.Segment.Start) {
+				continue
+			}
+			if wait := visit.Segment.Start.Sub(visit.Enter); wait > 0 {
+				p.cut = wait
+			}
+		}
+	}
+}
+
+// neverStartedIn says whether the record never started key's work: an issue of t with no slot and
+// no work segment, or one t does not hold.
+func neverStartedIn(t Trace, key string) bool {
+	iss, ok := t.Issues[key]
+	if !ok {
+		return true
+	}
+	if len(iss.Slots) > 0 {
+		return false
+	}
+	return !slices.ContainsFunc(iss.Visits, func(visit Visit) bool { return visit.Segment != nil })
+}
+
+// startedIn says whether the record started iss inside t's window: its first slot, or where it
+// held none its first work segment, begins at or after the window's start and before its end.
+func startedIn(t Trace, iss *IssueTrace) bool {
+	var first time.Time
+	if len(iss.Slots) > 0 {
+		if iss.Slots[0].Before {
+			return false
+		}
+		first = iss.Slots[0].Start
+	}
+	for _, visit := range iss.Visits {
+		if visit.Segment != nil && (first.IsZero() || visit.Segment.Start.Before(first)) {
+			first = visit.Segment.Start
+		}
+	}
+	return !first.IsZero() && !first.Before(t.From) && first.Before(t.To)
+}
+
+// finishedIn says whether the record moved iss to done inside t's window.
+func finishedIn(t Trace, iss *IssueTrace) bool {
+	return slices.ContainsFunc(iss.Visits, func(visit Visit) bool {
+		return visit.Out != nil && visit.Out.To == phase.Done && !visit.Out.At.Before(t.From) && visit.Out.At.Before(t.To)
+	})
+}
+
+// treeRoot says whether iss entered the workflow as a tree of its own, a root, rather than as a
+// child of another tree, by its first entry.
+func treeRoot(iss *IssueTrace) bool {
+	return len(iss.Entries) == 0 || iss.Entries[0].Tree == "" || iss.Entries[0].Tree == iss.Key
+}
+
+// drawNeverStarted is the branch's never-started scenario drawn or drawn-done (assumption 8):
+// each issue of t's project handed to Legion that the record never started is given the work of an
+// issue drawn with source from the issues the record started in the window (drawn), or from those
+// it finished in it (drawn-done) — of the same kind, a root for a root and a child for a child,
+// where the window holds one — each piece of that work at its recorded offsets from the new
+// issue's own starts, unended where the drawn issue's was. Where the window holds no issue to draw
+// from, the issue keeps no work, as under none. Each issue draws once, in the order of their keys.
+func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) {
+	var roots, children []string
+	for _, key := range sortedKeys(t.Issues) {
+		iss := t.Issues[key]
+		if iss.Project != t.Project || len(s.pieces[key]) == 0 || !startedIn(t, iss) {
+			continue
+		}
+		if scenario == neverStartedDrawnDone && !finishedIn(t, iss) {
+			continue
+		}
+		if treeRoot(iss) {
+			roots = append(roots, key)
+		} else {
+			children = append(children, key)
+		}
+	}
+	for _, key := range sortedKeys(t.Issues) {
+		iss := t.Issues[key]
+		if iss.Project != t.Project || len(iss.Entries) == 0 || !neverStartedIn(t, key) {
+			continue
+		}
+		candidates := children
+		if treeRoot(iss) {
+			candidates = roots
+		}
+		if len(candidates) == 0 {
+			candidates = slices.Concat(roots, children)
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		s.pieces[key] = clonePieces(s.pieces[candidates[source.IntN(len(candidates))]], key)
+	}
+}
+
+// clonePieces is pieces, another issue's recorded work, given to key (piece.drawn): each piece
+// with its phase, its role, its recorded length and its end, opened by key's own starts, and each
+// act of its workers at its offset — the turns, a registration, a claim's failure, a close of the
+// root and a ready mark, each of key — but for the Dispatch events the copied issue's workers made
+// and the roots its architect took into its tree, which stay the copied issue's.
+func clonePieces(pieces []*piece, key string) []*piece {
+	clones := make([]*piece, 0, len(pieces))
+	for _, p := range pieces {
+		clone := &piece{issue: key, index: len(clones), visit: p.visit, phase: p.phase, role: p.role, opens: p.opens, start: p.start,
+			end: p.end, ends: p.ends, hold: p.hold, m: p.m, cut: p.cut, drawn: true}
+		if clone.opens == opensAtSeed {
+			clone.opens = opensOnStart
+		}
+		for _, a := range p.acts {
+			switch a.kind {
+			case actEvent, actAdoption:
+				continue
+			case actClaimFailed:
+				a.failed.Claim.Issue = key
+			}
+			clone.acts = append(clone.acts, a)
+		}
+		clones = append(clones, clone)
+	}
+	return clones
+}
+
+// moveGeneration is the generation the recorded move that ends p is entered at: the record's
+// generation of p's issue at the move, or, for a drawn piece, the generation the issue stands at in
+// the replay.
+func (d *driver) moveGeneration(p *piece, move *Move) (uint64, error) {
+	if !p.drawn {
+		return d.generationAt(p.issue, move.At), nil
+	}
+	issue, err := d.recorded(p.issue)
+	if err != nil || issue == nil {
+		return 1, err
+	}
+	return issue.Generation, nil
+}
+
+// gateFor is gate, a registration of p's work, as p's issue registers it: a drawn piece registers
+// its own issue's document, its primary artifact as the replay's copy of Dispatch shows it, in
+// place of the copied issue's.
+func (d *driver) gateFor(p *piece, gate GateFact) GateFact {
+	if !p.drawn {
+		return gate
+	}
+	if iss, ok := d.shadow.issues[p.issue]; ok {
+		if artifact := iss.str("primary_artifact_id"); artifact != "" {
+			gate.Artifact = artifact
+		}
+	}
+	return gate
+}
