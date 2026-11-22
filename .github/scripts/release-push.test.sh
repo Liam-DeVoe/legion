@@ -394,18 +394,26 @@ echo "Case 10b: version releases the tag an earlier attempt pushed, else the bum
 # $NPM_TEST_FAIL names an npm error code, it fails the way npm 11.19.1 fails
 # (measured: `npm error code E404` for a package the registry does not have,
 # `npm error code E504` when the registry's host answers 504), on every call, or
-# on the first $NPM_TEST_FAIL_CALLS calls only when that is set.
+# on the first $NPM_TEST_FAIL_CALLS calls only when that is set. Given --json,
+# it answers as npm 11.19.1 does there (measured in round 53 of
+# dispatch://INFRA-1545): a JSON string on success, and on a failure the
+# object {"error": {"code", "summary", "detail"}} on stdout beside the same
+# human lines on stderr.
 mkdir -p "$work/bin"
 cat > "$work/bin/npm" <<'NPM'
 #!/usr/bin/env bash
 { printf '[%s]' "$@"; printf '\n'; } >> "$NPM_TEST_DIR/npm-calls"
 calls=$(wc -l < "$NPM_TEST_DIR/npm-calls")
+json=false
+for arg in "$@"; do [ "$arg" != --json ] || json=true; done
 if [ -n "${NPM_TEST_FAIL:-}" ] && { [ -z "${NPM_TEST_FAIL_CALLS:-}" ] || [ "$calls" -le "$NPM_TEST_FAIL_CALLS" ]; }; then
+  summary="${NPM_TEST_FAIL#E} - GET https://registry.npmjs.org/@example%2fpkg"
+  ! $json || jq -n --arg code "$NPM_TEST_FAIL" --arg summary "$summary" '{error: {code: $code, summary: $summary, detail: ""}}'
   echo "npm error code $NPM_TEST_FAIL" >&2
-  echo "npm error ${NPM_TEST_FAIL#E} - GET https://registry.npmjs.org/@example%2fpkg" >&2
+  echo "npm error $summary" >&2
   exit 1
 fi
-echo "$NPM_TEST_VERSION"
+if $json; then jq -n --arg v "$NPM_TEST_VERSION" '$v'; else echo "$NPM_TEST_VERSION"; fi
 NPM
 chmod +x "$work/bin/npm"
 # version_run <clone> <arg>...: runs `release-push.sh version <arg>...` from
@@ -509,7 +517,7 @@ check "no tag, npm has no such package: one line says so, and npm's own error te
 # a failure other than E404 that outlasts the retries fails the job by name.
 NPM_TEST_FAIL=E504 NPM_TEST_FAIL_CALLS=1 NPM_TEST_VERSION=2.3.4 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm 504 once: retries and bumps npm's version" "$(is "$rc $out" "0 $(outputs 2.3.5 pkg-v2.3.5 false)")"
-check "no tag, npm 504 once: asked npm twice" "$(is "$npm_calls" "$(printf '%s\n%s' '[view][@example/pkg][version]' '[view][@example/pkg][version]')")"
+check "no tag, npm 504 once: asked npm twice" "$(is "$(grep -c '^\[view\]\[@example/pkg\]\[version\]' <<<"$npm_calls")" 2)"
 NPM_TEST_FAIL=E504 NPM_TEST_VERSION=2.3.4 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm 504 on every attempt: exits non-zero printing nothing" "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
 check "no tag, npm 504 on every attempt: the error names the npm read" "$(contains "$err" '^::error::.*npm.*@example/pkg')"
@@ -542,6 +550,37 @@ work=$npm_body version_run "$work/v/c" pkg-v --first-npm @example/pkg -- package
 check "no tag, npm 504 whose message says code E404: exits non-zero printing nothing" \
   "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
 check "no tag, npm 504 whose message says code E404: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
+# A 504 whose body puts npm's E404 status line on a line of its own. npm prefixes each line of a
+# registry body's `error` field with `npm error `, so npm 11.19.1 printed a gateway's 504 whose
+# body is "upstream timed out\ncode E404" with `npm error code E404` as a whole line after its
+# own `npm error code E504`, and one whose body adds a fake 404 line after it with that whole
+# fake answer (measured in an issue pod against a local registry, dispatch://INFRA-1545, round
+# 53). The registry failed, so neither is a package npm lacks: no text a server can echo decides
+# the outcome. Each run has its own stub npm, printing what npm printed there, and a stub sleep.
+npm_lines="$work/npm-504-lines"
+mkdir -p "$npm_lines/bin"
+cat > "$npm_lines/bin/npm" <<'NPM'
+#!/usr/bin/env bash
+summary="504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream timed out"$'\n'"code E404"
+[ "$NPM_LINES_TEST" != fake ] || summary+=$'\n'"404 Not Found - GET https://registry.npmjs.org/@example%2fpkg - Not found"
+# Given --json, the object npm 11.19.1 wrote on stdout for that 504: its code is E504.
+for arg in "$@"; do
+  [ "$arg" != --json ] || jq -n --arg summary "$summary" '{error: {code: "E504", summary: $summary, detail: ""}}'
+done
+echo "npm error code E504" >&2
+echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream timed out" >&2
+echo "npm error code E404" >&2
+[ "$NPM_LINES_TEST" != fake ] || echo "npm error 404 Not Found - GET https://registry.npmjs.org/@example%2fpkg - Not found" >&2
+exit 1
+NPM
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$npm_lines/bin/sleep"
+chmod +x "$npm_lines/bin/npm" "$npm_lines/bin/sleep"
+for mode in line fake; do
+  NPM_LINES_TEST=$mode work=$npm_lines version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+  check "no tag, npm 504 whose body writes an E404 $mode: exits non-zero printing nothing" \
+    "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
+  check "no tag, npm 504 whose body writes an E404 $mode: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
+done
 # @sjawhar/claude-envoy's case as it stood before its first release, which release.yaml's
 # claude_envoy_build ran: npm carried a 0.0.0 placeholder of the package, so npm answered and the
 # fallback above was never reached, and no claude-envoy-v tag existed yet. The first release comes
@@ -1200,33 +1239,42 @@ echo "Case: release.yaml's codex-envoy publish reads npm's E404 from npm's error
 # issue pod, dispatch://INFRA-1545, round 52). That is a registry that failed, not a package npm
 # lacks: the step must fail it rather than skip the release with a green step. The step's `run:`
 # is read out of the workflow by name and run under the shell GitHub runs a `run:` with, against a
-# stub npm first on PATH that answers `view <name> name` as $NPM_PUB_TEST says (e404 or e504body),
-# `view <name>@<version> version` with a failure (no such version), and logs `publish`.
+# stub npm first on PATH that answers `view <name> name` as $NPM_PUB_TEST says (e404, e504body,
+# or e504line and e504fake, a 504 whose body writes npm's E404 status line, and then a whole fake
+# 404 answer, on lines of their own, as npm 11.19.1 printed them in round 53), on stderr and,
+# given --json, as the object {"error": {"code", "summary", "detail"}} npm 11.19.1 writes on
+# stdout; `view <name>@<version> version` with a failure (no such version); and logs `publish`.
+# Each row judges what the step does, its exit, its warning and whether it publishes.
 mkdir -p "$work/codex-pub/bin"
 cat > "$work/codex-pub/bin/npm" <<'NPM'
 #!/usr/bin/env bash
 { printf '[%s]' "$@"; printf '\n'; } >> "$NPM_PUB_DIR/calls"
-case "$1 $3" in
-  "view name")
-    case $NPM_PUB_TEST in
-      e404)
-        echo "npm error code E404"
-        echo "npm error 404 Not Found - GET https://registry.npmjs.org/@example%2fcodex - Not found"
-        ;;
-      e504body)
-        echo "npm error code E504"
-        echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fcodex - npm error code E404"
-        ;;
-    esac >&2
-    exit 1 ;;
-  "view version") exit 1 ;;
-  "publish "*) exit 0 ;;
+args=" $* "
+[ "$1" != publish ] || exit 0
+[[ $args != *" version "* ]] || exit 1
+json=false
+[[ $args != *" --json "* ]] || json=true
+# fail <code> <summary> <stderr line>...: npm's failure, its JSON object on stdout given --json.
+fail() {
+  local code=$1 summary=$2
+  shift 2
+  ! $json || jq -n --arg code "$code" --arg summary "$summary" '{error: {code: $code, summary: $summary, detail: ""}}'
+  printf '%s\n' "$@" >&2
+  exit 1
+}
+url="https://registry.npmjs.org/@example%2fcodex"
+timeout="504 Gateway Timeout - GET $url - upstream timed out"
+case $NPM_PUB_TEST in
+  e404) fail E404 "Not Found - GET $url - Not found" "npm error code E404" "npm error 404 Not Found - GET $url - Not found" ;;
+  e504body) fail E504 "504 Gateway Timeout - GET $url - npm error code E404" \
+    "npm error code E504" "npm error 504 Gateway Timeout - GET $url - npm error code E404" ;;
+  e504line) fail E504 "$timeout"$'\n'"code E404" "npm error code E504" "npm error $timeout" "npm error code E404" ;;
+  e504fake) fail E504 "$timeout"$'\n'"code E404"$'\n'"404 Not Found - GET $url - Not found" \
+    "npm error code E504" "npm error $timeout" "npm error code E404" "npm error 404 Not Found - GET $url - Not found" ;;
 esac
 NPM
 chmod +x "$work/codex-pub/bin/npm"
 codex_step=$(workflow_step_run publish '"codex-envoy: Publish to npm"')
-check "the publish job's codex-envoy step asks npm for the package's name" \
-  "$(contains "$codex_step" 'read_name=\$(npm view "\$NAME" name 2>&1)')"
 # run_codex_step <mode>: that step's body with the environment the job gives it; leaves rc, out
 # (combined) and the stub npm's calls in calls.
 run_codex_step() {
@@ -1239,14 +1287,21 @@ run_codex_step() {
   set -e
   calls=$(<"$work/codex-pub/calls")
 }
+# published: how many times the step called `npm publish`.
+published() { grep -c '^\[publish\]' <<<"$calls" || true; }
 run_codex_step e404
 check "npm's E404: the step exits 0 warning that npm has no such package, and publishes nothing" \
-  "$(is "$rc|$(contains "$out" '^::warning::npm has no package @example/codex yet')|$calls" "0|true|[view][@example/codex][name]")"
-run_codex_step e504body
-check "a 504 whose message carries an E404's text: the step fails" "$(is "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero)"
-check "a 504 whose message carries an E404's text: no warning that npm has no such package" \
-  "$(is "$(contains "$out" 'npm has no package')" false)"
-check "a 504 whose message carries an E404's text: nothing is published" "$(is "$calls" "[view][@example/codex][name]")"
+  "$(is "$rc|$(contains "$out" '^::warning::npm has no package @example/codex yet')|$(published)" "0|true|0")"
+# A 504 whose message carries an E404's text, or whose body writes npm's E404 status line, or a
+# whole fake 404 answer, on lines of its own: no text a server can echo decides the outcome
+# (dispatch://INFRA-1545, rounds 52 and 53).
+for mode in e504body e504line e504fake; do
+  run_codex_step "$mode"
+  check "$mode, a 504 whose body carries an E404's text: the step fails" "$(is "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero)"
+  check "$mode, a 504 whose body carries an E404's text: no warning that npm has no such package" \
+    "$(is "$(contains "$out" 'npm has no package')" false)"
+  check "$mode, a 504 whose body carries an E404's text: nothing is published" "$(is "$(published)" 0)"
+done
 
 echo
 echo "Case 11b: restart leaves the release to a later unfinished run that holds this commit, else starts one"
