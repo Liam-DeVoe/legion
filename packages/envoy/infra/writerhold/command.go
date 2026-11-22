@@ -340,7 +340,7 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		fmt.Fprintln(stdout, "wrote the first row: gen 1, phase released")
 		return nil
 	}
-	holdID := ""
+	holdID, cohortLeft := "", false
 	if o.holdID != "" {
 		journaled, err := hasJournal(ctx, records, o.holdID)
 		if err != nil {
@@ -354,6 +354,19 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 			}
 			if holdEnded(d) {
 				holdID = ""
+			}
+		}
+		if holdID != "" {
+			cohort, err := records.Records(ctx, o.holdID, "cohort")
+			if err != nil {
+				return err
+			}
+			cohortLeft = len(cohort) > 0
+			// The broker takes any hold id after a released entry, so an id no hold left anything
+			// under, a typo, would land on the row and send the operator to end a hold that is not
+			// there.
+			if !journaled && !cohortLeft {
+				return refusef(StepPreflight, "hold %s has no journal and no cohort record, so no hold of that id is left to end: restore the row with no --hold", o.holdID)
 			}
 		}
 	}
@@ -371,7 +384,11 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 	}
 	fmt.Fprintf(stdout, "restored the row: gen %d, phase %s, hold %q\n", row.Gen, row.Phase, row.HoldID)
 	if row.Phase == natsgrant.OperatorPhaseReleased && holdID != "" {
-		fmt.Fprintf(stdout, "hold %s was lost in prepare: its cohort record is still in the broker's database; end it with `hold abort --hold %s`, or begin again with a new `hold prepare`\n", o.holdID, o.holdID)
+		if cohortLeft {
+			fmt.Fprintf(stdout, "hold %s has not ended: its cohort record is still in the broker's database; end it with `hold abort --hold %s`, or begin again with a new `hold prepare`\n", o.holdID, o.holdID)
+		} else {
+			fmt.Fprintf(stdout, "hold %s has not ended: it has no cohort record, and its journal is still open; end it with `hold abort --hold %s`\n", o.holdID, o.holdID)
+		}
 	}
 	return nil
 }

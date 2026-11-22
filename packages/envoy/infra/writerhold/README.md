@@ -164,10 +164,13 @@ decides, not the journal.
   With no `--hold` the refusal names `--hold`, and no row is written.
 - After any other entry the row comes back `released`: with the hold's id when `--hold` names a hold
   that has not ended (a row lost in `prepare`, before `hold set`'s move, after an abort from
-  `prepare`, or before the hold's journal was written), and the output names the cohort record that
-  stays and the next step, `hold abort` or a new `hold prepare`; with no hold id for a hold that has
-  ended, or with no `--hold`. After a `prepare` entry the broker stores `released` only with that
-  entry's hold id (409 `hold_mismatch` otherwise).
+  `prepare`, or before the hold's journal was written), and the output says whether the hold's
+  cohort record is still there, and names the next step, `hold abort`; with no hold id for a hold
+  that has ended, or with no `--hold`. An id with neither a journal nor a cohort record is refused
+  before anything is written, since the broker would take it after a `released` entry and no hold
+  of it is left to end: restore with no `--hold`. After a `prepare` entry the broker stores
+  `released` only with that entry's hold id (409 `hold_mismatch` otherwise), and the refusal says
+  to name it with `--hold`.
 - `--bootstrap` writes the first row, and only into an empty log.
 
 ## Stated residuals

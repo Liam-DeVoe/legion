@@ -3363,12 +3363,13 @@ admitted in that hold. `hold restore` sends a lost row back released first, and 
 broker refuses released with 400 `bad_transition`, so the broker's signed row log decides, not
 the journal: after a held row of a hold that has not ended, `hold restore --hold ID` puts the row
 back held; after any other entry the row comes back released, with the hold's id for a hold that
-has not ended (a row lost in prepare, which `hold abort` then ends, naming the cohort record that
-stays), and with none for an ended hold or no `--hold`, which is refused mid-hold. `hold restore
---bootstrap` writes the first row into an empty log only. The command bounds no restore gen of its
-own: after a row loss the broker's per-replica floor of the row and its signature check are the
-guards (writerhold/README.md, "Stated residuals"). A journal or
-row the broker answers below its floor (an older signed record put back into its database) is
+has not ended (a row lost in prepare, which `hold abort` then ends; the output says whether its
+cohort record is still there), and with none for an ended hold or no `--hold`, which is refused
+mid-hold. An id with neither a journal nor a cohort record is refused, since no hold of it is left
+to end. `hold restore --bootstrap` writes the first row into an empty log only. The command bounds
+no restore gen of its own: after a row loss the broker's per-replica floor of the row and its
+signature check are the guards (writerhold/README.md, "Stated residuals"). A journal or row the
+broker answers below its floor (an older signed record put back into its database) is
 UNKNOWN. Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a reading that
 is not whole, which is never a pass.
 
