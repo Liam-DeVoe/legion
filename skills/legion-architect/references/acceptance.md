@@ -37,9 +37,8 @@ in `skill://legion-architect/references/design-gate.md` says.
   `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the
   `phase-finished` may never have reached you.
-- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, or
-  park it under the rule, and sign off again yourself only where the issue's pull request has
-  merged. Ask the person about one that can do neither, and hold the acceptance until they answer.
+- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done,
+  and sign off again yourself only where the issue's pull request has merged.
 - `SIGNOFF_CHILD_OPEN`: run each open child to done, or close or icebox it under the rule, and wait
   for it as for an issue beneath. Before `close_root`, also close or icebox each child that was
   never released.
@@ -120,15 +119,10 @@ complete while it is open.
 
 ## The close
 
-The merge closes the issue (`done`). One whose merge lands while an issue beneath it is still in
-the workflow stays in `merging` until the last of them is done or parked; one `pr-merged` notice
-names what it waits for. The production check after the close is not yours. A root's close
-lingers the tree for `linger_hours`.
+The merge closes the issue (`done`). The production check after the close is not yours. A root's
+close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 
-A root a person closed that stays `done` through its linger hands each child still in the
-workflow, a child that never started included, to Legion as a root of its own; only a finished,
-parked or never-released child stays. Ask the person whether a child's work must end with the root.
-A parked root hands over only a child in `merging` whose pull request is open. Your role prompt
+Ask the person whether a child's work must end with the root. Your role prompt
 says what a `handed_over` catch-up asks of you.

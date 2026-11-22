@@ -1,6 +1,6 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, releasing or parking children, a delivered wake, a worker's escalation, or accepting a reviewed head."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, releasing children, a delivered wake, a worker's escalation, or accepting a reviewed head."
 ---
 
 # Legion architect
@@ -65,17 +65,14 @@ skill the procedures. Where it disagrees with the code or a `--help`, follow tho
   `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`. Legion holds a child
   whose blockers are not `done`. Never hold a release back for a close: a child released after the
   root's merge runs as an orphan root. Never block a child on its own parent, which merges last.
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes,
-  and `park_child` each child it makes unneeded.
-- Before you park a child for good, take it off each sibling's `--blocked-by` list
-  (`--clear-blocked-by` where it was the only one), or park that sibling too: a parked child is
-  not `done`, and its dependents stay held with no notice.
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
 
 ## 3. Children complete
 
-While a parent is in `awaiting_children`, act only on its children (release, close, icebox or
-`park_child` them under the rule, or move an unreleased one out of the tree), and start nothing for
-its return. Move an unreleased child that should not run now to no parent, never under another
+While a parent is in `awaiting_children`, act only on its children (release them, write `done`,
+`icebox` or `backlog` on them in Dispatch under the rule for each move, or move an unreleased one
+out of the tree), and start nothing for its return. Move an unreleased child that should not run
+now to no parent, never under another
 issue of the tree, since an open child holds every phase start of its parent. When the person says
 to run that child, move it back under its parent and release it; until they answer, sign off
 neither that parent nor any issue above it.
