@@ -38,6 +38,8 @@ const (
 	durableWindow = 8 * time.Second
 	// durableSubject is a subject of the stream every listener durable filters on.
 	durableSubject = "notifications.team.forced-durable"
+	// durableSelectionStream is the selection bucket's stream.
+	durableSelectionStream = "KV_envoy_session_consumers"
 )
 
 // durableForcedRig is hooked servers in a topology, the listener's client in the build's naming
@@ -72,6 +74,11 @@ func forEachDurableTopology(t *testing.T, row func(t *testing.T, r *durableForce
 			conn := testnats.Connect(t, servers.URL)
 			t.Cleanup(conn.Close)
 			client := forcedListenerClient(t, urls, conn, topo.Replicas)
+			// No read of the bucket until the meta leader has applied it, which can be after its
+			// create answered (testnats.Cluster.AwaitStreamApplied).
+			if servers.Cluster != nil {
+				servers.Cluster.AwaitStreamApplied(t, natsserver.DEFAULT_GLOBAL_ACCOUNT, durableSelectionStream)
+			}
 			row(t, &durableForcedRig{Servers: servers, client: client, conn: conn, durable: bus.ListenerDurable("forced-" + id.New())})
 		})
 	}

@@ -9,10 +9,8 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -67,44 +65,6 @@ func (r *readFailure) Unwrap() error { return r.err }
 // selection record is missing (missingRecord).
 var errCheckpointWithoutRecord = errors.New("intake: a durable consumer has a checkpoint and no selection record")
 
-// errStoreConverted is the refusal of the fixed names on a database the operator's convert has
-// marked converted (refuseConvertedStore).
-var errStoreConverted = errors.New("intake_consumers says this database's durable consumers were converted to fresh names (cutover done), and legion.yaml's consumer_names is fixed: set consumer_names: fresh, since a converted store must not run the fixed names")
-
-// refuseConvertedStore refuses the fixed names on a database whose sentinel the operator's convert
-// has marked converted (cutover "done"), at the boot and after each reconnect of the daemon's
-// connection (Consumers.rereadMarker): its durables are fresh names now, and creating the fixed
-// ones again would run the race the cutover removed. What says there is no marker is
-// today's code, which opens the fixed names: no table, no sentinel, a read the database refuses
-// (insufficient_privilege: a login that may not read the table is a deployment that never ran the
-// cutover on it), a sentinel before any cutover, and one a rollback wrote ("rolled_back", which
-// restored the fixed names). A read that says nothing either way, no connection or a timeout, is
-// made again, from a quarter second doubling to five, until it answers or ctx ends, and then its
-// error is returned: the boot ends on it, and the watch beside Run reads again at its next look
-// (Consumers.watchMarker). The fixed names never open on a marker the daemon did not read.
-func refuseConvertedStore(ctx context.Context, pool Pool, project string) error {
-	store, err := daemonStore(pool, project)
-	if err != nil {
-		return err
-	}
-	wait := markerReadWait
-	for {
-		state, err := store.State(ctx)
-		switch {
-		case err == nil && state.Cutover == consumernames.CutoverDone:
-			return errStoreConverted
-		case err == nil, errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel), readRefused(err):
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("read the cutover marker of intake_consumers, which the fixed names never start without: %w", err)
-		case <-time.After(wait):
-		}
-		wait = min(2*wait, markerReadWaitMost)
-	}
-}
-
 // daemonStore is project's selection store on pool: the rows of the family daemon/<project>
 // (consumernames.DaemonFamily), which no other project's daemon reads. A project no store keeps is
 // refused, naming it.
@@ -114,18 +74,6 @@ func daemonStore(pool Pool, project string) (*consumernames.PGStore, error) {
 		return nil, fmt.Errorf("intake: the selection store of project %q: %w", project, err)
 	}
 	return consumernames.NewPGStore(family, pool)
-}
-
-// The waits between reads of the cutover marker that did not answer (refuseConvertedStore).
-const (
-	markerReadWait     = 250 * time.Millisecond
-	markerReadWaitMost = 5 * time.Second
-)
-
-// readRefused reports whether err is a read the database refused for want of a privilege.
-func readRefused(err error) bool {
-	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == "42501"
 }
 
 // durableNames is the daemon's side of the protocol for its three durables on fresh names.
@@ -143,7 +91,10 @@ func readRefused(err error) bool {
 // NativeFirstCreate), and a last floor is tagged with the stream identity the operator recorded
 // in the sentinel (streamID).
 type durableNames struct {
-	names   *consumernames.Names
+	names *consumernames.Names
+	// naming is the project's family's naming in the families' table (daemonNaming), which the
+	// creator's Config and each create's metadata take.
+	naming  consumernames.Naming
 	store   *consumernames.PGStore
 	pool    Pool
 	logger  *slog.Logger
@@ -163,26 +114,39 @@ func GenerationConnection(physical string) string {
 	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
-// daemonNaming is the daemon family's naming in the families' table, the one
-// consumernames.FamilyNaming gives each of a daemon's logical names (consumernames.LogicalNaming):
-// fresh names <logical>~<nuid>, the fixed name the logical name, and the metadata every consumer of
-// a logical name carries. The creator's Config and each create's metadata take it from there, never
-// by hand, so the creator and an operator's reader (consumernames.CheckFamily,
-// consumernames.OwnsFamily) judge a record and a consumer alike.
-var daemonNaming = consumernames.LogicalNaming()
+// daemonNaming is the naming of project's daemon family (daemon/<project>) in the families' table,
+// the one consumernames.FamilyNaming gives each of the daemon's logical names: fresh names
+// <logical>~<nuid>, the fixed name the logical name, the metadata every consumer of a logical name
+// carries, and the key rule that takes only legion-go-<project>-<kind> of this project. The
+// creator's Config and each create's metadata take it from there, never by hand, so the creator and
+// an operator's reader (consumernames.CheckFamily, consumernames.OwnsFamily) judge a key, a record
+// and a consumer alike. It is the same for each of the project's keys; the Dispatch durable's is
+// asked for.
+func daemonNaming(project string) (consumernames.Naming, error) {
+	family, err := consumernames.DaemonFamily(project)
+	if err != nil {
+		return consumernames.Naming{}, fmt.Errorf("intake: the naming of project %q: %w", project, err)
+	}
+	return consumernames.FamilyNaming(family, dispatchConsumerName(project))
+}
 
 func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
 	store, err := daemonStore(pool, spec.Project)
 	if err != nil {
 		return nil, err
 	}
-	d := &durableNames{store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
+	naming, err := daemonNaming(spec.Project)
+	if err != nil {
+		return nil, err
+	}
+	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:             store,
 		Server:            durableServer{d},
-		Prefix:            daemonNaming.Prefix,
-		Fixed:             daemonNaming.Fixed,
-		Metadata:          daemonNaming.Metadata,
+		Prefix:            naming.Prefix,
+		Fixed:             naming.Fixed,
+		Metadata:          naming.Metadata,
+		CheckKey:          naming.CheckKey,
 		Floor:             func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID:          d.streamID,
 		MissingRecord:     d.missingRecord,
@@ -273,6 +237,10 @@ func (d *durableNames) keep(logical, current string) {
 	}
 }
 
+// watch has nothing to watch beside Run: the fresh names read no cutover marker once open, since
+// a store converted to them is the one they run on.
+func (d *durableNames) watch(context.Context) error { return nil }
+
 // close closes every generation's connection.
 func (d *durableNames) close() {
 	d.mu.Lock()
@@ -310,7 +278,7 @@ func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig
 	if err != nil {
 		return nil, d.failed(logical, sel, operationUpdate, err)
 	}
-	selected := physicalConfig(config, current)
+	selected := d.physicalConfig(config, current)
 	selected.DeliverPolicy, selected.OptStartSeq, selected.OptStartTime = info.Config.DeliverPolicy, info.Config.OptStartSeq, info.Config.OptStartTime
 	consumer, err := js.UpdateConsumer(ctx, notificationStream, selected)
 	if err != nil {
@@ -444,7 +412,7 @@ func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.Cre
 		if err != nil {
 			return nil, err
 		}
-		physical := physicalConfig(config, name)
+		physical := d.physicalConfig(config, name)
 		switch start.Native {
 		case consumernames.NativeNew:
 			physical.DeliverPolicy = jetstream.DeliverNewPolicy
@@ -467,15 +435,15 @@ func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.Cre
 
 // physicalConfig is config, whose Durable is a logical name, for the physical consumer name: its
 // Durable the physical name, and its metadata carrying every pair the daemon family's consumers of
-// that logical name carry (daemonNaming.Metadata), the ones the owner check requires.
-func physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.ConsumerConfig {
+// that logical name carry (the naming's Metadata), the ones the owner check requires.
+func (d *durableNames) physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.ConsumerConfig {
 	logical := config.Durable
 	config.Durable = name
 	config.Metadata = maps.Clone(config.Metadata)
 	if config.Metadata == nil {
 		config.Metadata = map[string]string{}
 	}
-	maps.Copy(config.Metadata, daemonNaming.Metadata(logical))
+	maps.Copy(config.Metadata, d.naming.Metadata(logical))
 	return config
 }
 

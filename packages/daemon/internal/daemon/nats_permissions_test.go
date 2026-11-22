@@ -178,17 +178,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				logs := &syncBuffer{}
 
 				first := grantWorkflow(t, logs)
-				family, err := consumernames.DaemonFamily(cfg.Project)
-				if err != nil {
-					t.Fatal(err)
-				}
-				store, err := consumernames.NewPGStore(family, first.pool)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Family: family, Cutover: consumernames.CutoverDone, StreamID: "notifications-as-convert-recorded-it"}, 0); err != nil {
-					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
-				}
+				store := writeConvertedSentinel(t, first, cfg.Project)
 				if err := first.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
 					t.Fatalf("connect the daemon on fresh names: %v", err)
 				}
@@ -263,17 +253,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				cfg.ConsumerNames = consumernames.ModeFresh
 				logs := &syncBuffer{}
 				w := grantWorkflow(t, logs)
-				family, err := consumernames.DaemonFamily(cfg.Project)
-				if err != nil {
-					t.Fatal(err)
-				}
-				store, err := consumernames.NewPGStore(family, w.pool)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Family: family, Cutover: consumernames.CutoverDone, StreamID: "notifications-as-convert-recorded-it"}, 0); err != nil {
-					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
-				}
+				writeConvertedSentinel(t, w, cfg.Project)
 				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
 				if err := w.connect(attempt, cfg, natsConnection{seed: daemonSeed}); err == nil {
@@ -295,6 +275,40 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				t.Logf("observed server refusal: %s", serverLine)
 			})
 		})
+	}
+}
+
+// Every NATS connection a fresh daemon opens dials as its own connection does (workflowRuntime.dial):
+// the server admits only the daemon's nkey user and the admin, so a generation's connection that
+// presented another credential, or none, would end the boot; and when the server stops, each of the
+// four connections, the daemon's own and its three durables' generations, logs its loss through
+// the daemon's own events (natsauth.LogEvents), so a generation dialled without the daemon's
+// options logs nothing. The control is a generation dial written apart from the daemon's, which
+// leaves out one of its options: the row then counts one loss, or the boot ends.
+func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
+	daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
+	defer admin.Close()
+	createDaemonNotificationStream(t, js)
+	cfg := daemonGrantConfig(uri)
+	cfg.ConsumerNames = consumernames.ModeFresh
+	logs := &syncBuffer{}
+	w := grantWorkflow(t, logs)
+	writeConvertedSentinel(t, w, cfg.Project)
+	if err := w.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
+		t.Fatalf("connect the daemon on fresh names, on a server that admits only its own user: %v", err)
+	}
+	defer w.closeNATS()
+	admin.Close()
+	stop := 10 * time.Second
+	if err := server.Stop(t.Context(), &stop); err != nil {
+		t.Fatalf("stop the server: %v", err)
+	}
+	const lost, want = "NATS connection lost", 4
+	testwait.Eventually(t, fmt.Sprintf("%d connections logging their loss through the daemon's events", want), func() bool {
+		return strings.Count(logs.String(), lost) >= want
+	})
+	if got := strings.Count(logs.String(), lost); got != want {
+		t.Fatalf("%d connections logged %q, want %d: the daemon's own and one generation of each durable:\n%s", got, lost, want, logs.String())
 	}
 }
 
@@ -328,6 +342,25 @@ func grantWorkflow(t *testing.T, logs *syncBuffer) *workflowRuntime {
 		t.Fatalf("record the tree whose repository GitHub intake hears: %v", err)
 	}
 	return w
+}
+
+// writeConvertedSentinel writes project's sentinel in w's database as the operator's convert
+// leaves it: the cutover done, with the stream identity convert records. It returns the project's
+// selection store, which a test reads the records of.
+func writeConvertedSentinel(t *testing.T, w *workflowRuntime, project string) *consumernames.PGStore {
+	t.Helper()
+	family, err := consumernames.DaemonFamily(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := consumernames.NewPGStore(family, w.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Family: family, Cutover: consumernames.CutoverDone, StreamID: "notifications-as-convert-recorded-it"}, 0); err != nil {
+		t.Fatalf("write the sentinel as the operator's convert does: %v", err)
+	}
+	return store
 }
 
 func connectDaemonGrant(t *testing.T, uri, seed string, logs *syncBuffer) *workflowRuntime {

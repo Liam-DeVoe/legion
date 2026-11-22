@@ -445,7 +445,7 @@ func operatorCleanup(t testing.TB, pool *pgxpool.Pool, stream jetstream.Stream, 
 	}
 	return consumernames.New(consumernames.Config{
 		Store: storeOf(t, rigFamily(), pool), Server: operatorServer{stream},
-		Prefix: naming.Prefix, Fixed: naming.Fixed, Metadata: naming.Metadata, Owner: "the operator's cleanup",
+		Prefix: naming.Prefix, Fixed: naming.Fixed, Metadata: naming.Metadata, CheckKey: naming.CheckKey, Owner: "the operator's cleanup",
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(context.Context) (string, error) { return "", nil },
 	}).Cleanup(context.Background(), logical)

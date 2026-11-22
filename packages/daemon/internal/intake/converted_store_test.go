@@ -36,12 +36,13 @@ func (r failedRow) Scan(...any) error { return r.err }
 
 // On fixed names the boot reads the cutover marker before it opens anything, and only a marker it
 // read as "done" refuses it. What says there is no marker opens the fixed names as main does: no
-// table, and a read the database refuses (insufficient_privilege, 42501), since a login that may
-// not read the table is a deployment that never ran the cutover on it. What says nothing either
-// way — no connection, a timeout — is read again until it answers, and the boot never runs the
-// fixed names on a marker it did not read: it ends on the read's error once its deadline passes.
+// table. What says nothing either way — no connection, a timeout, and a read the database refuses
+// (insufficient_privilege, 42501), since a login that may not read the table says nothing of what
+// the table holds — is read again until it answers, and the boot never runs the fixed names on a
+// marker it did not read: it ends on the read's error once its deadline passes.
 func TestFixedNamesNeverStartOnACutoverMarkerTheyDidNotRead(t *testing.T) {
 	unreachable := errors.New("failed to connect to `host=127.0.0.1 user=legion database=legion`: dial error (dial tcp 127.0.0.1:5432: connect: connection refused)")
+	refused := &pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}
 	for _, tc := range []struct {
 		name   string
 		err    error
@@ -50,7 +51,7 @@ func TestFixedNamesNeverStartOnACutoverMarkerTheyDidNotRead(t *testing.T) {
 		want   string
 	}{
 		{name: "no table", err: &pgconn.PgError{Code: "42P01", Message: `relation "intake_consumers" does not exist`}, fails: 1 << 30},
-		{name: "a refused read", err: &pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}, fails: 1 << 30},
+		{name: "a refused read", err: refused, fails: 1 << 30, want: "read the cutover marker"},
 		{name: "a read that answers on its third try, a marker done", err: unreachable, fails: 2, marker: consumernames.CutoverDone, want: "consumer_names"},
 		{name: "a read that answers on its third try, no marker", err: unreachable, fails: 2},
 		{name: "a read that never answers", err: context.DeadlineExceeded, fails: 1 << 30, want: "read the cutover marker"},
@@ -73,8 +74,11 @@ func TestFixedNamesNeverStartOnACutoverMarkerTheyDidNotRead(t *testing.T) {
 			if tc.fails == 2 && reads.reads.Load() != 3 {
 				t.Fatalf("the boot read the marker %d times, want the two failed reads and the one that answered", reads.reads.Load())
 			}
-			if tc.want == "read the cutover marker" && !errors.Is(err, context.DeadlineExceeded) {
+			if tc.want == "read the cutover marker" && !errors.Is(err, tc.err) {
 				t.Fatalf("refuseConvertedStore = %v, want the last read's error in it", err)
+			}
+			if tc.err == refused && reads.reads.Load() < 2 {
+				t.Fatalf("the boot read the marker %d times over a refused read, want it read again until its deadline", reads.reads.Load())
 			}
 		})
 	}
