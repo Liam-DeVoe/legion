@@ -794,7 +794,7 @@ assert_instance_isolated() {
        | select(. as $n | $named | index($n) | not)] | join(" ")' 2>/dev/null || echo unread)"
   if [[ "$profiles" != "$want_profiles" ]] || [[ -n "$unnamed" ]] \
     || ! grep -qF "fake stands: dir=${workdir}/stands owners=[acme-org=7 ada=8 Ada=9] hosts=[github-tls=api.github.test] addresses=[] held=[]" "$log_file" \
-    || ! grep -qF "export DEV_BROKER_PROFILES_FILE=${workdir}/profiles.json" "$log_file" \
+    || [[ "$(exported "$log_file" DEV_BROKER_PROFILES_FILE)" != "${workdir}/profiles.json" ]] \
     || ! grep -qF "export DEV_BROKER_GITHUB_READ_PROFILE=DEMO_GITHUB_READ" "$log_file" \
     || ! grep -qF "export DEV_BROKER_GITHUB_ADMIN_READ_PROFILE=DEMO_GITHUB_ADMIN_READ" "$log_file" \
     || ! grep -qF "export DEV_BROKER_GITHUB_PROXIED_URL=https://api.github.test" "$log_file" \
@@ -811,7 +811,7 @@ assert_instance_isolated() {
   # is pointed at the proxy port the broker logged, by its backends file.
   local front_pid front_backends broker_pid
   front_pid="$(grep -o 'fake front: pid=[0-9]\+' "$log_file" | head -n1 | cut -d= -f2 || true)"
-  front_backends="$(grep -o 'fake front: pid=[0-9]* backends-file=[^ ]*' "$log_file" | head -n1 | sed -E 's/.*backends-file=//' || true)"
+  front_backends="$(grep -o 'fake front: pid=[0-9]* backends-file=.*' "$log_file" | head -n1 | sed -E 's/.*backends-file=//' || true)"
   broker_pid="$bound"
   if [[ -z "$front_pid" ]] \
     || ! grep -qF "fake broker airlock: profiles=${workdir}/profiles.json listen=127.0.0.1:0 proxy_url=http://127.0.0.1:${front_pid} ca_cert=${workdir}/stands/ca.crt ca_key=${workdir}/stands/ca.key upstream_ca=${workdir}/stands/ca.crt resolve=[] dial_allow=[] kubernetes_service_host=[]" "$log_file" \
@@ -1090,7 +1090,7 @@ if ! wait_for_ready "$log1"; then
   echo "FAIL: a DEV_BROKER_PROXIED_GITHUB_IP run never reached ready" >&2
   exit 1
 fi
-if ! grep -qE "^fake stands: dir=[^ ]* owners=\[acme-org=7 ada=8 Ada=9\] hosts=\[github-tls=api\.github\.test\] addresses=\[github-tls=127\.0\.0\.9:443\] held=\[acme-org=contents:read,administration:read ada=\]$" "$log1" \
+if ! grep -qE "^fake stands: dir=.* owners=\[acme-org=7 ada=8 Ada=9\] hosts=\[github-tls=api\.github\.test\] addresses=\[github-tls=127\.0\.0\.9:443\] held=\[acme-org=contents:read,administration:read ada=\]$" "$log1" \
   || ! grep -qF " resolve=[api.github.test=127.0.0.9] dial_allow=[api.github.test:443] " "$log1" \
   || ! grep -qF "(the github-tls stand, the same GitHub over TLS, which a command reaches through the proxy: at 127.0.0.9:443;" "$log1" \
   || ! grep -qF "  github holds:        acme-org=contents:read,administration:read ada=  (" "$log1"; then
@@ -1121,7 +1121,7 @@ if ! wait_for_ready "$log1"; then
   echo "FAIL: a DEV_BROKER_BROKER_BIN run never reached ready" >&2
   exit 1
 fi
-override_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
+override_workdir="$(grep -o 'dev-broker: workdir .*' "$log1" | head -n1 | cut -d' ' -f3- || true)"
 built="$(sort "${docker_calls1}.go" | tr '\n' ' ')"
 if ! grep -qF "override broker: started with profiles=${override_workdir}/profiles.json" "$log1" \
   || grep -q '^fake broker:' "$log1" \
