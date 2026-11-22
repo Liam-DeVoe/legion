@@ -164,7 +164,7 @@ func staticOwnerToken(role claim.Role, owner string) string {
 // sjawhar when repo is the zero Repository, which is how staticControllerCredential builds the
 // controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
 // holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
-func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+func staticCredential(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		return ghconfig.Bundle{}, err
@@ -185,7 +185,7 @@ func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository
 // it is asked for none, which is what the controller's launch asks for, as
 // appauth.ControllerCredential answers one.
 func staticControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	bundle, err := staticCredential(ctx, claim.RoleController, ghrepo.Repository{})
+	bundle, err := staticCredential(ctx, "", claim.RoleController, ghrepo.Repository{})
 	if err != nil || defaultOwner == "" {
 		return bundle, err
 	}
@@ -226,8 +226,8 @@ var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), ad
 // owner and never will (movedGhDirs).
 func servingAddedOwner(o *Options) {
 	o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return servedDirs }
-	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, repo)
+	credential := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, issue, role, repo)
 		if err != nil {
 			return bundle, err
 		}
@@ -236,7 +236,7 @@ func servingAddedOwner(o *Options) {
 	}
 	o.GitHubCredential = credential
 	o.ControllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		bundle, err := credential(ctx, claim.RoleController, ghrepo.Repository{})
+		bundle, err := credential(ctx, "", claim.RoleController, ghrepo.Repository{})
 		if err != nil || defaultOwner == "" {
 			return bundle, err
 		}

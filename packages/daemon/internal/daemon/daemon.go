@@ -1335,8 +1335,10 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// every launch's addressing reads the owners its App reaches out of them. A pane
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
-			// record — so the addressing is this runtime's one reader of it.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, roleApps(deploymentApps(cfg.Roles), planRoleOf(st)), log), gh
+			// record — so the addressing is this runtime's one reader of it. The credential
+			// reads the deployment's roles the runtime's walks hold (opts.DeploymentApps), one
+			// map for both.
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, roleApps(opts.DeploymentApps, planRoleOf(st)), log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 			opts.ClaimRole = st.ClaimRole
@@ -1380,7 +1382,8 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), every declared experiment's arms (experiment.DeclaredVariants), and the
+// (role_config_files), the App each role of the deployment acts as (deploymentApps), which the
+// credential reads too, every declared experiment's arms (experiment.DeclaredVariants), and the
 // checker of the deployment's shared leak check (leak_check), which every pane is told.
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
@@ -1397,6 +1400,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 		AdoptTimeout:            cfg.SlowCommandTimeout,
 		ProviderEnvDir:          providerEnvDir,
 		RoleConfigFiles:         cfg.RoleConfigFiles,
+		DeploymentApps:          deploymentApps(cfg.Roles),
 		LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256,
 		Log:                     log,
 	}

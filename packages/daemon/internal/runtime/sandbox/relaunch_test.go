@@ -1459,11 +1459,11 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 		},
 		"a role's github credential mint": {
 			fail: func(t *testing.T, failed *atomic.Bool) (rigOption, func(g *rig) runtime.SpawnSpec) {
-				credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+				credential := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 					if failed.CompareAndSwap(false, true) {
 						return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 					}
-					return staticCredential(ctx, role, repo)
+					return staticCredential(ctx, issue, role, repo)
 				}
 				return withOptions(func(o *Options) { o.GitHubCredential = credential }), func(*rig) runtime.SpawnSpec { return rootSpec(t) }
 			},

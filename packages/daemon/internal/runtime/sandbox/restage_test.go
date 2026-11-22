@@ -611,7 +611,7 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	installed := appauth.NewInstalled()
 	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, appauth.RoleApps{}, nil)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
-		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
+		if _, err := credential(context.Background(), "", role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
 		}
 	}

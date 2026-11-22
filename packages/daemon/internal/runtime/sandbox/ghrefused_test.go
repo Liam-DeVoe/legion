@@ -75,11 +75,18 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 // that sets none; an option that sets it goes first). Each App is installed on every owner the
 // project serves a repository of, so what a bundle holds here is what the mints answer for.
 func withProjectTokens(tokens appauth.Tokens) rigOption {
+	return withProjectTokensOf(tokens, nil)
+}
+
+// withProjectTokensOf is withProjectTokens whose credential reads planned, what the plan in force
+// of an issue says of a role (appauth.RoleApps.Plan, internal/daemon's planRoleOf; nil reads no
+// plan), as the daemon's own credential does.
+func withProjectTokensOf(tokens appauth.Tokens, planned func(context.Context, string, claim.Role) (appauth.Planned, error)) rigOption {
 	return withOptions(func(o *Options) {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		apps := sourceOf(tokens, installedOnServed{repos: refusedProjectRepos})
 		served := servesOneOf(refusedProjectRepos)
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, appauth.RoleApps{Deployed: o.DeploymentApps}, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, appauth.RoleApps{Deployed: o.DeploymentApps, Plan: planned}, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
@@ -179,8 +186,8 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 // a directory no role's gh volume projects, and every role would start unable to reach GitHub.
 func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			bundle, err := staticCredential(ctx, role, repo)
+		o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			bundle, err := staticCredential(ctx, issue, role, repo)
 			if err != nil {
 				return bundle, err
 			}

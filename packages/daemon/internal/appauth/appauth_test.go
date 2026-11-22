@@ -28,9 +28,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 func testAppKey(t *testing.T) (*rsa.PrivateKey, string) {
@@ -285,7 +287,7 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	deployed := DeploymentApps{"checker": Implement}
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
 	for role, app := range map[claim.Role]string{"checker": "implement", claim.RoleReviewer: "review"} {
-		bundle, err := credential(context.Background(), role, repo)
+		bundle, err := credential(context.Background(), "", role, repo)
 		if err != nil {
 			t.Fatalf("the bundle of %s: %v", role, err)
 		}
@@ -299,8 +301,90 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	var minted []string
 	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
 		ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
-	if _, err := counted(context.Background(), "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+	if _, err := counted(context.Background(), "", "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
 		t.Errorf("the bundle of ghost = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
+	}
+}
+
+// planOf43 is the plan in force of LEGION-43 alone: coder, of the type implementation, and prober,
+// of the type testing. Every other issue's plan defines no role.
+func planOf43(_ context.Context, issue string, role claim.Role) (Planned, error) {
+	if issue != "LEGION-43" {
+		return Planned{}, nil
+	}
+	return map[claim.Role]Planned{"coder": {Defines: true, Type: plan.TypeImplementation}, "prober": {Defines: true, Type: plan.TypeTesting}}[role], nil
+}
+
+// A role the issue's plan defines gets its gh files minted as the App of its type: on LEGION-43,
+// coder (implementation) holds the implement App's write token and prober (testing) the review
+// App's. The plan is the issue's own, so coder asked for on LEGION-44, whose plan defines none, is
+// refused before any lease is minted.
+func TestARoleOfAPlansBundleIsMintedAsTheAppOfItsType(t *testing.T) {
+	served := servesOneOf("sjawhar/legion")
+	repo := ghrepo.MustParse("sjawhar/legion")
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Plan: planOf43}, quietBundleLog())
+	for role, app := range map[claim.Role]string{"coder": "implement", "prober": "review"} {
+		bundle, err := credential(context.Background(), "LEGION-43", role, repo)
+		if err != nil {
+			t.Fatalf("the bundle of %s on LEGION-43: %v", role, err)
+		}
+		if token := bundleTokens(t, bundle)["sjawhar"]; !strings.HasPrefix(token, app+"-token-for-") {
+			t.Errorf("%s's hosts file holds %q, want the %s App's write token, %q…", role, token, app, app+"-token-for-")
+		}
+	}
+	var minted []string
+	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
+		ghrepo.Renames{}, nil, nil, RoleApps{Plan: planOf43}, quietBundleLog())
+	if _, err := counted(context.Background(), "LEGION-44", "coder", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+		t.Errorf("the bundle of coder on LEGION-44 = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
+	}
+}
+
+// One walk's memo builds a role of a plan once for each issue that asks: two issues can define
+// one name with two types, so coder of LEGION-43 (implementation) and coder of LEGION-45 (review)
+// on one repository are two bundles of two Apps, while a role of Legion's, and a role of the
+// deployment (the checker), which acts as one App on every issue, is one bundle for every issue
+// of the repository.
+func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
+	repo := ghrepo.MustParse("sjawhar/legion")
+	plans := func(ctx context.Context, issue string, role claim.Role) (Planned, error) {
+		if issue == "LEGION-45" && role == "coder" {
+			return Planned{Defines: true, Type: plan.TypeReview}, nil
+		}
+		return planOf43(ctx, issue, role)
+	}
+	deployed := DeploymentApps{"checker": Implement}
+	var built []string
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
+		RoleApps{Deployed: deployed, Plan: plans}, quietBundleLog())
+	counting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		built = append(built, issue+"/"+string(role))
+		return credential(ctx, issue, role, repo)
+	}
+	bundles := NewBundles(counting, deployed)
+	for _, ask := range []struct {
+		issue string
+		role  claim.Role
+		app   string
+	}{
+		{"LEGION-43", "coder", "implement"},
+		{"LEGION-45", "coder", "review"},
+		{"LEGION-43", "coder", "implement"},
+		{"LEGION-43", claim.RoleTester, "review"},
+		{"LEGION-45", claim.RoleTester, "review"},
+		{"LEGION-43", "checker", "implement"},
+		{"LEGION-45", "checker", "implement"},
+	} {
+		bundle, err := bundles.Bundle(context.Background(), ask.issue, ask.role, repo)
+		if err != nil {
+			t.Fatalf("the bundle of %s on %s: %v", ask.role, ask.issue, err)
+		}
+		if rendered := bundle.Dirs["sjawhar"]; rendered.App != ask.app {
+			t.Errorf("%s on %s is rendered for the %q App, want %q", ask.role, ask.issue, rendered.App, ask.app)
+		}
+	}
+	if want := []string{"LEGION-43/coder", "LEGION-45/coder", "LEGION-43/tester", "LEGION-43/checker"}; !slices.Equal(built, want) {
+		t.Errorf("the walk built %v, want %v: a role of a plan once for each issue, a role of Legion's and one of the deployment once for the repository", built, want)
 	}
 }
 

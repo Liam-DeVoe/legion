@@ -26,10 +26,11 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over source: a bundle whose directories (GitHubDirs, built from the same description) each hold
-// one lease of the role's App — AppRoleFor over deployed, the roles the deployment defines, so a
-// role of the deployment's acts as the App its github_app names and a role nothing defines is
-// refused before anything is minted — rendered as gh's hosts.yml and config.yml and named for the
-// App and its expiry so a log can say whose token it wrote. A directory is an owner account and
+// one lease of the role's App — apps.Of on the claim's issue (RoleApps, AppRoleFor), so a role of
+// the deployment's acts as the App its github_app names, a role of the issue's plan as the App of
+// its type there, and a role nothing defines is refused before anything is minted — rendered as
+// gh's hosts.yml and config.yml and named for the App and its expiry so a log can say whose token
+// it wrote. A directory is an owner account and
 // nothing smaller, because a lease is: every token this package mints reaches every repository its
 // installation holds and names no repository at all (INFRA-2543), so the installation is the
 // whole of what a role reaches and the bundle holds one directory per owner the role's App is
@@ -114,8 +115,8 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // directories carry it: a configured rename's two owner directories hold the one lease.
 func GitHubCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, apps RoleApps, log *slog.Logger) runtime.GitHubCredential {
-	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole, err := AppRoleFor(role, apps.Deployed, Planned{})
+	return func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		appRole, err := apps.Of(ctx, issue, role)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -147,40 +148,53 @@ func GitHubCredential(source Source, served func(ghrepo.Repository) bool, rename
 // all: a controller pod and a controller pane hold the one role.
 type Bundles struct {
 	credential runtime.GitHubCredential
+	deployed   DeploymentApps
 	built      map[bundleKey]ghconfig.Bundle
 }
 
 // bundleKey is what one bundle of a walk is held under: the App role it is minted as, or, for a
-// role that is none of Legion's, that role itself, and the repository it is built for, lowercased
-// as GitHub compares a repository's two halves.
+// role that is none of Legion's, that role itself, with the issue it was asked on for a role
+// that is none of the deployment's either; and the repository it is built for, lowercased as
+// GitHub compares a repository's two halves.
 type bundleKey struct {
-	app  AppRole
-	role claim.Role
-	repo string
+	app   AppRole
+	role  claim.Role
+	issue string
+	repo  string
 }
 
 // NewBundles is one walk's memo over credential, the runtime's own bundle function
-// (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential).
-func NewBundles(credential runtime.GitHubCredential) *Bundles {
-	return &Bundles{credential: credential, built: map[bundleKey]ghconfig.Bundle{}}
+// (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential), and deployed, the roles the
+// deployment defines, the map credential reads (internal/daemon's deploymentApps of the same
+// settings): a role it names acts as one App on every issue, so its bundle is shared by every
+// issue of the walk.
+func NewBundles(credential runtime.GitHubCredential, deployed DeploymentApps) *Bundles {
+	return &Bundles{credential: credential, deployed: deployed, built: map[bundleKey]ghconfig.Bundle{}}
 }
 
-// Bundle is role's gh bundle for repo, built once per App role and repository of the walk. A role
-// that is none of Legion's is held under its own name: the App it acts as is the deployment's
-// setting, which credential reads (GitHubCredential's deployed) and the memo is not handed, so it
-// shares no build with another role, and a role the deployment does not define fails at
-// credential, naming itself. A walk is one goroutine, so the memo needs no lock of its own.
-func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+// Bundle is role's gh bundle for repo on issue, the claim's issue key, built once per App role
+// and repository of the walk. A role that is none of Legion's is held under its own name: the
+// App it acts as is a setting credential reads and the memo does not decide — the deployment's
+// github_app, or the role's type in the issue's plan (RoleApps.Of) — so it shares no build with
+// another role, and a role nothing defines fails at credential, naming itself. A role of the
+// deployment acts as one App on every issue, so it is held for every issue of the walk. Any other
+// role is held for its issue alone: it can be only a role of that issue's plan, and two issues
+// can define one name with two types, so a bundle built for coder of one issue may be the other
+// App than coder of the next one needs. A walk is one goroutine, so the memo needs no lock of its
+// own.
+func (b *Bundles) Bundle(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	key := bundleKey{repo: strings.ToLower(repo.String())}
 	if app, err := AppRoleFor(role, nil, Planned{}); err == nil {
 		key.app = app
-	} else {
+	} else if _, deployed := b.deployed[role]; deployed {
 		key.role = role
+	} else {
+		key.role, key.issue = role, issue
 	}
 	if built, held := b.built[key]; held {
 		return built, nil
 	}
-	built, err := b.credential(ctx, role, repo)
+	built, err := b.credential(ctx, issue, role, repo)
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}

@@ -96,7 +96,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		token string
 		ok    bool
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.deploymentApps)
 	mints := map[string]mint{}
 	provisioning := func(repo ghrepo.Repository) (string, bool) {
 		key := strings.ToLower(repo.String())
@@ -303,12 +303,13 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 // controller's pod), and the one place each path of this runtime that writes a slot's gh files
 // asks for one: the refresh and a launch into a pod it keeps (writeSlotCredential), and a pod's
 // build (gitHubBundles). The controller's is asked for by owner (controllerDefault, "" for none);
-// every other role's is built for repo through bundles, the caller's memo of its walk.
+// every other role's is built for repo through bundles, the caller's memo of its walk, on issue,
+// whose plan can define the role and decides the App of a role it defines.
 func (r *Runtime) roleBundle(ctx context.Context, bundles *appauth.Bundles, issue string, role claim.Role, repo ghrepo.Repository, controllerDefault string) (ghconfig.Bundle, error) {
 	if role == claim.RoleController {
 		return r.controllerCredential(ctx, controllerDefault)
 	}
-	return bundles.Bundle(ctx, role, repo)
+	return bundles.Bundle(ctx, issue, role, repo)
 }
 
 // errSecretNotOwned is a slot Secret another Sandbox owns: the pod's Sandbox was replaced since the
@@ -486,7 +487,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		return nil, err
 	}
 	repo, _ := fetchRepository(pod)
-	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential), slotWrite{
+	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential, r.deploymentApps), slotWrite{
 		role:     func(context.Context, *corev1.Secret) (claim.Role, error) { return role, nil },
 		launched: launchedRecord(spec.Generation, spec.Role),
 	})

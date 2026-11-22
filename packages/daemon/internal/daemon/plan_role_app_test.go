@@ -2,17 +2,34 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// The tmux runtime holds the App each role of the deployment acts as (tmux.Options.DeploymentApps),
+// the map its gh bundle function reads, so one walk of its panes builds a role of the
+// deployment's bundle once for every issue (appauth.NewBundles) and builds a role of a plan for
+// each issue that asks.
+func TestTheTmuxRuntimeHoldsTheAppOfEachRoleOfTheDeployment(t *testing.T) {
+	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, Roles: []config.Role{
+		{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
+		{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
+	}}
+	want := appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).DeploymentApps; !maps.Equal(got, want) {
+		t.Errorf("tmux DeploymentApps = %v, want %v", got, want)
+	}
+}
 
 // The addressing of a role an owner's plan defines names the owners the App of its type reaches,
 // as it does for every role: the owners that App was read installed on and the role's container

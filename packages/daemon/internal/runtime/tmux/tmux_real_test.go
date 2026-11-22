@@ -1126,8 +1126,8 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 	// wrote its credential would change the live pane's gh files.
 	var mintMu sync.Mutex
 	mints := 0
-	minting := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, repo)
+	minting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, issue, role, repo)
 		mintMu.Lock()
 		mints++
 		token := fmt.Sprintf("ghs_mint_%d", mints)

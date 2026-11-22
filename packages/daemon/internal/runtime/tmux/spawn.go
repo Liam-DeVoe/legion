@@ -736,7 +736,7 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	}
 	var bundle ghconfig.Bundle
 	if err == nil {
-		bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential), spec.Issue, role, spec.Repository, "")
+		bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential, r.deploymentApps), spec.Issue, role, spec.Repository, "")
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {

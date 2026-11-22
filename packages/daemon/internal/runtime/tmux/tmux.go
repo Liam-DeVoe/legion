@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -93,6 +94,11 @@ type Options struct {
 	// way (appauth.AppRoleFor). Nil is a daemon with no GitHub Apps (Stage 2's, which configures no
 	// workflow): its panes are told no gh variable, hold no gh files, and the refresher does nothing.
 	GitHubCredential runtime.GitHubCredential
+	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the GitHub
+	// App it acts as (the daemon's deploymentApps), the map GitHubCredential reads: a role it names
+	// acts as one App on every issue, so a walk of the panes builds that role's bundle once for
+	// every issue of a repository (appauth.NewBundles). Nil is a deployment that defines no role.
+	DeploymentApps appauth.DeploymentApps
 	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
 	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
 	// files. Optional: nil gives every pane its claim's stored role.
@@ -198,6 +204,8 @@ type Runtime struct {
 	dispatchURL      string
 	dispatchToken    string
 	gitHubCredential runtime.GitHubCredential
+	// deploymentApps is Options.DeploymentApps.
+	deploymentApps appauth.DeploymentApps
 	// actsAs is Options.ActsAs.
 	actsAs runtime.ActsAs
 	// controllerCredential is the controller pane's bundle by default owner
@@ -375,6 +383,7 @@ func New(opts Options) (*Runtime, error) {
 		dispatchURL:             opts.DispatchURL,
 		dispatchToken:           opts.DispatchTokenFile,
 		gitHubCredential:        opts.GitHubCredential,
+		deploymentApps:          opts.DeploymentApps,
 		actsAs:                  opts.ActsAs,
 		controllerCredential:    opts.ControllerCredential,
 		gh:                      opts.GH,

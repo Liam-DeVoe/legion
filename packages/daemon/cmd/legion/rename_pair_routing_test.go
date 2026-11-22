@@ -34,7 +34,7 @@ func pairRoutedBundle(t *testing.T) string {
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	served := servesOneOf([]ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")})
 	credential := appauth.GitHubCredential(bothOwnersInstalled{}, served, pair, nil, nil, appauth.RoleApps{}, slog.Default())
-	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
+	bundle, err := credential(context.Background(), "", legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)
 	}

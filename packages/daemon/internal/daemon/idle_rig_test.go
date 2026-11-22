@@ -581,7 +581,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
-	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	opts.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		app, err := appauth.AppRoleFor(role, opts.DeploymentApps, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
