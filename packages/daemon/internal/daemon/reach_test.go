@@ -816,3 +816,33 @@ func TestAPodWhoseEveryClaimIsOutOfReachIsACaseForAPerson(t *testing.T) {
 		t.Fatalf("with the tester back in reach the daemon relaunched %+v, want the implementer's claim once", r.relaunched)
 	}
 }
+
+// Two claims of one pod that go dark together are marked a minute apart, by when each last
+// registered. At the first mark the other claim is not marked yet, but Envoy no longer lists its
+// session as live: the pod reaches Envoy for neither, so the daemon relaunches neither and writes
+// the first claim's line. Read as reaching Envoy until it is marked, the other claim would let the
+// first be relaunched into the pod that broke.
+func TestAPodClaimNotYetMarkedButNotLiveReachesNoEnvoy(t *testing.T) {
+	r := newReachRig(t, false)
+	pod := func(c supervise.Claim) supervise.Claim {
+		c.ActivityAt = reachBoot
+		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: c.Token, Incarnation: "pod-a:3",
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-208", PodUID: "pod-a", Container: "roles", Generation: 3}}
+		return c
+	}
+	worker := pod(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	tester := pod(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleTester, "ses_tester"))
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute, "ses_implementer": 0, "ses_tester": 90 * time.Second})
+	r.sweep(worker, tester)
+	if !r.reach(worker.Token).Unreachable() || r.reach(tester.Token).Unreachable() {
+		t.Fatalf("at 21 minutes the implementer reads %+v and the tester %+v, want the implementer marked and the tester not yet",
+			r.reach(worker.Token), r.reach(tester.Token))
+	}
+	if len(r.relaunched) != 0 {
+		t.Fatalf("the daemon relaunched %+v into a pod whose other claim Envoy lists as unresponsive, want none", r.relaunched)
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+		t.Fatalf("R6 wrote %d refused lines for the implementer, want one naming the pod", lines)
+	}
+}
