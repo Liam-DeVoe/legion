@@ -100,6 +100,26 @@ func TestAWriteNoStreamTakesReturnsThatAnswerWhenItsContextEnds(t *testing.T) {
 	}
 }
 
+// pastDeadline is a context whose deadline has passed while it has not ended, as a deadline's
+// context is between its deadline and its timer, which fires late under load.
+type pastDeadline struct{ context.Context }
+
+func (pastDeadline) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+
+// The loop sends nothing again within noStreamMargin of its context's deadline, read from the
+// deadline rather than from the context's end: here a context past its deadline that has not
+// ended, after one "no response from stream".
+func TestAWriteNoStreamTookIsNotSentAgainPastItsDeadline(t *testing.T) {
+	write := &scriptedWrite{script: []error{nats.ErrNoStreamResponse}}
+	ctx := pastDeadline{context.Background()}
+	if ctx.Err() != nil {
+		t.Fatalf("the past-deadline context has ended (%v), so this row holds nothing", ctx.Err())
+	}
+	if _, err := sentAgainWhileNoStream(ctx, write.send, write.streamGone); !errors.Is(err, nats.ErrNoStreamResponse) || write.sends != 1 {
+		t.Fatalf("a write no stream took past its deadline = %v after %d sends, want nats.ErrNoStreamResponse after one send", err, write.sends)
+	}
+}
+
 // The pause between two sends grows with each send and stops growing at 2 s: drawn at its top, it
 // is 50 ms after the first send, then 250 ms, 500 ms, 1 s, 2 s and 2 s.
 func TestThePauseBetweenSendsGrowsUpToTwoSeconds(t *testing.T) {
@@ -120,6 +140,8 @@ type countedLegacy struct {
 	nats.KeyValue
 	put   func(n int32, key string, value []byte) (uint64, error)
 	sends atomic.Int32
+	// conn is the connection the bucket's handles are on.
+	conn *nats.Conn
 }
 
 func (l *countedLegacy) Put(key string, value []byte) (uint64, error) {
@@ -158,7 +180,7 @@ func countedBucket(t *testing.T, bucket string) (KeyValue, *countedLegacy, nats.
 	if err != nil {
 		t.Fatalf("open the jetstream handle: %v", err)
 	}
-	counted := &countedLegacy{KeyValue: legacy}
+	counted := &countedLegacy{KeyValue: legacy, conn: conn}
 	kv := NewKeyValue(counted, watch, streams)
 	kv.noStreamWait = noStreamRowWait
 	return kv, counted, js, config
@@ -205,23 +227,95 @@ func TestAPutToABucketWhoseStreamIsGoneIsSentOnce(t *testing.T) {
 	}
 }
 
-// A put through a handle given its caller's context (Within) sends nothing more once that context
-// has ended, though its own noStreamWait lasts: here every send draws "no response from stream"
-// while the bucket's stream is there, and the second send ends the caller's context. A caller
-// that gave up on its write (Bounded) then writes again knowing the write it gave up on is not
-// sent after it.
-func TestAPutWhoseCallerGaveUpSendsNothingMore(t *testing.T) {
-	kv, legacy, _, _ := countedBucket(t, "envoy_no_stream_caller_test")
+// keyUnserved moves the stream of config's bucket off the subject of key, so a write of key draws
+// "no response from stream" while the stream is there, and returns a func that moves it back.
+func keyUnserved(t *testing.T, js nats.JetStreamContext, config *nats.KeyValueConfig) func() error {
+	t.Helper()
+	stream := "KV_" + config.Bucket
+	info, err := js.StreamInfo(stream, nats.Context(untilTheRowsEnd(t)))
+	if err != nil {
+		t.Fatalf("read the bucket's stream: %v", err)
+	}
+	served := info.Config
+	unserved := served
+	unserved.Subjects = []string{"$KV." + config.Bucket + ".unserved.>"}
+	if _, err := js.UpdateStream(&unserved, nats.Context(untilTheRowsEnd(t))); err != nil {
+		t.Fatalf("move the bucket's stream off its keys: %v", err)
+	}
+	return func() error {
+		_, err := js.UpdateStream(&served, nats.Context(untilTheRowsEnd(t)))
+		return err
+	}
+}
+
+// awaitSent waits, until the test binary's deadline less 30 s, until conn has sent n messages
+// since before, and returns what it has sent.
+func awaitSent(t *testing.T, conn *nats.Conn, before, n uint64, what string) uint64 {
+	t.Helper()
+	return testwait.Until(t, what, func() (uint64, bool) {
+		sent := conn.Stats().OutMsgs - before
+		return sent, sent >= n
+	})
+}
+
+// A put through a handle given its caller's context (Within) goes through the jetstream handle and
+// is sent again by the bus as one without it is: here the stream does not take the key until the
+// first send has drawn "no response from stream" (nats.go's three requests and the bus's read of
+// the stream, four messages), and the put, sent again, is stored.
+func TestABoundPutNoStreamTookIsSentAgainAndStored(t *testing.T) {
+	kv, legacy, js, config := countedBucket(t, "envoy_no_stream_bound_put_test")
+	serve := keyUnserved(t, js, config)
+	before := legacy.conn.Stats().OutMsgs
+	put := make(chan error, 1)
+	go func() {
+		_, err := kv.Within(untilTheRowsEnd(t)).Put("key", []byte("value"))
+		put <- err
+	}()
+	awaitSent(t, legacy.conn, before, 4, "the put's first send and the read of the stream after it")
+	if err := serve(); err != nil {
+		t.Fatalf("move the bucket's stream back onto its keys: %v", err)
+	}
+	if err := testwait.Receive(t, "the bound put's answer", put); err != nil {
+		t.Fatalf("a bound put no stream took, the stream then moved back = %v", err)
+	}
+	if legacy.sends.Load() != 0 {
+		t.Fatalf("the bound put went through the legacy handle %d times, want none", legacy.sends.Load())
+	}
+	entry, err := kv.Get("key")
+	if err != nil || string(entry.Value()) != "value" {
+		t.Fatalf("read the key back = %v, %v; want value", entry, err)
+	}
+}
+
+// A put its caller gave up on (Bounded, Within) sends nothing after the caller has: here the stream
+// does not take the key, the caller gives up during nats.go's own sends again, then the stream
+// takes the key again and the caller's next write deletes it, and the key stays deleted once the
+// given-up put has answered. The legacy handle's put went on sending after its caller gave up and
+// could land after that delete.
+func TestAPutWhoseCallerGaveUpLandsNothingAfterItsNextWrite(t *testing.T) {
+	kv, legacy, js, config := countedBucket(t, "envoy_no_stream_caller_test")
+	serve := keyUnserved(t, js, config)
 	caller, giveUp := context.WithCancel(context.Background())
 	defer giveUp()
-	legacy.put = func(n int32, _ string, _ []byte) (uint64, error) {
-		if n == 2 {
-			giveUp()
-		}
-		return 0, nats.ErrNoStreamResponse
+	before := legacy.conn.Stats().OutMsgs
+	gaveUp := make(chan error, 1)
+	go func() {
+		_, err := kv.Within(caller).Put("key", []byte("given up"))
+		gaveUp <- err
+	}()
+	awaitSent(t, legacy.conn, before, 2, "the put's first request and nats.go's first send again")
+	giveUp()
+	if err := serve(); err != nil {
+		t.Fatalf("move the bucket's stream back onto its keys: %v", err)
 	}
-	if _, err := kv.Within(caller).Put("key", []byte("value")); !errors.Is(err, nats.ErrNoStreamResponse) || legacy.sends.Load() != 2 {
-		t.Fatalf("a put whose caller gave up at its second send = %v after %d sends, want nats.ErrNoStreamResponse after 2", err, legacy.sends.Load())
+	if err := kv.Delete("key"); err != nil {
+		t.Fatalf("the caller's next write, a delete: %v", err)
+	}
+	if err := testwait.Receive(t, "the given-up put's answer", gaveUp); err == nil {
+		t.Fatal("the given-up put answered that it was stored")
+	}
+	if entry, err := kv.Get("key"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("read the key after the caller's delete = %v, %v; want it deleted, the given-up put landing nothing after it", entry, err)
 	}
 }
 
@@ -363,22 +457,18 @@ func TestAStoredPublishNoStreamTookIsSentAgainAndStored(t *testing.T) {
 }
 
 // A stored publish to a deleted notification stream fails with nats.ErrNoStreamResponse within
-// its context and without ErrUnacknowledged: the read after the answer finds no stream, so it is
-// not sent again, and no send of it reached a stream.
-func TestAStoredPublishToAStreamThatIsGoneFailsStoringNothing(t *testing.T) {
-	client, err := ConnectOwningStream([]string{testnats.URL(t)}, WithKeepInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(client.Close)
+// its context and without ErrUnacknowledged, after one send of one message: the read after the
+// answer finds no stream, so it is not sent again, and no send of it reached a stream.
+func TestAStoredPublishToAStreamThatIsGoneIsSentOnceAndStoresNothing(t *testing.T) {
+	client, counted, _ := offSubjectClient(t)
 	if err := client.JS().DeleteStream(Stream); err != nil {
 		t.Fatalf("delete the stream: %v", err)
 	}
-	err = client.PublishWithin(untilTheRowsEnd(t), contracts.Envelope{
-		EventID: "event-no-stream-gone", Source: "dispatch",
-		Topic: "notifications.agent.ses_no_stream_gone", DedupeKey: "dispatch.event.no_stream_gone",
-	})
+	_, err := client.PublishStoredAck(untilTheRowsEnd(t), offSubjectEnvelope.Topic, offSubjectEnvelope, "")
 	if !errors.Is(err, nats.ErrNoStreamResponse) || errors.Is(err, ErrUnacknowledged) {
 		t.Fatalf("a publish to a stream that is gone = %v, want nats.ErrNoStreamResponse without ErrUnacknowledged", err)
+	}
+	if sent := counted.messages(); !slices.Equal(sent, []uint64{1}) {
+		t.Fatalf("messages the connection sent during each publish = %v, want [1]: one send, not sent again", sent)
 	}
 }

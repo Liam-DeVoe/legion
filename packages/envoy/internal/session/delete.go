@@ -182,7 +182,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return kept, nil
 		}
 		_, answered, err = bus.Bounded(ctx, func() (struct{}, error) {
-			return struct{}{}, kv.Within(ctx).Delete(sessionID, nats.LastRevision(revision))
+			return struct{}{}, kv.Within(ctx).DeleteAt(sessionID, revision)
 		})
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)

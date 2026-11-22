@@ -56,7 +56,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	}
 	kv, epoch := r.watcher.Handle()
 	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, kv.Within(ctx).Delete(sessionID, nats.LastRevision(revision))
+		return struct{}{}, kv.Within(ctx).DeleteAt(sessionID, revision)
 	})
 	if !answered {
 		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)

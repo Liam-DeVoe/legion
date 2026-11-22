@@ -33,24 +33,45 @@ import (
 // finds the stream, or draws no answer, says nothing against sending again.
 //
 // Between two sends it waits noStreamPause, which grows with each send, so the writes of every
-// client a recovering cluster has made wait do not all come back at once. When ctx ends before a
-// send again, the last send's answer is returned, nats.ErrNoStreamResponse itself, so a caller
-// still reads that the stream stored nothing. That is why this loop is the bus's and not nats.go's
-// RetryAttempts(-1): nats.go's loop sends again with a ctx that ended in its pause and answers
-// ctx's error (js.go:598-618), which the stored path must read as a send that may have stored the
-// message (sendUnanswered); the bucket's legacy writes take no publish options at all; and a
-// delete's options (nats.DeleteOpt) cannot be read outside nats.go to build the publish here. Any
-// other answer is returned at once.
+// client a recovering cluster has made wait do not all come back at once. No send again starts
+// once ctx is canceled or within noStreamMargin of its deadline (nearEnd), and the last send's
+// answer is returned then, nats.ErrNoStreamResponse itself, so a caller still reads that the
+// stream stored nothing. That is why this loop is the bus's and not nats.go's RetryAttempts(-1):
+// nats.go's loop sends again with a ctx that ended in its pause and answers ctx's error
+// (js.go:598-618), which the stored path must read as a send that may have stored the message
+// (sendUnanswered); the bucket's legacy writes take no publish options at all; and a delete's
+// options (nats.DeleteOpt) cannot be read outside nats.go to build the publish here. Any other
+// answer is returned at once. A send already in flight when the bound ends is answered by its own
+// wait, which the stored path reads as a send that may have stored the message, as it did before
+// writes were sent again.
 func sentAgainWhileNoStream[T any](ctx context.Context, send func() (T, error), gone func(context.Context) bool) (T, error) {
 	for sent := 1; ; sent++ {
 		value, err := send()
 		if !errors.Is(err, nats.ErrNoStreamResponse) || gone(ctx) {
 			return value, err
 		}
-		if pause(ctx, noStreamPause(sent, rand.Int64N)) != nil || ctx.Err() != nil {
+		if nearEnd(ctx) || pause(ctx, noStreamPause(sent, rand.Int64N)) != nil || nearEnd(ctx) {
 			return value, err
 		}
 	}
+}
+
+// noStreamMargin is how long before its context's deadline a write no stream took is no longer
+// sent again (nearEnd), and how much earlier than its caller's context a bucket write the jetstream
+// handle sends ends (writtenOn). A deadline's context reports its end only when its timer fires,
+// which runs late under load: a probe of the stored path at 490 bounds on a loaded box sent again
+// after the deadline, its context not yet ended, in 5 and 11 of them, and in none with a 100 ms
+// margin.
+const noStreamMargin = 100 * time.Millisecond
+
+// nearEnd reports whether ctx has ended or its deadline is within noStreamMargin, read from the
+// deadline itself rather than from ctx's end (noStreamMargin).
+func nearEnd(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) < noStreamMargin
 }
 
 // noStreamPause is the wait after the sent'th send of a write no stream took
