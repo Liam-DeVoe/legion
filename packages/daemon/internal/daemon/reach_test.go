@@ -26,24 +26,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // reachBoot is the moment the rig's daemon booted.
 var reachBoot = time.Date(2026, 11, 12, 15, 0, 0, 0, time.UTC)
 
-type toldNotice struct {
-	notice record.ControllerNotice
-	issue  string
-}
-
 type reachRig struct {
-	t *testing.T
-	k *reachKeeper
-	// lockOuts is the lock-out notices the minute sweep resends, told through the same outbox.
-	lockOuts *lockOutNotices
-	logged   *bytes.Buffer
+	t      *testing.T
+	k      *reachKeeper
+	logged *bytes.Buffer
 
 	mu       sync.Mutex
 	now      time.Time
@@ -52,8 +44,6 @@ type reachRig struct {
 	roles      map[string][]string
 	listErr    error
 	puts       map[claim.Token]supervise.Reach
-	told       []toldNotice
-	refuseTell bool
 	rows       map[string][]record.OutboxPayload
 	relaunched []supervise.Claim
 	relaunch   error
@@ -79,21 +69,13 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 			return true, nil
 		},
 		reachNotify: reachNotify{
-			tell: func(_ context.Context, notice record.ControllerNotice, issue string, marks []reachMark) (bool, error) {
-				r.mu.Lock()
-				defer r.mu.Unlock()
-				if r.refuseTell {
-					return false, nil
-				}
-				r.told = append(r.told, toldNotice{notice: notice, issue: issue})
-				r.putMarks(marks)
-				return true, nil
-			},
 			enqueue: func(_ context.Context, issue string, notice record.Notice, marks []reachMark) error {
 				r.mu.Lock()
 				defer r.mu.Unlock()
 				r.rows[issue] = append(r.rows[issue], notice)
-				r.putMarks(marks)
+				for _, mark := range marks {
+					r.puts[mark.token] = mark.reach
+				}
 				return nil
 			},
 		},
@@ -110,18 +92,7 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 			return c, nil
 		},
 	})
-	r.lockOuts = newLockOutNotices(lockOutOptions{log: log, project: "LEGION", tell: r.k.tell, alerts: r.k.alerts})
 	return r
-}
-
-// putMarks writes the claims' reach records a notice marks told, as its transaction does; a
-// project's own notice record has no claim's record to write. The caller holds mu.
-func (r *reachRig) putMarks(marks []reachMark) {
-	for _, mark := range marks {
-		if mark.project == nil {
-			r.puts[mark.token] = mark.reach
-		}
-	}
 }
 
 // at moves the rig's clock to boot plus d.
@@ -147,25 +118,11 @@ func (r *reachRig) listing(seen map[string]time.Duration) {
 	}
 }
 
-// sweep is one minute's pass over claims, the lock-out notices' resend first as the orphan sweep
-// runs it, with the relaunches it may start finished.
+// sweep is one minute's pass over claims, with the relaunches it may start finished.
 func (r *reachRig) sweep(claims ...supervise.Claim) {
 	r.t.Helper()
-	r.lockOuts.resend(context.Background())
 	r.k.sweep(context.Background(), claims)
 	r.k.wait()
-}
-
-func (r *reachRig) notices(kind record.NoticeKind) []toldNotice {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var of []toldNotice
-	for _, told := range r.told {
-		if told.notice.Kind == kind {
-			of = append(of, told)
-		}
-	}
-	return of
 }
 
 func (r *reachRig) architectNotices(issue string) []record.Notice {
@@ -212,63 +169,6 @@ func (r *reachRig) with(c supervise.Claim) supervise.Claim {
 	return c
 }
 
-// countedNotices is a store of the project's own notice records that holds held, and counts the
-// reads and the deletes it is asked for.
-type countedNotices struct {
-	mu             sync.Mutex
-	held           []store.ReachProjectNotice
-	reads, deletes int
-}
-
-func (n *countedNotices) ReachProjectNotices(context.Context, string) ([]store.ReachProjectNotice, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.reads++
-	return slices.Clone(n.held), nil
-}
-
-func (n *countedNotices) PutReachProjectNotice(context.Context, store.ReachProjectNotice) error {
-	return nil
-}
-
-func (n *countedNotices) DeleteReachProjectNotice(context.Context, string, string, claim.Token) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.deletes++
-	n.held = nil
-	return nil
-}
-
-// A daemon whose every list holds a live session reads the project's notice records once, at its
-// first read, and deletes the no-live run's record only where the daemon before it told one; no
-// later read of a live list asks the store anything until a run is told.
-func TestALiveListReadsTheNoLiveRecordOnce(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		held    []store.ReachProjectNotice
-		deletes int
-	}{
-		{name: "no run told", deletes: 0},
-		{name: "a run the last daemon told", held: []store.ReachProjectNotice{{Project: "LEGION",
-			Kind: string(record.EnvoyNoLiveSessionNotice), Told: true}}, deletes: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newReachRig(t, false)
-			notices := &countedNotices{held: tc.held}
-			r.k.notices = notices
-			for minute := 1; minute <= 30; minute++ {
-				r.at(time.Duration(minute) * time.Minute)
-				r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
-				r.sweep()
-			}
-			if notices.reads != 1 || notices.deletes != tc.deletes {
-				t.Fatalf("30 minutes of live lists read the records %d times and deleted the no-live record %d times, want one read and %d deletes",
-					notices.reads, notices.deletes, tc.deletes)
-			}
-		})
-	}
-}
-
 // The 20 minutes are counted from the daemon's boot as well as the session's last registration,
 // so a daemon outage does not mark every claim at once; a claim whose session registered in the
 // last 20 minutes is never marked; and a claim marked keeps its state.
@@ -291,12 +191,6 @@ func TestAClaimIsMarkedTwentyMinutesAfterItsLastRegistrationCountedFromTheBoot(t
 	got := r.reach(worker.Token)
 	if !got.Unreachable() || !got.Since.Equal(reachBoot) || !got.LastSeen.Equal(reachBoot.Add(-time.Hour)) {
 		t.Fatalf("at 21 minutes the claim's reach = %+v, want it marked since the boot with its last registration read", got)
-	}
-	r.mu.Lock()
-	told := len(r.told)
-	r.mu.Unlock()
-	if told != 0 {
-		t.Fatalf("the controller was told %d notices of a claim out of reach, want none: the daemon relaunches it", told)
 	}
 
 	// Its session registers: reachable again, and reported again only once it is out of reach again.
@@ -354,7 +248,6 @@ func TestAFailedReadChangesNothingAndTwentyMinutesOfThemWriteTheLine(t *testing.
 	if !r.reach(worker.Token).Unreachable() {
 		t.Fatal("the claim was not marked at 25 minutes")
 	}
-	before := len(r.told)
 
 	r.mu.Lock()
 	r.listErr = errors.New("listener returned 503 Service Unavailable: refilling")
@@ -363,8 +256,8 @@ func TestAFailedReadChangesNothingAndTwentyMinutesOfThemWriteTheLine(t *testing.
 		r.at(time.Duration(minute) * time.Minute)
 		r.sweep(r.with(worker))
 	}
-	if !r.reach(worker.Token).Unreachable() || len(r.told) != before {
-		t.Fatalf("the failed reads changed the mark to %+v or told %d notices", r.reach(worker.Token), len(r.told)-before)
+	if !r.reach(worker.Token).Unreachable() {
+		t.Fatalf("the failed reads changed the mark to %+v", r.reach(worker.Token))
 	}
 	if got := r.lines(fleetalert.SessionListUnreadable.Word); got != 0 {
 		t.Fatalf("19 minutes of failed reads wrote the line %d times, want none yet", got)
@@ -431,9 +324,6 @@ func TestAFailedReadOrAnEmptyListLeavesAMarkAsItIs(t *testing.T) {
 				if !got.Unreachable() || !got.Since.Equal(marked.Since) || !got.LastSeen.Equal(marked.LastSeen) {
 					t.Fatalf("at %d minutes, after %s at 26, the claim reads %+v, want its mark %+v as it was", minute, name, got, marked)
 				}
-			}
-			if told := r.toldCount(); told != 0 {
-				t.Errorf("after %s the controller was told %d notices, want none", name, told)
 			}
 			if got := len(r.architectNotices("LEGION-209")); got != rows {
 				t.Errorf("after %s the architect was sent %d more notices, want none", name, got-rows)
@@ -547,8 +437,8 @@ func TestTheKeeperForgetsTheRecordOfAClaimTheDaemonNoLongerHolds(t *testing.T) {
 	}
 }
 
-// When Envoy's whole list holds no live session for 20 minutes, the daemon marks none, tells the
-// controller once and writes R6's line once; the count starts again when the list holds one.
+// When Envoy's whole list holds no live session for 20 minutes, the daemon marks none and writes
+// R6's line once; the count starts again when the list holds one.
 func TestAListWithNoLiveSessionMarksNoneAndIsToldOnce(t *testing.T) {
 	r := newReachRig(t, false)
 	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
@@ -559,9 +449,6 @@ func TestAListWithNoLiveSessionMarksNoneAndIsToldOnce(t *testing.T) {
 	}
 	if r.reach(worker.Token).Unreachable() {
 		t.Fatalf("with no live session listed the claim reads %+v, want none marked", r.reach(worker.Token))
-	}
-	if told := r.notices(record.EnvoyNoLiveSessionNotice); len(told) != 1 || told[0].issue != "LEGION" {
-		t.Fatalf("the controller was told %+v that Envoy lists nobody, want once on the project", told)
 	}
 	if got := r.lines(fleetalert.NoLiveSession.Word); got != 1 {
 		t.Fatalf("the line was written %d times, want once", got)
@@ -682,13 +569,6 @@ func settledWorker(t *testing.T) supervise.Claim {
 	return worker
 }
 
-// toldCount is how many controller notices the rig's outbox took.
-func (r *reachRig) toldCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.told)
-}
-
 // The daemon relaunches a workflow role's claim it has marked out of reach, on its same session,
 // once: no agent is asked to, and the controller is told nothing.
 func TestTheDaemonRelaunchesAWorkerClaimItCannotReach(t *testing.T) {
@@ -710,9 +590,6 @@ func TestTheDaemonRelaunchesAWorkerClaimItCannotReach(t *testing.T) {
 	}
 	if got := r.reach(worker.Token); !got.Unreachable() || !got.Relaunched {
 		t.Fatalf("after the relaunch the claim reads %+v, want it marked and relaunched", got)
-	}
-	if told := r.toldCount(); told != 0 {
-		t.Fatalf("the controller was told %d notices, want none", told)
 	}
 	if lines := r.lines(fleetalert.ClaimUnreachable.Word) + r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
 		t.Fatalf("R6 wrote %d lines for a relaunch still inside its 20 minutes, want none", lines)
@@ -741,8 +618,8 @@ func TestACaseForAPersonWritesTheClaimsLineOnce(t *testing.T) {
 		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
 			t.Fatalf("R6 wrote %d refused lines after 60 minutes of refusal, want one", lines)
 		}
-		if len(r.relaunched) != 0 || r.toldCount() != 0 {
-			t.Fatalf("relaunched %+v and told the controller %d notices, want neither", r.relaunched, r.toldCount())
+		if len(r.relaunched) != 0 {
+			t.Fatalf("relaunched %+v, want none", r.relaunched)
 		}
 	})
 	t.Run("its relaunch did not bring it back", func(t *testing.T) {
@@ -756,8 +633,8 @@ func TestACaseForAPersonWritesTheClaimsLineOnce(t *testing.T) {
 				t.Fatal("R6 wrote the not-back line inside the 20 minutes after the relaunch")
 			}
 		}
-		if lines := r.lines(fleetalert.ClaimUnreachable.Word); lines != 1 || len(r.relaunched) != 1 || r.toldCount() != 0 {
-			t.Fatalf("not-back lines %d, relaunches %d, controller notices %d; want 1, 1 and 0", lines, len(r.relaunched), r.toldCount())
+		if lines := r.lines(fleetalert.ClaimUnreachable.Word); lines != 1 || len(r.relaunched) != 1 {
+			t.Fatalf("not-back lines %d, relaunches %d; want 1 and 1", lines, len(r.relaunched))
 		}
 	})
 	t.Run("its launcher is not connected", func(t *testing.T) {
@@ -769,14 +646,73 @@ func TestACaseForAPersonWritesTheClaimsLineOnce(t *testing.T) {
 			r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
 			r.sweep(r.with(worker))
 		}
-		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 || r.toldCount() != 0 {
-			t.Fatalf("refused lines %d and controller notices %d, want 1 and 0", lines, r.toldCount())
+		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+			t.Fatalf("refused lines %d, want 1", lines)
 		}
 		if len(r.relaunched) < 2 || r.reach(worker.Token).Relaunched {
 			t.Fatalf("the refused relaunch was asked %d times and the claim reads %+v; want it asked again at each sweep and not relaunched",
 				len(r.relaunched), r.reach(worker.Token))
 		}
 	})
+	for _, refused := range []struct {
+		name string
+		err  error
+	}{
+		{"its tree allows it no launch", &supervise.RefusedError{State: supervise.StateIdle, Request: "relaunch",
+			Reason: "the claim's tree allows it no launch", Err: fmt.Errorf("%w: cleanup reserved", supervise.ErrTreeRefusesLaunch)}},
+		{"a wake of it waits its turn", &supervise.RefusedError{State: supervise.StateIdle, Request: "relaunch",
+			Reason: "a resume of the claim waits its turn in the wake pacing", Err: errors.New("a resume of the claim waits its turn in the wake pacing")}},
+	} {
+		t.Run(refused.name+" for 60 minutes", func(t *testing.T) {
+			r := newReachRig(t, false)
+			r.relaunch = refused.err
+			worker := settledWorker(t)
+			for minute := 21; minute <= 80; minute++ {
+				r.at(time.Duration(minute) * time.Minute)
+				r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+				r.sweep(r.with(worker))
+			}
+			if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+				t.Fatalf("R6 wrote %d refused lines inside 60 minutes of the claim's machine refusing its relaunch, want none", lines)
+			}
+			for minute := 81; minute <= 100; minute++ {
+				r.at(time.Duration(minute) * time.Minute)
+				r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+				r.sweep(r.with(worker))
+			}
+			if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+				t.Fatalf("R6 wrote %d refused lines after 60 minutes of the claim's machine refusing its relaunch, want one", lines)
+			}
+			if len(r.relaunched) < 60 || r.reach(worker.Token).Relaunched {
+				t.Fatalf("the refused relaunch was asked %d times and the claim reads %+v; want it asked again at each sweep and not relaunched",
+					len(r.relaunched), r.reach(worker.Token))
+			}
+		})
+	}
+}
+
+// An operator's suspension held over the claim is a person's own act on it, so its refusal of the
+// daemon's relaunch writes no line however long it lasts: it is logged once, and the relaunch is
+// asked for again at each sweep.
+func TestAnOperatorsSuspensionHoldsTheRelaunchWithNoLine(t *testing.T) {
+	r := newReachRig(t, false)
+	r.relaunch = &supervise.RefusedError{State: supervise.StateWorking, Request: "relaunch",
+		Reason: supervise.ErrOperatorSuspensionHeld.Error(), Err: supervise.ErrOperatorSuspensionHeld}
+	worker := settledWorker(t)
+	for minute := 21; minute <= 100; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(worker))
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d lines for a claim an operator's suspension holds, want none", lines)
+	}
+	if logged := strings.Count(r.logged.String(), "an operator's suspension holds the daemon's relaunch"); logged != 1 {
+		t.Fatalf("the operator's suspension was logged %d times over 80 sweeps, want once", logged)
+	}
+	if len(r.relaunched) < 80 {
+		t.Fatalf("the relaunch was asked %d times, want it asked again at each sweep", len(r.relaunched))
+	}
 }
 
 // A pod that holds two or more live claims, every one out of reach, is a case for a person: the
@@ -804,10 +740,6 @@ func TestAPodWhoseEveryClaimIsOutOfReachIsACaseForAPerson(t *testing.T) {
 	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 2 {
 		t.Fatalf("R6 wrote %d refused lines for the pod's two claims over ten sweeps, want one for each", lines)
 	}
-	if told := r.toldCount(); told != 0 {
-		t.Fatalf("the controller was told %d notices, want none", told)
-	}
-
 	// The tester registers again: the pod reaches Envoy for one claim, and the worker is relaunched.
 	r.at(31 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_other": 31 * time.Minute, "ses_tester": 31 * time.Minute})

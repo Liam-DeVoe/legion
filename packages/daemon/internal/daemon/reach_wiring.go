@@ -2,25 +2,21 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
-
-// reachNoticeBudget bounds the write of one notice the keeper or the worker stream's lock-out
-// report makes outside a sweep's own context.
-const reachNoticeBudget = 30 * time.Second
 
 // listSessions is the keeper's read of Envoy's list over the listener the daemon's notices go
 // through, and nil where no listener is configured, which leaves the keeper reading nothing.
@@ -31,88 +27,23 @@ func listSessions(envoyURL, token string) func(context.Context) ([]notify.Listed
 	return notify.New(envoyURL, token).ListSessions
 }
 
-// reachNotify is the workflow's two writes the reach keeper and the lock-out notices tell through:
-// a controller notice with its marks (tellControllerQueued) and an architect's notice with its
-// marks (enqueueReachNotice). Both are nil in a deployment with no workflow, which tells nobody.
+// reachNotify is the workflow's write the reach keeper tells through: an architect's notice with
+// its mark (enqueueReachNotice). It is nil in a deployment with no workflow, which tells nobody.
 type reachNotify struct {
-	tell    controllerTell
 	enqueue architectEnqueue
 }
-
-// controllerTell queues a controller notice on an issue and, where it queued it, writes each of
-// its marks in the same transaction, answering whether it queued it (tellControllerQueued).
-type controllerTell func(ctx context.Context, notice record.ControllerNotice, issue string, marks []reachMark) (bool, error)
 
 // architectEnqueue writes an architect's notice row on an issue and its marks in one transaction
 // (enqueueReachNotice).
 type architectEnqueue func(ctx context.Context, issue string, notice record.Notice, marks []reachMark) error
 
-// reachNotify is w's reach writes, and none for a deployment with no workflow (w nil), which
+// reachNotify is w's reach write, and none for a deployment with no workflow (w nil), which
 // openSupervision is handed before the workflow attaches to it.
 func (w *workflowRuntime) reachNotify() reachNotify {
 	if w == nil {
 		return reachNotify{}
 	}
-	return reachNotify{tell: w.tellControllerQueued, enqueue: w.enqueueReachNotice}
-}
-
-// projectNotice is n, the project's own record of a controller notice that speaks for no claim's
-// reach record, which its caller fills field by field, with notice encoded into it as the
-// controller is told it, and whether notice encoded; a notice that does not encode is told with no
-// record (reachMark.project) written beside it.
-func projectNotice(log *slog.Logger, n store.ReachProjectNotice, notice record.ControllerNotice) (store.ReachProjectNotice, bool) {
-	encoded, err := json.Marshal(notice)
-	if err != nil {
-		log.Error("controller notice: a notice did not encode, so its record is not written with it", "kind", notice.Kind, "error", err)
-		return n, false
-	}
-	n.Notice = encoded
-	return n, true
-}
-
-// tellQueued queues notice on issue through tell, with the records marks says it marks told
-// written in the same transaction, and answers whether it queued it: false for a deployment with
-// no workflow (tell nil), a controller not registered, a notice of the same kind still waiting, and
-// a store that refused either write, each of which marks nothing and which the caller tells again
-// at a later sweep. The reach keeper and the lock-out notices both tell through it.
-func tellQueued(ctx context.Context, log *slog.Logger, tell controllerTell, notice record.ControllerNotice, issue string, marks ...reachMark) bool {
-	if tell == nil {
-		return false
-	}
-	told, err := tell(ctx, notice, issue, marks)
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Error("controller notice: a notice was not written; telling it again at the next sweep", "kind", notice.Kind, "error", err)
-		}
-		return false
-	}
-	return told
-}
-
-// tellControllerQueued queues one controller notice in a transaction of its own and answers
-// whether it did (admit.Admission.TellControllerQueued), writing each of marks — the reach
-// records the notice marks told — in that same transaction where it queued it, so the notice and
-// its marks commit together or not at all (reachMark): the keeper's notices and the worker
-// stream's lock-out report are made outside any fact, as the provider-errors notice is
-// (providerErrorRunReached), and own the commit hook their write registers, so the controller's
-// lane is woken once the row commits.
-func (w *workflowRuntime) tellControllerQueued(ctx context.Context, notice record.ControllerNotice, issue string, marks []reachMark) (bool, error) {
-	if w.admission == nil {
-		return false, nil
-	}
-	scoped, committed := intake.WithCommitHooks(store.ForConcurrentWorker(ctx))
-	var told bool
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		var err error
-		if told, err = w.admission.TellControllerQueued(scoped, tx, notice, issue); err != nil || !told {
-			return err
-		}
-		return putReachMarks(scoped, tx, marks)
-	}); err != nil {
-		return false, err
-	}
-	committed()
-	return told, nil
+	return reachNotify{enqueue: w.enqueueReachNotice}
 }
 
 // enqueueReachNotice writes an architect's notice row of issue, due now, and marks — the reach
@@ -137,22 +68,26 @@ func (w *workflowRuntime) enqueueReachNotice(ctx context.Context, issue string, 
 	return nil
 }
 
-// putReachMarks writes each of marks through tx: a claim's reach record, or the project's own
-// record of a notice that speaks for no claim's. A claim the store no longer holds is marked
-// nothing, and its notice is written all the same.
+// putReachMarks writes each of marks, a claim's reach record, through tx. A claim the store no
+// longer holds is marked nothing, and its notice is written all the same.
 func putReachMarks(ctx context.Context, tx pgx.Tx, marks []reachMark) error {
 	for _, mark := range marks {
-		if mark.project != nil {
-			if err := store.PutReachProjectNoticeTx(ctx, tx, *mark.project); err != nil {
-				return err
-			}
-			continue
-		}
 		if _, err := store.PutClaimReachTx(ctx, tx, mark.token, mark.reach); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// closeEndedLockOuts closes R6's line of each lock-out the worker stream's lockedOut no longer
+// holds (R3): a line the last daemon opened names a connection that ended with it, and this
+// daemon's stream tells that older process to stop at its hello rather than binding it. The stream
+// closes the line of a lock-out it saw end itself.
+func (k *reachKeeper) closeEndedLockOuts(lockedOut func(claim.Token) (stream.LockOut, bool)) {
+	k.alerts.CloseEnded(fleetalert.NewerProcessRefused, func(token string) bool {
+		_, locked := lockedOut(claim.Token(token))
+		return locked
+	})
 }
 
 // relaunchByDaemon is the daemon's relaunch of a marked claim at at (reachKeeper's relaunch):

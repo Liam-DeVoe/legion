@@ -353,7 +353,7 @@ func TestADatabaseAtMainsNewestMigrationUpgradesWithItsPendingRows(t *testing.T)
 			t.Fatalf("%s rows after the upgrade = %d, want the pending one kept", kind, pending)
 		}
 	}
-	for _, kind := range []string{"reach_notice", "reach_controller_notice"} {
+	for _, kind := range []string{"reach_notice"} {
 		if err := queue(kind, "LEGION-208"); err != nil {
 			t.Fatalf("queue a %s row after the upgrade: %v", kind, err)
 		}
@@ -363,7 +363,7 @@ func TestADatabaseAtMainsNewestMigrationUpgradesWithItsPendingRows(t *testing.T)
 			t.Fatalf("queue a %s row of another issue after the upgrade: %v", kind, err)
 		}
 	}
-	t.Logf("after the upgrade the outbox keeps the pending rows of %v, and takes reach_notice, reach_controller_notice and each of those kinds", mainsRowKinds)
+	t.Logf("after the upgrade the outbox keeps the pending rows of %v, and takes reach_notice and each of those kinds", mainsRowKinds)
 }
 
 // migrateAsMain migrates store as a deployment of main did: every embedded migration in version

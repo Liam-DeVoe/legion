@@ -16,15 +16,17 @@ body: |-
     since its launch is missing or shows background work. The daemon makes no relaunch of a role
     whose launcher is not connected, no launch that would replace the pod for a reason of its own
     and so end the other roles running in it, and no relaunch of a claim whose pod holds two or more
-    claims while Envoy lists the session of no other claim of that pod as live, and it does nothing more after a stop that the claim's process
-    outlived. When the relaunched claim has not answered an update round over its pod, and the
+    claims while Envoy lists the session of no other claim of that pod as live, and it does nothing
+    more after a stop that the claim's process outlived. When the relaunched claim has not
+    answered an update round over its pod, and the
     round does not pass the claim over, the relaunch holds the pod from its stop until its launch
     starts, even when that launch waits for a retry, and at most until the round's bound, so the
     claim comes back where its unpushed work is. Reaching the bound ends that hold; an operator's
     suspension or a pause's hold still keeps the pod. A workflow role's relaunch waits while the
-    project is paused. Under `controller: daemon` the daemon relaunches its own controller the same
-    way, and replaces the controller's pod where the launch needs that or the launcher is not
-    connected.
+    project is paused, and an operator's suspension held over a claim refuses its relaunch with no
+    line, since it is a person's own act. Under `controller: daemon` the daemon relaunches its own
+    controller the same way, and replaces the controller's pod where the launch needs that or the
+    launcher is not connected.
     A role message or hook prompt to a claim that keeps the session it recorded is held in the
     outbox until a session holds the role again, the claim ends, or the issue leaves its phase, on
     every listener: a hook prompt for such a claim is published without Envoy's keep flag, so the
@@ -32,19 +34,19 @@ body: |-
     The worker stream tells an older generation's connection to stop when the claim's newer
     process says hello, and tells a hello of an older generation to stop, after a daemon restart
     too: the database keeps the hash of every boot token a launch replaced. The daemon closes an
-    older connection that sends nothing for 2 minutes after its stop frame, and tells the
-    controller of a newer process that is still refused after 5 minutes (`worker-locked-out`).
-    Every accepted TCP connection of the worker stream carries keepalive (15 s idle, 9 probes 15 s
-    apart) and a 2-minute `TCP_USER_TIMEOUT`, so a connection whose sent data stays unacknowledged
-    for 2 minutes ends. The controller is also told once when Envoy's list has held no live session
-    for 20 minutes (`envoy-no-live-session`).
+    older connection that sends nothing for 2 minutes after its stop frame. Every accepted TCP
+    connection of the worker stream carries keepalive (15 s idle, 9 probes 15 s apart) and a
+    2-minute `TCP_USER_TIMEOUT`, so a connection whose sent data stays unacknowledged for 2 minutes
+    ends. The controller is told of no claim out of reach, no lock-out and no empty session list:
+    each is a case only a person can act on.
     For a case no agent can hear or act on, the daemon writes an error line that starts
     `LEGION FLEET ALERT`, with a `case` field: `claim_unreachable` (a claim its relaunch did not
     bring back within 20 minutes, or out of reach again within 6 hours of its relaunch),
     `claim_relaunch_refused` (a claim the daemon cannot relaunch: its launcher is not connected, the
-    launch would replace its pod, its process outlived the stop, every claim of its pod is out of
-    reach, or the guard has held it for 60 minutes), `controller_unreachable`,
-    `controller_relaunch_refused`, `envoy_no_live_session`, `envoy_session_list_unreadable` or
+    launch would replace its pod, its process outlived the stop, Envoy lists no other claim of its
+    pod as live, or the guard or anything else has refused its relaunch for 60 minutes),
+    `controller_unreachable`, `controller_relaunch_refused`, `envoy_no_live_session`,
+    `envoy_session_list_unreadable` or
     `newer_process_refused`. It writes one line for each case and claim until that case ends, for a
     log-match alert policy to page on.
     A worker's claim boot and each call of it that the daemon applies at most once now wait up to an
@@ -58,9 +60,9 @@ body: |-
     An Oh My Pi session whose previous process ended in a turn is told so when it is resumed, and
     a session whose Envoy heartbeat stopped registers again (`@sjawhar/pi-envoy`).
     Six migrations add what this needs: the claims' reach record and the hash of every boot token
-    a launch replaced (`20261116012459_claim_reach_and_prior_boot_tokens`), the two outbox kinds of
-    the reach notices (`20261116082000_reach_notice_kinds`), the records a restart must keep of a
-    held outbox row, of a relaunch's generation and of the notices no claim's reach record holds
+    a launch replaced (`20261116012459_claim_reach_and_prior_boot_tokens`), the outbox kind of the
+    architect's reach notice (`20261116082000_reach_notice_kinds`), the records a restart must keep
+    of a held outbox row and of a relaunch's generation
     (`20261116092312_reach_records_kept_with_their_acts`), the session the listener stored a role
     message's or hook prompt's copy for (`20261116164153_outbox_copy_stored_for_its_session`), the
     open fleet alert lines (`20261118133133_fleet_alert_lines`), and the session's own time of an

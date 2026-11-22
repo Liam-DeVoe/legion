@@ -232,13 +232,9 @@ func (d *durableReach) workflow() *workflowRuntime {
 		handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", log: quietLogger()}
 }
 
-// The notices the tests count: each a notice of one kind, which is queued under the outbox kind
-// that notice kind takes (record.ControllerNotice.OutboxKind, record.Notice.OutboxKind).
-var (
-	noLiveSession   = record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice}
-	lockedOut       = record.ControllerNotice{Kind: record.WorkerLockedOutNotice}
-	architectToldOf = record.Notice{Kind: record.ClaimOutOfReachNotice}
-)
+// architectToldOf is the notice the tests count, queued under the outbox kind its notice kind
+// takes (record.Notice.OutboxKind).
+var architectToldOf = record.Notice{Kind: record.ClaimOutOfReachNotice}
 
 // delivered is how many rows of notice's kind the outbox holds, under the outbox kind that notice
 // kind is queued in, which it then finishes, as their delivery does: a controller notice of the
@@ -415,14 +411,6 @@ func TestTheDaemonRelaunchesItsControllerOnceAcrossARefusedReachWriteAndARestart
 	}
 }
 
-// notifying is a keeper whose controller notices are written through w, and whose reach record is
-// written by put.
-func (d *durableReach) notifying(w *workflowRuntime, put func(context.Context, claim.Token, supervise.Reach) (bool, error)) *reachKeeper {
-	o := d.options(false, put)
-	o.tell = w.tellControllerQueued
-	return newReachKeeper(o)
-}
-
 // sweeps runs one sweep a minute from minute on each keeper in turn, a restart between each two,
 // and counts the notices of notice's kind each left in the outbox.
 func (d *durableReach) sweeps(minute int, notice record.OutboxPayload, keepers ...*reachKeeper) int {
@@ -483,49 +471,12 @@ func TestTheArchitectIsToldOfAnUnreachableClaimOnceAcrossADaemonThatEndsBeforeIt
 	}
 }
 
-// sweepEach runs one sweep a minute of k from minute from to minute to, both included, and counts
-// the notices of notice's kind it left in the outbox.
-func (d *durableReach) sweepEach(from, to int, notice record.OutboxPayload, k *reachKeeper) int {
+// sweepEach runs one sweep a minute of k from minute from to minute to, both included.
+func (d *durableReach) sweepEach(from, to int, k *reachKeeper) {
 	d.t.Helper()
-	told := 0
 	for minute := from; minute <= to; minute++ {
 		d.at(time.Duration(minute) * time.Minute)
 		k.sweep(context.Background(), d.stored())
-		told += d.delivered(notice)
-	}
-	return told
-}
-
-// projectNotifying is notifying with the project's own notice records in the database.
-func (d *durableReach) projectNotifying(w *workflowRuntime) *reachKeeper {
-	k := d.notifying(w, d.st.PutClaimReach)
-	k.notices = d.st
-	return k
-}
-
-// The notice that Envoy lists no live session is told once for a run of such lists, across a
-// restart: its told mark is a record of the project's, written with it. Once a list holds a live
-// session again, the next run of such lists is told once more.
-func TestANoLiveSessionNoticeIsToldOnceARunAcrossARestart(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	d.noLiveSessions(true)
-	if told := d.sweepEach(1, 25, noLiveSession, d.projectNotifying(w)); told != 1 {
-		t.Fatalf("the first daemon told %d notices of 25 minutes of lists with no live session, want 1", told)
-	}
-	next := d.projectNotifying(w)
-	if told := d.sweepEach(26, 50, noLiveSession, next); told != 0 {
-		t.Fatalf("the next daemon told %d notices of the same run of lists with no live session, want none", told)
-	}
-
-	d.noLiveSessions(false)
-	d.sweepEach(51, 51, noLiveSession, next)
-	d.noLiveSessions(true)
-	if told := d.sweepEach(52, 75, noLiveSession, next); told != 1 {
-		t.Fatalf("a run of lists with no live session after one that held a live session was told %d times, want 1", told)
-	}
-	if told := d.sweepEach(76, 100, noLiveSession, d.projectNotifying(w)); told != 0 {
-		t.Fatalf("the daemon after that told %d notices of its run, want none", told)
 	}
 }
 
@@ -692,8 +643,8 @@ func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
 
 // R6's line is written once until its case ends, and a restart ends no case (R6): a run of lists
 // with no live session that holds through a restart writes its line once, a lock-out line the last
-// daemon wrote is ended by the next one, whose worker stream holds no such lock-out, and a case
-// that ended and came back writes its line again.
+// daemon wrote is ended by the next one, whose worker stream holds no such lock-out
+// (closeEndedLockOuts), and a case that ended and came back writes its line again.
 func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	d := newDurableReach(t)
 	logged := &testlog.Buffer{}
@@ -701,16 +652,16 @@ func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	d.noLiveSessions(true)
 	first := d.booted(logged)
 	first.alerts.Open(fleetalert.NewerProcessRefused, "legion-legion-legion-209-implementer")
-	d.sweepEach(1, 25, noLiveSession, first)
+	d.sweepEach(1, 25, first)
 	first.wait()
 	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
 		t.Fatalf("the first daemon wrote the no-live line %d times in 25 minutes, want once", got)
 	}
 
 	next := d.booted(logged)
-	// The next daemon's minute sweep resends its lock-out notices, whose stream holds no lock-out.
-	newLockOutNotices(lockOutOptions{log: quietLogger(), project: "LEGION", alerts: next.alerts}).resend(context.Background())
-	d.sweepEach(26, 50, noLiveSession, next)
+	// The next daemon's minute sweep closes the lines of the lock-outs its stream holds none of.
+	next.closeEndedLockOuts(func(claim.Token) (stream.LockOut, bool) { return stream.LockOut{}, false })
+	d.sweepEach(26, 50, next)
 	next.wait()
 	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
 		t.Fatalf("the no-live line was written %d times across a restart its case held through, want once", got)
@@ -721,93 +672,11 @@ func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	}
 
 	d.noLiveSessions(false)
-	d.sweepEach(51, 51, noLiveSession, next)
+	d.sweepEach(51, 51, next)
 	next.wait()
 	d.noLiveSessions(true)
-	d.sweepEach(52, 75, noLiveSession, d.booted(logged))
+	d.sweepEach(52, 75, d.booted(logged))
 	if got := lines(fleetalert.NoLiveSession.Word); got != 2 {
 		t.Fatalf("a run of lists with no live session after one that held a live session wrote %d lines in all, want 2", got)
-	}
-}
-
-// lockOutOf is the lock-out of claim the worker stream reads as open: out, while it is of claim.
-func lockOutOf(out stream.LockOut) func(claim.Token) (stream.LockOut, bool) {
-	return func(token claim.Token) (stream.LockOut, bool) { return out, token == out.Claim }
-}
-
-// lockOutsOf is one daemon's lock-out notices over the database, told through w, whose worker
-// stream reads out as open, and the supervision that reports out to them.
-func (d *durableReach) lockOutsOf(w *workflowRuntime, out stream.LockOut, claims ...supervise.Claim) (*lockOutNotices, *supervision) {
-	d.t.Helper()
-	l := newLockOutNotices(lockOutOptions{log: quietLogger(), project: "LEGION", tell: w.tellControllerQueued, records: d.st,
-		lockedOut: lockOutOf(out), alerts: fleetalert.New(quietLogger(), "legion")})
-	s := d.daemon(d.projectNotifying(w), nil, claims...)
-	s.lockOuts = l
-	l.claimOf = supervisedClaimOf(s.supervisor)
-	return l, s
-}
-
-// resendEach runs the minute sweep's resend of l once a minute from minute from to minute to, both
-// included, and counts the notices of notice's kind it left in the outbox.
-func (d *durableReach) resendEach(from, to int, notice record.OutboxPayload, l *lockOutNotices) int {
-	d.t.Helper()
-	told := 0
-	for minute := from; minute <= to; minute++ {
-		d.at(time.Duration(minute) * time.Minute)
-		l.resend(context.Background())
-		told += d.delivered(notice)
-	}
-	return told
-}
-
-// A lock-out's notice is told once across a restart: the next daemon's worker stream reports the
-// same lock-out when the older process binds first again, and its told mark is a record of the
-// project's, written with it.
-func TestALockOutNoticeIsToldOnceAcrossARestart(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-	d.put(worker)
-	out := stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot}
-	reported := func() int {
-		_, s := d.lockOutsOf(w, out, d.claim(worker.Token))
-		s.lockOuts.report(out)
-		return d.delivered(lockedOut)
-	}
-	if told := reported(); told != 1 {
-		t.Fatalf("the first daemon told %d notices of the lock-out, want 1", told)
-	}
-	if told := reported(); told != 0 {
-		t.Fatalf("the next daemon told %d notices of the same lock-out, want none", told)
-	}
-}
-
-// A lock-out notice the controller's lane did not queue is kept as a record of the project's, so
-// the next daemon, whose worker stream still refuses the newer process, tells it at its first
-// sweep, once, and its own stream's report of the lock-out tells nothing more.
-func TestAKeptLockOutNoticeIsToldOnceByTheNextDaemon(t *testing.T) {
-	d := newDurableReach(t)
-	w := d.workflow()
-	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-	d.put(worker)
-	out := stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot}
-
-	first, s := d.lockOutsOf(w, out, d.claim(worker.Token))
-	first.tell = func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error) { return false, nil }
-	s.lockOuts.report(out)
-	if told := d.delivered(lockedOut); told != 0 {
-		t.Fatalf("the first daemon told %d notices its controller's lane refused, want none", told)
-	}
-
-	next, s := d.lockOutsOf(w, out, d.claim(worker.Token))
-	if told := d.resendEach(1, 1, lockedOut, next); told != 1 {
-		t.Fatalf("the next daemon's first sweep told %d notices of the lock-out the first kept, want 1", told)
-	}
-	s.lockOuts.report(out)
-	told := d.delivered(lockedOut) + d.resendEach(2, 3, lockedOut, next)
-	third, s := d.lockOutsOf(w, out, d.claim(worker.Token))
-	s.lockOuts.report(out)
-	if told += d.delivered(lockedOut) + d.resendEach(4, 5, lockedOut, third); told != 0 {
-		t.Fatalf("the lock-out was told %d more times after the next daemon told it, want none", told)
 	}
 }

@@ -56,24 +56,21 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
-	// OutboxKindReachNotice and OutboxKindReachControllerNotice are the kinds of the notices this
-	// change adds (reachNoticeKind): an architect's Notice and a ControllerNotice, decoded and
-	// delivered exactly as the two kinds above them are, under kinds of their own so that a daemon
-	// of the release before never selects one. That release decodes outbox rows strictly
-	// (DecodeOutboxPayload's DisallowUnknownFields) and knows neither these notice kinds nor their
-	// claim and unreachable fields, so under `notice` or `controller_notice` such a row is one it
-	// fails on at every attempt, for ever, and under `notice` one whose backoff also fails that
-	// release's every read of the project's state, which lists the notices not yet due and decodes
-	// each (WaitingNotices). It runs a row only through a lane that lists the row's kind
-	// (UnfinishedLanes leaves out a kind it has no lane for), so a daemon a rollback starts — or
-	// the older half of a rolling restart — leaves each of these rows where it stands, and the next
-	// daemon of this release delivers it. That is the standard answer to a message a new writer
-	// adds that an old reader cannot read, a type of its own the old reader skips, and it is the
-	// route that needs no release in between: a decoder the release before made tolerant would
-	// protect a rollback only to a release that carries it, and no release before this one carries
-	// one (scripts/e2e/rollback-notices.sh runs the one before it).
-	OutboxKindReachNotice           OutboxKind = "reach_notice"
-	OutboxKindReachControllerNotice OutboxKind = "reach_controller_notice"
+	// OutboxKindReachNotice is the kind of the notice this change adds (reachNoticeKind): an
+	// architect's Notice, decoded and delivered exactly as `notice` is, under a kind of its own so
+	// that a daemon of the release before never selects one. That release decodes outbox rows
+	// strictly (DecodeOutboxPayload's DisallowUnknownFields) and knows neither this notice kind nor
+	// its claim field, so under `notice` such a row is one it fails on at every attempt, for ever,
+	// and one whose backoff also fails that release's every read of the project's state, which
+	// lists the notices not yet due and decodes each (WaitingNotices). It runs a row only through a
+	// lane that lists the row's kind (UnfinishedLanes leaves out a kind it has no lane for), so a
+	// daemon a rollback starts — or the older half of a rolling restart — leaves each of these rows
+	// where it stands, and the next daemon of this release delivers it. That is the standard answer
+	// to a message a new writer adds that an old reader cannot read, a type of its own the old
+	// reader skips, and it is the route that needs no release in between: a decoder the release
+	// before made tolerant would protect a rollback only to a release that carries it, and no
+	// release before this one carries one (scripts/e2e/rollback-notices.sh runs the one before it).
+	OutboxKindReachNotice OutboxKind = "reach_notice"
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
@@ -141,7 +138,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindReachNotice, OutboxKindReachControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindReachNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -198,8 +195,7 @@ type pauseHold struct {
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
 // issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
-// (controller_notice and reach_controller_notice), since the pause never holds the controller
-// (spec Design item 8).
+// (controller_notice), since the pause never holds the controller (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -916,15 +912,7 @@ func (n Notice) Published(id int64) (Notice, string) {
 // published as the Notice it is.
 type ControllerNotice Notice
 
-// OutboxKind is the kind a controller notice is queued as: OutboxKindControllerNotice, or
-// OutboxKindReachControllerNotice for one the release before this change cannot decode
-// (reachNoticeKind).
-func (n ControllerNotice) OutboxKind() OutboxKind {
-	if reachNoticeKind(n.Kind) {
-		return OutboxKindReachControllerNotice
-	}
-	return OutboxKindControllerNotice
-}
+func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
 
 // The controller notices no architect is told of. A triage notice's root is unrecorded, so no
 // architect owns it; a slot-free notice names the issue whose slot admission released while no
@@ -995,13 +983,6 @@ const (
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
 
-	// EnvoyNoLiveSessionNotice says Envoy's whole list has held no live session for 20 minutes,
-	// so the daemon marks no claim out of reach (R5). WorkerLockedOutNotice names a claim whose
-	// newer process the worker stream has refused for 5 minutes because an older connection will
-	// not close, which only a person can end (R3).
-	EnvoyNoLiveSessionNotice NoticeKind = "envoy-no-live-session"
-	WorkerLockedOutNotice    NoticeKind = "worker-locked-out"
-
 	// ClaimOutOfReachNotice is the one unreachable notice an architect is told: one for each
 	// claim of its tree other than its own (R5). It asks nothing of the architect, since the
 	// daemon relaunches the claim, and an architect that is itself out of reach is never told
@@ -1012,17 +993,12 @@ const (
 	ProjectResumedNotice  NoticeKind = "project-resumed"
 )
 
-// reachNoticeKind says whether a notice of kind is one of this change's notices, which the release
-// before them cannot decode, so it is queued as OutboxKindReachNotice or
-// OutboxKindReachControllerNotice, which that release never runs. The claim field rides on these
-// kinds alone (validateClaimNotice), so no other notice carries a field that release does not know.
+// reachNoticeKind says whether a notice of kind is this change's notice, which the release before
+// it cannot decode, so it is queued as OutboxKindReachNotice, which that release never runs. The
+// claim field rides on that kind alone (validateClaimNotice), so no other notice carries a field
+// that release does not know.
 func reachNoticeKind(kind NoticeKind) bool {
-	switch kind {
-	case EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ClaimOutOfReachNotice:
-		return true
-	default:
-		return false
-	}
+	return kind == ClaimOutOfReachNotice
 }
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -1115,17 +1091,8 @@ type ArchitectStall struct {
 //
 // Every other kind says something about the project — a free slot, a todo issue, the day's tick
 // — which one wake carries however many facts find it pending.
-//
-// The lock-out notice answers true for the same reason the provider-errors notice does (R3): each
-// claim's is sent once, so a second claim's notice dropped behind the first claim's would never be
-// sent at all. The notice that Envoy lists nobody speaks for the project, as a tick does.
 func NoticePerClaim(kind NoticeKind) bool {
-	switch kind {
-	case ProviderErrorsNotice, TreeStalledNotice, WorkerLockedOutNotice:
-		return true
-	default:
-		return false
-	}
+	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
 
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's
@@ -2067,7 +2034,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindControllerNotice, OutboxKindReachControllerNotice:
+	case OutboxKindControllerNotice:
 		value := ControllerNotice{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
@@ -2689,19 +2656,18 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
-// validateClaimNotice holds the claim token to the notices of R5 and R3 that speak for one claim,
-// as every other field of a notice is held to its own kinds: each of them names it, and no other
-// notice does. Both arms of the switch above call it, because the architect reads one of these
-// kinds and the controller the other.
+// validateClaimNotice holds the claim token to the notice of R5 that speaks for one claim, as
+// every other field of a notice is held to its own kinds: it names it, and no other notice does.
+// Both arms of the switch above call it, so a controller notice that names a claim is refused too.
 func validateClaimNotice(kind NoticeKind, claimToken string) error {
 	switch kind {
-	case WorkerLockedOutNotice, ClaimOutOfReachNotice:
+	case ClaimOutOfReachNotice:
 		if claimToken == "" {
 			return fmt.Errorf("a %s notice names the claim it speaks for", kind)
 		}
 	default:
 		if claimToken != "" {
-			return fmt.Errorf("a %s notice names a claim; only a notice of a claim out of reach or locked out does", kind)
+			return fmt.Errorf("a %s notice names a claim; only a notice of a claim out of reach does", kind)
 		}
 	}
 	return nil
@@ -2712,8 +2678,7 @@ func validateClaimNotice(kind NoticeKind, claimToken string) error {
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice,
-		EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ProjectPausedNotice, ProjectResumedNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
 		return true
 	default:
 		return false

@@ -52,17 +52,17 @@ func TestTheOutboxTakesTheRoleHoldersPublishKindWith20261116165926(t *testing.T)
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "reach_notice", "reach_controller_notice",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "reach_notice",
 	}
-	if len(kinds) != 27 {
-		t.Fatalf("the list names %d kinds, want the 27 the daemon writes", len(kinds))
+	if len(kinds) != 26 {
+		t.Fatalf("the list names %d kinds, want the 26 the daemon writes", len(kinds))
 	}
 	for _, kind := range kinds {
 		if err := queue(kind, "LEGION-208"); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
-	t.Logf("after the migration the outbox takes all 27 kinds, role_holders_publish among them")
+	t.Logf("after the migration the outbox takes all 26 kinds, role_holders_publish among them")
 	if err := queue("quiesce", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
 	}

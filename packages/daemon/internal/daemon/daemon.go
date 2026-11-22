@@ -1595,13 +1595,11 @@ type supervision struct {
 	// the same claim carries the record its owner wants.
 	backstopMu   sync.Mutex
 	backstopOwed map[claim.Token]stallNoticeOwed
-	// reach is the daemon's reading of which claims Envoy cannot reach, and what it tells and does
-	// about them (R5): swept with the orphan sweep, relaunching each claim it marks, and holding the
-	// one R6 writer the worker stream writes its lock-out line through as well, so one case opens
-	// one line. lockOuts keeps the controller's notices of R3's lock-outs, resent at the same
-	// sweep. Neither is nil once openSupervision returns.
-	reach    *reachKeeper
-	lockOuts *lockOutNotices
+	// reach is the daemon's reading of which claims Envoy cannot reach, and what it does about
+	// them (R5): swept with the orphan sweep, relaunching each claim it marks, and holding the one
+	// R6 writer the worker stream writes its lock-out line through as well, so one case opens one
+	// line. It is not nil once openSupervision returns.
+	reach *reachKeeper
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1758,17 +1756,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.beforeDecision = p.beforeDecision
-	// The lock-out's notices are the controller's, which the workflow's admission queues
-	// (notices), and the stream reports each lock-out to them LockOutReportAfter after a first
-	// refused hello. They read the stream's own lock-outs back, so the listener is named here and
-	// set just below, before any report or sweep can read it.
-	var listener *stream.Listener
-	lockOuts := newLockOutNotices(lockOutOptions{log: log, project: cfg.Project, tell: notices.tell, records: st, alerts: alerts,
-		lockedOut: func(token claim.Token) (stream.LockOut, bool) { return listener.LockedOut(token) },
-		claimOf:   supervisedClaimOf(sup)})
-	listener, err = stream.Listen(draining, p.stream,
+	listener, err := stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log,
-			Alerts: alerts, ReportLockOut: lockOuts.report})
+			Alerts: alerts})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1880,9 +1870,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		alerts:           alerts,
 		relaunch:         supervisionOf.relaunchByDaemon,
 		step:             st.ClaimStep,
-		notices:          st,
 	})
-	supervisionOf.lockOuts = lockOuts
 	sup.deps.SessionGone = cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log, supervisionOf.reach.registrationRead)
 	return supervisionOf, nil
 }
@@ -2700,8 +2688,10 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
 		// Once a minute, as the requirement asks, over the claims this tick already read (R5), and
-		// the lock-out notices the controller's lane has not queued yet (R3).
-		s.lockOuts.resend(ctx)
+		// R6's line of each lock-out the worker stream no longer holds ends (R3).
+		if s.stream != nil {
+			s.reach.closeEndedLockOuts(s.stream.LockedOut)
+		}
 		s.reach.sweep(ctx, claims)
 	}
 }

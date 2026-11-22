@@ -10,7 +10,7 @@
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261114031356 did:
 -- that migration's twenty-four kinds, which are the kinds the daemon writes, this one, and
--- reach_notice and reach_controller_notice, which 20261116082000_reach_notice_kinds adds. Its
+-- reach_notice, which 20261116082000_reach_notice_kinds adds. Its
 -- version stands above 20261114031356 and 20261116082000 on purpose: Migrate applies every
 -- unrecorded migration in version order, so the list with the higher version is the last word on
 -- any database that applies both, and a database that recorded this list before
@@ -21,8 +21,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'reach_notice',
-  'reach_controller_notice'));
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'reach_notice'));
 
 -- One publish row per issue, which is what lets the enqueue be an upsert
 -- (store.EnqueueRoleHolders): the row names the issue alone, and the executor reads the

@@ -6,7 +6,7 @@ Read this when the skill's wake table sends you here. Wakes come on `notificatio
 
 Run the every-turn steps and the parked-root walk. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
 
-A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. Any other owning architect's claim the daemon relaunches once Envoy cannot reach its session: take nothing for it.
+A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says.
 
 ## `awaiting-person`
 

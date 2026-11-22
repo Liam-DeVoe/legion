@@ -100,11 +100,10 @@ type harnessOptions struct {
 	// launcherWait is Options.LauncherWait, for the tests that measure how long a launcher's
 	// hello waits for an acceptor; zero leaves the listener's own default.
 	launcherWait time.Duration
-	// clock, alerts and reportLockOut are the lock-out's: the time its report waits on, the
-	// writer of R6's line, and what the daemon would tell the controller through.
-	clock         Clock
-	alerts        *fleetalert.Writer
-	reportLockOut func(LockOut)
+	// clock and alerts are the lock-out's: the time its report waits on, and the writer of R6's
+	// line.
+	clock  Clock
+	alerts *fleetalert.Writer
 }
 
 func startListener(t *testing.T, options harnessOptions) *harness {
@@ -121,12 +120,11 @@ func startListener(t *testing.T, options harnessOptions) *harness {
 	logs := &logRecorder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	listener, err := Listen(ctx, options.addr, options.resolver.resolve, Options{
-		RPCTimeout:    options.rpcTimeout,
-		LauncherWait:  options.launcherWait,
-		Log:           slog.New(logs),
-		Clock:         options.clock,
-		Alerts:        options.alerts,
-		ReportLockOut: options.reportLockOut,
+		RPCTimeout:   options.rpcTimeout,
+		LauncherWait: options.launcherWait,
+		Log:          slog.New(logs),
+		Clock:        options.clock,
+		Alerts:       options.alerts,
 	})
 	if err != nil {
 		cancel()

@@ -30,9 +30,6 @@ func TestTheDaemonRelaunchesItsOwnControllerOnceInSixHours(t *testing.T) {
 	if len(r.relaunched) != 1 {
 		t.Fatalf("the daemon relaunched its controller %d times, want once", len(r.relaunched))
 	}
-	if len(r.told) != 0 {
-		t.Fatalf("the controller was told of itself: %+v", r.told)
-	}
 	controller.Generation++
 	for minute := 22; minute <= 40; minute++ {
 		r.at(time.Duration(minute) * time.Minute)

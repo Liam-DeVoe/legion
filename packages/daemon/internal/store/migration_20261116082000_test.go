@@ -12,18 +12,18 @@ import (
 // migrate through everything before it whatever lands beside it.
 const reachNoticeKindsVersion = 20261116082000
 
-// The notices this change adds are queued under two kinds of their own, which the release before it
-// never runs (record.OutboxKindReachNotice, record.OutboxKindReachControllerNotice): the outbox
-// refuses a kind its constraint does not name, so neither could be queued before this migration,
-// which is the negative control, read before it runs. After it both are queued, and so is every
-// kind the constraint already named and the role-holders publication both lists name
-// (20261116165926), since the migration rewrites the list whole and a kind left out would stop its
-// own effect. A kind that is none is still refused.
+// The notice this change adds is queued under a kind of its own, which the release before it never
+// runs (record.OutboxKindReachNotice): the outbox refuses a kind its constraint does not name, so
+// it could not be queued before this migration, which is the negative control, read before it
+// runs. After it, it is queued, and so is every kind the constraint already named and the
+// role-holders publication both lists name (20261116165926), since the migration rewrites the
+// list whole and a kind left out would stop its own effect. A kind that is none is still refused,
+// reach_controller_notice among them: the controller is told of no claim out of reach.
 //
-// A database a build of this change migrated before the two kinds existed can hold such a notice
-// under `notice` or `controller_notice`, where this release refuses to decode it, because a row's
-// kind and its notice's kind must agree (record.DecodeOutboxPayload). The migration moves each such
-// row to its own kind, where it decodes, and moves no other notice.
+// A database a build of this change migrated before the kind existed can hold such a notice under
+// `notice`, where this release refuses to decode it, because a row's kind and its notice's kind
+// must agree (record.DecodeOutboxPayload). The migration moves each such row to its own kind,
+// where it decodes, and moves no other notice.
 func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -33,7 +33,7 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 			values ($1, 'LEGION-208', $2::jsonb, 0, now(), '')`, kind, payload)
 		return err
 	}
-	added := []string{"reach_notice", "reach_controller_notice"}
+	added := []string{"reach_notice"}
 	for _, kind := range added {
 		err := queue(kind, `{}`)
 		if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
@@ -42,8 +42,6 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 		t.Logf("before the migration a %s row is refused: %v", kind, err)
 	}
 	written := map[string]struct{ kind, payload string }{
-		"nolive":    {"controller_notice", `{"kind":"envoy-no-live-session","reason":"r"}`},
-		"locked":    {"controller_notice", `{"kind":"worker-locked-out","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
 		"architect": {"notice", `{"kind":"claim-out-of-reach","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
 		"tick":      {"controller_notice", `{"kind":"tick"}`},
 		"finished":  {"notice", `{"kind":"phase-finished","role":"implementer","summary":"done"}`},
@@ -61,7 +59,6 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 		t.Fatalf("migrate through the reach notice kinds: %v", err)
 	}
 	for name, want := range map[string]record.OutboxKind{
-		"nolive": record.OutboxKindReachControllerNotice, "locked": record.OutboxKindReachControllerNotice,
 		"architect": record.OutboxKindReachNotice, "tick": record.OutboxKindControllerNotice, "finished": record.OutboxKindNotice,
 	} {
 		var row record.OutboxRow
@@ -88,8 +85,10 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
-	t.Logf("after the migration the outbox takes every kind, reach_notice and reach_controller_notice among them")
-	if err := queue("quiesce", `{}`); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
-		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
+	t.Logf("after the migration the outbox takes every kind, reach_notice among them")
+	for _, kind := range []string{"quiesce", "reach_controller_notice"} {
+		if err := queue(kind, `{}`); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+			t.Fatalf("queueing a row of %s, a kind that is none = %v, want the constraint to refuse it", kind, err)
+		}
 	}
 }

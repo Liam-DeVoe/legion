@@ -29,14 +29,11 @@ var kindsTheReleaseBeforeRuns = []OutboxKind{
 	"claim_release",
 }
 
-// reachNotices is one of each notice this change adds, as its writers fill it: the controller's
-// two and the architect's one. The release before decodes none of them: it knows none of the
-// kinds, and its decoder refuses the claim field (DisallowUnknownFields).
+// reachNotices is the notice this change adds, as its writer fills it: the architect's notice of a
+// claim out of reach. The release before cannot decode it: it knows neither the kind nor the claim
+// field, which its decoder refuses (DisallowUnknownFields).
 func reachNotices(at time.Time) []OutboxPayload {
 	return []OutboxPayload{
-		ControllerNotice{Kind: EnvoyNoLiveSessionNotice, Reason: "Envoy has listed no live session for 20 minutes"},
-		ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "generation 7 has been refused the worker stream for 5 minutes; generation 6 is still connected"},
 		Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
 			Reason: "its session's last registration with Envoy is more than 20 minutes old"},
 	}
@@ -99,69 +96,17 @@ func TestANoticeDecodesOnlyUnderTheKindItIsQueuedAs(t *testing.T) {
 			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
 		}
 		ordinary := OutboxKindNotice
-		if _, ok := payload.(ControllerNotice); ok {
-			ordinary = OutboxKindControllerNotice
-		}
 		if _, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: ordinary, Payload: row.Payload}); err == nil || !strings.Contains(err.Error(), "does not match") {
 			t.Errorf("a %s notice under %s decoded with %v, want the kinds' mismatch refused", noticeKindOf(payload), ordinary, err)
 		}
 	}
-	tick, err := json.Marshal(ControllerNotice{Kind: TickNotice})
+	finished, err := json.Marshal(Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Summary: "done"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: OutboxKindReachControllerNotice, Payload: tick}); err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Errorf("a tick under %s decoded with %v, want the kinds' mismatch refused", OutboxKindReachControllerNotice, err)
+	if _, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: OutboxKindReachNotice, Payload: finished}); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Errorf("a phase-finished notice under %s decoded with %v, want the kinds' mismatch refused", OutboxKindReachNotice, err)
 	}
-}
-
-// The reads that decide whether a controller notice still waits unsent find the notices of this
-// change under their own kind, so a second notice that Envoy lists no live session is not queued
-// behind the first and a claim's lock-out notice is one per claim, as the reads do for every other
-// kind; and a pending tick is still found under its own.
-func TestAControllerNoticeIsPendingUnderTheKindItIsQueuedAs(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	inTx(t, st, func(tx pgx.Tx) {
-		for _, queued := range []struct {
-			issue   string
-			payload OutboxPayload
-		}{
-			{"LEGION", ControllerNotice{Kind: EnvoyNoLiveSessionNotice, Reason: "r"}},
-			{"LEGION-209", ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-legion-209-implementer", Reason: "r"}},
-			{"LEGION", ControllerNotice{Kind: TickNotice}},
-		} {
-			row, err := NewOutboxRow(queued.issue, queued.payload, now)
-			must(t, err)
-			must(t, records.Enqueue(ctx, tx, row))
-		}
-	})
-	inTx(t, st, func(tx pgx.Tx) {
-		for _, tc := range []struct {
-			kind  NoticeKind
-			issue string
-			role  claim.Role
-			want  bool
-		}{
-			{EnvoyNoLiveSessionNotice, "", "", true},
-			{WorkerLockedOutNotice, "LEGION-209", claim.RoleImplementer, true},
-			{WorkerLockedOutNotice, "LEGION-210", claim.RoleImplementer, false},
-			{TickNotice, "", "", true},
-		} {
-			pending, err := records.ControllerNoticePending(ctx, tx, "LEGION", tc.kind, tc.issue, tc.role)
-			must(t, err)
-			if pending != tc.want {
-				t.Errorf("ControllerNoticePending(%s, %q, %q) = %t, want %t", tc.kind, tc.issue, tc.role, pending, tc.want)
-			}
-		}
-		pending, err := records.ControllerNoticesPending(ctx, tx, "LEGION", WorkerLockedOutNotice, []string{"LEGION-209", "LEGION-210"}, claim.RoleImplementer)
-		must(t, err)
-		if _, ok := pending["LEGION-209"]; !ok || len(pending) != 1 {
-			t.Errorf("ControllerNoticesPending(worker-locked-out, LEGION-209 and LEGION-210) = %v, want LEGION-209 alone", pending)
-		}
-	})
 }
 
 // The architect's notice of a claim out of reach is one of its tree's notices like any other: a

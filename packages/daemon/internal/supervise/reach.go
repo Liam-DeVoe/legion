@@ -57,6 +57,15 @@ type Reach struct {
 	// GuardRefusedAt is when the relaunch guard first refused the daemon's relaunch of the claim in
 	// this episode (RelaunchGuard), which R6's line for a guard held 60 minutes counts from.
 	GuardRefusedAt time.Time `json:"guardRefusedAt,omitzero"`
+	// HeldAt is when anything but the guard first refused that relaunch in this episode — the
+	// claim's machine for a cause it owns (its tree lifecycle, a wake waiting its turn, a
+	// compaction in flight) or any other error of the relaunch — which R6's line for a relaunch
+	// held 60 minutes counts from, as it counts from GuardRefusedAt.
+	HeldAt time.Time `json:"heldAt,omitzero"`
+	// SuspensionHeldAt is when an operator's suspension held over the claim first refused that
+	// relaunch in this episode (ErrOperatorSuspensionHeld): a person's own act, which is logged
+	// once and writes no line.
+	SuspensionHeldAt time.Time `json:"suspensionHeldAt,omitzero"`
 	// Relaunched is whether a relaunch reached the claim in this episode.
 	Relaunched bool `json:"relaunched,omitempty"`
 	// RelaunchedAt is the claim's last relaunch this record has taken in (Claim.LastRelaunch, as
@@ -110,6 +119,9 @@ var (
 	// the epoch the claim is bound to is stale or unset — so the relaunch stops nothing. The tree's
 	// close or its next start decides that claim, not a relaunch.
 	ErrTreeRefusesLaunch = errors.New("the claim's tree allows it no launch, so nothing was stopped")
+	// ErrOperatorSuspensionHeld: an operator's suspension is held over the claim for its turn, so
+	// the operator, not a relaunch, decides its process (SuspendedByOperator).
+	ErrOperatorSuspensionHeld = errors.New("an operator's suspension is held over the claim")
 	// ErrTreeCheckFailed: the tree lifecycle's recheck before the stop got no answer of the tree's
 	// — the store did not answer it, or the request's time ran out waiting on it — so the relaunch
 	// stopped nothing and may be asked for again.
@@ -276,6 +288,8 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		return &RefusedError{State: m.claim.State, Request: "relaunch", Reason: err.Error(), Err: err}
 	}
 	switch {
+	case m.held != nil && m.held.By == SuspendedByOperator:
+		return refuse(ErrOperatorSuspensionHeld)
 	case m.held != nil:
 		return refuse(errors.New("a suspension is held over the claim"))
 	case m.wake != nil:

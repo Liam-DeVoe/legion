@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -162,72 +162,34 @@ func TestTheDaemonsRelaunchRefusesAPodWhoseEveryClaimIsOutOfReach(t *testing.T) 
 	testwait.Eventually(t, "the worker's relaunch to move its generation", func() bool { return m.Claim().Generation > generation })
 }
 
-// lockOutRig is a supervisor holding worker, and the reach rig's lock-out notices the lock-out is
-// told through, whose worker stream reads the worker's lock-out of generation 4 by 3 as open while
-// locked holds.
-func lockOutRig(t *testing.T, locked *atomic.Bool) (*supervision, *reachRig, supervise.Claim) {
-	t.Helper()
-	sup, _ := newPluginSupervisor(t, api.DaemonAPIVersion, true)
-	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
+// An operator's suspension held over the claim for its turn refuses the daemon's relaunch at the
+// claim's machine: the operator decides its process. The claim's generation does not move, no line
+// is written however long the suspension is held, and the refusal is logged once.
+func TestTheDaemonsRelaunchOfAClaimAnOperatorSuspendsIsRefusedWithNoLine(t *testing.T) {
+	r, sup := relaunchRig(t)
+	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
 	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
 		t.Fatal(err)
 	}
-	r := newReachRig(t, false)
-	r.lockOuts.lockedOut = func(token claim.Token) (stream.LockOut, bool) {
-		return stream.LockOut{Claim: token, Newer: 4, Older: 3, Since: reachBoot}, token == worker.Token && locked.Load()
+	m, _ := sup.Machine(worker.Token)
+	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: worker.Token, By: supervise.SuspendedByOperator,
+		Reason: "the operator suspends it"}); !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("the operator's suspension of the claim in its turn = %v, want it held for the turn", err)
 	}
-	r.lockOuts.claimOf = supervisedClaimOf(sup)
-	return &supervision{log: quietLogger(), supervisor: sup, reach: r.k, lockOuts: r.lockOuts}, r, worker
-}
-
-// The worker stream reports a lock-out once, so a notice of it the controller's lane did not queue
-// — here, no controller registered — is told again until it is queued, and queued once (R3).
-func TestARefusedLockOutNoticeIsToldAgainUntilItIsQueued(t *testing.T) {
-	locked := &atomic.Bool{}
-	locked.Store(true)
-	s, r, worker := lockOutRig(t, locked)
-	r.mu.Lock()
-	r.refuseTell = true
-	r.mu.Unlock()
-	s.lockOuts.report(stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot})
-	if told := r.notices(record.WorkerLockedOutNotice); len(told) != 0 {
-		t.Fatalf("lock-out notices = %+v while the controller's lane refuses them, want none", told)
-	}
-
-	r.mu.Lock()
-	r.refuseTell = false
-	r.mu.Unlock()
-	for minute := 1; minute <= 3; minute++ {
+	generation := m.Claim().Generation
+	for minute := 21; minute <= 90; minute++ {
 		r.at(time.Duration(minute) * time.Minute)
-		r.sweep()
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(m.Claim()))
 	}
-	told := r.notices(record.WorkerLockedOutNotice)
-	if len(told) != 1 || told[0].notice.Claim != string(worker.Token) || told[0].issue != worker.Issue {
-		t.Fatalf("lock-out notices = %+v, want one naming the claim on its issue", told)
+	if got := m.Claim().Generation; got != generation {
+		t.Fatalf("the relaunch moved the claim an operator suspends to generation %d, want %d", got, generation)
 	}
-}
-
-// A lock-out that ended before its notice was queued is told no more: only a person can end the
-// process it names, and it has ended.
-func TestALockOutNoticeIsToldNoMoreOnceItsLockOutEnds(t *testing.T) {
-	locked := &atomic.Bool{}
-	locked.Store(true)
-	s, r, worker := lockOutRig(t, locked)
-	r.mu.Lock()
-	r.refuseTell = true
-	r.mu.Unlock()
-	s.lockOuts.report(stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot})
-
-	locked.Store(false)
-	r.mu.Lock()
-	r.refuseTell = false
-	r.mu.Unlock()
-	for minute := 1; minute <= 3; minute++ {
-		r.at(time.Duration(minute) * time.Minute)
-		r.sweep()
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d lines for the claim an operator suspends, want none", lines)
 	}
-	if told := r.notices(record.WorkerLockedOutNotice); len(told) != 0 {
-		t.Fatalf("lock-out notices = %+v after the lock-out ended, want none", told)
+	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.HeldAt.IsZero() || !got.GuardRefusedAt.IsZero() {
+		t.Fatalf("the keeper's record = %+v, want the operator's suspension recorded and no other refusal", got)
 	}
 }
 

@@ -3,12 +3,10 @@ package stream
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
-	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // A lock-out is a claim whose current process the stream refuses because an older generation's
@@ -36,10 +34,10 @@ import (
 //
 // What is left after LockOutReportAfter is a process that answers and will not stop, which only a
 // person can end on its node: closing its connection here would leave two processes writing one
-// Oh My Pi session and one branch.
+// Oh My Pi session and one branch. R6's line tells that person (fleetalert.NewerProcessRefused).
 const (
-	// LockOutReportAfter is how long a newer process is refused before the lock-out is reported
-	// to the project's controller and a person is told by R6's line.
+	// LockOutReportAfter is how long a newer process is refused before R6's line tells a person
+	// of the lock-out.
 	LockOutReportAfter = 5 * time.Minute
 	// LockOutSilenceAfter is how long an older generation's connection may send nothing at all
 	// after its stop frame before the daemon ends it. With the at most 5 seconds the newer
@@ -49,19 +47,13 @@ const (
 	LockOutSilenceAfter = 2 * time.Minute
 )
 
-// LockOut is one such claim, as the daemon reports it: the generation refused, the generation
-// still bound, and the first hello the newer process was refused at.
+// LockOut is one such claim, as the stream holds it: the generation refused, the generation still
+// bound, and the first hello the newer process was refused at.
 type LockOut struct {
 	Claim claim.Token
 	Newer uint64
 	Older uint64
 	Since time.Time
-}
-
-// Reason is the sentence the controller's record.WorkerLockedOutNotice carries.
-func (o LockOut) Reason() string {
-	return fmt.Sprintf("generation %d has been refused the worker stream for %s; generation %d is still connected",
-		o.Newer, timewords.Words(LockOutReportAfter), o.Older)
 }
 
 // Clock is the time the stream waits on: a lock-out's report and its older connection's silence,
@@ -225,9 +217,8 @@ func (l *Listener) endSilentOlder(token claim.Token, o *lockOut, bound *Conn, ma
 	}
 }
 
-// reportLockOut is the timer of a lock-out that has lasted LockOutReportAfter: the project's
-// controller is told once, and R6's line is written once, because only a person can end a
-// process that cannot be stopped.
+// reportLockOut is the timer of a lock-out that has lasted LockOutReportAfter: R6's line is
+// written once, because only a person can end a process that cannot be stopped.
 func (l *Listener) reportLockOut(token claim.Token) {
 	l.mu.Lock()
 	o, open := l.lockOuts[token]
@@ -236,14 +227,11 @@ func (l *Listener) reportLockOut(token claim.Token) {
 		return
 	}
 	o.reported = true
-	out := LockOut{Claim: token, Newer: o.newer, Older: o.older, Since: o.since}
+	newer, older := o.newer, o.older
 	l.mu.Unlock()
 
 	if l.alerts != nil {
-		l.alerts.Open(fleetalert.NewerProcessRefused, string(token), "generation", out.Newer, "boundGeneration", out.Older)
-	}
-	if l.reportLocked != nil {
-		l.reportLocked(out)
+		l.alerts.Open(fleetalert.NewerProcessRefused, string(token), "generation", newer, "boundGeneration", older)
 	}
 }
 

@@ -14,24 +14,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A newer process still refused LockOutReportAfter after its first hello is reported once to the
-// project's controller, naming the claim and both generations, and R6's line is written once
-// beside it: only a person can end a process that cannot be stopped, and the controller cannot.
-// Both end with the lock-out.
+// A newer process still refused LockOutReportAfter after its first hello is reported once by R6's
+// line, naming the claim and both generations: only a person can end a process that cannot be
+// stopped. The line ends with the lock-out.
 //
 // The older process here is that process: it answers what the daemon asks it, as Oh My Pi does
 // through its shim, and ignores its stop frame. A connection that answers stays bound past the
 // window in which a silent one is ended, and is ended by nobody but its own process.
 func TestANewerProcessStillRefusedIsReportedOnce(t *testing.T) {
 	clock := &lockOutClock{now: time.Date(2026, 11, 12, 20, 30, 0, 0, time.UTC)}
-	reports := make(chan LockOut, 4)
 	alertLog := &logRecorder{}
 	alerts := fleetalert.New(slog.New(alertLog), "acme")
 	h := startListener(t, harnessOptions{
-		resolver:      generations(map[string]uint64{testToken: testGeneration, newerToken: testGeneration + 1}),
-		clock:         clock,
-		alerts:        alerts,
-		reportLockOut: func(out LockOut) { reports <- out },
+		resolver: generations(map[string]uint64{testToken: testGeneration, newerToken: testGeneration + 1}),
+		clock:    clock,
+		alerts:   alerts,
 	})
 	older := h.connect(testToken)
 	bound := h.conn()
@@ -49,34 +46,19 @@ func TestANewerProcessStillRefusedIsReportedOnce(t *testing.T) {
 	}
 
 	clock.advance(LockOutReportAfter - time.Second)
-	select {
-	case out := <-reports:
-		t.Fatalf("the lock-out was reported after %s, before %s: %#v", LockOutReportAfter-time.Second, LockOutReportAfter, out)
-	default:
+	if lines := alertLog.Lines(); len(lines) != 0 {
+		t.Fatalf("the fleet alert lines after %s, before %s = %q, want none", LockOutReportAfter-time.Second, LockOutReportAfter, lines)
 	}
 	if !daemonEndOpen(bound) {
 		t.Fatalf("the older connection was ended within %s although it answered", LockOutReportAfter-time.Second)
 	}
 	clock.advance(time.Second)
-
-	out := awaitReport(t, reports)
-	if out != want {
-		t.Fatalf("report = %#v, want %#v", out, want)
-	}
-	if got, want := out.Reason(), "generation 4 has been refused the worker stream for 5 minutes; generation 3 is still connected"; got != want {
-		t.Fatalf("the notice's reason = %q, want %q", got, want)
-	}
-
-	// Refused again, and the report and the line stay at one for this lock-out.
+	awaitAlertLines(t, alertLog, 1)
+	// Refused again, and the line stays at one for this lock-out.
 	repeat := dial(t, h.listener.Addr())
 	repeat.hello(newerToken)
 	repeat.awaitClosed()
 	clock.advance(LockOutReportAfter)
-	select {
-	case out := <-reports:
-		t.Fatalf("the lock-out was reported twice: %#v", out)
-	default:
-	}
 	lines := alertLog.Lines()
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], fleetalert.Prefix+": ") ||
 		!strings.Contains(lines[0], "case="+fleetalert.NewerProcessRefused.Word) ||
@@ -103,15 +85,11 @@ func TestANewerProcessStillRefusedIsReportedOnce(t *testing.T) {
 	}
 }
 
-func awaitReport(t *testing.T, reports <-chan LockOut) LockOut {
+// awaitAlertLines waits until log holds n lines, R6's line being written on the clock's goroutine
+// as the report's wait fires.
+func awaitAlertLines(t *testing.T, log *logRecorder, n int) {
 	t.Helper()
-	select {
-	case out := <-reports:
-		return out
-	case <-time.After(wait):
-		t.Fatal("the lock-out was never reported")
-		return LockOut{}
-	}
+	testwait.Eventually(t, fmt.Sprintf("%d fleet alert lines", n), func() bool { return len(log.Lines()) >= n })
 }
 
 // lockOutClock is the time the listener's lock-out waits on, its report and its older

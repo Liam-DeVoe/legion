@@ -18,12 +18,12 @@
 // Step 6 starts a shim with a boot token the daemon never minted.
 //
 // What a step reads is the daemon's own log (the hellos it refused and why, with their claims and
-// generations), the relay's record of every connection (each hello, the frames the daemon sent,
-// when it closed), the runtime's (each process's end, and every read of a process the daemon
-// made), the operator's claim listing, and the controller's topic as the stream stored it. Every
-// daemon text a step matches is written here as a literal, so step 1 builds against the base,
-// whose code names none of the head's symbols: lockout-generations.sh's negative control lays this
-// file and the rig's over the base's tree and runs step 1 there.
+// generations, and R6's lines), the relay's record of every connection (each hello, the frames the
+// daemon sent, when it closed), the runtime's (each process's end, and every read of a process the
+// daemon made), the operator's claim listing, and the controller's topic as the stream stored it.
+// Every daemon text a step matches is written here as a literal, so step 1 builds against the
+// base, whose code names none of the head's symbols: lockout-generations.sh's negative control lays
+// this file and the rig's over the base's tree and runs step 1 there.
 package daemon
 
 import (
@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -44,16 +45,15 @@ import (
 // (internal/stream listener.go and lockout.go, internal/supervise machine.go and table.go,
 // internal/fleetalert).
 const (
-	rejectedHelloPrefix   = "worker-stream: rejected hello ("
-	refusedAlreadyBound   = "worker-stream: rejected hello (already bound to a live stream)"
-	refusedOlderBound     = "worker-stream: rejected hello (already bound to a live stream of an older generation, which has been told to stop)"
-	refusedStale          = "worker-stream: rejected hello (stale worker generation)"
-	refusedUnknown        = "worker-stream: rejected hello (unknown boot token)"
-	droppedStaleEvent     = "supervise: dropped a stale event"
-	registrationHeld      = "supervise: the worker stream refuses this launch while an older generation's connection is bound; its registration deadline is held, charging nothing"
-	fleetAlertPrefix      = "LEGION FLEET ALERT: "
-	newerProcessRefused   = "newer_process_refused"
-	workerLockedOutNotice = "worker-locked-out"
+	rejectedHelloPrefix = "worker-stream: rejected hello ("
+	refusedAlreadyBound = "worker-stream: rejected hello (already bound to a live stream)"
+	refusedOlderBound   = "worker-stream: rejected hello (already bound to a live stream of an older generation, which has been told to stop)"
+	refusedStale        = "worker-stream: rejected hello (stale worker generation)"
+	refusedUnknown      = "worker-stream: rejected hello (unknown boot token)"
+	droppedStaleEvent   = "supervise: dropped a stale event"
+	registrationHeld    = "supervise: the worker stream refuses this launch while an older generation's connection is bound; its registration deadline is held, charging nothing"
+	fleetAlertPrefix    = "LEGION FLEET ALERT: "
+	newerProcessRefused = "newer_process_refused"
 )
 
 // The bounds the check reads against: the shim's grace before it kills the process it wraps
@@ -324,8 +324,8 @@ func (r *lockoutLive) secondShimIsRefused() {
 // olderHoldsTenMinutes is the check's third step: the first step again with a shim A2 that reads
 // the stop frame and does not stop. For 10 minutes, past the rig's 6-minute registration deadline,
 // the newer shim stays refused and A2 stays bound, the claim is charged no launch failure and no
-// newer generation is launched; 5 minutes after the newer shim's first hello the controller's
-// notice names the claim and both generations, once, and the daemon writes R6's line, once.
+// newer generation is launched; 5 minutes after the newer shim's first hello the daemon writes
+// R6's line, once, naming the claim and both generations, and the controller is told nothing.
 func (r *lockoutLive) olderHoldsTenMinutes() {
 	token := r.token(r.stubborn, claim.RoleImplementer)
 	from := r.daemon.count()
@@ -381,23 +381,14 @@ func (r *lockoutLive) olderHoldsTenMinutes() {
 		r.fails("deadline-held", "the registration deadline of %s never came round in %s, so the lock-out was not watched past it", token, lockOutWatched)
 	}
 
-	var notices []rigNotice
-	for _, n := range r.controllerNotices(workerLockedOutNotice) {
-		if n.claim == string(token) {
-			notices = append(notices, n)
+	var toController []string
+	for _, stored := range r.nats.storedOn(notify.ControllerTopic(r.project)) {
+		if notice, ok := noticeIn(stored.data); ok && (notice.claim == string(token) || strings.Contains(notice.reason, string(token))) {
+			toController = append(toController, clockAt(stored.at)+" "+notice.kind)
 		}
 	}
-	if len(notices) != 1 {
-		r.fails("controller-told-once", "the controller was told of %s's lock-out %d times, want once", token, len(notices))
-	}
-	notice := notices[0]
-	r.note("the controller's notice, stored at %s (%s after the newer shim's first hello): kind %s, claim %s, reason %q",
-		clockAt(notice.at), notice.at.Sub(b2Hello).Round(time.Second), notice.kind, notice.claim, notice.reason)
-	if wait := notice.at.Sub(b2Hello); wait < lockOutReported || wait > lockOutReported+reportAllowance {
-		r.fails("controller-told-at-5m", "the controller was told %s after the newer shim's first hello, want %s", wait, lockOutReported)
-	}
-	if !strings.Contains(notice.reason, fmt.Sprintf("generation %d", b2.spec.Generation)) || !strings.Contains(notice.reason, fmt.Sprintf("generation %d", a2.spec.Generation)) {
-		r.fails("controller-told-generations", "the notice's reason %q does not name generations %d and %d", notice.reason, b2.spec.Generation, a2.spec.Generation)
+	if len(toController) != 0 {
+		r.fails("controller-told-nothing", "the controller was told of %s's lock-out %v, want nothing: only a person can end it", token, toController)
 	}
 	alerts := r.logsFrom(from, func(rec loggedRecord) bool {
 		return strings.HasPrefix(rec.Message, fleetAlertPrefix) && rec.Attrs["case"] == newerProcessRefused && rec.Attrs["claim"] == string(token)
@@ -407,6 +398,9 @@ func (r *lockoutLive) olderHoldsTenMinutes() {
 	}
 	if wait := alerts[0].at.Sub(b2Hello); wait < lockOutReported || wait > lockOutReported+reportAllowance {
 		r.fails("r6-line-at-5m", "R6's line came %s after the newer shim's first hello, want %s", wait, lockOutReported)
+	}
+	if !generationIs(alerts[0].Attrs["generation"], b2.spec.Generation) || !generationIs(alerts[0].Attrs["boundGeneration"], a2.spec.Generation) {
+		r.fails("r6-line-generations", "R6's line reads %v, want generation %d refused while %d is bound", alerts[0].Attrs, b2.spec.Generation, a2.spec.Generation)
 	}
 	r.note("R6's line at %s (%s after the first hello): %s", clockAt(alerts[0].at), alerts[0].at.Sub(b2Hello).Round(time.Second), describe(alerts[0]))
 	r.a2, r.b2 = a2, b2

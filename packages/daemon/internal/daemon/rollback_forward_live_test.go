@@ -93,7 +93,7 @@ func TestARollbackSeedIsWrittenByTheNewerReleaseLive(t *testing.T) {
 			t.Fatalf("the database keeps %d boot tokens of earlier launches, want the %d the launches left", len(history), rollbackLaunches*len(rollbackClaims))
 		}
 	})
-	p.step("a canary tick, then one of each notice of this change", func() {
+	p.step("a canary tick, then the notice of this change", func() {
 		root, implementer := p.root(), p.token(rollbackClaim{role: claim.RoleImplementer})
 		now := time.Now().UTC()
 		queued := []struct {
@@ -101,10 +101,6 @@ func TestARollbackSeedIsWrittenByTheNewerReleaseLive(t *testing.T) {
 			payload record.OutboxPayload
 		}{
 			{p.cfg.Project, record.ControllerNotice{Kind: record.TickNotice}},
-			{p.cfg.Project, record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice,
-				Reason: "Envoy's session list has held no live session for 20 minutes"}},
-			{root, record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: string(implementer),
-				Reason: "generation 3 has been refused the worker stream for 5 minutes; generation 2 is still connected"}},
 			{root, record.Notice{Kind: record.ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: string(implementer),
 				Reason: "its session has not registered with Envoy for more than 20 minutes; nothing is asked of you"}},
 		}

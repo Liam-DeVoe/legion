@@ -94,10 +94,6 @@ type Options struct {
 	// (fleetalert.NewerProcessRefused), opened once and closed when the lock-out ends; nil
 	// writes none.
 	Alerts *fleetalert.Writer
-	// ReportLockOut is told of each lock-out once, LockOutReportAfter after the newer process's
-	// first refused hello, so the daemon can tell the project's controller
-	// (record.WorkerLockedOutNotice, whose text is LockOut.Reason); nil tells nobody.
-	ReportLockOut func(LockOut)
 }
 
 // Listener accepts shim connections and keeps the live one for each claim. Its life is the
@@ -138,11 +134,10 @@ type Listener struct {
 	registrations uint64
 	// lockOuts is every claim whose current process the stream is refusing because an older
 	// generation's connection is still bound (lockout.go); clock is the time their waits run on,
-	// and alerts and reportLocked are what their reports are made to.
-	lockOuts     map[claim.Token]*lockOut
-	clock        Clock
-	alerts       *fleetalert.Writer
-	reportLocked func(LockOut)
+	// and alerts is where their report is written.
+	lockOuts map[claim.Token]*lockOut
+	clock    Clock
+	alerts   *fleetalert.Writer
 
 	wg sync.WaitGroup
 }
@@ -192,7 +187,6 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 		lockOuts:          map[claim.Token]*lockOut{},
 		clock:             clock,
 		alerts:            opts.Alerts,
-		reportLocked:      opts.ReportLockOut,
 	}
 	l.wg.Add(1)
 	go l.accept()

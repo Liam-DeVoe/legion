@@ -258,10 +258,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
-		// The orphan sweep resends the lock-out notices and sweeps the reach keeper at each tick;
-		// the rig's stream holds no lock-out and its keeper reads no Envoy list.
-		lockOuts: newLockOutNotices(lockOutOptions{log: quietLogger(), project: podUpdateProject,
-			alerts: fleetalert.New(quietLogger(), podUpdateProject)}),
+		// The orphan sweep sweeps the reach keeper at each tick; the rig's keeper reads no Envoy
+		// list.
 		reach: newReachKeeper(reachKeeperOptions{log: quietLogger(), project: podUpdateProject, now: clock.Now,
 			alerts: fleetalert.New(quietLogger(), podUpdateProject)}),
 	}

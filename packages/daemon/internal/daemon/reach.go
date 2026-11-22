@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
@@ -80,35 +79,20 @@ type reachKeeper struct {
 	// sessions is each session of the last list that answered, with the Envoy roles it holds.
 	sessions map[string]notify.ListedSession
 	// failingSince is the first of a run of failed reads, and failedAt the end of the last failed
-	// read; noLiveSince is the first of a run of reads that found no live session, noLiveAt the
-	// last such read, and noLiveTold whether the controller has been told of that run.
+	// read; noLiveSince is the first of a run of reads that found no live session, and noLiveAt
+	// the last such read.
 	failingSince, failedAt time.Time
 	noLiveSince, noLiveAt  time.Time
-	noLiveTold             bool
 	// relaunching is each claim whose relaunch by the daemon is in flight.
 	relaunching map[claim.Token]bool
-	// loaded is whether this daemon has read the project's notice records yet (loadNotices), and
-	// noLiveUncleared whether the record of a no-live run that was told still waits for its
-	// delete, a read having found a live session since.
-	loaded          bool
-	noLiveUncleared bool
 }
 
-// reachNotices is the store of the project's own notice records (reachKeeperOptions.notices).
-type reachNotices interface {
-	ReachProjectNotices(ctx context.Context, project string) ([]store.ReachProjectNotice, error)
-	PutReachProjectNotice(ctx context.Context, n store.ReachProjectNotice) error
-	DeleteReachProjectNotice(ctx context.Context, project, kind string, token claim.Token) error
-}
-
-// reachMark is a record a notice marks told, written in the notice's own transaction: a claim's
-// reach record, or for a notice that speaks for no claim's reach record the project's own record
-// of it (project). A daemon that ends after the notice commits never tells it again, and a notice
-// that does not commit has marked nothing.
+// reachMark is a claim's reach record its notice marks told, written in the notice's own
+// transaction: a daemon that ends after the notice commits never tells it again, and a notice that
+// does not commit has marked nothing.
 type reachMark struct {
-	token   claim.Token
-	reach   supervise.Reach
-	project *store.ReachProjectNotice
+	token claim.Token
+	reach supervise.Reach
 }
 
 // reachKeeperOptions are what a keeper is built from, every field of it that is not its own state.
@@ -121,10 +105,9 @@ type reachKeeperOptions struct {
 	now              func() time.Time
 	list             func(context.Context) ([]notify.ListedSession, error)
 	put              func(context.Context, claim.Token, supervise.Reach) (bool, error)
-	// reachNotify is the workflow's two writes the keeper tells through: the controller's notice
-	// that Envoy lists no live session, with its mark (tell), and an architect's notice of a claim
-	// of its tree out of reach, with its mark (enqueue), each in one transaction. Both are nil in
-	// a deployment with no workflow, which tells nobody.
+	// reachNotify is the workflow's write the keeper tells through: an architect's notice of a
+	// claim of its tree out of reach, with its mark (enqueue), in one transaction. It is nil in a
+	// deployment with no workflow, which tells nobody.
 	reachNotify
 	alerts *fleetalert.Writer
 	// relaunch is the daemon's own relaunch of a marked claim on its same session at a moment of
@@ -134,10 +117,6 @@ type reachKeeperOptions struct {
 	// step reads the step record the store holds for a claim (store's ClaimStep); nil reads the
 	// record the claim carries (stepOf).
 	step func(context.Context, claim.Token) (supervise.StepRecord, error)
-	// notices is the store of the project's own notice records (store.ReachProjectNotice), which
-	// holds whether the notice that Envoy lists no live session was told, written beside that
-	// notice in its own transaction; nil keeps it in this daemon's memory alone.
-	notices reachNotices
 }
 
 func newReachKeeper(o reachKeeperOptions) *reachKeeper {
@@ -209,7 +188,8 @@ func relaunchTakenIn(c supervise.Claim, rec supervise.Reach) supervise.Reach {
 	}
 	rec.RelaunchedAt = c.LastRelaunch
 	if rec.Unreachable() {
-		rec.Relaunched, rec.GuardRefusedAt = true, time.Time{}
+		rec.Relaunched = true
+		rec.GuardRefusedAt, rec.HeldAt, rec.SuspensionHeldAt = time.Time{}, time.Time{}, time.Time{}
 	}
 	return rec
 }
@@ -262,64 +242,9 @@ func (k *reachKeeper) storeEach(ctx context.Context, token claim.Token, next sup
 // caller holds mu.
 func (k *reachKeeper) marked(marks []reachMark) {
 	for _, mark := range marks {
-		if mark.project != nil {
-			k.projectTold(*mark.project)
-			continue
-		}
 		k.records[mark.token] = mark.reach
 		delete(k.dirty, mark.token)
 	}
-}
-
-// projectTold takes in the project's own record of the no-live notice, as the store holds it: the
-// no-live run it says was told. The caller holds mu.
-func (k *reachKeeper) projectTold(n store.ReachProjectNotice) {
-	if n.Told && record.NoticeKind(n.Kind) == record.EnvoyNoLiveSessionNotice {
-		k.noLiveTold, k.noLiveUncleared = true, false
-	}
-}
-
-// loadNotices reads the project's own record of the no-live notice, once, and answers whether it
-// is read: the no-live run the last daemon told. Until it is read, the no-live notice is not told,
-// since whether it was told is not known; a read that fails is made again at the next sweep. The
-// caller holds mu.
-func (k *reachKeeper) loadNotices(ctx context.Context) bool {
-	if k.loaded {
-		return true
-	}
-	if k.notices == nil {
-		k.loaded = true
-		return true
-	}
-	records, err := k.notices.ReachProjectNotices(ctx, k.project)
-	if err != nil {
-		if ctx.Err() == nil {
-			k.log.Error("reach: the project's notice records could not be read; no notice they mark is told until they are", "error", err)
-		}
-		return false
-	}
-	for _, n := range records {
-		k.projectTold(n)
-	}
-	k.loaded = true
-	return true
-}
-
-// clearNoLive deletes the record of a no-live run that was told, a read having found a live
-// session, which ends that run; a delete the store refuses is made again at the next read that
-// finds one. The caller holds mu.
-func (k *reachKeeper) clearNoLive(ctx context.Context) {
-	if k.notices == nil {
-		return
-	}
-	if err := k.notices.DeleteReachProjectNotice(ctx, k.project, string(record.EnvoyNoLiveSessionNotice), ""); err != nil {
-		k.noLiveUncleared = true
-		if ctx.Err() == nil {
-			k.log.Error("reach: the record of a told no-live run was not deleted; deleting it again at the next live read", "error", err)
-		}
-		return
-	}
-	k.noLiveUncleared = false
 }
 
 // sweep is one minute's read of Envoy's list and judgement of every watched claim of claims: the
@@ -330,14 +255,10 @@ func (k *reachKeeper) clearNoLive(ctx context.Context) {
 // is one of the moments the 20 minutes are counted from, and reads that fail for 20 minutes write
 // R6's line once, until a read answers (fleetalert.SessionListUnreadable). A list that holds no
 // live session — Legion's or any other — marks none: its read is counted from as well, and after
-// 20 minutes of such reads the controller is told once a run, written with the project's record
-// that it was told, so the next daemon tells that run no more, and R6's line is written once
-// (record.EnvoyNoLiveSessionNotice, fleetalert.NoLiveSession). A read that finds a live session
-// ends the run and deletes its record.
+// 20 minutes of such reads R6's line is written once a run (fleetalert.NoLiveSession), since no
+// agent can hear anything then. A read that finds a live session ends the run.
 //
-// The project's notice record of the no-live run is read first, at the first sweep that can, and
-// the record of a claim the sweep no longer reads is forgotten (forgetGone). The lock-out notices
-// the minute sweep resends are no reading of the list and are kept apart (lockOutNotices.resend).
+// The record of a claim the sweep no longer reads is forgotten first (forgetGone).
 //
 // R6's writer loads the lines the store holds open at the boot, and every sweep, the first after
 // that load included, closes each line whose case does not hold now: the list's lines where no
@@ -402,13 +323,7 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 		k.sessions[s.Session] = s
 	}
 	if live {
-		// The records are read once, at the first read that can, and only a run some daemon told
-		// has a record to delete; a read of them the store refuses deletes the record unread,
-		// which is the one way to end a run whose record cannot be read.
-		if !k.loadNotices(ctx) || k.noLiveTold || k.noLiveUncleared {
-			k.clearNoLive(ctx)
-		}
-		k.noLiveSince, k.noLiveTold = time.Time{}, false
+		k.noLiveSince = time.Time{}
 		k.alerts.Close(fleetalert.NoLiveSession, "")
 	} else {
 		if k.noLiveSince.IsZero() {
@@ -417,16 +332,6 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 		k.noLiveAt = now
 		if now.Sub(k.noLiveSince) >= silentListFor {
 			k.alerts.Open(fleetalert.NoLiveSession, "", "since", k.noLiveSince)
-			if !k.noLiveTold && k.loadNotices(ctx) && !k.noLiveTold {
-				notice := record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice,
-					Reason: fmt.Sprintf("Envoy's session list has held no live session since %s, %s, so no agent of the fleet can hear anything; the daemon marks no claim out of reach while it holds none",
-						stamp(k.noLiveSince), timewords.Words(silentListFor))}
-				var marks []reachMark
-				if n, ok := projectNotice(k.log, store.ReachProjectNotice{Project: k.project, Kind: string(notice.Kind), Issue: k.project, Told: true}, notice); ok {
-					marks = []reachMark{{project: &n}}
-				}
-				k.tellController(ctx, notice, k.project, marks...)
-			}
 		}
 	}
 	type read struct {
@@ -697,23 +602,45 @@ func notBack(c supervise.Claim) string {
 
 // guardRefuses is rec once the guard has refused c's relaunch at at, for why: the episode's first
 // refusal is kept, and logged with its reason, since the daemon asks again at each sweep and says
-// nothing more until R6's line; that line is written once the guard has refused c for long enough,
-// at once for the controller (R6) and after 60 minutes for a workflow claim (R5). The caller
-// holds mu.
+// nothing more until R6's line; that line is written once the guard has refused c for long enough
+// (refusedFor). The caller holds mu.
 func (k *reachKeeper) guardRefuses(c supervise.Claim, rec supervise.Reach, why string, at time.Time) supervise.Reach {
 	if rec.GuardRefusedAt.IsZero() {
 		rec.GuardRefusedAt = at
 		k.log.Info("reach: the relaunch guard holds the daemon's relaunch of a claim Envoy cannot reach; it asks again at each sweep",
 			"claim", c.Token, "reason", why)
 	}
-	held := guardHeldAfter
-	if c.Role == claim.RoleController {
-		held = 0
-	}
-	if at.Sub(rec.GuardRefusedAt) >= held {
+	if at.Sub(rec.GuardRefusedAt) >= refusedFor(c) {
 		k.alerts.Open(linesOf(c)[1], string(c.Token), "since", rec.GuardRefusedAt, "reason", why)
 	}
 	return rec
+}
+
+// machineHolds is rec once anything but the guard has refused c's relaunch at at, for why: c's own
+// machine for a cause it owns — its tree lifecycle, a wake waiting its turn, a compaction in
+// flight, no process recorded — or any other error of the relaunch. The daemon asks again at each
+// sweep. As with the guard (guardRefuses), the episode's first such refusal is kept and logged,
+// and R6's line is written once c has been held so for long enough (refusedFor), since a refusal that
+// lasts that long is one no agent will end. The caller holds mu.
+func (k *reachKeeper) machineHolds(c supervise.Claim, rec supervise.Reach, why string, at time.Time) supervise.Reach {
+	if rec.HeldAt.IsZero() {
+		rec.HeldAt = at
+		k.log.Warn("reach: the daemon's relaunch of a claim Envoy cannot reach was refused; it asks again at each sweep",
+			"claim", c.Token, "reason", why)
+	}
+	if at.Sub(rec.HeldAt) >= refusedFor(c) {
+		k.alerts.Open(linesOf(c)[1], string(c.Token), "since", rec.HeldAt, "reason", why)
+	}
+	return rec
+}
+
+// refusedFor is how long a refusal of c's relaunch lasts before R6's line names it: at once for the
+// controller (R6), and 60 minutes for a workflow claim (R5).
+func refusedFor(c supervise.Claim) time.Duration {
+	if c.Role == claim.RoleController {
+		return 0
+	}
+	return guardHeldAfter
 }
 
 // errRelaunchWaitsForResume is the daemon's relaunch of a workflow claim while the project is
@@ -751,9 +678,18 @@ func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, sinc
 			k.alerts.Open(refused, string(c.Token), "reason", err.Error())
 		}
 	case errors.Is(err, errRelaunchWaitsForResume):
+	case errors.Is(err, supervise.ErrOperatorSuspensionHeld):
+		// An operator's suspension is a person's own act on the claim, so it writes no line: it
+		// is logged once an episode, and the relaunch is asked for again at each sweep.
+		if asked && rec.SuspensionHeldAt.IsZero() {
+			rec.SuspensionHeldAt = at
+			k.log.Info("reach: an operator's suspension holds the daemon's relaunch of a claim Envoy cannot reach; no line is written for a person's own act",
+				"claim", c.Token, "reason", err.Error())
+			k.storeEach(ctx, c.Token, rec)
+		}
 	default:
-		if ctx.Err() == nil {
-			k.log.Error("reach: the daemon's relaunch of a claim Envoy could not reach failed; it is tried again at the next sweep", "claim", c.Token, "error", err)
+		if asked && ctx.Err() == nil {
+			k.storeEach(ctx, c.Token, k.machineHolds(c, rec, err.Error(), at))
 		}
 	}
 }
@@ -807,17 +743,6 @@ func (k *reachKeeper) tellArchitect(ctx context.Context, c supervise.Claim, rec 
 	}
 	k.marked(marks)
 	return true
-}
-
-// tellController queues notice on issue, with the records marks says it marks told written in the
-// same transaction, and answers whether it queued it (tellQueued), taking the marks in where it
-// did. The caller holds mu.
-func (k *reachKeeper) tellController(ctx context.Context, notice record.ControllerNotice, issue string, marks ...reachMark) bool {
-	told := tellQueued(ctx, k.log, k.tell, notice, issue, marks...)
-	if told {
-		k.marked(marks)
-	}
-	return told
 }
 
 // refusalOf is why a relaunch of c, whose reach record is rec, is refused before c's machine

@@ -1982,6 +1982,41 @@ func (w *w5Rig) roleNotices(token claim.Token) []w5Notice {
 	return w.noticesOn(notify.RoleTopicPrefix + string(token))
 }
 
+// forwardedTo is every notice the listener forwarded to session for topic, oldest first: a role
+// message reaches its holder as a forward the stream stores on the session's own subject, in
+// either of its forms, with the role topic kept in the envelope. Each is a copy the session is
+// handed.
+func (w *w5Rig) forwardedTo(session, topic string) []w5Notice {
+	var out []w5Notice
+	seen := map[uint64]bool{}
+	for _, subject := range []string{"notifications.agent." + session, "notifications.agent.*." + session} {
+		for _, stored := range w.nats.storedOn(subject) {
+			if seen[stored.seq] {
+				continue
+			}
+			seen[stored.seq] = true
+			var envelope struct {
+				Topic   string `json:"topic"`
+				EventID string `json:"event_id"`
+			}
+			if json.Unmarshal(stored.data, &envelope) != nil || envelope.Topic != topic {
+				continue
+			}
+			found, ok := findNotice(stored.data)
+			if !ok {
+				continue
+			}
+			n := w5Notice{at: stored.at, raw: found}
+			n.kind, _ = found["kind"].(string)
+			n.claim, _ = found["claim"].(string)
+			n.reason = "event " + envelope.EventID
+			out = append(out, n)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].at.Before(out[j].at) })
+	return out
+}
+
 // findNotice is noticeIn's walk, answering the whole object that carries a kind.
 func findNotice(data []byte) (map[string]any, bool) {
 	var value any

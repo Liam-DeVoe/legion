@@ -66,6 +66,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -591,6 +592,14 @@ func describeLine(rec *loggedRecord) string {
 	return w5Describe(*rec)
 }
 
+// firstOf is the first of lines, nil for none.
+func firstOf(lines []loggedRecord) *loggedRecord {
+	if len(lines) == 0 {
+		return nil
+	}
+	return &lines[0]
+}
+
 // relaunchStops is every stop of token's process that a relaunch made from from and that ended
 // it, as the rig's runtime answered it.
 func (r *w5Run) relaunchStops(token claim.Token, from time.Time) []podRelaunchCall {
@@ -738,7 +747,7 @@ func (r *w5Run) checkMarked(name string, before w5Snapshot, from time.Time) {
 		r.check("marked-20-to-22m-"+name, false, "the daemon wrote no out-of-reach line for %s", c.token)
 		return
 	}
-	r.check("marked-20-to-22m-"+name, markedInTime(mark.at, seen, from),
+	r.check("marked-20-to-22m-"+name, markedInTime(mark.at, seen),
 		"%s marked at %s, %s after its session's last registration the rig read, %s, and %s after the block at %s (the daemon logged since %v, lastSeen %v)",
 		c.token, clockAt(mark.at), mark.at.Sub(seen).Round(time.Second), clockAt(seen), mark.at.Sub(from).Round(time.Second), clockAt(from), mark.Attrs["since"], mark.Attrs["lastSeen"])
 	v, shown := r.firstMark(c.token)
@@ -824,23 +833,29 @@ func (r *w5Run) checkArchitectRows(from time.Time) {
 			continue
 		}
 		told, copied := tellings[row.resendOf]
+		// The daemon writes the copy's row and logs its re-held line in the same pass, in either
+		// order, so the line is read within 2 seconds of the row on either side.
 		reheld := r.logs(func(rec loggedRecord) bool {
 			return strings.HasPrefix(rec.Message, w5NoticeReheld) && fmt.Sprint(rec.Attrs["key"]) == fmt.Sprintf("legion-outbox:%d", row.resendOf) &&
-				fmt.Sprint(rec.Attrs["reason"]) == "receipt_timeout" && !rec.at.After(row.written)
+				fmt.Sprint(rec.Attrs["reason"]) == "receipt_timeout" && absDuration(rec.at.Sub(row.written)) <= 2*time.Second
 		})
 		if !copied || !told.Before(row.written) || len(reheld) == 0 {
-			strays = append(strays, fmt.Sprintf("row %d resend_of %d (a telling of the implementer: %t; re-held lines with receipt_timeout before it: %d)", row.id, row.resendOf, copied, len(reheld)))
+			strays = append(strays, fmt.Sprintf("row %d resend_of %d (a telling of the implementer: %t; re-held lines with receipt_timeout within 2 s of it: %d)", row.id, row.resendOf, copied, len(reheld)))
 		}
 	}
-	var stored []string
-	for _, n := range r.roleNotices(arch) {
+	// A copy the architect's session received is the listener's forward of the role message,
+	// which the stream stores on the session's own subject with the role topic in its envelope.
+	session := r.session(arch)
+	var delivered []string
+	for _, n := range r.forwardedTo(session, notify.RoleTopicPrefix+string(arch)) {
 		if n.kind == w5NoticeClaimOutOfReach && n.claim == string(impl) && !n.at.Before(from) {
-			stored = append(stored, n.String())
+			delivered = append(delivered, n.String())
 		}
 	}
 	r.check("architect-row-names-the-implementer", len(tellings) == 1 && len(strays) == 0,
 		"%d rows tell the architect of %s and copy no other; %d rows are copies; copies that do not copy an earlier telling after its receipt timeout: %v", len(tellings), impl, len(rows)-len(tellings), strays)
-	r.check("architect-receives-the-implementers-notice-once", len(stored) == 1, "the architect's role topic stored %d notices naming %s: %v", len(stored), impl, stored)
+	r.check("architect-receives-the-implementers-notice-once", len(delivered) == 1,
+		"the stream stored %d forwards to the architect's session %s of a notice naming %s: %v", len(delivered), session, impl, delivered)
 	r.check("no-architect-row-names-its-own-claim", namesOwn == 0, "%d architect rows name the architect's own claim %s", namesOwn, arch)
 }
 
@@ -1399,13 +1414,13 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	if mark == nil {
 		r.observe(f, "tenth-marked-20m-after-last-registration", false, "no out-of-reach line for the tenth")
 	} else {
-		r.observe(f, "tenth-marked-20m-after-last-registration", markedInTime(mark.at, seen, start),
+		r.observe(f, "tenth-marked-20m-after-last-registration", markedInTime(mark.at, seen),
 			"marked at %s, %s after its last registration the rig read, %s, and %s after the block at %s (the daemon logged since %v)",
 			clockAt(mark.at), mark.at.Sub(seen).Round(time.Second), clockAt(seen), mark.at.Sub(start).Round(time.Second), clockAt(start), mark.Attrs["since"])
 	}
 	r.observe(f, "tenth-stays-marked-through-relaunches", !markedAt.IsZero() && !unmarkedAfterMark, "first read marked at %s; unmarked again after: %t", clockAt(markedAt), unmarkedAfterMark)
 	stops := r.relaunchStops(tenth.token, start)
-	r.observe(f, "tenth-relaunched-by-the-daemon-at-most-once-after-its-mark", len(stops) <= 1 && (len(stops) == 0 || (mark != nil && !stops[0].at.Before(mark.at))),
+	r.observe(f, "tenth-relaunched-by-the-daemon-once-after-its-mark", len(stops) == 1 && mark != nil && !stops[0].at.Before(mark.at),
 		"the daemon's relaunch stops of the tenth from the block: %v; its mark %s", describeCalls(stops), describeLine(mark))
 	r.unblock("tenth")
 	waitFor(5*time.Minute, func() bool {
@@ -1646,19 +1661,25 @@ func (r *w5Run) podsFlow(f *w5Flows) {
 	snap := r.snapshot()
 	r.record("pods: %s %s, %s %s", sixth.token, snap.views[sixth.token], tenth.token, snap.views[tenth.token])
 	// The tenth was relaunched by the daemon in its own flow, less than 6 hours before, so its line
-	// is the second-time line, which the daemon reads before the pod; the sixth's names the pod.
+	// is the second-time line alone, since the daemon reads the 6 hours before the pod; the sixth's
+	// names the pod.
 	for _, c := range []*w5Claim{sixth, tenth} {
-		lines := append(r.claimLines(w5CaseClaimRefused, c.token, start), r.claimLines(w5CaseClaimGone, c.token, start)...)
+		word, want := w5CaseClaimRefused, w5PodReason
+		if c.name == "tenth" {
+			word, want = w5CaseClaimGone, w5SecondTime
+		}
+		lines := r.claimLines(word, c.token, start)
+		other := r.claimLines(map[string]string{w5CaseClaimRefused: w5CaseClaimGone, w5CaseClaimGone: w5CaseClaimRefused}[word], c.token, start)
 		reason := ""
 		if len(lines) > 0 {
 			reason = reasonOf(&lines[0])
 		}
-		named := strings.Contains(reason, snap.views[c.token].pod) && strings.Contains(reason, w5PodReason)
-		if c.name == "tenth" && len(r.relaunchStops(tenth.token, r.t0)) > 0 {
-			named = named || strings.Contains(reason, w5SecondTime)
+		named := strings.Contains(reason, want)
+		if c.name == "sixth" {
+			named = named && strings.Contains(reason, snap.views[c.token].pod)
 		}
-		r.observe(f, "pod-of-two-r6-line-naming-the-pod-"+c.name, len(lines) == 1 && named,
-			"%d R6 lines name %s; the reason: %q", len(lines), c.token, reason)
+		r.observe(f, "pod-of-two-r6-line-"+c.name, len(lines) == 1 && len(other) == 0 && named,
+			"%d %s lines name %s and %d of the other case; the reason: %q, want it to name %q", len(lines), word, c.token, len(other), reason, want)
 	}
 	sixthCalls, tenthCalls := r.pods.relaunchCalls(sixth.token, start), r.pods.relaunchCalls(tenth.token, start)
 	nothingStopped := sixthLaunch.running() && tenthLaunch.running() && r.runtime.current(sixth.token) == sixthLaunch &&
@@ -1852,13 +1873,20 @@ func (r *w5Run) everySessionBlocked() {
 	}
 	r.check("every-session-blocked-none-marked", len(markedDuring) == 0 && unread == 0, "marked while every session was blocked: %v; minutes whose read did not answer with the run's claims: %d", markedDuring, unread)
 	r.recordEmptyReads("every session blocked", blockedAt)
+	// The empty list is R6's line alone: the controller is told nothing of it, and the line is
+	// written once, 20 minutes or more after the block.
 	noLive := []w5Notice{}
 	for _, n := range r.controllerNoticesW5() {
 		if n.kind == w5NoticeNoLive && !n.at.Before(blockedAt) {
 			noLive = append(noLive, n)
 		}
 	}
-	r.check("controller-told-once-no-live-session", len(noLive) == 1, "envoy-no-live-session notices: %v", noLive)
+	r.check("controller-told-nothing-of-the-empty-list", len(noLive) == 0, "envoy-no-live-session notices to the controller: %v", noLive)
+	lines := r.logs(func(rec loggedRecord) bool {
+		return strings.HasPrefix(rec.Message, w5FleetAlertPrefix) && fmt.Sprint(rec.Attrs["case"]) == w5CaseNoLive && !rec.at.Before(blockedAt)
+	})
+	r.check("empty-list-r6-line-once-after-20m", len(lines) == 1 && lines[0].at.Sub(blockedAt) >= w5Unreachable,
+		"%d %s lines from the block at %s; the first %s", len(lines), w5CaseNoLive, clockAt(blockedAt), describeLine(firstOf(lines)))
 	// They register again one at a time over 2 minutes.
 	step := w5RegisterOver / time.Duration(max(1, len(all)))
 	for _, session := range all {
@@ -1936,8 +1964,8 @@ func (r *w5Run) covers(snap w5Snapshot) bool {
 // totals reads what holds over the whole run: no notice to the controller names a claim of the
 // run, and R6's lines are exactly these, each starting with the fixed text and naming its case and
 // project: one for the list with no live session, one for the 25 minutes of failed reads, the
-// ninth's after 60 minutes of the guard's hold, one for each claim of the pod of two (the tenth's
-// the second-time line where the daemon relaunched it in its own flow), one for each of the sixth's
+// ninth's after 60 minutes of the guard's hold, the sixth's for the pod of two and the tenth's
+// second-time line, since the daemon relaunched it in its own flow, one for each of the sixth's
 // three runs, and the implementer's, out of reach a second time within 6 hours.
 func (r *w5Run) totals() {
 	for _, n := range r.controllerNoticesW5() {
@@ -1962,10 +1990,7 @@ func (r *w5Run) totals() {
 			"%s", w5Describe(rec))
 	}
 	r.record("R6 lines: %v", described)
-	tenthCase := w5CaseClaimRefused
-	if len(r.relaunchStops(r.c("tenth").token, r.t0)) > 0 {
-		tenthCase = w5CaseClaimGone
-	}
+	tenthCase := w5CaseClaimGone
 	want := map[string]int{
 		w5CaseNoLive:                     1,
 		w5CaseListUnreadable:             1,

@@ -66,19 +66,17 @@ func (h twelfthHold) inWindow(named time.Time) bool {
 }
 
 // markedInTime is whether a mark at at came 20 to 22 minutes after a session's last registration,
-// which lies between seen, the last registration a read of the listener's list showed once the
-// rig had blocked the session, and blocked, when the rig stopped every registration of it: at
-// least 20 minutes after seen, and at most 22 minutes after blocked. w5 reads its marks with it.
-func markedInTime(at, seen, blocked time.Time) bool {
-	return !seen.IsZero() && at.Sub(seen) >= guardWindow && at.Sub(blocked) <= guardWindow+2*time.Minute
+// seen: the last registration a read of the listener's list showed once the rig had blocked the
+// session, which no later registration passes. w5 reads its marks with it.
+func markedInTime(at, seen time.Time) bool {
+	return !seen.IsZero() && at.Sub(seen) >= guardWindow && at.Sub(seen) <= guardWindow+2*time.Minute
 }
 
 // TestAMarkIsInTimeOnlyTwentyToTwentyTwoMinutesAfterTheLastRegistration holds w5's mark clauses to
-// their bounds: a mark under 20 minutes after the last registration the rig read fails, as does
-// one more than 22 minutes after the block, and a mark with no registration read fails too.
+// their bounds: a mark under 20 minutes or more than 22 minutes after the last registration the
+// rig read fails, and a mark with no registration read fails too.
 func TestAMarkIsInTimeOnlyTwentyToTwentyTwoMinutesAfterTheLastRegistration(t *testing.T) {
 	seen := time.Date(2026, 11, 22, 6, 1, 48, 855_000_000, time.UTC)
-	blocked := seen.Add(75 * time.Second)
 	cases := []struct {
 		name string
 		at   time.Time
@@ -88,13 +86,13 @@ func TestAMarkIsInTimeOnlyTwentyToTwentyTwoMinutesAfterTheLastRegistration(t *te
 		{"20m54s after the registration, as the daemon marked the implementer", seen.Add(20*time.Minute + 54*time.Second), seen, true},
 		{"exactly 20 minutes after the registration", seen.Add(20 * time.Minute), seen, true},
 		{"a second under 20 minutes after the registration", seen.Add(20*time.Minute - time.Second), seen, false},
-		{"a minute under 20 minutes, inside 22 minutes of the block", seen.Add(19 * time.Minute), seen, false},
-		{"exactly 22 minutes after the block", blocked.Add(22 * time.Minute), seen, true},
-		{"a second past 22 minutes after the block", blocked.Add(22*time.Minute + time.Second), seen, false},
+		{"exactly 22 minutes after the registration", seen.Add(22 * time.Minute), seen, true},
+		{"a second past 22 minutes after the registration", seen.Add(22*time.Minute + time.Second), seen, false},
+		{"23m27s after the registration, which a bound from the block would let through", seen.Add(23*time.Minute + 27*time.Second), seen, false},
 		{"no registration read", seen.Add(21 * time.Minute), time.Time{}, false},
 	}
 	for _, c := range cases {
-		if got := markedInTime(c.at, c.seen, blocked); got != c.want {
+		if got := markedInTime(c.at, c.seen); got != c.want {
 			t.Errorf("%s: markedInTime = %t, want %t", c.name, got, c.want)
 		}
 	}

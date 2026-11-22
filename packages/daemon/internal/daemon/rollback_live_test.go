@@ -53,7 +53,7 @@ const (
 // rollbackNoticeKinds are the notice kinds this change adds, which the release before it cannot
 // decode: it knows none of them, and its strict decoder refuses their claim field. Text, since that
 // release has no names for them.
-var rollbackNoticeKinds = []string{"envoy-no-live-session", "worker-locked-out", "claim-out-of-reach"}
+var rollbackNoticeKinds = []string{"claim-out-of-reach"}
 
 // rollbackCanaryKind is the ordinary controller notice the seed queues beside them, which every
 // release delivers: the rollback step reads its delivery as the proof that the older daemon's

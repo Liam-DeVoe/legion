@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,13 +28,11 @@ const olderSilence = 2 * time.Minute
 // older generation's and not the claim's, and the newer process binds on its next hello.
 func TestAnOlderConnectionSilentSinceItsStopFrameIsEnded(t *testing.T) {
 	clock := &lockOutClock{now: time.Date(2026, 11, 16, 16, 52, 34, 0, time.UTC)}
-	reports := make(chan LockOut, 4)
 	alertLog := &logRecorder{}
 	h := startListener(t, harnessOptions{
-		resolver:      generations(map[string]uint64{testToken: testGeneration, newerToken: testGeneration + 1}),
-		clock:         clock,
-		alerts:        fleetalert.New(slog.New(alertLog), "acme"),
-		reportLockOut: func(out LockOut) { reports <- out },
+		resolver: generations(map[string]uint64{testToken: testGeneration, newerToken: testGeneration + 1}),
+		clock:    clock,
+		alerts:   fleetalert.New(slog.New(alertLog), "acme"),
 	})
 	older := h.connectSilent(testToken)
 	bound := h.conn()
@@ -81,11 +80,6 @@ func TestAnOlderConnectionSilentSinceItsStopFrameIsEnded(t *testing.T) {
 
 	// Nothing is reported once the report's own wait has passed: the lock-out ended at the cut.
 	clock.advance(LockOutReportAfter)
-	select {
-	case out := <-reports:
-		t.Fatalf("the lock-out was reported after its older connection was ended: %#v", out)
-	default:
-	}
 	if lines := alertLog.Lines(); len(lines) != 0 {
 		t.Fatalf("the fleet alert lines = %q, want none", lines)
 	}
@@ -133,11 +127,11 @@ func TestAnOlderConnectionThatNeverAnswersIsAskedAgainAndEnded(t *testing.T) {
 // its report.
 func TestAnOlderConnectionThatAnswersLateIsNotEnded(t *testing.T) {
 	clock := &lockOutClock{now: time.Date(2026, 11, 16, 16, 52, 34, 0, time.UTC)}
-	reports := make(chan LockOut, 4)
+	alertLog := &logRecorder{}
 	h := startListener(t, harnessOptions{
-		resolver:      generations(map[string]uint64{testToken: testGeneration, newerToken: testGeneration + 1}),
-		clock:         clock,
-		reportLockOut: func(out LockOut) { reports <- out },
+		resolver: generations(map[string]uint64{testToken: testGeneration, newerToken: testGeneration + 1}),
+		clock:    clock,
+		alerts:   fleetalert.New(slog.New(alertLog), "acme"),
 	})
 	older := h.connect(testToken)
 	bound := h.conn()
@@ -160,8 +154,9 @@ func TestAnOlderConnectionThatAnswersLateIsNotEnded(t *testing.T) {
 		t.Fatal("the lock-out ended while its older connection was still bound")
 	}
 	clock.advance(LockOutReportAfter - olderSilence)
-	if out := awaitReport(t, reports); out.Older != testGeneration || out.Newer != testGeneration+1 {
-		t.Fatalf("report = %#v, want generation %d refused while %d is bound", out, testGeneration+1, testGeneration)
+	awaitAlertLines(t, alertLog, 1)
+	if line := alertLog.Lines()[0]; !strings.Contains(line, "generation=4") || !strings.Contains(line, "boundGeneration=3") {
+		t.Fatalf("the fleet alert line = %q, want generation %d refused while %d is bound", line, testGeneration+1, testGeneration)
 	}
 }
 

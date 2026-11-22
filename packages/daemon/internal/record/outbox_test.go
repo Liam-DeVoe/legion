@@ -267,7 +267,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindReachNotice, OutboxKindReachControllerNotice, OutboxKindRoleHoldersPublish,
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindReachNotice, OutboxKindRoleHoldersPublish,
 		OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
@@ -318,27 +318,24 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindMergeQueueRemoval: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:     "every row",
-		OutboxKindCheckWake:        "every row",
-		OutboxKindCheckLook:        "every row",
-		OutboxKindCheckBound:       "every row",
-		OutboxKindControllerNotice: "",
-		// The controller's notices of claims out of reach run through, as every controller notice
-		// does: the pause never holds the controller.
-		OutboxKindReachControllerNotice: "",
-		OutboxKindDispatchStatus:        "",
-		OutboxKindDispatchMessage:       "",
-		OutboxKindGateSeed:              "",
-		OutboxKindLingerClose:           "",
-		OutboxKindIssueSuspend:          "",
-		OutboxKindWorkspaceRemove:       "",
-		OutboxKindIssueBranch:           "",
-		OutboxKindIssueBundle:           "",
-		OutboxKindIssueRelease:          "",
-		OutboxKindGatedStepsPublish:     "",
-		OutboxKindClaimRelease:          "",
-		OutboxKindDesignGatesPublish:    "",
-		OutboxKindMergeQueueRead:        "",
+		OutboxKindMergeForward:       "every row",
+		OutboxKindCheckWake:          "every row",
+		OutboxKindCheckLook:          "every row",
+		OutboxKindCheckBound:         "every row",
+		OutboxKindControllerNotice:   "",
+		OutboxKindDispatchStatus:     "",
+		OutboxKindDispatchMessage:    "",
+		OutboxKindGateSeed:           "",
+		OutboxKindLingerClose:        "",
+		OutboxKindIssueSuspend:       "",
+		OutboxKindWorkspaceRemove:    "",
+		OutboxKindIssueBranch:        "",
+		OutboxKindIssueBundle:        "",
+		OutboxKindIssueRelease:       "",
+		OutboxKindGatedStepsPublish:  "",
+		OutboxKindClaimRelease:       "",
+		OutboxKindDesignGatesPublish: "",
+		OutboxKindMergeQueueRead:     "",
 		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
