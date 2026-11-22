@@ -2,7 +2,8 @@
 // `dispatch-tools-constants.ts`, and are re-exported here whole: a reader that needs one of
 // them must not be given the tool schemas below with it, which is what any import of this
 // module costs (dispatch://INFRA-1109, R13). Every import of this module, and of the package
-// index, answers what it always answered.
+// index, answers what it always answered and two names more, `NAME_EXTENSION` and
+// `MARKDOWN_EXTENSION`, which this module held unexported and the constants module exports.
 export * from "./dispatch-tools-constants";
 
 import {

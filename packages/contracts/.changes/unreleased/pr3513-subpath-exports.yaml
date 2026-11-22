@@ -15,9 +15,9 @@ body: |-
   The constants, limits, header names, codes and small functions of the two Dispatch contracts
   that a reader outside their schema modules takes live in `dispatch-api-constants` and
   `dispatch-tools-constants` now, so such a reader takes no zod schema with it. `dispatch-api`
-  and `dispatch-tools` re-export those two modules whole, so an import of either, or of the
-  index, answers what it answered before and two names more: `NAME_EXTENSION` and
-  `MARKDOWN_EXTENSION`, which `dispatch-tools` held unexported and `dispatch-tools-constants`
-  now exports, so that `pathKeepsBytesOf` there and `dispatch-tools` read one copy. Nothing is
-  renamed and nothing leaves the index. A reader that names one of the area modules by its file
+  and `dispatch-tools` re-export those two modules whole. An import of `dispatch-api` answers
+  exactly what it answered before; an import of `dispatch-tools`, or of the index, answers that
+  and two names more: `NAME_EXTENSION` and `MARKDOWN_EXTENSION`, which `dispatch-tools` held
+  unexported and `dispatch-tools-constants` now exports, so that `pathKeepsBytesOf` there and
+  `dispatch-tools` read one copy. Nothing is renamed and nothing leaves the index. A reader that names one of the area modules by its file
   path, such as `dispatch-api-limits.ts`, finds a moved name in the constants module instead.

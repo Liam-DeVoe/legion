@@ -100,9 +100,10 @@ export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
  * recovery's offline rule (`DeploymentResilience.tsx`, `reloadForChunkFailure`): a chunk that
  * fails while the browser is offline reloads nothing, since a reload then would swap the app for
  * the browser's offline page, so the chunk is asked for again when the network returns instead.
- * Chromium caches a failed module fetch in its module map, so that retry can reject again; it
- * then rejects online, propagates like any online failure and reaches `reloadForChunkFailure`,
- * which reloads while the tab's budget lasts.
+ * A browser that keeps a failed module fetch in its module map makes that retry reject again, as
+ * WebKit did when the keyed-writes outage row was tried on it (Chromium and Firefox asked for the
+ * chunk again); the retry then rejects online, propagates like any online failure and reaches
+ * `reloadForChunkFailure`, which reloads while the tab's budget lasts.
  *
  * What loads through it: the chunks of a document - the editor's library and its node views,
  * Yjs, Hocuspocus and the pending-edit store, code-split so the issue route's chunk carries none

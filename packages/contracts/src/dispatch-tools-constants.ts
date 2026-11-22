@@ -10,7 +10,8 @@
  * and it was paying for the schema builder on every page load to have them
  * (dispatch://INFRA-1109, R13). A constant a reader needs must not drag a schema builder into a
  * browser, so the constants live here and `dispatch-tools.ts` re-exports them: an import of that
- * module, or of the package index, answers exactly what it answered before. A new constant of
+ * module, or of the package index, answers what it answered before and two names more,
+ * `NAME_EXTENSION` and `MARKDOWN_EXTENSION`, which `dispatch-tools.ts` held unexported. A new constant of
  * the tool contract goes here too, rather than beside the schemas, whether or not a browser
  * reads it. What still sits in `dispatch-tools.ts`, `DISPATCH_ITEM_BLOCKS` and `SEARCH_KIND_DEPTH`
  * among them, has no reader that is not taking the schemas anyway, and each moves here the first

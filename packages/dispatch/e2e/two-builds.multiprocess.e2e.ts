@@ -357,8 +357,9 @@ function visits(seed: Seeded): readonly Visit[] {
       // an event to the reads it refreshes as it starts, once the page has drawn. Three surfaces
       // no address reaches are opened here too, each its own chunk and each opened by its key: the
       // search bar, the Create issue dialog and the shortcut sheet. A walk that never opened them
-      // would leave the dialog's and the sheet's scripts unasked for (the search bar's host
-      // prefetches its chunk as it mounts), which is what the last assertion of `walk` refuses,
+      // would leave the dialog's script unasked for (the search bar's host prefetches its chunk,
+      // and the shortcut sheet's it imports, as it mounts), which is what the last assertion of
+      // `walk` refuses,
       // and they are opened on this visit rather than on a second landing at
       // the same address, which would cost the walk another cold navigation, landing read and
       // shell render for nothing. The shell's two lists of writes, the pending-writes indicator

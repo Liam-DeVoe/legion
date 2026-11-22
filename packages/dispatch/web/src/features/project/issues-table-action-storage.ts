@@ -7,16 +7,14 @@
  * Why the two halves are two modules. The table's write kind is registered from the kinds chunk
  * the write store's take-up fetches as the person signs in, so that a reload finds a kept table
  * write's kind (`features/writes/kinds.ts`), and that kind reads an interrupted action from here
- * (`issues-table-recovery.ts`). The layout half read `COLUMN_SIZES` and `PINNED`, built from the
- * table's whole column list, so a kinds chunk that reached this storage would pull the table
- * model and its match ranking - about 16,000 bytes - into what every signed-in page downloads
- * at sign-in (dispatch://INFRA-1109, R13). The layout half takes that list from its caller now
- * (`ISSUE_TABLE_COLUMNS`, in the table model), so the kinds chunk reaches the model through
- * neither half, and this one is all a reload's kind needs.
- * Nothing of the table is drawn by a first paint: it is a page.
+ * (`issues-table-recovery.ts`). This half is all a reload's kind needs, so the kinds chunk loads
+ * it alone: with the layout half in the same module, what every signed-in page downloads at
+ * sign-in grows by 650 bytes (measured at `efdb650c`, dispatch://INFRA-1109, R13). Neither half
+ * reaches the table model: the layout half takes the column list it validates against from its
+ * caller (`StoredColumns`). Nothing of the table is drawn by a first paint: it is a page.
  *
- * One failure rule, for every field, as before: a browser that refuses storage, a full quota or
- * a corrupt value is a table with no saved preferences, never an exception out of a click.
+ * One failure rule, for every field: a browser that refuses storage, a full quota or a corrupt
+ * value is a table with no saved preferences, never an exception out of a click.
  */
 export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
 

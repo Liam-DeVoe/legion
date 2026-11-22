@@ -72,14 +72,14 @@ dispatch-browser-nightly.yaml's full job declares the first two: its call passes
 
 ## What the job set costs, and the machine-time ceiling the run holds it to
 
-What the job set of dispatch-browser.yaml costs, measured rather than estimated, at 0dbcde78
-on 2026-11-22. The full lane, run 44980647391: 2,411 s over eight jobs for 1,683 rows, 1.43
-machine-seconds a row, in an own time of 1,016 s - its binaries job, longest leg and merge
+What the job set of dispatch-browser.yaml costs, measured rather than estimated, on
+2026-11-22. The full lane, run 44997560086 at 19112b9c: 2,429 s over eight jobs for 1,683 rows,
+1.44 machine-seconds a row, in an own time of 1,070 s - its binaries job, longest leg and merge
 job, end to end. The same lane on the default branch that day costs twelve jobs and a median
-of 3,751 s for 1,668 rows over its 13 green runs up to 04:00:15Z (3,615 to 3,976 s), 2.25 s a row
+of 3,741 s for 1,668 rows over its 20 green runs up to 07:44:09Z (3,519 to 3,976 s), 2.24 s a row
 at the median of their per-row figures, so this job set spends 0.64 of a row's machine time.
-The pull-request lane: 680 s over five jobs for 290 rows (run 44980640510), in an own time of
-425 s.
+The pull-request lane, run 44980640510 at 0dbcde78: 680 s over five jobs for 290 rows, in an
+own time of 425 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
@@ -87,7 +87,7 @@ ceiling less that job's own worst case. Both are written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum` in its `machine-time`
 branch); the worst case is the 44 s of job 132733634671, the most a merge job of pull request
 #3513's runs of 2026-11-15 up to 17:44Z read. The reading above, taken as the budget takes it,
-which is the lane less its own merge job, is 2,379 s (44980647391, whose merge job took 32 s), and
+which is the lane less its own merge job, is 2,398 s (44997560086, whose merge job took 31 s), and
 the pull-request lane's 662 s (44980640510, 18 s); both are inside that budget.
 
 That ceiling is a coarse guard and no reading of what dispatch://INFRA-1109 delivers: no job can

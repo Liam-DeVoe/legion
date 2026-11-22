@@ -52,8 +52,8 @@ test("a chunk that is not in draws the fallback, then the component", async () =
     // Two mounts, one download.
     expect(imports).toBe(1);
   } finally {
-    // The download goes through `renderChunk`, so one still out would be counted for the rows of
-    // other files run after this one (`chunkLoadsOut`). Resolving a settled promise does nothing.
+    // The download goes through `renderChunk`, so one still out would stay counted for the later
+    // rows of this file (`chunkLoadsOut`). Resolving a settled promise does nothing.
     resolve(Greeting);
     view.unmount();
   }
@@ -123,8 +123,8 @@ test("a download that fails offline draws the fallback, reaches no error boundar
     expect(screen.queryByRole("alert")).toBeNull();
   } finally {
     // Every download settled and the event sent, whichever step failed: a download still out
-    // through `renderChunk` would be counted for the rows of other files run after this one
-    // (`chunkLoadsOut`), and one still waiting on `online` would never end. Settling a settled
+    // through `renderChunk` would stay counted for the later rows of this file (`chunkLoadsOut`),
+    // and one still waiting on `online` would never end. Settling a settled
     // promise does nothing, and an `online` nothing waits on reaches no listener.
     first.reject(new TypeError("Failed to fetch dynamically imported module"));
     window.dispatchEvent(new Event("online"));
