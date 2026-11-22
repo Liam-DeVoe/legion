@@ -1044,8 +1044,8 @@ type PullRequest struct {
 	// finishes undelivered once the record's ask no longer names the row's head; Engine.handoff,
 	// which refuses a completion at MergeForward.Head once the record's head has moved off it, or
 	// at the head of any merge forward of Earlier the record's head is not
-	// (HANDOFF_HEAD_MERGED_FORWARD); and the merger's start task, which waits for the reviewer's
-	// approval of the landed head when the reviewer was asked to read it.
+	// (HANDOFF_HEAD_MERGED_FORWARD); and the merger's start task, which, when the reviewer was asked
+	// for its verdict at the landed head, waits for legion-verdict success at that head.
 	//
 	// It is no part of a head run's judgement (Judgement), so a replay of the run and a move of
 	// the head leave it as it is (classify's replayRun, withJudgement and advance): the arrival of

@@ -200,6 +200,6 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	return e.start(ctx, tx, parent, w, role, func(at Standing) string {
-		return task(parent, at, last, pr, "")
+		return task(parent, at, last, pr, "", "")
 	}, false)
 }

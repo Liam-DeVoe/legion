@@ -2208,9 +2208,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err != nil {
 			return "", err
 		}
-		// The retry tells nothing of a stuck round: passed as its own before, it is stuck the same way.
+		// The retry tells nothing of a stuck round its reviewer can decide: passed as its own before,
+		// it is stuck the same way. A round stuck on GitHub's merge state while it was held is told
+		// now, with the round's facts as the notice's summary (byRetry).
 		r := e.reviewRound(issue, reviewer, pr)
-		settled, err := e.settleRound(ctx, tx, issue, reviewer, pr, r, "")
+		settled, err := e.settleRound(ctx, tx, issue, reviewer, pr, r, byRetry(reviewer, r.head, e.now()))
 		if err != nil {
 			return "", err
 		}
@@ -2221,8 +2223,14 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
+	owed := ""
+	if from == phase.Merging {
+		if owed, err = e.owedVerdict(ctx, tx, issue.Key, pr); err != nil {
+			return "", err
+		}
+	}
 	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
+		return task(issue, at, record.PhaseRow{}, pr, reason, owed)
 	}, freshSession)
 }
 
@@ -2461,8 +2469,15 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
+		owed := ""
+		if row.To == phase.Merging {
+			var err error
+			if owed, err = e.owedVerdict(ctx, tx, issue.Key, pr); err != nil {
+				return err
+			}
+		}
 		if err := e.start(ctx, tx, issue, w, starting, func(at Standing) string {
-			return task(issue, at, handoff, pr, reason)
+			return task(issue, at, handoff, pr, reason, owed)
 		}, movedBack); err != nil {
 			return err
 		}

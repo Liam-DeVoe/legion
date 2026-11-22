@@ -275,7 +275,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return err
 	}
 	return e.start(ctx, tx, issue, w, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
+		return task(issue, at, record.PhaseRow{}, pr, reason, "")
 	}, true)
 }
 

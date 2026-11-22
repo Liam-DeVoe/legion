@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -162,12 +163,13 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // The worker of the phase the issue stands in, when the landed reaches it - the tester, the
 // reviewer or the merger (record.MergeForwardReaches) - is told the old head and the new one and
 // to read what the merge changed before it goes on (record.MergeForwardLanded). An issue past its
-// review (record.PastReview) stands on a verdict at the old head, so the round's recorded reviewer
-// is asked to read the merge and send its verdict at the new head (record.MergeForwardReview),
-// which the daemon records as the round's decision there and writes legion-verdict from
-// (reviewVerdict); the record keeps that the verdict was asked for (ReviewAsked), which the
-// merger's task (task) and the landed the merger is told in merging
-// (record.MergeForwardMessage.Message) read. That holds only where the issue's task has a reviewer
+// review (record.PastReview) stands on a verdict at an older head, so the round's recorded
+// reviewer is asked to read what changed since its last verdict, the merge among it, and send its
+// verdict at the new head (record.MergeForwardReview, from the head of that verdict, verdictSince,
+// or the head the merge was asked of where the record holds none), which the daemon records as the
+// round's decision there and writes legion-verdict from (reviewVerdict); the record keeps that the
+// verdict was asked for (ReviewAsked), which the landed the merger is told in merging
+// (record.MergeForwardMessage.Message) reads. That holds only where the issue's task has a reviewer
 // step (the walk's line holds reviewing): a task whose plan has none stands on no verdict at the
 // old head, no reviewer step runs for it, and a merger told to wait for a reviewer's verdict would
 // wait for good, so nothing is asked and the merger goes on at the new head. The architect and the
@@ -192,8 +194,14 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	if worker := RoleFor(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
+	since := asked.Head
 	if review {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key})
+		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		if err != nil {
+			return true, err
+		}
+		since = cmp.Or(verdictSince(reviewer, pr.HeadSHA, asked.Head), asked.Head)
 	}
 	addressed, err := e.addressRoles(issue.Project, recipients, nil)
 	if err != nil {
@@ -201,11 +209,11 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	}
 	for _, to := range addressed {
 		role, _ := to.token.Role()
-		step := record.MergeForwardLanded
+		step, head := record.MergeForwardLanded, asked.Head
 		if review && role == claim.RoleReviewer {
-			step = record.MergeForwardReview
+			step, head = record.MergeForwardReview, since
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Step: step, Head: asked.Head, Landed: pr.HeadSHA,
+		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Step: step, Head: head, Landed: pr.HeadSHA,
 			Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}); err != nil {
 			return true, err
 		}
@@ -298,8 +306,8 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 
 // mergeForwardReviewOwed says whether the verdict a landed merge forward asked of the reviewer
 // stands owed for pr's head (mergeForwardLanded): it was asked, and the head is still the one the
-// merge left. The merger's task reads it (task); the landed message reads ReviewAsked alone, since
-// it names the head the merge left (record.MergeForwardMessage.Message).
+// merge left. owedVerdict reads it for a reviewer's row that holds no decision; the landed message
+// reads ReviewAsked alone, since it names the head the merge left (record.MergeForwardMessage.Message).
 func mergeForwardReviewOwed(pr record.PullRequest) bool {
 	asked := pr.MergeForward
 	return asked != nil && asked.ReviewAsked && asked.Landed == pr.HeadSHA

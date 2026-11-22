@@ -744,7 +744,8 @@ func decisionOf(fact intake.HandoffComplete) *record.ReviewDecision {
 // The fact that wrote a review-stuck notice, its summary. The architect prompt
 // (prompts/go/architect-common.md) reads a notice the reviewer's completion wrote after the
 // architect asked as the reviewer answering, and every other as news about the round; it names
-// each of these words, so a change to one changes that prompt too.
+// each of these words, so a change to one changes that prompt too. The retry of a held round is no
+// fact of the round's own, so its notice carries the round's facts instead (byRetry).
 const (
 	byCompletion = "the reviewer's completion"
 	byReview     = "a review that is not the reviewer's answer"
@@ -752,6 +753,23 @@ const (
 	byMergeState = "GitHub's merge state for the head"
 	byMerge      = "the pull request's merge"
 )
+
+// byRetry is the summary of the review-stuck notice the retry of a round held from reviewing
+// writes (retryPhase): the round GitHub's answer left stuck while it was held, told for the first
+// time at the retry. It names the round's facts, since no fact of the round's own wrote it: the
+// head the round is stuck at, the reviewer claim whose verdict decided it, and how long before now
+// that verdict came (the reviewer row's completion).
+func byRetry(reviewer record.PhaseRow, head string, now time.Time) string {
+	given := "with no verdict recorded"
+	if !reviewer.CompletedAt.IsZero() {
+		since := "less than a minute"
+		if waited := now.Sub(reviewer.CompletedAt).Round(time.Minute); waited >= time.Minute {
+			since = strings.TrimSuffix(waited.String(), "0s")
+		}
+		given = "its verdict given " + since + " ago"
+	}
+	return fmt.Sprintf("the retry of the held round: head %s, reviewer %s, %s", head, reviewer.Claim, given)
+}
 
 // roundOutcome is what a review round comes to after a fact (reviewRound).
 type roundOutcome int

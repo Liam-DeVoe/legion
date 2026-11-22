@@ -1088,14 +1088,15 @@ const (
 // as the tester's report, never as a field of its own completion, and the implementer started on
 // the reviewer's changes reads it as the reviewer's.
 //
-// A merger started in merging at the head a merge forward landed past the review, while the
-// verdict that landing asked of the reviewer stands owed for that head (mergeForwardReviewOwed), is
-// told to merge that head only once legion-verdict at that head is success: under one App no
-// review on GitHub approves a Legion head, and the daemon writes that check from the reviewer's
-// verdict there (spec R4, R5). The merger's task is built at retro's completion, the one move into
-// merging, and at the retry of a held merging (retryPhase); each reads the pull request in its own
-// transaction, so pr says what the record holds.
-func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
+// A merger started in merging at a head that moved past the review, a merge forward's landing or
+// any other push, is told to merge that head only once legion-verdict at that head is success:
+// owed is the head of the reviewer's last verdict where the pull request's head is another
+// (owedVerdict), "" where the reviewer's verdict names the head. Under one App no review on GitHub
+// approves a Legion head, and the daemon writes that check from the reviewer's verdict there
+// (spec R4, R5). The merger's task is built at retro's completion, the one move into merging, and
+// at the retry of a held merging (retryPhase); each reads the pull request in its own transaction,
+// so pr says what the record holds.
+func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason, owed string) string {
 	text := continueLine(issue) + at.lines
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
@@ -1110,9 +1111,9 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
 	}
-	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
-		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked for its verdict on it: merge head %s only once legion-verdict at that head is success.",
-			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
+	if issue.Phase == phase.Merging && pr != nil && owed != "" {
+		text += fmt.Sprintf(" Head %s came after the reviewer's verdict at head %s, and the reviewer is asked for its verdict on it: merge head %s only once legion-verdict at that head is success.",
+			pr.HeadSHA, owed, pr.HeadSHA)
 	}
 	if reason != "" {
 		text += " " + reasonLabel + ": " + sentence(reason)

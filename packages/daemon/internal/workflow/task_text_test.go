@@ -323,7 +323,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		t.Fatal(err)
 	}
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
-	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
+	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again", "")
 
 	labels := map[string]string{
 		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
@@ -406,7 +406,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	reviewer := record.PhaseRow{Role: claim.RoleReviewer, ReviewedHead: daemons, Entry: 3, EntryTask: "the entry's task"}
 	round := reviewedPartOf(daemons) + reviewEntryPartOf(3)
 	for name, composed := range map[string]string{
-		"a start":  task(issue, at, handoff, &record.PullRequest{Number: 42}, "the reviewer asked again"),
+		"a start":  task(issue, at, handoff, &record.PullRequest{Number: 42}, "the reviewer asked again", ""),
 		"a resume": resumeText(issue, at),
 	} {
 		t.Run(name, func(t *testing.T) {
