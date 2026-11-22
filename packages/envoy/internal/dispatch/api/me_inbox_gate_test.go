@@ -5,11 +5,18 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // gateSeeded is one issue the gate test seeds, with the row it puts in alice's Inbox and the gate
@@ -107,13 +114,96 @@ func gateLinesOf(lines []approvalGateLine) []gateSeededLine {
 	return read
 }
 
+// gateVersionProbe is the one shape in which the one read may name artifact_versions: a gate
+// document's latest version as max(number) over that document's own rows (meInboxGateReads),
+// which Postgres answers from the last entry of the document's range of the unique (artifact_id,
+// number) index rather than by reading its version rows. Its three aliases are the one alias of
+// the version rows it ranges over, which versionReads holds them to.
+var gateVersionProbe = regexp.MustCompile(`\(select max\((\w+)\.number\) from artifact_versions (\w+) where (\w+)\.artifact_id = \w+\.id\)`)
+
+// versionReads holds texts, the text of every query one read sent, to gateVersionProbe: how many
+// probes they hold, and each place they name artifact_versions other than in a probe, with the
+// text around it. Such a place is a read of a document's version rows, which can pick the latest
+// in Go from one statement as well as the probe can, so a count of statements alone lets it
+// through.
+func versionReads(texts []string) (probes int, beside []string) {
+	for _, text := range texts {
+		rest := gateVersionProbe.ReplaceAllStringFunc(strings.Join(strings.Fields(text), " "), func(probe string) string {
+			aliases := gateVersionProbe.FindStringSubmatch(probe)
+			if aliases[1] != aliases[2] || aliases[3] != aliases[2] {
+				return probe
+			}
+			probes++
+			return "(the probe)"
+		})
+		for {
+			at := strings.Index(rest, "artifact_versions")
+			if at < 0 {
+				break
+			}
+			beside = append(beside, rest[max(0, at-160):min(len(rest), at+160)])
+			rest = rest[at+len("artifact_versions"):]
+		}
+	}
+	return probes, beside
+}
+
+// gateBatchTexts is the rig's statement recorder (meInboxStatements), which records a batch as the
+// one round trip it is and not as its text, with the text of each query a counted read's batches
+// carry kept beside it. The one read sends its one statement in the batch of its own transaction
+// (readMeInbox), so a batch is where that statement's text is.
+type gateBatchTexts struct {
+	*meInboxStatements
+	mu    sync.Mutex
+	texts []string
+}
+
+func (g *gateBatchTexts) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if ctx.Value(countedRead{}) != nil {
+		g.mu.Lock()
+		for _, query := range data.Batch.QueuedQueries {
+			g.texts = append(g.texts, query.SQL)
+		}
+		g.mu.Unlock()
+	}
+	return g.meInboxStatements.TraceBatchStart(ctx, conn, data)
+}
+
+// taken is every text kept since the last call.
+func (g *gateBatchTexts) taken() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	texts := g.texts
+	g.texts = nil
+	return texts
+}
+
+// newGateRig is newMeInboxRig's rig, traced through gateBatchTexts so the batches' texts are kept
+// too.
+func newGateRig(t *testing.T) (*meInboxRig, *gateBatchTexts) {
+	t.Helper()
+	database := storetest.Open(t)
+	texts := &gateBatchTexts{meInboxStatements: &meInboxStatements{}}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, texts, nil)}
+	handler, _, _ := newTestServer(t, testServerOptions{
+		store:    traced,
+		identity: headerIdentity(database),
+		// As newMeInboxRig's: a delay no test reaches keeps a document's settlement out of the
+		// read's statements.
+		settle: time.Hour,
+	})
+	return &meInboxRig{database: database, traced: traced, handler: handler, statements: texts.meInboxStatements}, texts
+}
+
 // The one read carries each entry's approval gate in its one statement (c-approval-one-statement):
 // over 3 issues with a row each and over 12, alice's Inbox is one statement, so no statement reads a
-// gate document's versions, its review or its request for each document; each row carries the gate
-// its issue was seeded to, on its ask and on its thread; and the issue read answers the same gate,
-// field for field, so one computation answers both reads.
+// gate document's versions, its review or its request for each document; the text of what the read
+// sent reads artifact_versions only through the probe of each gate document's latest version
+// (gateVersionProbe), so it reads no document's version rows to pick the latest among them; each row
+// carries the gate its issue was seeded to, on its ask and on its thread; and the issue read answers
+// the same gate, field for field, so one computation answers both reads.
 func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
-	rig := newMeInboxRig(t)
+	rig, texts := newGateRig(t)
 	handler := rig.handler
 	createReferenceAPIProject(t, handler, "GATE")
 	publishGatedSteps(t, handler, "GATE", []string{model.GatedStepCriteria, model.GatedStepSpec})
@@ -134,13 +224,16 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 	seed(gateSeed{project: "GATE", gated: true, parent: root.Key, spec: "changes_requested", verification: "missing"}, "A child sent back")
 
 	// read reads alice's Inbox on a request whose statements the rig records, and holds each
-	// row's gate to what its issue was seeded to.
-	read := func(rows int) (meInboxResponse, []string) {
+	// row's gate to what its issue was seeded to. It answers the statements the rig counts and
+	// the text of every query the read sent, its batch's among them.
+	read := func(rows int) (meInboxResponse, []string, []string) {
 		t.Helper()
 		rig.statements.ownStatements(t, rig.traced)
+		texts.taken()
 		marked := context.WithValue(context.Background(), countedRead{}, true)
 		answer := decodeMeInbox(t, meInboxRequestAs(t, handler, marked, "alice", url.Values{"state": {myRepliesStateInbox}}))
 		statements := rig.statements.ownStatements(t, rig.traced)
+		sent := append(slices.Clone(statements), texts.taken()...)
 		if len(answer.Entries) != rows {
 			t.Fatalf("alice's Inbox holds %d rows, want the %d seeded: %v", len(answer.Entries), rows, meInboxNodes(answer))
 		}
@@ -168,10 +261,10 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 		if asks == 0 || threads == 0 {
 			t.Fatalf("alice's Inbox holds %d ask rows and %d thread rows, want both kinds", asks, threads)
 		}
-		return answer, statements
+		return answer, statements, sent
 	}
 
-	_, three := read(3)
+	_, three, threeSent := read(3)
 	// Nine more, which make twelve: every state the seed writes, under both projects, as roots
 	// and children, with and without a Verification document.
 	seed(gateSeed{project: "FREE", spec: "draft", verification: "missing"}, "A spec nobody asked about")
@@ -183,11 +276,32 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 	seed(gateSeed{project: "GATE", gated: true, spec: "approved", verification: "changes_requested"}, "A root whose checks went back")
 	seed(gateSeed{project: "GATE", gated: true, parent: root.Key, spec: "approved", verification: "missing"}, "An approved child")
 	seed(gateSeed{project: "GATE", gated: true, parent: root.Key, spec: "draft", verification: "draft"}, "A child nobody asked about")
-	twelve, twelveStatements := read(12)
+	twelve, twelveStatements, twelveSent := read(12)
 
 	if len(three) != 1 || len(twelveStatements) != 1 {
 		t.Fatalf("the 3-row read ran %d statements and the 12-row read %d, want 1 each:\n%s\n---\n%s",
 			len(three), len(twelveStatements), strings.Join(three, "\n---\n"), strings.Join(twelveStatements, "\n---\n"))
+	}
+	// One statement can pull every version row of each gate document and leave the latest to Go as
+	// well as it can probe for it, so the text of what each read sent is held to the probe too.
+	for _, counted := range []struct {
+		rows int
+		sent []string
+	}{{3, threeSent}, {12, twelveSent}} {
+		probes, beside := versionReads(counted.sent)
+		if probes == 0 {
+			heads := make([]string, 0, len(counted.sent))
+			for _, text := range counted.sent {
+				flat := strings.Join(strings.Fields(text), " ")
+				heads = append(heads, flat[:min(len(flat), 100)])
+			}
+			t.Errorf("the %d-row read sent no max(number) probe of artifact_versions in its %d queries, which begin:\n%s",
+				counted.rows, len(counted.sent), strings.Join(heads, "\n"))
+		}
+		if len(beside) > 0 {
+			t.Errorf("the %d-row read names artifact_versions %d times beside the per-document max(number) probe, so it reads version rows:\n%s",
+				counted.rows, len(beside), strings.Join(beside, "\n---\n"))
+		}
 	}
 
 	// The issue read answers the gate each row carries, field for field.
@@ -209,5 +323,7 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 			t.Errorf("%s's issue read answers the gate %+v, and its Inbox row carries %+v", key, issueGate, entry.ApprovalGate)
 		}
 	}
-	t.Logf("the 3-row read and the 12-row read each ran one statement")
+	if !t.Failed() {
+		t.Logf("the 3-row read and the 12-row read each ran one statement, and neither names artifact_versions beside the max(number) probe")
+	}
 }

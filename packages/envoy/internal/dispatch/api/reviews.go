@@ -217,13 +217,15 @@ func applyApprovals(
 	}
 }
 
-// approvalOf is a document's approval: the one rule every read of an approval state runs, the
-// document reads through applyApprovals and the approval gate of an issue (approvalGate). latest
-// is the document's latest version, 0 when it has none; review is its latest review and request
-// its open approval request, each nil when it has none. A retired document's approval is
-// superseded by its retirement (docs.RetireDocument), which writes no version, so it reads stale
-// at its latest version as an approval a later version left behind reads: a gate or a reader that
-// asks whether the document stands approved hears that it does not.
+// approvalOf is a document's approval: the one rule every read of an approval state runs, called by
+// the document reads through applyApprovals and by the one read for each gate document of its page
+// (readApprovalGates). approvalGate calls it for neither read: it takes the approvals already
+// computed, the one read's from readApprovalGates and the issue read's from applyApprovals
+// (issueApprovalGate). latest is the document's latest version, 0 when it has none; review is its
+// latest review and request its open approval request, each nil when it has none. A retired
+// document's approval is superseded by its retirement (docs.RetireDocument), which writes no
+// version, so it reads stale at its latest version as an approval a later version left behind
+// reads: a gate or a reader that asks whether the document stands approved hears that it does not.
 func approvalOf(latest int, retired bool, review *model.ArtifactReview, request *openApprovalRequest) model.ArtifactApproval {
 	approval := model.ArtifactApproval{State: "draft", LatestVersion: latest}
 	if review != nil {

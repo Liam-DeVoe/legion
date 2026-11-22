@@ -1420,8 +1420,9 @@ test("the step that holds the gate", async ({ browser }) => {
 });
 
 // The two short rows beside the pane are read by the five states and the live change, at the
-// pane's width. @phone
-test("the approval mark at phone width @phone", async ({ browser }) => {
+// pane's width. Below the pane's width each row is a card, a claim the desktop projects cannot
+// make, so the row runs on the phone projects alone. @phone @phone-only
+test("the approval mark at phone width @phone @phone-only", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "PHONEMARK", name: "Phone mark" });
   const issue = await createIssue({
