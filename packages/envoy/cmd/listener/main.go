@@ -104,6 +104,9 @@ type listenerDeps struct {
 	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
 	// (sendHandler). Empty names nobody, and every send carrying one is refused.
 	dispatchPrincipal string
+	// relaySockets is an edge listener's relay sockets (relay_socket.go), nil on every other
+	// listener, which answers the socket's path 404 (relaySocketRoute).
+	relaySockets *relaySockets
 	// repositories is the edge listener's reader of the repositories its projects' issues
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
@@ -1127,6 +1130,8 @@ const (
 	// relayRepliesRefusedLine is the session relay's reply subscription
 	// (bus.SessionConsumers.SubscribeReplies, startSessionRelays).
 	relayRepliesRefusedLine = "session relay reply subscription refused by the NATS grant; retrying"
+	// relaySocketsRefusedLine is an edge listener's relay socket connection (relaySockets).
+	relaySocketsRefusedLine = "relay socket connection refused by the NATS grant; retrying"
 	// streamRefusedLine is the notification stream's read or create (connectListener,
 	// bus.ConnectOwningStream), with the stream and the grant.
 	streamRefusedLine = "notification stream refused by the NATS grant; retrying"
@@ -1478,11 +1483,11 @@ func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machi
 const natsReleaseRefusedLine = "nats-server release below the listener's floor; retrying"
 
 // openStartConnection runs open, a step that opens a NATS connection of its own once the stores
-// are open (the session consumers' with its relay's reply subscription, the role lane's), until it
-// succeeds, by the start rule (cmd/listener/README.md, "Start"). Each such connection reads the
-// settings the start's own connect (connectListener) has already taken - its servers, its
-// credential, its proxy and the remote-NATS rule - so no failure here is one the listener's
-// configuration alone decides, and none ends the process:
+// are open (the session consumers' with its relay's reply subscription, an edge listener's relay
+// sockets', the role lane's), until it succeeds, by the start rule (cmd/listener/README.md,
+// "Start"). Each such connection reads the settings the start's own connect (connectListener) has
+// already taken - its servers, its credential, its proxy and the remote-NATS rule - so no failure
+// here is one the listener's configuration alone decides, and none ends the process:
 //   - a refusal under the NATS grant (nats.ErrPermissionViolation) is tried again after
 //     waitOutGrantRefusal, which logs refusedLine;
 //   - a server whose release the listener refuses (natsversion.RefusedRelease) after the same
@@ -2371,7 +2376,9 @@ func main() {
 	// whose inbox is new, needs a new connection.
 	var delivery *sessionDelivery
 	// The relay hears registrations from the moment /v1 opens, and relays once this task serves
-	// its machine's receive term (below).
+	// its machine's receive term (below). An edge listener's relay takes its receipts under its
+	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
+	// session's relay socket publishes them.
 	relays := openStartConnection(logger, "session consumer connection failed; retrying", relayRepliesRefusedLine, func() (*sessionRelays, error) {
 		var err error
 		if delivery, err = connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, edge.connectOptions()...); err != nil {
@@ -2393,6 +2400,17 @@ func main() {
 		}
 		return 0
 	}
+	// An edge listener serves its sessions' relay sockets on a NATS connection of the sockets'
+	// own, as the main client's but for its name, whose slow consumers stay off the main
+	// connection's last error (confirmPublished reads it), opened by the start rule
+	// (openStartConnection) as the session consumers' is; every other listener serves none.
+	var sockets *relaySockets
+	if edge != nil {
+		socketsClient := openStartConnection(logger, "relay socket connection failed; retrying", relaySocketsRefusedLine, func() (*bus.Client, error) {
+			return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+		})
+		sockets = newRelaySockets(socketsClient, brokerTokenAuth, logger)
+	}
 	// An edge listener reads the repositories its projects' issues resolve to from the broker's
 	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub
 	// frame to them. It is set before the relay relays anything, which it does only once this task
@@ -2401,6 +2419,14 @@ func main() {
 	if len(cfg.EdgeProjects) > 0 {
 		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
 		relays.repositories = repositories
+		sockets.repositories = repositories
+		// The first read of every project's answer is made before /v1 serves, so a relay socket
+		// this replica opens judges a GitHub frame by a fresh answer from its first frame, rather
+		// than waiting for the refresh loop, which starts only with this task's receive term
+		// (holderLoops). A read that fails keeps no answer, each read is bounded
+		// (edgeRepositoryReadTimeout), and a socket answers a GitHub frame it cannot judge nak
+		// (relaySocket.withhold), so the relay sends it again.
+		repositories.refresh(context.Background())
 	}
 
 	// The role lane (startRoleLane), whose connection opens by the start rule too; an edge
@@ -2418,6 +2444,7 @@ func main() {
 		lane:      lane,
 		delivery:  delivery,
 		relays:    relays,
+		sockets:   sockets,
 		caches:    caches,
 		known:     known,
 		stopWakes: stopWakeReports,
@@ -2651,6 +2678,7 @@ func main() {
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
 		dispatchPrincipal:   dispatchPrincipal,
+		relaySockets:        sockets,
 		repositories:        repositories,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
@@ -2797,16 +2825,17 @@ type listenerLoops struct {
 
 // listenerParts are the parts of a started listener that shut down: server is the /v1 HTTP server,
 // client the main bus connection, lane the role lane, delivery the session-consumer connection,
-// relays the relay of its consumers (nil when it does not run), caches the KV caches whose
-// watchers are retired last, and stopWakes ends the wake reports still retrying, the liveness
-// report and the old-form counter's log line (wakeReporter, startListenerReadyReports,
-// startLegacySubjectsLog).
+// relays the relay of its consumers (nil when it does not run), sockets an edge listener's relay
+// sockets (nil on every other listener), caches the KV caches whose watchers are retired last,
+// and stopWakes ends the wake reports still retrying, the liveness report and the old-form
+// counter's log line (wakeReporter, startListenerReadyReports, startLegacySubjectsLog).
 type listenerParts struct {
 	server   *http.Server
 	client   *bus.Client
 	lane     roleLane
 	delivery *sessionDelivery
 	relays   *sessionRelays
+	sockets  *relaySockets
 	caches   []listenerCache
 	// known is the known-session store, whose watcher is retired with the caches' but which is
 	// none of them (listenerDeps.known); nil on a listener with no store, which retires nothing.
@@ -2819,13 +2848,14 @@ type listenerParts struct {
 // has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
 // TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
 const (
-	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
-	// opens, in this order - the receive stop (loops.receiver.Stop), the relays' stop, the HTTP
-	// server's shutdown, the consumer deletes still in flight, the session-consumer drain and
-	// the wait for a self-health rebuild still running (loops.monitorDone). The receive stop is
-	// the one that most plausibly spends the whole of it: step 2 of shutdownListener below sizes
-	// its hand-over at 11 s, and 12.25 s where the flush and the release both run to their
-	// bounds, so whoever sizes this number reads that step too.
+	// stopHTTPGrace bounds the first part of the stop: seven waits run under the one context it
+	// opens, in this order - the receive stop (loops.receiver.Stop), the relays' stop, an edge
+	// listener's relay sockets' close frames (relaySockets.stop, every socket at once, each write
+	// bounded at relaySocketCloseGrace), the HTTP server's shutdown, the consumer deletes still in
+	// flight, the session-consumer drain and the wait for a self-health rebuild still running
+	// (loops.monitorDone). The receive stop is the one that most plausibly spends the whole of it:
+	// step 2 of shutdownListener below sizes its hand-over at 11 s, and 12.25 s where the flush and
+	// the release both run to their bounds, so whoever sizes this number reads that step too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
@@ -2897,6 +2927,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// left in doubt among them, so the pod of this machine that receives the durable next is
 	// delivered them at once rather than after their ack wait.
 	parts.relays.stop(shutdownCtx)
+	// An edge listener's relay sockets close next, each with 1012, on which its client opens it
+	// again at once on another replica, and every upgrade after it is refused. They stay open
+	// through the relays' settle above, since an edge session answers its frames over its socket
+	// alone, and close before the HTTP server's shutdown, which does not wait for a hijacked
+	// connection, so nothing else would close them.
+	parts.sockets.stop()
 
 	// 4. HTTP server — stop accepting new requests, drain in-flight, within what is left of the
 	// budget.

@@ -117,7 +117,7 @@ func TestALateSessionWriteIsRefusedOverADeleteMadeAfterItsRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the bucket holds no entry of %s after the registration made again over the delete: %v", sessionID, err)
 	}
-	entry, err := decodeSessionEntry(stored.Value())
+	entry, err := DecodeEntry(sessionID, stored.Value())
 	if err != nil || entry.MachineID != "example-host" {
 		t.Fatalf("the bucket holds %s for %s (%v), want the registration's own entry", stored.Value(), sessionID, err)
 	}

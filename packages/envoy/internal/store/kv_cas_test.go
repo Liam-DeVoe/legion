@@ -154,7 +154,9 @@ func TestInterestAndClaimWritesKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 	a, _ := podRegistries(t)
 	const sessionID = "ses_newer_build"
 	interests, roles := a.interests().Legacy(), a.roles().Legacy()
-	if _, err := interests.Put(sessionID, []byte(`{"session_id":"ses_newer_build","machine_id":"box-a","topics":["notifications.agent.ses_newer_build","notifications.team.gone"],"future_field":[1,2]}`)); err != nil {
+	// The row names its key, a machine and an update time, as every row the registry writes does
+	// (boundInterest), so every reader takes it as the session's row.
+	if _, err := interests.Put(sessionID, []byte(`{"session_id":"ses_newer_build","machine_id":"box-a","topics":["notifications.agent.ses_newer_build","notifications.team.gone"],"updated_at":`+liveRowUpdatedAt+`,"future_field":[1,2]}`)); err != nil {
 		t.Fatalf("store a newer build's interest: %v", err)
 	}
 	if _, err := roles.Put("keeper", []byte(`{"holder_session_id":"ses_before","claimed_at":1,"future_claim_field":"kept"}`)); err != nil {

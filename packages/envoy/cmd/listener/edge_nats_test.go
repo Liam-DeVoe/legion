@@ -26,15 +26,16 @@ import (
 // edgeProject is the one project this package's edge listeners serve.
 const edgeProject = "PRIV"
 
-// startEdgeListenerProcess starts binary as an edge listener of edgeProject, machine machineID,
-// against the NATS at uri, with env added to its environment: on a loopback port the test holds
-// (startListenerProcess says why), taking broker access tokens from broker and no other
-// credential, as an edge listener takes them.
-func startEdgeListenerProcess(t *testing.T, binary, uri, machineID string, broker *ciphertokentest.StubBroker, env ...string) *listenerProcess {
+// startEdgeListenerProcess starts binary as an edge listener of projects (ENVOY_EDGE_PROJECTS),
+// machine machineID, against the NATS at uri, with env added to its environment: on a loopback port
+// the test holds (startListenerProcess says why), taking broker access tokens from the broker at
+// brokerURL, which it asks with accountToken, and no other credential, as an edge listener takes
+// them.
+func startEdgeListenerProcess(t *testing.T, binary, uri, machineID, projects, brokerURL, accountToken string, env ...string) *listenerProcess {
 	t.Helper()
 	held := cmdtest.HoldPort(t)
 	account := filepath.Join(t.TempDir(), "account-token")
-	if err := os.WriteFile(account, []byte("edge-listener-account-token"), 0o600); err != nil {
+	if err := os.WriteFile(account, []byte(accountToken), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary)
@@ -43,8 +44,8 @@ func startEdgeListenerProcess(t *testing.T, binary, uri, machineID string, broke
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=" + machineID,
 		"NATS_URLS=" + uri,
-		config.EdgeProjectsEnvVar + "=" + edgeProject,
-		EnvBrokerURL + "=" + broker.Server.URL,
+		config.EdgeProjectsEnvVar + "=" + projects,
+		EnvBrokerURL + "=" + brokerURL,
 		EnvBrokerAccountTokenFile + "=" + account,
 		EnvPublicURL + "=http://127.0.0.1:" + strconv.Itoa(held.Port),
 	}, env...)
@@ -78,7 +79,7 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	uri := testnats.URL(t)
 	broker := ciphertokentest.NewStubBroker(t)
 
-	refused := startEdgeListenerProcess(t, binary, uri, "edge-no-stream", broker)
+	refused := startEdgeListenerProcess(t, binary, uri, "edge-no-stream", edgeProject, broker.Server.URL, edgeAccountToken)
 	refused.WaitExit(t, "its start")
 	output := refused.Output.String()
 	if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
@@ -93,7 +94,7 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	shared.Terminate(t)
 	shared.WaitExit(t, "SIGTERM")
 
-	started := startEdgeListenerProcess(t, binary, uri, "edge-with-stream", broker)
+	started := startEdgeListenerProcess(t, binary, uri, "edge-with-stream", edgeProject, broker.Server.URL, edgeAccountToken)
 	started.waitHealthy(t)
 	if output := started.Output.String(); strings.Contains(output, "role lane subscribed") || !strings.Contains(output, "role lane not subscribed") {
 		t.Fatalf("the edge listener opened a role lane, or did not say it opened none:\n%s", output)
@@ -149,7 +150,7 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 	})
 	// The edge's public origin is the one signedListenerCall signs for: of a variable named twice,
 	// the process reads the last.
-	edge := startEdgeListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID, broker,
+	edge := startEdgeListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID, edgeProject, broker.Server.URL, edgeAccountToken,
 		bus.NkeySeedEnvVar+"="+seed, EnvPublicURL+"="+listenerBrokerOrigin)
 	edge.waitHealthy(t)
 
@@ -214,7 +215,7 @@ func TestAnEdgeListenerNamesItsOwnGrantInItsBucketRefusals(t *testing.T) {
 		t.Fatalf("the admin creates the stream: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	edge := startEdgeListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID, ciphertokentest.NewStubBroker(t),
+	edge := startEdgeListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID, edgeProject, ciphertokentest.NewStubBroker(t).Server.URL, edgeAccountToken,
 		bus.NkeySeedEnvVar+"="+seed)
 	// refusal is the first ERROR line the edge logged at line for one of buckets.
 	refusal := func(line string, buckets ...string) map[string]any {

@@ -216,14 +216,16 @@ func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 	sessionKV, interestKV, roleKV := bucket(bus.SessionBucket), bucket(bus.InterestBucket), bucket(bus.RoleClaimBucket)
 	// The registration carries the moment it was written, as every build's does: a record with no
 	// updated_at is one no reader can date, which reads gone (session.StateOf), and a role set
-	// refuses a claimant this listener holds no standing record for.
+	// refuses a claimant this listener holds no standing record for. The interest row names its
+	// key, a machine and that moment too, as every row the registry writes does: one naming no
+	// update time is no row of its key (store's boundInterest), and a heartbeat replaces it.
 	registered := time.Now().UnixMilli()
 	for _, seed := range []struct {
 		kv         nats.KeyValue
 		key, value string
 	}{
 		{sessionKV, sessionID, fmt.Sprintf(`{"port":0,"machine_id":"test-machine","dir":"/work","updated_at":%d,"future_field":"session"}`, registered)},
-		{interestKV, sessionID, `{"session_id":"ses_newer_build","machine_id":"test-machine","dir":"/work","topics":["notifications.agent.ses_newer_build"],"future_field":"interest"}`},
+		{interestKV, sessionID, fmt.Sprintf(`{"session_id":"ses_newer_build","machine_id":"test-machine","dir":"/work","topics":["notifications.agent.ses_newer_build"],"updated_at":%d,"future_field":"interest"}`, registered)},
 		{roleKV, "keeper", `{"holder_session_id":"ses_before","claimed_at":1,"future_field":"claim"}`},
 	} {
 		if _, err := seed.kv.Put(seed.key, []byte(seed.value)); err != nil {

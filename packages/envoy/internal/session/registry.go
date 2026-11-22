@@ -36,7 +36,22 @@ const entryWriteLosses = 32
 // a 503 with Retry-After.
 var ErrWriteConflict = errors.New("the session registration changed under every write attempt")
 
+// ErrEntryUnbound is a stored session record that is not the registration of the key it is stored
+// under (DecodeEntry): one naming another key or the empty key, or naming its key with no machine,
+// registration time or projects. Every reader reads it as no record.
+var ErrEntryUnbound = errors.New("the session record is not the registration of its key")
+
 type SessionEntry struct {
+	// SessionID is the key the record is written under, which every writer sets (PutWithin). A
+	// record naming another key is read as absent (DecodeEntry): it is not that session's
+	// registration but a copy of another session's, which the server itself stores when a request
+	// names the key's subject as its reply subject, so a direct get of one session's record can
+	// lay that session's machine and projects over another's key. It is empty only on a record
+	// an earlier build wrote, which names no key and is read as before by every reader here; a
+	// reader that grants a session's scope across a project reads such an entry as no project's
+	// (cmd/listener's edgeScope.shows). An entry naming no key encodes none, so it reads as
+	// such a record and never as one naming the empty key, which every reader refuses.
+	SessionID string `json:"session_id,omitempty"`
 	// Port is always 0 for an entry this build writes: a registration naming a serving port is
 	// refused (cmd/listener's subscribeHandler), and no delivery opens a connection to a
 	// session. The field is kept because every released client parses it in the listener's
@@ -126,11 +141,11 @@ type SessionEntry struct {
 	// GitHub event of the session while no fresh repository answer stood, and no frame carrying
 	// the mark has been sent since (cmd/listener's sessionRelays). It lives on the entry so the
 	// next listener to relay the session, after a move or a restart, sends the mark. Its value is
-	// the id the relay that set it gave it. Only SetRepositoryGap and ClearRepositoryGap write it:
-	// the relay that withholds such an event sets it before it acknowledges the event, and the
-	// relay that sends the mark clears it. Every other write of the entry carries over the mark of
-	// the entry it replaces (PutWithin, Amend). It is the registry's own record: no answer of the
-	// listener's API carries it.
+	// the id the relay that set it gave it. SetRepositoryGap and ClearRepositoryGap raise and clear
+	// it, and PutClearingGap writes it empty for a claim refresh over a record no writer's stands
+	// for, while keeping a standing writer's record's mark; every other write of the entry carries
+	// over the mark of the entry it replaces (PutWithin). It is the registry's own record: no
+	// answer of the listener's API carries it.
 	RepositoryGap string `json:"repository_gap,omitempty"`
 
 	// unknown holds the JSON of every key a stored registration carries that SessionEntry does not
@@ -144,15 +159,55 @@ type SessionEntry struct {
 // SessionEntry.unknown.
 var sessionEntryKeys = store.JSONKeys(reflect.TypeFor[SessionEntry]())
 
-// decodeSessionEntry reads a stored registration: the fields SessionEntry names, and every other key
-// into its unknown map.
-func decodeSessionEntry(data []byte) (SessionEntry, error) {
-	var entry SessionEntry
-	unknown, err := store.DecodeKeeping(data, &entry, sessionEntryKeys)
+// storedEntry is a session record as DecodeEntry reads it: the entry, with the key it names and
+// its projects kept raw, so a record naming the empty key or null is told apart from one naming no
+// key at all, and one naming null projects from one naming none. The outer fields are the
+// shallower of the two tagged session_id and projects, so they are the ones decoded.
+type storedEntry struct {
+	SessionEntry
+	SessionID json.RawMessage `json:"session_id"`
+	Projects  json.RawMessage `json:"projects"`
+}
+
+// DecodeEntry reads value, stored under key in the session bucket, as key's registration: the
+// fields SessionEntry names, and every other key into its unknown map (store.DecodeKeeping), which
+// encodeSessionEntry writes back. A value naming a key (session_id) is that registration only when
+// the key it names is key, and it names a machine (machine_id), a registration time (updated_at
+// above 0) and its projects (the projects key present, null or a list), which every registration
+// this build writes names; any other is refused with an error wrapping ErrEntryUnbound. The server
+// itself stores such a value when a request names key's subject as its reply subject: a direct
+// get's copy of another session's record, or of the session's own interest row, which names its
+// key, machine and time but no projects. A value naming no key is what every build before
+// SessionEntry.SessionID wrote: it is read exactly as before, and its entry's SessionID is empty,
+// which a reader of a session's scope reads as no project's. A value that is not JSON is the decode
+// error itself, as before. A field this build does not know is no refusal: a newer build's record
+// must not read as gone here for the length of a rolling deploy, and it is kept.
+func DecodeEntry(key string, value []byte) (SessionEntry, error) {
+	var stored storedEntry
+	unknown, err := store.DecodeKeeping(value, &stored, sessionEntryKeys)
 	if err != nil {
 		return SessionEntry{}, err
 	}
+	entry := stored.SessionEntry
 	entry.unknown = unknown
+	if stored.Projects != nil {
+		if err := json.Unmarshal(stored.Projects, &entry.Projects); err != nil {
+			return SessionEntry{}, err
+		}
+	}
+	if stored.SessionID == nil {
+		return entry, nil
+	}
+	switch {
+	case json.Unmarshal(stored.SessionID, &entry.SessionID) != nil || entry.SessionID != key:
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names session %s", ErrEntryUnbound, key, stored.SessionID)
+	case entry.MachineID == "":
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no machine", ErrEntryUnbound, key)
+	case entry.UpdatedAt <= 0:
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no registration time", ErrEntryUnbound, key)
+	case stored.Projects == nil:
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no projects", ErrEntryUnbound, key)
+	}
 	return entry, nil
 }
 
@@ -358,6 +413,12 @@ type SessionRegistry struct {
 	// changed is every session the work under r.mu changed, which unlockAndNotify reports once
 	// that lock is released. Guarded by r.mu.
 	changed []string
+
+	// leaderSeam is a test-only, per-session override of the leader read StoredByWriter makes
+	// (bus.KeyValue.NewestFromLeader). Its zero value, the production value, overrides nothing, so
+	// every StoredByWriter reads the bucket's stream leader; a cmd/listener handler test installs
+	// overrides through SetStoredByWriterSeamForTest (testhooks.go).
+	leaderSeam storedByWriterSeam
 }
 
 // OnChange registers changed to be called with a session's id after each change to the session's
@@ -615,7 +676,12 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 }
 
 // decodeLocked is the row a put record of the bucket, delivered or read, leaves in the cache, with
-// its local expiry measured from the record's Created (expiryFor).
+// its local expiry measured from the record's Created (expiryFor). A record that is not the
+// registration of its key (DecodeEntry) is an error, as
+// one that does not decode is: the copy keeps no row for it and evicts the row it held
+// (kvwatch.Rows.Decode), its caller logs it, and every read answers the session as having no
+// record — Lookup gone, Get and Refresh nats.ErrKeyNotFound, List without it — so no reader takes
+// another session's machine or projects from a record copied under this key.
 //
 // A record older than the row the copy removed at its deadline needs no test of its own here: the
 // copy keeps that key's revision in its fence when it removes a row for the cache's own reasons
@@ -624,7 +690,7 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 // does keep is answered absent once it is past its deadline (Get) and removed at it (expireDue).
 // Callers hold r.mu.
 func (r *SessionRegistry) decodeLocked(entry kvwatch.Entry) (*cachedSession, bool, error) {
-	item, err := decodeSessionEntry(entry.Value)
+	item, err := DecodeEntry(entry.Key, entry.Value)
 	if err != nil {
 		return nil, false, err
 	}
@@ -840,49 +906,18 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // registration it replaces (SessionEntry.RepositoryGap), whatever entry's own field says (write).
 // Every other field is entry's, so against another listener's write it is last-writer-wins, as it
 // always was.
+//
+// The entry is written naming sessionID (SessionEntry.SessionID) and stamped with this moment, so
+// every reader reads it as sessionID's registration (DecodeEntry). A caller that writes back an
+// entry it read keeps that entry's Projects only where the entry names sessionID already: one
+// naming no key may be another session's record the server copied under this one, and this write
+// would bind its projects to sessionID (cmd/listener's roleSetHandler). An entry naming no machine
+// is refused with ErrEntryUnbound and nothing is written: every reader would read it as no record,
+// while this registry's own copy held it until its watcher delivered it (write).
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	return r.write(ctx, sessionID, func(cur SessionEntry, found bool, now int64) SessionEntry {
 		return stampClaim(cur, found, entry, now)
 	})
-}
-
-// Amend applies change to sessionID's stored registration and writes the result as PutWithin writes
-// it, within ctx, so a change made on a listener whose cache trails the bucket lands on what another
-// listener wrote since, not on its own stale copy. base is the registration change applies to when
-// the bucket holds none (the caller's earlier read, which an expiry or a delete has overtaken), so the
-// write registers the session again.
-//
-// Several processes can run under one session id, and each of them amending this one registration
-// at the same moment is what write's compare-and-set refuses: a caller that loses every attempt
-// lost them to writes of its own session, each as fresh as the one it was making. So the conflict
-// is reported only while the change this call was to make is still unmade. Where the registration
-// those writes left already carries it - applying change to the stored entry would write the entry
-// back unchanged - the amendment stands and the caller is answered as it would have been had its
-// own write landed. The stamp is not weighed there: the writer that won set it later than this
-// call would have, so the registration is no staler for this call having written nothing. A
-// conflict that left anything else unmade is the failure it was, and so is a read that cannot say.
-func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base SessionEntry, change func(*SessionEntry)) error {
-	amend := func(cur SessionEntry, found bool, now int64) SessionEntry {
-		next := base
-		if found {
-			next = cur
-		}
-		change(&next)
-		return stampClaim(cur, found, next, now)
-	}
-	err := r.write(ctx, sessionID, amend)
-	if !errors.Is(err, ErrWriteConflict) {
-		return err
-	}
-	kv, epoch := r.watcher.Handle()
-	cur, _, found, readErr := r.readStored(ctx, kv, epoch, sessionID, true)
-	if readErr != nil || !found {
-		return err
-	}
-	if reflect.DeepEqual(amend(cur, found, cur.UpdatedAt), cur) {
-		return nil
-	}
-	return err
 }
 
 // write writes sessionID's registration by compare-and-set on its KV revision, so a write another
@@ -892,7 +927,9 @@ func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base Sess
 // is none, whatever merge answers: the mark is SetRepositoryGap's and ClearRepositoryGap's alone to
 // write, so a registration written over an entry never clears a mark no frame has carried, nor
 // raises one no withheld event owes, and a mark another listener set since this one's read refuses
-// the write, which carries that mark on its next attempt.
+// the write, which carries that mark on its next attempt. The value written names sessionID
+// (SessionEntry.SessionID), and one that names no machine is refused with ErrEntryUnbound before
+// anything is written, since DecodeEntry reads such a record as no registration.
 // The first attempt merges onto the cache. A cache miss, or a write the bucket refuses because the
 // revision moved (another listener wrote, or MaxAge removed the key under a cached revision), reads
 // the bucket entry and merges onto that (readStored): Update at the revision of the key's newest
@@ -900,6 +937,14 @@ func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base Sess
 // registration, or 0 when the key holds no entry at all. Every read after a refused write is the
 // bucket stream's leader's (readLatest). After entryWriteLosses refused writes it returns
 // ErrWriteConflict, having written nothing.
+//
+// The first attempt's record, the cache's or a direct get's, cannot be told from a RePublish whose
+// body names the key, a machine, a time and projects: where the write lands at that record's
+// revision (an edge listener, whose direct get is a stream message get, reports a RePublish at the
+// sequence it is stored at), the registration carries that record's gap mark and the keys this
+// build does not know. That is main's window for the gap mark, kept on this path alone; every other
+// field written is the registration's own, and a role claim's refresh, which decides from the
+// leader's read and writes at its revision, carries nothing of such a record (PutClearingGap).
 //
 // Each bucket call waits no longer than ctx (bus.BoundedOn). A write ctx abandoned may still land after
 // this answer. That is safe: it is a compare-and-set on the very entry it read, a marker or no entry
@@ -921,6 +966,10 @@ func (r *SessionRegistry) write(ctx context.Context, sessionID string, merge fun
 			}
 		}
 		entry := merge(cur, found, r.now().UnixMilli())
+		entry.SessionID = sessionID
+		if entry.MachineID == "" {
+			return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
+		}
 		entry.RepositoryGap = ""
 		if found {
 			entry.RepositoryGap = cur.RepositoryGap
@@ -962,11 +1011,12 @@ func (r *SessionRegistry) cachedEntry(epoch uint64, sessionID string) (SessionEn
 // record is applied (kvwatch.Copy.Apply: the read answers only a stored value, never a delete
 // marker). revision is the revision of the key's newest entry: the stored value's, a delete or
 // purge marker's when that is the newest entry, and 0 when the key holds no entry at all. write
-// reads for a write and writes at that revision, so it lands only over what this read found. Amend
-// reads after write lost every attempt: it drops the revision, only checks whether its change would
-// leave the stored entry as it is, and writes nothing. A value that does not decode is found false,
-// as the cache, which evicts it, sees no registration either: write replaces it at its revision,
-// and Amend reports its conflict.
+// reads for a write and writes at that revision, so it lands only over what this read found. A
+// value that does not decode as sessionID's registration (DecodeEntry: one that is no JSON, and one
+// naming another key the server copied under this one) is found false, as the cache, which evicts
+// it, sees no registration either, and so is a put the server wrote, which only the leader's read
+// tells apart (readLatest): write replaces either at its revision, carrying no mark and no field of
+// it.
 func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, fromLeader bool) (SessionEntry, uint64, bool, error) {
 	read, err := readLatest(ctx, kv, sessionID, fromLeader)
 	if errors.Is(err, nats.ErrKeyNotFound) {
@@ -980,7 +1030,7 @@ func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch
 	r.mu.Lock()
 	_, malformed := r.cache.Apply(r.watcher, epoch, kvwatch.LegacyEntry(stored))
 	r.unlockAndNotify()
-	item, decoded := decodeSessionEntry(stored.Value())
+	item, decoded := DecodeEntry(sessionID, stored.Value())
 	if malformed == nil && decoded == nil {
 		return item, revision, true, nil
 	}
@@ -997,9 +1047,13 @@ func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch
 // (bus.KeyValue.GetLatestFromLeader), which holds every write the bucket took, rather than by a
 // direct get, which any copy near enough to current answers (Refresh): a write that lost to
 // another reads so, since a copy that keeps answering a write behind would hand it the revision it
-// just lost on, and would spend the write's bound of lost writes (entryWriteLosses). The leader
-// read is bounded as the direct get is: nats.go fails no request its connection drops, so a leader
-// read lost with its connection would otherwise hold the write that lost until ctx ends.
+// just lost on, and would spend the write's bound of lost writes (entryWriteLosses). The leader's
+// read also reports a put the server wrote as no entry, at the sequence it is stored at: a record
+// the server stored carries another stream's first Nats-Sequence header, so a direct get's
+// revision fences a write out for good, and only the leader's read carries the headers that tell
+// it from a writer's record. The leader read is bounded as the direct get is: nats.go fails no
+// request its connection drops, so a leader read lost with its connection would otherwise hold the
+// write that lost until ctx ends.
 func readLatest(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (bus.LatestEntry, error) {
 	read, _, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) {
 		if fromLeader {
@@ -1011,7 +1065,7 @@ func readLatest(ctx context.Context, kv bus.KeyValue, sessionID string, fromLead
 }
 
 // writeEntryAt is the one write of sessionID's entry every write of it sends (write,
-// rewriteStoredEntry): entry, with the keys of the registration it was read from that this build
+// PutClearingGap, rewriteStoredEntry): entry, with the keys of the registration it was read from that this build
 // does not know (encodeSessionEntry), written as an Update at revision, the revision of the key's
 // newest entry its caller read, and never as a create (write says why), waiting no longer than ctx
 // (bus.BoundedOn), and put in the copy through epoch once it lands (kvwatch.Copy.Put), so a write
@@ -1047,45 +1101,152 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 }
 
 // rewriteStoredEntry is the change of sessionID's entry as the bucket holds it that
-// SetRepositoryGap, ClearRepositoryGap and RenewWithin share: the entry is read from the bucket
-// (readLatest), handed to change, and written back at the revision read when change reports it
-// changed (writeEntryAt), so a registration or another write that lands between the read and the
-// write is never overwritten: the entry is read again, from the bucket stream's leader, and change
-// asked again, by writeEntryAt's stop rule. The keys of the entry this build does not know are
-// written back as read (decodeSessionEntry). A key whose newest entry is no value - a delete or
-// purge marker, or none at all - is missing, the caller's error or nil, and is never written, and
-// a value no read decodes is an error. what names the change in each error. No write it makes is
-// recorded as the session's last-seen time (recordSeen, which write calls for a registration): a
-// change of the gap mark says nothing of whether the session answers, and RenewWithin's one
-// caller, cmd/listener's edge listener, opens no listener state bucket to record it in.
+// SetRepositoryGap, ClearRepositoryGap and RenewWithin share: the entry is read from the stream
+// leader (readEntryFromLeader), handed to change, and written back at the revision read when change
+// reports it changed (writeEntryAt), so a registration or another write that lands between the read
+// and the write is never overwritten: the entry is read again and change asked again, by
+// writeEntryAt's stop rule. The leader read, never a direct get, is what a bucket read by a stream
+// message get (an edge listener's) needs so a record the server wrote is never written back as a
+// writer's: a direct get reports such a record at the key's true sequence there, so a write fenced
+// on it would land. The keys of the entry this build does not know are written back as read
+// (DecodeEntry). A key the stream holds no writer's record for - absent, a marker, a record the
+// server wrote, or one that does not bind to the key - is missing, the caller's error or nil, so no
+// such record is rewritten. A read that did not answer is the error; what names the change in each.
+// No write it makes is recorded as the session's last-seen time (recordSeen, which write calls for
+// a registration): a change of the gap mark says nothing of whether the session answers, and
+// RenewWithin's one caller, cmd/listener's edge listener, opens no listener state bucket to record
+// it in.
 func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
 	kv, epoch := r.watcher.Handle()
-	fromLeader := false
 	for range entryWriteLosses {
-		read, err := readLatest(ctx, kv, sessionID, fromLeader)
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return missing
-		}
+		entry, revision, found, err := readEntryFromLeader(ctx, kv, sessionID)
 		if err != nil {
 			return fmt.Errorf("read session %s to %s: %w", sessionID, what, err)
 		}
-		entry, err := decodeSessionEntry(read.Entry.Value())
-		if err != nil {
-			return fmt.Errorf("read session %s to %s: the stored value is no session entry: %w", sessionID, what, err)
+		if !found {
+			return missing
 		}
 		if !change(&entry) {
 			return nil
 		}
-		_, lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, read.Revision)
+		_, lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
 		if err != nil {
 			return fmt.Errorf("write session %s to %s: %w", sessionID, what, err)
 		}
 		if !lost {
 			return nil
 		}
-		fromLeader = true
 	}
 	return fmt.Errorf("%w: write session %s to %s", ErrWriteConflict, sessionID, what)
+}
+
+// PutClearingGap is a role claim's refresh of sessionID's registration (cmd/listener's
+// roleSetHandler): it writes machineID and selfSubscribed, and writes the port out, over the record
+// the one read of each pass finds, so a forged record is cleared and the session's own
+// registration is kept. Each pass reads the stream leader (readForClear), never the cache or a
+// direct get, since neither can tell a RePublish from a registration, decides from that read, and
+// writes at that read's revision (writeEntryAt): a write the server, or any writer, lands between
+// the read and the write moves the revision, so this write loses and the next pass reads and
+// decides again, and no field of a record stored in between survives a decision made on the record
+// before it. The record a pass reads decides what it writes:
+//   - the session's own writer's record (DecodeEntry binds it and its SessionID is the key): that
+//     record with machineID and selfSubscribed written, UpdatedAt stamped and Port written out, and
+//     every other field kept - its projects, the gap mark, the delivery set (Delivery, Epoch,
+//     ConsumerStart, read together so the record never reads as an earlier release's), the client
+//     instance, capabilities, display fields and the keys this build does not know - so a live
+//     session's own registration is never cleared by this write.
+//   - a writer's record that names no key, one an earlier build wrote: the same, except its
+//     projects, which are projects, the claim token's, since a record naming no key may be another
+//     session's record the server copied under this one, and its projects would be bound to
+//     sessionID.
+//   - any other - a RePublish, a copy of another key's record, a record naming another key, a
+//     marker, or no message at all: the session's key, machineID, selfSubscribed and projects and
+//     nothing else, no gap mark, so a forged record is cleared at the sequence it is stored at.
+//
+// The entry is rebuilt on every pass, so a pass that reads a forged record after one that read the
+// writer's record clears, and never writes the earlier pass's record's fields. Its write is an
+// Update at the revision the pass read, never a create (write says why), and a write that lands is
+// recorded as the session's last-seen time, as a registration's is (recordSeen). Several processes
+// can run under one session id and refresh its claims at once, so once it has lost entryWriteLosses
+// writes (writeEntryAt's stop rule) to what may be the session's own other processes, it reads the
+// leader once more and answers nil where the session's own record already carries the change
+// (machineID, selfSubscribed, no port), and ErrWriteConflict otherwise. An
+// empty machineID is refused with ErrEntryUnbound.
+func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machineID string, selfSubscribed bool, projects []string) error {
+	if machineID == "" {
+		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
+	}
+	kv, epoch := r.watcher.Handle()
+	for range entryWriteLosses {
+		stored, revision, found, err := r.readForClear(ctx, kv, sessionID)
+		if err != nil {
+			return fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
+		}
+		entry := SessionEntry{MachineID: machineID, SelfSubscribed: selfSubscribed, Projects: projects}
+		switch {
+		case found && stored.SessionID == sessionID:
+			entry = stored
+			entry.MachineID, entry.SelfSubscribed, entry.Port = machineID, selfSubscribed, 0
+		case found && stored.SessionID == "":
+			entry = stored
+			entry.MachineID, entry.SelfSubscribed, entry.Projects, entry.Port = machineID, selfSubscribed, projects, 0
+		}
+		entry.SessionID = sessionID
+		entry.UpdatedAt = r.now().UnixMilli()
+		written, lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
+		if err != nil {
+			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
+		}
+		if !lost {
+			r.recordSeen(ctx, kv, sessionID, written)
+			return nil
+		}
+	}
+	if stored, _, found, err := r.readForClear(ctx, kv, sessionID); err == nil && found && stored.SessionID == sessionID &&
+		stored.MachineID == machineID && stored.SelfSubscribed == selfSubscribed && stored.Port == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: session %s", ErrWriteConflict, sessionID)
+}
+
+// readEntryFromLeader reads sessionID's newest message from the bucket's stream leader through kv
+// (readLatest, from the leader) and classifies it as sessionID's registration, with the revision a
+// write-back is fenced on (the classification StoredByWriter answers by, which calls this function,
+// with the revision added): the decoded entry and the revision the message is stored at, found
+// true, when the leader's newest message is a writer's put DecodeEntry binds to sessionID; and the
+// zero entry, found false, for a key the stream holds no message for, a delete or purge marker, a
+// put the server wrote (bus.KeyValue.GetLatestFromLeader answers it as no entry), and a put
+// DecodeEntry refuses for sessionID - a record the server stored at the key's subject, a direct
+// get's copy or a RePublish among them, which no write of the entry may take for a writer's. A read
+// the leader refused or did not answer, the loss of its connection among them (bus.BoundedOn), is
+// the error, since no write may proceed over a key it could not read from the leader.
+func readEntryFromLeader(ctx context.Context, kv bus.KeyValue, sessionID string) (entry SessionEntry, revision uint64, found bool, err error) {
+	read, err := readLatest(ctx, kv, sessionID, true)
+	switch {
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return SessionEntry{}, read.Revision, false, nil
+	case err != nil:
+		return SessionEntry{}, 0, false, err
+	}
+	entry, decodeErr := DecodeEntry(sessionID, read.Entry.Value())
+	if decodeErr != nil {
+		return SessionEntry{}, read.Revision, false, nil
+	}
+	return entry, read.Revision, true, nil
+}
+
+// readForClear reads sessionID's leader record for a clearing write (PutClearingGap), honoring the
+// StoredByWriter seam so a cmd/listener handler test's forged-record cases reach this write as they
+// reach the claim's own confirmation (SetStoredByWriterSeamForTest): a seamed session answers the
+// seam's (entry, is-a-writer's, error) at the revision the stream leader holds now, and every other
+// session answers the leader read (readEntryFromLeader). The real leader read is made either way, so
+// the write still fences on the bucket and a lost compare-and-swap still reads a fresh revision.
+func (r *SessionRegistry) readForClear(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, bool, error) {
+	stored, revision, found, err := readEntryFromLeader(ctx, kv, sessionID)
+	if res, ok := r.leaderSeam.lookup(sessionID); ok {
+		return res.entry, revision, res.written, res.err
+	}
+	return stored, revision, found, err
 }
 
 // SetRepositoryGap writes mark as sessionID's RepositoryGap and nothing else, over any mark the
@@ -1248,6 +1409,37 @@ func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID strin
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
 	return r.applyRead(sessionID, epoch, got, err)
+}
+
+// StoredByWriter reads sessionID's newest message on the session bucket's stream from the stream's
+// leader with the headers the stream stored with it (bus.KeyValue.NewestFromLeader) and returns the
+// record a writer stored there: the message decoded as sessionID's registration (DecodeEntry) when
+// it is a put carrying none of the headers the server writes (bus.KeyValue.GetLatestFromLeader), with true. A
+// message the server wrote - a direct get's copy of another key's record, or a RePublish of another
+// stream naming the key's subject, whatever body that stream was given - can read as a record of
+// sessionID (DecodeEntry) naming any projects, and neither the watcher's entries nor a direct get
+// carry the headers that tell it apart, so it answers the zero entry and false. A key the stream
+// holds no message for, one whose newest message is a delete or purge marker, and one whose newest
+// message is a put the server wrote or that does not decode as sessionID's registration are each no
+// writer's record: the zero entry and false, no error. The entry it returns is the one the leader
+// holds, so a caller judges its scope on the record the key is bound to now, not on a cached entry
+// an older message left. It is the edge listener's confirmation of a session it is about to show,
+// send to or name as a role's holder across what a cached entry says; a role claim's refresh makes
+// the same read itself, with the revision it writes at (PutClearingGap, readForClear). Every other
+// reader has no use for its cost, a read the leader alone answers.
+func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) (SessionEntry, bool, error) {
+	if res, ok := r.leaderSeam.lookup(sessionID); ok {
+		return res.entry, res.written, res.err
+	}
+	kv, _ := r.watcher.Handle()
+	entry, _, found, err := readEntryFromLeader(ctx, kv, sessionID)
+	switch {
+	case errors.Is(err, bus.ErrRefused):
+		return SessionEntry{}, false, nil
+	case err != nil:
+		return SessionEntry{}, false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
+	}
+	return entry, found, nil
 }
 
 // applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err

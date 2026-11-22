@@ -494,8 +494,12 @@ Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no l
 Run one edge pod per machine id, since a second one has no lease to stand by under:
 a second edge pod for one machine id, a rolling update's surge pod included, can deliver a message twice, as an edge listener of a build before this release can.
 So an edge Deployment runs one replica under the `Recreate` strategy.
-The relays of an edge listener acknowledge a GitHub event they withhold, or give it back, with no check of the receive term (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`), because an edge listener holds no lease and runs one pod:
+The relays of an edge listener acknowledge a frame they withhold (a GitHub event while no fresh repository answer stands, or a frame of no project the session's token lists, `edge_frames.go`), or give it back, with no check of the receive term (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`), because an edge listener holds no lease and runs one pod:
 an edge standby would need that withhold fenced by the lease, with the change to the edge's grant that its owner approves.
+An edge listener serves its sessions' relay sockets (`relay_socket.go`) on a NATS connection of their own, and opens that connection by the start rule, as it opens the session consumers' (`openStartConnection`, "Start: what ends it and what it waits out" above).
+A server that refuses that connection, or dials that find no server, log `relay socket connection failed; retrying` (and a grant refusal `relay socket connection refused by the NATS grant; retrying`) and the start waits, since an exit would only send the pod into a crash loop.
+At a stop the relay sockets close, each with 1012, after the session relays have settled (`shutdownListener`), and before the HTTP server shuts down, which does not wait for a hijacked connection.
+An edge session answers its frames over its socket alone, so a socket closed before the relays settled would leave each stopped relay's 750 ms settle (`relaySettleGrace`) nothing to hear, and every frame it had out would be given back and sent again.
 
 ## Environment
 
