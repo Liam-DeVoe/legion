@@ -53,7 +53,8 @@ type roleForReader struct {
 // (Engine.taskStopped, at admitted as at accepting), or answers the issue's own phase for the
 // architect's completion there, as its reader took the issue's phase while RoleFor named no role
 // (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
-// where the role does not work the issue's), or reads only the places of a plan's steps, which
+// where the role does not work the issue's, and reads the role that works the retro only while
+// the issue stands at the retro), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, completionOf, which reads the role of a place
 // only while the task runs there and so never at admitted, whose task is at no act, and
 // Engine.restartTask, which reads its task's first step, a place no plan runs as admitted), or
@@ -74,8 +75,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestReadmissionStartsTheTreesMidPhaseChildren", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}: {calls: 1, tests: []string{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
-	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 1, tests: []string{
-		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
+	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 2, tests: []string{
+		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
+		"TestTheRetroOfARoleOfTheDeploymentIsReported"}},
 	{file: "internal/api/operator.go", fn: "server.restartWorkedPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
