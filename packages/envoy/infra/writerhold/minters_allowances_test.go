@@ -39,6 +39,34 @@ func TestHoldTheMinterReportsAllowancesArePrintedAndRecorded(t *testing.T) {
 	require.Equal(t, "--fleet none", done.Outputs["minters_allowance.1"])
 }
 
+// A held command given --hold of a hold `hold prepare` made sets that hold itself (RunHeld), and
+// that set checks the minter report as `hold set` does, so its done entry records each allowance
+// too: every way a hold is set records them. The control is RunHeld at 75031d8b8a, which ran no
+// preflight for a prepared hold and so recorded no minters_allowance.<i>.
+func TestHoldAHeldCommandSettingAPreparedHoldRecordsTheAllowances(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	report, err := json.Marshal(map[string]any{
+		"run_at": time.Now().UTC().Format(time.RFC3339), "findings": []any{}, "unknown": []any{},
+		"allowances": []map[string]string{{"flag": "--fleet", "value": "none"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(h.report, report, 0o600))
+
+	code, stdout, stderr := h.run(actionPrepare, "--workflow", string(holdrecord.WorkflowStreamsUpdate), "--reason", "prepared for streams update")
+	require.Zero(t, code, "hold prepare: %s", stderr)
+	require.Contains(t, stdout, "the minter report's run was given --fleet none")
+	id := h.row().HoldID
+	h.awaitStreamLeaders()
+
+	code, stdout, stderr = h.streamsRun(nil, "update", "--hold", id, "--reason", "set by the held command")
+	require.Zero(t, code, "streams update --hold of the prepared hold: %s", stderr)
+	require.Contains(t, stdout, "the minter report's run was given --fleet none")
+	done, ok := h.journal(id).Latest(holdrecord.CommandSet, holdrecord.StateDone)
+	require.True(t, ok, "the held command's set wrote no done entry")
+	require.Equal(t, "--fleet none", done.Outputs["minters_allowance.0"])
+}
+
 // An allowance the preflight cannot read whole, or a report with no `allowances` list, is UNKNOWN,
 // as a finding or an unknown step it cannot read is: the hold never runs on a report whose
 // allowances it did not see.

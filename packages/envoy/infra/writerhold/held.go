@@ -41,10 +41,12 @@ type HeldCommand struct {
 	Change func(ctx context.Context, nc *nats.Conn, holdID string) (map[string]Change, map[string]string, error)
 }
 
-// RunHeld runs c inside its hold and returns the hold's id. With no HoldID it checks the minter
-// report, prepares a hold of c's workflow and sets it (Set), its preflight recording c's targets as
-// expected absence; with one whose `hold set` has no done entry, it runs Set again, `hold set`'s
-// rerun. Then, on the operator's connection under the held grant: its admission (holdrecord.Admit:
+// RunHeld runs c inside its hold and returns the hold's id. With no HoldID it prepares a hold of
+// c's workflow and sets it (Set), its preflight recording c's targets as expected absence; with one
+// whose `hold set` has no done entry, it runs Set on it, the set of a hold `hold prepare` made or
+// `hold set`'s rerun. Every set it runs checks the minter report first, as `hold set` does
+// (PreflightMinters), printing each allowance and recording it in the set's done entry. Then, on
+// the operator's connection under the held grant: its admission (holdrecord.Admit:
 // the row held under the hold id, c's command admitted in the workflow, its intent written), the
 // protected streams read, c's change, the postcheck (Postcheck) against what the change says it
 // did, and its done entry. A step after the intent that fails writes a stop entry naming why when
@@ -56,14 +58,24 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if id == "" && c.Workflow == "" {
 		return "", refusef(StepPreflight, "%s names no hold and no workflow to set one of", c.Command)
 	}
+	// recorded is the minter preflight's allowances, which the set's done entry records; checked
+	// says the preflight ran in this run.
 	var recorded map[string]string
-	if id == "" {
+	checked := false
+	preflight := func() error {
 		allowances, err := PreflightMinters(ctx, op.Hub.Client, c.MintersReport, now)
 		if err != nil {
-			return "", err
+			return err
 		}
 		printAllowances(stdout, allowances)
-		recorded = allowanceOutputs(allowances)
+		recorded, checked = allowanceOutputs(allowances), true
+		return nil
+	}
+	if id == "" {
+		if err := preflight(); err != nil {
+			return "", err
+		}
+		var err error
 		if id, err = startHold(ctx, records, op, c.Workflow, c.Reason); err != nil {
 			return id, err
 		}
@@ -77,6 +89,11 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		return id, refusef(StepPreflight, "hold %s is a %s hold: %s runs only in a %s hold", id, d.Workflow, c.Command, c.Workflow)
 	}
 	if !latestIs(d, holdrecord.CommandSet, holdrecord.StateDone) {
+		if !checked {
+			if err := preflight(); err != nil {
+				return id, err
+			}
+		}
 		reading, err := Set(ctx, records, op, id, c.Reason, nil, recorded)
 		if err != nil {
 			return id, err

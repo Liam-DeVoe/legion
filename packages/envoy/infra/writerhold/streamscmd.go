@@ -49,8 +49,9 @@ The writer hold's two stream commands. update makes each missing protected strea
 configuration and raises each by a start's own rules, inside a streams-update hold; census, once
 every cutover row's family is done, removes each stream and consumer the declared set does not
 name, inside a streams-census, cutover or hub-restore hold. With no --hold each prepares and sets a
-hold of its own workflow (streams-update, streams-census); with --hold it runs in that hold. The
-hold stays set: envoy-infra hold release --hold ID ends it.
+hold of its own workflow (streams-update, streams-census), checking --minters-report as hold set
+does; with --hold it runs in that hold, setting it first, with --minters-report too, when its hold
+set is not done. The hold stays set: envoy-infra hold release --hold ID ends it.
 
 The census's families are every family of the broker's cutover rows: session, dispatch and each
 daemon/<P>. --family is optional: when any is given, the values must be exactly the rows' families,

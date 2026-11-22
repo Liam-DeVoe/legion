@@ -106,8 +106,9 @@ const usage = `usage: envoy-infra buckets create|recreate|restore [--hold ID] --
              buckets-restore hold (--workflow recreate|restore, or --hold ID), as its first command
 
 With no --hold, create, recreate and restore prepare and set a hold of their workflow themselves
-(--minters-report, as envoy-infra hold set takes it); with --hold they run in that hold. The hold
-stays set: envoy-infra hold release --hold ID ends it.
+(--minters-report, as envoy-infra hold set takes it); with --hold they run in that hold, setting it
+first, with --minters-report too, when its hold set is not done. The hold stays set: envoy-infra
+hold release --hold ID ends it.
 
   --hold ID            the hold to run in
   --reason R           why, as the hold records it

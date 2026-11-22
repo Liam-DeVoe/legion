@@ -91,7 +91,9 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
 Its rerun, `hold set --hold ID`, goes through the hold's admission like every command: it takes
 the one-command lock and writes a new intent before it restarts anything, then runs the steps
 again, and its done entry follows that intent. A buckets or streams command given `--hold` of a
-hold whose `hold set` is not done runs that rerun first. On a `held` row the rerun runs no probe
+hold whose `hold set` is not done (one `hold prepare` made, or one whose set stopped) runs that set
+first, and that set checks `--minters-report` as `hold set` does, printing each allowance and
+recording it in its done entry. On a `held` row the rerun runs no probe
 outside the hold, so it counts the probe's refusal as the hold's only on this hold's own proof:
 the journal holds the admitted-probe record (a), the rerun's credential has its fingerprint (b),
 and that credential lapses after now plus the probe's timeout (c). Otherwise the rerun is UNKNOWN,
