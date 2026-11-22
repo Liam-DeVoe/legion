@@ -33,7 +33,16 @@ type WriteBatch struct {
 // and by argument type, so a currval(text) of another schema, or a pg_get_serial_sequence of one
 // placed before pg_catalog, would be called instead and could draw from the sequence. The id
 // guards accept only this spelling as a read (api.TestOnlyAnEventInsertsDefaultDrawsAnEventID).
-const LatestEventID = `pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))`
+//
+// The currval is a scalar subquery so that a statement finding the event by it reads one row of
+// events through its primary key. currval is volatile, and Postgres compares a column with a
+// volatile expression row by row, so `events.id = currval(...)` read every row of events, the
+// whole table on each review and each ask opened. An uncorrelated subquery runs at most once, when
+// the statement first needs its value, and that value can be an index key: for
+// `events.id = (select currval(...))` it runs as the index scan of events_pkey starts, and the
+// scan reads the one row. It is the same value, since nothing in the statement draws from the
+// sequence.
+const LatestEventID = `(select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id')))`
 
 // Queued is one statement of a WriteBatch. Unless one of its methods says otherwise, its result is
 // read as an Exec's and dropped.

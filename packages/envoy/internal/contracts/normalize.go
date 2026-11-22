@@ -115,7 +115,22 @@ type CIObservation struct {
 // GithubCIObservations extracts one CI observation per associated PR. Both
 // check runs and suites are folded into durable per-head state; neither emits a
 // raw webhook envelope.
+//
+// A check_suite delivery whose action is requested or rerequested maps to none. GitHub sends it
+// to the App that owns the suite alone, to ask that App to run its checks: it is an instruction,
+// never a CI result, and the suite it carries is queued with no run. An App that never adds a run
+// leaves that suite queued for ever, and the CI store, which settles no head while a suite of its
+// record holds it (cistore's settlementReady), would hold the head for ever. This mapping is the
+// one place a webhook's CI observations are built (the webhook route's only source of them), so
+// the CI store takes a check suite only once it completes, as Dispatch's CI reconcile records
+// only completed suites.
 func GithubCIObservations(event string, body map[string]any) []CIObservation {
+	if event == "check_suite" {
+		switch stringValue(body["action"]) {
+		case "requested", "rerequested":
+			return nil
+		}
+	}
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
 		// A check suite GitHub runs on a pull request's head carries that head's ref even when it
@@ -129,7 +144,8 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	}
 	owner, repo := githubRepo(body)
 	// The CI event name is also the key of its object in the body.
-	obs, ok := GithubCIObservation(event, mapValue(body[event]), owner, repo, numbers[0])
+	object := mapValue(body[event])
+	obs, ok := GithubCIObservation(event, object, owner, repo, numbers[0])
 	if !ok {
 		return nil
 	}
@@ -1739,7 +1755,9 @@ func ghostWisprSummary(eventType string, body map[string]any) string {
 // ghostWisprPayload builds the envelope payload from the body's payload object: the session id,
 // its times and links, its title and its duration for every event type, and the summary fields
 // for summary_ready. payloadJSON drops a field the unit did not send. A current unit sends no
-// title or summary text (packages/envoy/AGENTS.md says why), and an older unit's still pass.
+// title or summary text, because the stream keeps an envelope for its whole retention window and
+// no deletion on the unit can recall it, so a reader fetches the current text through the links;
+// an older unit's still pass.
 func ghostWisprPayload(eventType string, body map[string]any) string {
 	normalizedEventType := normalizeGhostWisprEventType(eventType)
 	data := map[string]string{"event_type": normalizedEventType}

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -26,7 +27,7 @@ import (
 //
 // Everything the trimmer reads of the machine is a field or a package-level var, so a test
 // drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
-// (volumeusage_linux.go), and the rest are the fields of the trimmer below.
+// (volumeusage.go), and the rest are the fields of the trimmer below.
 
 // volumeTrimLog begins every line the trimmer writes, but the stack lines below a recovered
 // panic's own line (fault), which do not carry it. In an issue pod every line the trimmer
@@ -1079,20 +1080,9 @@ func cutEach(list []string, runes int) []string {
 	}
 	out := make([]string, len(list))
 	for at, one := range list {
-		out[at] = cutRunes(one, runes)
+		out[at] = redact.Runes(one, runes)
 	}
 	return out
-}
-
-// cutRunes is s cut to at most bound runes with an ellipsis where it was cut, as runtime.PodEnd
-// cuts a kubelet's message at runtime.PodEndRunes, so its size is one this package chose rather
-// than one the pod's roles happened to give it.
-func cutRunes(s string, bound int) string {
-	runes := []rune(s)
-	if len(runes) <= bound {
-		return s
-	}
-	return string(runes[:bound-1]) + "…"
 }
 
 // sizes is the size walk for one report: a fresh walk, or the last one when it is less than an
@@ -1138,7 +1128,7 @@ func walkShortfall(walk walkResult) string {
 	for _, size := range walk.Sizes {
 		if size.Refused != "" {
 			partly = append(partly, fmt.Sprintf("%q at %q",
-				cutRunes(size.Path, volumeReportPathRunes), cutRunes(size.Refused, volumeReportPathRunes)))
+				redact.Runes(size.Path, volumeReportPathRunes), redact.Runes(size.Refused, volumeReportPathRunes)))
 		}
 	}
 	partlyAll := len(partly) + walk.PartlyOmitted
@@ -1165,9 +1155,9 @@ func walkShortfall(walk walkResult) string {
 		// The walk keeps no more of the list than a report names (walkResult.miss).
 		missing := make([]string, len(walk.Missing))
 		for at, one := range walk.Missing {
-			missing[at] = strconv.Quote(cutRunes(one.Path, volumeReportPathRunes))
+			missing[at] = strconv.Quote(redact.Runes(one.Path, volumeReportPathRunes))
 			if one.Reason != "" {
-				missing[at] += " (" + strconv.Quote(cutRunes(one.Reason, volumeReportPathRunes)) + ")"
+				missing[at] += " (" + strconv.Quote(redact.Runes(one.Reason, volumeReportPathRunes)) + ")"
 			}
 		}
 		and := " and"
@@ -1227,8 +1217,8 @@ type sweepOutcome struct {
 // only answer yes; the platforms where a handle could keep a name rather than a descriptor —
 // GOOS=plan9 and GOOS=js, where os.Root does (`go doc os.Root`) — run no sweep at all, because
 // this binary opens no directory of the volume outside Linux and the reading every interval
-// starts from refuses by name there (volumedir_other.go, readVolumeUsage in
-// volumeusage_other.go).
+// starts from refuses by name there (volumedir_other.go, and readVolumeUsage through
+// volumestat.Read, volumestat_other.go).
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
