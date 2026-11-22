@@ -189,9 +189,17 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 // the destination has as much as for a new one. Without them, a forward merge (the default
 // branch merged onto an older tip of the branch) would read every commit of the default branch
 // since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
+//
+// An update that moves a ref to an object that is no commit once every annotated tag in front of
+// it is peeled off is an error (peelsToACommit), as a commit git could not read is.
 func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
 	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
 		return nil, nil
+	}
+	if update.LocalSHA != update.RemoteSHA {
+		if err := g.peelsToACommit(ctx, req.Dir, update.LocalSHA); err != nil {
+			return nil, err
+		}
 	}
 	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
 	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
@@ -211,6 +219,24 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 		return nil, err
 	}
 	return strings.Fields(out), nil
+}
+
+// peelsToACommit fails unless sha, with every annotated tag in front of it peeled off, names a
+// commit. A ref can hold a blob or a tree, or a tag of one: git pushes that object, while rev-list
+// lists no commit for it and exits 0, so Guard.commits would read nothing and the object's text
+// would reach the destination unread. The rules read a push's commits alone, so such a push is
+// refused rather than passed: the type git answers for the peeled object is the test, anything but
+// "commit" refuses, and so does a type git could not read. A ref the destination holds at that sha
+// already is not asked about (Guard.commits), since the push sends nothing of it.
+func (g *Guard) peelsToACommit(ctx context.Context, dir, sha string) error {
+	out, err := g.git(ctx, dir, "cat-file", "-t", sha+"^{}")
+	if err != nil {
+		return err
+	}
+	if kind := strings.TrimSpace(out); kind != "commit" {
+		return fmt.Errorf("%s, which the push moves a ref to, is a %s once its tags are peeled, not a commit, and the private-name rules read a push's commits alone", short(sha), kind)
+	}
+	return nil
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates

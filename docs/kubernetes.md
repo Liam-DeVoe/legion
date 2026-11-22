@@ -136,6 +136,8 @@ It carries:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
   `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
   or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
+  A push that moves a ref to a blob or a tree, bare or behind annotated tags, gets that setup error too, though no pod is broken, `<sha>, which the push moves a ref to, is a blob once its tags are peeled, not a commit, …`, whatever the object holds:
+  the rules read a push's ref names and the commits it adds, and git pushes such an object with no commit for them to read, so the guard refuses it rather than pass its text unread, as the shared check refuses it too (`Guard.peelsToACommit`, `internal/leakguard/push.go`).
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 

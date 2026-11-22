@@ -477,3 +477,176 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 		}
 	})
 }
+
+// A push that moves a ref to a blob or a tree, or to a tag of one however many tags deep, is
+// refused as a setup failure, whatever the object holds. git sends the object, and rev-list lists
+// no commit for it and exits 0, so the rules, which read a push's commits, would read nothing of
+// it and pass the push: a blob or a file of a tree that names a host would reach the destination
+// unread. The case that names nothing is refused the same way, since the guard reads none of
+// them. The shared check here is the stand-in that passes every push (leakguardtest.Passes), so
+// each refusal is the guard's own. The controls show the type read takes nothing from the pushes
+// the rules can read: a tag chain that ends at a commit is read as that commit is, its added line
+// refused by the rules and a clean one passed, and a ref the destination holds at that blob
+// already, which the push does not send, is passed.
+func TestAPushOfARefToNoCommitIsRefused(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(t *testing.T, path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(t *testing.T, name, content string) string {
+		t.Helper()
+		write(t, filepath.Join(repo, name), content)
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", "a message of no interest")
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	base := commit(t, "README.md", "one\n")
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+
+	const named, clean = "the runner answers at " + theHost + "\n", "a line of ordinary prose\n"
+	// blob is a blob of content in the repository's object store, on no commit.
+	blob := func(t *testing.T, content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "notes.md")
+		write(t, path, content)
+		return strings.TrimSpace(fixture.Out(repo, "git", "hash-object", "-w", "--no-filters", path))
+	}
+	// tree is a tree of one file, notes.md, holding content, on no commit. It is written from an
+	// index of its own, so the repository's index is left as it was.
+	tree := func(t *testing.T, content string) string {
+		t.Helper()
+		index := fixture.With("GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "index"))
+		index.Run(repo, "git", "update-index", "--add", "--cacheinfo", "100644,"+blob(t, content)+",notes.md")
+		return strings.TrimSpace(index.Out(repo, "git", "write-tree"))
+	}
+	// annotated is an annotated tag named name on object, whose message names nothing, and its sha.
+	annotated := func(t *testing.T, name, object string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "-c", "advice.nestedTag=false", "tag", "-a", "-m", "a tag of no interest", name, object)
+		return fixture.Run(repo, "git", "rev-parse", "refs/tags/"+name)
+	}
+	push := func(t *testing.T, name, local, remote string) error {
+		t.Helper()
+		ref := "refs/tags/" + name
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+		return guard.Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: ref, LocalSHA: local, RemoteRef: ref, RemoteSHA: remote}},
+		})
+	}
+
+	for _, content := range []struct{ name, text string }{{"names a host", named}, {"names nothing", clean}} {
+		for _, tc := range []struct {
+			name string
+			// local is the sha the ref is pushed at, made under the tag name name.
+			local func(t *testing.T, name string) string
+			// kind is the type of the object at the end of the ref's tags.
+			kind string
+		}{
+			{
+				name:  "a lightweight tag on a blob that " + content.name,
+				local: func(t *testing.T, _ string) string { return blob(t, content.text) },
+				kind:  "blob",
+			},
+			{
+				name:  "an annotated tag on a blob that " + content.name,
+				local: func(t *testing.T, name string) string { return annotated(t, name, blob(t, content.text)) },
+				kind:  "blob",
+			},
+			{
+				name:  "a lightweight tag on a tree whose file " + content.name,
+				local: func(t *testing.T, _ string) string { return tree(t, content.text) },
+				kind:  "tree",
+			},
+			{
+				name: "a tag of a tag on a blob that " + content.name,
+				local: func(t *testing.T, name string) string {
+					return annotated(t, name, annotated(t, name+"-inner", blob(t, content.text)))
+				},
+				kind: "blob",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				name := strings.ReplaceAll(tc.name, " ", "-")
+				local := tc.local(t, name)
+				if got := fixture.Run(repo, "git", "cat-file", "-t", local+"^{}"); got != tc.kind {
+					t.Fatalf("the fixture's object is a %s once its tags are peeled, want a %s", got, tc.kind)
+				}
+				failed := setupFailure(t, push(t, name, local, noSHA))
+				says(t, failed, ": "+short(local)+", which the push moves a ref to, is a "+tc.kind+" once its tags are peeled, not a commit")
+				if strings.Contains(failed.Error(), theHost) {
+					t.Fatalf("the setup failure holds the text it refused: %v", failed)
+				}
+				t.Log(failed)
+			})
+		}
+	}
+
+	t.Run("a tag of a tag on a commit whose added line names a host", func(t *testing.T) {
+		fixture.Run(repo, "git", "checkout", "--quiet", "-B", "named", base)
+		head := commit(t, "chain.md", named)
+		local := annotated(t, "named-outer", annotated(t, "named-inner", head))
+		want := []string{"chain.md: " + theClass}
+		if refused := refusal(t, push(t, "named-outer", local, noSHA)); refused.By != byRules || !slices.Equal(refused.Lines, want) {
+			t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
+		}
+	})
+	t.Run("an annotated tag on a commit that names nothing", func(t *testing.T) {
+		fixture.Run(repo, "git", "checkout", "--quiet", "-B", "clean", base)
+		head := commit(t, "clean.md", clean)
+		if err := push(t, "clean-tag", annotated(t, "clean-tag", head), noSHA); err != nil {
+			t.Fatalf("a push of a tag on a commit that names nothing: %v", err)
+		}
+	})
+	t.Run("a lightweight tag on a blob the destination holds at that ref already", func(t *testing.T) {
+		held := blob(t, named)
+		if err := push(t, "held", held, held); err != nil {
+			t.Fatalf("a push that moves no ref: %v", err)
+		}
+	})
+}
+
+// A read of the type of what a ref is pushed at that fails refuses the push, as any other git
+// read of its records that fails does: the push could be of a blob or a tree, which the rules
+// would not read. The stand-in git fails `cat-file -t` alone and runs the real git for every other
+// command, and the push is of a commit that names nothing, which the control, the same push with
+// the real git first on PATH, passes.
+func TestAFailedTypeReadOfAPushedRefRefusesThePush(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", "a commit of nothing in particular")
+	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	const reason = "fatal: the stand-in reads the type of no object"
+	standIn := t.TempDir()
+	script := "#!/bin/sh\ncase \" $* \" in\n*\" cat-file -t \"*) echo '" + reason + "' >&2; exit 128 ;;\nesac\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(standIn, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	push := func(t *testing.T, extra ...string) error {
+		t.Helper()
+		return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, extra...).Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+		})
+	}
+	if err := push(t); err != nil {
+		t.Fatalf("the control, the push with the real git: %v", err)
+	}
+	failed := setupFailure(t, push(t, "PATH="+standIn+string(os.PathListSeparator)+os.Getenv("PATH")))
+	says(t, failed, ": git cat-file exited 128: "+reason)
+	t.Log(failed)
+}

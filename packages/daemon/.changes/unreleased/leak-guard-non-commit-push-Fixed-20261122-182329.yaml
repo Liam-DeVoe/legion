@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The leak guard now refuses a push that moves a ref to a blob or a tree, or to an annotated tag
+  of one however many tags deep, as a setup error (`LEAK CHECK SETUP ERROR: … <sha>, which the
+  push moves a ref to, is a blob once its tags are peeled, not a commit, …`). Before, its
+  private-name pass listed the push's commits with `git rev-list`, which lists none for such an
+  object and exits 0, so the pass read nothing of it and passed the push while git sent the
+  object. The shared leak check already refuses such a push; the guard now refuses it on its own
+  as well. A push of a ref to a commit, directly or through annotated tags, is read as before, and
+  a ref the destination holds at that object already is not asked about.
+time: 2026-11-22T18:23:29Z
+custom:
+  Issue: leak-guard-non-commit-push
