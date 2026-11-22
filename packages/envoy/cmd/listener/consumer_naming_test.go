@@ -14,11 +14,11 @@ import (
 )
 
 // A fixed-mode start reads the selection bucket's marker before it runs today's names. A listener
-// whose grant holds no read of the bucket, as the listener beside Dispatch and one whose hub never
-// gave it the window's grants hold none, starts in the fixed mode even over a converted bucket it
-// cannot see. The control is that read itself: it answers an error, so a build that ended its start
-// on any failed read would stop the Dispatch listener. The same converted bucket read with a grant
-// that allows the read refuses the start.
+// whose grant holds no read of the bucket, as one whose hub never gave it the window's grants holds
+// none, starts in the fixed mode even over a converted bucket it cannot see. The control is that
+// read itself: it answers an error, so a build that ended its start on any failed read would stop
+// such a listener. The same converted bucket read with a grant that allows the read refuses the
+// start.
 func TestAFixedModeStartRefusedTheBucketsReadStartsAndAGrantedReadOfAConversionStops(t *testing.T) {
 	seed, public := testnats.User(t)
 	stream := "KV_" + consumernames.SessionBucket

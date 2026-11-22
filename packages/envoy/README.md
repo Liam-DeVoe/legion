@@ -177,8 +177,8 @@ are in [`consumernames/README.md`](consumernames/README.md).
   which the durable is created and bound, each make no consumer call and no durable create,
   correction or bind until a read of the selection bucket's cutover marker (`envoy.bucket`) on that
   very connection says the cutover did not convert the bucket. A missing bucket counts as no
-  marker, and so does a read the connection's grant refuses (the listener beside Dispatch holds no
-  such read).
+  marker, and so does a read the connection's grant refuses (a hub never given the window's
+  grants; the listener beside Dispatch reads the bucket on Dispatch's grant).
   - Every disconnect shuts the gate, and each reconnect reads the marker again.
   - A converted bucket stops the process, naming `ENVOY_CONSUMER_NAMES`.
   - A read that fails keeps the gate shut and is read again. Meanwhile a registration is answered
