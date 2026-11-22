@@ -2523,7 +2523,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		}
 		// A start the phase or entry fence below would finish still starts a claim the project
-		// release stopped, with no task (releaseStoppedStart).
+		// release stopped, with no task (releaseStoppedStart), unless it is a start queued for news
+		// alone (record.SuperviseRequest.News), which the fence finishes without acting for that
+		// claim too.
 		if payload.Phase != "" && payload.Phase != issue.Phase {
 			started, run := r.releaseStoppedStart(row, payload, "serves a phase the issue has left",
 				"row", row.ID, "issue", issue.Key, "phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
@@ -3933,12 +3935,12 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 // (supervise.Claim.ProjectReleased) it answers that claim's start (record.ReleaseStoppedStart)
 // and true, and for every other row the row's own payload and false, which the fence finishes
 // without acting. A start queued for news alone (record.SuperviseRequest.News) is such another
-// row: it never counts as the claim's start, so the boot writes the released claim's own start
-// beside it, and answering it here would start that claim a second time. It logs which of the
-// two it answered at Info, with fields.
+// row: it never counts as the claim's start (workflow.StartsWork, which the boot's StartFor reads
+// as well), so the boot writes the released claim's own start beside it, and answering it here
+// would start that claim a second time. It logs which of the two it answered at Info, with fields.
 func (r *outbox) releaseStoppedStart(row record.OutboxRow, payload record.SuperviseRequest, serves string, fields ...any) (record.SuperviseRequest, bool) {
 	stopped := false
-	if payload.Op == "start" && !payload.News {
+	if workflow.StartsWork(payload) {
 		token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 		if err == nil {
 			machine, found := r.supervisor.Machine(token)

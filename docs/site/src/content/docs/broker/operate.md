@@ -137,7 +137,7 @@ name>…]`, as `=first` does above. An entry that names none takes the first iss
 alone, so an entry written for one cluster keeps its meaning while that cluster stays first in
 the list. When you change `BROKER_K8S_OIDC_ISSUER` from one URL to named entries, list the cluster
 the broker trusted before first: an entry that names no issuer takes the first issuer, and a
-token login's credential or a pod's enrollment recorded before migration 0041 reads as the first
+token login's credential or a pod's enrollment recorded before migration 0042 reads as the first
 issuer's. A listed account's token from an issuer its entry does not name is answered
 `403 ACCOUNT_NOT_LISTED`, as an account the list does not name is.
 A Google caller presents its machine's own Google identity token for `BROKER_GOOGLE_OIDC_AUDIENCE`

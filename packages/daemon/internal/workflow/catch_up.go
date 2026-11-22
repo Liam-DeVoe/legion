@@ -171,7 +171,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
 // about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
 // liveness: this claim is live, which is precisely why it is being given its task. A start queued
-// for news alone carries no task of the phase (startsWork), so it covers nothing, and the worker is
+// for news alone carries no task of the phase (StartsWork), so it covers nothing, and the worker is
 // given its task beside it.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
 	stop := actingStop(run, root)

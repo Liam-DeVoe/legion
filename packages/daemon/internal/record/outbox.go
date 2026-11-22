@@ -1160,12 +1160,13 @@ type SuperviseRequest struct {
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
 	// finishes without acting, unless its claim is one the project release stopped, which it then
-	// starts with no task (ReleaseStoppedStart). It is empty for a root's architect, which serves
-	// every phase, for a child's own architect's plain start (workflow's childArchitectStart), and
-	// for a suspend or a tree's close, which must still act after the issue moves on. The start a
-	// re-admission writes to bring back a mid-phase child's own architect names the phase the
-	// child stands in (admit's startMidPhaseMembers), and is held to that phase as a phase
-	// worker's start is.
+	// starts with no task (ReleaseStoppedStart). A start queued for news alone (News below)
+	// finishes without acting even then, since it is never the claim's start
+	// (workflow.StartsWork). It is empty for a root's architect, which serves every phase, for a
+	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
+	// tree's close, which must still act after the issue moves on. The start a re-admission writes
+	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
+	// startMidPhaseMembers), and is held to that phase as a phase worker's start is.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -1345,9 +1346,10 @@ func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
 // start, and ended unrun it would leave the claim suspended with every delivery for it waiting
 // (the daemon's awaitsBootStart). So each place that would end a start of such a claim unrun puts
 // this start in its place: the outbox's phase and entry fences, for a start they would finish
-// (the daemon's releaseStoppedStart); Store.EnqueueStart, for a start of another role that it
-// takes out; and admission's repair, for a held start whose phase alone the issue has left
-// (admit's finishFencedStarts).
+// other than one queued for news alone (SuperviseRequest.News), which is never the claim's start
+// (the daemon's releaseStoppedStart, workflow.StartsWork); Store.EnqueueStart, for a start of
+// another role that it takes out; and admission's repair, for a held start whose phase alone the
+// issue has left (admit's finishFencedStarts).
 func ReleaseStoppedStart(tree string, role claim.Role, generation uint64) SuperviseRequest {
 	return SuperviseRequest{Op: "start", Tree: tree, Role: role, Generation: generation, RuleResume: true}
 }

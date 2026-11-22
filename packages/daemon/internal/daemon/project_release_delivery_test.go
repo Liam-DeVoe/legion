@@ -531,7 +531,9 @@ func TestADeliveryForAClaimThatHeldItsRoleSinceTheReleaseEndsAfterARestart(t *te
 // start, so the outbox starts the claim anyway, resumed by rule and with no task, as the boot starts
 // a role of an earlier phase, rather than finish the row and leave the claim suspended by the
 // release with every delivery for it waiting. The same start of a claim no release stopped still
-// finishes without acting.
+// finishes without acting, and so does a start queued for news alone of a claim the release
+// stopped, which is never that claim's start (workflow.StartsWork): the boot writes the claim's
+// own start beside it.
 func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -548,6 +550,8 @@ func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *test
 			record.SuperviseRequest{Phase: phase.Implementing, Entry: 1, Task: "the work of entry 1"}, 2, true},
 		{"a start of a phase the issue has left, for a claim the daemon suspended", claim.RoleTester, supervise.SuspendedByDaemon,
 			record.SuperviseRequest{Phase: phase.Testing, Task: "carry the testing phase on", ResumeTask: true}, 0, false},
+		{"a start queued for news alone of a phase the issue has left", claim.RoleTester, supervise.SuspendedByProjectRelease,
+			record.SuperviseRequest{Phase: phase.Testing, News: true}, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -565,7 +569,9 @@ func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *test
 				}
 			}
 			start := tc.start
-			start.Op, start.Tree, start.Role, start.Generation, start.RuleResume = "start", "LEGION-208", tc.role, 1, true
+			start.Op, start.Tree, start.Role, start.Generation = "start", "LEGION-208", tc.role, 1
+			// A start queued for news alone is never resumed by rule (record.NewOutboxRow).
+			start.RuleResume = !start.News
 			rig.enqueue(t, start)
 
 			rig.run(t)
