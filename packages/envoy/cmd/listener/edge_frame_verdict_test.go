@@ -43,35 +43,34 @@ func TestEdgeFrameVerdict(t *testing.T) {
 
 	projects := []string{"PRIV"}
 	for _, tc := range []struct {
-		name         string
-		subject      string
-		topic        string
-		role         string
-		wantWithhold bool
-		wantReason   string
+		name    string
+		subject string
+		topic   string
+		role    string
+		want    frameVerdict
 	}{
-		{"a send on the session's own subject passes", own, own, "", false, ""},
-		{"a send on the session's own new-form subject passes", ownNew, ownNew, "", false, ""},
-		{"a forged other-project role-marked send on the own subject is withheld", own, own, pubRole, true, withheldProjectNotHeld},
-		{"the session's own project's role-marked send kept on the previous holder's subject passes", own, previous, privRole, false, ""},
-		{"the session's own project's role-lane forward passes", own, contracts.RoleTopicPrefix + privRole, "", false, ""},
-		{"an other-project role-lane forward is withheld", own, contracts.RoleTopicPrefix + pubRole, "", true, withheldProjectNotHeld},
-		{"a frame on another session's agent subject is withheld", otherAgent, otherAgent, "", true, withheldProjectNotHeld},
-		{"a frame on the own subject with no envelope topic is withheld", own, "", "", true, withheldProjectNotHeld},
-		{"a non-role forward of a GitHub event on the own subject is withheld", own, github, "", true, withheldProjectNotHeld},
-		{"a non-role forward of another agent subject on the own subject is withheld", own, otherAgent, "", true, withheldProjectNotHeld},
-		{"the wildcard own subject is no one's and is withheld", contracts.AgentTopicPrefix + "*." + session, contracts.AgentTopicPrefix + "*." + session, "", true, withheldProjectNotHeld},
-		{"a GitHub header whose envelope names a topic that is no GitHub event's is withheld", github, ownIssue, "", true, withheldProjectNotHeld},
-		{"a GitHub header with no reader stands answer_unknown", github, "", "", true, withheldAnswerUnknown},
-		{"a topic of the token's project passes", ownIssue, ownIssue, "", false, ""},
-		{"a topic of a project the token does not list is withheld", otherIssue, otherIssue, "", true, withheldProjectNotHeld},
-		{"a relay header of the token's project whose envelope names another project is withheld", ownIssue, otherIssue, "", true, withheldProjectNotHeld},
+		{"a send on the session's own subject passes", own, own, "", framePasses()},
+		{"a send on the session's own new-form subject passes", ownNew, ownNew, "", framePasses()},
+		{"a forged other-project role-marked send on the own subject is withheld", own, own, pubRole, frameDrops(withheldProjectNotHeld)},
+		{"the session's own project's role-marked send kept on the previous holder's subject passes", own, previous, privRole, framePasses()},
+		{"the session's own project's role-lane forward passes", own, contracts.RoleTopicPrefix + privRole, "", framePasses()},
+		{"an other-project role-lane forward is withheld", own, contracts.RoleTopicPrefix + pubRole, "", frameDrops(withheldProjectNotHeld)},
+		{"a frame on another session's agent subject is withheld", otherAgent, otherAgent, "", frameDrops(withheldProjectNotHeld)},
+		{"a frame on the own subject with no envelope topic is withheld", own, "", "", frameDrops(withheldProjectNotHeld)},
+		{"a non-role forward of a GitHub event on the own subject is withheld", own, github, "", frameDrops(withheldProjectNotHeld)},
+		{"a non-role forward of another agent subject on the own subject is withheld", own, otherAgent, "", frameDrops(withheldProjectNotHeld)},
+		{"the wildcard own subject is no one's and is withheld", contracts.AgentTopicPrefix + "*." + session, contracts.AgentTopicPrefix + "*." + session, "", frameDrops(withheldProjectNotHeld)},
+		{"a GitHub header whose envelope names a topic that is no GitHub event's is withheld", github, ownIssue, "", frameDrops(withheldProjectNotHeld)},
+		{"a GitHub header with no reader stands answer_unknown", github, "", "", frameAnswerUnknownVerdict()},
+		{"a topic of the token's project passes", ownIssue, ownIssue, "", framePasses()},
+		{"a topic of a project the token does not list is withheld", otherIssue, otherIssue, "", frameDrops(withheldProjectNotHeld)},
+		{"a relay header of the token's project whose envelope names another project is withheld", ownIssue, otherIssue, "", frameDrops(withheldProjectNotHeld)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			verdict := edgeFrameVerdict(nil, session, projects, tc.subject, frame(tc.topic, tc.role))
-			if withhold := verdict.action != framePass; withhold != tc.wantWithhold || verdict.reason != tc.wantReason {
-				t.Fatalf("edgeFrameVerdict(subject=%q, topic=%q, role=%q) = (%t, %q), want (%t, %q)",
-					tc.subject, tc.topic, tc.role, withhold, verdict.reason, tc.wantWithhold, tc.wantReason)
+			if verdict != tc.want {
+				t.Fatalf("edgeFrameVerdict(subject=%q, topic=%q, role=%q) = {action %d, reason %q}, want {action %d, reason %q}",
+					tc.subject, tc.topic, tc.role, verdict.action, verdict.reason, tc.want.action, tc.want.reason)
 			}
 		})
 	}
