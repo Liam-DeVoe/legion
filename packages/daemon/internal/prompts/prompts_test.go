@@ -1140,3 +1140,48 @@ func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
 		}
 	}
 }
+
+// The owner of an issue does each step of its plan whose key is owner, and the retro of a task
+// with no step of the type implementation: Legion tells it the step with an owner-step notice, and
+// it reports the step with complete_step, which refuses an architect but the issue's own and a
+// step that does not run now. So each composed architect prompt names both and both refusals, and
+// says how an issue with no pull request closes. A step worker's prompt holds under every plan the
+// release takes, a task of the tester alone among them, which has no pull request: each sentence in
+// retired said every task had one, and no composed step worker prompt still says it, while each
+// worker named in closes says how such an issue closes. This shows the text is loaded, never that
+// an agent follows it.
+func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, isRoot := range []bool{true, false} {
+		text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, isRoot))
+		for _, term := range []string{"`owner-step`", "`complete_step`", "`NOT_THE_OWNER`", "`OWNER_STEP_NOT_RUNNING`", "the end of its retro closes one that has none"} {
+			if !strings.Contains(text, term) {
+				t.Errorf("the composed architect prompt (root %t) omits %q", isRoot, term)
+			}
+		}
+	}
+	retired := []string{
+		"The issue closes after its merge",
+		"At the close, which comes at the merge",
+		"the issue's close hands this session the check task",
+		"the daemon sends the issue back to the implementer",
+		"the architect where it has the step `acceptance:owner`, and the retro",
+	}
+	closes := map[claim.Role]string{
+		claim.RoleTester: "An issue with no pull request closes when its retro ends",
+	}
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.Role("acceptance")} {
+		text := foldWhitespace(composedText(t, composer, role, false))
+		for _, phrase := range retired {
+			if strings.Contains(text, phrase) {
+				t.Errorf("the composed %s prompt still says %q", role, phrase)
+			}
+		}
+		if want, ok := closes[role]; ok && !strings.Contains(text, want) {
+			t.Errorf("the composed %s prompt omits %q", role, want)
+		}
+	}
+}
