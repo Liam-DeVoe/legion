@@ -68,15 +68,12 @@ func NamesAsAWord(text string, names ...string) bool {
 // far end names the two in that order, and one that names one node at both ends names it twice.
 func NamesInOrder(text string, names ...string) bool {
 	spaced := spacedWords(text)
-	// from is where the next name is looked for: the space after the last name found, which
-	// begins the word after it.
-	from := 0
 	for _, name := range names {
-		at := strings.Index(spaced[from:], " "+name+" ")
+		at := strings.Index(spaced, " "+name+" ")
 		if at < 0 {
 			return false
 		}
-		from += at + 1 + len(name)
+		spaced = spaced[at+1+len(name):]
 	}
 	return true
 }

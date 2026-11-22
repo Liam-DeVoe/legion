@@ -486,8 +486,8 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	requireRefused(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": mistyped}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "2", "risk")
-	// Every refusal of an entry's shape ends with the shape, which names checks, so the refusal of
-	// an entry without its checks is told by "no checks", which the shape does not hold.
+	// Every refusal of an entry's shape holds the shape, which names checks, so the refusal of an
+	// entry without its checks is told by "no checks", which the shape does not hold.
 	requireRefused(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": []any{map[string]any{"risk": 3, "reason": "None."}}}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "1", "3", "no checks")
