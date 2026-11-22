@@ -1487,9 +1487,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   A connection that closes again before a bound passes postpones that bound each time to a whole bound after its next hello, and the reconnect deadline bounds each gap.
   Nothing to do unless it repeats: a worker that reconnects and never answers has a hung agent, or a shim that cannot reach its agent.
 - **`supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again`** and **`supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here`** at Info, with the `task` where the claim holds one, mark each change of what the daemon sees of the worker's turns on its connection.
-  The first comes when the connection closes, when a daemon start restores a claim with a process, and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it: the take, turn-start and report waits stand still from it.
+  The first comes, with the `view` the daemon has then, when the connection closes (`closed`), when a daemon start restores a claim with a process (`no-hello`), and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it (`asked`): the take, turn-start and report waits stand still from it.
   The second comes at the first hello of a new process, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, after a reconnect hello or a daemon start, at a turn's start or end, and when the daemon lets the process go: each wait that the first line stopped runs again, whole, from it.
-  [Task delivery cost](/legion/legion/task-delivery-cost/) reads these two lines to start each wait where the daemon started it.
+  [Task delivery cost](/legion/legion/task-delivery-cost/) reads these two lines to start each wait where the daemon started it, and the first `no-hello` line of a daemon start as the start's first line.
   Nothing to do.
 - **`supervise: the first bound passed over a revision whose seen report this daemon read from the
   store; it is written again under its number, and nobody is charged`** at Info follows a daemon

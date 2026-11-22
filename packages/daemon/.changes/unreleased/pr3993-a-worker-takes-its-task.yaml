@@ -11,7 +11,12 @@ body: |-
   and nobody is charged. These bounds run only while the worker's connection shows the daemon
   every frame of its turns: time with the connection cut counts toward none of them, and each
   starts again whole once the agent answers the daemon's ask after its shim's reconnect hello, or
-  a turn starts or ends. A daemon that
+  a turn starts or ends. The daemon logs each change of that view at Info, with the task where one
+  is pending: `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on
+  the worker stand still until it does again`, whose `view` names what it sees then (`no-hello` at a
+  daemon start's restore, `closed` or `asked`), and `supervise: the daemon sees every frame of the
+  worker's turns again; the bounds on the worker run again, whole, from here`; `legion task-cost`
+  reads both to start each wait where the daemon started it. A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
   connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
   `legion config check` prints the refusal of a daemon that would connect as that user.
