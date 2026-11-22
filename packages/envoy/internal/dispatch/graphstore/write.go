@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -69,6 +71,40 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 		QueueWrite(b, nodes, tuples)
 		return nil
 	})
+}
+
+// WriteState writes each of roots again at state, dated at and signed by who, in one Write in the
+// caller's transaction, and answers the nodes it wrote. A write into gone takes everything beneath
+// each root with it: where state is StateGone, each root is followed by every node that stands
+// beneath it and is not gone yet (withBeneath), at every depth and whatever its kind, whoever may
+// see it, so no read by its own address answers a node under a gone one live with nothing to stand
+// on (spec requirement r-proposed); at any other state it writes the roots alone. Each node is
+// written as the store holds it but for its state, which the write moves (Restates false), keeping
+// the cause the store holds of it (KeepsCause), marked changed, and at the sentinel (NoEvent), so
+// the write moves the row's state and appends one state tuple at the sentinel, dated at and signed
+// by who. It answers the nodes in the order it read them, each root followed by what stands
+// beneath it, so the first is the first root as written; at a state other than gone those are
+// roots' own elements, set in place. With no node to write it writes nothing and answers none.
+func WriteState(ctx context.Context, tx pgx.Tx, roots []Node, state string, at time.Time, who model.Actor) ([]Node, error) {
+	nodes := roots
+	if state == StateGone {
+		var err error
+		if nodes, err = withBeneath(ctx, tx, roots); err != nil {
+			return nil, err
+		}
+	}
+	if len(nodes) == 0 {
+		return nil, nil
+	}
+	for index := range nodes {
+		each := &nodes[index]
+		each.State, each.Restates, each.KeepsCause, each.Changed = state, false, true, true
+		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
+	}
+	if err := Write(ctx, tx, nodes, nil); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // QueueWrite queues the write of every node and the append of every tuple on b. It appends only:

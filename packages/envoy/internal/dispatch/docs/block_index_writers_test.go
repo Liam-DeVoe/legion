@@ -598,7 +598,7 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds. A
 	// node taken gone takes its whole part_of subtree gone in the same write, each node from its own
-	// row, which the write reads through the current part_of tuples (graphstore.WithBeneath).
+	// row, which the write reads through the current part_of tuples (graphstore.WriteState).
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of every node under a node it takes gone, and the issue it stands under",
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
@@ -658,7 +658,7 @@ var indexPasses = map[string]string{
 	// retracted - the store's own relations, retracted because the document they name has gone. The
 	// lenses on the document that the delete leaves stale go gone with all beneath them, read as the
 	// stale lenses on its node (refs.StaleLensesOn) and what stands beneath each
-	// (graphstore.WithBeneath), where it read one standing there.
+	// (graphstore.WriteState), where it read one standing there.
 	"api/artifact_removal.go#removeArtifact": "the document the request removes, the changed_by_run its node states, the lenses that stand on its node, and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
@@ -728,7 +728,7 @@ var indexPasses = map[string]string{
 	// decides is the lens's own recorded row (graphstore.AttributeArtifactID) against the artifacts
 	// row at its document's address (refs.StaleSQL), the lens's own fact and the address's own row,
 	// neither of which is the other side of a projection, and what stands under each stale lens goes
-	// gone with it from its own row (graphstore.WithBeneath). It mends nothing, so it is no repair.
+	// gone with it from its own row (graphstore.WriteState). It mends nothing, so it is no repair.
 	"graphcensus/orphans.go#StateStaleLensesGone": "each lens's recorded row and the artifacts row at its document's address, the rows of every node beneath each stale one, and the database's clock",
 	// The store's own record, beside its write of a lens's part_of, of the row of the document the
 	// lens is placed on (graphstore.AttributeArtifactID): the lens's part_of the write states, the

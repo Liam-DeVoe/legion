@@ -483,7 +483,7 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // row of is errNodeNotHeld, and a node at gone, or a stale one (storedGone), 409 NODE_GONE
 // (nodeGone), since no write writes on a gone node, so a write the route found the node live for
 // and that queued behind its gone is refused too. It holds the node to the route's rule and writes
-// it again as the store holds it but for its state (graphstore.AsStateWrite): a plain node write,
+// it again as the store holds it but for its state (graphstore.WriteState): a plain node write,
 // not one that restates the node (graphstore.Node.Restates), dated and signed by the request and
 // at graphstore.NoEvent, as every write of these routes is. So graphstore.Write moves the row's
 // state and appends the one state tuple that says so, whose writer is who: the row and the log
@@ -503,7 +503,7 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // gone yet to gone in the same graphstore.Write, each node the same way, at every depth and
 // whatever its kind, those the caller may not see among them: a finding or a risk under a lens, a
 // lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each
-// (graphstore.WithBeneath, whose nodesBeneath is one statement however deep the tree).
+// (graphstore.WriteState, whose read beneath a node is one statement however deep the tree).
 // So no read by its own address answers a node under a gone one live with nothing to stand on
 // (spec requirement r-proposed). The route lets a person alone make that move (goneNotPermitted),
 // so what stands under the node is read for the write and for no refusal, and tells the caller
@@ -533,14 +533,8 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 	if previous == write.state {
 		return node, previous, nil
 	}
-	moved := []graphstore.Node{node}
-	if write.state == graphstore.StateGone {
-		if moved, err = graphstore.WithBeneath(ctx, tx, moved); err != nil {
-			return graphstore.Node{}, "", err
-		}
-	}
-	graphstore.AsStateWrite(moved, write.state, write.at, write.who)
-	if err := graphstore.Write(ctx, tx, moved, nil); err != nil {
+	moved, err := graphstore.WriteState(ctx, tx, []graphstore.Node{node}, write.state, write.at, write.who)
+	if err != nil {
 		return graphstore.Node{}, "", err
 	}
 	return moved[0], previous, nil

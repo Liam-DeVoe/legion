@@ -323,7 +323,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 		Drive:    pass(backfillEndedPreventions),
 		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
 	}, {
-		Name: staleLensSweepDrive, Sites: []string{"graphcensus/orphans.go#StateStaleLensesGone"},
+		Name: staleLensSweepDrive, Sites: []string{"graphcensus/orphans.go#StateStaleLensesGone", "graphstore/write.go#WriteState"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			seedOrphan(t, database, "lensed-md", "00000000-0000-4000-8000-0000000005a1")

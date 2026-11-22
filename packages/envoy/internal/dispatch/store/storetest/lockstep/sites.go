@@ -82,7 +82,7 @@ var storeWriteCallSites = map[string]string{
 	"api/reasoning_write.go#writeReasoningPointer": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// One node's state a request writes or settles (api/node_state.go): the issue's owner lock,
 	// then one Write of the node as the store holds it but for its state, and, on a move into
-	// gone, of every node beneath it (graphstore.WithBeneath), each as the store holds it but for
+	// gone, of every node beneath it (graphstore.WriteState), each as the store holds it but for
 	// its state: a plain write that moves the rows and appends their state tuples. It appends no
 	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
 	// owner lock writeReasoningNodes takes first too.
@@ -154,7 +154,7 @@ var storeWriteCallSites = map[string]string{
 	// made with none, then the document's node stated gone in a node write it holds for its cause
 	// (PlanUncaused, QueueNodes), before its row goes, with each changed_by_run of the node
 	// retracted; then the row's delete; then, where a lens stands on the node, the read of the stale
-	// lenses on it (refs.StaleLensesOn) and of what stands beneath each (graphstore.WithBeneath),
+	// lenses on it (refs.StaleLensesOn) and of what stands beneath each (graphstore.WriteState),
 	// under the owner lock it holds and taking none of its own, and one Write of those nodes in
 	// ascending (kind, id) with their state tuples at the sentinel; then, after the room's
 	// announcement, the artifact.removed event and the gone statement it causes, in one batch
@@ -231,12 +231,16 @@ var storeWriteCallSites = map[string]string{
 	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
 	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
 	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and
-	// TestEveryStoreWriteTakesOneLockOrder proves the order on them.
+	// TestEveryStoreWriteTakesOneLockOrder proves the order on them. WriteState runs one Write of
+	// the nodes whose state it moves, after the reads of what stands beneath those it takes gone,
+	// which take no lock, so its order is the order that test proves of Write, after the locks its
+	// caller holds.
 	"graphstore/people.go#QueueAuthored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueReached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueSessionRecorded": "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/write.go#Caused":                "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"graphstore/write.go#WriteState":            "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// Retarget moves one pointer through Write, after the row of the node it moves it out of
 	// (planRetarget, its read phase).
 	"graphstore/reasoning.go#Retarget": "graphstore#TestEveryStoreWriteTakesOneLockOrder",

@@ -320,8 +320,8 @@ const nodesOfKind = `
 // that node's row out of the answer, since what still stands under a gone node stands beneath the
 // start too. The statement binds `to_kind <> 'value'` as a literal, as CurrentIn does, so the
 // planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
-// reached, and walks that index from each such end. Each writer that takes a node to gone reads
-// what stands beneath it so, through WithBeneath.
+// reached, and walks that index from each such end. WriteState reads what stands beneath each node
+// it takes gone so, through withBeneath.
 func nodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
 	rows, err := q.Query(ctx, nodesBeneathStatement, kind, id, StateGone)
 	if err != nil {
@@ -334,15 +334,13 @@ func nodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, erro
 	return beneath, nil
 }
 
-// WithBeneath answers roots, each followed by what nodesBeneath reads beneath it, root by root in
+// withBeneath answers roots, each followed by what nodesBeneath reads beneath it, root by root in
 // the order roots holds them, and each node once, as the store keys it, by kind and id: where a node
 // is met twice - a root an earlier root's subtree holds, or a node two roots' subtrees share - the
 // answer keeps it where it was first met, as that read answered it. It reads beneath every root, one
-// nodesBeneath each, whether or not it met the root already. Each writer that takes a node to gone
-// takes with it what this answers beneath it: the state route and the settle (api's
-// writeNodeState), a document's removal over the stale lenses on its node (api's removeArtifact),
-// and the block-index tick's sweep of every stale lens (graphcensus's StateStaleLensesGone).
-func WithBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
+// nodesBeneath each, whether or not it met the root already. It is WriteState's read of what a
+// write into gone takes with it.
+func withBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
 	var nodes []Node
 	taken := map[[2]string]bool{}
 	take := func(node Node) {

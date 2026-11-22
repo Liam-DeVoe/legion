@@ -22,7 +22,8 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // WriteFunctions is the name of every function of graphstore a write of graph_nodes and
 // graph_tuples from outside that package goes through, a fresh slice for each caller: Write and
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
-// queued on a write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's
+// queued on a write phase's batch; WriteState, Write of the state of nodes, with what stands
+// beneath each node it takes gone; WriteArms and WriteArmsUncaused spliced into a caller's
 // statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
 // writers that record an author, a reached session and a session an ask names; EraseNode, the
 // erase's delete of a node and its tuples; FillScopes, the backfill's fill of the project of a
@@ -34,7 +35,7 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
 // (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
-	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
+	return []string{"Write", "WriteState", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
 		"EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteRun"}

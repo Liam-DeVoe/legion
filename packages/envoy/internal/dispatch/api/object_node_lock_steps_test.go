@@ -271,7 +271,7 @@ func (r *storeWriterRig) documentRemoval() storeWriter {
 }
 
 // keptCauseMoveStatement is graphstore's node move of a write that keeps its nodes' cause
-// (keptCauseNodeMove), as a write of a node's state makes it (graphstore.AsStateWrite): it moves
+// (keptCauseNodeMove), as a write of a node's state makes it (graphstore.WriteState): it moves
 // each node's row and appends, in the same statement, the state tuple of each node it moved.
 const keptCauseMoveStatement = "with incoming as ("
 

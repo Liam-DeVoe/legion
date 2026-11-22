@@ -65,18 +65,18 @@ import (
 // that stands under it at every depth, as gone at once. In the transaction that deletes the row,
 // after the delete, the removal states each of them gone as the block-index tick's sweep states
 // every stale lens gone (graphcensus's StateStaleLensesGone): it reads the stale lenses on the
-// document's node (refs.StaleLensesOn) and what stands beneath each (graphstore.WithBeneath), its
-// findings, its risks and the lenses on those, those the person may not see among them, and writes
-// each again as the store holds it but for its state, keeping its cause, with one state tuple at
-// the sentinel signed by the person at the removal's time (graphstore.AsStateWrite), in one
-// graphstore.Write (spec requirement r-proposed). The removal takes no person check of its own for
-// them: it is the person's already (routeScopes), and the cascade is part of the delete. It reads,
-// with the rest of what it reads before its first write, whether any lens stands on the document's
-// node, and reads the stale lenses only where one does, so a document nothing stands on holds its
-// transaction id no longer than before. No lens stands on a block of the document, since a document
-// the removal takes holds no block, and the removal reads what it takes under the issue's owner
-// lock, which every writer of a lens, a finding or a risk takes first (lockIssueOwner), and which
-// the removal holds, so it takes no lock for them.
+// document's node (refs.StaleLensesOn) and states them gone through graphstore.WriteState, which
+// takes what stands beneath each with it, its findings, its risks and the lenses on those, those
+// the person may not see among them, each written again as the store holds it but for its state,
+// keeping its cause, with one state tuple at the sentinel signed by the person at the removal's
+// time, in one graphstore.Write (spec requirement r-proposed). The removal takes no person check
+// of its own for them: it is the person's already (routeScopes), and the cascade is part of the
+// delete. It reads, with the rest of what it reads before its first write, whether any lens stands
+// on the document's node, and reads the stale lenses only where one does, so a document nothing
+// stands on holds its transaction id no longer than before. No lens stands on a block of the
+// document, since a document the removal takes holds no block, and the removal reads what it takes
+// under the issue's owner lock, which every writer of a lens, a finding or a risk takes first
+// (lockIssueOwner), and which the removal holds, so it takes no lock for them.
 //
 // The document's node is addressed by its ref_key, which a later document of the same issue and
 // slug takes again: that document's create finds the node gone and states it live under its own
@@ -225,13 +225,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// the document at the same time, in this transaction (spec requirement r-proposed).
 	if lensed {
 		lenses, err := refs.StaleLensesOn(r.Context(), tx, artifact.RefKey)
-		var gone []graphstore.Node
 		if err == nil {
-			gone, err = graphstore.WithBeneath(r.Context(), tx, lenses)
-		}
-		if err == nil && len(gone) > 0 {
-			graphstore.AsStateWrite(gone, graphstore.StateGone, removedAt.UTC(), actor)
-			err = graphstore.Write(r.Context(), tx, gone, nil)
+			_, err = graphstore.WriteState(r.Context(), tx, lenses, graphstore.StateGone, removedAt.UTC(), actor)
 		}
 		if err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the lenses on the removed document %s gone: %w", artifact.ID, err))

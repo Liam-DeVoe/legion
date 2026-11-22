@@ -138,24 +138,6 @@ type Node struct {
 	Changed bool
 }
 
-// AsStateWrite sets each of nodes, in place, to be written again at state by who at at, as a
-// request's write of a node's state writes it (api's writeNodeState): the node as the store holds
-// it but for its state, which the write moves (Restates false), keeping the cause the store holds
-// of it (KeepsCause), marked changed, and at the sentinel, so its write states one state tuple at
-// the sentinel signed by who. Every writer that moves a node's state, or takes a node's subtree
-// gone beside a write of its own, sets the nodes it read so: the state route and the settle
-// (writeNodeState, with what WithBeneath reads beneath a node it takes gone), a document's removal
-// (api's removeArtifact), with the stale lenses on the document's node and what WithBeneath reads
-// beneath them, and the block-index tick's sweep that takes every stale lens gone with all that
-// stands under it (graphcensus's StateStaleLensesGone), which it runs after its orphan sweep.
-func AsStateWrite(nodes []Node, state string, at time.Time, who model.Actor) {
-	for index := range nodes {
-		each := &nodes[index]
-		each.State, each.Restates, each.KeepsCause, each.Changed = state, false, true, true
-		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
-	}
-}
-
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is
 // the value itself; any other ToKind makes it a relation, whose ToKind and ToID address the far
 // end. LegacySourceSeq is the `source_seq` of the row a projection's own write came from, and is
