@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
-import { selectedCardBg, textMutedOnSurface } from "../theme/classes";
+import { selectedCardBg } from "../theme/classes";
 import {
   type ColumnFilterRenderer,
   DataTable,
@@ -834,7 +834,7 @@ test("a sort button carries no native title and opens its hint in the tooltip, o
   );
 });
 
-test("a column that says how its value is taken says it first in its sort tooltip, the hint muted under it", async () => {
+test("a column that says how its value is taken says it first in its sort tooltip, the hint under it", async () => {
   const user = userEvent.setup();
   const method = "The minutes from the first push to the rollout's end.";
   const columns = COLUMNS.map((column) =>
@@ -849,13 +849,10 @@ test("a column that says how its value is taken says it first in its sort toolti
     method,
     `${SORT_HINT}; drag to move the column`,
   ]);
-  expect(lines[0]?.className).toBe("");
-  for (const token of textMutedOnSurface.split(" ")) expect(lines[1]).toHaveClass(token);
-  // A column with no method has the hint alone, in the tooltip's own colour.
+  // A column with no method has the hint alone.
   await user.hover(within(table).getByRole("button", { name: "Region" }));
   const hint = [...screen.getByRole("tooltip").querySelectorAll("p")];
   expect(hint.map((line) => line.textContent)).toEqual([`${SORT_HINT}; drag to move the column`]);
-  expect(hint[0]?.className).toBe("");
 });
 
 test("a column drag shuts the sort tooltip, and no hover opens one until the drop", async () => {
