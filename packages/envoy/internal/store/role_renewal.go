@@ -143,7 +143,10 @@ func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanc
 // caller hands it nothing of the registry's own. cmd/listener's edge listener asks it at each
 // registration, before it registers the session, for the roles of no project of the session's
 // token: a role another listener granted the session, or one it held under a token that listed
-// more, ends with the registration that may not keep it.
+// more, ends with the registration that may not keep it. Each release is forced and frees the
+// claim it read (releaseReadRoleClaim): a claim granted to the session again after that read is
+// left standing, as one granted a moment after the delete is, and the next registration's release,
+// which reads it, frees it.
 //
 // A role claim copy that cannot be served (ErrRoleViewNotReady) names no roles, which is not the
 // answer that the session holds none, and a claim whose lane topic the row does not carry is then
@@ -233,8 +236,9 @@ func (r *Registry) releaseRefusedRoleClaimsByScan(ctx context.Context, sessionID
 // reports whether it freed it: the release of a refused role (ReleaseRefusedRoleClaims), which
 // the registration of that very session asks for, so the process a claim names does not decide
 // it as it decides a hand-back (RoleReleaseAuthority.Force). A claim of another session, a role no
-// record claims and a claim granted to another since the read are none of its business, and
-// none is an error. A claim it could not read is: nothing can say it is not the session's.
+// record claims and a claim granted since the read, to another or to this session again
+// (RoleClaim.sameGrant), are none of its business, and none is an error. A claim it could not
+// read is: nothing can say it is not the session's.
 func (r *Registry) releaseHeldRoleClaim(ctx context.Context, sessionID, role string) (bool, error) {
 	claim, err := r.RoleClaim(ctx, role)
 	if err != nil {

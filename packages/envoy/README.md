@@ -196,6 +196,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A role send whose forward the bus refuses, for a holder the edge does not show, is answered in the listener's own words under the refusal's status, since the refusal names the holder's agent subject (`hideHolder`).
   Each registration first releases the claims of another project's roles that the session holds, which another listener granted it or a token that listed more did, and the answer's `warnings` name them (`store.Registry.ReleaseRefusedRoleClaims`).
   It finds them in the session's stored interest row and in the listener's view of the role claims, which it may serve up to 2 minutes after it stopped following the role bucket, so a claim the view does not show yet is released at a later registration; while the view cannot be served, the release reads the role bucket itself.
+  Each release frees the claim it read: a claim granted to the session again after that read stands, and the next registration's release frees it.
   A release that fails refuses the registration with the retryable `503`, and nothing of it is stored; the `503` names the claim record the bus answered and the release could not read or free, or says the bus did not answer. It renews only the session's claims of roles of its token's projects.
   A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
