@@ -96,19 +96,19 @@ func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
 // login, a shared secret's request), a record other than the one their code names, an approve or
 // a deny that carries no code, the lookup of any of those, and a dismissal, each 403
 // RESTRICTED_MEMBER; and every decision through their personal token or a broker token, their own
-// login's included, 403 RESTRICTED_MEMBER from a token that holds the route's scopes and 403
-// OAUTH_SCOPE_REQUIRED from one that does not (tokenRefusal), whichever scopes a broker token
-// acting for its person is given. A full member's decision reaches the broker as it always has, so
-// the rig can see a call.
+// login's included, 403 OAUTH_SCOPE_REQUIRED, since neither holds a scope (personalTokenActor,
+// brokerTokenActor), read from what whoami says each holds (tokenRefusal), and 403
+// RESTRICTED_MEMBER from any credential of theirs that held the route's scopes, which
+// TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes holds. A full member's decision
+// reaches the broker as it always has, so the rig can see a call.
 //
 // Controls, each run once: drop every clause but the record id's, and the rows of alice's, the
 // service's and the shared records fail; drop the approver comparison alone, and alice's row fails;
 // drop the service clause alone, and the row of the service's login naming erin fails; drop the
-// kind clause alone, and the row of her own secret's request fails; let any credential of a
-// restricted member past withinProjectScope (atBrowser answering true), and the rows of her
-// personal token fail; drop the own-login refusal (restrictedOwnLoginRefusal), and the personal
-// token's rows fail on its text, as refuseDeploymentWrite answers the same code; drop the refusal
-// of a decision that carries no code, and the code-less rows fail.
+// kind clause alone, and the row of her own secret's request fails; give a restricted member's
+// personal token its row's scopes at its use (personalTokenActor), and the row fails naming the
+// scopes her personal token holds; drop the refusal of a decision that carries no code, and the
+// code-less rows fail.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
@@ -184,14 +184,16 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	whoami := httptest.NewRecorder()
 	served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
 	held := heldScopes(t, whoami)
+	personalHeld := heldScopes(t, agentRequest(t, served, http.MethodGet, "/api/v1/whoami", nil, personal))
+	if len(personalHeld) != 0 {
+		t.Errorf("erin's personal token holds %v, want no scope: a restricted member's token is their agent's", personalHeld)
+	}
 	for _, action := range []string{"approve", "deny"} {
 		path := "/api/v1/credential-requests/rec-erin/" + action
 		before := rig.decisions()
 		byToken := agentRequest(t, served, http.MethodPost, path, code, personal)
-		refused(byToken, action+" of her own login with her personal token", before)
-		if !strings.Contains(byToken.Body.String(), "at their browser alone") {
-			t.Errorf("%s of her own login with her personal token answered %s, want the own-login refusal naming the browser", action, byToken.Body.String())
-		}
+		refusedWith(byToken, action+" of her own login with her personal token", before,
+			tokenRefusal(http.MethodPost, "/api/v1/credential-requests/{id}/"+action, personalHeld))
 		byBroker := httptest.NewRecorder()
 		served.ServeHTTP(byBroker, caller.presenting(t, http.MethodPost, path, erinsBrokerToken, code))
 		refusedWith(byBroker, action+" of her own login with a broker token acting as her", before,

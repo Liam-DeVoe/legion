@@ -269,8 +269,10 @@ func newOutsideTokenRig(t *testing.T) outsideTokenRig {
 	return outsideTokenRig{on: on, off: off, database: database, token: decodeBody[agentTokenResponse](t, minted).Token}
 }
 
-// erinsTokenWhoami is GET /api/v1/whoami's answer to erin's token where it acts.
-const erinsTokenWhoami = `{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person","approve"],"service":null,"session":null}`
+// erinsTokenWhoami is GET /api/v1/whoami's answer to erin's token where it acts: a restricted
+// member's token, minted at her browser naming nothing, holds no scope and lists ACC, the one
+// project she sees.
+const erinsTokenWhoami = `{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","projects":["ACC"],"project":"ACC","scopes":[],"service":null,"session":null}`
 
 // TestARestrictedOwnersTokenActsOnlyWhileTheDeploymentAdmitsThem (R5): a restricted member's
 // personal token is held, at every use, to the rule that admits the member. It acts while the
@@ -352,7 +354,7 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner(t *testi
 	if spelled == accessErin || model.CanonicalLogin(spelled) != accessErin {
 		t.Fatalf("%q must differ from erin's row %q only in case", spelled, accessErin)
 	}
-	token := personalTokenOwnedBy(t, rig.database, spelled, model.ScopePerson)
+	token := personalTokenListing(t, rig.database, spelled, []string{"ACC"}, model.ScopePerson)
 	whoami := func(handler http.Handler) *httptest.ResponseRecorder {
 		t.Helper()
 		return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
@@ -387,7 +389,7 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverSpacesSurroundItsOwner(t *
 	if spelled == accessErin || model.CanonicalLogin(spelled) != accessErin {
 		t.Fatalf("%q must differ from erin's row %q only in the spaces around it", spelled, accessErin)
 	}
-	token := personalTokenOwnedBy(t, rig.database, spelled, model.ScopePerson)
+	token := personalTokenListing(t, rig.database, spelled, []string{"ACC"}, model.ScopePerson)
 	actor, err := directServer(Deps{Store: rig.database, RestrictedAdmission: testOutsideRule(rig.database.Pool)}).personalTokenActor(context.Background(), token)
 	if err != nil || actor.Owner == nil {
 		t.Fatalf("the token owned by %q with restricted members admitted and ACC's list naming erin: %+v, %v; want it to act", spelled, actor, err)
