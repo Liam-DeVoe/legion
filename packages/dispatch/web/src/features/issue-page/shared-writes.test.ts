@@ -339,8 +339,8 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// The new issue page's add menu reaches four of `main`'s controls by name, so each name is
-// `main`'s, and each of `main`'s controls answers to it.
+// Four of `main`'s controls are named by a function each exports, which the new issue page's
+// rows find them by, so each name is `main`'s, and each of `main`'s controls answers to it.
 test("the four control names are main's", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
@@ -394,7 +394,7 @@ test("the four control names are main's", async () => {
   }
 });
 
-// The new issue page's add menu, its `l` key and its rows find the labels control by the name it
+// The new issue page's `l` key and its rows find the labels control by the name it
 // carries inside `NoTooltips`, which `labelsControlName` builds: the words it draws, then the
 // joining word of `page-words.ts` and the issue's key, while it has no label; `main`'s name once
 // it has one; and while it saves, the words it draws then, their ellipsis dropped, then the
@@ -461,7 +461,7 @@ test("labelsControlName names the labels control as it is drawn", () => {
   }
 });
 
-// The new issue page's add menu and its rows find the components picker by the name its trigger
+// The new issue page's rows find the components picker by the name its trigger
 // carries inside `NoTooltips`, which `componentsControlName` builds: the words the trigger draws,
 // then the joining word of `page-words.ts` and the issue's key, and while it saves the page's
 // `saving_components` that `ComponentPicker` draws in their place, its ellipsis dropped. On the

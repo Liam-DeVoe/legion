@@ -33,6 +33,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { propertyControl } from "../issue/property-control";
 import { focusOnDocument } from "../shell/roving";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -49,8 +50,7 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
 }
 
 /** The name of the control that places `issueKey` under a priority, in the words it has on
- *  every page, which the new issue page's one add control finds it by while the issue advances
- *  none. */
+ *  every page. */
 export function addPriorityControlName(issueKey: string): string {
   return `Add a priority to ${issueKey}`;
 }
@@ -447,6 +447,9 @@ export function IssuePriorityLine({
           ref={addControl}
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"
+          // The new issue page's add menu reaches the control by this mark while the issue
+          // advances none, rather than drawing a second one (`IssueAddMenu.tsx`).
+          {...propertyControl("advances", issue.key)}
           {...page?.pageChrome}
         >
           {page !== null && inRow && advances.length === 0 ? page.CONTROL_LABELS.add_priority : "+"}

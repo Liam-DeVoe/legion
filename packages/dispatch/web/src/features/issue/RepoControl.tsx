@@ -31,6 +31,7 @@ import {
   badgeSelectRailWrapper,
 } from "./badge-select";
 import { pickLook } from "./issue-field-looks";
+import { propertyControl } from "./property-control";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The option of the shared list that clears the issue's own repository, so it resolves to its
@@ -84,9 +85,7 @@ const ON_PAGE = {
 } as const;
 
 /** The name the repository control answers to, in its words on every page: the property it sets
- *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). The
- *  new issue page's add menu reaches this control by this name rather than drawing a second one,
- *  so a word changed here changes both sides at once. */
+ *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). */
 export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
@@ -94,10 +93,9 @@ export function repoControlName(issueKey: string): string {
 /** The name of the button a row of Details draws in the box's place: the text it shows, then the
  *  box's name - `None, Repository of <KEY>` while the issue resolves to no repository, else
  *  `<owner/name>, Repository of <KEY>`. It takes the issue's state rather than the text, so the
- *  rule for which text the button shows is written here once, and the new issue page's add menu,
- *  which finds the button by this name, names the text the button draws. The words are the
- *  page's list's, passed in, since this file imports nothing of that list
- *  (`components/tooltips.tsx`). */
+ *  rule for which text the button shows is written here once, and a test that finds the button by
+ *  this name names the text the button draws. The words are the page's list's, passed in, since
+ *  this file imports nothing of that list (`components/tooltips.tsx`). */
 export function repoTextControlName(
   issueKey: string,
   state: {
@@ -667,6 +665,9 @@ function RepositoryBox({
       {showsNone ? (
         <button
           aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
+          // The new issue page's add menu reaches the row's control by this mark, which the text
+          // and the box carry alike, since the row draws one of them at a time (`IssueAddMenu.tsx`).
+          {...propertyControl("repository", issueKey)}
           className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
           ref={noneControl}
@@ -714,6 +715,7 @@ function RepositoryBox({
             <button
               aria-describedby={descriptionId}
               aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
+              {...propertyControl("repository", issueKey)}
               className={`min-h-11 min-w-0 max-w-full rounded-sm text-left font-mono text-xs [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? ON_PAGE.inherited : ON_PAGE.own} ${focusVisibleRing}`}
               disabled={disabled}
               ref={textControl}
@@ -729,6 +731,7 @@ function RepositoryBox({
                 aria-describedby={descriptionId}
                 aria-invalid={refused || undefined}
                 aria-label={repoControlName(issueKey)}
+                {...propertyControl("repository", issueKey)}
                 autoComplete="off"
                 className={`min-h-11 ${boxWidth} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}

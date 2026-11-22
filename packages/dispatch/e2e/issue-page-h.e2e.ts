@@ -1,5 +1,4 @@
 import AxeBuilder from "@axe-core/playwright";
-import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
 import {
@@ -1204,19 +1203,14 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);
     await addControl(page).click();
-    // Add lists Assignee only where the header draws the assignee's control, which the menu
-    // focuses, and only while TWO has no assignee: an issue someone is assigned to has a value for
-    // it, and Add lists no property that has one. The header is read once it is drawn.
+    // Add lists Assignee while TWO has no assignee, for the header's assignee control, which the
+    // menu reaches by its mark: an issue someone is assigned to has a value for it, and Add lists
+    // no property that has one. The menu is read once the header that draws that control is drawn.
     const twoStored = await getIssue(two);
     await expect(
       issuePage(page).getByRole("heading", { level: 1, name: twoStored.title })
     ).toBeVisible();
-    // One read is the header's answer here: the assignee's control waits on no read, so a header
-    // that draws it draws it in the commit that drew the heading awaited above.
-    const assigneeControls = await page
-      .locator(`[aria-label="${assigneeControlName(two)}"]`)
-      .count();
-    const listsAssignee = assigneeControls > 0 && twoStored.assignee === null;
+    const listsAssignee = twoStored.assignee === null;
     await expect(
       openMenu(page).getByRole("menuitem"),
       "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"

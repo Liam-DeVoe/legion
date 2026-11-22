@@ -371,9 +371,9 @@ export function IssueMarginPanel({
   // is cached, even where that read failed before it answered. A line that goes with no press of
   // its Retry - a read answering on an event or a window focus - or before that answer - the set
   // changed or emptied in another session while the read is out - leaves the focus on the page's
-  // body. In Blocked by the focus goes to the row's control, found by its name as the add menu
-  // finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or while
-  // its editor is open - to the first issue the row waits on, each passing over a control that
+  // body. In Blocked by the focus goes to the row's control, found by its name
+  // (`blockedByControlName`), and where the row draws none - on a closed issue, or while its
+  // editor is open - to the first issue the row waits on, each passing over a control that
   // takes no press (`usableControl`). The row draws that issue whenever the read has answered,
   // since the titles are read only for a set that holds one. In Blocks, which has no control, the
   // focus of the Retry of what waits on the issue goes to the first issue the row draws, or else

@@ -44,10 +44,11 @@ import type {
   UserState,
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
-import { assigneeControlName } from "../issue/AssigneeControl";
+import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
+import { PROPERTY_CONTROL_ATTRIBUTE } from "../issue/property-control";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
@@ -3385,10 +3386,11 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
 });
 
 // The menu lists the properties with no value and presses the control that sets each one,
-// rather than drawing a second copy of it. It finds that control by the name exported for it
-// (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
-// its own, a word changed in one made the entry disappear with no error anywhere.
-test("the add menu opens the control the panel draws, under the name exported for it", async () => {
+// rather than drawing a second copy of it. It finds that control by the mark the control carries
+// (`propertyControl`), which both sides take from the one module, so the two sides cannot spell
+// it apart: while each typed the control's name for itself, a word changed in one made the entry
+// disappear with no error anywhere.
+test("the add menu opens the control the panel draws, by the mark exported for it", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const { unmount } = renderDetails();
@@ -3902,7 +3904,7 @@ function setAttributeUntil(element: Element, name: string, value: string): () =>
 }
 
 /** Each way a control Add reaches stops taking a press (`usableControl`), or stops being found by
- *  the name Add looks for, set on "Add a priority to CORE-1" or on the element around it, with
+ *  the mark Add looks for, set on "Add a priority to CORE-1" or on the element around it, with
  *  what undoes it. */
 const refusals = [
   ["disabled", (control: HTMLElement) => setAttributeUntil(control, "disabled", "")],
@@ -3951,13 +3953,13 @@ const refusals = [
     },
   ],
   [
-    // Another component's own commit renames its control in place, which draws Add no further
-    // time: Add finds the control again only by watching its name.
-    "renamed in place",
+    // Another component's own commit re-marks its control in place, which draws Add no further
+    // time: Add finds the control again only by watching its mark.
+    "re-marked in place",
     (control: HTMLElement) => {
-      const name = control.getAttribute("aria-label") ?? "";
-      control.setAttribute("aria-label", `${name}, renamed`);
-      return () => control.setAttribute("aria-label", name);
+      const mark = control.getAttribute(PROPERTY_CONTROL_ATTRIBUTE) ?? "";
+      control.setAttribute(PROPERTY_CONTROL_ATTRIBUTE, `${mark}, re-marked`);
+      return () => control.setAttribute(PROPERTY_CONTROL_ATTRIBUTE, mark);
     },
   ],
   [
@@ -3976,7 +3978,7 @@ const refusals = [
 // Add lists an entry only while its control takes a press (`usableControl`), whatever stops it
 // taking one - on the control or on an element around it - and lists it again once that is
 // undone, in a change no component of Add's draws. Each row is one rule of `usableControl`, or
-// the name Add finds the control by, and each is a change Add's watch must see.
+// the mark Add finds the control by, and each is a change Add's watch must see.
 test.each(
   refusals
 )("Add lists no entry whose control is %s, and lists it again once it is not", async (_name, refuse) => {
@@ -4817,7 +4819,7 @@ test("Add lists the same entries while Details is closed as once it is open agai
   }
 });
 
-/** The issue of the two cases below: a value for every property Add lists but the assignee, so
+/** The issue of the three cases below: a value for every property Add lists but the assignee, so
  *  Add's one entry is Assignee. */
 const assigneeOnly: IssueDetails = {
   ...advancesOnly,
@@ -4825,16 +4827,36 @@ const assigneeOnly: IssueDetails = {
   assignee: null,
 };
 
-/** The page's header, not yet on the page, with the assignee's control as the header draws it:
- *  a select named by `assigneeControlName` (`AssigneeControl.tsx`), which Add focuses rather
- *  than clicks. */
-function assigneeHeader(): { assignee: HTMLSelectElement; header: HTMLElement } {
+/** The page's header, not yet on the page, with the assignee's control as the header draws it
+ *  (`IssuePropertiesRow.tsx`): the real `AssigneeControl`, the shared list's single pick, whose
+ *  trigger is named through `aria-labelledby` and carries no `aria-label`. The people list it
+ *  reads once reached answers nobody. `unmount` takes the control, the header and that read away. */
+function assigneeHeader(): { header: HTMLElement; unmount: () => void } {
   const header = document.createElement("div");
   header.setAttribute("data-issue-header", "");
-  const assignee = document.createElement("select");
-  assignee.setAttribute("aria-label", assigneeControlName("CORE-1"));
-  header.append(assignee);
-  return { assignee, header };
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([]);
+  const view = render(
+    <QueryClientProvider client={detailsQueryClient()}>
+      <NoTooltips>
+        <AssigneeControl assignee={null} issueKey="CORE-1" variant="header" />
+      </NoTooltips>
+    </QueryClientProvider>,
+    { container: header }
+  );
+  return {
+    header,
+    unmount: () => {
+      view.unmount();
+      header.remove();
+      listUsers.mockRestore();
+    },
+  };
+}
+
+/** The header's assignee trigger, by the name the shared list gives it: its list's name, then
+ *  what it shows. */
+function assigneeTrigger(header: HTMLElement): HTMLElement {
+  return within(header).getByRole("button", { name: pickNamed(assigneeControlName("CORE-1")) });
 }
 
 // The assignee's control is the header's, and the header can be drawn after Details. Add then
@@ -4845,7 +4867,7 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
   const { getIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue(assigneeOnly);
-  const { header } = assigneeHeader();
+  const { header, unmount: unmountHeader } = assigneeHeader();
   const view = renderDetails();
   try {
     await screen.findByRole("link", { name: "CORE-3" });
@@ -4861,8 +4883,46 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
       "Add lists other than Assignee once the header draws the assignee's control"
     ).toEqual([PROPERTY_LABELS.assignee]);
   } finally {
-    header.remove();
+    unmountHeader();
     view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The header draws the assignee's control as the shared list's single pick (`AssigneeControl`),
+// whose trigger is named through `aria-labelledby`, by its list's name and then what it shows, and
+// carries no `aria-label`. Add finds each control it reaches by the mark the control carries
+// (`propertyControl`), so on an issue whose one empty property is the assignee Add is drawn, lists
+// Assignee, and its press opens the assignee's list. Found by an `aria-label` equal to the
+// control's name, the trigger was never found: Add listed no Assignee, and with no other entry
+// Add was not drawn at all.
+test("Add lists Assignee for the header's assignee list, and its press opens that list", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  getIssue.mockResolvedValue(assigneeOnly);
+  const { header, unmount: unmountHeader } = assigneeHeader();
+  document.body.append(header);
+  const view = renderDetails();
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+      "Add lists other than Assignee for the header's assignee list"
+    ).toEqual([PROPERTY_LABELS.assignee]);
+    await user.click(screen.getByRole("menuitem", { name: PROPERTY_LABELS.assignee }));
+    expect(
+      assigneeTrigger(header),
+      "Add's Assignee left the header's assignee list shut"
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      await screen.findByRole("listbox", { name: `${assigneeControlName("CORE-1")} options` }),
+      "Add's Assignee drew no list of people"
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    unmountHeader();
     priorities.mockRestore();
     restore();
   }
@@ -4870,9 +4930,9 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
 
 // The assignee's control is in the header, which the phone's Details sheet covers, so Add's
 // Assignee closes an open Details and reaches the control two frames on, once the drawer has
-// given the focus back as it closes. The header draws that control as a select, and a script's
-// click opens no select's list, so Add puts the focus on it.
-test("Add's Assignee closes an open Details, then puts the focus on the header's assignee select", async () => {
+// given the focus back as it closes. The header draws that control as the shared list's single
+// pick, whose trigger a click opens, so Add clicks it.
+test("Add's Assignee closes an open Details, then opens the header's assignee list", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
@@ -4883,7 +4943,7 @@ test("Add's Assignee closes an open Details, then puts the focus on the header's
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   getIssue.mockResolvedValue(assigneeOnly);
-  const { assignee, header } = assigneeHeader();
+  const { header, unmount: unmountHeader } = assigneeHeader();
   document.body.append(header);
   const setOpen = jest.fn((_open: boolean) => undefined);
   const { unmount } = renderDetails(undefined, { ...OPEN_DRAWER, setOpen });
@@ -4894,10 +4954,13 @@ test("Add's Assignee closes an open Details, then puts the focus on the header's
       [false],
     ]);
     await waitFor(() =>
-      expect(assignee, "Add's Assignee put no focus on the header's select").toHaveFocus()
+      expect(
+        assigneeTrigger(header),
+        "Add's Assignee left the header's assignee list shut"
+      ).toHaveAttribute("aria-expanded", "true")
     );
   } finally {
-    header.remove();
+    unmountHeader();
     unmount();
     getReferences.mockRestore();
     priorities.mockRestore();

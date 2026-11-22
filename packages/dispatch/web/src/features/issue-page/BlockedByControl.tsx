@@ -9,6 +9,7 @@ import {
   pageInkText,
   pageQuietText,
 } from "../../theme/classes";
+import { propertyControl } from "../issue/property-control";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { blockedByControlName } from "./details-names";
@@ -132,9 +133,10 @@ export function BlockedByControl({
         )}
         {isClosed || editing ? null : (
           <button
-            // The name is `blockedByControlName`'s, which the add menu reaches this control by
-            // rather than drawing a second copy of it (`IssueAddMenu.tsx`).
             aria-label={blockedByControlName(issue.key, blockers.length)}
+            // The add menu reaches this control by this mark rather than drawing a second copy of
+            // it (`IssueAddMenu.tsx`).
+            {...propertyControl("blocked_by", issue.key)}
             className={pageHeaderControl}
             onClick={open}
             ref={control}

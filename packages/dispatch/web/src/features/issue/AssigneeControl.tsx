@@ -25,15 +25,14 @@ import {
   badgeSelectTrigger,
   badgeSelectWrapper,
 } from "./badge-select";
+import { propertyControl } from "./property-control";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /** The option that stands for nobody: the issue goes back to having no assignee. */
 const UNASSIGNED = "";
 
 /** The name the assignee picker answers to, in its words on every page: the property it sets
- *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The
- *  new issue page's add menu reaches this picker by this name rather than drawing a second
- *  one, so a word changed here changes both sides at once. */
+ *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). */
 export function assigneeControlName(issueKey: string): string {
   return `Assignee of ${issueKey}`;
 }
@@ -120,6 +119,9 @@ export function AssigneeControl({
           error={users.isError ? "Could not load the people list." : null}
           keysOnTrigger
           label={assigneeControlName(issueKey)}
+          // The new issue page's add menu reaches the trigger by this mark rather than drawing a
+          // second picker (`IssueAddMenu.tsx`).
+          marks={{ trigger: propertyControl("assignee", issueKey) }}
           mode="single"
           onOpenChange={(next) => setOpen(next && !held)}
           onPick={(picked) => {
