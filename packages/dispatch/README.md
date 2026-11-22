@@ -155,14 +155,19 @@ when the run ends, a Ctrl-C included, and exits with its own status.
 A SIGTERM stops the stacks this suite starts. A SIGKILL of the run - a `kill -9`, the OOM
 killer, a runner that crashes - stops nothing in the run itself, so whatever starts a harness
 (Playwright's runner through `globalSetup`, `e2e/harness-up.ts`, `bun run dispatch:local`) also
-starts one reaper beside it (`e2e/reaper.ts`, `e2e/harness-reaper.ts`). The reaper notices its
-starter's end through a pipe only the starter holds, and stops what the starter had not
-stopped: each server's process group, each stack's Postgres (`pg_ctl stop`, or `docker rm` of
-its container) and the run's data directories, keeping the logs a SIGTERM keeps. A run that
-stopped everything leaves it nothing to do, and it exits with its starter. Measured on main
-6977266e41, a SIGKILL of `bunx` and the runner mid-row left the fake Envoy, GitHub and broker,
-the real broker and its dev issuer, the plain-HTTP proxy and the Postgres running 15 s later;
-with the reaper, none was left 1 s later.
+starts one reaper beside it (`e2e/reaper.ts`, `e2e/harness-reaper.ts`), and refuses to start
+anything when the reaper does not say it is ready. The reaper notices its starter's end through
+a pipe only the starter holds, and stops what the starter had not stopped: each server's
+process group, each stack's Postgres (`pg_ctl stop`, or `docker rm` of its container) and the
+run's data directories, keeping the logs a SIGTERM keeps. It signals a group only while the
+group's leader still runs with the start time it had when it was handed over, and a group whose
+leader exits is taken off its list at once, so a process number the kernel has since given to
+another run's server or a daemon is never signalled. On a machine with no `/proc` to read a
+start time from, no group is handed over. A run that stopped everything leaves the reaper
+nothing to do, and it exits with its starter. Measured on main 6977266e41, a SIGKILL of `bunx`
+and the runner mid-row left the fake Envoy, GitHub and broker, the real broker and its dev
+issuer, the plain-HTTP proxy and the Postgres running 15 s later; with the reaper, no server of
+the run was left.
 
 A run that holds a stubbed row also starts Playwright's own `webServer`
 (`e2e/stub/static-server.ts`), which Playwright stops at the end of a run and on a SIGINT. That

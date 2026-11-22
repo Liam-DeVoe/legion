@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { buildStallLibrary, diskStallDir, stallEnvironment } from "./disk-stall";
-import { reapIfAbandoned, stopReaping } from "./harness-reaper";
+import { reapIfAbandoned, startTimeOf, stopReaping } from "./harness-reaper";
 import { Interrupted } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
@@ -299,7 +299,11 @@ async function startCluster(
         ["-D", data, "-l", join(dir, "postgres.log"), "-o", options.join(" "), "-w", "start"],
         { env: server }
       );
-      reapIfAbandoned(clusterKey(data), { awaits: starting.child.pid, commands: [stop] });
+      reapIfAbandoned(clusterKey(data), {
+        awaits: starting.child.pid,
+        commands: [stop],
+        start: startTimeOf(starting.child.pid),
+      });
       await starting;
       reapIfAbandoned(clusterKey(data), { commands: [stop] });
       return port;
@@ -520,7 +524,11 @@ function imageProvider(
               image,
               ...started.flatMap((setting) => ["-c", setting]),
             ]);
-            reapIfAbandoned(key, { awaits: running.child.pid, commands: [["docker", ...removal]] });
+            reapIfAbandoned(key, {
+              awaits: running.child.pid,
+              commands: [["docker", ...removal]],
+              start: startTimeOf(running.child.pid),
+            });
             await running;
             reapIfAbandoned(key, { commands: [["docker", ...removal]] });
           } catch (error) {
