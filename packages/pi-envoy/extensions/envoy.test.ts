@@ -23726,7 +23726,13 @@ console.log(JSON.stringify(args));
       );
       await clock.run("the subscribe", subscribing);
     });
-    // MEASUREMENT-PROVISIONAL
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
+    // (`onPassClock`). Worst measured cost of this form: 7 493.41 ms over 20 runs at the 96 rung in
+    // the Job infra-1580-krows-bnew-f5hnq of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (183 busy loops, at which row A's runs took 32.1 s against the calibration's 31.2 s),
+    // 2026-11-22T00:11Z to 00:23Z, so 120_000 is 16.0 times that. The real-clock form it replaced
+    // cost up to 10 901.29 ms over 20 runs at the 96 rung (infra-1580-krows-j5-sjzwb, where it
+    // failed once) and 41 315.25 ms over 40 runs at the 240 rung (infra-1580-krows-b240old-6qdvp).
   }, 120_000);
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
