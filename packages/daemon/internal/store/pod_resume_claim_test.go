@@ -59,3 +59,58 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 		t.Fatalf("a resume the release before wrote, read for the tester's own claim = %t, %v; want it found: it names no claim", found, err)
 	}
 }
+
+// The wake pacing's let-out of a launch moves the stuck clock of that claim's own resume and of no
+// other claim's, so another claim of the same role is not hidden from the stuck rule by a launch
+// that is not its own. The agent of key a, `…-implementer`, works the tester's step beside the
+// tester's own claim; key a's wake took the tester's open resume. A let-out of the tester's own
+// claim finds no resume of its own and moves nothing; key a's let-out moves its clock. A resume
+// the release before wrote names no claim, so any claim of its role's let-out moves it.
+func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := claim.NewToken("legion", rootIssue, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, keyed, claim.RoleTester, pods.WakeDelivery, at, 0); err != nil || !taken {
+		t.Fatalf("take key a's wake on the tester's step = %t, %v; want it taken", taken, err)
+	}
+	clock := func() time.Time {
+		t.Helper()
+		var clockAt time.Time
+		if err := st.Pool().QueryRow(ctx, `select clock_at from pod_resumes where issue = $1 and role = 'tester'
+			and first_turn_at is null and closed_at is null`, rootIssue).Scan(&clockAt); err != nil {
+			t.Fatalf("read the tester's open resume: %v", err)
+		}
+		return clockAt.UTC()
+	}
+
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, own, at.Add(5*time.Minute)); err != nil || set {
+		t.Errorf("the tester's own claim's let-out = %t, %v; want no resume of its own found", set, err)
+	}
+	if got := clock(); !got.Equal(at) {
+		t.Errorf("key a's clock after the tester's own claim's let-out = %s, want %s: that launch is not key a's", got, at)
+	}
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(5*time.Minute)); err != nil || !set {
+		t.Errorf("key a's let-out = %t, %v; want its resume found", set, err)
+	}
+	if got := clock(); !got.Equal(at.Add(5 * time.Minute)) {
+		t.Errorf("key a's clock after its own let-out = %s, want %s", got, at.Add(5*time.Minute))
+	}
+
+	if _, err := st.Pool().Exec(ctx, `update pod_resumes set claim = '' where issue = $1`, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, own, at.Add(10*time.Minute)); err != nil || !set {
+		t.Errorf("the tester's own claim's let-out over a resume that names no claim = %t, %v; want it found", set, err)
+	}
+	if got := clock(); !got.Equal(at.Add(10 * time.Minute)) {
+		t.Errorf("the clock of a resume that names no claim = %s, want %s", got, at.Add(10*time.Minute))
+	}
+}

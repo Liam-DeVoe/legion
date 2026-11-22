@@ -561,10 +561,10 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 		t.Fatalf("the unheld wake's resume = release %d, pause %v, clock %s; want the issue's release, no pause, clock %s", release, held, clock, pausedAt)
 	}
 
-	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, pausedAt.Add(5*time.Minute)); err != nil || !set {
+	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(5*time.Minute)); err != nil || !set {
 		t.Fatalf("set the implementer's clock = %t, %v; want it set", set, err)
 	}
-	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, pausedAt.Add(time.Minute)); err != nil || !set {
+	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(time.Minute)); err != nil || !set {
 		t.Fatalf("set the implementer's clock earlier = %t, %v; want the open resume found", set, err)
 	}
 	if _, _, clock := read(claim.RoleImplementer); !clock.Equal(pausedAt.Add(5 * time.Minute)) {
@@ -576,7 +576,7 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 		}
 		return nil
 	})
-	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, pausedAt.Add(2*time.Hour)); err != nil || set {
+	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(2*time.Hour)); err != nil || set {
 		t.Fatalf("set the clock of a closed resume = %t, %v; want no open resume found", set, err)
 	}
 }

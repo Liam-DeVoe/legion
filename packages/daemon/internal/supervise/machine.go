@@ -1116,11 +1116,12 @@ type Deps struct {
 	// (reserveWake), the one that lets the launch out at once included, and the let-out of a
 	// launch the pause's gate held once its pause has ended (letOutHeldLaunch). at is the moment
 	// the reservation answered, never before the decision's now. The daemon sets the stuck clock
-	// of the role's open resume to it (store.Store.SetResumeClock on pod_resumes.clock_at, which
-	// never moves a clock back), so a launch that waits its turn in a long queue is not warned
-	// stuck for the wait. It is called inside the machine's decision, so it returns at once and
-	// does its write on a goroutine of its own, as the durable-state report's podResume does in
-	// internal/daemon. nil stamps nothing.
+	// of the claim's own open resume to it, one that names the claim or names none
+	// (store.Store.SetResumeClock on pod_resumes.clock_at, which never moves a clock back), so a
+	// launch that waits its turn in a long queue is not warned stuck for the wait, and another
+	// claim of the same role keeps its clock. It is called inside the machine's decision, so it
+	// returns at once and does its write on a goroutine of its own, as the durable-state report's
+	// podResume does in internal/daemon. nil stamps nothing.
 	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,

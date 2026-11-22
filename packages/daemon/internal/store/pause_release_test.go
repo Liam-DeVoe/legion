@@ -352,7 +352,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
 	clock := woke.Add(30 * time.Minute)
-	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, clock); err != nil {
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, "legion-legion-legion-208-architect", clock); err != nil {
 		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
 	}
 	reads := func(before time.Time) (stuck, unfinished []PodResume) {

@@ -432,14 +432,15 @@ func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string
 }
 
 // SetResumeClock moves the stuck clock (pod_resumes.clock_at) of the open resume of issue's role
-// to at, the moment the wake pacing lets that role's launch out (decision 14), and answers whether
-// the role had an open resume. It never moves a clock backwards (greatest): a clock a resume of
-// the project or a later reservation already moved stays. project is the project token, as
-// pod_resumes holds it.
-func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role claim.Role, at time.Time) (bool, error) {
+// that is token's — it names token, or names no claim — to at, the moment the wake pacing lets
+// that claim's launch out (decision 14), and answers whether the claim had an open resume. Two
+// claims can hold one role, and the let-out is one claim's, so another claim's resume keeps its
+// clock. It never moves a clock backwards (greatest): a clock a resume of the project or a later
+// reservation already moved stays. project is the project token, as pod_resumes holds it.
+func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role claim.Role, token claim.Token, at time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $4)
-		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
-		project, issue, string(role), at)
+		where project = $1 and issue = $2 and role = $3 and (claim = $5 or claim = '') and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at, string(token))
 	if err != nil {
 		return false, fmt.Errorf("set the stuck clock of %s's %s: %w", issue, role, err)
 	}
