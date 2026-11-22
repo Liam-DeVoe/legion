@@ -559,13 +559,16 @@ func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error
 // personAnswer is the cached answer for person, a canonical login, while it is younger than keep
 // says for it, and else the one a call of the person route answers. Under Fresh or askedNow it is
 // personAnswerNow. Under CachedOnly a cache that holds no young answer is ErrNotCached, and nothing
-// is asked. Where takeFailure, a failure an earlier read kept for person within failureTTL is the
-// answer, with no call. Otherwise the read joins the person's call in flight, or starts one, which
-// runs on none of its readers' contexts (askPerson): a reader whose own context ends stops
-// waiting, and the call goes on for every reader still waiting and for the cache.
-func (c *Client) personAnswer(ctx context.Context, person string, takeFailure bool, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
+// is asked. Where memberKind, a failure an earlier member-kind read kept for person within
+// failureTTL is the answer, with no call, and a failure of the call this read starts is kept for
+// the next; a Person read neither takes nor keeps one, since the hold gate keeps its own memory of
+// a failure to ask and a member-kind read must not take the gate's failure as its own. Otherwise
+// the read joins the person's call in flight, or starts one, which runs on none of its readers'
+// contexts (askPerson): a reader whose own context ends stops waiting, and the call goes on for
+// every reader still waiting and for the cache.
+func (c *Client) personAnswer(ctx context.Context, person string, memberKind bool, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
 	if isAskedNow(ctx) {
-		return c.personAnswerNow(ctx, person, keep)
+		return c.personAnswerNow(ctx, person, memberKind, keep)
 	}
 	c.mu.Lock()
 	if cached, ok := c.people[person]; ok && c.now().Sub(cached.at) < keep(cached) {
@@ -576,7 +579,7 @@ func (c *Client) personAnswer(ctx context.Context, person string, takeFailure bo
 		c.mu.Unlock()
 		return cachedPerson{}, fmt.Errorf("%w: %s", ErrNotCached, person)
 	}
-	if failed, ok := c.failures[person]; takeFailure && ok && c.now().Sub(failed.at) < failureTTL {
+	if failed, ok := c.failures[person]; memberKind && ok && c.now().Sub(failed.at) < failureTTL {
 		c.mu.Unlock()
 		return cachedPerson{}, failed.err
 	}
@@ -584,7 +587,7 @@ func (c *Client) personAnswer(ctx context.Context, person string, takeFailure bo
 	if !joined {
 		flight = &personFlight{done: make(chan struct{})}
 		c.flights[person] = flight
-		go c.askPerson(context.WithoutCancel(ctx), person, flight)
+		go c.askPerson(context.WithoutCancel(ctx), person, flight, memberKind)
 	}
 	hook := c.joined
 	c.mu.Unlock()
@@ -608,7 +611,7 @@ func (c *Client) personAnswer(ctx context.Context, person string, takeFailure bo
 // longer than Dispatch does not answer. The call runs on the caller's own context, so a call that
 // failed because that context ended, its deadline passed or its caller cancelled, keeps no failure
 // for the person's next reads: that ending says nothing of Dispatch.
-func (c *Client) personAnswerNow(ctx context.Context, person string, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
+func (c *Client) personAnswerNow(ctx context.Context, person string, memberKind bool, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
 	c.mu.Lock()
 	if cached, ok := c.people[person]; ok && !fresh(ctx) && c.now().Sub(cached.at) < keep(cached) {
 		c.mu.Unlock()
@@ -620,19 +623,19 @@ func (c *Client) personAnswerNow(ctx context.Context, person string, keep func(c
 		return cachedPerson{}, err
 	}
 	c.mu.Lock()
-	c.settleLocked(person, answer, err)
+	c.settleLocked(person, answer, err, memberKind)
 	c.mu.Unlock()
 	return answer, err
 }
 
-// askPerson makes flight's one call of the person route for person and settles it (settleLocked).
-// The flight leaves c.flights under the same lock, so a read that finds no flight finds what this
-// one settled.
-func (c *Client) askPerson(ctx context.Context, person string, flight *personFlight) {
+// askPerson makes flight's one call of the person route for person and settles it (settleLocked),
+// keeping a failure where the read that started the flight is a member-kind read. The flight leaves
+// c.flights under the same lock, so a read that finds no flight finds what this one settled.
+func (c *Client) askPerson(ctx context.Context, person string, flight *personFlight, keepFailure bool) {
 	answer, err := c.readPerson(ctx, person, c.now())
 	c.mu.Lock()
 	delete(c.flights, person)
-	c.settleLocked(person, answer, err)
+	c.settleLocked(person, answer, err, keepFailure)
 	c.mu.Unlock()
 	flight.answer, flight.err = answer, err
 	close(flight.done)
@@ -640,15 +643,15 @@ func (c *Client) askPerson(ctx context.Context, person string, flight *personFli
 
 // settleLocked keeps the outcome of a call of the person route for person: an answer is kept,
 // aged from before its question, unless one to a question asked later is already held, and clears
-// a kept failure; a failure is kept failureTTL from when it came back. A caller whose own context
-// ended settles nothing (personAnswerNow), and the shared call runs on no caller's context
-// (askPerson). c.mu is held.
-func (c *Client) settleLocked(person string, answer cachedPerson, err error) {
+// a kept failure; a failure is kept failureTTL from when it came back where keepFailure (a
+// member-kind read's call). A caller whose own context ended settles nothing (personAnswerNow),
+// and the shared call runs on no caller's context (askPerson). c.mu is held.
+func (c *Client) settleLocked(person string, answer cachedPerson, err error, keepFailure bool) {
 	if len(c.people) >= maxCached || len(c.failures) >= maxCached {
 		c.sweepLocked()
 	}
 	if err != nil {
-		if len(c.failures) < maxCached {
+		if keepFailure && len(c.failures) < maxCached {
 			c.failures[person] = failedKind{err: err, at: c.now()}
 		}
 		return

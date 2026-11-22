@@ -1277,7 +1277,18 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 				fullMember, status, body["error"], description)
 		}
 		dispatch.SetDown(false)
-		_, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+		// The broker answers a person's member-kind read that failed from that failure for two
+		// seconds after it came back (projectaccess's failureTTL), so the client's next trade is
+		// answered 503 inside that window and minted after it. The broker is its own process, so
+		// the window is waited out, bounded at five times its length.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			status, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+			if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
 		if got := projectsOf(t, introspected(t, live, body, fullMember)); got != nil {
 			t.Fatalf("%s's token minted once Dispatch answers again names %v, want none", fullMember, got)
 		}
