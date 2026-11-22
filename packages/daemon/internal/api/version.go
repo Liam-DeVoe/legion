@@ -3021,21 +3021,24 @@ package api
 //
 // 212: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
-// that session, which moves three surfaces this number names. The agent's argv: the daemon
-// chooses each Oh My Pi role's session id and starts it with `--session-id <id>`, or with
-// `--resume <id>` when it resumes the role by its recorded file, and no path (sandbox's agentArgv);
-// a launch into a pod that carries no exchange identity waits for that pod's update round, since
-// its role would hold no credential for the Envoy listener. A resume of a session the claim
-// records with no file keeps entry 189's one `--resume=<id>`, and the launch runs under that id.
-// The worker environment: a role in a pod that carries the identity is told
+// that session, which moves three surfaces this number names. The agent's argv: in a pod that
+// carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
+// session id and starts it with `--session-id <id>`, or with `--resume <id>` when it resumes the
+// role by its recorded file, and no path (sandbox's agentArgv); a launch into a pod that carries no
+// exchange identity keeps `--resume=<file>`. A resume of a session the claim records with no file
+// keeps entry 189's one `--resume=<id>` in either pod, and a launch that trades runs under that
+// id. The worker environment: a role in a pod that carries the identity is told
 // `DISPATCH_TOKEN_BROKER=1` under the setting, which the image's Dispatch client reads as the
 // order to trade, and no `DISPATCH_TOKEN_FILE`, since its start carries no Dispatch token
-// (sandbox's mainEnvironment). The state: `GET /legion/v1/state` gains `dispatchCredential` under
-// the setting and nowhere else (api's DispatchCredentialView): the session the daemon's own
-// Dispatch calls run under, `legion-daemon:<project>`, and the live launches whose start carried a
-// Dispatch token, the shared bearer a daemon without the setting handed out, which a deployment
-// waits to see at zero before it revokes that bearer. The settings block's `dispatch_token_broker`
-// is a key of the block the plugin parses loosely (35 above), and moves no number.
+// (sandbox's mainEnvironment); a launch into a pod built before the identity carries the token of
+// `dispatch_token_transition_file` through `DISPATCH_TOKEN_FILE`, as every launch carried the
+// shared bearer before. The state: `GET /legion/v1/state` gains `dispatchCredential` under the
+// setting and nowhere else (api's DispatchCredentialView): the session the daemon's own Dispatch
+// calls run under, `legion-daemon:<project>`, the launches since the daemon's boot that carried the
+// transition token with the time of the last, and the live launches whose start carried a Dispatch
+// token, which a deployment waits to see at zero before it removes
+// `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
+// block the plugin parses loosely (35 above), and moves no number.
 // A caller below 212 is served the state without the key, by its row of shaping.go's
 // stateNarrowings (withoutDispatchCredential, the band of dispatchCredentialContract): a plugin
 // built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
@@ -3050,9 +3053,9 @@ package api
 // The skew is why the number moves. An Oh My Pi from before `--session-id` refuses a flag it does
 // not know and exits, and a Dispatch client from before `DISPATCH_TOKEN_BROKER` reads a role with
 // no `DISPATCH_TOKEN_FILE` as a role with no Dispatch credential at all, so the boot gate and
-// `legion probe-image` hold the daemon to an image built from this contract. A kept pod of an
-// older image carries no exchange identity, so a launch into it waits for the pod's update round,
-// which replaces the pod.
+// `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
+// of an older image carries no exchange identity, so it keeps the argv and the credential it had,
+// and its pod's update round replaces the pod.
 // (This change takes 212, the lowest number above main's 205 that no other open pull request
 // declared when the forward merge of 2026-11-21 brought main in at a155b5a33a, which declares 205
 // (INFRA-3178's entry above). It had declared 165, then 175 from the merge that brought main in at
@@ -3070,4 +3073,27 @@ package api
 // at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 212
+//
+// 219: cybermonklabs/legion#4805 -- the Envoy listener takes no shared bearer, which removes what
+// entry 212 kept for a pod built before the exchange identity and two counts of
+// `dispatchCredential`. The agent's argv: a launch into a kept pod that carries no exchange
+// identity no longer keeps `--resume=<file>` or the credential it had; it waits for that pod's
+// update round (sandbox's listenerCredential), since its role would hold no credential for the
+// Envoy listener, so every role the daemon starts runs with entry 212's `--session-id <id>` or
+// `--resume <id>`, or 189's one `--resume=<id>`. The worker environment: no launch carries the
+// token of `dispatch_token_transition_file`, a key the loader now refuses, and none carries
+// `ENVOY_TOKEN`. The state: `dispatchCredential` loses `transitionLaunches` and
+// `lastTransitionLaunchAt`, and holds `session` and `liveLaunchesWithDispatchToken` alone.
+// dispatchCredentialContract moves from 212 to 219, so a caller below 219 is served the state
+// without the key (withoutDispatchCredential): a caller at 212 names the two counts in the shape
+// its record describes, and is served the body 205 describes rather than an object short of them.
+// From this change on, 212's records are 205's under its own number, and 219's are 205's under its
+// own number with the key paths of `dispatchCredential`, `session` and
+// `liveLaunchesWithDispatchToken` on the state's. No other answer a plugin parses moves.
+// (This change takes 219, the lowest number above the base's 212 that no open pull request
+// declares, as check-daemon-api-contract.sh named it from its reading of every open pull request,
+// which ended at 2026-11-22T00:37:07Z: 213 (#4553), 214 (#4592, #4596), 215 (#4065), 216 (#4173,
+// #4180, #4193, #4251, #4259, #4261, #4269, #4290), 217 (#4273, #4590, #4771) and 218 (#3831) were
+// declared by other pull requests. Read the base's own number and every open pull request again at
+// the next merge rather than from this line.)
+const DaemonAPIVersion = 219

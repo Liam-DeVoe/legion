@@ -2579,7 +2579,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
   // nothing beside it; `dispatchCredential`, which the state golden carries under
-  // `dispatch_token_broker`, is set aside from the golden too, since every caller below 212 is
+  // `dispatch_token_broker`, is set aside from the golden too, since every caller below 219 is
   // served the state without it (`withoutDispatchCredential`).
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
@@ -2840,10 +2840,10 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The daemon's Dispatch credential under `dispatch_token_broker` (contract 212): the golden names
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 219): the golden names
 // the daemon's session and the count of the live launches that still hold a Dispatch token. The
 // key is not required: a daemon without the setting writes none, and a daemon at this contract
-// leaves it off the state it serves a caller older than 212, whether the caller states its
+// leaves it off the state it serves a caller older than 219, whether the caller states its
 // contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin reads a
 // field of it, so each field is optional; what is refused is a count that is not a whole number
 // of launches, or an empty session.

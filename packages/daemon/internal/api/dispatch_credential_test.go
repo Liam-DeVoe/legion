@@ -61,6 +61,9 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		stated int
 	}{
 		{name: "a caller stating the contract just below", claims: podClaims(memoryContract - 1), stated: dispatchCredentialContract - 1},
+		// 212 is where the key arrived, with two counts of the transition token that 219 took off
+		// it: a caller at 212 is served no object, rather than one short of what its record names.
+		{name: "a caller stating 212, where the key arrived", claims: podClaims(memoryContract - 1), stated: 212},
 		{name: "a pod whose plugin states no contract", claims: podClaims(shapedAnswersContract - 1)},
 	} {
 		remote := "192.0.2.1:4100"
@@ -96,13 +99,14 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	}
 }
 
-// dispatchCredentialContract is the contract whose entry in version.go added the key, and this
-// daemon's own contract is never below it: a caller at this contract is served the object.
-func TestTheDispatchCredentialContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedDispatchCredential = 212
-	if dispatchCredentialContract != addedDispatchCredential {
-		t.Fatalf("dispatchCredentialContract = %d, want %d, the contract whose entry in version.go added `dispatchCredential`",
-			dispatchCredentialContract, addedDispatchCredential)
+// dispatchCredentialContract is the contract whose entry in version.go gave the key the shape this
+// daemon writes, 219, which moved it from 212, where the key arrived with two counts 219 took off;
+// and this daemon's own contract is never below it: a caller at this contract is served the object.
+func TestTheDispatchCredentialContractIsTheContractThatGaveTheKeyItsShape(t *testing.T) {
+	const shapedDispatchCredential = 219
+	if dispatchCredentialContract != shapedDispatchCredential {
+		t.Fatalf("dispatchCredentialContract = %d, want %d, the contract whose entry in version.go gave `dispatchCredential` the shape this daemon writes",
+			dispatchCredentialContract, shapedDispatchCredential)
 	}
 	if dispatchCredentialContract > DaemonAPIVersion {
 		t.Fatalf("dispatchCredentialContract = %d, above DaemonAPIVersion %d: no caller could be served the key",

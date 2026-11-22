@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4805
+body: |-
+  The plugin declares daemon API contract 219. The daemon starts every role with `--session-id
+  <id>` or `--resume <id>`, and a launch into a pod built before the exchange identity waits for
+  that pod's update round. No launch carries an Envoy bearer or a transition token, and
+  `dispatchCredential` in `GET /legion/v1/state` holds `session` and
+  `liveLaunchesWithDispatchToken` alone, which a caller below 219 is served without.
+time: 2026-11-22T00:41:06Z

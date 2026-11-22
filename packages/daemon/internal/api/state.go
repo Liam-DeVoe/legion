@@ -101,7 +101,7 @@ type State struct {
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
 	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
 	// the count of the live launches that still hold a Dispatch token (DispatchCredentialView),
-	// absent when the setting is off (contract 212).
+	// absent when the setting is off (contract 219).
 	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live

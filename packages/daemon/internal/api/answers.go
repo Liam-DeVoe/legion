@@ -48,12 +48,13 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last three are
-// repositoriesLiveContract, childRouteRemovedContract and dispatchCredentialContract rather than
-// their numbers for the same reason: dispatch://INFRA-4401's change, dispatch://INFRA-3178's and
-// dispatch://INFRA-4425's each name their constant, and a renumber of any of them moves its
-// constant and this list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, dispatchCredentialContract}
+// one of the two alone would describe a shape at a contract no entry declares. The last three named
+// ones are repositoriesLiveContract, childRouteRemovedContract and dispatchCredentialContract rather
+// than their numbers for the same reason: dispatch://INFRA-4401's change, dispatch://INFRA-3178's and
+// cybermonklabs/legion#4805 each name their constant, and a renumber of any of them moves its
+// constant and this list with it. 212, the contract `dispatchCredential` arrived at, is a number of
+// its own beside them, since the constant moved on to 219, which gave the key the shape it has.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, 212, dispatchCredentialContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
