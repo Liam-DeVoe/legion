@@ -26,12 +26,12 @@ import (
 // reviewer cannot hold it from the document, only from the people who would be asked to act on it.
 // By DISPATCH_REVIEWER_DECISION_BLOCKS:
 //
-//   - hold: in the settlement's own transaction the ask gets held_until, which every Inbox read
-//     and every open-ask count reads (askNotHeld), and a held_texts row of kind decision_block
-//     under the ask's id carries its review, the writer's frame and window, and the sweep, as for
-//     any held text. Its post ends the hold: the ask's held_until goes back to null and a quiet
-//     ask.reviewed event tells an open page to refetch its Inbox and counts; where the outcome is
-//     rewrite_posted, the reviewer's rewrite is applied first (rewriteDecisionBlock).
+//   - hold: in the settlement's own transaction the ask gets held_until, which every list and
+//     count of what waits on people reads (askNotHeld, below), and a held_texts row of kind
+//     decision_block under the ask's id carries its review, the writer's frame and window, and the
+//     sweep, as for any held text. Its post ends the hold: the ask's held_until goes back to null
+//     and a quiet ask.reviewed event tells an open page to refetch its Inbox and counts; where the
+//     outcome is rewrite_posted, the reviewer's rewrite is applied first (rewriteDecisionBlock).
 //   - after: the block is reviewed after its settlement commits, with the findings sent to the
 //     writer and nothing held.
 //
@@ -44,9 +44,20 @@ import (
 // which no request of its own makes.
 const decisionBlockRoute = "SETTLE decision block"
 
-// askNotHeld is the condition every read of an Inbox or an open-ask count adds for the ask aliased
-// a: no reviewer's hold of a decision block keeps it out (asks.held_until, migration
-// 20261119050005).
+// askNotHeld is the condition, on the ask aliased a, that no reviewer's hold of a decision block
+// keeps it out (asks.held_until, migration 20261119050005). Every read that lists or counts open
+// asks as what waits on people adds it: the Inbox (listInbox), the open asks of one session or one
+// project (listOpenAsks, which `dispatch open-asks` reads), the issue detail's open asks
+// (listIssueAsksQueryWaiting), the Decisions view's open questions (specOpenQuestions), and the
+// open-ask counts of the project list (projectListQuery), the issue listing (issueSummaryJoins),
+// the priorities (priorityCountsQuery) and the agents list (agentOpenAskCounts). The block's own
+// record and lifecycle do not: the issue's and the document's ask lists and the ask's own read,
+// which show the block as its document does and mark it held_for_review instead (askReadColumns);
+// its writer's advice (your_open_asks); a close, a reopen and their repair; the document's own
+// guards; the approval reads, which never meet a decision block; and the Replies list's exclusion
+// of an open ask the Inbox lists (myRepliesOwner) with the logins a close names (events'
+// issueLoginsQuery), where the condition would put a held block in the Replies half of the Inbox
+// of the person it waits on.
 const askNotHeld = `(a.held_until is null or a.held_until <= now())`
 
 // decisionBlockHold is a held decision block's request: the ask whose block is held.

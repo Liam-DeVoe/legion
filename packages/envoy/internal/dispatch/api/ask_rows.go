@@ -185,10 +185,14 @@ func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *st
 // rather than evaluating the rule a second time; LastReply still names the newest comment.
 // WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
 // waiting_on_person for the same reason; every project names a default assignee, so it is null
-// only for a question whose project row the read could not reach. Queries selecting them read
-// from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
+// only for a question whose project row the read could not reach. HeldForReview is the reviewer's
+// hold of a decision block as askNotHeld reads it, so a reader of a list that shows the block (an
+// issue's asks, from which the page marks what waits on its reader) can leave it out of what waits
+// as the server's own lists and counts do. Queries selecting them read from askReadFrom. Event
+// payloads are built from askRowColumns instead: they carry none of them.
 const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
-	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
+	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person, not ` + askNotHeld +
+	` as held_for_review`
 
 // askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask
 // (askedOfPersonJoins) and the ask's newest reply. A query over it that wants the issue's or
@@ -419,20 +423,22 @@ func (s *server) loadAskAnchorArtifact(
 }
 
 // scanAskRead decodes one askReadColumns row; an open ask gets WaitingOn from
-// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, the three steps that
-// end at the project's default assignee, and the newest reply is returned separately (nil when
-// the thread is empty).
+// waitingOnExpression and HeldForReview from askNotHeld, WaitingOnPerson comes from
+// askedOfPersonExpression, the three steps that end at the project's default assignee, and the
+// newest reply is returned separately (nil when the thread is empty).
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
 	var turn string
 	var waitingOnPerson *string
-	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson}, extra...)...)
+	var heldForReview bool
+	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson, &heldForReview}, extra...)...)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
 	if ask.State == "open" {
 		ask.WaitingOn = turn
+		ask.HeldForReview = heldForReview
 	}
 	if waitingOnPerson != nil {
 		ask.WaitingOnPerson = *waitingOnPerson

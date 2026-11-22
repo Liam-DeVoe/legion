@@ -766,6 +766,14 @@ type openAsksResponse struct {
 // issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
 // parameters selects the scope. A human clarification leaves an ask open but makes the author
 // responsible for the next reply.
+//
+// A decision block the reviewer holds (askNotHeld) is in no part of the answer (its rows, its
+// counts, opened_since) in either scope and for every caller, its writer included. The route
+// cannot tell the writer from another reader: a GET carries no actor, and only a broker-issued
+// token proves a session, so author_session is a parameter any caller may set. The writer reads
+// its held block at GET /api/v1/held/{id}, as the writer of a held ask reads that ask, which has
+// no row here before its post either. The agents list's count of a session's open asks
+// (agentOpenAskCounts) leaves the block out for everyone too, so the two counts agree.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -803,8 +811,9 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
 			where
-				($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
-				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3)
+				(($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
+				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3))
+				and `+askNotHeld+`
 		), active as (
 			select
 				a.id::text,

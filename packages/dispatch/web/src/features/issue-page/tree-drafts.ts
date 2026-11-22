@@ -834,9 +834,13 @@ function addAsks(
     // header's count of what waits puts the focus on (R13, `waiting.ts`): the person the server
     // resolved it waits on (`waiting_on_person`), as every other count of what waits on the
     // reader reads it (`inbox/BlockedOnYou.tsx`'s `waitingOnYou`). A question waiting on
-    // somebody else is open all the same, and the fold still unfolds the path to it.
+    // somebody else is open all the same, and the fold still unfolds the path to it. A decision
+    // block the reviewer holds (`held_for_review`) does not wait on the reader until it posts:
+    // the server leaves it out of the issue's `open_asks`, which the count reads, and out of every
+    // Inbox, so the tree shows it without marking it or putting the focus on it.
     draft.waiting =
       ask.state === "open" &&
+      ask.held_for_review !== true &&
       ask.waiting_on === "human" &&
       context.viewer !== undefined &&
       ask.waiting_on_person === context.viewer;

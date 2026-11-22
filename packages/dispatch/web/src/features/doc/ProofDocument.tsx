@@ -515,10 +515,13 @@ export function ProofDocument({
     },
     [queryClient, artifact.id, onAskAnswered]
   );
+  // The open decisions the navigator counts and walks: a block the reviewer holds
+  // (`held_for_review`) shows where it stands in the document, and is out of the count, as it is
+  // out of the Inbox and every count of open asks, until it posts.
   const openBlockAsks = useMemo(
     () =>
       blockAsks
-        .filter((ask) => ask.state === "open")
+        .filter((ask) => ask.state === "open" && ask.held_for_review !== true)
         .map((ask) => ({
           ...ask,
           question: ask.question.replace(CONTROL_CHARACTERS, ""),

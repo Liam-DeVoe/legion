@@ -4007,6 +4007,7 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       edited_at: null | string;
+      held_for_review?: boolean;
       id: string;
       issue_key: null | string;
       kind: string;
@@ -5473,6 +5474,7 @@ export interface components {
       created_at: string;
       document?: components["schemas"]["InboxDocument"];
       edited_at: null | string;
+      held_for_review?: boolean;
       id: string;
       issue?: components["schemas"]["InboxIssue"];
       issue_key: null | string;
@@ -5557,6 +5559,7 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       edited_at: null | string;
+      held_for_review?: boolean;
       id: string;
       issue_key: null | string;
       kind: string;
@@ -5748,6 +5751,7 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       edited_at: null | string;
+      held_for_review?: boolean;
       id: string;
       issue_key: null | string;
       kind: string;

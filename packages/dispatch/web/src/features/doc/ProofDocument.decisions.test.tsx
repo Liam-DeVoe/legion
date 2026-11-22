@@ -357,6 +357,39 @@ test("the open-decision link names its block as encodeBlockId writes it, in its 
   }
 });
 
+// A decision block the reviewer holds (`held_for_review`) shows in the document, and the open-
+// decisions navigator neither counts it nor walks to it until it posts, as the Inbox and every
+// count of open asks leave it out. The next read of the issue's asks after the post counts it.
+test("the open-decisions navigator leaves out a decision block the reviewer holds until it posts", async () => {
+  const other: Ask = { ...blockAsk, block_id: "b-2", id: "ask-2", question: "Which region?" };
+  const held: Ask = { ...blockAsk, held_for_review: true };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [held, other]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    { ...held, last_reply: null },
+    { ...other, last_reply: null },
+  ]);
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
+    expect(within(nav).getByText("1 open decision")).toBeDefined();
+    expect(within(nav).getByRole("link")).toHaveTextContent("Which region?");
+
+    listIssueAsks.mockResolvedValue([
+      { ...blockAsk, last_reply: null },
+      { ...other, last_reply: null },
+    ]);
+    await act(() => queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1"] }));
+    await waitFor(() => expect(within(view.container).getByText("2 open decisions")).toBeDefined());
+  } finally {
+    listIssueAsks.mockRestore();
+    view.unmount();
+  }
+});
+
 // A pane's editor is read-only, but `blocksReadOnly` is `isClosed || schemaReadOnly` still: the
 // whole point of the Inbox's reading pane is that the reader answers the decision there.
 test("a pane's decision block hosts its answer form and tells its host which question was answered", async () => {

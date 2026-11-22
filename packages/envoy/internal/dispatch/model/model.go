@@ -1823,6 +1823,12 @@ type Ask struct {
 	// person. Set on ask reads only (inbox rows, ask lists, the ask detail), never on the ask.*
 	// event payloads.
 	WaitingOnPerson string `json:"waiting_on_person,omitempty"`
+	// HeldForReview is true while the reviewer holds this open decision block from people's
+	// Inboxes, counts and notices (DISPATCH_REVIEWER_DECISION_BLOCKS=hold, api.askNotHeld): its
+	// document and its owner's ask list show it, and nothing that lists or counts what waits on
+	// people does until it posts. Set on ask reads only (ask lists, the ask detail), never on the
+	// ask.* event payloads, and absent on every ask nobody holds.
+	HeldForReview bool `json:"held_for_review,omitempty"`
 	// Rewrite is the ask's rewrite where one runs, was written or failed (TextRewrite). Set on
 	// ask reads only (api.queueAskDetails, api.attachAskReadFields), never on the ask.* event
 	// payloads.

@@ -3736,6 +3736,8 @@ Every default keeps each change to a text off.
 - `DISPATCH_REVIEWER_DOCUMENTS`: `off` or `after` (default `off`); no document version is held.
 
 - `DISPATCH_REVIEWER_DECISION_BLOCKS`: `off`, `after` or `hold` (default `off`); `hold` shows the block in its document and keeps it out of every person's Inbox, counts and notices until the review ends.
+  Until then every read that lists or counts open asks as what waits on people leaves it out (`askNotHeld`, `api/decision_blocks.go`): the Inbox, `GET /api/v1/asks/open` in both scopes and for every caller, its writer included, the issue's open asks (`GET /api/v1/issues/{key}`), the Decisions view's open questions (`GET /api/v1/issues/{key}/decisions`), and the open-ask counts of the project list, the issue listing, the priorities and the agents list.
+  Its writer reads it at `GET /api/v1/held/{id}`, and its document shows it, with the issue's and the document's ask lists and `GET /api/v1/asks/{id}`, whose row carries `held_for_review: true` until it posts, so the web app leaves it out of what it counts from those lists: the issue page's tree draws it without marking it as waiting on the reader, and the margin's open asks and the document's open-decisions count leave it out.
   A choice other than `off` of any of these six needs the reviewer's model group, and refuses the boot without it.
 
 - `DISPATCH_REVIEWER_RULES`: a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `structure` and `detector` (default `noslop,phrases,reader_words,ask_parts`).

@@ -54,6 +54,13 @@ func (rig *reviewRig) uploadDecisionBlockOf(content string, typed bool) string {
 	if response.Code != http.StatusCreated {
 		rig.t.Fatalf("the document with a decision block: %d %s", response.Code, response.Body.String())
 	}
+	return rig.blockAsk()
+}
+
+// blockAsk waits for the ask of the one decision block a write put in a document of the rig's
+// issue, which its settlement opens, and answers its id.
+func (rig *reviewRig) blockAsk() string {
+	rig.t.Helper()
 	var askID string
 	pollUntil(rig.t, 20*time.Second, "the decision block's ask", func() bool {
 		return rig.database.Pool.QueryRow(context.Background(), `
@@ -135,6 +142,192 @@ func TestADecisionBlockHeldShowsInItsDocumentAndIsOutOfTheInboxUntilReviewed(t *
 	if reviewed := countRows(t, rig.database, `
 		select count(*) from events where type = 'ask.reviewed' and payload->>'id' = $1 and not notify`, askID); reviewed != 1 {
 		t.Fatalf("%d quiet ask.reviewed events of the block, want 1", reviewed)
+	}
+}
+
+// listedOpenAsks is the ids an answer of GET /api/v1/asks/open lists, which its counts must agree
+// with.
+func listedOpenAsks(t *testing.T, read openAsksRead) []string {
+	t.Helper()
+	ids := []string{}
+	for _, ask := range read.Asks {
+		ids = append(ids, ask.ID)
+	}
+	if read.Count != len(ids) || read.WaitingOnHuman+read.WaitingOnAgent != len(ids) {
+		t.Fatalf("the open asks %v are counted %d (%d on a person, %d on an agent)",
+			ids, read.Count, read.WaitingOnHuman, read.WaitingOnAgent)
+	}
+	return ids
+}
+
+// GET /api/v1/asks/open, which `dispatch open-asks` reads, leaves a held decision block out of its
+// rows, its counts and opened_since until the block posts, in both its scopes and for every
+// reader: alice's read of the project, an agent's read of it, and the writer session's read of
+// its own open asks. Once the block posts, each of them lists it.
+func TestADecisionBlockHeldIsOutOfTheOpenAsksUntilItPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: time.Minute}, nil)
+	// The writer's since is the database's clock, read once before the block is written.
+	var since time.Time
+	if err := rig.database.Pool.QueryRow(context.Background(), `select statement_timestamp()`).Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	const writers = "the writer's read of its own open asks"
+	reads := func() map[string]openAsksRead {
+		t.Helper()
+		var alices openAsksRead
+		if err := json.Unmarshal([]byte(rig.aliceReads("/api/v1/asks/open?project=RVW")), &alices); err != nil {
+			t.Fatal(err)
+		}
+		return map[string]openAsksRead{
+			"alice's read of the project":    alices,
+			"an agent's read of the project": listProjectOpenAsks(t, rig.handler, "RVW"),
+			writers:                          listOpenAsks(t, rig.handler, heldWriter, since.UTC().Format(time.RFC3339Nano)),
+		}
+	}
+	for name, read := range reads() {
+		if ids := listedOpenAsks(t, read); len(ids) != 0 {
+			t.Fatalf("%s lists %v before the block, want none", name, ids)
+		}
+	}
+	askID := rig.uploadDecisionBlock(false)
+	rig.waitHeld(askID, heldAwaitingWriter)
+	for name, read := range reads() {
+		if ids := listedOpenAsks(t, read); len(ids) != 0 || read.OpenedSince {
+			t.Fatalf("%s lists %v (opened_since %t) while the block is held, want none", name, ids, read.OpenedSince)
+		}
+	}
+	rig.postHeldAsWritten(askID)
+	rig.waitHeld(askID, heldPosted)
+	posted := reads()
+	for name, read := range posted {
+		if ids := listedOpenAsks(t, read); len(ids) != 1 || ids[0] != askID {
+			t.Fatalf("%s lists %v once the block posted, want the block %s", name, ids, askID)
+		}
+	}
+	if !posted[writers].OpenedSince {
+		t.Fatalf("%s says no ask opened since %s once the block posted", writers, since)
+	}
+}
+
+// The Decisions view's open questions are what waits on its reader, which the page counts: a
+// decision block the writer adds to the issue's spec is out of them while the reviewer holds it,
+// though the spec shows it, and in them once it posts.
+func TestADecisionBlockHeldIsOutOfTheDecisionsViewUntilItPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: time.Minute}, nil)
+	questions := func() []string {
+		t.Helper()
+		ids := []string{}
+		for _, question := range readIssueDecisions(t, rig.handler, rig.issue).OpenQuestions {
+			ids = append(ids, question.ID)
+		}
+		return ids
+	}
+	if open := questions(); len(open) != 0 {
+		t.Fatalf("the Decisions view lists %v before the block, want none", open)
+	}
+	block := decisionBlockDocument[strings.Index(decisionBlockDocument, ":::ask"):]
+	edit := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/artifacts/spec/edits", map[string]any{
+		"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": block}},
+	})
+	if edit.Code != http.StatusOK {
+		t.Fatalf("the writer's edit of the spec: %d %s", edit.Code, edit.Body.String())
+	}
+	askID := rig.blockAsk()
+	rig.waitHeld(askID, heldAwaitingWriter)
+	if !strings.Contains(rig.aliceReads("/api/v1/issues/"+rig.issue+"/artifacts/spec/text"), "Ship the reviewer?") {
+		t.Fatal("the spec does not show the held decision block")
+	}
+	if open := questions(); len(open) != 0 {
+		t.Fatalf("the Decisions view lists %v while the block is held, want none", open)
+	}
+	rig.postHeldAsWritten(askID)
+	rig.waitHeld(askID, heldPosted)
+	if open := questions(); len(open) != 1 || open[0] != askID {
+		t.Fatalf("the Decisions view lists %v once the block posted, want the block %s", open, askID)
+	}
+}
+
+// While the reviewer holds a decision block, the reads that show it say so (held_for_review): the
+// issue's ask list, from which the page's tree marks what waits on its reader, and the ask's own
+// read, which answers the block's row to a person and to a session alike rather than 409
+// HELD_TEXT, since its document shows it. Its writer reads the held block at GET
+// /api/v1/held/{id}, which a person at a browser is refused. Once the block posts, neither row
+// carries the field.
+func TestADecisionBlockHeldIsMarkedHeldForReviewWhereItShows(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: time.Minute}, nil)
+	askID := rig.uploadDecisionBlock(false)
+	rig.waitHeld(askID, heldAwaitingWriter)
+	type markedAsk struct {
+		ID            string `json:"id"`
+		HeldForReview *bool  `json:"held_for_review"`
+	}
+	marks := func() map[string]*bool {
+		t.Helper()
+		var rows []markedAsk
+		if err := json.Unmarshal([]byte(rig.aliceReads("/api/v1/issues/"+rig.issue+"/asks")), &rows); err != nil {
+			t.Fatal(err)
+		}
+		marks := map[string]*bool{}
+		for _, row := range rows {
+			if row.ID == askID {
+				marks["the issue's ask list"] = row.HeldForReview
+			}
+		}
+		reads := map[string]*httptest.ResponseRecorder{
+			"alice's read of the ask":     dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice"),
+			"a session's read of the ask": sessionRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+askID, nil),
+		}
+		for name, response := range reads {
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s, want the block's row", name, response.Code, response.Body.String())
+			}
+			var read struct {
+				Ask markedAsk `json:"ask"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil || read.Ask.ID != askID {
+				t.Fatalf("%s answers %s (%v), want the block %s", name, response.Body.String(), err, askID)
+			}
+			marks[name] = read.Ask.HeldForReview
+		}
+		if len(marks) != 3 {
+			t.Fatalf("the reads that show the block are %v, want the ask list and both reads of the ask", marks)
+		}
+		return marks
+	}
+	for name, mark := range marks() {
+		if mark == nil || !*mark {
+			t.Fatalf("%s does not mark the block held for review while the reviewer holds it", name)
+		}
+	}
+
+	held := rig.asWriter(http.MethodGet, "/api/v1/held/"+askID, nil)
+	if held.Code != http.StatusOK {
+		t.Fatalf("the writer's read of its held block: %d %s", held.Code, held.Body.String())
+	}
+	var read struct {
+		ID       string            `json:"id"`
+		Kind     string            `json:"kind"`
+		State    string            `json:"state"`
+		Writer   string            `json:"writer"`
+		Findings []json.RawMessage `json:"findings"`
+	}
+	if err := json.Unmarshal(held.Body.Bytes(), &read); err != nil {
+		t.Fatal(err)
+	}
+	if read.ID != askID || read.Kind != "decision_block" || read.State != heldAwaitingWriter || read.Writer != heldWriter ||
+		len(read.Findings) != 1 || !strings.Contains(held.Body.String(), "Ship the reviewer?") {
+		t.Fatalf("the writer reads its held block as %s", held.Body.String())
+	}
+	if refused := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/held/"+askID, nil, "alice"); refused.Code != http.StatusForbidden {
+		t.Fatalf("alice's read of the held block at /held: %d %s, want 403", refused.Code, refused.Body.String())
+	}
+
+	rig.postHeldAsWritten(askID)
+	rig.waitHeld(askID, heldPosted)
+	for name, mark := range marks() {
+		if mark != nil {
+			t.Fatalf("%s carries held_for_review %t once the block posted, want it absent", name, *mark)
+		}
 	}
 }
 

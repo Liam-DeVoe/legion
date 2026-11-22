@@ -251,6 +251,12 @@ export const askFields = {
    *  open-ask read (inbox rows, ask lists, the ask detail, the issue detail's `open_asks`); absent
    *  on closed asks and on `ask.*` event payloads. */
   waiting_on: z.enum(ASK_TURNS).optional(),
+  /** True while the reviewer holds this open decision block from people's Inboxes, counts and
+   *  notices (`DISPATCH_REVIEWER_DECISION_BLOCKS=hold`): its document and its owner's ask list
+   *  show it, and nothing that lists or counts what waits on people does until it posts. Present
+   *  on ask reads (ask lists, the ask detail) alone, and only while the hold stands; absent on
+   *  every other ask and on `ask.*` event payloads. */
+  held_for_review: z.boolean().optional(),
   edited_at: z.string().nullable(),
   /** Present only on a server-created approval ask. */
   approval: AskApprovalSchema.optional(),
