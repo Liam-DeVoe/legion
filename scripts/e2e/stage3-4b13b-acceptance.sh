@@ -1173,8 +1173,9 @@ pass
 
 # ---- 8. a design gate that re-closes in merging holds no merge -------------------------------------
 begin a-reclosed-gate-holds-no-merge
-# The design gate holds a tree's start and nothing after it: a new primary spec version while
-# $root3 is in merging closes the gate, and the merger merges all the same. $root3 merges into a
+# A closed design gate holds what has not started (the tree's work, its merger's start, a released
+# child's start) and stops no merger already started: a new primary spec version while $root3 is in
+# merging closes the gate, and the merger merges all the same. $root3 merges into a
 # base of its own for the same reason $root1 did.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
