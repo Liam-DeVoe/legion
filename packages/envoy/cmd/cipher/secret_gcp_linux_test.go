@@ -78,9 +78,12 @@ func (d *firedDeadline) Err() error {
 const gcloudChildFile = "AGENT_SECRETS_TEST_GCLOUD_CHILD"
 
 // gcloudChild is the child of the stub gcloud useGcloudWhoseChildHoldsItsOutput writes, by the
-// file it writes its pid to.
+// file it writes its pid to; or, with envFile set, another process of that stub (the stub's own,
+// in TestGcloudEndsWhenAgentSecretsIsKilled), by its pid file and the child's, which its
+// environment names (ours).
 type gcloudChild struct {
 	pidFile string
+	envFile string
 }
 
 // useGcloudWhoseChildHoldsItsOutput is a stub gcloud that never answers, whatever it is asked: it
@@ -156,11 +159,16 @@ func (c gcloudChild) runs(pid int) (bool, error) {
 	return stat.state != 'Z' && stat.state != 'X', nil
 }
 
-// ours reports whether pid's environment holds this child's pid file, so that no process the
-// kernel has given the pid since is killed for the child. A process that is exiting can refuse a
-// read of its environment for a moment (permission denied, seen once in twenty runs), so ours
-// asks again until the waits of these tests give up (waitsGaveUp) before it answers that error.
+// ours reports whether pid's environment holds this child's pid file (envFile where it is set), so
+// that no process the kernel has given the pid since is killed for the child. A process that is
+// exiting can refuse a read of its environment for a moment (permission denied, seen once in
+// twenty runs), so ours asks again until the waits of these tests give up (waitsGaveUp) before it
+// answers that error.
 func (c gcloudChild) ours(t *testing.T, pid int) (bool, error) {
+	marker := c.pidFile
+	if c.envFile != "" {
+		marker = c.envFile
+	}
 	var answer bool
 	var readErr error
 	testwait.Holds(untilGiveUp(t), testwait.Poll, func() bool {
@@ -172,7 +180,7 @@ func (c gcloudChild) ours(t *testing.T, pid int) (bool, error) {
 			readErr = err
 			return false
 		default:
-			answer, readErr = slices.Contains(strings.Split(string(environ), "\x00"), gcloudChildFile+"="+c.pidFile), nil
+			answer, readErr = slices.Contains(strings.Split(string(environ), "\x00"), gcloudChildFile+"="+marker), nil
 		}
 		return true
 	})
@@ -334,6 +342,16 @@ const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
 // store call (storeCallDeadline), 60s where it is unset.
 const gcloudSignInDeadline = "AGENT_SECRETS_GCLOUD_DEADLINE"
 
+// gcloudExecs is the variable that makes TestGcloudSignInSignalHelper's stub gcloud, once it has
+// started its child, write its own pid beside the child's (gcloudPidName) and replace itself with
+// a process that never answers (exec), as gcloud's own script replaces itself with its Python:
+// nothing of that stub process then watches anything, so only its parent-death signal ends it
+// (gcloudProcAttr, TestGcloudEndsWhenAgentSecretsIsKilled).
+const gcloudExecs = "AGENT_SECRETS_GCLOUD_EXECS"
+
+// gcloudPidName is the file, beside the child's pid file, the stub of gcloudExecs writes its own pid to.
+const gcloudPidName = "gcloud.pid"
+
 // TestGcloudSignInSignalHelper is the process the gcloud sign-in signal rows signal: `secret list`
 // against a fake broker serving the GCP store, with no other source of a Google credential, so
 // its sign-in runs `gcloud auth list` through the stub gcloud of gcloudStubIn, written beside the
@@ -364,6 +382,9 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	last := "wait"
 	if at == gcloudWaited {
 		last = "exit 0"
+	}
+	if os.Getenv(gcloudExecs) != "" {
+		last = "echo $$ >" + shellWord(filepath.Join(filepath.Dir(pidFile), gcloudPidName)) + "\nexec sleep 3600"
 	}
 	gcloud, child := gcloudStubIn(t, filepath.Dir(pidFile), last)
 	if at != "" {
@@ -400,20 +421,33 @@ type signInHelper struct {
 // child's pid file, with env added to its environment. It runs under `env --default-signal`, so
 // it does not inherit a SIGINT this test process ignores (as a job run in the background of a
 // script does), at which agent-secrets rightly goes on running. A helper still running when t
-// ends is stopped (stop).
+// ends is stopped (stop). Where this test process is itself killed and runs no cleanup, the
+// helper is killed with it (its parent-death signal), and its gcloud with the helper
+// (gcloudProcAttr), so nothing the row started outlives the test binary. The signal follows the
+// thread that started the helper, so one goroutine holds that thread from Start until the helper
+// has been waited for.
 func startSignInHelper(t *testing.T, child gcloudChild, env ...string) *signInHelper {
 	t.Helper()
 	cmd := exec.Command("env", "--default-signal=INT", os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
 	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	h := &signInHelper{cmd: cmd, out: &bytes.Buffer{}, waited: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = h.out, h.out
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	started := make(chan error, 1)
 	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := cmd.Start(); err != nil {
+			started <- err
+			return
+		}
+		started <- nil
 		_ = cmd.Wait()
 		close(h.waited)
 	}()
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(h.stop)
 	return h
 }
@@ -491,6 +525,48 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	requireCommandOnTime(t, meter, "agent-secrets after its interrupt, which ends it at once", sent, 0)
 	helper.requireEndedByInterrupt(t)
 	child.requireGone(t)
+}
+
+// TestGcloudEndsWhenAgentSecretsIsKilled: a gcloud still running when agent-secrets ends by a
+// SIGKILL, which runs none of agent-secrets' code, ends with it (gcloudProcAttr's parent-death
+// signal), and is not left running in its group of its own until it ends by itself. The stub
+// gcloud replaces itself with a process that never answers (gcloudExecs), as gcloud's own script
+// replaces itself with its Python, so nothing of it watches agent-secrets: only that signal can
+// end it. The wait for its end is bounded only by the moment the waits of these tests give up.
+func TestGcloudEndsWhenAgentSecretsIsKilled(t *testing.T) {
+	child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
+	gcloud := gcloudChild{pidFile: filepath.Join(filepath.Dir(child.pidFile), gcloudPidName), envFile: child.pidFile}
+	t.Cleanup(func() { child.cleanUp(t) })
+	helper := startSignInHelper(t, child, gcloudSignInDeadline+"=1h", gcloudExecs+"=1")
+	var pid int
+	seen := heldBeforeGiveUp(t, func() bool {
+		if pid = gcloud.pid(); pid == 0 {
+			return false
+		}
+		running, err := gcloud.runs(pid)
+		return err == nil && running
+	})
+	if !seen {
+		helper.stop()
+		t.Fatalf("the stub gcloud never named itself running in %s, %s before the test binary's deadline; the helper said %q", gcloud.pidFile, waitMargin, helper.out.String())
+	}
+	if err := helper.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-helper.waited
+	var readErr error
+	gone := heldBeforeGiveUp(t, func() bool {
+		running, err := gcloud.runs(pid)
+		readErr = err
+		return err != nil || !running
+	})
+	if readErr != nil {
+		t.Fatalf("reading the stub gcloud, pid %d: %v", pid, readErr)
+	}
+	if !gone {
+		gcloud.kill(t, pid)
+		t.Fatalf("the stub gcloud, pid %d, still ran after agent-secrets was killed, %s before the test binary's deadline", pid, waitMargin)
+	}
 }
 
 // TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild: an interrupt that comes at

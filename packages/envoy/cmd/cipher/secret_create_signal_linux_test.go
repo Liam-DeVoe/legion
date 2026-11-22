@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -180,31 +181,51 @@ func (a announcedCreate) CreateSecret(ctx context.Context, in *secretsmanager.Cr
 }
 
 // createProcess is a TestCreateSignalHelper process: its standard input, a pipe held open until
-// the test writes or closes it, and everything it printed.
+// the test writes or closes it, everything it printed, and a channel closed once it has been waited
+// for, with what the wait answered.
 type createProcess struct {
-	t     *testing.T
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	out   *syncWriter
+	t       *testing.T
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	out     *syncWriter
+	waited  chan struct{}
+	waitErr error
 }
 
 // startCreate starts cmd, a command that runs TestCreateSignalHelper, with env added to its
-// environment, killing it if the test ends first.
+// environment, killing it if the test ends first. Where this test process is itself killed and
+// runs no cleanup, the helper is killed with it (its parent-death signal), so it does not outlive
+// the test binary holding a store call for up to an hour (heldDeadline). The signal follows the
+// thread that started the helper, so one goroutine holds that thread from Start until the helper
+// has been waited for, and it is the one that waits: the rows read the end from waited.
 func startCreate(t *testing.T, cmd *exec.Cmd, env ...string) *createProcess {
 	t.Helper()
 	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_CREATE_HELPER=1"), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &createProcess{t: t, cmd: cmd, stdin: stdin, out: &syncWriter{}}
+	p := &createProcess{t: t, cmd: cmd, stdin: stdin, out: &syncWriter{}, waited: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = p.out, p.out
-	if err := cmd.Start(); err != nil {
+	started := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := cmd.Start(); err != nil {
+			started <- err
+			return
+		}
+		started <- nil
+		p.waitErr = cmd.Wait()
+		close(p.waited)
+	}()
+	if err := <-started; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		<-p.waited
 	})
 	return p
 }
@@ -241,14 +262,9 @@ func (p *createProcess) signal(sig syscall.Signal) {
 // show (endsAtOnceBy).
 func (p *createProcess) endedBy(sig syscall.Signal) string {
 	p.t.Helper()
-	waited := make(chan struct{})
-	go func() {
-		_ = p.cmd.Wait()
-		close(waited)
-	}()
-	if _, ok := received(p.t, waited); !ok {
+	if _, ok := received(p.t, p.waited); !ok {
 		_ = p.cmd.Process.Kill()
-		<-waited
+		<-p.waited
 		p.t.Fatalf("the create had not ended %s before the test binary's deadline, output %q; want it ended by %s by then", waitMargin, p.out.String(), sig)
 	}
 	out := p.out.String()
@@ -521,8 +537,10 @@ func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
 	p.signal(syscall.SIGINT)
 	_, _ = io.WriteString(p.stdin, "piped-value")
 	_ = p.stdin.Close()
-	err := p.cmd.Wait()
-	if out := p.out.String(); err != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
-		t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", err, out)
+	if _, ok := received(t, p.waited); !ok {
+		t.Fatalf("the create had not ended after its value came, %s before the test binary's deadline; output %q", waitMargin, p.out.String())
+	}
+	if out := p.out.String(); p.waitErr != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
+		t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", p.waitErr, out)
 	}
 }
