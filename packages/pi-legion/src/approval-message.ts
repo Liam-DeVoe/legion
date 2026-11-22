@@ -1,15 +1,16 @@
 import { messageFor } from "@legion/envoy-client/errors";
+import { APPROVAL_MESSAGE_TYPE, isApprovalMessage } from "@legion/pi-shared/approval-message";
 import {
-  APPROVAL_MESSAGE_TYPE,
   type Conversion,
   type HostAgentRegistry,
-  isApprovalMessage,
   isHandoffPrompt,
   isSideTurn,
   messageKey,
   nextConversion,
+  roleOf,
   sessionCompacting,
-} from "@legion/pi-shared/approval-message";
+  timestampOf,
+} from "@legion/pi-shared/context-request";
 import { customEntries } from "@legion/pi-shared/custom-entry";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
@@ -111,7 +112,8 @@ interface Standing {
 
 /** A new placement whose answer is not saved yet. Every request of the loop places this same
  *  copy, the same bytes and timestamp, until an answer to one of them is saved, or the standing
- *  version changes. */
+ *  version changes, or a request holds a message stamped at or after it (a compaction summary
+ *  written after its request failed), which gets a copy stamped anew. */
 interface Pending {
   readonly session: string;
   readonly version: number;
@@ -129,7 +131,7 @@ const PER_CALL = "agent.message.perCallContext";
 /** Oh My Pi's date reminder as its control message carries it on the wire
  *  (`prompts/system/date-cwd-reminder.md`, rendered and trimmed by `renderDateCwdReminder`, with
  *  the local date as `YYYY-MM-DD`, at the pinned tag). */
-const DATE_REMINDER =
+export const DATE_REMINDER =
   /^<system-reminder>\nToday: \d{4}-\d{2}-\d{2}; current working directory: '.*'\. Do not repeat this information in your reply\.\n<\/system-reminder>$/;
 
 function approvalMessage(text: string, timestamp: number): Record<string, unknown> {
@@ -141,23 +143,6 @@ function approvalMessage(text: string, timestamp: number): Record<string, unknow
     attribution: "agent",
     timestamp,
   };
-}
-
-/** A message's role, or undefined where it has none. */
-export function roleOf(message: unknown): unknown {
-  return typeof message === "object" && message !== null && "role" in message
-    ? message.role
-    : undefined;
-}
-
-/** A message's numeric timestamp, or undefined where it has none. */
-export function timestampOf(message: unknown): number | undefined {
-  return typeof message === "object" &&
-    message !== null &&
-    "timestamp" in message &&
-    typeof message.timestamp === "number"
-    ? message.timestamp
-    : undefined;
 }
 
 /**
@@ -309,9 +294,10 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
    * Whether the request is outside the conversation's own loop: a side turn, Oh My Pi's handoff
    * prompt, or a compaction's own. A remote compaction converts the conversation up to its cut,
    * then the whole conversation right after it, and one that keeps no tail converts the same
-   * messages twice while the session compacts (`nextConversion`). A main-loop request while a
-   * speculative compaction runs is none of these, so it places as any other does. A request with
-   * no turn in it (only a compaction summary) is outside the loop too.
+   * messages twice while the session compacts (`nextConversion`, which reads both without the
+   * answers message pi-envoy adds to the first when its handler runs first). A main-loop request
+   * while a speculative compaction runs is none of these, so it places as any other does. A
+   * request with no turn in it (only a compaction summary) is outside the loop too.
    */
   const outsideLoop = (
     messages: readonly unknown[],
@@ -391,16 +377,20 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       if (pending?.session === session) pending = undefined;
       return false;
     }
+    // Newer than every message of the request, so Oh My Pi, which tells messages apart by role
+    // and timestamp, and puts a compaction's file list before the first message newer than the
+    // compaction, keeps it last. A placement waiting for its answer is stamped anew when the
+    // request holds a message stamped at or after it, such as the summary of a compaction that ran
+    // after its request failed: no answer was saved against the old stamp, so no record rebuilds a
+    // copy with it.
+    const newest = Math.max(0, ...messages.map((message) => timestampOf(message) ?? 0));
     if (
       pending === undefined ||
       pending.session !== session ||
       pending.version !== now.version ||
-      pending.text !== now.text
+      pending.text !== now.text ||
+      pending.timestamp <= newest
     ) {
-      // Newer than every message of the request, so Oh My Pi, which tells messages apart by role
-      // and timestamp, and puts a compaction's file list before the first message newer than the
-      // compaction, keeps it last.
-      const newest = Math.max(0, ...messages.map((message) => timestampOf(message) ?? 0));
       pending = {
         session,
         version: now.version,

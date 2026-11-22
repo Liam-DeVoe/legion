@@ -64,6 +64,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, headers as natsHeaders, StringCodec } from "nats";
+import { DATE_REMINDER } from "../src/approval-message";
 
 const RECORDER = path.join(import.meta.dir, "approval-context-recorder.ts");
 const ENTRIES = path.resolve(
@@ -107,11 +108,6 @@ const DELEGATE =
 
 /** How the host's handoff prompt begins (`handoff-document.md` at the pinned tag). */
 export const HANDOFF_PROMPT = "Write a handoff document for another instance of yourself.";
-
-/** Oh My Pi's date reminder on the wire (`prompts/system/date-cwd-reminder.md` at the pinned
- *  tag), as pi-legion's `DATE_REMINDER` reads it. */
-const DATE_REMINDER =
-  /^<system-reminder>\nToday: \d{4}-\d{2}-\d{2}; current working directory: '.*'\. Do not repeat this information in your reply\.\n<\/system-reminder>$/;
 
 /** How pi-envoy's people's-answers message begins (`session-answers-context.ts`). */
 const ANSWERS_MESSAGE = "[Dispatch: what people wrote to this session";

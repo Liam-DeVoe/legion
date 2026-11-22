@@ -1,5 +1,5 @@
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
-import { leadingText } from "@legion/pi-shared/approval-message";
+import { leadingText } from "@legion/pi-shared/context-request";
 import { userTextMessage } from "./context-message";
 
 /**

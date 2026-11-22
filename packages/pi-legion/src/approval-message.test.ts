@@ -2,17 +2,16 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { LegionClaimApproval } from "@legion/contracts/legion-api";
-import {
-  APPROVAL_MESSAGE_TYPE,
-  type HostAgentRegistry,
-  isApprovalMessage,
-  messageKey,
-} from "@legion/pi-shared/approval-message";
+import { APPROVAL_MESSAGE_TYPE, isApprovalMessage } from "@legion/pi-shared/approval-message";
+import { type HostAgentRegistry, messageKey } from "@legion/pi-shared/context-request";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { withSessionAnswers } from "../../pi-envoy/src/session-answers-context";
+import {
+  type SessionAnswersRequest,
+  withSessionAnswers,
+} from "../../pi-envoy/src/session-answers-context";
 import { APPROVAL_SENT_ENTRY, type ApprovalSent, createApprovalMessage } from "./approval-message";
 
 // The approval message's state table (rows S1 to S23 of the plan), each row driven on the
@@ -607,6 +606,43 @@ test("S9: after a remote compaction that summarized the answer, the message is l
   expect(Number(record(placed, "the placement").timestamp)).toBeGreaterThan(newest);
 });
 
+// Oh My Pi's overflow recovery: the request that placed the message fails with no answer saved, a
+// compaction summarizes the conversation, and the agent goes on with no new message. Oh My Pi puts
+// the compaction's file list before the first message stamped after the summary, or after the last
+// message when none is (`flushCompactionFiles`): a placement stamped before the summary would have
+// the list after it.
+test("a placement whose answer failed is stamped after the summary of the compaction that followed, and stays last on the retry", async () => {
+  const name = "compaction-soft";
+  const route: Route = { answer: NONE };
+  const p = pane({ session: sessionOf(name), route });
+  await p.start();
+  await p.request(name, 4);
+  p.end(name, 8);
+  await p.request(name, 13);
+  p.end(name, 17);
+  route.answer = GOLDEN;
+  const placed = record((await p.request(name, 22)).messages.at(-1), "the placement");
+  expect(isApprovalMessage(placed)).toBe(true);
+  // Its answer fails, so no answer is saved (S3), and the compaction summarizes the conversation.
+  p.compact(name, 33);
+
+  // The retry: the compaction's request with neither the failed answer nor a new prompt.
+  const failed = answerKey(name, 26);
+  const retry = await p.request(name, 39, {
+    edit: (messages) => messages.filter((message) => messageKey(message) !== failed).slice(0, -1),
+  });
+
+  const summary = record(retry.original[0], "the compaction summary");
+  expect(summary.role).toBe("compactionSummary");
+  expect(Number(placed.timestamp)).toBeLessThan(Number(summary.timestamp));
+  const again = record(retry.messages.at(-1), "the retry's placement");
+  expect(isApprovalMessage(again)).toBe(true);
+  expect(textOf(again)).toBe(GOLDEN_TEXT);
+  expect(approvalsIn(retry.messages)).toHaveLength(1);
+  expect(Number(again.timestamp)).toBeGreaterThan(Number(summary.timestamp));
+  expect(p.records()).toEqual([]);
+});
+
 test("S10: a fresh session's first request, and a new process's first request in a session holding no copy, have the message last", async () => {
   const fresh = pane({ session: sessionOf("idle-card"), route: { answer: GOLDEN } });
   await fresh.start();
@@ -784,6 +820,59 @@ test("a request of the loop made while a speculative compaction runs still gets 
 
   expect(copyBefore(third.messages, answerKey(name, 8), placed)).toBe(true);
   expect(textOf(third.messages.at(-1))).toBe(V26_TEXT);
+});
+
+// The sandbox loads pi-envoy before pi-legion (`--extension envoy --extension legion`). A remote
+// compaction that keeps no tail converts the whole conversation twice while the session compacts
+// (`agent-session.ts:3541-3567`): pi-envoy's handler adds an answers message, unrecorded, after the
+// last message of the first conversion, and nothing to the second, a repeat. The compaction keeps
+// as many messages of the second as the first holds: the second is the compaction's own request.
+test("with pi-envoy's handler first, a remote compaction that keeps no tail gets no new placement in its own request", async () => {
+  const name = "compaction-remote";
+  const session = sessionOf(name);
+  const route: Route = { answer: GOLDEN };
+  const p = pane({ session, route });
+  await p.start();
+  const placed = (await p.request(name, 4)).messages.at(-1);
+  p.end(name, 8);
+  await p.request(name, 13);
+  p.end(name, 17);
+  // The last request of the loop reads the route and fails, so the compaction's first conversion
+  // reads it again (S13), and v26 stands from then on.
+  route.answer = new Error("the daemon did not answer within 800 ms");
+  await p.request(name, 22);
+  p.end(name, 26);
+  route.answer = V26;
+
+  // Each conversion is the fixture's whole conversion (31), which ends at the branch's last
+  // message, handed to pi-envoy's handler and then to pi-legion's.
+  const whole = recorded(name, 31, "context");
+  const answersText = textOf(
+    list(recorded("date-reminder-resume", 17, "context").messages, "the messages").at(-1)
+  );
+  const envoy: SessionAnswersRequest = {
+    branch: () => list(whole.branch, "the branch"),
+    session: {},
+    id: session,
+    compacting: () => true,
+    read: async () => ({ text: answersText, answered: true }),
+    record: () => undefined,
+    readFailed: () => undefined,
+  };
+  const conversion = async (): Promise<Request> => {
+    const messages = list(structuredClone(whole.messages), "the messages");
+    const handed = (await withSessionAnswers(messages, envoy)) ?? messages;
+    return p.request(name, 31, { edit: () => handed });
+  };
+  const first = await conversion();
+  const own = await conversion();
+
+  expect(textOf(first.original.at(-1))).toBe(answersText);
+  expect(own.original).toEqual(list(whole.messages, "the messages"));
+  expect(own.messages.length).toBeLessThanOrEqual(first.messages.length);
+  expect(copyBefore(own.messages, answerKey(name, 8), placed)).toBe(true);
+  expect(approvalsIn(own.messages).map(textOf)).toEqual([GOLDEN_TEXT]);
+  expect(own.messages.at(-1)).toEqual(own.original.at(-1));
 });
 
 test("S16: on a model whose flag is off the message is placed, and one log line names the session's model, with no second line", async () => {

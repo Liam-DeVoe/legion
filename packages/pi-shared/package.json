@@ -29,6 +29,10 @@
       "types": "./src/approval-message.ts",
       "bun": "./src/approval-message.ts"
     },
+    "./context-request": {
+      "types": "./src/context-request.ts",
+      "bun": "./src/context-request.ts"
+    },
     "./custom-entry": {
       "types": "./src/custom-entry.ts",
       "bun": "./src/custom-entry.ts"

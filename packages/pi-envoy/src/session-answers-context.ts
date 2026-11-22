@@ -4,6 +4,7 @@ import {
   type SessionAnswersRead,
   sessionAnswersChanged,
 } from "@legion/envoy-client/session-answers";
+import { splitTrailingApproval } from "@legion/pi-shared/approval-message";
 import {
   type Conversion,
   isHandoffPrompt,
@@ -11,8 +12,7 @@ import {
   leadingText,
   messageKey,
   nextConversion,
-  splitTrailingApproval,
-} from "@legion/pi-shared/approval-message";
+} from "@legion/pi-shared/context-request";
 import { customEntries } from "@legion/pi-shared/custom-entry";
 import { userTextMessage } from "./context-message";
 

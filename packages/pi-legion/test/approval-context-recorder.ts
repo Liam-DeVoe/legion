@@ -14,15 +14,17 @@
 // LEGION_CAPTURE_PLACEMENT, so every approval message it records is pi-legion's own.
 // Without LEGION_CAPTURE_RECORD the recorder does nothing.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { APPROVAL_MESSAGE_TYPE } from "@legion/pi-shared/approval-message";
 import {
-  APPROVAL_MESSAGE_TYPE,
   isHandoffPrompt,
   isSideTurn,
   liveAgentSession,
   messageKey,
-} from "@legion/pi-shared/approval-message";
+  roleOf,
+  timestampOf,
+} from "@legion/pi-shared/context-request";
 import * as host from "@oh-my-pi/pi-coding-agent";
-import { perCall, roleOf, timestampOf } from "../src/approval-message";
+import { perCall } from "../src/approval-message";
 
 /** What the recorder reads of a handler's context. */
 interface RecorderContext {

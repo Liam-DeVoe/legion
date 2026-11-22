@@ -163,7 +163,7 @@ import {
   type LiveAgentSession,
   liveAgentSession,
   sessionCompacting,
-} from "@legion/pi-shared/approval-message";
+} from "@legion/pi-shared/context-request";
 import { transcriptPictures, withDeliveredPictures } from "@legion/pi-shared/delivery-pictures";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import {
