@@ -2459,13 +2459,22 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 				workflowStart + " LEGION-210 reviewer\n",
 		},
 		// Two claims of one role on one issue: each takes the move its own suspender calls for,
-		// read by its token, and neither takes the other's.
+		// read by its token, and neither takes the other's. The role's own claim is named by its
+		// issue and role, and key a's agent, named for another role, by its token beside them.
 		{
 			name: "two claims of one role on one issue", bearer: true,
 			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
 				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
 			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-212 tester; " +
-				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester\n",
+				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
+		},
+		// Without a bearer both read as suspended workers, one move, and the two are named apart.
+		{
+			name: "two claims of one role on one issue in one move",
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) " +
+				"LEGION-212 tester, LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
 		},
 		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it
