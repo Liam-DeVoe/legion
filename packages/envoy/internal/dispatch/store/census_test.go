@@ -1107,6 +1107,37 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
+// TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough holds the census to admitting the two indexes
+// the erase's reads under its owner locks probe (20261121180000 on comment_deliveries.reply_id,
+// 20261121180100 on asks.handed_back_reply_id) over a database at 20261120122700, the version
+// before them, with the limit at one byte, where both tables are over it: each is one concurrent,
+// non-unique index of its own migration, which the limit never applies to at any size. Only each
+// entry is read, never the verdict of the whole set, for the reason
+// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261120122700)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261121180100), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	found := map[int]bool{20261121180000: false, 20261121180100: false}
+	for _, entry := range report.Pending {
+		if _, wanted := found[entry.Migration.Version]; !wanted {
+			continue
+		}
+		found[entry.Migration.Version] = true
+		if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+			t.Errorf("the census did not admit migration %d as a concurrent index: %+v", entry.Migration.Version, entry)
+		}
+	}
+	for version, present := range found {
+		if !present {
+			t.Errorf("migration %d was not pending in the census over a database at 20261120122700", version)
+		}
+	}
+}
+
 // queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
