@@ -311,12 +311,20 @@ const BESIDE_TOKEN_FILES = [
   IDENTITY_VAR,
 ] as const;
 
-/** The token-file settings `env` sets, by name: neither, one or both. */
-export function tokenFileSettings(env: DispatchEnvironment): readonly string[] {
-  return [
-    ...(nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE) === undefined ? [] : [TOKEN_FILE_VAR]),
-    ...(nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE) === undefined ? [] : [DPOP_KEY_FILE_VAR]),
+/** The clause the token files' refusals open with, naming each file whose setting is set
+ *  (`tokenFile` for DISPATCH_BROKER_TOKEN_FILE, `keyFile` for DISPATCH_BROKER_DPOP_KEY_FILE, each
+ *  as the environment holds it): "X is set" or "X and Y are set", or undefined when neither is. A
+ *  Dispatch call's refusal (`tokenFilesTarget`) and `dispatch login`'s (`loginCommand`) alike. */
+export function tokenFilesSet(
+  tokenFile: string | undefined,
+  keyFile: string | undefined
+): string | undefined {
+  const set = [
+    ...(nonEmpty(tokenFile) === undefined ? [] : [TOKEN_FILE_VAR]),
+    ...(nonEmpty(keyFile) === undefined ? [] : [DPOP_KEY_FILE_VAR]),
   ];
+  if (set.length === 0) return undefined;
+  return `${set.join(" and ")} ${set.length === 1 ? "is" : "are"} set`;
 }
 
 /** Each of `BESIDE_TOKEN_FILES` that `env` sets, as the token files' refusal names it: a Dispatch
@@ -347,11 +355,11 @@ function tokenFilesTarget(
 ): SectionOff | DispatchTarget | undefined {
   const tokenFile = nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE);
   const keyFile = nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE);
-  if (tokenFile === undefined && keyFile === undefined) return undefined;
+  const set = tokenFilesSet(tokenFile, keyFile);
+  if (set === undefined) return undefined;
   if (!taken) {
-    const set = tokenFileSettings(env);
     return offWithError(
-      `${set.join(" and ")} ${set.length === 1 ? "is" : "are"} set, and only the dispatch command reads the token files: Dispatch is off here rather than written with another credential beside them`
+      `${set}, and only the dispatch command reads the token files: Dispatch is off here rather than written with another credential beside them`
     );
   }
   const explicitUrl = nonEmpty(env.DISPATCH_URL);

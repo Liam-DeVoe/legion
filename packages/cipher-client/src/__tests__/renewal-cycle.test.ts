@@ -165,13 +165,13 @@ async function deviceLoginCycle(
 
 /**
  * A person's read client on a machine whose broker mints tokens of `life` seconds, and whose
- * sign-in credential lapses at `start` and {@link LIVES} lives, held to `tradesPerLife`: the
- * broker answers a read trade with the credential's remaining life where that is shorter, in whole
+ * sign-in credential lapses at `start` and {@link LIVES} lives, held to `bounds`: the broker
+ * answers a read trade with the credential's remaining life where that is shorter, in whole
  * seconds, truncated, as `clampNarrowed` bounds it, and a read trade moves the credential not at
  * all, as `signInCredential` takes it. The row's last call comes a step before the credential
- * lapses. A person's client refreshes nothing.
+ * lapses. A person's client refreshes nothing, so its rows allow no refresh.
  */
-async function personCycle(life: number, start: number, tradesPerLife: number): Promise<Cycle> {
+async function personCycle(life: number, start: number, bounds: Bounds): Promise<Cycle> {
   const ends = start + LIVES * life * 1000;
   const broker = stubBroker((trade) => {
     const left = Math.floor((ends - Date.now()) / 1000);
@@ -199,18 +199,35 @@ async function personCycle(life: number, start: number, tradesPerLife: number): 
     client: made.client,
     trades: () => broker.trades.length,
     refreshes: () => 0,
-    tradesPerLife,
-    refreshesPerLife: 0,
-    refreshGap: 0,
+    ...bounds,
   };
 }
 
 /** How long a row may take: every call is a turn of the event loop, and a trade a request. */
 const ROW_MS = 120_000;
 
-const READ = "a device login's read client";
-const PLAIN = "a device login's plain client";
-const PERSON_CLIENT = "a person's read client whose sign-in credential nears its end";
+/** A row's client: its name in the row's title, and the builder of its cycle at a life from a
+ *  start, held to the row's bounds. */
+interface Client {
+  readonly name: string;
+  readonly cycle: (life: number, start: number, bounds: Bounds) => Promise<Cycle>;
+}
+
+/** A device login's read or plain client ({@link deviceLoginCycle}), whose file an older build
+ *  rewrites where `olderBuild` is set. */
+function deviceLoginClient(read: boolean, olderBuild = false): Client {
+  return {
+    name: `a device login's ${read ? "read" : "plain"} client${olderBuild ? " whose file an older build rewrote" : ""}`,
+    cycle: (life, _start, bounds) => deviceLoginCycle(life, read, bounds, olderBuild),
+  };
+}
+
+const READ = deviceLoginClient(true);
+const PLAIN = deviceLoginClient(false);
+const PERSON_CLIENT: Client = {
+  name: "a person's read client whose sign-in credential nears its end",
+  cycle: personCycle,
+};
 
 // Fifteen rows: each access-token life S against each of the three clients, with the bounds each
 // row states and the rule it follows. A token of S s renews after the corpus's moment m for S
@@ -225,50 +242,41 @@ const PERSON_CLIENT = "a person's read client whose sign-in credential nears its
 // left, and then lives what is left and is held to half of it, so calls 10 s apart see at most
 // floor(log2(S / 10)) + 1 more: ceil(S / m) + floor(log2(S / 10)) + 1 a life.
 test.each([
-  // [client, S, trades a life, refreshes a life, refreshes more than this many s apart]
   // Corpus 120 → 60 s; least 60 s (S/2): trades 2 + 1, refreshes ceil(120/60), gap 120 - 60.
-  [READ, 120, 3, 2, 60],
+  { client: READ, life: 120, tradesPerLife: 3, refreshesPerLife: 2, refreshGap: 60 },
   // Corpus 120 → 60 s; least 60 s: trades ceil(120/60), refreshes ceil(120/60), gap 120 - 60.
-  [PLAIN, 120, 2, 2, 60],
+  { client: PLAIN, life: 120, tradesPerLife: 2, refreshesPerLife: 2, refreshGap: 60 },
   // Corpus 120 → 60 s: trades ceil(120/60) + floor(log2(12)) + 1 = 2 + 3 + 1; no refresh.
-  [PERSON_CLIENT, 120, 6, 0, 0],
+  { client: PERSON_CLIENT, life: 120, tradesPerLife: 6, refreshesPerLife: 0, refreshGap: 0 },
   // Corpus 300 → 150 s; least 150 s (S/2): trades 2 + 1, refreshes ceil(300/150), gap 300 - 150.
-  [READ, 300, 3, 2, 150],
+  { client: READ, life: 300, tradesPerLife: 3, refreshesPerLife: 2, refreshGap: 150 },
   // Corpus 300 → 150 s; least 60 s: trades ceil(300/150), refreshes ceil(300/240), gap 300 - 60.
-  [PLAIN, 300, 2, 2, 240],
+  { client: PLAIN, life: 300, tradesPerLife: 2, refreshesPerLife: 2, refreshGap: 240 },
   // Corpus 300 → 150 s: trades ceil(300/150) + floor(log2(30)) + 1 = 2 + 4 + 1; no refresh.
-  [PERSON_CLIENT, 300, 7, 0, 0],
+  { client: PERSON_CLIENT, life: 300, tradesPerLife: 7, refreshesPerLife: 0, refreshGap: 0 },
   // Corpus 302 → 151 s; least 151 s (S/2): trades 2 + 1, refreshes ceil(302/151), gap 302 - 151.
-  [READ, 302, 3, 2, 151],
+  { client: READ, life: 302, tradesPerLife: 3, refreshesPerLife: 2, refreshGap: 151 },
   // Corpus 302 → 151 s; least 60 s: trades ceil(302/151), refreshes ceil(302/242), gap 302 - 60.
-  [PLAIN, 302, 2, 2, 242],
+  { client: PLAIN, life: 302, tradesPerLife: 2, refreshesPerLife: 2, refreshGap: 242 },
   // Corpus 302 → 151 s: trades ceil(302/151) + floor(log2(30.2)) + 1 = 2 + 4 + 1; no refresh.
-  [PERSON_CLIENT, 302, 7, 0, 0],
+  { client: PERSON_CLIENT, life: 302, tradesPerLife: 7, refreshesPerLife: 0, refreshGap: 0 },
   // Corpus 600 → 300 s; least 300 s (S/2): trades 2 + 1, refreshes ceil(600/300), gap 600 - 300.
-  [READ, 600, 3, 2, 300],
+  { client: READ, life: 600, tradesPerLife: 3, refreshesPerLife: 2, refreshGap: 300 },
   // Corpus 600 → 300 s; least 60 s: trades ceil(600/300), refreshes ceil(600/540), gap 600 - 60.
-  [PLAIN, 600, 2, 2, 540],
+  { client: PLAIN, life: 600, tradesPerLife: 2, refreshesPerLife: 2, refreshGap: 540 },
   // Corpus 600 → 300 s: trades ceil(600/300) + floor(log2(60)) + 1 = 2 + 5 + 1; no refresh.
-  [PERSON_CLIENT, 600, 8, 0, 0],
+  { client: PERSON_CLIENT, life: 600, tradesPerLife: 8, refreshesPerLife: 0, refreshGap: 0 },
   // Corpus 900 → 600 s; least 301 s (ask): trades 2 + 1, refreshes ceil(900/599), gap 900 - 301.
-  [READ, 900, 3, 2, 599],
+  { client: READ, life: 900, tradesPerLife: 3, refreshesPerLife: 2, refreshGap: 599 },
   // Corpus 900 → 600 s; least 60 s: trades ceil(900/600), refreshes ceil(900/840), gap 900 - 60.
-  [PLAIN, 900, 2, 2, 840],
+  { client: PLAIN, life: 900, tradesPerLife: 2, refreshesPerLife: 2, refreshGap: 840 },
   // Corpus 900 → 600 s: trades ceil(900/600) + floor(log2(90)) + 1 = 2 + 6 + 1; no refresh.
-  [PERSON_CLIENT, 900, 9, 0, 0],
-] as const)(
-  "%s trades and refreshes within its bounds at an access-token life of %i s",
-  async (name, life, tradesPerLife, refreshesPerLife, refreshGap) => {
+  { client: PERSON_CLIENT, life: 900, tradesPerLife: 9, refreshesPerLife: 0, refreshGap: 0 },
+])(
+  "$client.name trades and refreshes within its bounds at an access-token life of $life s",
+  async ({ client, life, ...bounds }) => {
     const start = Date.now();
-    const cycle =
-      name === PERSON_CLIENT
-        ? await personCycle(life, start, tradesPerLife)
-        : await deviceLoginCycle(life, name === READ, {
-            tradesPerLife,
-            refreshesPerLife,
-            refreshGap,
-          });
-    await run(cycle, start);
+    await run(await client.cycle(life, start, bounds), start);
   },
   ROW_MS
 );
@@ -296,16 +304,15 @@ test(
 // token is not clamped. Both are held to the bounds of one life, with the minute as the least
 // life: at 120 s that is S/2 too, so the bounds are those of the rows above at 120 s.
 test.each([
-  // [client, trades a life, refreshes a life, refreshes more than this many s apart]
   // Corpus 120 → 60 s; least 60 s (the minute): trades 2 + 1, refreshes ceil(120/60), gap 120 - 60.
-  [READ, 3, 2, 60],
+  { client: deviceLoginClient(true, true), tradesPerLife: 3, refreshesPerLife: 2, refreshGap: 60 },
   // Corpus 120 → 60 s; least 60 s: trades ceil(120/60), refreshes ceil(120/60), gap 120 - 60.
-  [PLAIN, 2, 2, 60],
-] as const)(
-  "at an access-token life of 120 s %s whose file an older build rewrote trades and refreshes within its bounds",
-  async (name, tradesPerLife, refreshesPerLife, refreshGap) => {
-    const bounds = { tradesPerLife, refreshesPerLife, refreshGap };
-    await run(await deviceLoginCycle(120, name === READ, bounds, true), Date.now());
+  { client: deviceLoginClient(false, true), tradesPerLife: 2, refreshesPerLife: 2, refreshGap: 60 },
+])(
+  "at an access-token life of 120 s $client.name trades and refreshes within its bounds",
+  async ({ client, ...bounds }) => {
+    const start = Date.now();
+    await run(await client.cycle(120, start, bounds), start);
   },
   ROW_MS
 );

@@ -615,9 +615,19 @@ describe("the dispatch command's token files", () => {
     const help = await run(["login", "--help"], env, copy.dir);
     expect(help.code, help.stdout).toBe(0);
     expect(help.stdout).toContain("Usage: dispatch login --device [--person <address>]");
+    expect(dispatch.presented).toEqual([]);
+  });
 
-    // A tool's dry run that does not ask Dispatch prints the arguments, as it does with Dispatch
-    // off.
+  test("a tool's dry run beside the token files prints the arguments", async () => {
+    // Beside the settings the token files refuse, a dry run that does not ask Dispatch prints the
+    // arguments, as it does with Dispatch off, and sends nothing.
+    const broker = stubBroker(900);
+    const dispatch = standInDispatch();
+    const copy = copyFiles();
+    const env = commandEnvironment(copy, dispatch.url, {
+      AGENT_SECRETS_URL: broker.url,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+    });
     const dry = await run(
       ["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"],
       env,
@@ -625,7 +635,7 @@ describe("the dispatch command's token files", () => {
     );
     expect(dry.code, dry.stdout).toBe(0);
     expect(JSON.parse(dry.stdout)).toEqual({ issue: "DSP-1", body: "hi" });
-    expect(dispatch.presented).toEqual([]);
+    expect([dispatch.presented, broker.trades]).toEqual([[], []]);
   });
 
   test("a loop of reads sees the renamed token", async () => {
