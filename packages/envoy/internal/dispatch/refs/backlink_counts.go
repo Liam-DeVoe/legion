@@ -290,8 +290,11 @@ func blockRefCarries(fromKind, alias string) string {
 // is how the release that deletes an old arm of the view reads whether the release a rollback
 // would reach writes that arm's kinds as tuples too. A child that moves another relation into the
 // store adds its kinds here, so the arm and the announcement read one list; a relation the view
-// answers from the tuples alone goes into storeArmPointers or storeArmPlacements (graph.go)
-// instead, from which this list reads it.
+// answers from the tuples alone goes into graphstore's pointerRules instead: a pointer there
+// alone, which storeArmPointers (graph.go) reads from graphstore.PointerKinds, and a placement
+// there and then in storeArmPlacements (graph.go), which
+// TestTheStoreArmReadsEveryKindThePointerRulesHold holds to graphstore.PlacementKinds. This list
+// reads both.
 //
 // The announcement names a kind alone, and part_of in it is no claim about every part_of the store
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk or

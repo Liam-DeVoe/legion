@@ -323,7 +323,9 @@ var storeArmPointers = append([]string{graphstore.TupleChangedByRun}, graphstore
 // risk's place under a pre-mortem lens, not as a pointer, so PointerKinds leaves it out. The arm
 // reads it, beside authored_by, only out of a node of the store's own kinds or out of a finding,
 // because the view renders no part_of tuple out of any other node: a session's, a page's and a
-// block's placement are part_of tuples no arm of it renders (TupleKinds, backlink_counts.go).
+// block's placement are part_of tuples no arm of it renders (TupleKinds, backlink_counts.go). It
+// is a hand list: a placement added to graphstore's pointerRules must join it, and
+// TestTheStoreArmReadsEveryKindThePointerRulesHold (store_arm_kinds_test.go) fails until it does.
 var storeArmPlacements = []string{graphstore.TuplePartOf}
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
