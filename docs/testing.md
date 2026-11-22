@@ -205,11 +205,26 @@ itself, whose tests import its sources by relative path.
   from `LEGION_PROOF_DEADLINE_MS`, epoch milliseconds its script sets, and with neither a wait
   refuses to start.
 
-- A command whose rows wait through it loads the row-deadline preload,
-  `--preload @legion/test-fixtures/row-deadline`, as `packages/test-fixtures`' own `test` script
-  does. The preload marks the start of each row, the end of each row's body, the end of each row
-  and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in
-  a `beforeAll` or in a row's first `afterEach`. Without it a wait counts from its own start, and
+- A row on Bun's fake clock waits for the code's next step through
+  `@legion/test-fixtures/fake-clock`'s `turnsUntil`, which turns the real event loop until its fact
+  holds and gives the wait no duration either. It ends at the row's deadline, read in real time on
+  an alarm armed at each mark of the row-deadline preload, since the fake clock holds every clock
+  the row could read (`packages/test-fixtures/src/deadline.ts`).
+
+- A row that reads a deadline the code arms with `AbortSignal.timeout` holds it through
+  `@legion/test-fixtures/held-deadlines`: `holdDeadlines(ms)` holds every deadline of that length
+  the code arms until the row ends them (`end`, or `letGo`, after which one of that length is the
+  real one), and `restore` puts the real `AbortSignal.timeout` back. So the row reads what the code
+  did up to its own bound and at it, in that order, and a deadline the code armed at another length
+  is never held: a row that waits for the held one to be armed fails at its deadline, naming the
+  wait.
+
+- A command whose rows wait through the shared wait or `turnsUntil` loads the row-deadline preload,
+  `--preload @legion/test-fixtures/row-deadline`, as the `test` scripts of `packages/test-fixtures`,
+  `packages/envoy-client` and `packages/cipher-client` do. The preload marks the start of each
+  row, the end of each row's body, the end of each row and the start of a run, so each wait of a
+  row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first
+  `afterEach`. Without it a wait counts from its own start, and
   its failure says so. A hook that no mark directly precedes counts from an earlier mark, so its
   waits end earlier than its own clock would allow, never later
   (`packages/test-fixtures/src/row-deadline.ts`). So a row's second `afterEach` counts from the mark
