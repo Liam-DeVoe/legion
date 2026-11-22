@@ -382,6 +382,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/artifacts/{id}/changes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What changed between two stored versions of one document, version_from=<n>&version_to=<m>: {artifact_id, from, to, decision_only, unchanged, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. Exactly one of three holds: decision_only, true when the two stored texts differ and cut to the same text; unchanged, true when the two differ in nothing any section or block holds (the stored texts are the same, or the cut texts name nothing and are not decision-only); or sections and blocks name at least one item. sections and blocks are empty when decision_only or unchanged is true. sections is each top-level unit whose text differs, that moved, or that one version alone holds: a `##` section by heading and occurrence (the heading's text as a heading anchor reads it, without markdown's syntax and with a line break in it as a line feed; 0 for the first section of that heading, so a `##` heading with no words counts from occurrence 1), and a run of the text outside every `##` section (the title and what stands above the first `##`, or what follows a `#` heading up to the next `##`) under heading "" and occurrence 0 with its place: place before_first_section, or place after_section with after_heading and after_occurrence naming the `##` section directly before the run, in the later version for a changed, added or moved run and in the earlier for a removed one. A `#` or `##` heading that holds a line break, which is stored in setext form with no `#`, cuts the document as any heading of its level does. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each unit and block is marked changed, added or removed, and a unit whose text is the same is marked moved when its place among the document's top-level units is another: it stands outside one longest common subsequence of the two versions' orders of the units both hold, and of several that long the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is moved. Both versions hold a run when both hold its text at the same place, and then, among the runs left in each version, the n-th run of one text in each is one run in both, so adding or removing one copy of a repeated run moves no other copy's match; a run the other version does not hold pairs with that version's unpaired run at the same place and is marked changed, and a run left unpaired is added or removed. A block is never marked moved. Each list holds the later version's items in its document order, a moved unit where the later version holds it, then what only the earlier holds, in its order. version_from and version_to are both required, each a version number from 1 to 2147483647 (the largest version number the store holds), and version_from below version_to (400 INVALID_QUERY); a version the document does not have is 404 NOT_FOUND, a file or an image 400 NOT_DOCUMENT, and 404 ARTIFACT_NOT_FOUND. */
+    get: operations["getApiV2ArtifactsByIdChanges"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/artifacts/{id}/comments": {
     parameters: {
       query?: never;
@@ -424,7 +441,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page a project document's event log. Position: seq, each event's place in its owner's log. after=<seq> keeps the events above it and before=<seq> those below it, both together a window; ids=<id>,<id>... (event ids, at most 50) keeps those events alone. sort=seq (the default, oldest first) or -seq; with no sort, a before alone reads down from it, newest first, so a before past the last seq answers the newest page. limit 1 to 200 (default 200) and offset; {items, total, limit, offset}, total the exact count of the events the filters keep. An after above the log's last seq, or an after or a before that is no integer of 0 or more, is 400 POSITION_INVALID naming the parameter and seq; more than 50 ids is 400 INVALID_QUERY. 404 ARTIFACT_NOT_FOUND for a document that does not exist; a document of an issue is 400 ARTIFACT_LINKED, its events being its issue's log, and a file of an agent's conversation 400 ARTIFACT_AGENT_OWNED. */
+    /** @description Page a project document's event log. Position: seq, each event's place in its owner's log. after=<seq> keeps the events above it and before=<seq> those below it, both together a window; ids=<id>,<id>... (event ids, at most 50) keeps those events alone. sort=seq (the default, oldest first) or -seq; with no sort, a before alone reads down from it, newest first, so a before past the last seq answers the newest page. limit 1 to 200 (default 200) and offset; {items, total, limit, offset}, total the exact count of the events the filters keep. An after above the log's last seq, or an after or a before that is no integer from 0 to 2147483647 (the largest seq the store holds), is 400 POSITION_INVALID naming the parameter and seq; more than 50 ids is 400 INVALID_QUERY. 404 ARTIFACT_NOT_FOUND for a document that does not exist; a document of an issue is 400 ARTIFACT_LINKED, its events being its issue's log, and a file of an agent's conversation 400 ARTIFACT_AGENT_OWNED. */
     get: operations["getApiV2ArtifactsByIdEvents"];
     put?: never;
     post?: never;
@@ -1060,14 +1077,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records [{step, artifact_id}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; and referenced_by_count, how many references to it stand. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; and referenced_by_count, how many references to it stand. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKey"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
+    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
     patch: operations["patchApiV2IssuesByKey"];
     trace?: never;
   };
@@ -1235,7 +1252,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log. Position: seq, each event's place in its owner's log. after=<seq> keeps the events above it and before=<seq> those below it, both together a window; ids=<id>,<id>... (event ids, at most 50) keeps those events alone. sort=seq (the default, oldest first) or -seq; with no sort, a before alone reads down from it, newest first, so a before past the last seq answers the newest page. limit 1 to 200 (default 200) and offset; {items, total, limit, offset}, total the exact count of the events the filters keep. An after above the log's last seq, or an after or a before that is no integer of 0 or more, is 400 POSITION_INVALID naming the parameter and seq; more than 50 ids is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Page an issue's event log. Position: seq, each event's place in its owner's log. after=<seq> keeps the events above it and before=<seq> those below it, both together a window; ids=<id>,<id>... (event ids, at most 50) keeps those events alone. sort=seq (the default, oldest first) or -seq; with no sort, a before alone reads down from it, newest first, so a before past the last seq answers the newest page. limit 1 to 200 (default 200) and offset; {items, total, limit, offset}, total the exact count of the events the filters keep. An after above the log's last seq, or an after or a before that is no integer from 0 to 2147483647 (the largest seq the store holds), is 400 POSITION_INVALID naming the parameter and seq; more than 50 ids is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -1621,7 +1638,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Write several of the caller's marks at once, answering {updated}, how many it changed (0 for a request that changes nothing, which appends no event). The body is either {items}, a named set, each item {kind, id, ...fields} of one mark written as PATCH /api/v2/me/marks/{kind}/{id} writes it, every target held to exist before anything is written, a kind that is none of the six 400 INVALID_KIND, and every item written in one transaction, so a refusal of any item writes none of them; or {filter?, set}, the Inbox's own narrowing of GET /api/v2/me/threads - filter {kind (reply, agent; both by default), priority (P0, P1, P2, P3, none), urgency (low, med, high, blocking, none), project (a key, none), issue or artifact}, each absent list meaning every value - with set {read_through}, marking read every unread thread it narrows to whose newest reply is at or before read_through, an agent reply marked read by id; {dismissed_through}, taking out of the Inbox every thread it narrows to whose newest reply is at or before it; or {dismissed: false, dismissed_through?}, putting back every dismissed thread it narrows to, dismissed at or before dismissed_through where it is given. Each time is RFC3339 and no more than a minute ahead of the server. Both forms at once, neither, a malformed filter, and items naming one mark twice are 400 INVALID_QUERY. issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored one (last_read_seq not negative), and a seq not above the stored one is 409 STATE_STALE with the stored mark as state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the caller's sidebar or unpins it. document {read_version}: replaces, not negative. thread {read_through?, dismissed?, version?}, at least one: read_through moves forward only, and dismissed true, which takes the version GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and a malformed snooze 400 SNOOZE_INPUT. Needs the person scope, which a project-scoped session's token does not hold. A credential that proved a session, a token the secrets broker issued, writes through items the agent marks of that session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is written. The filter form names no session, so with kind agent it marks the agent replies of every session, as POST /api/v1/me/inbox/read does. */
+    /** @description Write several of the caller's marks at once, answering {updated}, how many it changed (0 for a request that changes nothing, which appends no event). The body is either {items}, a named set, each item {kind, id, ...fields} of one mark written as PATCH /api/v2/me/marks/{kind}/{id} writes it, every target held to exist before anything is written, a kind that is none of the six 400 INVALID_KIND, and every item written in one transaction, so a refusal of any item writes none of them; or {filter?, set}, the Inbox's own narrowing of GET /api/v2/me/threads - filter {kind (reply, agent; both by default), priority (P0, P1, P2, P3, none), urgency (low, med, high, blocking, none), project (a key, none), issue or artifact}, each absent list meaning every value - with set {read_through}, marking read every unread thread it narrows to whose newest reply is at or before read_through, an agent reply marked read by id; {dismissed_through}, taking out of the Inbox every thread it narrows to whose newest reply is at or before it; or {dismissed: false, dismissed_through?}, putting back every dismissed thread it narrows to, dismissed at or before dismissed_through where it is given. Each time is RFC3339 and no more than a minute ahead of the server. Both forms at once, neither, a malformed filter, and items naming one mark twice are 400 INVALID_QUERY. issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored one (last_read_seq from 0 to 2147483647, the largest event position the store holds), and a seq not above the stored one is 409 STATE_STALE with the stored mark as state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the caller's sidebar or unpins it. document {read_version}: replaces, from 0 to 2147483647 (the largest version number the store holds). thread {read_through?, dismissed?, version?}, at least one: read_through moves forward only, and dismissed true, which takes the version GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and a malformed snooze 400 SNOOZE_INPUT. Needs the person scope, which a project-scoped session's token does not hold. A credential that proved a session, a token the secrets broker issued, writes through items the agent marks of that session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is written. The filter form names no session, so with kind agent it marks the agent replies of every session, as POST /api/v1/me/inbox/read does. */
     patch: operations["patchApiV2MeMarks"];
     trace?: never;
   };
@@ -1639,7 +1656,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Write the caller's mark of one kind on one object, the fields the body names under that kind's rules, and answer the mark. The body's fields are the path's kind's: issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored one (last_read_seq not negative), and a seq not above the stored one is 409 STATE_STALE with the stored mark as state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the caller's sidebar or unpins it. document {read_version}: replaces, not negative. thread {read_through?, dismissed?, version?}, at least one: read_through moves forward only, and dismissed true, which takes the version GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and a malformed snooze 400 SNOOZE_INPUT. A kind that is none of the six is 400 INVALID_KIND. Needs the person scope, which a project-scoped session's token does not hold. A credential that proved a session, a token the secrets broker issued, writes the agent mark of that session alone: an agent mark of another session is 403 SESSION_SCOPE. The target must exist: 404 ISSUE_NOT_FOUND, ARTIFACT_NOT_FOUND, THREAD_NOT_FOUND, MESSAGE_NOT_FOUND or ASK_NOT_FOUND by kind; an agent mark's session is not held to exist. */
+    /** @description Write the caller's mark of one kind on one object, the fields the body names under that kind's rules, and answer the mark. The body's fields are the path's kind's: issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored one (last_read_seq from 0 to 2147483647, the largest event position the store holds), and a seq not above the stored one is 409 STATE_STALE with the stored mark as state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the caller's sidebar or unpins it. document {read_version}: replaces, from 0 to 2147483647 (the largest version number the store holds). thread {read_through?, dismissed?, version?}, at least one: read_through moves forward only, and dismissed true, which takes the version GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and a malformed snooze 400 SNOOZE_INPUT. A kind that is none of the six is 400 INVALID_KIND. Needs the person scope, which a project-scoped session's token does not hold. A credential that proved a session, a token the secrets broker issued, writes the agent mark of that session alone: an agent mark of another session is 403 SESSION_SCOPE. The target must exist: 404 ISSUE_NOT_FOUND, ARTIFACT_NOT_FOUND, THREAD_NOT_FOUND, MESSAGE_NOT_FOUND or ASK_NOT_FOUND by kind; an agent mark's session is not held to exist. */
     patch: operations["patchApiV2MeMarksByKindById"];
     trace?: never;
   };
@@ -1736,7 +1753,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description The attempt's session records that it took the message as its user's own turn {state: accepted, actor}, under a bearer credential, the session naming itself in actor: a cookie caller and another session's attempt are 403 ACCEPT_FORBIDDEN. One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON) themselves, not an agent for them (409 ACCEPT_WRITTEN_BY_AGENT), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. The same session accepting an attempt it already accepted answers 200 the same and writes nothing. 400 STATE_INVALID for any other state, 404 MESSAGE_NOT_FOUND, 404 DELIVERY_NOT_FOUND for an attempt the message does not have. */
+    /** @description The attempt's session records that it took the message as its user's own turn {state: accepted, actor}, under a bearer credential, the session naming itself in actor: a cookie caller and another session's attempt are 403 ACCEPT_FORBIDDEN. One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON) themselves, not an agent for them (409 ACCEPT_WRITTEN_BY_AGENT), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted. The same session accepting an attempt it already accepted answers 200 the same and writes nothing. 400 STATE_INVALID for any other state, 404 MESSAGE_NOT_FOUND, 404 DELIVERY_NOT_FOUND for an attempt the message does not have, and so for one that is not a whole number from 1 to 2147483647 (the largest attempt the store holds). */
     put: operations["putApiV2MessagesByIdDeliveriesByAttemptState"];
     post?: never;
     delete?: never;
@@ -2686,6 +2703,21 @@ export interface components {
       token: string;
       type: string;
     };
+    ArtifactBlockChange: {
+      /** @enum {string} */
+      change: "changed" | "added" | "removed";
+      id: string;
+      type: string;
+    };
+    ArtifactChanges: {
+      artifact_id: string;
+      blocks: components["schemas"]["ArtifactBlockChange"][] | null;
+      decision_only: boolean;
+      from: number;
+      sections: components["schemas"]["ArtifactSectionChange"][] | null;
+      to: number;
+      unchanged: boolean;
+    };
     ArtifactRebuildReport: {
       /** Format: int64 */
       head: number;
@@ -2746,6 +2778,16 @@ export interface components {
       reason?: null | string;
       state: string;
       version?: null | number;
+    };
+    ArtifactSectionChange: {
+      after_heading?: string;
+      after_occurrence?: number;
+      /** @enum {string} */
+      change: "changed" | "added" | "removed" | "moved";
+      heading: string;
+      occurrence: number;
+      /** @enum {string} */
+      place?: "before_first_section" | "after_section";
     };
     ArtifactUploadV2: {
       artifact: components["schemas"]["ArtifactV2"];
@@ -4554,6 +4596,13 @@ export interface components {
     };
     IssueDesignGate: {
       artifact_id: string;
+      holds: null | boolean;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
+    };
+    IssueDesignGateInput: {
+      artifact_id: string;
+      holds?: null | boolean;
       /** @enum {string} */
       step: "decisions" | "criteria" | "spec";
     };
@@ -5477,7 +5526,7 @@ export interface components {
       assignee?: unknown;
       blocked_by?: null | string[];
       components?: unknown;
-      design_gates?: null | components["schemas"]["IssueDesignGate"][];
+      design_gates?: null | components["schemas"]["IssueDesignGateInput"][];
       expected_sequence?: null | number;
       external_links?: null | components["schemas"]["ExternalLink"][];
       labels?: null | string[];
@@ -7467,6 +7516,53 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["BlockPath"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV2ArtifactsByIdChanges: {
+    parameters: {
+      query?: {
+        version_from?: number;
+        version_to?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactChanges"];
         };
       };
       /** @description Bad Request */
@@ -14472,11 +14568,14 @@ export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSour
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
 export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
+export type ArtifactBlockChange = components["schemas"]["ArtifactBlockChange"];
+export type ArtifactChanges = components["schemas"]["ArtifactChanges"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferenceV2 = components["schemas"]["ArtifactReferenceV2"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
 export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
 export type ArtifactReviewV2Input = components["schemas"]["ArtifactReviewV2Input"];
+export type ArtifactSectionChange = components["schemas"]["ArtifactSectionChange"];
 export type ArtifactUploadV2 = components["schemas"]["ArtifactUploadV2"];
 export type ArtifactUploadV2WithDocumentWriteAdvice =
   components["schemas"]["ArtifactUploadV2WithDocumentWriteAdvice"];
@@ -14669,6 +14768,7 @@ export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"]
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisionsV2 = components["schemas"]["IssueDecisionsV2"];
 export type IssueDesignGate = components["schemas"]["IssueDesignGate"];
+export type IssueDesignGateInput = components["schemas"]["IssueDesignGateInput"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
 export type IssueMarkV2Input = components["schemas"]["IssueMarkV2Input"];
 export type IssueProgress = components["schemas"]["IssueProgress"];

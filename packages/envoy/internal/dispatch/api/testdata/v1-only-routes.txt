@@ -27,6 +27,7 @@ POST /api/v1/artifacts/{id}/asks
 GET /api/v1/artifacts/{id}/blocks
 GET /api/v1/artifacts/{id}/blocks/{block_id}
 POST /api/v1/artifacts/{id}/blocks/{block_id}/keep
+GET /api/v1/artifacts/{id}/changes # #3995, one approval covers the spec and its checks, and an approved version reaches the worker doing the work
 GET /api/v1/artifacts/{id}/comments
 POST /api/v1/artifacts/{id}/comments
 POST /api/v1/artifacts/{id}/edits

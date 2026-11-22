@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -455,7 +456,8 @@ func (s *server) versionsAtTimes(
 }
 
 // decisionSumsAt is each named version's decisions, with the sum of each one's text: the
-// version's own stored markdown, cut by the same rule as the document as it stands.
+// version's own stored markdown (versionsMarkdown), cut by the same rule as the document as it
+// stands.
 func (s *server) decisionSumsAt(
 	ctx context.Context, artifactID string, numbers []int,
 ) (map[int]map[sectionKey]string, error) {
@@ -463,23 +465,14 @@ func (s *server) decisionSumsAt(
 	if len(numbers) == 0 {
 		return sums, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, numbers)
+	markdown, err := s.versionsMarkdown(ctx, artifactID, numbers)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var number int
-		var markdown string
-		if err := rows.Scan(&number, &markdown); err != nil {
-			return nil, err
-		}
-		sums[number] = decisionSums(markdown)
+	for number, text := range markdown {
+		sums[number] = decisionSums(text)
 	}
-	return sums, rows.Err()
+	return sums, nil
 }
 
 // decisionSums cuts a document's markdown into its decisions and sums each one's text. It cuts
@@ -917,7 +910,9 @@ type documentReadInput struct {
 
 // putDocumentRead is PUT /api/v1/me/documents/{id}/read {"version": n}: the caller has read the
 // document through that version. It is the caller's own view state, written as PUT
-// /api/v1/me/issues/{key}/state is, and announces nothing.
+// /api/v1/me/issues/{key}/state is, and announces nothing. The version is 0 or more and fits
+// user_document_reads.version, an integer column (fitsIntegerColumn); anything else is refused
+// 400 INVALID_STATE before the write.
 func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -928,8 +923,8 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if input.Version == nil || *input.Version < 0 {
-		writeError(w, r, apicode.InvalidState, "version must be a whole number that is not negative")
+	if input.Version == nil || *input.Version < 0 || !fitsIntegerColumn(*input.Version) {
+		writeError(w, r, apicode.InvalidState, fmt.Sprintf("version must be a whole number from 0 to %d", maxIntegerColumn))
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))

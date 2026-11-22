@@ -178,7 +178,8 @@ func (s *server) v2IssueRows() []routeRow {
 				"name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, " +
 				"each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; " +
 				"children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate " +
-				"step records [{step, artifact_id}] in step order; reach {route_status, route_holder, route_status_reason, " +
+				"step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said " +
+				"nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, " +
 				"holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its " +
 				"claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; " +
 				"and referenced_by_count, how many references to it stand. 404 ISSUE_NOT_FOUND for an issue that does not " +
@@ -197,8 +198,11 @@ func (s *server) v2IssueRows() []routeRow {
 				"blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, "+
 				"assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or "+
 				"components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its "+
-				"design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none, "+
-				"which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of "+
+				"design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, "+
+				"artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the "+
+				"issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers "+
+				"by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and "+
+				"refuse_open_foreign_children, true beside a status of "+
 				"retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open "+
 				"(any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each "+
 				"such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is "+
@@ -653,8 +657,9 @@ type issueReachV2 struct {
 type patchIssueV2Input struct {
 	updateIssueInput
 	// DesignGates is the whole set of the documents the issue's design-gate steps record, [] for
-	// none; absent leaves the set as it stands.
-	DesignGates *[]issueDesignGate `json:"design_gates"`
+	// none; absent leaves the set as it stands. Each entry is the one PUT
+	// /api/v1/issues/{key}/design-gates takes, holds left out or null stored as null.
+	DesignGates *[]issueDesignGateInput `json:"design_gates"`
 }
 
 // issueCollaboratorsV2Query is GET /api/v2/issues/{key}/collaborators's query: one page.

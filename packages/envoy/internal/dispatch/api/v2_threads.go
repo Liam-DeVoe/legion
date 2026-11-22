@@ -273,7 +273,8 @@ func (s *server) v2ThreadRows() []routeRow {
 				"taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and " +
 				"the message's stored body; leaves the attempt's state to the send, and appends message.accepted. The same " +
 				"session accepting an attempt it already accepted answers 200 the same and writes nothing. 400 STATE_INVALID " +
-				"for any other state, 404 MESSAGE_NOT_FOUND, 404 DELIVERY_NOT_FOUND for an attempt the message does not have.",
+				"for any other state, 404 MESSAGE_NOT_FOUND, 404 DELIVERY_NOT_FOUND for an attempt the message does not have, " +
+				"and so for one that is not a whole number from 1 to 2147483647 (the largest attempt the store holds).",
 			Handler:  s.putDeliveryStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{
@@ -1015,12 +1016,14 @@ func (s *server) putDeliveryStateV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // deliveryAttemptV2 is the attempt number names of message messageID, and where the message has no
-// such attempt - number is no whole number of 1 or more, or names none - it writes 404
-// DELIVERY_NOT_FOUND (dispatch://INFRA-4071/spec R7) and answers false.
+// such attempt - number is no whole number of 1 or more, one past message_deliveries.attempt's
+// integer column (fitsIntegerColumn), or one that names none - it writes 404 DELIVERY_NOT_FOUND
+// (dispatch://INFRA-4071/spec R7) and answers false, making no query with a number past the
+// column.
 func (s *server) deliveryAttemptV2(w http.ResponseWriter, r *http.Request, messageID, number string) (model.MessageDelivery, bool) {
 	missing := errorf(apicode.DeliveryNotFound, "message %s has no delivery attempt %s", messageID, number)
 	attempt, err := strconv.Atoi(number)
-	if err != nil || attempt < 1 {
+	if err != nil || attempt < 1 || !fitsIntegerColumn(attempt) {
 		s.writeHandlerError(w, r, missing)
 		return model.MessageDelivery{}, false
 	}

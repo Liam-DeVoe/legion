@@ -152,6 +152,18 @@ func documentsTourSteps() []tourStep {
 			Missing: append([]tourMissing{{Param: "block_id", Value: "no-such-block", Code: apicode.BlockNotFound}}, documentMissing...),
 		},
 		{
+			Method: http.MethodGet, Pattern: "/artifacts/{id}/changes", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				key, name := tour.issue(t).Key, "Tour changes "+uuid.NewString()[:8]+".md"
+				document := tour.issueDocument(t, key, name, "# Changes\n\n## Scope\n\nWhat the tour wrote first.\n")
+				tour.issueDocument(t, key, name, "# Changes\n\n## Scope\n\nWhat the tour wrote next.\n")
+				return tourRequest{
+					Path: map[string]string{"id": document.ID}, Query: url.Values{"version_from": {"1"}, "version_to": {"2"}}, As: alice,
+				}
+			},
+			Missing: documentMissing,
+		},
+		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/comments", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				document := tour.document(t)

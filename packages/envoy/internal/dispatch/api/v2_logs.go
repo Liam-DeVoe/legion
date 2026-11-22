@@ -62,7 +62,8 @@ const ownerLogText = "Position: seq, each event's place in its owner's log. afte
 	"sort=seq (the default, oldest first) or -seq; with no sort, a before alone reads down from it, newest first, so a before " +
 	"past the last seq answers the newest page. limit 1 to 200 (default 200) and offset; {items, total, limit, offset}, total " +
 	"the exact count of the events the filters keep. An after above the log's last seq, or an after or a before that is no " +
-	"integer of 0 or more, is 400 POSITION_INVALID naming the parameter and seq; more than 50 ids is 400 INVALID_QUERY."
+	"integer from 0 to 2147483647 (the largest seq the store holds), is 400 POSITION_INVALID naming the parameter and " +
+	"seq; more than 50 ids is 400 INVALID_QUERY."
 
 // v2LogRows are the five logs: rows 72, 103, 21, 170 and 134 of the route map.
 func (s *server) v2LogRows() []routeRow {
@@ -382,11 +383,23 @@ type ownerEventsRead struct {
 }
 
 // ownerEventsReadOf reads an owner's log's query: its positions against last, the log's last seq,
-// its ids, and its order.
+// its ids, and its order. A seq is kept in an integer column (events.seq, fitsIntegerColumn), so
+// a position past that column's range is no position of any owner's log and is refused as any
+// position that is none, 400 POSITION_INVALID, before a query is made with it, where /api/v1's
+// lists refuse it 400 INVALID_QUERY (parseEventPosition).
 func ownerEventsReadOf(r *http.Request, query ownerEventsV2Query, last int64) (ownerEventsRead, error) {
 	positions, err := integerPositions(query.After, query.Before, seqPosition.Field, knownPosition(last))
 	if err != nil {
 		return ownerEventsRead{}, err
+	}
+	for _, position := range []struct {
+		name  string
+		value *int64
+	}{{"after", positions.after}, {"before", positions.before}} {
+		if position.value != nil && !fitsIntegerColumn(*position.value) {
+			return ownerEventsRead{}, errorf(apicode.PositionInvalid,
+				"%s reads this log's %s, an integer from 0 to %d; %d is none", position.name, seqPosition.Field, maxIntegerColumn, *position.value)
+		}
 	}
 	if len(query.IDs) > maxEventIDs {
 		return ownerEventsRead{}, errorf(apicode.InvalidQuery, "ids names %d events; it names at most %d", len(query.IDs), maxEventIDs)

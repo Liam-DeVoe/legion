@@ -105,8 +105,8 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	if actor, ok = actSessionFromBody(w, r, actor, input.Actor); !ok {
 		return
 	}
-	if input.LastReadSeq != nil && *input.LastReadSeq < 0 {
-		writeError(w, r, apicode.InvalidState, "last_read_seq must be non-negative")
+	if err := lastReadSeqRefusal(input.LastReadSeq); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	value, err := s.writeUserIssueState(r.Context(), actor, r.PathValue("key"), input)
@@ -121,6 +121,18 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, value)
+}
+
+// lastReadSeqRefusal is the refusal of an issue read position no stored row can hold, nil for one
+// it can or none at all: last_read_seq is a position in the issue's event sequence, which
+// user_issue_state keeps in an integer column, so one below 0 or past that column
+// (fitsIntegerColumn) is refused 400 INVALID_STATE before any query is made with it, by PUT
+// /api/v1/me/issues/{key}/state and by an issue mark's write under /api/v2 alike.
+func lastReadSeqRefusal(seq *int) error {
+	if seq != nil && (*seq < 0 || !fitsIntegerColumn(*seq)) {
+		return errorf(apicode.InvalidState, "last_read_seq must be from 0 to %d", maxIntegerColumn)
+	}
+	return nil
 }
 
 // userStateStale is writeUserIssueStateIn's refusal of a write whose seq is not newer than the

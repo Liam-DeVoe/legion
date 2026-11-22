@@ -76,6 +76,16 @@ var (
 	OpenForeignChild = Condition{"open foreign child"}
 )
 
+// The conditions of what a request names outside its path.
+var (
+	// QueryVersionMissing is a version a request's query names that the document holds no version
+	// of: GET /api/v2/artifacts/{id}/changes's version_from and version_to, each answered as GET
+	// /api/v1/artifacts/{id}/changes answers its from and to, since the path names no version.
+	QueryVersionMissing = Condition{"query version missing"}
+	// ArtifactNotDocument is an artifact a route reads as a document that is a file or an image.
+	ArtifactNotDocument = Condition{"artifact not a document"}
+)
+
 // The conditions of what a deployment configures.
 var (
 	// BrokerUnconfigured is a request to a route that relays to the secrets broker, on a Dispatch

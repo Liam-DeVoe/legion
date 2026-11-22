@@ -632,7 +632,9 @@ func (s *server) readIssueChecks(ctx context.Context, issueKey, at string, trees
 	return body, reader, nil
 }
 
-// refusal is every refusal a result's own fields earn, before anything is read.
+// refusal is every refusal a result's own fields earn, before anything is read. The three counts
+// are each a non-negative number check_results keeps in an integer column, so a count past that
+// column (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
 		return errorf(apicode.ResultInput, "check names the check block the result proves")
@@ -647,9 +649,12 @@ func (input checkResultInput) refusal() error {
 	if !resultCommitSHA.MatchString(input.Commit) {
 		return errorf(apicode.ResultInput, "commit is the 40-character lowercase hex commit the check ran at")
 	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(apicode.ResultInput, "%s counts cases and cannot be negative", name)
+	for _, count := range []struct {
+		name  string
+		cases int
+	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
+		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
+			return errorf(apicode.ResultInput, "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {

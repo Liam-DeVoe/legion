@@ -15,6 +15,7 @@ POST /api/v1/artifacts/{id}/asks any
 GET /api/v1/artifacts/{id}/blocks any
 GET /api/v1/artifacts/{id}/blocks/{block_id} any
 POST /api/v1/artifacts/{id}/blocks/{block_id}/keep any
+GET /api/v1/artifacts/{id}/changes any
 GET /api/v1/artifacts/{id}/comments any
 POST /api/v1/artifacts/{id}/comments any
 POST /api/v1/artifacts/{id}/edits any
@@ -217,6 +218,7 @@ POST /api/v2/artifacts/{id}/approval-requests any
 GET /api/v2/artifacts/{id}/asks any
 POST /api/v2/artifacts/{id}/asks any
 GET /api/v2/artifacts/{id}/blocks/{block_id} any
+GET /api/v2/artifacts/{id}/changes any
 GET /api/v2/artifacts/{id}/comments any
 POST /api/v2/artifacts/{id}/comments any
 POST /api/v2/artifacts/{id}/edits any

@@ -73,11 +73,13 @@ const markText = "A mark is the caller's own state on one object, {kind, id, ...
 
 // markWriteText is what both mark writes say of the fields each kind takes and their rules.
 const markWriteText = "issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored " +
-	"one (last_read_seq not negative), and a seq not above the stored one is 409 STATE_STALE with the stored mark as " +
+	"one (last_read_seq from 0 to 2147483647, the largest event position the store holds), and a seq not above the " +
+	"stored one is 409 STATE_STALE with the stored mark as " +
 	"state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, " +
 	"at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute " +
 	"ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the " +
-	"caller's sidebar or unpins it. document {read_version}: replaces, not negative. thread {read_through?, " +
+	"caller's sidebar or unpins it. document {read_version}: replaces, from 0 to 2147483647 (the largest version " +
+	"number the store holds). thread {read_through?, " +
 	"dismissed?, version?}, at least one: read_through moves forward only, and dismissed true, which takes the version " +
 	"GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that " +
 	"version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. " +
@@ -1114,8 +1116,8 @@ func (s *server) planMarkWrite(w http.ResponseWriter, r *http.Request, actor mod
 		if !ok {
 			return nil, false
 		}
-		if input.LastReadSeq != nil && *input.LastReadSeq < 0 {
-			writeError(w, r, apicode.InvalidState, "last_read_seq must be non-negative")
+		if err := lastReadSeqRefusal(input.LastReadSeq); err != nil {
+			s.writeHandlerError(w, r, err)
 			return nil, false
 		}
 		state := userIssueStateInput{Pinned: input.Pinned, LastReadSeq: input.LastReadSeq, Dismissed: input.PinnedItems, Seq: input.Seq}
@@ -1144,8 +1146,11 @@ func (s *server) planMarkWrite(w http.ResponseWriter, r *http.Request, actor mod
 			return 1, []model.Event{userAgentStateEvent(actor, write.id)}, nil
 		}, true
 	case documentMarkV2Input:
-		if input.ReadVersion == nil || *input.ReadVersion < 0 {
-			writeError(w, r, apicode.InvalidState, "read_version must be a whole number that is not negative")
+		// read_version is the column PUT /api/v1/me/documents/{id}/read writes
+		// (user_document_reads.version, an integer column: fitsIntegerColumn), so a version past it
+		// is refused before the transaction makes a query with it.
+		if input.ReadVersion == nil || *input.ReadVersion < 0 || !fitsIntegerColumn(*input.ReadVersion) {
+			writeError(w, r, apicode.InvalidState, fmt.Sprintf("read_version must be a whole number from 0 to %d", maxIntegerColumn))
 			return nil, false
 		}
 		return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
