@@ -196,10 +196,10 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 // live text has changed since the newest one, the anchor's snapshot writes the next version in
 // the question's own transaction (resolveAnchor). Alice approved version 1 and the spec was then
 // edited live, so the question's own write leaves the document at version 2, which nobody has
-// reviewed: the advice names nothing. The advice is read once the question's write phase has run
-// (docs.Ledger.AfterWrites), so the table holds version 2 as the newest; read before it, the table
-// would still hold version 1, and the rule would name alice's approval of the text this very
-// write moved past.
+// reviewed: the advice names nothing. The table still holds version 1 as the newest when the
+// advice is read, in the question's read phase, so the rule takes the version off the question's
+// ledger (docs.Ledger.PendingVersionNumber); read off the table, it would name alice's approval of
+// the text this very write moved past.
 func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testing.T) {
 	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP")
 
@@ -215,9 +215,9 @@ func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testin
 // The live text put back to the text alice approved, the next anchored question's snapshot
 // writes version 3, which holds version 1's text byte for byte, so the restore carries her
 // approval to it in the same transaction (docs.carryApproval). The advice names that carry:
-// alice's approval, pinned to version 3 and naming version 1. The advice is read once the write
-// phase has run (docs.Ledger.AfterWrites), so the table holds the version and the carry the write
-// phase kept, and the carry's time is its row's.
+// alice's approval, pinned to version 3 and naming version 1. The advice reads the stored reviews
+// in the read phase and takes the carry the write phase kept once Commit has returned
+// (docs.Ledger.WrittenReview), and the carry's time is its row's.
 //
 // The same restore over a record that moved since the approval is no restore of what alice
 // approved, whatever its text. A requirement uploaded beside the spec, in the issue's

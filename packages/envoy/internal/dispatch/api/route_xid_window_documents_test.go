@@ -75,27 +75,32 @@ var documentRouteXidWindows = []routeXidWindowCase{
 	// its edit time (docs.RewriteApprovalAsk) - run in the read phase, and its update, index,
 	// parts, ask.edited and stamp join the version's batch. The upload writes its version itself
 	// (storeArtifact, then MoveApprovalAsk); the edit writes it through the document service
-	// (docs' writeVersionTx, then MoveApprovalAsk).
+	// (docs' writeVersionTx, then MoveApprovalAsk). The spec is a document the spec query's record
+	// covers, so the version's version_renders row is filled once the batch has run: the record
+	// is the walk of the store as the batch leaves it (R14, R15), and so stands in the window
+	// (specVersionWindow). Its approval advice is read in the read phase.
 	{
 		name: "the spec upload under an open approval request", route: "POST /api/v1/issues/{key}/artifacts under an open approval request (storeArtifact, docs.MoveApprovalAsk)",
-		ready: readyUploadUnderApprovalRequest, window: storetest.XidBatchedWindow,
+		ready: readyUploadUnderApprovalRequest, window: specVersionWindow,
 	},
 	{
 		name: "the spec edit under an open approval request", route: "POST /api/v1/artifacts/{id}/edits under an open approval request (editArtifact, docs' writeVersionTx, MoveApprovalAsk)",
-		ready: readyEditUnderApprovalRequest, window: storetest.XidBatchedWindow,
+		ready: readyEditUnderApprovalRequest, window: specVersionWindow,
 	},
 	// A version that restores the approved text under an open request moves the request and
 	// then answers it in the approver's name (docs' writeCarriedReview, answerApprovalAsk): the
 	// answer's reads - the transaction's time, its parts' plan - run in the read phase beside the
 	// move's, and its update, parts, ask.answered and stamp, with the carried review and its
-	// artifact.approved, join the version's batch.
+	// artifact.approved, join the version's batch, from the version's insert on behind the
+	// savepoint the write phase takes for the restore's carry (docs' writeRestored), and the fill
+	// holds the pin to the record's digest (specRestoreWindow).
 	{
 		name: "the spec edit restoring the approved text under an open approval request", route: "POST /api/v1/artifacts/{id}/edits restoring the approved text (docs' carryApproval, writeCarriedReview, answerApprovalAsk)",
-		ready: readyEditRestoringTheApprovedText, window: storetest.XidBatchedWindow,
+		ready: readyEditRestoringTheApprovedText, window: specRestoreWindow,
 	},
 	{
 		name: "the spec upload restoring the approved text under an open approval request", route: "POST /api/v1/issues/{key}/artifacts restoring the approved text (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk)",
-		ready: readyUploadRestoringTheApprovedText, window: storetest.XidBatchedWindow,
+		ready: readyUploadRestoringTheApprovedText, window: specRestoreWindow,
 	},
 	{
 		name: "the agent conversation upload route", route: "POST /api/v1/agents/{session_id}/artifacts (uploadAgentArtifact, storeArtifact)",
@@ -110,6 +115,37 @@ var documentRouteXidWindows = []routeXidWindowCase{
 		ready: readyDocumentComment, window: storetest.XidBatchedWindow,
 	},
 }
+
+// specFill names what the fill of a spec version's version_renders row runs once the write phase's
+// batch has run (docs' writeStatedRenders): it reads the record of the spec's query at one cut, by
+// the walk of the issue's tree as the batch left the store (R14, R15) - the cut, the five reads of
+// the issue's conversation (its items, the asks the conversation test passes, their blocks, and the
+// ask and its blocks as their loaders read them), the read of the items' rows, the one read of the
+// tree, every level of it (refs.TreeSubtrees), the read of the issues above the issue and that of
+// the issue a view shows. The spec query takes none of the fixture's blocks, so the record reads no
+// node's values or relations.
+const specFill = "the fill, which reads the spec query's record of the issue at one cut once the batch has run (R14, R15): " +
+	"the cut, the five reads of the issue's conversation - its items, the asks the conversation test passes, their blocks, and the ask and its blocks as their loaders read them - " +
+	"the read of the items' rows, the one read of the tree, every level of it, the read of the issues above the issue and that of the issue a view shows"
+
+// specVersionWindow is the window of a version of the spec under an open approval request: the
+// write phase's batch, the fill (specFill), the version_renders row it writes (R15) and the
+// COMMIT.
+var specVersionWindow = storetest.XidWindowOf(13,
+	"the write phase's one batch, "+specFill+", the version_renders row it writes with the record's digest (R15), and the COMMIT ending them")
+
+// specRestoreWindow is the window of a version of the spec restoring the approved text under an
+// open approval request (docs' writeRestored): the batch up to the version's insert, the savepoint
+// taken before it, the batch from it on - the version's version_renders row pinned to the
+// approval's digest, the carried review and its artifact.approved, the request's answer and the
+// version's artifact.version - the fill (specFill), the update giving the pinned row its cut, the
+// savepoint's release, the batch of the settlement credit's statements and the COMMIT.
+var specRestoreWindow = storetest.XidWindowOf(17,
+	"the write phase's batch up to the restored version's insert, the savepoint the write phase takes before that insert (writeRestored), "+
+		"the batch from the insert on - the version's version_renders row pinned to the approval's digest, the carried review, its artifact.approved and the request's answer before the version's artifact.version - "+
+		specFill+", the update giving the pinned version_renders row the cut (R15), "+
+		"the release of the savepoint where the fill found the approval's digest (a rollback to it where it did not, which writes the version again with no carry), "+
+		"the batch of the settlement credit's statements, and the COMMIT ending them")
 
 // readyReviewAnsweringApprovalRequest drives POST /api/v1/artifacts/{id}/reviews on a spec with
 // an approval request open, so the person's review answers that request (closeAskTx) and

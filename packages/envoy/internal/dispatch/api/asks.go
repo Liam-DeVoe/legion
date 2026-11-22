@@ -368,26 +368,25 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
 	// The review the issue's specification already carries, reported beside the advice above.
-	// It is read once the write phase has run and before the commit (docs.Ledger.AfterWrites), so
-	// it answers for the specification as this write left it: a version the anchor's snapshot
-	// wrote of that document, and a review that version's carry wrote, which the write phase drops
-	// where the version restores the approved text over another record (a restore's carry). It is
-	// about the document rather than about this session, so it is read for a person's question as
-	// for an agent's, and it rides the advice the write already answers rather than a read of its
-	// own. A question on a project document has no issue and so no specification, and a write
-	// whose advice read failed carries nothing to hang it on; both report no review.
+	// It is read here, in the read phase after every write of this ask is queued, so it answers
+	// for the specification as this write leaves it: a version the anchor's snapshot queued of
+	// that document is its newest, off the ledger, and the review that version's carry writes,
+	// which the write phase keeps or drops as only it decides (a restore's carry), is set over the
+	// stored newest one once Commit has returned, with no statement. It is about the document
+	// rather than about this session, so it is read for a person's question as for an agent's,
+	// and it rides the advice the write already answers rather than a read of its own. A question
+	// on a project document has no issue and so no specification, and a write whose advice read
+	// failed carries nothing to hang it on; both report no review.
+	var standing standingSpecRead
 	if advice != nil && owner.IssueKey != nil {
-		issueKey := *owner.IssueKey
-		if err := ledger.AfterWrites(func(ctx context.Context) {
-			advice.StandingReview = s.standingReviewAdvice(ctx, tx, routeOpenAsk, issueKey)
-		}); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+		standing = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if advice != nil {
+		advice.StandingReview = standing.asWritten(ledger)
 	}
 	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)

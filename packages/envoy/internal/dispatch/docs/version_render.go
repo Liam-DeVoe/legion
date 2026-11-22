@@ -213,6 +213,62 @@ var statedDocumentsStatement = `
 // queryOf is the issue and the query whose record covers a document's versions.
 type queryOf struct{ issue, query string }
 
+// readStatedDocuments reads which query's record covers each document a pass of the ledger's
+// transaction stated a version of (recordStatedVersions), into covered, which the fill reads
+// (statedRenders). It runs once the queue is sealed and before the write phase's first batch is
+// sent (runQueue), so the read holds no transaction id the batch takes, and it reads the issue and
+// the band of a document the transaction creates off the address it was registered under
+// (RegisterPendingArtifact), whose row no statement reads before the batch writes it, and those of
+// every other document off its artifacts row, in one statement (statedDocumentsStatement). A
+// transaction whose passes stated no version of a stored document runs none. What it reads is what
+// a read after the batch would: the columns a band is decided by - the issue, the kind, is_primary,
+// the role and the slug - are written with the row, and the one write of one of them a write phase
+// makes later, an upload's repair of a role left null (api's storeArtifact), writes the role the
+// row's slug already gives it (refs.DocumentBandSQL).
+func (l *Ledger) readStatedDocuments(ctx context.Context) error {
+	if len(l.stated) == 0 {
+		return nil
+	}
+	covered := map[string]queryOf{}
+	var stored []string
+	for _, version := range l.stated {
+		address, pending := l.PendingDocument(version.artifactID)
+		if !pending {
+			stored = append(stored, version.artifactID)
+			continue
+		}
+		if of := (queryOf{issue: address.IssueKey, query: queryOfBand[string(address.Band)]}); of.issue != "" && of.query != "" {
+			covered[version.artifactID] = of
+		}
+	}
+	if len(stored) > 0 {
+		tx := l.writer
+		if tx == nil {
+			tx = l.tx
+		}
+		rows, err := tx.Query(ctx, statedDocumentsStatement, stored)
+		if err != nil {
+			return fmt.Errorf("read the documents whose versions the passes stated: %w", err)
+		}
+		for rows.Next() {
+			var id, band string
+			var of queryOf
+			if err := rows.Scan(&id, &of.issue, &band); err != nil {
+				rows.Close()
+				return fmt.Errorf("read the documents whose versions the passes stated: %w", err)
+			}
+			if of.query = queryOfBand[band]; of.issue != "" && of.query != "" {
+				covered[id] = of
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read the documents whose versions the passes stated: %w", err)
+		}
+	}
+	l.covered = covered
+	return nil
+}
+
 // cutRecords builds the records of issues' queries at one cut, walking each issue's tree once
 // (WalkIssueTree) and building each query's record once (IssueTree.QueryRecord).
 type cutRecords struct {
@@ -249,12 +305,14 @@ func (c *cutRecords) record(ctx context.Context, q Queryer, of queryOf) (QueryRe
 }
 
 // writeStatedRenders writes, in the ledger's transaction, the version_renders row of each version
-// a pass of it stated (recordStatedVersions) whose document a query's record covers (queryOfBand):
-// the digest of that query's record, and the time and the seq of the cut it was read at, one cut
-// for the whole transaction, read once its write phase has run (refs.HeadCut), so the record and
-// the render as of the row's time hold every tuple the passes appended under their events. It runs
-// after the write phase's batch and before the commit (runQueue): the record is built in Go from the
-// store as that batch leaves it (IssueTree.QueryRecord), which no statement of the batch can read.
+// a pass of it stated (recordStatedVersions) whose document a query's record covers (queryOfBand,
+// read before the write phase's first batch, readStatedDocuments): the digest of that query's
+// record, and the time and the seq of the cut it was read at, one cut for the whole transaction,
+// read once its write phase has run (refs.HeadCut), so the record and the render as of the row's
+// time hold every tuple the passes appended under their events. It runs after the write phase's
+// batch and before the commit (runQueue): the record is built in Go from the store as that batch
+// leaves it (IssueTree.QueryRecord), which no statement of the batch can read. Where no query's
+// record covers a stated version's document, it runs no statement.
 //
 // A version a restore carry pins (carryRestored) holds its row already: the digest the approval it
 // carries pinned, which the insert trigger of the carry's review took from it. Its record is read
@@ -319,37 +377,12 @@ type statedRender struct {
 }
 
 // statedRenders reads, through tx, the record of each version a pass of the ledger's transaction
-// stated whose document a query's record covers (queryOfBand), once a version, in the order the
-// passes stated them: the query of each document read in one statement, and every record at one
-// cut, each issue's tree walked once (cutRecords). It reads no version_renders row.
+// stated whose document a query's record covers (covered, readStatedDocuments), once a version, in
+// the order the passes stated them: every record at one cut, each issue's tree walked once
+// (cutRecords). It reads no version_renders row, and nothing where no stated version's document is
+// covered.
 func (l *Ledger) statedRenders(ctx context.Context, tx pgx.Tx) ([]statedRender, error) {
-	if len(l.stated) == 0 {
-		return nil, nil
-	}
-	ids := make([]string, 0, len(l.stated))
-	for _, version := range l.stated {
-		ids = append(ids, version.artifactID)
-	}
-	rows, err := tx.Query(ctx, statedDocumentsStatement, ids)
-	if err != nil {
-		return nil, fmt.Errorf("read the documents whose versions the passes stated: %w", err)
-	}
-	covered := map[string]queryOf{}
-	for rows.Next() {
-		var id, band string
-		var of queryOf
-		if err := rows.Scan(&id, &of.issue, &band); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read the documents whose versions the passes stated: %w", err)
-		}
-		if of.query = queryOfBand[band]; of.issue != "" && of.query != "" {
-			covered[id] = of
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the documents whose versions the passes stated: %w", err)
-	}
-	if len(covered) == 0 {
+	if len(l.covered) == 0 {
 		return nil, nil
 	}
 	cut, err := refs.HeadCut(ctx, tx)
@@ -360,7 +393,7 @@ func (l *Ledger) statedRenders(ctx context.Context, tx pgx.Tx) ([]statedRender, 
 	var renders []statedRender
 	written := map[statedVersion]bool{}
 	for _, version := range l.stated {
-		of, held := covered[version.artifactID]
+		of, held := l.covered[version.artifactID]
 		if !held || written[version] {
 			continue
 		}

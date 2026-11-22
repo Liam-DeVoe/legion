@@ -903,8 +903,9 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// this transaction's read phase - a second carry's refusal (refuseSecondCarry), a request's
 	// other documents (namedDocumentsApproved) - takes it off the ledger. The carry makes no such
 	// read itself: it runs at most once for a document in a transaction (refuseSecondCarry). The
-	// write advice reads the table once the write phase has run (Ledger.AfterWrites), since the
-	// write phase drops a restore's carry whose version's record is not the approved one.
+	// write advice takes the review the write phase kept (Ledger.WrittenReview) once Commit has
+	// returned, since the write phase drops a restore's carry whose version's record is not the
+	// approved one.
 	//
 	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
 	// QueueReview inserts is dated by its column's default, now() (artifact_reviews.created_at,

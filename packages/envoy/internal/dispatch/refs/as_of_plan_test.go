@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"testing"
@@ -172,6 +173,8 @@ func asOfReads(seed asOfSeed) []asOfRead {
 			[]any{parentKinds, parentIDs, seq, open}, []string{"graph_tuples_as_of_in"}},
 		{"the children of a node in rank order as of a render's time", treeChildrenStatement,
 			[]any{parentKinds, parentIDs, unbounded, at}, []string{"graph_tuples_as_of_in"}},
+		{"the subtrees of nodes the walk of SEED-1 enters, every level in one read, at a time", treeSubtreesStatement,
+			[]any{parentKinds, parentIDs, seq, open, "SEED-1"}, []string{"graph_tuples_as_of_in"}},
 		{"the values out of a node at a time", treeValuesStatement,
 			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
 		{"the values out of a node as of a render's time", treeValuesStatement,
@@ -248,6 +251,7 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	if len(children) != 101 {
 		t.Errorf("SEED-1 holds %d children at seq %d, want the 100 blocks placed under it and its spec", len(children), seed.readSeq)
 	}
+	requireSubtreesReadEveryLevelsChildren(t, database, seed)
 
 	for _, read := range asOfReads(seed) {
 		plan := asOfPlan(t, database, read.statement, read.args)
@@ -274,6 +278,45 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	}
 
 	requireTypeMigrationsAloneWriteTheTupleTable(t)
+}
+
+// requireSubtreesReadEveryLevelsChildren holds the one statement of TreeSubtrees to the children
+// TreeChildren reads level by level over the seed, from SEED-1's node down: under each node the walk
+// of SEED-1 enters, the same children in the same order, and nothing under a node it does not
+// enter - SEED-2's blocks are answered under b1 and read under nowhere.
+func requireSubtreesReadEveryLevelsChildren(t *testing.T, database *store.Store, seed asOfSeed) {
+	t.Helper()
+	ctx := context.Background()
+	cut := TreeCut{ReadSeq: seed.readSeq}
+	under, err := TreeSubtrees(ctx, database.Pool, []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}}, "SEED-1", cut)
+	if err != nil {
+		t.Fatalf("read the subtrees of SEED-1: %v", err)
+	}
+	levels := map[Target][]TreeChild{}
+	read := 0
+	for frontier := []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}}; len(frontier) > 0; {
+		children, err := TreeChildren(ctx, database.Pool, frontier, cut)
+		if err != nil {
+			t.Fatalf("read a level of SEED-1's tree: %v", err)
+		}
+		frontier = nil
+		for _, child := range children {
+			levels[child.Parent] = append(levels[child.Parent], child)
+			read++
+			if TreeOwns("SEED-1", child.Node) {
+				frontier = append(frontier, child.Node)
+			}
+		}
+	}
+	if !reflect.DeepEqual(under, levels) {
+		t.Errorf("the subtrees read answers %d parents, the level reads %d: the one statement does not read the children the levels read", len(under), len(levels))
+	}
+	if got := len(under[Target{Kind: BlockNodeKind, ID: "SEED-1/spec#b1"}]); got != 14 {
+		t.Errorf("b1 holds %d children in the subtrees read, want its 4 blocks of SEED-1 and the 10 of SEED-2 placed under it", got)
+	}
+	if _, entered := under[Target{Kind: BlockNodeKind, ID: "SEED-2/spec#c1"}]; entered || read != 491 {
+		t.Errorf("the level reads read %d children, want 491 - SEED-1's 480 blocks, its spec and SEED-2's 10 blocks - and the subtrees read entered SEED-2's c1 = %t, want false", read, entered)
+	}
 }
 
 // asOfPlan is the plan of statement under args, explained with analyze and buffers.
