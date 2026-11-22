@@ -54,7 +54,14 @@ ${fn("assert_review_round_handoff")}
 assert_review_round_handoff LEG-1 2
 `,
     ],
-    { env: { PATH: process.env.PATH, READS: reads, CHECKED: checked, BEFORE: String(readsBeforeCompletion) } }
+    {
+      env: {
+        PATH: process.env.PATH,
+        READS: reads,
+        CHECKED: checked,
+        BEFORE: String(readsBeforeCompletion),
+      },
+    }
   );
   const stdout = result.stdout.toString();
   const stderr = result.stderr.toString();
