@@ -943,6 +943,36 @@ test("the mention picker draws each agent with its state and no link", async () 
   expect(list.querySelector("a")).toBeNull();
 });
 
+// A session's row is named by the session's name, which for a session with no title is the short
+// form `session:<8>…` that two sessions may share, so the row carries the session's full id as
+// its tooltip and accessible description. A role's row is named by its role, and carries none.
+test("a session's row has its full id as its title and description, and a role's row has none", async () => {
+  const user = userEvent.setup();
+  const twins = ["twin-session-one", "twin-session-two"];
+  renderHost({
+    agents: twins.map((session_id, index) => ({
+      ...worker,
+      roles: index === 0 ? ["planner"] : [],
+      session_id,
+      title: "",
+    })),
+  });
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+  const list = await screen.findByRole("listbox", { name: "References" });
+  const sessions = await within(list).findAllByRole("option", { name: /^session:twin-ses…/ });
+  expect(sessions.map((option) => option.title).sort()).toEqual(twins);
+  for (const option of sessions) {
+    // The title is the id of the session the row draws.
+    expect(option.querySelector(`[data-agent-name="${option.title}"]`)).not.toBeNull();
+    expect(option).toHaveAccessibleDescription(option.title);
+  }
+  const role = within(list).getByRole("option", { name: /^planner/ });
+  expect(role).not.toHaveAccessibleDescription();
+  expect(role.hasAttribute("title")).toBe(false);
+});
+
 /** A comment's hit whose snippet is `snippet`, with the tree the server read it into where the
  *  test gives one, numbered so several can stand in one answer. */
 function commentHit(index: number, snippet: string, snippetTree?: DisplayTree): SearchResult {

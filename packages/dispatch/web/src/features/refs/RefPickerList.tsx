@@ -210,7 +210,10 @@ export function RefPickerList({
   };
   const row = (one: RefPickerRow) => (
     // A row is a `div`, not a `button`: a row that holds parts carries the control that lists
-    // them, and a button inside a button is no button at all.
+    // them, and a button inside a button is no button at all. A session's row has the session's
+    // full id as its title, which is its tooltip and, beside the words that name the row, its
+    // accessible description: its name can be the short form `session:<8>…`, which two sessions
+    // may share.
     <div
       aria-selected={one.id === picker.activeId}
       className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${
@@ -228,6 +231,7 @@ export function RefPickerList({
       onMouseEnter={() => picker.highlight(one.id)}
       role="option"
       tabIndex={-1}
+      title={one.kind === "agent" ? one.agent?.sessionId : undefined}
     >
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
