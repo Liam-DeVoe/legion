@@ -1,16 +1,20 @@
 package leakguard
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -153,14 +157,60 @@ func TestEveryAddedLineIsReadWholeAsGitWritesIt(t *testing.T) {
 // answer, and the bound only turns that hang into a failure.
 const hangGuard = 2 * time.Minute
 
-// holdUntilEnd is the path of a file the test makes when it ends, and a shell loop that runs until
-// that file is there: a process that outlives the git that started it, for as long as the test
-// runs, and goes once it ends.
+// holdUntilEnd is a shell loop that runs while a file the test made is there, and the test removes
+// that file when it ends: a process that outlives the git that started it, for as long as the test
+// runs, and goes once it ends. The loop waits on the file's presence, not on a file's arrival, so
+// either removal ends it: the cleanup's, or the RemoveAll of the test's temporary directory, which
+// a cleanup registered earlier runs after it.
 func holdUntilEnd(t *testing.T) string {
 	t.Helper()
-	stop := filepath.Join(t.TempDir(), "stop")
-	t.Cleanup(func() { _ = os.WriteFile(stop, nil, 0o600) })
-	return "while [ ! -e '" + stop + "' ]; do sleep 0.1; done"
+	held := filepath.Join(t.TempDir(), "held")
+	if err := os.WriteFile(held, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(held) })
+	return "while [ -e '" + held + "' ]; do sleep 0.1; done"
+}
+
+// No holder outlives its test: five loops of holdUntilEnd, each started by a subtest, have all
+// ended within hangGuard of the subtests' end. The loops are this test's own children, so it waits
+// for them, and kills every one still running when it fails.
+func TestNoHolderOutlivesItsTest(t *testing.T) {
+	var loops []*exec.Cmd
+	t.Cleanup(func() {
+		for _, loop := range loops {
+			_ = loop.Process.Kill()
+		}
+	})
+	for i := range 5 {
+		t.Run(fmt.Sprintf("holder %d", i), func(t *testing.T) {
+			loop := exec.Command("sh", "-c", holdUntilEnd(t))
+			if err := loop.Start(); err != nil {
+				t.Fatal(err)
+			}
+			loops = append(loops, loop)
+		})
+	}
+	ended := make(chan int, len(loops))
+	for i, loop := range loops {
+		go func() {
+			_ = loop.Wait()
+			ended <- i
+		}()
+	}
+	running := map[int]bool{}
+	for i := range loops {
+		running[i] = true
+	}
+	deadline := time.After(hangGuard)
+	for len(running) > 0 {
+		select {
+		case i := <-ended:
+			delete(running, i)
+		case <-deadline:
+			t.Fatalf("holders %v still ran %s after their tests ended", slices.Sorted(maps.Keys(running)), hangGuard)
+		}
+	}
 }
 
 // within is answer's answer, failing the test where it gives none within hangGuard.
@@ -355,9 +405,9 @@ func TestAReadAfterTheChildExitedTakesWhatThePipeHeldAndNoMore(t *testing.T) {
 
 // A read waiting on the pipe ends when its context ends, with os.ErrDeadlineExceeded, whatever
 // the child does: here no child and no Wait, only a pipe the test owns whose write end stays open
-// and holds nothing, so nothing but the context's end (endWithContext) can end the read. A read
-// with no such end would wait until the test closed the pipe; the ten seconds are only the bound
-// on that failure.
+// and holds nothing, and a reader made as readOutput makes its own (newPipeReader), so nothing but
+// the context's end can end the read. A read with no such end would wait until the test closed
+// the pipe; hangGuard only bounds that failure.
 func TestAReadEndsWhenItsContextEnds(t *testing.T) {
 	out, in, err := os.Pipe()
 	if err != nil {
@@ -366,9 +416,8 @@ func TestAReadEndsWhenItsContextEnds(t *testing.T) {
 	defer out.Close()
 	defer in.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := endWithContext(ctx, out)
+	reader, stop := newPipeReader(ctx, out)
 	defer stop()
-	reader := &pipeReader{ctx: ctx, file: out}
 	read := make(chan error, 1)
 	go func() {
 		_, err := reader.Read(make([]byte, 16))
@@ -380,8 +429,70 @@ func TestAReadEndsWhenItsContextEnds(t *testing.T) {
 		if !errors.Is(err, os.ErrDeadlineExceeded) {
 			t.Fatalf("the read answered %v, want os.ErrDeadlineExceeded", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("the read did not end when its context ended: nothing set the pipe's read deadline")
+	}
+}
+
+// readOutput hands what its child's Wait answered to the read's end after the exit: a child that
+// fails while a process it started holds its standard output makes Wait answer an
+// *exec.ExitError, and the read then ends at once (readEndDelay), not after the hour the guard's
+// WaitDelay is here. The holder keeps the pipe open, so the read cannot end at the pipe's end
+// either. The read takes what the child wrote, and readOutput answers the child's status.
+func TestReadOutputEndsAtOnceAfterAFailedChildThoughAProcessHoldsItsOutput(t *testing.T) {
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	guard.waitDelay = time.Hour
+	argv := []string{"sh", "-c", "(" + holdUntilEnd(t) + ") 2>/dev/null &\nprintf 'a line\\n'\nexit 3"}
+	var read []byte
+	var status int
+	err := within(t, func() error {
+		var err error
+		status, err = guard.readOutput(context.Background(), child{argv: argv}, func(r io.Reader) error {
+			var err error
+			read, err = io.ReadAll(r)
+			return err
+		})
+		return err
+	})
+	if err != nil || status != 3 || string(read) != "a line\n" {
+		t.Fatalf("the read answered status %d, %v, and %q, want 3, no error and the child's line", status, err, read)
+	}
+}
+
+// readOutput's read ends when its context ends, though its child has exited 0 and Wait has
+// answered nil, so nothing stops the child's process group and the read's end after the exit is
+// the hour the guard's WaitDelay is here, and a process the child started holds the pipe open: the
+// context's end (newPipeReader) is the only end left, and readOutput answers it as the stop it is.
+// The child writes its own process id and exits; the reader reads that line, waits until the
+// process is gone, which is once Wait has reaped it, and only then ends the context.
+func TestReadOutputEndsWhenItsContextEndsAfterTheChildExited(t *testing.T) {
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	guard.waitDelay = time.Hour
+	argv := []string{"sh", "-c", "(" + holdUntilEnd(t) + ") 2>/dev/null &\necho $$"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := within(t, func() error {
+		_, err := guard.readOutput(ctx, child{argv: argv}, func(r io.Reader) error {
+			line, err := bufio.NewReader(r).ReadString('\n')
+			if err != nil {
+				return fmt.Errorf("the child's process id: %w", err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil {
+				return fmt.Errorf("the child's process id %q: %w", line, err)
+			}
+			for syscall.Kill(pid, 0) == nil {
+				time.Sleep(10 * time.Millisecond)
+			}
+			cancel()
+			_, err = io.ReadAll(r)
+			return err
+		})
+		return err
+	})
+	var stop *stoppedError
+	if !errors.As(err, &stop) {
+		t.Fatalf("readOutput answered %v, want the stop of its context's end", err)
 	}
 }
 

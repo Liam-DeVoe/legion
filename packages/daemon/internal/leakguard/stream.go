@@ -52,8 +52,7 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 		waitErr = cmd.Wait()
 		close(waited)
 	}()
-	reader := &pipeReader{ctx: ctx, file: out}
-	stop := endWithContext(ctx, out)
+	reader, stop := newPipeReader(ctx, out)
 	finished := make(chan struct{})
 	go reader.endAfterExit(waited, finished, func() time.Duration {
 		return readEndDelay(waitErr, g.exitDelay())
@@ -82,12 +81,14 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	return cmd.ProcessState.ExitCode(), nil
 }
 
-// endWithContext sets file's read deadline to now once ctx ends, so a read of file that waits for
-// more, a read a process that outlived the child holds open among them, ends then with
-// os.ErrDeadlineExceeded, which readOutput answers as the stop the context's end is. It answers
-// the stop of that, as context.AfterFunc does.
-func endWithContext(ctx context.Context, file *os.File) func() bool {
-	return context.AfterFunc(ctx, func() { _ = file.SetReadDeadline(time.Now()) })
+// newPipeReader is the reader of file, the read end of a child's standard output, for a read under
+// ctx, and the stop of its context end: once ctx ends, file's read deadline is set to now, so a
+// read of file that waits for more, a read a process that outlived the child holds open among
+// them, ends then with os.ErrDeadlineExceeded, which readOutput answers as the stop the context's
+// end is. readOutput gets its reader only from here, so the reader and its context end are made
+// together. The stop is context.AfterFunc's.
+func newPipeReader(ctx context.Context, file *os.File) (*pipeReader, func() bool) {
+	return &pipeReader{ctx: ctx, file: file}, context.AfterFunc(ctx, func() { _ = file.SetReadDeadline(time.Now()) })
 }
 
 // readEndDelay is how long after Wait returns the read of a child's standard output ends, where
