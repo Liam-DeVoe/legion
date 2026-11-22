@@ -98,6 +98,38 @@ func TestARoleThePlanDefinesRunsWithItsPromptAndModel(t *testing.T) {
 	})
 }
 
+// A deployment that lists no `models` and whose role checker names checker-model lists that one
+// model (config.Config.ListedModels). The whole daemon tells the owner checker-model as the model a
+// role of its plan can name, takes a plan whose own role critic names it, and refuses a plan whose
+// critic names another model, with checker-model as the list. `legion config check` and the served
+// settings print the same list (TestCheckConfigPrintsTheListedModels,
+// TestSettingsOfServesTheListedModels).
+func TestARoleOfTheDeploymentListsItsModel(t *testing.T) {
+	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), deploymentRoles(t),
+		[]string{"Critic on the role's model", "Critic on another model"})
+	listed, other := r.issues[0].key, r.issues[1].key
+	critic := func(model string) string {
+		return ":::plan_role{#critic type=\"testing\" model=\"" + model + "\"}\n# Critic\n\nCriticise the change.\n:::\n\n" +
+			deploymentPlanOf("implementer", "critic")
+	}
+
+	r.on(listed)
+	addressing := lastLaunch(t, r.rt, r.token(claim.RoleArchitect)).Prompt.Addressing
+	if want := ModelsFragment([]string{deploymentCheckerModel}); !strings.Contains(addressing, want) {
+		t.Errorf("the architect of %s is told %q, want it to hold %q", listed, addressing, want)
+	}
+	if status, body := r.registerPlan(r.document("plan.md", critic(deploymentCheckerModel)), 1); status != http.StatusOK {
+		t.Errorf("register_plan of critic on %s, the model of the role checker = %d %s, want 200", deploymentCheckerModel, status, body)
+	}
+
+	r.on(other)
+	status, body := r.registerPlan(r.document("plan.md", critic("other-model")), 1)
+	want := "step 2 of task a names the role critic, whose model other-model the deployment does not list; it lists checker-model."
+	if status != http.StatusConflict || !strings.Contains(body, "PLAN_REFUSED") || !strings.Contains(body, want) {
+		t.Errorf("register_plan of critic on other-model = %d %s, want 409 PLAN_REFUSED saying %q", status, body, want)
+	}
+}
+
 // R20: an issue that ran before a plan could define a role goes on under this release. The store
 // holds every migration below plan_roles, applied by hand (storeOfSliceFour), and the record of one
 // issue whose owner's plan `implementer tester reviewer` stands at step 2, the implementer's step

@@ -310,7 +310,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "models", Default: "no model is listed", RequiredBy: "no",
-			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once.",
+			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once. The model each role of `roles` names is listed after them, so `legion config check`, the served settings and the owner read one list.",
 			Read:        reads(readModels, func(f *fileConfig, v []string) { f.Models = v }),
 		},
 		{

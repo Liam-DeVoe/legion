@@ -1479,7 +1479,12 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
-			want := demoCheckConfigOK + strings.ReplaceAll(tc.roles, "<dir>", dir) + secretsGap + defaultCacheLine + tc.want
+			ok := demoCheckConfigOK
+			if tc.roles != "" {
+				// The role's model is the one model the file lists.
+				ok = strings.TrimSuffix(ok, modelsNoneLine) + "models: checker-model\n"
+			}
+			want := ok + strings.ReplaceAll(tc.roles, "<dir>", dir) + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}

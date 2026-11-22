@@ -46,21 +46,32 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 	}
 }
 
-// `legion config check` reads back the models the file lists, in its order, on one line right
-// after the project lines, and says `none` for a file that lists none.
+// `legion config check` reads back the models a role of an owner's plan may name
+// (config.Config.ListedModels), on one line right after the project lines: the file's `models`,
+// then each model a role of `roles` names that `models` lacks, in the file's order. It says `none`
+// where there is no such model. A deployment whose only model is a role's prints that model, the
+// list the owner is told and register_plan judges a plan by.
 func TestCheckConfigPrintsTheListedModels(t *testing.T) {
 	if !strings.Contains(shippedExampleCheckOK, defaultStepsTodayLine("WIDGETS")+modelsNoneLine) {
 		t.Fatalf("the shipped example's check prints %q, want the models line right after the project lines", shippedExampleCheckOK)
 	}
-	for _, tc := range []struct{ name, key, line string }{
+	const checker = "roles: {checker: {type: testing, prompt_file: checker.md, model: m-two}}\n"
+	const checkerLine = "roles.checker: type testing, model m-two, App review, prompt <dir>/checker.md\n"
+	for _, tc := range []struct{ name, key, line, roles string }{
 		{name: "two models", key: "models: [m-one, m-two]\n", line: "models: m-one, m-two\n"},
 		{name: "no key", line: modelsNoneLine},
+		{name: "a role's model alone", key: checker, line: "models: m-two\n", roles: checkerLine},
+		{name: "the key, then a role's model", key: "models: [m-one]\n" + checker, line: "models: m-one, m-two\n", roles: checkerLine},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := stageShippedExample(t, func(example string) string { return example + "\n" + tc.key })
+			dir := filepath.Dir(config)
+			if err := os.WriteFile(filepath.Join(dir, "checker.md"), []byte("You check the change.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-			want := strings.Replace(shippedExampleCheckOK, modelsNoneLine, tc.line, 1)
+			want := strings.Replace(shippedExampleCheckOK, modelsNoneLine, tc.line+strings.ReplaceAll(tc.roles, "<dir>", dir), 1)
 			if code != 0 || out.String() != want {
 				t.Fatalf("legion config check with %q = %d, stdout %q, stderr %q; want 0 and %q", tc.key, code, out.String(), errb.String(), want)
 			}
@@ -469,9 +480,9 @@ func checkShippedExample(t *testing.T, edit func(string) string) string {
 }
 
 // A role the deployment defines in `roles` gets one line of `legion config check` after
-// the projects' lines and the models line: its type, its model, the GitHub App it works as (the
-// review App, since the file names none) and its prompt file as the loader resolved it beside the
-// file.
+// the projects' lines and the models line, which lists the role's model: its type, its model, the
+// GitHub App it works as (the review App, since the file names none) and its prompt file as the
+// loader resolved it beside the file.
 func TestCheckConfigPrintsEachRoleOfTheDeployment(t *testing.T) {
 	config := stageShippedExample(t, func(example string) string {
 		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
@@ -484,9 +495,9 @@ func TestCheckConfigPrintsEachRoleOfTheDeployment(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	projectLines := productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") + modelsNoneLine
-	roleLine := "roles.checker: type testing, model checker-model, App review, prompt " + prompt + "\n"
-	want := strings.Replace(shippedExampleCheckOK, projectLines, projectLines+roleLine, 1)
+	projectLines := productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS")
+	roleLines := "models: checker-model\nroles.checker: type testing, model checker-model, App review, prompt " + prompt + "\n"
+	want := strings.Replace(shippedExampleCheckOK, projectLines+modelsNoneLine, projectLines+roleLines, 1)
 	if code != 0 || out.String() != want {
 		t.Fatalf("legion config check with a role = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
