@@ -754,6 +754,40 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 	t.Logf("the cursors' age: none before a pass, %s five minutes after one", age)
 }
 
+// TestEventsReadThroughAnswersTheEventsCursor: the eval day-row refresher reads how far the
+// consumer has stored facts (evals' facts relay) as the events cursor's position: 0 on a database
+// no pass has committed on, then the last event the newest pass read, which a pass over a new
+// event moves to that event.
+func TestEventsReadThroughAnswersTheEventsCursor(t *testing.T) {
+	run := newConsumer(t, 2)
+	through := func() int64 {
+		t.Helper()
+		position, err := EventsReadThrough(t.Context(), run.database.Pool)
+		if err != nil {
+			t.Fatalf("read the events cursor: %v", err)
+		}
+		return position
+	}
+	if got := through(); got != 0 {
+		t.Fatalf("before any pass EventsReadThrough answers %d, want 0", got)
+	}
+	run.pass(t)
+	head := run.head(t, `select coalesce(max(id), 0) from events`)
+	if got, cursor := through(), run.cursors(t)[eventsCursor].position; got != head || got != cursor {
+		t.Errorf("after the first pass EventsReadThrough answers %d, want the events cursor %d at the log's head %d", got, cursor, head)
+	}
+	run.writeEvent(t, run.fixture.Open[0], "implementer", "issue.updated", `{"changed":["status"]}`, run.at.Add(-time.Minute))
+	event := run.head(t, `select coalesce(max(id), 0) from events`)
+	if got := through(); got != head {
+		t.Errorf("before the pass over event %d EventsReadThrough answers %d, want %d", event, got, head)
+	}
+	run.pass(t)
+	if got := through(); got != event {
+		t.Errorf("after the pass over event %d EventsReadThrough answers %d, want %d", event, got, event)
+	}
+	t.Logf("EventsReadThrough: 0 before any pass, %d after the first, %d after the pass over a new event", head, event)
+}
+
 // TestAPassHoldsTheFreshnessRequirement: a stored row stands no more than Freshness behind the
 // event that changed it, at the rig's own population and at four times it. No pass runs on a
 // timer: a commit wakes the loop, whose next pass starts at most PassGap after the one before it,

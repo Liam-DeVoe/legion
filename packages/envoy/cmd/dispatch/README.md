@@ -1546,7 +1546,10 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
 
 - The eval day-row refresher (`evals.Store.RunRefresher`, lease `eval-days`) keeps every project's `eval_days` true to its inputs.
   It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), and the triggers of `repo_projects` (`20261117100020`), `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261117100001`), and by `dispatch_events`.
-  Passes start at least 10 s apart.
+  Passes start at least 10 s apart (`evals.RefresherGap`), with one exception, the facts relay: a pass that reads an event whose Legion facts the facts consumer may not have stored yet (its `issue_facts_cursor` row `events` stands below the event, `legionfacts.EventsReadThrough`) does not start that gap.
+  Until 10 s after that pass began, each wake runs a check instead of a pass, under the lease: one read of that cursor, and no write.
+  The first check that finds the consumer at or past the event runs the pass at once, which rewrites the days the stored facts move and starts the gap; a check that finds it short puts the wake off to the relay's end.
+  So a Legion facts write reaches the day rows moments after the consumer stores its facts, not 10 s after the pass its event woke, and at most two passes start within any 10 s.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
   A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
 

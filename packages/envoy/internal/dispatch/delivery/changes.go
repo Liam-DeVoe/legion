@@ -180,10 +180,12 @@ const drainBatch = 250
 //   - the next Legion facts pass's, every pending row, after its commit (legionfacts' writePass);
 //   - the day-row refresher's next pass, every pending row, at its start (evals' refresh). The
 //     rows' notification wakes the refresher of every live process, and the process that holds the
-//     refresher's lease, eval-days, starts that pass no sooner than 10 s after its last pass started
-//     (evals.RefresherGap). Where the killed process held the lease, a woken process finds it held
-//     and tries again every 10 s plus up to a tenth (duty.RunWoken), so it takes the lease at its
-//     first try after the killed process's database session ends, and its pass drains;
+//     refresher's lease, eval-days, starts that pass no later than 10 s after its last pass started
+//     (evals.RefresherGap): 10 s after the last pass that started the gap, or at once where a check
+//     of its facts relay finds the Legion facts consumer past the event the relay waits for. Where
+//     the killed process held the lease, a woken process finds it held and tries again every 10 s
+//     plus up to a tenth (duty.RunWoken), so it takes the lease at its first try after the killed
+//     process's database session ends, and its pass drains;
 //   - with no process alive, the next process's boot drain, before it serves (cmd/dispatch's main).
 func DrainPending(ctx context.Context, pool *store.Pool) (int64, error) {
 	var total int64

@@ -155,7 +155,12 @@ type refresh struct {
 	walking bool
 	// walked is the span of days the pass's walks wrote, by family and project (noteWalked).
 	walked map[walkKey]daySpan
-	report refreshed
+	// eventsFrom is where the event cursor stood when the pass's first page read it (paged is set
+	// once one has), and eventsTo where the last page the pass committed left it (commitPage): the
+	// span of the event log the pass read past, which owedFacts reads.
+	eventsFrom, eventsTo int64
+	paged                bool
+	report               refreshed
 }
 
 // load reads the projects and the delivery settings and seeds the projects the pass owes a seed
@@ -338,7 +343,9 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // page is one page of each feed: it reads where each cursor stands and a page of each feed after
 // it, brings the delivery and CI rows to the delivery settings it reads (syncSettings), writes the
 // days the page names, and moves the cursors in a transaction of its own, which also records the
-// walks the page begins again. It answers whether a feed holds more rows.
+// walks the page begins again. It answers whether a feed holds more rows. The pass's first page
+// records where the event cursor stood before it (eventsFrom), where the pass's reading of the
+// event log began (owedFacts).
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and every walk begins, which builds every day the feeds' history could name. A change cursor
@@ -360,6 +367,9 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	cursors, committed, err := r.store.readRefresherCursors(ctx)
 	if err != nil {
 		return false, err
+	}
+	if !r.paged {
+		r.paged, r.eventsFrom = true, cursors.events
 	}
 	work := newPageWork()
 	var moved feedCursors

@@ -1,7 +1,9 @@
 package evals
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
@@ -17,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // refresherNow is the moment the refresher's tests run their passes as of: noon of deliverytest's
@@ -555,4 +559,318 @@ func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
 		t.Errorf("the pass asks for its next at %s, want %s", next.UTC(), want.UTC())
 	}
 	t.Logf("pruned to %v; the next pass is due at %s", kept, next.UTC().Format(time.RFC3339))
+}
+
+// factsLatencyBound is how long after the Legion facts consumer's commit the refresher's loop may
+// take to rewrite the day rows the stored facts move: well under R14's 2 s from a facts write to
+// every evals view, which the views' own wake and recompute share.
+const factsLatencyBound = time.Second
+
+// relayLoop is the refresher's loop as the server runs it (runRefresher, under the eval-days
+// lease), over a rig's database, at a gap the test gives and as of the rig's clock, woken by the
+// test by hand rather than by a hub: events and deliveries are its two wakes. log holds every
+// record logged while the loop runs, and started is the moment before its boot pass began.
+type relayLoop struct {
+	events, deliveries chan struct{}
+	log                *logtest.Recorder
+	started            time.Time
+}
+
+// runLoop starts the loop over the rig, once the event log's safe horizon covers every event
+// written so far; it runs until the test ends.
+func (r *refresherRig) runLoop(t *testing.T, gap time.Duration) *relayLoop {
+	t.Helper()
+	if _, err := r.horizon.Await(t.Context()); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	loop := &relayLoop{events: make(chan struct{}, 1), deliveries: make(chan struct{}, 1), log: &logtest.Recorder{}}
+	logtest.SetDefault(t, loop.log)
+	deps := RefresherDeps{Horizon: r.horizon, Build: r.build, Leases: storetest.Leases(t, r.database.Pool), Events: loop.events, Deliveries: loop.deliveries}
+	now := r.now
+	sched := refresherSchedule{gap: gap, page: refresherPage, batch: r.batch, now: func() time.Time { return now }}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	loop.started = time.Now()
+	go func() {
+		defer close(done)
+		r.registry.runRefresher(ctx, deps, sched)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return loop
+}
+
+// wake signals the loop's delivery wake as the hub does, a send that never blocks into a buffer of
+// one: the wake a change in the change log gives, a stored fact's or the refresher's own.
+func (l *relayLoop) wake() {
+	select {
+	case l.deliveries <- struct{}{}:
+	default:
+	}
+}
+
+// ran is how many of the loop's attempts have run so far, its passes and its relay's checks alike:
+// duty.Exclusive logs each one that ran under the refresher's lease.
+func (l *relayLoop) ran() int {
+	n := 0
+	for _, record := range l.log.Records() {
+		if record.Message != "dispatch duty: leased pass ran" {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "lease" && attr.Value.String() == RefresherLease {
+				n++
+				return false
+			}
+			return true
+		})
+	}
+	return n
+}
+
+// awaitRan waits until n of the loop's attempts have run, failing t once bound has passed, and
+// answers when they had.
+func (l *relayLoop) awaitRan(t *testing.T, n int, bound time.Duration) time.Time {
+	t.Helper()
+	return awaitAt(t, time.Now().Add(bound), fmt.Sprintf("attempt %d of the loop", n), func() bool { return l.ran() >= n })
+}
+
+// gaveUp is how many times the loop logged that its facts relay gave up on event.
+func (l *relayLoop) gaveUp(event int64) int {
+	n := 0
+	for _, record := range l.log.Records() {
+		if !strings.Contains(record.Message, "facts relay gave up") {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "event" && attr.Value.Kind() == slog.KindInt64 && attr.Value.Int64() == event {
+				n++
+				return false
+			}
+			return true
+		})
+	}
+	return n
+}
+
+// awaitAt asks holds every 10 ms until it holds, failing t once deadline has passed, and answers
+// the moment it was seen to hold.
+func awaitAt(t *testing.T, deadline time.Time, what string, holds func() bool) time.Time {
+	t.Helper()
+	for {
+		if holds() {
+			return time.Now()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: not seen by %s", what, deadline.Format(time.RFC3339Nano))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// stillAt asks holds every 50 ms until until, and fails t where it stops holding sooner: a change
+// the gap is to hold landed before the gap's end.
+func stillAt(t *testing.T, until time.Time, what string, holds func() bool) {
+	t.Helper()
+	for time.Now().Before(until) {
+		if !holds() {
+			t.Errorf("%s moved %s before the gap's end, which a pass that started the gap holds it to", what, time.Until(until))
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// workTime is EVAL's legion-work-time n of each day, of its all-repositories rows of hours, by the
+// day's date: one read, cheap enough to ask every 10 ms.
+func (r *refresherRig) workTime(t *testing.T) map[string]int {
+	t.Helper()
+	rows, err := r.database.Pool.Query(t.Context(), `select day, n from eval_days where eval_id = $1 and series = 'hours' and repo = '' and deploy_repo = ''`,
+		EvalID("EVAL", SlugLegionWorkTime))
+	if err != nil {
+		t.Fatalf("read legion-work-time's rows: %v", err)
+	}
+	n := map[string]int{}
+	var day time.Time
+	var count int
+	if _, err := pgx.ForEachRow(rows, []any{&day, &count}, func() error {
+		n[day.Format(time.DateOnly)] = count
+		return nil
+	}); err != nil {
+		t.Fatalf("read legion-work-time's rows: %v", err)
+	}
+	return n
+}
+
+// factsCursorUpsert moves the Legion facts consumer's events cursor to $1, as its pass does
+// (legionfacts' advanceCursors).
+const factsCursorUpsert = `
+	insert into issue_facts_cursor (name, position, updated_at) values ('events', $1, now())
+	on conflict (name) do update set position = excluded.position, updated_at = excluded.updated_at`
+
+// storeFacts stores the facts of keys as history holds them and moves the Legion facts consumer's
+// events cursor to through, in one transaction, then drains the change log's outbox: what the
+// consumer's pass commits, and then does (legionfacts' writePass). It answers the moment the
+// transaction committed.
+func (r *refresherRig) storeFacts(t *testing.T, history *legionEval, through int64, keys ...string) time.Time {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the facts of %v: %v", keys, err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var rows []legionfacts.Row
+	for _, key := range keys {
+		rows = append(rows, history.rows[key])
+	}
+	if _, err := legionfacts.WriteProject(ctx, tx, legionfacts.ProjectWrite{Project: "EVAL", Rows: rows, Stated: keys}); err != nil {
+		t.Fatalf("write the facts of %v: %v", keys, err)
+	}
+	if _, err := tx.Exec(ctx, factsCursorUpsert, through); err != nil {
+		t.Fatalf("move the facts consumer's events cursor to %d: %v", through, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the facts of %v: %v", keys, err)
+	}
+	committed := time.Now()
+	if _, err := delivery.DrainPending(ctx, r.database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	return committed
+}
+
+// TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit: R14 gives a Legion facts write 2 s to
+// reach every evals view, and a view wakes once the refresher has rewritten its day rows. The
+// write's event wakes the refresher at once, and that pass runs before the Legion facts consumer
+// has stored the facts the event moves, so it rewrites nothing; the consumer's commit wakes the
+// loop again. Here the loop runs as the server runs it, at RefresherGap, woken by hand: its first
+// pass reads EVAL-3's status event and rewrites nothing; a wake before the consumer commits, as the
+// refresher's own writes give, runs no pass that starts the gap; then the consumer stores EVAL-3's
+// close moved from the 3rd day to the 5th with its events cursor at the event, and the wake of that
+// commit runs the pass that rewrites both days within factsLatencyBound of the commit, not
+// RefresherGap after the first pass. That pass starts the gap: EVAL-2's close moved after it, with
+// no event, waits for the gap's end.
+func TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit(t *testing.T) {
+	r := newRefresherRig(t)
+	history := r.seedLegionEval(t)
+	r.settle(t)
+	r.pass(t)
+	d1, d2 := history.d1.Format(time.DateOnly), history.d2.Format(time.DateOnly)
+	d3, d4 := legionHistoryDay(4).Format(time.DateOnly), legionHistoryDay(5).Format(time.DateOnly)
+	if n := r.workTime(t); n[d1] != 2 || n[d2] != 1 || n[d3] != 0 || n[d4] != 0 {
+		t.Fatalf("after the walk legion-work-time holds n %v, want 2 on %s, 1 on %s and 0 on %s and %s", n, d1, d2, d3, d4)
+	}
+	r.exec(t, "store the facts of every event so far", factsCursorUpsert, r.count(t, `select coalesce(max(id), 0) from events`))
+	r.writeIssueEvent(t, "EVAL-3", "issue.updated", `{"key":"EVAL-3","status":"in_review","changed":["status"]}`)
+	event := int64(r.count(t, `select max(id) from events`))
+
+	loop := r.runLoop(t, RefresherGap)
+	loop.awaitRan(t, 1, time.Minute)
+	if read := int64(r.count(t, `select position from eval_days_cursor where name = $1`, eventsCursor)); read < event {
+		t.Fatalf("the first pass left the events cursor at %d, short of EVAL-3's event %d", read, event)
+	}
+	if n := r.workTime(t); n[d2] != 1 || n[d4] != 0 {
+		t.Fatalf("the first pass moved EVAL-3's close before its facts were stored: n %v", n)
+	}
+	loop.wake()
+	loop.awaitRan(t, 2, RefresherGap+5*time.Second)
+
+	moved := history.rows["EVAL-3"]
+	moved.ClosedAt = new(legionHistoryDay(5).Add(9 * time.Hour))
+	history.rows["EVAL-3"] = moved
+	committed := r.storeFacts(t, history, event, "EVAL-3")
+	loop.wake()
+	landed := awaitAt(t, committed.Add(RefresherGap+3*time.Second), "the day rows of EVAL-3's moved close", func() bool {
+		n := r.workTime(t)
+		return n[d2] == 0 && n[d4] == 1
+	})
+	latency := landed.Sub(committed)
+	if latency > factsLatencyBound {
+		t.Errorf("EVAL-3's moved close reached the day rows %s after the facts consumer's commit, want within %s", latency, factsLatencyBound)
+	}
+	if gaveUp := loop.gaveUp(event); gaveUp != 0 {
+		t.Errorf("the loop logged %d times that its facts relay gave up on event %d, which the consumer stored within the gap", gaveUp, event)
+	}
+	t.Logf("EVAL-3's moved close reached the day rows %s after the facts consumer's commit (bound %s)", latency, factsLatencyBound)
+
+	loop.awaitRan(t, 3, time.Minute)
+	moved = history.rows["EVAL-2"]
+	moved.ClosedAt = new(legionHistoryDay(4).Add(12 * time.Hour))
+	history.rows["EVAL-2"] = moved
+	stored := r.storeFacts(t, history, event, "EVAL-2")
+	loop.wake()
+	// The pass that rewrote EVAL-3's days began after the commit, so its gap ends no sooner than
+	// RefresherGap after it.
+	stillAt(t, committed.Add(RefresherGap-500*time.Millisecond), "EVAL-2's close on "+d1, func() bool { return r.workTime(t)[d1] == 2 })
+	again := awaitAt(t, landed.Add(RefresherGap+2*time.Second), "the day rows of EVAL-2's moved close", func() bool {
+		n := r.workTime(t)
+		return n[d1] == 1 && n[d3] == 1
+	})
+	t.Logf("EVAL-2's close, moved %s after EVAL-3's pass landed, reached the day rows %s after its own commit, %s after EVAL-3's commit",
+		stored.Sub(landed), again.Sub(stored), again.Sub(committed))
+}
+
+// TestTheFactsRelayGivesUpAfterItsGapAndEveryOtherPassStartsTheGap: a relay waits for the facts of
+// the event its pass read no longer than the gap. The first pass reads EVAL-3's event; EVAL-3's
+// facts then move while the Legion facts consumer's events cursor stays short of the event, so the
+// wake of that change finds the facts unstored, and the pass that rewrites EVAL-3's days runs at
+// the gap's end after the first pass began, logging that the relay gave up. That pass starts the
+// gap, as every pass that opens no relay does: EVAL-2's close moved after it, with the consumer's
+// cursor now past the event, waits for the gap's end.
+func TestTheFactsRelayGivesUpAfterItsGapAndEveryOtherPassStartsTheGap(t *testing.T) {
+	const gap = 5 * time.Second
+	r := newRefresherRig(t)
+	history := r.seedLegionEval(t)
+	r.settle(t)
+	r.pass(t)
+	d1, d2 := history.d1.Format(time.DateOnly), history.d2.Format(time.DateOnly)
+	d3, d4 := legionHistoryDay(4).Format(time.DateOnly), legionHistoryDay(5).Format(time.DateOnly)
+	before := int64(r.count(t, `select coalesce(max(id), 0) from events`))
+	r.exec(t, "store the facts of every event so far", factsCursorUpsert, before)
+	r.writeIssueEvent(t, "EVAL-3", "issue.updated", `{"key":"EVAL-3","status":"in_review","changed":["status"]}`)
+	event := int64(r.count(t, `select max(id) from events`))
+
+	loop := r.runLoop(t, gap)
+	first := loop.awaitRan(t, 1, time.Minute)
+	if took := first.Sub(loop.started); took > gap-time.Second {
+		t.Fatalf("the first pass took %s, too long to leave a wake inside its gap of %s", took, gap)
+	}
+	moved := history.rows["EVAL-3"]
+	moved.ClosedAt = new(legionHistoryDay(5).Add(9 * time.Hour))
+	history.rows["EVAL-3"] = moved
+	r.storeFacts(t, history, before, "EVAL-3")
+	loop.wake()
+	landed := awaitAt(t, first.Add(gap+3*time.Second), "the day rows of EVAL-3's moved close", func() bool {
+		n := r.workTime(t)
+		return n[d2] == 0 && n[d4] == 1
+	})
+	// The first pass began after started, so its relay ran to started+gap at the soonest.
+	if end := loop.started.Add(gap); landed.Before(end) {
+		t.Errorf("EVAL-3's moved close reached the day rows %s before the relay's gap ended, while the consumer had not read the event", end.Sub(landed))
+	}
+	if late := first.Add(gap + 2*time.Second); landed.After(late) {
+		t.Errorf("EVAL-3's moved close reached the day rows %s after the first pass ended, want by the relay's gap of %s and 2 s", landed.Sub(first), gap)
+	}
+	if gaveUp := loop.gaveUp(event); gaveUp != 1 {
+		t.Errorf("the loop logged %d times that its facts relay gave up on event %d, want once", gaveUp, event)
+	}
+	t.Logf("with the consumer short of the event, EVAL-3's moved close reached the day rows %s after the loop started (gap %s)", landed.Sub(loop.started), gap)
+
+	loop.awaitRan(t, 3, time.Minute)
+	moved = history.rows["EVAL-2"]
+	moved.ClosedAt = new(legionHistoryDay(4).Add(12 * time.Hour))
+	history.rows["EVAL-2"] = moved
+	stored := r.storeFacts(t, history, event, "EVAL-2")
+	loop.wake()
+	// The pass that gave up began at started+gap at the soonest, so its gap ends no sooner than
+	// started+2*gap.
+	stillAt(t, loop.started.Add(2*gap-500*time.Millisecond), "EVAL-2's close on "+d1, func() bool { return r.workTime(t)[d1] == 2 })
+	again := awaitAt(t, landed.Add(gap+2*time.Second), "the day rows of EVAL-2's moved close", func() bool {
+		n := r.workTime(t)
+		return n[d1] == 1 && n[d3] == 1
+	})
+	t.Logf("EVAL-2's close, moved %s after the pass that gave up landed, reached the day rows %s after its commit", stored.Sub(landed), again.Sub(stored))
 }

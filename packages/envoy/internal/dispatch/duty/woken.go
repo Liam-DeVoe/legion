@@ -21,16 +21,26 @@ type WokenLoop struct {
 	// running pass read too early is still served. Nil is a loop that runs only at start and
 	// when its passes ask to.
 	Wake <-chan struct{}
-	// MinGap is the least time from the start of one pass to the start of the next, whatever
-	// woke it: wakes that arrive sooner collapse into the one pass at the end of the gap, so a
-	// loop under load runs no more often than once per MinGap - the period of the timer it
-	// replaces - and an idle one not at all. It is also how long a leased loop waits, plus up to
-	// a tenth again, before trying once more after an attempt whose pass did not run: the lease
-	// was held by another process, or could not be taken. It must be positive when Lease is
-	// set. The retry is what keeps a wake from being lost to the other process's pass, which may
-	// have read before the change that woke this one; the loop keeps trying until a pass of its
-	// own runs.
+	// MinGap is the least time from the start of a pass that starts the gap - every pass, unless
+	// Paced answers otherwise - to the start of the next, whatever woke it: wakes that arrive
+	// sooner collapse into the one pass at the end of the gap, so a loop under load runs no more
+	// often than once per MinGap - the period of the timer it replaces - and an idle one not at
+	// all. It is also how long a leased loop waits, plus up to a tenth again, before trying once
+	// more after an attempt whose pass did not run: the lease was held by another process, or
+	// could not be taken. It must be positive when Lease is set. The retry is what keeps a wake
+	// from being lost to the other process's pass, which may have read before the change that
+	// woke this one; the loop keeps trying until a pass of its own runs.
 	MinGap time.Duration
+	// Paced, when set, is asked after each pass that ran whether that pass starts the gap. True
+	// holds the next attempt to MinGap after this pass's start, as a loop with no Paced holds
+	// every pass. False leaves the gap where the passes before it left it: a wake after this pass
+	// runs once that earlier gap has ended (at once, where it already has), and a due time this
+	// pass returned runs at its own time or at that gap's end, whichever is later. It is for a
+	// loop whose pass may only check whether its work can be done yet, or may do work whose input
+	// lands moments later, and that must not hold the pass doing that work to the gap
+	// (evals.Store.RunRefresher's facts relay). An attempt whose pass did not run is not asked:
+	// its retry waits as every loop's does. Nil: every pass starts the gap.
+	Paced func() bool
 	// Pass does the work, on the loop's goroutine, and returns when the loop next needs to run
 	// with no wake - an attempt's retry time, a claim's expiry - or the zero time for never.
 	// Each pass's answer replaces the last one's, and a due time is held to MinGap like a wake.
@@ -38,9 +48,10 @@ type WokenLoop struct {
 }
 
 // RunWoken runs loop until ctx is cancelled: one pass at once, then a pass on each wake and at each
-// due time a pass returned, never sooner than loop.MinGap after the previous pass started. Between
-// those it holds no timer and makes no statement, so a loop with nothing to do costs nothing - the
-// point of the shape, against RunJittered's pass every period whatever changed.
+// due time a pass returned, never sooner than loop.MinGap after the start of the last pass that
+// started the gap, which is every pass but those loop.Paced answers false for. Between those it
+// holds no timer and makes no statement, so a loop with nothing to do costs nothing - the point of
+// the shape, against RunJittered's pass every period whatever changed.
 //
 // A leased loop runs each pass under Exclusive with no period and no due time (the zero time),
 // which is mutual exclusion and nothing else: no period is read or recorded, so no tick can be
@@ -101,8 +112,8 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 		owed = true
 		// due is when the last pass asked to run again; zero for never.
 		due time.Time
-		// notBefore is the earliest the next attempt may start: MinGap after the last pass
-		// started, pushed later by a held attempt's retry wait.
+		// notBefore is the earliest the next attempt may start: MinGap after the start of the
+		// last pass that started the gap (Paced), pushed later by a held attempt's retry wait.
 		notBefore time.Time
 		// The one timer the loop owns, re-armed rather than replaced, and the time it is armed
 		// for (zero when it is not armed).
@@ -143,7 +154,10 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 		started := time.Now()
 		next, ran := l.attempt(ctx, exclusive)
 		if ran {
-			owed, due, notBefore = false, next, started.Add(l.MinGap)
+			owed, due = false, next
+			if l.Paced == nil || l.Paced() {
+				notBefore = started.Add(l.MinGap)
+			}
 			continue
 		}
 		if ctx.Err() != nil {

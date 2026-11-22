@@ -220,6 +220,60 @@ func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
 	})
 }
 
+// Paced says whether a pass starts the gap. With no Paced, or one that answers true, every pass
+// does, as before: after a boot pass at 0 with a gap of 5 s, wakes at 6 s, 6.5 s and 7 s run a
+// pass at 6 s and one at 11 s. A pass Paced answers false for leaves the gap where the pass before
+// it left it: when the pass at 6 s does not start it, the wake at 6.5 s runs at once, since the
+// boot pass's gap ended at 5 s; that pass starts the gap again, so the wake at 7 s waits for
+// 11.5 s. Paced is asked once after each pass, and only then.
+func TestAPassPacedAnswersFalseForLeavesTheNextWakeUnheld(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// paced answers for the nth pass; nil runs the loop with no Paced.
+		paced func(n int) bool
+		want  []time.Duration
+	}{
+		{"no Paced", nil, []time.Duration{0, 6 * time.Second, 11 * time.Second}},
+		{"Paced answers true", func(int) bool { return true }, []time.Duration{0, 6 * time.Second, 11 * time.Second}},
+		{"Paced answers false for the second pass", func(n int) bool { return n != 2 },
+			[]time.Duration{0, 6 * time.Second, 6500 * time.Millisecond, 11500 * time.Millisecond}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var passes passClock
+				wake := make(chan struct{}, 1)
+				ran, asked := 0, 0
+				loop := duty.WokenLoop{
+					Wake:   wake,
+					MinGap: 5 * time.Second,
+					Pass:   func(context.Context) time.Time { passes.record(); ran++; return time.Time{} },
+				}
+				if row.paced != nil {
+					loop.Paced = func() bool {
+						asked++
+						if asked != ran {
+							t.Errorf("Paced was asked for the %dth time after %d passes, want once after each pass", asked, ran)
+						}
+						return row.paced(ran)
+					}
+				}
+				booted := time.Now()
+				cancel, done := runLoop(loop, noLease(t))
+				for _, at := range []time.Duration{6 * time.Second, 6500 * time.Millisecond, 7 * time.Second} {
+					time.Sleep(at - time.Since(booted))
+					signal(wake)
+				}
+				time.Sleep(time.Hour)
+				stop(cancel, done)
+				wantPassesAt(t, &passes, booted, row.want...)
+				if row.paced != nil && asked != ran {
+					t.Errorf("Paced was asked %d times over %d passes, want once after each", asked, ran)
+				}
+			})
+		})
+	}
+}
+
 // fakeLease is Exclusive's shape over a lease the test controls: it refuses the first refusals
 // attempts, as a lease held by another process (or one that could not be taken) does, and runs the
 // pass on every attempt after. It records each attempt's time, name, due time and period.

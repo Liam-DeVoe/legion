@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// pollEvery is how often wait reads the consumers' state: more than the refresher's least gap
-// between two passes (evals.RefresherGap, 10 s), so a cursor that stood still for a whole poll
-// had a pass in which to move.
+// pollEvery is how often wait reads the consumers' state: more than the longest a wake waits for
+// the refresher's next pass (evals.RefresherGap, 10 s, which its facts relay shortens and never
+// lengthens), so a cursor that stood still for a whole poll had a pass in which to move.
 const pollEvery = 15 * time.Second
 
 // lagPolls is how many polls old the heads a cursor is held to are: each cursor must stand at or

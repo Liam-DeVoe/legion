@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -76,10 +77,32 @@ import (
 // once would build the same days twice and walk the same days twice.
 const RefresherLease = "eval-days"
 
-// RefresherGap is the loop's MinGap: the least time from one pass's start to the next whatever woke
-// it, so a burst of changes is answered by one pass every ten seconds rather than one per change.
-// A computed eval's view wakes once the refresher has rewritten its rows (R10), so this is how far
-// behind its inputs a computed eval can stand while changes arrive, plus one pass.
+// RefresherGap is the loop's MinGap: the least time from the start of a pass that starts the gap
+// to the start of the next, whatever woke it, so a burst of changes is answered by one pass every
+// ten seconds rather than one per change. A computed eval's view wakes once the refresher has
+// rewritten its rows (R10), so this is how far behind its inputs a computed eval can stand while
+// changes arrive, plus one pass.
+//
+// Every pass starts the gap except one that read an event whose Legion facts the facts consumer
+// had not stored when the pass began (refreshed.factsOwed), which opens the facts relay
+// (dispatch://INFRA-2916, R14's 2 s for a Legion facts write). Such a pass cannot rewrite the days
+// those facts move, since the facts are not stored yet. The consumer, woken by the same event,
+// stores them moments later, and their change in the log wakes this loop again; the gap must not
+// hold that pass. So the opening pass leaves the gap where the passes before it left it
+// (duty.WokenLoop.Paced), and until RefresherGap after its start each wake runs a check instead
+// of a pass: under the lease, one read of the consumer's events cursor
+// (legionfacts.EventsReadThrough), and no write. A check that finds the consumer short of the
+// event puts the wake off to the relay's end, when the gap would have run it anyway: the
+// refresher's own writes, which wake it too, meet such a check. The first check that finds the
+// consumer at or past the event runs the full pass at once, which reads the facts' change,
+// rewrites the days it moves and starts the gap.
+//
+// The relay is bounded. A pass that starts inside the RefresherGap after a pass that opened a
+// relay opens none, and once that RefresherGap has passed the next pass runs whole and starts the
+// gap whatever the consumer has stored, logging that the relay gave up where it put a wake off. So
+// at most two full passes start within any RefresherGap. The opening pass's own due time is held
+// to the relay's end, so a walk's next batch and the retry of an event above the safe horizon
+// keep this gap.
 const RefresherGap = 10 * time.Second
 
 // refresherPage is the most rows one page of a pass reads of each feed. A pass whose page was full
@@ -89,9 +112,11 @@ const refresherPage = 1000
 // walkBatch is how many days one pass builds of each walk. A walk of INFRA's history (a year of
 // days, each one read of the day's delivery rows and one write per project) is many passes, each
 // started RefresherGap after the one before it began (the loop's MinGap holds a pass asked for at
-// once to that), so the changes that arrive meanwhile are answered between two batches rather than
-// after the whole rebuild, and no pass holds the lease for the whole of it. Every day is a
-// transaction of its own per project (writeDeliveryDay, writeLegionDay).
+// once to that, and a pass that opens the facts relay asks for its next at the relay's end, the
+// same moment; the pass that closes a relay early builds one batch more inside that gap), so the
+// changes that arrive meanwhile are answered between two batches rather than after the whole
+// rebuild, and no pass holds the lease for the whole of it. Every day is a transaction of its own
+// per project (writeDeliveryDay, writeLegionDay).
 const walkBatch = 28
 
 // The cursors, one row of eval_days_cursor each, named for the feed they are read by (feedCursors).
@@ -157,11 +182,13 @@ var serverRefresherSchedule = refresherSchedule{
 // RunRefresher keeps every project's day rows true to their inputs (the refresher's rules above)
 // until ctx is done: one pass at start, a pass on each wake, a pass asked for at once after one
 // that left a walk unfinished (which the loop's MinGap, RefresherGap, holds to ten seconds after
-// the last began), a pass RefresherGap after one that left an event above the safe horizon it
-// read, and a pass at the earliest of the next UTC midnight, which begins a day every walk builds,
-// and pruneSlack after the oldest delivery change passes delivery.ChangeRetention, which the pass
-// then prunes (delivery.PruneChanges), so the change log keeps its retention where no GitHub App
-// runs the reconcile that prunes it too.
+// the last pass that started the gap began), a pass RefresherGap after one that left an event
+// above the safe horizon it read, and a pass at the earliest of the next UTC midnight, which
+// begins a day every walk builds, and pruneSlack after the oldest delivery change passes
+// delivery.ChangeRetention, which the pass then prunes (delivery.PruneChanges), so the change log
+// keeps its retention where no GitHub App runs the reconcile that prunes it too. While a facts
+// relay is open (RefresherGap), a wake runs a check of the Legion facts consumer's events cursor
+// instead, and the pass at once when the check finds the facts stored.
 func (s *Store) RunRefresher(ctx context.Context, deps RefresherDeps) {
 	s.runRefresher(ctx, deps, serverRefresherSchedule)
 }
@@ -172,12 +199,20 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 	}
 	ctx = store.WithTransactionTracking(ctx)
 	seeds := &seeding{}
+	relay := &factsRelay{paced: true}
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  RefresherLease,
 		Leases: deps.Leases,
 		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Deliveries),
 		MinGap: sched.gap,
+		Paced:  func() bool { return relay.paced },
 		Pass: func(ctx context.Context) time.Time {
+			// The wall clock times the relay, not sched.now, which a test stands still.
+			started := time.Now()
+			if relay.hold(ctx, s.database.Pool, started) {
+				return relay.until
+			}
+			early := relay.begin(started, sched.gap)
 			report, next, err := s.refresh(ctx, deps, sched, seeds)
 			if err != nil && ctx.Err() == nil {
 				slog.Warn("dispatch: the eval day-row refresher's pass failed", "error", err)
@@ -189,9 +224,69 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 			if len(report.days) > 0 || len(report.seeded) > 0 {
 				slog.Debug("dispatch: eval day rows refreshed", "days", len(report.days), "projects_seeded", len(report.seeded))
 			}
-			return next
+			return relay.end(started, early, report.factsOwed, sched.gap, next)
 		},
 	})
+}
+
+// factsRelay is the loop's facts relay (RefresherGap), which the loop's goroutine alone reads and
+// writes. through is the newest event a full pass read whose facts the Legion facts consumer had
+// not stored, 0 while no relay is open; until is RefresherGap after the start of the pass that
+// opened the last relay; held is set once a check has put a wake off to until; and paced is what
+// the loop's Paced answers for the pass that ran last. Its times are the wall clock's.
+type factsRelay struct {
+	through int64
+	until   time.Time
+	held    bool
+	paced   bool
+}
+
+// hold runs before each pass, at started. While a relay is open it reads how far the consumer has
+// stored facts (legionfacts.EventsReadThrough) and answers true where the consumer is short of the
+// relay's event: that read is then the whole pass, a check, which puts the wake off to the relay's
+// end and starts no gap. Otherwise the full pass runs (begin). A read that fails answers nothing,
+// so the full pass runs, and starts the gap.
+func (f *factsRelay) hold(ctx context.Context, q legionfacts.Querier, started time.Time) bool {
+	if f.through == 0 || !started.Before(f.until) {
+		return false
+	}
+	stored, err := legionfacts.EventsReadThrough(ctx, q)
+	if err != nil || stored >= f.through {
+		return false
+	}
+	f.held, f.paced = true, false
+	return true
+}
+
+// begin closes the relay before a full pass that starts at started, and answers whether the pass
+// is early: inside the RefresherGap of the pass that opened the last relay, so it opens none (end).
+// A pass that is not early while the relay is still open is the relay giving up, which it logs
+// where a check put a wake off: no wake found the facts stored within the gap.
+func (f *factsRelay) begin(started time.Time, gap time.Duration) bool {
+	early := started.Before(f.until)
+	if f.held && !early {
+		slog.Info("dispatch: the eval day-row refresher's facts relay gave up: no wake found the Legion facts consumer past the event within the gap, and the pass the relay put off runs now",
+			"event", f.through, "gap", gap)
+	}
+	f.through, f.held, f.paced = 0, false, true
+	return early
+}
+
+// end records a full pass that started at started, read owed (refreshed.factsOwed) and asked for
+// next, and answers when the loop is to run again with no wake. A pass that is not early (begin)
+// and read an event whose facts are owed opens a relay: it starts no gap, and a due time it asked
+// for before the relay's end is held to that end, so a walk's next batch and a held-back event's
+// retry run no sooner than the gap would have run them. Every other pass starts the gap and keeps
+// its due time.
+func (f *factsRelay) end(started time.Time, early bool, owed int64, gap time.Duration, next time.Time) time.Time {
+	if early || owed == 0 {
+		return next
+	}
+	f.through, f.until, f.paced = owed, started.Add(gap), false
+	if !next.IsZero() && next.Before(f.until) {
+		next = f.until
+	}
+	return next
 }
 
 // refreshThroughPasses bounds RefreshThrough: a pass builds walkBatch days of each walk, so this
@@ -232,10 +327,14 @@ func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time
 // refreshed is what one pass wrote: each family's day of each project it built and wrote, which is
 // what a check of which days a change touches reads, and each project whose seed it ran, in the
 // order it ran them. The unowned-p0 row of today is recorded under its slug, and a logged eval's
-// zero fill under walkLogged and the day it filled through.
+// zero fill under walkLogged and the day it filled through. factsOwed is the newest event the
+// pass's pages read whose Legion facts the facts consumer had not stored when the pass began, 0
+// for none (owedFacts), which opens the loop's facts relay (RefresherGap); RefreshThrough reads it
+// not.
 type refreshed struct {
-	days   map[builtDay]bool
-	seeded []string
+	days      map[builtDay]bool
+	seeded    []string
+	factsOwed int64
 }
 
 // builtDay is one project's day of one family a pass wrote.
@@ -262,6 +361,12 @@ func (r refreshed) sorted() []string {
 // figures' part (figuresPass), prunes the change log, and answers what it wrote and when the loop
 // should run again.
 //
+// Its first read, before the drain, is how far the Legion facts consumer has stored facts
+// (legionfacts.EventsReadThrough): the facts of every event at or below that committed before the
+// drain, which moves their changes into the log, so the pass's pages read them. The pass answers in
+// factsOwed the newest event its pages read above it (owedFacts), whose facts the pass may have
+// read before the consumer stored them: what the loop's facts relay waits for (RefresherGap).
+//
 // A pass that leaves an event id standing above the safe horizon it read has read less than the
 // log holds (events.Horizon.HeldBack): an event that committed while a lower id was still open,
 // which its pages stopped below. It asks for a pass sched.gap away, not for nextPass's day's end,
@@ -272,6 +377,10 @@ func (r refreshed) sorted() []string {
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
 	r.clock = sched.now
+	stored, err := legionfacts.EventsReadThrough(ctx, s.database.Pool)
+	if err != nil {
+		return r.report, time.Time{}, err
+	}
 	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
 		return r.report, time.Time{}, err
 	}
@@ -290,6 +399,10 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 		if !more {
 			break
 		}
+	}
+	owed, err := r.owedFacts(ctx, stored)
+	if err != nil {
+		return r.report, time.Time{}, err
 	}
 	pending, err := r.walk(ctx)
 	if err != nil {
@@ -314,7 +427,30 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 			next = again
 		}
 	}
+	r.report.factsOwed = owed
 	return r.report, next, nil
+}
+
+// owedFacts is the newest event between where the events cursor stood before the pass's first
+// page and where its last committed page left it, where that event is above stored, the Legion
+// facts consumer's events cursor as the pass read it before its drain; 0 where the pages moved
+// the cursor past no event above stored. It reads the log itself rather than comparing the two
+// cursors: the consumer's stands at the last event its page read (legionfacts.EventsReadThrough),
+// the refresher's at the safe horizon where its page came back short (readRefresherEvents), which
+// may stand above every event, so the consumer's would never reach it.
+func (r *refresh) owedFacts(ctx context.Context, stored int64) (int64, error) {
+	if r.eventsTo <= max(r.eventsFrom, stored) {
+		return 0, nil
+	}
+	var newest int64
+	if err := r.store.database.Pool.QueryRow(ctx, `select coalesce(max(id), 0) from events where id > $1 and id <= $2`,
+		r.eventsFrom, r.eventsTo).Scan(&newest); err != nil {
+		return 0, fmt.Errorf("read the newest event after %d through %d: %w", r.eventsFrom, r.eventsTo, err)
+	}
+	if newest <= stored {
+		return 0, nil
+	}
+	return newest, nil
 }
 
 // newRefresh is the state of one pass that builds as build, as of now, batch days of each walk. Its
@@ -336,7 +472,8 @@ func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 const pruneSlack = 5 * time.Minute
 
 // nextPass is when the loop should run again with no wake: now while a walk has days left (which
-// the loop's MinGap, RefresherGap, holds until RefresherGap after the last pass began), and
+// the loop's MinGap, RefresherGap, holds until RefresherGap after the last pass that started the
+// gap began, and a pass that opens the facts relay to the relay's end, the same moment), and
 // otherwise at the earlier of the next UTC midnight, the first moment of a day every walk builds,
 // and pruneSlack after the oldest change the log holds passes its retention, which the pass then
 // prunes.
@@ -406,7 +543,8 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // the cursor that passed them, and with the settings the walk builds under where none were
 // recorded (syncSettings). The event cursor is stamped with the moment the pass ran as of, and the
 // change cursor with its ReadAt, when a page last read the change log to its end (page), which the
-// lost-cursor rule reads and which a full page leaves where it stood.
+// lost-cursor rule reads and which a full page leaves where it stood. Once the transaction commits,
+// the pass records where it left the event cursor (eventsTo, owedFacts).
 func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
@@ -470,6 +608,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
 	}
+	r.eventsTo = cursors.events
 	return nil
 }
 
@@ -556,13 +695,14 @@ func (s *Store) RefresherAge(ctx context.Context, now time.Time) (time.Duration,
 // oldest of its two cursors' updated_at (the stored figures' own cursor, figuresCursor, is not one
 // of them), and false when no pass has committed on this database. Every pass stamps the event
 // cursor with the moment it ran as of, whether or not its feed held anything new, and the change
-// cursor with the moment one of its pages last read the change log to its end (commitPage). So the
-// age is the time since the last pass ran, or since a pass last read the change log to its end,
-// whichever is older: a pass catching up a backlog of changes reads as old as its last read of the
-// whole log. It is not how long ago the last change arrived: it is the freshness the eval list
-// states of the computed evals' day rows, read in the snapshot of the rows it states it of
-// (BeginSnapshot). A caller whose clock stands behind the writing process's reads a negative age,
-// as it would of any moment another process stamped.
+// cursor with the moment one of its pages last read the change log to its end (commitPage). A
+// check of the facts relay (RefresherGap) is no pass and stamps neither. So the age is the time
+// since the last pass ran, or since a pass last read the change log to its end, whichever is
+// older: a pass catching up a backlog of changes reads as old as its last read of the whole log.
+// It is not how long ago the last change arrived: it is the freshness the eval list states of the
+// computed evals' day rows, read in the snapshot of the rows it states it of (BeginSnapshot). A
+// caller whose clock stands behind the writing process's reads a negative age, as it would of any
+// moment another process stamped.
 func RefresherAgeIn(ctx context.Context, q delivery.Querier, now time.Time) (time.Duration, bool, error) {
 	var oldest *time.Time
 	if err := q.QueryRow(ctx, `select min(updated_at) from eval_days_cursor where name = any($1)`, refresherCursors).Scan(&oldest); err != nil {

@@ -695,7 +695,11 @@ func main() {
 	//     back) and the eval day rows (evals.Store.RunRefresher, woken by api.EventsChannel and
 	//     delivery.ChangesChannel, whose due time is at once while a walk has days left, else the
 	//     earlier of the next UTC midnight and the next prune of the change log, and
-	//     evals.RefresherGap after a pass that failed or whose safe horizon held an event back).
+	//     evals.RefresherGap after a pass that failed or whose safe horizon held an event back; a
+	//     pass that read an event the Legion facts consumer had not read yet starts no gap, and
+	//     until evals.RefresherGap after it began each wake checks the consumer's events cursor
+	//     and runs the pass at once when the consumer has passed the event, evals.RefresherGap's
+	//     facts relay).
 	//     The four leased ones, reference-excerpts, edit-notices, legion-facts and eval-days, take
 	//     their lease with no period (duty.RunWoken): a process that finds it held retries until a
 	//     pass of its own runs, since the other process's pass may have read before the change
