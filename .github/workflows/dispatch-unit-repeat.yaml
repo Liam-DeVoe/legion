@@ -85,8 +85,8 @@ name: Dispatch unit suite repeated
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
-# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 30 runs that
-# the notes' measurement reads took 115 to 175 minutes each, and $0, since those minutes are free
+# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 31 runs that
+# the notes' measurement reads took 115 to 242 minutes each, and $0, since those minutes are free
 # here.
 
 on:
@@ -135,7 +135,7 @@ jobs:
         # Three legs a lane, each under a seed of its own. The head says why three.
         round: [1, 2, 3]
         # Each lane's reruns; its slowest test step and its slowest other steps, each the largest
-        # reading over the 30 runs the notes list, with the run and round that gave it (the harness
+        # reading over the 31 runs the notes list, with the run and round that gave it (the harness
         # slowest leaves out the legs of branches that add harness rows of their own, #4236's and
         # #4790's, as the notes say); and the deadline, the test step's budget and the job's budget
         # set from them, with a margin of twice the slowest, each line's arithmetic beside it. The
@@ -164,11 +164,11 @@ jobs:
             job_minutes: 10 # 8 + 2 x 44 s = 88 s, up to the next whole minute, 2
           - lane: harness
             reruns: 20
-            slowest_seconds: 1649 # run 44940719055, round 2
+            slowest_seconds: 3882 # run 44963607247, round 3, stopped at 3,300 s and estimated (the notes)
             other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
-            deadline_seconds: 3300 # 2 x 1,649 = 3,298 s, up to the next whole minute
-            step_minutes: 57 # 3,300 + 60 s kill-after + 60 s of slack = 3,420 s
-            job_minutes: 65 # 57 + 2 x 229 s = 458 s, up to the next whole minute, 8
+            deadline_seconds: 7800 # 2 x 3,882 = 7,764 s, up to the next whole minute
+            step_minutes: 132 # 7,800 + 60 s kill-after + 60 s of slack = 7,920 s
+            job_minutes: 140 # 132 + 2 x 229 s = 458 s, up to the next whole minute, 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -28,10 +28,10 @@ measurement beside the budgets:
 The job's rule is this file's own. `.github/ci-notes/dispatch-browser.md`'s rule for
 `dispatch-browser.yaml` adds the measured maximum of the steps without a budget once; this one
 adds it twice, the same margin of 2 as the deadline, because the other steps vary from runner to
-runner as the test step does. Over the 30 runs below, a leg's other steps took 15 to 37 s in the
+runner as the test step does. Over the 31 runs below, a leg's other steps took 15 to 37 s in the
 web lane, 13 to 44 s in the web-cold lane and 28 to 229 s in the harness lane: 2.5, 3.4 and 8.2
-times the fastest. Taken once, those maxima would give 69, 9 and 61 minutes in place of 70, 10
-and 65. The job budget stays a backstop behind the step's, and decides no verdict.
+times the fastest. Taken once, those maxima would give 69, 9 and 136 minutes in place of 70, 10
+and 140. The job budget stays a backstop behind the step's, and decides no verdict.
 
 `packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts`, which the dashboard job of
 `ci.yaml` runs on every change to the workflow, holds each lane's three budgets to exactly those
@@ -42,10 +42,10 @@ each budget's rule as worked out from that lane's own measurements, and name the
 rules that fail. They repeat no measured number. So a new reading changes the matrix and these
 notes and no line of the test.
 
-### What was measured, on 2026-11-20 and 2026-11-21
+### What was measured, on 2026-11-20 to 2026-11-22
 
-The step times of every leg of 30 runs of the workflow, read from
-`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 90 legs a
+The step times of every leg of 31 runs of the workflow, read from
+`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 93 legs a
 lane:
 
 - the ten runs before 11:00Z on 2026-11-20 (runs 44681726917 to 44712651976, pull requests and
@@ -61,7 +61,9 @@ lane:
   44913926295 (#4437), 44918296869, 44921906214 and 44926138389 (#4790), each a merge of its
   branch with main after #4615 had merged;
 - run 44940719055, the pull request's own at its head `3989f41d6a`, a merge of main `e2ce417d59`;
-  and runs 44948990810 and 44956324879, its own at `3ff830bb16` and `b23e61c369`.
+  runs 44948990810 and 44956324879, its own at `3ff830bb16` and `b23e61c369`; and run
+  44963607247, its own at `0682934fca`, whose merge ref (`73a40e355f`) put the head on main
+  `dc7e668784`, which holds #4659.
 
 A leg stopped before Bun ended has no time of its own, and no report. Its time is estimated from
 its `bun.log`, which holds a result line for each row that ended: the step's time, times the
@@ -76,11 +78,18 @@ rows, that errs toward a longer estimate and a larger budget. The estimate takes
 come at an even rate. A leg whose last minutes are one slow file running alone ends later than
 its estimate says, so an estimate is a floor.
 
+Round 3 of run 44963607247 is such a leg. This pull request's own deadline stopped it at 3,300 s
+while one file ran alone, `e2e/__tests__/outside-agent-acceptance.test.ts`, in row 7 of its run
+17 of 20, after 294 of its 360 rows. The results it wrote, 17,874 of a whole leg's 17,940, give
+3,312 s, the floor above. That file's own remaining 66 rows, at its 7.06 s a row, give 3,766 s.
+The leg's time over the file's runs, 3,300 × 20 ÷ 17, gives 3,882 s. The larger, 3,882 s, is
+taken: a budget is a hang guard, and errs long.
+
 | Lane | Legs whose Bun ended by itself | Legs stopped before Bun ended | Slowest | Old step budget |
 | --- | --- | --- | --- | --- |
-| web | 59, 726 to 1,954 s | 31, by the budget at 972 or 973 s, estimated at most 1,614 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
-| web-cold | 79, 94 to 175 s; 14 of them past the old budget, so their steps failed with no row failed | 11, by the budget at 132 or 133 s, estimated at 132.4 to 173.9 s | 175 s, run 44956324879, round 3 | 2 minutes |
-| harness | 89, 1,070 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,649 s, run 44940719055, round 2 | 30 minutes |
+| web | 62, 726 to 1,954 s | 31, by the budget at 972 or 973 s, estimated at most 1,614 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
+| web-cold | 82, 94 to 175 s; 14 of them past the old budget, so their steps failed with no row failed | 11, by the budget at 132 or 133 s, estimated at 132.4 to 173.9 s | 175 s, run 44956324879, round 3 | 2 minutes |
+| harness | 91, 1,070 to 3,241 s | 2: a cancel of its run at 2,274 s, estimated 2,283 s; and this pull request's 3,300 s deadline, estimated 3,882 s | 3,882 s, estimated, run 44963607247, round 3 | 30 minutes |
 
 The web lane grew within the day: main's `a8067fcd51` (11:41Z) added
 `web/src/features/issue/useIssueDrafts.test.ts`, whose rows took 1,168 s together over a leg's 20
@@ -93,15 +102,23 @@ stopped at main's 16 minutes, estimated at 1,016 to 1,614 s. The pull request's 
 head `3989f41d6a`, 44940719055, read the first whole ones: 1,815, 1,313 and 1,881 s, under the
 1,954 s the web budgets rest on.
 
-The harness lane's slowest leg is read over the 78 legs of the branches that add no harness row of
+The harness lane's slowest leg is read over the 81 legs of the branches that add no harness row of
 their own beside main's: #4236's 9 legs in the window, and the 3 of #4790's run 44926138389, whose
 head adds a harness row, are left out. Pull request #4615 merged on 2026-11-21 with harness rows of
-its own, so its run 44839359908 counts, and its round 1 took 1,642 s. The slowest is round 2 of the
-pull request's own run 44940719055, 1,649 s. Pull request #4236 adds harness rows whose real-time
-waits take minutes: its 9 legs in the window took 1,651 to 2,301 s, and round 3 of its later run
-44740717331 took 2,375 s. It sets its own harness budget, and 2,375 s is inside the deadline set
-here. If it merges, its harness legs come into the window and set the harness budgets again by
-the rule.
+its own, so its run 44839359908 counts, and its round 1 took 1,642 s; round 2 of the pull
+request's own run 44940719055 took 1,649 s. Pull request #4659 then merged with
+`outside-agent-acceptance.test.ts` and `outside-agent-public.test.ts`, 18 and 2 rows a run, which
+take about 7 s and 31 s a row. In run 44963607247, the first whose merge holds them, the three harness
+legs took 2,571 s and 3,241 s and the third was stopped at 3,300 s, against 1,107 to 1,649 s at
+the heads before. The legs' row times summed to 31,553 to 31,989 s, against 28,975 s in a leg of
+run 44956324879, and no row failed. The acceptance file's 20 runs, about 2,500 s of rows, run one
+after another in one worker, and it was the last file to end in each of the three legs. So a
+harness leg now ends about 2,500 s after that file starts, and when it starts depends on the
+seed's order of files: that is the spread from 2,571 s to an estimated 3,882 s. Pull request
+#4236 adds harness rows whose real-time waits take minutes: its 9 legs in the window took 1,651 to
+2,301 s, and round 3 of its later run 44740717331 took 2,375 s. It sets its own harness budget,
+and 2,375 s is inside the deadline set here. If it merges, its harness legs come into the window
+and set the harness budgets again by the rule.
 
 Pull request #4523 sets its own web and web-cold budgets and changes the lanes' tests, so its runs
 are not in the window either. Its run 44922135913's web-cold legs took 169, 169 and 185 s, and
@@ -113,7 +130,7 @@ The other steps took at most 37 s in a web leg (run 44751162563, round 3), 44 s 
 (run 44814644776, round 1) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's
 install), and at least 15, 13 and 28 s.
 
-The window grew eight times after a commit had set budgets from it:
+The window grew nine times after a commit had set budgets from it:
 
 - the runs at the pull request's first head read a web leg of 1,661 s, which its second head took
   in;
@@ -129,7 +146,10 @@ The window grew eight times after a commit had set budgets from it:
   estimated at 173.9 s, which `62898d3adc` took in;
 - the run at `3989f41d6a` read a harness leg of 1,649 s, which the next commit took in;
 - the run at `b23e61c369` read a web-cold leg of 175 s, above the 173.9 s estimate, which the next
-  commit took in, with the run at `3ff830bb16`.
+  commit took in, with the run at `3ff830bb16`;
+- the run at `0682934fca`, the first whose merge holds #4659, read harness legs of 2,571 and
+  3,241 s and one stopped at 3,300 s and estimated at 3,882 s, which the commit after the merge of
+  main took in.
 
 The first three times, a lane's budgets no longer kept the rule over every leg read, and the head
 that took the legs in set every lane's budgets again by the rule. The next two times the rule
@@ -138,10 +158,11 @@ minutes, and 2 × 169 s is 338 s, which rounds up to the same 360 s deadline. Th
 set the harness budgets again, to 3,300 s, 57 minutes and 65 minutes from 2 × 1,642 s, and kept
 the web-cold ones, since 2 × 174 s is 348 s, which rounds up to the same 360 s. The seventh time
 it kept them all: 2 × 1,649 s is 3,298 s, which rounds up to the same 3,300 s. So did the eighth:
-2 × 175 s is 350 s, which rounds up to the same 360 s.
+2 × 175 s is 350 s, which rounds up to the same 360 s. The ninth set the harness budgets again, to
+7,800 s, 132 minutes and 140 minutes, from 2 × 3,882 s.
 
-The largest job budget, 70 minutes for a web leg, is far inside GitHub's own limit for a job on a
-GitHub-hosted runner. GitHub's "Actions limits" page
+The largest job budget, 140 minutes for a harness leg, is far inside GitHub's own limit for a job
+on a GitHub-hosted runner. GitHub's "Actions limits" page
 (https://docs.github.com/en/actions/reference/limits, read on 2026-11-20) says: "Each job in a
 workflow can run for up to 6 hours of execution time." Each step's budget is inside its job's,
 and each deadline inside its step's, so `timeout` fires first, then the step budget, then the job
@@ -160,10 +181,10 @@ budget failed the step. No row was running long; the lane was.
 
 ### What a run costs now
 
-A run that passes takes what its rows take: the 30 runs read cost 115 to 175 billed minutes each
-(each leg's job rounded up to a whole minute; run 44940719055 cost 175), and $0,
+A run that passes takes what its rows take: the 31 runs read cost 115 to 242 billed minutes each
+(each leg's job rounded up to a whole minute; run 44963607247 cost 242), and $0,
 since standard runners are free for a public repository. The budgets bound only a leg that hangs:
-at most 70 minutes for a web leg, 10 for a web-cold leg and 65 for a harness leg.
+at most 70 minutes for a web leg, 10 for a web-cold leg and 140 for a harness leg.
 
 ### When to measure again
 
