@@ -99,6 +99,9 @@ const POWERS_MADE = "2026-11-20T00:30:00.000Z";
 const KIT_V1 = "8".repeat(40);
 /** acme/dots before POWERS_AT: its plugin list pins @acme/kit 1.0.0, and it holds no pool yet. */
 const DOTS_OLD = "9".repeat(40);
+/** When acme/fresh and acme/newproj got their first commit: after every made-up session's start,
+ *  so GitHub gives no commit of either at or before a session's start. */
+const FRESH_MADE = "2026-11-20T03:00:00.000Z";
 /** The release tags GitHub lists of each made-up repository. */
 const TAGS: Readonly<Record<string, readonly string[]>> = {
   "acme/skills": ["pi-acme-v1.0.0"],
@@ -1020,7 +1023,9 @@ const SLOT_RULE =
  *  clones acme/pack into vendor/acme-pack at PACK_PIN, a pool its skills-sources.json feeds to Oh
  *  My Pi through its extension. acme/powers holds a package whose `pi` manifest declares its
  *  skills/ (power-one and power-two); acme/pack holds pack-one and pack-later at SHA, and pack-one
- *  and pack-two at PACK_PIN (PINNED). */
+ *  and pack-two at PACK_PIN (PINNED). acme/fresh and acme/newproj got their first commit at
+ *  FRESH_MADE: acme/fresh holds fresh-one, which a dev box's installer installs from then on, and
+ *  acme/newproj holds its own skill nova in `.claude/skills/` and a CLAUDE.md. */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -1227,6 +1232,11 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "package.json": JSON.stringify({ name: "acme-one", pi: { skills: ["."] } }),
     "SKILL.md": skillMd("one-skill"),
   },
+  "acme/fresh": { "skills/fresh-one/SKILL.md": skillMd("fresh-one") },
+  "acme/newproj": {
+    ".claude/skills/nova/SKILL.md": projectSkillMd("nova"),
+    "CLAUDE.md": "# Made-up rules of a new project\n\nKeep each change small.\n",
+  },
 };
 
 /** The ref the copies output read acme/pack at, later than the sessions (repositories.tsv). */
@@ -1411,6 +1421,9 @@ const io = (lines: string[]): BuildIo => ({
       if (repo === "acme/powers" && until < Date.parse(POWERS_MADE)) return ok("null\n");
       if (repo === "acme/powers" && until < Date.parse(POWERS_AT)) return ok(`${POWERS_OLD}\n`);
       if (repo === "acme/dots" && until < Date.parse(POWERS_AT)) return ok(`${DOTS_OLD}\n`);
+      // acme/fresh and acme/newproj have no commit before FRESH_MADE.
+      const fresh = repo === "acme/fresh" || repo === "acme/newproj";
+      if (fresh && until < Date.parse(FRESH_MADE)) return ok("null\n");
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
@@ -5378,6 +5391,233 @@ test("build-tasks --reprofile gives each written task the profile of the --conte
     context: "devbox",
   });
   expect(summary.counts).toMatchObject({ changed: 8, unchanged: 2 });
+}, 120_000);
+
+/** A copy of the suite's copies output in `<setupDir>/<name>`, with `rows` added at the end of
+ *  each file they name. */
+function copiesWith(
+  name: string,
+  rows: Readonly<Record<string, readonly (readonly (string | number)[])[]>>
+): string {
+  const dir = path.join(setupDir, name);
+  mkdirSync(dir, { recursive: true });
+  for (const file of [
+    "prefix-table.tsv",
+    "installers.tsv",
+    "manifests.tsv",
+    "loaders.tsv",
+    "skill-copies.tsv",
+    "repositories.tsv",
+  ]) {
+    const added = (rows[file] ?? []).map((row) => `${row.join("\t")}\n`).join("");
+    writeFileSync(
+      path.join(dir, file),
+      `${readFileSync(path.join(copiesDir, file), "utf8")}${added}`
+    );
+  }
+  return dir;
+}
+
+/** The start of F1, so of every session built from it. */
+const F1_START = "2026-11-20T01:59:41.780Z";
+
+/** The rows of a copies output where acme/home is the dev box's repository and, by the copies
+ *  output's time, its installer installs fresh-one from acme/fresh, whose first commit
+ *  (FRESH_MADE) came after every session's start. */
+const FRESH_TARGET = {
+  "manifests.tsv": [
+    ["acme/home", "installers/omp.sh", "installer-script", "tree", 4, "links skills", ""],
+    ["acme/home", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+  ],
+  "installers.tsv": [
+    [
+      "acme/home",
+      "installers/omp.sh",
+      "installer-script",
+      "installs",
+      "gh-skill:fresh-one",
+      "omp",
+      "fresh-one",
+      "acme/fresh",
+      "skills/fresh-one",
+      "",
+    ],
+  ],
+  "skill-copies.tsv": [["acme/fresh", "skills/fresh-one", "fresh-one", 1, "no", "no", "", "", ""]],
+  "repositories.tsv": [["acme/fresh", "main", SHA, "no", "no", "", 1, "whole", 1, ""]],
+};
+
+/** The evidence item that leaves acme/fresh out of a profile of a session built from F1. */
+const FRESH_LEFT_OUT = {
+  item: `left out: acme/fresh, which has no commit at or before the session's start ${F1_START}`,
+  source: `main, the ref repositories.tsv names, has no commit at or before the session's start; gh api repos/acme/fresh/commits?sha=main&until=${F1_START} gives no commit of main (from gh api repos/acme/fresh): GitHub holds no commit of acme/fresh then, so nothing of it was installed then, and the profile installs nothing of it`,
+};
+
+// Catches: a repository the dev box's installers install by the copies output's time, whose first
+// commit came after the session's start, failing the whole build: GitHub gives no commit of it at
+// or before that start.
+test("a dev-box session that started before the first commit of a repository its dev box's installers install later gets its profile: that repository is left out with the evidence, and no profile lists a skill of it", async () => {
+  const copies = copiesWith("copies-fresh", FRESH_TARGET);
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "fresh-target", "profiles");
+  const context = `store_a:${fileHash("/sessions/task-4.jsonl")}`;
+  const said: string[] = [];
+  const code = await main(
+    [
+      "build-tasks",
+      "--config",
+      config,
+      "--copies",
+      copies,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--profiles-out",
+      dir,
+      "--context-session",
+      context,
+    ],
+    io(said)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : said.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const evidence = (reprofileSummary(dir).profiles.contextSession?.evidence ?? []) as Item[];
+  expect(evidence).toContainEqual(FRESH_LEFT_OUT);
+  expect(evidence.filter((each) => each.item.includes("acme/fresh"))).toEqual([FRESH_LEFT_OUT]);
+  // Each session task's profile is built the same way.
+  for (const record of reprofileSummary(dir).profiles.tasks) {
+    if (record.from === "session") expect(record.differs.added).toContainEqual(FRESH_LEFT_OUT);
+  }
+  // No profile written holds a skill of acme/fresh; each holds acme/home's linked skills.
+  for (const task of tasksOf(path.join(dir, "tasks.jsonl"))) {
+    const profile = JSON.parse(readFileSync(String(task.profile), "utf8"));
+    const repos = profile.skills.map((skill: { repo: string }) => skill.repo);
+    expect(repos).not.toContain("acme/fresh");
+    expect(repos).toContain("acme/home");
+  }
+}, 120_000);
+
+// Catches: the same repository leaving each case of build-cases --reprofile out, as a GitHub read
+// the profile needs that failed, where only that repository is left out of the profile.
+test("build-cases --reprofile of a dev-box case whose session started before the first commit of a repository its dev box's installers install later writes the case: that repository is left out with the evidence, and the profile holds no skill of it", async () => {
+  const good = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("good"))
+  ) as Case;
+  const dir = path.join(scratch, "fresh-target-cases");
+  const from = path.join(dir, "old.jsonl");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(from, `${JSON.stringify(good)}\n`);
+  const fresh = path.join(dir, "reprofiled.jsonl");
+  const lines: string[] = [];
+  const code = await main(
+    [
+      "build-cases",
+      "--config",
+      config,
+      "--old",
+      old,
+      "--copies",
+      copiesWith("copies-fresh", FRESH_TARGET),
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--out",
+      fresh,
+    ],
+    io(lines)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const [c] = loadCases(fresh, old);
+  expect(c?.id).toBe(good.id);
+  expect(c?.evidence).toContainEqual(FRESH_LEFT_OUT);
+  const repos = c?.profile.skills.map((skill) => skill.repo);
+  expect(repos).not.toContain("acme/fresh");
+  expect(repos).toContain("acme/home");
+}, 120_000);
+
+// Catches: a session repository with no commit at the session's start failing the whole build, or
+// a later commit of it read in its place.
+test("a session whose working directory is a checkout of a repository with no commit at its start gets its profile without that repository's project skills and context files; the evidence says why, and the listing measure counts the missing project skill", async () => {
+  const copies = copiesWith("copies-newproj", {
+    "repositories.tsv": [["acme/newproj", "main", SHA, "no", "no", "", 1, "recursive", 1, ""]],
+  });
+  // The good session in a checkout of acme/newproj, whose first commit (FRESH_MADE) came after
+  // the session's start, and a subagent of it whose recorded listing holds acme/newproj's nova.
+  const session = "/sessions/newproj.jsonl";
+  const store = changedStore("newproj-store", (files) => {
+    const storeA = files.store_a ?? {};
+    storeA[session] = inDirectory(sessionText("good"), "/home/dev/src/newproj");
+    storeA["/sessions/newproj/Helper.jsonl"] = sessionText("subagent").replace(
+      "- beta: Use for the beta greeting.\\n",
+      "- beta: Use for the beta greeting.\\n- nova: Use when the project asks for nova.\\n"
+    );
+  });
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "newproj-context", "profiles");
+  const callsBefore = ghCalls.length;
+  const said: string[] = [];
+  const code = await main(
+    [
+      "build-tasks",
+      "--config",
+      store,
+      "--copies",
+      copies,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--profiles-out",
+      dir,
+      "--context-session",
+      `store_a:${fileHash(session)}`,
+    ],
+    io(said)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : said.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const evidence = (reprofileSummary(dir).profiles.contextSession?.evidence ?? []) as Item[];
+  const items = evidence.map((each) => each.item);
+  expect(items).toContain("session repository acme/newproj");
+  expect(evidence).toContainEqual({
+    item: `left out: acme/newproj, which has no commit at or before the session's start ${F1_START}`,
+    source: `main, the ref repositories.tsv names, has no commit at or before the session's start; gh api repos/acme/newproj/commits?sha=main&until=${F1_START} gives no commit of main (from gh api repos/acme/newproj): GitHub holds no commit of acme/newproj then, so its project skills and context files are not read, and the profile names no session repository`,
+  });
+  const written = tasksOf(from).find((task) => task.source === "written");
+  const profile = JSON.parse(readFileSync(path.resolve(dir, `${written?.id}.json`), "utf8"));
+  expect(profile.sessionRepository).toBeUndefined();
+  expect(profile.workingDirectory).toBeUndefined();
+  expect(
+    [...profile.skills, ...profile.contextFiles].filter(
+      (each: { repo: string }) => each.repo === "acme/newproj"
+    )
+  ).toEqual([]);
+  // No later commit of acme/newproj is read in its place: only its commit at the start is asked
+  // for, and no tree or file of it.
+  const asked = ghCalls
+    .slice(callsBefore)
+    .filter((args) =>
+      args.some((arg) => arg.startsWith("repos/acme/newproj/") || arg === "name=newproj")
+    );
+  expect(asked.length).toBeGreaterThan(0);
+  expect(
+    asked.every((args) => args.some((arg) => arg.startsWith("repos/acme/newproj/commits?")))
+  ).toBe(true);
+  // The subagent's recorded listing holds nova, which the profile does not list.
+  const measure = ListingMeasure.parse(
+    JSON.parse(evidence.find((each) => each.item === LISTING_MEASURE)?.source ?? "{}")
+  );
+  expect(measure.kind).toBe("subagent listing");
+  expect(measure.missing).toContain("nova");
 }, 120_000);
 
 test("build-tasks --reprofile keeps the old profile of a task whose session its store holds no longer, and of each written task when the context session is gone, each with an evidence item that says so; a store read that fails fails the run", async () => {

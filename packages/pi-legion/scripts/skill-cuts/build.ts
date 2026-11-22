@@ -233,7 +233,12 @@
  *   GitHub's) at or before the session's start; a unit's repository that an installer of the
  *   units pins (copies.ts's `installerPins`: a `github:` dependency of an Oh My Pi plugins
  *   package.json, an `ensure_vendor` clone) at the last commit of the ref that installer names at
- *   the session's start, as the session's machine held it. Every GitHub read goes through `gh api`
+ *   the session's start, as the session's machine held it. A repository GitHub gives no commit of
+ *   at or before that time (`NoCommitThen`), such as one the dev box's installers install only by
+ *   the copies output's later read, did not exist then, so nothing of it was installed then: it is
+ *   left out, with the `gh api` read in the evidence. A session repository with no commit then has
+ *   its project skills and context files not read, and the profile names no session repository;
+ *   no later commit is read in its place. Every GitHub read goes through `gh api`
  *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches. A read
  *   that fails for a transient reason is sent again by the rule copies.ts's and context.ts's reads
  *   share (common.ts's `GhRetries`: after 5, 15, 45 and 135 s, each retry said on standard error;
@@ -1854,6 +1859,10 @@ function transientFailure(error: unknown): boolean {
   return error instanceof GhFailed && error.transient !== undefined;
 }
 
+/** What `GithubReads.commitAt` throws when GitHub gives no commit of the ref at or before the
+ *  time: the ref had no commit then. Callers tell it apart from every other failure by its type. */
+class NoCommitThen extends Error {}
+
 /** The standard output of `result`, gh's answer to `args`; throws a GhFailed naming `args` and
  *  gh's first error line (each try's, when the read was sent more than once) when it failed. */
 function ghAnswer(args: readonly string[], result: GhResult): string {
@@ -1966,7 +1975,8 @@ export class GithubReads {
   /** The last commit of `branch` of `repo` at or before `at`: one GET whose query is in its path,
    *  as copies.ts reads a commit, which the pod's gh sends for a repository of any owner, a pinned
    *  one outside the configured owners too (the same GET given as `-X GET` with `-f` fields it
-   *  refuses for an owner it holds no GitHub App token of). */
+   *  refuses for an owner it holds no GitHub App token of). Throws NoCommitThen when GitHub gives
+   *  none. */
   async commitAt(repo: string, branch: string, at: string): Promise<string> {
     const sha = (
       await this.ok([
@@ -1977,7 +1987,7 @@ export class GithubReads {
       ])
     ).trim();
     if (!/^[0-9a-f]{40}$/.test(sha))
-      throw new Error(`no commit of ${repo} ${branch} at or before ${at}`);
+      throw new NoCommitThen(`no commit of ${repo} ${branch} at or before ${at}`);
     return sha;
   }
 
@@ -2979,29 +2989,45 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const projectDirs = PROJECT_SKILLS.flatMap((kind) =>
     levels.map((level) => ({ ...kind, dir: level === "" ? kind.dir : `${level}/${kind.dir}` }))
   );
-  /** The commit of `repo` at the session's start, and the evidence for it. repositories.tsv names
-   *  the ref the copies output read, a pin's tag for a pinned repository; a tag made after the
-   *  session's start has no commit at or before it, and then the default branch's is read (an
-   *  installer's pin at the session's start, below, takes its place where one names the
-   *  repository). */
-  const readCommit = async (repo: string): Promise<{ sha: string; line: Evidence }> => {
+  /** The commit of `repo` at the session's start, and the evidence for it; or no commit, when
+   *  GitHub gives none then (NoCommitThen), and the evidence item that leaves it out, whose
+   *  source names the read (the caller says what is not read). repositories.tsv names the ref the
+   *  copies output read, a pin's tag for a pinned repository; a tag made after the session's start
+   *  has no commit at or before it, and then the default branch's is read (an installer's pin at
+   *  the session's start, below, takes its place where one names the repository). */
+  const readCommit = async (repo: string): Promise<{ sha?: string; line: Evidence }> => {
     const when = whenOf(repo);
     let { branch, from } = await github.branch(repo);
     let younger = "";
-    let sha: string;
+    let sha: string | undefined;
     try {
       sha = await github.commitAt(repo, branch, when.at);
     } catch (error) {
-      if (transientFailure(error) || from !== "repositories.tsv") throw error;
-      younger = `${branch}, the ref repositories.tsv names, has no commit at or before ${when.words}; `;
-      ({ branch, from } = await github.branch(repo, true));
-      sha = await github.commitAt(repo, branch, when.at);
+      const fallBack = !transientFailure(error) && from === "repositories.tsv";
+      if (!fallBack && !(error instanceof NoCommitThen)) throw error;
+      if (fallBack) {
+        younger = `${branch}, the ref repositories.tsv names, has no commit at or before ${when.words}; `;
+        ({ branch, from } = await github.branch(repo, true));
+        sha = await github.commitAt(repo, branch, when.at).catch((again: unknown) => {
+          if (again instanceof NoCommitThen) return undefined;
+          throw again;
+        });
+      }
+    }
+    const read = `gh api repos/${repo}/commits?sha=${branch}&until=${when.at}`;
+    if (sha === undefined) {
+      return {
+        line: {
+          item: `left out: ${repo}, which has no commit at or before ${when.words} ${when.at}`,
+          source: `${younger}${read} gives no commit of ${branch} (from ${from})`,
+        },
+      };
     }
     return {
       sha,
       line: {
         item: `commit ${sha} of ${repo}`,
-        source: `${younger}the last commit of ${branch} (from ${from}) at or before ${when.words} ${when.at}: gh api repos/${repo}/commits?sha=${branch}&until=${when.at}`,
+        source: `${younger}the last commit of ${branch} (from ${from}) at or before ${when.words} ${when.at}: ${read}`,
       },
     };
   };
@@ -3009,6 +3035,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const known = commits.get(repo);
     if (known !== undefined) return known;
     const { sha, line } = await readCommit(repo);
+    if (sha === undefined) throw new Error(line.source);
     commits.set(repo, sha);
     evidence.push(line);
     return sha;
@@ -3205,17 +3232,46 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // sorted order, as reading them one after another gives them.
   const reads = await Promise.allSettled(
     [...toRead].sort().map(async (repo) => {
-      const commit = await readCommit(repo);
+      const { sha, line } = await readCommit(repo);
+      if (sha === undefined) return { repo, none: line };
       const { excludePaths } = run.config;
       return repositories.has(repo)
-        ? { repo, commit, at: await github.at(repo, commit.sha, excludePaths), reads: 0 }
-        : { repo, commit, ...(await github.project(repo, commit.sha, levels, excludePaths)) };
+        ? { repo, commit: { sha, line }, at: await github.at(repo, sha, excludePaths), reads: 0 }
+        : {
+            repo,
+            commit: { sha, line },
+            ...(await github.project(repo, sha, levels, excludePaths)),
+          };
     })
   );
-  const values = reads.map((settled) => {
+  // A repository with no commit at the time it is read at did not exist then: nothing of it was
+  // installed then, and as the session repository its project skills and context files are not
+  // read. It is left out, and no later commit is read in its place.
+  const absent = new Set<string>();
+  const values = reads.flatMap((settled) => {
     if (settled.status === "rejected") throw settled.reason;
-    return settled.value;
+    const read = settled.value;
+    if (read.none === undefined) return [read];
+    absent.add(read.repo);
+    const missed = [
+      ...(repositories.has(read.repo)
+        ? ["nothing of it was installed then, and the profile installs nothing of it"]
+        : []),
+      ...(read.repo === checkout.repo
+        ? [
+            "its project skills and context files are not read, and the profile names no session repository",
+          ]
+        : []),
+    ];
+    evidence.push({
+      item: read.none.item,
+      source: `${read.none.source}: GitHub holds no commit of ${read.repo} then, so ${missed.join("; ")}`,
+    });
+    return [];
   });
+  /** `repo` at the commit it is read at, or, for one left out above, that it had none. */
+  const atCommit = (repo: string) =>
+    absent.has(repo) ? `${repo}, which has no commit then` : `${repo} at ${commits.get(repo)}`;
   // A unit's repository that an installer of the units pins (copies.ts's `installerPins`: a
   // `github:` dependency of an Oh My Pi plugins package.json, an `ensure_vendor` clone) is held at
   // the ref that installer names at the session's start, as the session's machine held it then;
@@ -3266,14 +3322,24 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       );
       for (const pin of [...installerPins(manifests), ...legionPins(manifests)]) {
         const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
-        if (values.some((value) => known(value.repo)) || tried.has(pin.repository.toLowerCase())) {
+        // A pin of no ref names the default branch, which a repository left out above had no
+        // commit of then.
+        const leftOut = pin.ref === "" && [...absent].some(known);
+        if (
+          leftOut ||
+          values.some((value) => known(value.repo)) ||
+          tried.has(pin.repository.toLowerCase())
+        ) {
           continue;
         }
         tried.add(pin.repository.toLowerCase());
         const pinned = `${pin.manifest.repository}:${pin.manifest.path}`;
+        const names =
+          pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins";
+        const when = whenOf(pin.repository);
+        let ref = pin.ref;
         try {
-          const ref = pin.ref === "" ? (await github.branch(pin.repository)).branch : pin.ref;
-          const when = whenOf(pin.repository);
+          if (ref === "") ref = (await github.branch(pin.repository)).branch;
           const sha = await github.commitAt(pin.repository, ref, when.at);
           repositories.add(pin.repository);
           values.push({
@@ -3282,7 +3348,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
               sha,
               line: {
                 item: `commit ${sha} of ${pin.repository}`,
-                source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${when.words} ${when.at}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at}`,
+                source: `the last commit of ${ref}, the ref ${pinned} ${names} at the session's start, at or before ${when.words} ${when.at}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at}`,
               },
             },
             at: await github.at(pin.repository, sha, run.config.excludePaths),
@@ -3291,10 +3357,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           fresh = true;
         } catch (error) {
           if (transientFailure(error)) throw error;
-          evidence.push({
-            item: `left out: ${pin.repository}, which ${pinned} pins at the session's start`,
-            source: messageFor(error),
-          });
+          evidence.push(
+            error instanceof NoCommitThen
+              ? {
+                  item: `left out: ${pin.repository}, which has no commit at or before ${when.words} ${when.at}`,
+                  source: `${ref}, the ref ${pinned} ${names} at the session's start, has no commit at or before ${when.words}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at} gives none, so nothing of ${pin.repository} was installed then, and the profile installs nothing of it`,
+                }
+              : {
+                  item: `left out: ${pin.repository}, which ${pinned} pins at the session's start`,
+                  source: messageFor(error),
+                }
+          );
         }
       }
     }
@@ -3497,7 +3570,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     if (legion.setup.length === 0) {
       evidence.push({
         item: "left out: the catalog of the Legion role setup",
-        source: `${LEGION_INSTALLS_RULE}; ${deployment} at ${commits.get(deployment)} holds no role setup script that names a catalog`,
+        source: `${LEGION_INSTALLS_RULE}; ${atCommit(deployment)} holds no role setup script that names a catalog`,
       });
     }
     for (const row of resolved.rows) {
@@ -3543,7 +3616,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }[] = [];
   for (const [key, { via, why }] of units) {
     const id = via.unit;
-    const start = `${via.repository} at ${commits.get(via.repository)}`;
+    const start = atCommit(via.repository);
     const version = id.startsWith("package:") ? versions.get(id) : undefined;
     let members = shipsAtStart(via);
     if (version !== undefined) {
@@ -3671,7 +3744,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const copy of alone.values()) {
     // A read of a project skill is placed at its copy, which the project skills hold already.
     if (projectOffers.some((each) => same(each.copy, copy))) continue;
-    const start = `${copy.repo} at ${commits.get(copy.repo)}`;
+    const start = atCommit(copy.repo);
     const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
     if (found === undefined) {
       evidence.push({
@@ -3899,6 +3972,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   const profileFiles: Profile["contextFiles"] = [];
   for (const file of contextFiles) {
+    // A repository with no commit then is left out above, with why.
+    if (absent.has(file.repo)) continue;
     const commit = await commitOf(file.repo);
     if (file.path.startsWith("project:")) {
       const projectFile = file.path.slice("project:".length);
@@ -3978,17 +4053,19 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       source: `${file.why}, and it has ${file.path} at ${commit}`,
     });
   }
+  // A session repository with no commit then is left out above, so the profile names none.
+  const sessionRepo =
+    checkout.repo === undefined || absent.has(checkout.repo) ? undefined : checkout.repo;
   return {
     profile: {
       skills: profileSkills,
       plugins: profilePlugins,
       contextFiles: profileFiles,
       sessionRepository:
-        checkout.repo === undefined
+        sessionRepo === undefined
           ? undefined
-          : { repo: checkout.repo, commit: await commitOf(checkout.repo) },
-      workingDirectory:
-        checkout.repo === undefined || checkout.rel === "" ? undefined : checkout.rel,
+          : { repo: sessionRepo, commit: await commitOf(sessionRepo) },
+      workingDirectory: sessionRepo === undefined || checkout.rel === "" ? undefined : checkout.rel,
     },
     evidence,
     shipped,
