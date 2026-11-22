@@ -17,9 +17,10 @@ import (
 )
 
 // SessionConsumerNamePrefix begins the physical name of every session consumer the fresh mode
-// creates (consumernames.FreshName): session~<nuid>. An earlier build's sweep lists only names
-// that begin s-, so it never takes one of these for a session.
-const SessionConsumerNamePrefix = "session"
+// creates (consumernames.FreshName): session~<nuid>, the family table's (consumernames.SessionPrefix).
+// An earlier build's sweep lists only names that begin s-, so it never takes one of these for a
+// session.
+const SessionConsumerNamePrefix = consumernames.SessionPrefix
 
 // SessionIDMetadataKey is the metadata every session consumer of the fresh mode carries, naming
 // its session, beside consumernames.LogicalMetadataKey.
@@ -77,11 +78,14 @@ func (v sessionNamesServer) Delete(ctx context.Context, name string) error {
 func newFreshSessions(s *SessionConsumers) *freshSessions {
 	fresh := &freshSessions{store: s.client.SelectionStore()}
 	host, _ := os.Hostname()
+	// The naming is the session family's own (consumernames.SessionNaming), the one an operator's
+	// reader judges a record by (consumernames.CheckFamily).
+	naming := consumernames.SessionNaming()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:  fresh.store,
 		Server: sessionNamesServer{s},
-		Prefix: func(string) string { return SessionConsumerNamePrefix },
-		Fixed:  func(sessionID string) string { return sessionConsumerPrefix + sessionID },
+		Prefix: naming.Prefix,
+		Fixed:  naming.Fixed,
 		Floor:  ackFloor,
 		StreamID: func(ctx context.Context) (string, error) {
 			state, err := s.streamState(ctx)

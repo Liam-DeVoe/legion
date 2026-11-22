@@ -378,11 +378,16 @@ func (n *Names) write(ctx context.Context, sel Selection, record Record) (Select
 }
 
 // settleOp is Step 0: it settles sel's open operation. waited reports, for a candidate the server
-// does not hold, whether this call has waited the settle age for it itself. A replace reserved with
-// no start has destroyed nothing, so its candidate is retired, a fresh one reserved, and the start
-// read from the predecessor then.
+// does not hold, whether this call has waited the settle age for it itself. A replace whose
+// candidate is already the current is a published replace of the fixed name whose delete has not
+// been confirmed: its delete is retried first, before anything else (finishFixedDelete). A replace
+// reserved with no start has destroyed nothing, so its candidate is retired, a fresh one reserved,
+// and the start read from the predecessor then.
 func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, waited func(string) bool) (Selection, error) {
 	op := sel.Record.Op
+	if op.Kind == OpReplace && op.Candidate != "" && op.Candidate == sel.Record.Current && op.Old == n.fixed(sel.Logical) {
+		return n.finishFixedDelete(ctx, sel)
+	}
 	if op.Kind == OpDelete {
 		return n.settleDelete(ctx, sel)
 	}
@@ -448,6 +453,21 @@ func (n *Names) saveReplaceStart(ctx context.Context, sel Selection) (Selection,
 	}
 	record := sel.Record.clone()
 	record.Start = n.cfg.Floor(info) + 1
+	return n.write(ctx, sel, record)
+}
+
+// finishFixedDelete ends sel's published replace of the fixed name: it deletes that name, the
+// operation's old one, and once the server confirms the delete (or holds no such consumer)
+// clears the operation. A delete that fails is the call's error, naming the name, and leaves the
+// operation open, so the next call's Step 0 deletes it again before anything else.
+func (n *Names) finishFixedDelete(ctx context.Context, sel Selection) (Selection, error) {
+	old := sel.Record.Op.Old
+	if err := n.deleteOwned(ctx, sel.Logical, old); err != nil {
+		n.observe(OperationCleanup, OutcomeError)
+		return sel, stepError(sel.Logical, OperationRecover, old, err)
+	}
+	record := sel.Record.clone()
+	record.Op = nil
 	return n.write(ctx, sel, record)
 }
 
@@ -760,8 +780,9 @@ func answered(err error) bool {
 // many times keeps a record of one size; one whose delete failed stays retired, for the cleanup. A
 // refused drop leaves it retired too, and the cleanup finds it gone. A predecessor that is the
 // fixed name (a convert's replace, settled here) is deleted and never retired, since a record's
-// retired names are fresh ones alone (Check): one whose delete fails is left to the cutover's
-// census, which declares every fixed name.
+// retired names are fresh ones alone (Check): the replace stays open, its candidate now the
+// current, until the server confirms that delete (finishFixedDelete), so a failed delete leaves the
+// fixed name named by an open operation, which the next call's Step 0 deletes before anything else.
 func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo, operation Operation, outcome Outcome) (Selection, error) {
 	op := sel.Record.Op
 	record := sel.Record.clone()
@@ -775,14 +796,19 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 		record.Start = info.Delivered.Stream + 1
 	}
 	record.LastFloor = nil
-	old := ""
+	old, fixedOld := "", false
 	if op.Kind == OpReplace {
 		old = op.Old
-		if old != n.fixed(sel.Logical) {
+		if fixedOld = old == n.fixed(sel.Logical); !fixedOld {
 			record = record.retire(old)
 		}
 	}
-	record.Op = nil
+	if fixedOld {
+		pending := *op
+		record.Op = &pending
+	} else {
+		record.Op = nil
+	}
 	next, err := n.write(ctx, sel, record)
 	if err != nil {
 		n.observeErr(operation, err)
@@ -791,6 +817,14 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	next.Info, next.Created, next.Missing = info, true, false
 	n.observe(operation, outcome)
 	if old == "" {
+		return next, nil
+	}
+	if fixedOld {
+		// A delete that fails leaves the replace open for Step 0; this call serves the current.
+		if done, err := n.finishFixedDelete(ctx, next); err == nil {
+			done.Info, done.Created = next.Info, next.Created
+			next = done
+		}
 		return next, nil
 	}
 	if err := n.deleteOwned(ctx, sel.Logical, old); err != nil {

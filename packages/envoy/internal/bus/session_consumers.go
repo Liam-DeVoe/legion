@@ -94,8 +94,9 @@ func InactiveThresholdFor(recordLife, reapInterval, sweepInterval time.Duration)
 	return max(SessionConsumerInactiveThreshold, bound+inactiveThresholdMargin)
 }
 
-// sessionConsumerPrefix begins the name of every session consumer (SessionConsumerName).
-const sessionConsumerPrefix = "s-"
+// sessionConsumerPrefix begins the name of every session consumer (SessionConsumerName): the
+// family table's fixed name (consumernames.SessionFixedPrefix).
+const sessionConsumerPrefix = consumernames.SessionFixedPrefix
 
 // ErrConsumerNotGranted is wrapped, with the server's refusal (ErrPublishDenied), by a consumer API
 // call of this package (consumerRequest) the connection's NATS user may not make: a hub whose grant
