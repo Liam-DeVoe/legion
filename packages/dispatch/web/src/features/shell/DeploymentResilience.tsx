@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderStrong,
   card,
@@ -290,6 +291,12 @@ export function DeploymentResilience(): ReactNode {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const dismissed = useRef(false);
   const lastVersionCheckAt = useRef(0);
+  // The banner sits at the foot of the screen, in the band the shell's status corner shares, so
+  // it publishes how far up it reaches (`useFootInset`) and the corner rides above it: Pending
+  // changes then lies over none of its buttons. The hook runs before the early return below, so
+  // it runs on every render.
+  const bannerRef = useRef<HTMLElement>(null);
+  useFootInset(bannerRef, updateAvailable);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -326,6 +333,7 @@ export function DeploymentResilience(): ReactNode {
     <section
       aria-label="A new version is available"
       className={`fixed right-4 bottom-4 left-4 z-50 mx-auto flex max-w-md items-center justify-between gap-3 rounded-xl border p-3 shadow-lg ${card} ${borderStrong}`}
+      ref={bannerRef}
       role="status"
     >
       <p className={`text-sm ${textSecondaryOnSurface}`}>A new version is available - Reload</p>
