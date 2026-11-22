@@ -735,7 +735,11 @@ const AN_UNREPORTED_RED_WAITS = new RegExp(
  * pull request's counted set", and a re-run written before the absence or more than twenty
  * characters after it all pass. So "… absent from that set: no re-run is spent, so re-run that
  * run's failed and cancelled jobs" passes: `no` governs its first re-run, and its second stands
- * past twenty characters. The reviewer's prompt part's words, pinned in roles_test.go, carry the
+ * past twenty characters. A negation that governs another verb of the clause passes too, since the
+ * pattern reads no verb between: "… absent from that set: don't wait and re-run that run's failed
+ * and cancelled jobs, once." passes (the class search at c3087a8c; the guard is frozen for this
+ * pull request by the architect's ruling of 2026-11-22, so the cost is written here, not fixed).
+ * The reviewer's prompt part's words, pinned in roles_test.go, carry the
  * rest.
  */
 const ABSENCE_FROM_THE_SET_IS_RERUN =
