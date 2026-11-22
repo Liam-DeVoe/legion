@@ -1738,8 +1738,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = releaseBackstop(supervision.cfg)
-	// The idle rule for a pod with no live claim runs, so it ends a start's wait for a pod built
-	// before the start's role (outbox.roleWaitsForItsPod tells the controller otherwise).
+	// The idle rule for a pod with no live claim runs, so it ends a start's wait for a pod that
+	// lacks the slot of the start's claim or the role of its step (outbox.roleWaitsForItsPod tells
+	// the controller otherwise).
 	w.outbox.idleReleases = true
 }
 

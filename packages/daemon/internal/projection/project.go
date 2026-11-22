@@ -127,8 +127,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The roles whose start waits because their issue's pod was built before the deployment
-	// defined them, by issue: a start waiting on its backoff, and a role with no claim to show.
+	// The roles of the starts that wait because their issue's pod lacks the slot of the start's
+	// claim or the role of its step, by issue: a start waiting on its backoff, which may have no
+	// claim to show yet.
 	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err

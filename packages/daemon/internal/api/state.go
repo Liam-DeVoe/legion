@@ -702,9 +702,11 @@ type Issue struct {
 	// phase names, so the phase alone does not say who works the issue. Absent at every other
 	// phase, whose role the phase names (phase.RoleFor).
 	StepRole string `json:"stepRole,omitempty"`
-	// StartWaitsForPod are the roles whose start waits because the issue's pod was built before
-	// the deployment defined them (record.Store.StartsWaitingForPod): such a role has no claim to
-	// show, and only the pod's update round or its release lets it start. Absent where none waits.
+	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
+	// the slot of the start's claim or the role of its step, the pod having been built before the
+	// deployment defined that name (record.Store.StartsWaitingForPod): a start that creates its
+	// claim has none to show yet, and only the pod's update round or its release lets it start.
+	// Absent where none waits.
 	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
@@ -938,7 +940,8 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ClaimView is one role claim as the record holds it: the session its agent registered as, where
+// ClaimView is one claim as the record holds it, the claim of one agent of an issue under its
+// token, on the role of the step its agent runs now: the session its agent registered as, where
 // it is in its life (`supervise.ClaimState`), its locator, and the capability report its session
 // sent on a `claims/ready` of its own while it ran (LEGION-663, INFRA-927). The locator is the
 // runtime's own nested shape —
