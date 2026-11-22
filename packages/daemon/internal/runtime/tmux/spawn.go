@@ -125,7 +125,8 @@ func validateSpawnSpec(spec runtime.SpawnSpec, providerKeys []string, operatorEn
 		return err
 	}
 	// The token names the pane's secret files, and it is one file name: the shared validation
-	// above holds it to the one claim.NewToken derives, which has no separator in it.
+	// above holds it to the token of an agent of the spec's issue (claim.AgentToken), which has no
+	// separator in it.
 	token := string(spec.Claim)
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("spawn %s: "+format, append([]any{token}, args...)...)

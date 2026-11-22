@@ -8,10 +8,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// A slot holds the App of the step its claim does now: the claim's stored role, here tester, which
-// key a's claim `…-implementer` took for its tester step, and not the slot's name. Where the
+// A slot holds the App of the role its caller passes SlotRole — the role the slot's process was
+// launched as, or the claim's stored role where no record of that launch stands — here tester,
+// which key a's claim `…-implementer` took for its tester step, and not the slot's name. Where the
 // runtime is given an ActsAs, the role it gives the token wins; one that gives none leaves the
-// stored role, and one that fails is that failure.
+// role passed, and one that fails is that failure.
 func TestASlotsRoleIsTheRoleOfTheStepThatItsClaimDoesNow(t *testing.T) {
 	ctx := context.Background()
 	const token claim.Token = "legion-legion-infra-12-implementer"

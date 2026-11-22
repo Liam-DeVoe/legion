@@ -397,12 +397,14 @@ func TestNewRefusesACredentialFunctionWithoutTheRealGh(t *testing.T) {
 	}
 }
 
-// The refresher brings every tracked pane's gh bundle to the current render of its role's
-// credential for the pane's own repository, the one its launch recorded (none for the controller), and
+// The refresher brings every tracked pane's gh bundle to the current render of the credential of
+// the role the pane was launched as (paneRole), for the pane's own repository, the one its launch
+// recorded (none for the controller), and
 // touches nothing else: a stale owner's hosts.yml is replaced whole, by rename, and logged with the
 // claim, role, App, expiry and the owners it rewrote; an owner already at the render is not
 // rewritten; a root that is gone is made again, including the controller's, whose render is the
-// review App's (appauth.AppRoleFor); a token that names no role is skipped. A mint that fails is
+// review App's (appauth.AppRoleFor); a pane whose role it cannot know, a token that names no claim,
+// is skipped. A mint that fails is
 // logged and leaves the pane's last tokens in place until the next tick, and so does a render whose
 // default is not the owner of the pane's own repository.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
