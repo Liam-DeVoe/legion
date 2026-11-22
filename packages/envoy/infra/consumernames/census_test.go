@@ -1052,9 +1052,9 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 
 	s0, s1, s2 := fresh(bus.SessionConsumerNamePrefix), fresh(bus.SessionConsumerNamePrefix), fresh(bus.SessionConsumerNamePrefix)
 	write(kv, "ses_a", selection.Record{Current: s1, Start: 4, Retired: []string{s0},
-		Op: &selection.Op{Kind: selection.OpReplace, Candidate: s2, Old: s1}})
+		Op: &selection.Op{Kind: selection.OpReplace, Candidate: s2, Old: s1, ReservedAt: time.Now()}})
 	s4 := fresh(bus.SessionConsumerNamePrefix)
-	write(kv, "ses_e", selection.Record{Start: 4, Op: &selection.Op{Kind: selection.OpReplace, Old: sessionFixedPrefix + "ses_e", Candidate: s4}})
+	write(kv, "ses_e", selection.Record{Start: 4, Op: &selection.Op{Kind: selection.OpReplace, Old: sessionFixedPrefix + "ses_e", Candidate: s4, ReservedAt: time.Now()}})
 	l0, l1 := fresh(bus.ListenerDurable("hub")), fresh(bus.ListenerDurable("hub"))
 	write(kv, selection.DurableKey(bus.ListenerDurable("hub")), selection.Record{Current: l1, Start: 4, Retired: []string{l0}})
 	dispatchFile, dispatchDB := censusStore(t, familyDispatch, dispatchMigrations...)
@@ -1063,7 +1063,7 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 	require.NoError(t, err)
 	d0, d1, d2 := fresh("delivery-events"), fresh("delivery-events"), fresh("delivery-events")
 	write(dispatch, "delivery-events", selection.Record{Current: d1, Start: 4, Retired: []string{d0},
-		Op: &selection.Op{Kind: selection.OpReplace, Candidate: d2, Old: d1}})
+		Op: &selection.Op{Kind: selection.OpReplace, Candidate: d2, Old: d1, ReservedAt: time.Now()}})
 	daemon, daemonDB := censusDaemonStore(t, "PROJ", daemonMigrations...)
 	w0, w1 := fresh("legion-go-PROJ-wake"), fresh("legion-go-PROJ-wake")
 	write(pgFamilyOf(t, daemonFamily("PROJ"), daemonDB), "legion-go-PROJ-wake", selection.Record{Current: w1, Start: 4, Retired: []string{w0}})

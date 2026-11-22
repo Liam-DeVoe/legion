@@ -779,7 +779,7 @@ func (rr *restoreRun) settle(ctx context.Context, name restoreSetName, start uin
 			if err := rr.delete(ctx, fresh); err != nil {
 				return "", unknownf(err, "the delete of %s", fresh)
 			}
-			next = retire(next, fresh)
+			next = retire(next, name.Target, fresh)
 		}
 		if err := restoreAt("deleted", name.Logical); err != nil {
 			return "", err

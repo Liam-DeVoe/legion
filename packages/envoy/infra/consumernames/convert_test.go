@@ -187,13 +187,14 @@ func (rig *convertRig) fixedNames() []string {
 }
 
 // requireFresh requires record to select a fresh name of m started at start, carrying m's
-// metadata, with fixed retired.
+// metadata, with m's fixed name not retired: the selection package refuses a record naming it
+// anywhere but as an open operation's old name.
 func (rig *convertRig) requireFresh(m member, record selection.Record, start uint64) *jetstream.ConsumerInfo {
 	rig.t.Helper()
 	require.Nil(rig.t, record.Op, "%s's record holds an open operation", m.Logical)
 	require.True(rig.t, strings.HasPrefix(record.Current, m.Prefix+"~"), "%s's record selects %q, not a fresh name", m.Logical, record.Current)
 	require.Equal(rig.t, start, record.Start, "%s's saved start", m.Logical)
-	require.Contains(rig.t, record.Retired, m.Fixed, "%s's record does not retire %s", m.Logical, m.Fixed)
+	require.NotContains(rig.t, record.Retired, m.Fixed, "%s's record retires its fixed name %s", m.Logical, m.Fixed)
 	info := rig.consumer(record.Current)
 	require.NotNil(rig.t, info, "the server does not hold %s, %s's current", record.Current, m.Logical)
 	require.Equal(rig.t, jetstream.DeliverByStartSequencePolicy, info.Config.DeliverPolicy)
@@ -205,16 +206,30 @@ func (rig *convertRig) requireFresh(m member, record selection.Record, start uin
 	return info
 }
 
+// freshResolve resolves m's record in store as m's family's fresh creator does
+// (selection.Names.Resolve, with the family's prefix, fixed name and key check), which refuses a
+// record naming a consumer outside the logical's own fresh names, a retired fixed name among them.
+func freshResolve(m member, store selection.Store) (selection.Selection, error) {
+	config := selection.Config{Store: store, Prefix: func(string) string { return m.Prefix }, Fixed: func(string) string { return m.Fixed }}
+	if m.Family == familySession && m.SessionID == "" {
+		config.CheckKey = selection.CheckDurableKey
+	}
+	return selection.New(config).Resolve(context.Background(), m.Logical)
+}
+
 // Every family's fixed names are converted: a session consumer, a listener's durable, Dispatch's
 // two durables and a daemon's consumer, each with messages its fixed name acknowledged and messages
 // it did not. convert writes each logical name's record with a fresh name created at its fixed
 // name's ack floor + 1 from the fixed name's configuration, with the member's metadata, deletes
 // every fixed name, writes each family's broker cutover row and store marker done (the bucket's
 // sentinel holding this cutover's B and hold), marks its record complete and writes its done
-// entry; after the release every message the fixed names had not acknowledged arrives on the fresh
-// names. Control, run first: the same command while the row is released is refused and converts
-// nothing. It fails when a fixed name is left, a start is not its floor + 1, or a pending message
-// does not arrive.
+// entry; each record convert wrote resolves through its family's fresh creator (freshResolve),
+// with no fixed name retired; after the release every message the fixed names had not
+// acknowledged arrives on the fresh names. Control, run first: the same command while the row is
+// released is refused and converts nothing. It fails when a fixed name is left, a start is not its
+// floor + 1, a record does not resolve, or a pending message does not arrive. The resolve's
+// control is the convert that retired the fixed name (the previous convert.go, by -overlay),
+// whose records the fresh creator refuses, naming the key's retired fixed name.
 func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 	rig := newConvertRig(t, 0)
 	ctx := context.Background()
@@ -261,14 +276,23 @@ func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 		m, ok := classify(c.fixed)
 		require.True(t, ok)
 		var record selection.Record
+		var store selection.Store
 		switch m.Family {
 		case familySession:
 			record = rig.record(familySession, m.Logical)
+			nc, _ := rig.operator()
+			store = newSessionStore(nc)
 		case familyDispatch:
 			record = pgRecord(t, familyDispatch, dispatch, m.Logical)
+			store = pgFamilyOf(t, familyDispatch, dispatch)
 		default:
 			record = pgRecord(t, m.Family, daemon, m.Logical)
+			store = pgFamilyOf(t, m.Family, daemon)
 		}
+		sel, err := freshResolve(m, store)
+		require.NoError(t, err, "%s's fresh creator refuses the record convert wrote", m.Logical)
+		require.Equal(t, record.Current, sel.Record.Current, "%s's fresh creator selects another name", m.Logical)
+		require.NotContains(t, sel.Record.Retired, m.Fixed, "%s's record retires its fixed name", m.Logical)
 		info := rig.requireFresh(m, record, floors[c.fixed]+1)
 		require.Equal(t, c.subject, info.Config.FilterSubject, "%s's fresh name keeps its filter", c.fixed)
 		require.Equal(t, time.Hour, info.Config.InactiveThreshold, "%s's fresh name does not carry its creator's inactive threshold", c.fixed)

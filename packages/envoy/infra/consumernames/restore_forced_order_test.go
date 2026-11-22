@@ -5,6 +5,7 @@ package consumernames
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -126,7 +127,7 @@ func restoreFamily4Rig(t *testing.T, replicas int, ran *bool) (*restoreRig, stri
 		restoreConversion{fixed: sessionFixedPrefix + "hole", start: 1, deleteFresh: true,
 			edit: func(record *selection.Record, fresh string) {
 				record.Start = 0
-				record.Op = &selection.Op{Kind: selection.OpDelete, Old: fresh}
+				record.Op = &selection.Op{Kind: selection.OpDelete, Old: fresh, ReservedAt: time.Now()}
 				record.LastFloor = &selection.Floor{Floor: 0, Name: fresh, StreamID: restoreStreamID}
 			}},
 		restoreConversion{fixed: sessionFixedPrefix + "nostart", start: 1, deleteFresh: true,

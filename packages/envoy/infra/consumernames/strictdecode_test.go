@@ -179,8 +179,8 @@ func malformedSessions(t *testing.T, nc *nats.Conn, sessions ...string) map[stri
 // listener-hub~<nuid> stay, and its stop entry records only this hold's barrier key, which it put
 // before it read the records. Control: today's decode takes each value (malformedCase.lenient), and
 // a census on it removes a session's consumer or runs complete and removes the stray (shown by an
-// overlay run of today's decode). The copied record waits on the library's records carrying their
-// own key.
+// overlay run of today's decode). The copied record is refused by the key rule of the selection
+// package's records (readSelectionValue).
 func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -223,7 +223,7 @@ func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 // line), still prints the session record that is well formed, and exits 2 naming the key. Control:
 // today's decode takes each value (malformedCase.lenient), and status on it prints the value as a
 // record or a store state and exits 0 (shown by an overlay run of today's decode). The copied
-// record waits on the library's records carrying their own key.
+// record is refused by the key rule of the selection package's records (readSelectionValue).
 func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -266,8 +266,8 @@ func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 // stays on the stream and in ses_a's record, and its stop entry records only this hold's barrier
 // key, which it put before the walk (TestACleanupStopNamesTheBarrierKeyItPut).
 // Control: today's decode takes each value (malformedCase.lenient), and cleanup on it deletes that
-// retired name (shown by an overlay run of today's decode). The copied record waits on the
-// library's records carrying their own key.
+// retired name (shown by an overlay run of today's decode). The copied record is refused by the
+// key rule of the selection package's records (readSelectionValue).
 func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -319,8 +319,8 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 // listed the bucket (TestARestorePrepareStopNamesTheBarrierKeyItPut): its stop entry records only
 // that key, and session keyed's record holds no restore. Control: today's decode takes each value
 // (malformedCase.lenient), and restore --prepare on it plans the rollback and writes keyed's
-// restore (shown by an overlay run of today's decode). The copied record waits on the library's
-// records carrying their own key.
+// restore (shown by an overlay run of today's decode). The copied record is refused by the key
+// rule of the selection package's records (readSelectionValue).
 func TestRestorePrepareRefusesAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("other", "keyed") {
 		t.Run(c.name, func(t *testing.T) {

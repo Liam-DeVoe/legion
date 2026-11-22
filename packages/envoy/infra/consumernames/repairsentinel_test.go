@@ -50,8 +50,9 @@ func repairPlant(t *testing.T, h *stack, as *nats.Conn) []byte {
 // repairRecordsSentinel is the sentinel the broker's records give, read by the row from the
 // broker's routes: the session family's cutover row for the state, the hold that row names (for
 // rolled_back, the cutover hold that rollback's saved set records), and that hold's cohort record
-// for the boundary, as json.Marshal writes it. A row checks it against the bytes convert or restore
-// --finish wrote before the damage, so it is no copy of the command's own reading.
+// for the boundary, as json.Marshal writes it under the sentinel's own key and family
+// (ownSentinel). A row checks it against the bytes convert or restore --finish wrote before the
+// damage, so it is no copy of the command's own reading.
 func repairRecordsSentinel(t *testing.T, records *holdrecord.Client) []byte {
 	t.Helper()
 	ctx := context.Background()
@@ -74,7 +75,7 @@ func repairRecordsSentinel(t *testing.T, records *holdrecord.Client) []byte {
 	cohort, _, found, err := readPrepareCohort(ctx, records, hold)
 	require.NoError(t, err)
 	require.True(t, found, "hold %s has no cohort record", hold)
-	value, err := json.Marshal(selection.StoreState{Cutover: row.State, Boundary: cohort.Boundary, Hold: hold})
+	value, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: row.State, Boundary: cohort.Boundary, Hold: hold}))
 	require.NoError(t, err)
 	return value
 }
@@ -113,10 +114,11 @@ func (rig *convertRig) repairCall(logical string) (selection.Selection, error) {
 // After a cutover (prepare, create-bucket, convert, a clean census, release), a listener, whose
 // grant holds a JetStream API request, stores a STREAM.INFO answer over the selection bucket's
 // sentinel through a reply subject. Every session consumer call of the listener's fresh mode then
-// fails closed, ErrCutoverNotRun, for a session with a record and one without: the library's decode
-// reads the answer as an empty store state. Control: a sentinel-repair hold set and released with
-// no repair leaves every call failing, as today. repair-sentinel, in a sentinel-repair hold, writes
-// the sentinel the broker's records give, its intent then its done entry completing the hold, and
+// fails closed for a session with a record and one without: the selection store reads the answer as
+// no sentinel of its own (selection.ErrMalformedSentinel). Control: a sentinel-repair hold set and
+// released with no repair leaves every call failing, as today. repair-sentinel, in a
+// sentinel-repair hold, writes the sentinel the broker's records give, its intent then its done
+// entry completing the hold, and
 // after the release the call serves again and selects the session's recorded consumer. The
 // rewritten sentinel is byte for byte the one convert wrote before the damage, and the broker's
 // records give exactly those bytes. Control of that check: a sentinel built from NATS state alone
@@ -158,7 +160,7 @@ func TestRepairSentinelRewritesAMalformedSentinelSoSessionsServeAgain(t *testing
 	require.Error(t, err, "the planted value is a store state")
 	for _, logical := range []string{"r1", "r-new"} {
 		_, err := rig.repairCall(logical)
-		require.ErrorIs(t, err, selection.ErrCutoverNotRun, "the call for %s over the malformed sentinel", logical)
+		require.ErrorIs(t, err, selection.ErrMalformedSentinel, "the call for %s over the malformed sentinel", logical)
 	}
 
 	rig.closeWriter()
@@ -166,7 +168,7 @@ func TestRepairSentinelRewritesAMalformedSentinelSoSessionsServeAgain(t *testing
 	require.NoError(t, rig.release(none))
 	rig.connectWriter()
 	_, err = rig.repairCall("r1")
-	require.ErrorIs(t, err, selection.ErrCutoverNotRun, "control: with no repair the call still fails")
+	require.ErrorIs(t, err, selection.ErrMalformedSentinel, "control: with no repair the call still fails")
 	require.Equal(t, malformed, repairSentinelValue(t, rig.stack), "control: the sentinel changed with no repair")
 
 	rig.closeWriter()
@@ -190,8 +192,8 @@ func TestRepairSentinelRewritesAMalformedSentinelSoSessionsServeAgain(t *testing
 	nc, _ := rig.operator()
 	stream, err := streamInfo(ctx, nc, notifications)
 	require.NoError(t, err)
-	fromNATS, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: stream.State.LastSeq + 1,
-		StreamID: selection.StreamIdentity(stream), Hold: repair})
+	fromNATS, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: stream.State.LastSeq + 1,
+		StreamID: selection.StreamIdentity(stream), Hold: repair}))
 	require.NoError(t, err)
 	require.Error(t, repairCheck(records, fromNATS), "control: the check takes a sentinel built from NATS state alone")
 }
@@ -253,11 +255,11 @@ func TestRepairRowTakesOnlyADoneOrRolledBackSessionRow(t *testing.T) {
 // delete marker and a selection recovery's sentinel, each before any write. Control: the
 // malformed value is one the library's lenient decode takes, as an empty store state.
 func TestRepairDecideWritesOnlyOverAValue(t *testing.T) {
-	want, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 4, Hold: "h-cutover"})
+	want, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 4, Hold: "h-cutover"}))
 	require.NoError(t, err)
-	other, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 9, Hold: "h-other"})
+	other, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 9, Hold: "h-other"}))
 	require.NoError(t, err)
-	recovery, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 4, ReplayFrom: 7, BackupSHA256: "none", Hold: "h-recovery"})
+	recovery, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 4, ReplayFrom: 7, BackupSHA256: "none", Hold: "h-recovery"}))
 	require.NoError(t, err)
 	malformed := []byte(`{"type":"io.nats.jetstream.api.v1.stream_info_response","config":{"name":"ENVOY_NOTIFICATIONS"}}`)
 	var lenient selection.StoreState

@@ -446,13 +446,14 @@ func createBucketKilledRun(t *testing.T, h *stack, id, dir string, dialer *creat
 // at sequence 1 and n records ses_<i>, the i-th at sequence i+2.
 func createBucketWalkOfRecords(t *testing.T, n int) []kvrecords.Record {
 	t.Helper()
-	sentinel, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"})
+	sentinel, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"}))
 	require.NoError(t, err)
 	records := []kvrecords.Record{createBucketWalkRecord(1, selection.SentinelKey, sentinel)}
 	for i := range n {
-		record, err := json.Marshal(selection.Record{Start: uint64(i + 1)})
+		key := fmt.Sprintf("ses_%02d", i)
+		record, err := json.Marshal(selection.Record{Key: key, Start: uint64(i + 1)})
 		require.NoError(t, err)
-		records = append(records, createBucketWalkRecord(uint64(i+2), fmt.Sprintf("ses_%02d", i), record))
+		records = append(records, createBucketWalkRecord(uint64(i+2), key, record))
 	}
 	return records
 }
@@ -779,11 +780,14 @@ func TestARecoveryRefusalAfterItsIntentStops(t *testing.T) {
 	createBucketRequireStop(t, h, id, createBucketAfterLossCommand, "the hold's selection record", "this hold's barrier key in "+selectionStreamName)
 }
 
-// replay's refusal after its intent (a record that does not decode) writes its stop entry naming
-// what it left, this hold's barrier key in the bucket, and the hold has its way out. Control: the
-// same command's intent with no stop after it leaves hold release refused.
+// replay's refusal after its intent writes its stop entry naming what it left, this hold's barrier
+// key in the bucket, and the hold has its way out. The refusal is the bucket's stream's: made again
+// by the operator with a max_msg_size the barrier's put fits and K's record does not, it refuses
+// replay's write of the record with an answer that is no selection.ErrConflict. Control: the same
+// command's intent with no stop after it leaves hold release refused.
 func TestAReplayRefusalAfterItsIntentStops(t *testing.T) {
 	createBucketRequireStoppable(t, holdrecord.WorkflowCutover, replayCommand)
+	ctx := context.Background()
 	h := newStack(t)
 	createBucketNotifications(t, h, 3)
 	id := h.prepared(holdrecord.WorkflowCutover)
@@ -792,9 +796,14 @@ func TestAReplayRefusalAfterItsIntentStops(t *testing.T) {
 	code, _, stderr := h.run("create-bucket", "--hold", id)
 	require.Equal(t, 0, code, stderr)
 	_, js := h.operator()
-	_, err := js.Publish(context.Background(), "$KV."+selection.SessionBucket+".ses_bad", []byte("no record"))
+	require.NoError(t, js.DeleteStream(ctx, selectionStreamName))
+	config := createBucketStreamConfig(1)
+	config.Name = selectionStreamName
+	config.MaxMsgSize = int32(len(id)) // the barrier's put is the hold id alone
+	_, err := js.CreateStream(ctx, config)
 	require.NoError(t, err)
 	code, _, stderr = h.run("replay", "--hold", id, "--key", "ses_bad", "--from", "2")
 	require.Equal(t, 1, code, stderr)
+	require.Contains(t, stderr, "message size exceeds maximum allowed", "the stream refused the record's write")
 	createBucketRequireStop(t, h, id, replayCommand, "this hold's barrier key in "+selectionStreamName)
 }

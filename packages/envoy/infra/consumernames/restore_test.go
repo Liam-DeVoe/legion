@@ -446,9 +446,12 @@ func (rig *restoreRig) freshCreator(family string) *selection.Names {
 // the restored fixed names and marks the bucket's sentinel with that cutover's B and hold, as the
 // session row names it; after a STREAM.INFO answer is stored over that sentinel, repair-sentinel
 // writes it again byte for byte from the broker's records. Control: with the rows and markers left
-// at done (restoreRuleSet's noMarkers), a creator in the fresh mode is admitted and serves the
-// fixed name. (The stream keeps its first message, so the second B equals the first, and the hold
-// is what tells the two cutovers' sentinels apart.)
+// at done (restoreRuleSet's noMarkers), a creator in the fresh mode is not refused for the cutover
+// (no selection.ErrCutoverNotRun): it reads the restored record, which serves the fixed name, and
+// which the selection package now refuses as no record of the key (selection.ErrMalformedRecord: a
+// record names the fixed name only as an open operation's old name). (The stream keeps its first
+// message, so the second B equals the first, and the hold is what tells the two cutovers'
+// sentinels apart.)
 func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 	ctx := context.Background()
 	t.Run("control: the rows and markers left at done", func(t *testing.T) {
@@ -466,9 +469,10 @@ func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 		}
 		for _, name := range restoreH4Names {
 			m, _ := classify(name.fixed)
-			sel, err := rig.freshCreator(name.family).Resolve(ctx, m.Logical)
-			require.NoError(t, err, "under the control a fresh creator of %s is admitted", name.fixed)
-			require.Equal(t, name.fixed, sel.Record.Current, "and serves the fixed name")
+			_, err := rig.freshCreator(name.family).Resolve(ctx, m.Logical)
+			require.NotErrorIs(t, err, selection.ErrCutoverNotRun, "under the control a fresh creator of %s is not refused for the cutover", name.fixed)
+			require.ErrorIs(t, err, selection.ErrMalformedRecord, "it reads the restored record of %s", name.fixed)
+			require.Equal(t, name.fixed, rig.record(name.family, m.Logical).Current, "which serves the fixed name")
 		}
 	})
 	t.Run("treatment", func(t *testing.T) {
@@ -649,12 +653,12 @@ func TestTheRestoreTargetExpiresBetweenFinishAndItsResume(t *testing.T) {
 }
 
 // restoreStoppableOrSkip skips a treatment that needs command Stoppable in rollback while this
-// tree's table holds it not Stoppable: the stop rows wait on cybermonklabs/legion#4679's next head,
-// which makes restore --prepare and restore --key Stoppable. A skip is no pass.
+// tree's table holds it not Stoppable: the stop rows wait on #4679's next head, which makes
+// restore --prepare and restore --key Stoppable. A skip is no pass.
 func restoreStoppableOrSkip(t *testing.T, command string) {
 	t.Helper()
 	if !holdrecord.Stoppable(holdrecord.WorkflowRollback, command) {
-		t.Skipf("waiting on cybermonklabs/legion#4679's next head: %s is not Stoppable in rollback in this tree's internal/holdrecord/table.go", command)
+		t.Skipf("waiting on #4679's next head: %s is not Stoppable in rollback in this tree's internal/holdrecord/table.go", command)
 	}
 }
 

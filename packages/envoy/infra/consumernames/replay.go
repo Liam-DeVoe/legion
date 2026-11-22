@@ -32,11 +32,12 @@ const replayWrites = 8
 // operator step"). The record keeps its retired list, and every name it selected or had in flight
 // (its current, and an open operation's candidate and old name) is retired with it, so no name it
 // held is selected again and cleanup may delete each: an open operation is settled so, never left
-// open under a start it was not reserved at. Everything that can refuse it, the key, the store and
-// the stream's sequences, is read before its intent entry, so such a refusal leaves the journal as
-// it was; a refusal after its intent (a record that does not read, a write the store refuses past
-// its retries or does not answer, a done entry whose write fails) is its stop
-// (createBucketStopped), naming what the run left.
+// open under a start it was not reserved at. A value under K that is no record of K is written
+// over, retiring nothing of it, and named (replayRead). Everything that can refuse it, the key,
+// the store and the stream's sequences, is read before its intent entry, so such a refusal leaves
+// the journal as it was; a refusal after its intent (a read that fails, a write the store refuses
+// past its retries, refuses for another reason or does not answer, a done entry whose write fails)
+// is its stop (createBucketStopped), naming what the run left.
 func (r *run) replay(ctx context.Context) error {
 	err := r.replayRun(ctx)
 	return connRefusal(r.nc, err)
@@ -74,7 +75,7 @@ func (r *run) replayRun(ctx context.Context) error {
 		} else if !present {
 			return fmt.Errorf("%w: KV_%s, which create-bucket makes first: replay writes %s's record there", selection.ErrNoStore, selection.SessionBucket, r.o.key)
 		}
-	} else if _, _, err := store.Read(ctx, m.Logical); err != nil && !errors.Is(err, selection.ErrNoRecord) {
+	} else if _, _, err := store.Read(ctx, m.Logical); err != nil && !errors.Is(err, selection.ErrNoRecord) && !errors.Is(err, selection.ErrMalformedRecord) {
 		return fmt.Errorf("read %s's record in %s's store: %w", m.Logical, m.Family, err)
 	}
 
@@ -98,15 +99,17 @@ func (r *run) replayRun(ctx context.Context) error {
 }
 
 // replayHeld is replay's work after its intent: K's record read (behind the bucket's barrier for
-// the session family) and written over its revision, the changes counted in left.
+// the session family) and written over its revision, the changes counted in left. A value that is
+// no record of K (replayRead) is written over, and named in its output replaced.
 func (r *run) replayHeld(ctx context.Context, nc *nats.Conn, store familyStore, m member, left *createBucketLeft) (map[string]string, error) {
 	var written selection.Record
+	var replaced string
 	for attempt := 1; ; attempt++ {
 		var old selection.Record
 		var revision uint64
 		read := func(ctx context.Context) error {
 			var err error
-			old, revision, err = replayRead(ctx, nc, store, m)
+			old, revision, replaced, err = replayRead(ctx, nc, store, m)
 			return err
 		}
 		var err error
@@ -123,7 +126,7 @@ func (r *run) replayHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 			return nil, err
 		}
 		r.read(fmt.Sprintf("%s's record in %s's store", m.Logical, m.Family))
-		written = replayRecord(old, r.o.from)
+		written = replayRecord(old, r.o.from, m.Fixed)
 		left.unsure = fmt.Sprintf("%s's record in %s's store, if its unanswered write landed", m.Logical, m.Family)
 		_, err = store.Write(ctx, m.Logical, written, revision)
 		if err == nil {
@@ -137,19 +140,26 @@ func (r *run) replayHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 			return nil, fmt.Errorf("write %s's record in %s's store: %w", m.Logical, m.Family, err)
 		}
 	}
-	fmt.Fprintf(r.stdout, "%s: %s's record starts at %d with no current; retired: %s\n", m.Family, m.Logical, r.o.from, strings.Join(written.Retired, ", "))
-	return map[string]string{"key": m.Logical, "family": m.Family, "start": formatSeq(r.o.from),
-		"retired": strings.Join(written.Retired, ",")}, nil
+	outputs := map[string]string{"key": m.Logical, "family": m.Family, "start": formatSeq(r.o.from),
+		"retired": strings.Join(written.Retired, ",")}
+	line := fmt.Sprintf("%s: %s's record starts at %d with no current; retired: %s", m.Family, m.Logical, r.o.from, strings.Join(written.Retired, ", "))
+	if replaced != "" {
+		outputs["replaced"] = replaced
+		line += "; replaced a value that is no record of it: " + replaced
+	}
+	fmt.Fprintln(r.stdout, line)
+	return outputs, nil
 }
 
 // replayRecord is the record replay writes over old: start from and no current, old's retired
-// names kept, and every name old selected or had in flight retired.
-func replayRecord(old selection.Record, from uint64) selection.Record {
+// names kept, and every name old selected or had in flight retired but fixed, the logical's fixed
+// name, which no record retires (retire).
+func replayRecord(old selection.Record, from uint64, fixed string) selection.Record {
 	next := selection.Record{Start: from, Retired: old.Retired, Restore: old.Restore}
-	next = retire(next, old.Current)
+	next = retire(next, fixed, old.Current)
 	if old.Op != nil {
-		next = retire(next, old.Op.Candidate)
-		next = retire(next, old.Op.Old)
+		next = retire(next, fixed, old.Op.Candidate)
+		next = retire(next, fixed, old.Op.Old)
 	}
 	return next
 }
@@ -157,25 +167,56 @@ func replayRecord(old selection.Record, from uint64) selection.Record {
 // replayRead reads m's record and the revision a write over it names: 0 for a key never written,
 // and, for a session key whose last message is a KV delete or purge marker
 // (selection.ErrRecordDeleted), the marker's own sequence, which the selection store does not
-// return, read from the stream's leader.
-func replayRead(ctx context.Context, nc *nats.Conn, store familyStore, m member) (selection.Record, uint64, error) {
-	record, revision, err := store.Read(ctx, m.Logical)
+// return, read from the stream's leader. A value that is no record of the key
+// (selection.ErrMalformedRecord: a document a reply subject stored there, garbage, or another
+// key's record copied there), in any family, selects nothing replay can trust: it answers no
+// record, so none of its names is retired (the census removes a consumer no record names), the
+// revision the store holds it at (replayRevision), and replaced, the store's error naming it.
+// Every other read error, a sentinel's included, is a refusal or UNKNOWN.
+func replayRead(ctx context.Context, nc *nats.Conn, store familyStore, m member) (record selection.Record, revision uint64, replaced string, err error) {
+	record, revision, err = store.Read(ctx, m.Logical)
 	switch {
 	case err == nil:
-		return record, revision, nil
+		return record, revision, "", nil
 	case errors.Is(err, selection.ErrNoRecord):
-		return selection.Record{}, 0, nil
+		return selection.Record{}, 0, "", nil
 	case errors.Is(err, selection.ErrRecordDeleted) && m.Family == familySession:
+		revision, err = replayRevision(ctx, nc, store, m)
+		return selection.Record{}, revision, "", err
+	case errors.Is(err, selection.ErrMalformedRecord):
+		replaced = err.Error()
+		revision, err = replayRevision(ctx, nc, store, m)
+		return selection.Record{}, revision, replaced, err
+	}
+	return selection.Record{}, 0, "", fmt.Errorf("read %s's record in %s's store: %w", m.Logical, m.Family, err)
+}
+
+// replayRevision is the revision a write over m's value names where the store answers none: for a
+// session key, the sequence of its last message, read from the stream's leader
+// (replayLeaderRead); for a Postgres family, the revision of its intake_consumers row
+// (selection.PGKey), read by SQL. One that cannot be read is UNKNOWN.
+func replayRevision(ctx context.Context, nc *nats.Conn, store familyStore, m member) (uint64, error) {
+	if m.Family == familySession {
 		last, found, err := replayLeaderRead(ctx, nc, selection.SessionBucket, m.Logical)
 		if err != nil {
-			return selection.Record{}, 0, err
+			return 0, err
 		}
 		if !found {
-			return selection.Record{}, 0, unknownf(nil, "%s's last message in %s is a marker, and the leader read of it finds none", m.Logical, selection.SessionBucket)
+			return 0, unknownf(nil, "%s's last message in %s: the leader read of it finds none", m.Logical, selection.SessionBucket)
 		}
-		return selection.Record{}, last.Seq, nil
+		return last.Seq, nil
 	}
-	return selection.Record{}, 0, fmt.Errorf("read %s's record in %s's store: %w", m.Logical, m.Family, err)
+	pg, ok := store.(pgFamilyStore)
+	if !ok {
+		return 0, unknownf(nil, "the revision of %s's row in %s's store: the store is no Postgres store", m.Logical, m.Family)
+	}
+	var revision int64
+	err := pg.db.QueryRow(ctx, `select revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGKey(m.Family, m.Logical)).
+		Scan(&revision)
+	if err != nil {
+		return 0, unknownf(err, "the revision of %s's row in %s's store", m.Logical, m.Family)
+	}
+	return uint64(revision), nil
 }
 
 // replayMessage is a KV key's last message as the stream's leader answers it.

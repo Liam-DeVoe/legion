@@ -2,6 +2,7 @@ package consumernames
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -178,33 +179,75 @@ func TestReplayInARecoveryFollowsCreateBucketAfterLoss(t *testing.T) {
 	}
 }
 
-// In a selection-recovery hold after create-bucket --after-loss, replay --key K --from SEQ replaces
-// a malformed session record: a STREAM.INFO answer stored under K through a reply subject, which
-// the readers' strict decode refuses (readSelectionValue). After it K's value is exactly a record
-// (strictRecord) with start SEQ, no current and no retired name, written over the answer's
-// revision; replay's intent and done entries are written. Control: today's library decode
-// (json.Unmarshal, selection.KVStore.Read) takes the answer as an empty record, which is what
-// replay reads and writes over, so replay replaces it with no change of its own.
+// In a selection-recovery hold after create-bucket --after-loss, replay --key K --from SEQ writes
+// over a value under K that is no record of K, in any family: a STREAM.INFO answer stored under a
+// session's key through a reply subject, a session's key holding "no record", and Dispatch's
+// intake_consumers row of delivery-events holding delivery-jobs' record. The store refuses each as
+// no record of K (selection.ErrMalformedRecord), and the readers' strict decode refuses the session
+// values too (readSelectionValue). After it K's value is exactly K's record (strictRecord) with
+// start SEQ, no current and no retired name, written over the value's revision; replay's intent
+// and done entries are written, and its output and done entry name the value it replaced
+// (replaced). Control: the red run, this row against the replay before it wrote over such a value
+// (that replay.go, by -overlay) with the selection package's strict decode, which refuses each
+// value after its intent, exit 1 naming the store's refusal.
 func TestReplayReplacesAMalformedSessionRecord(t *testing.T) {
+	ctx := context.Background()
 	h := newStack(t)
 	createBucketNotifications(t, h, 5)
+	dispatchDB := h.database(familyDispatch, dispatchMigrations...)
 	id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
 	code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
 	require.Equal(t, 0, code, stderr)
 
-	nc, _ := h.operator()
-	malformed := malformedReplyStore(t, nc, "ses_bad")
-	malformedRefused(t, "ses_bad", malformed)
-	malformedCases("ses_bad", "")[0].lenient(t, malformed)
+	nc, js := h.operator()
+	answer := malformedReplyStore(t, nc, "ses_bad")
+	malformedRefused(t, "ses_bad", answer)
+	malformedCases("ses_bad", "")[0].lenient(t, answer)
+	_, err := js.Publish(ctx, "$KV."+selection.SessionBucket+".ses_none", []byte("no record"))
+	require.NoError(t, err)
+	malformedRefused(t, "ses_none", []byte("no record"))
+	events, jobs := dispatchDurables()[0], dispatchDurables()[1]
+	copied, err := json.Marshal(selection.Record{Key: selection.PGKey(familyDispatch, jobs), Start: 4})
+	require.NoError(t, err)
+	_, err = dispatchDB.Exec(ctx, `insert into `+selection.IntakeConsumersTable+` (logical, record, revision) values ($1, $2, 1)`,
+		selection.PGKey(familyDispatch, events), string(copied))
+	require.NoError(t, err)
+	_, _, err = pgFamilyOf(t, familyDispatch, dispatchDB).Read(ctx, events)
+	require.ErrorIs(t, err, selection.ErrMalformedRecord, "the store reads delivery-jobs' record under delivery-events")
 
-	code, _, stderr = h.run("replay", "--hold", id, "--key", "ses_bad", "--from", "3")
-	require.Equal(t, 0, code, stderr)
-	require.Equal(t, []string{"intent", "done"}, createBucketEntries(h.journal(id), replayCommand))
-	nc, _ = h.operator()
-	value := malformedValue(t, nc, "ses_bad")
-	record, err := strictRecord(value)
-	require.NoError(t, err, "ses_bad's value after replay is no exact record: %s", value)
-	require.Equal(t, selection.Record{Key: "ses_bad", Start: 3}, record)
+	sessionValue := func(key string) []byte {
+		nc, _ := h.operator()
+		return malformedValue(t, nc, key)
+	}
+	rowValue := func(string) []byte {
+		var value string
+		require.NoError(t, dispatchDB.QueryRow(ctx, `select record::text from `+selection.IntakeConsumersTable+` where logical = $1`,
+			selection.PGKey(familyDispatch, events)).Scan(&value))
+		return []byte(value)
+	}
+	for i, row := range []struct {
+		key       string
+		from      uint64
+		recordKey string
+		value     func(string) []byte
+	}{
+		{"ses_bad", 3, "ses_bad", sessionValue},
+		{"ses_none", 4, "ses_none", sessionValue},
+		{events, 5, selection.PGKey(familyDispatch, events), rowValue},
+	} {
+		code, stdout, stderr := h.run("replay", "--hold", id, "--key", row.key, "--from", formatSeq(row.from))
+		require.Equal(t, 0, code, "replay %s\n%s", row.key, stderr)
+		require.Contains(t, stdout, "replaced a value that is no record of it", row.key)
+		d := h.journal(id)
+		require.Len(t, createBucketEntries(d, replayCommand), 2*(i+1), "replay %s wrote its intent and done", row.key)
+		done := d.Ops[len(d.Ops)-1]
+		require.Equal(t, []string{replayCommand, "done"}, []string{done.Command, done.State}, row.key)
+		require.Contains(t, done.Outputs["replaced"], "no selection record of its own", "replay %s names the value it replaced", row.key)
+		value := row.value(row.key)
+		record, err := strictRecord(value)
+		require.NoError(t, err, "%s's value after replay is no exact record: %s", row.key, value)
+		require.Equal(t, selection.Record{Key: row.recordKey, Start: row.from}, record, row.key)
+	}
 }
 
 // A replay whose done entry is lost, after it wrote the key's record, writes its stop, recording

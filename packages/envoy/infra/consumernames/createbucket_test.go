@@ -275,7 +275,7 @@ func TestCreateBucketWritesItsIntentTheBucketAndItsSentinelWithB(t *testing.T) {
 	require.True(t, present)
 	require.Empty(t, createBucketConfigDiff(info.Config, 1))
 	require.True(t, found)
-	require.Equal(t, createBucketJSON(selection.StoreState{Boundary: 7, Hold: id}), createBucketJSON(sentinel.state))
+	require.Equal(t, createBucketJSON(ownSentinel(familySession, selection.StoreState{Boundary: 7, Hold: id})), createBucketJSON(sentinel.state))
 	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
 }
 
@@ -321,7 +321,7 @@ func TestCreateBucketOnThreeCopiesWritesItsSentinel(t *testing.T) {
 	require.NotNil(t, info.Cluster)
 	require.NotEmpty(t, info.Cluster.Leader)
 	require.True(t, found)
-	require.Equal(t, createBucketJSON(selection.StoreState{Boundary: 2, Hold: id}), createBucketJSON(sentinel.state))
+	require.Equal(t, createBucketJSON(ownSentinel(familySession, selection.StoreState{Boundary: 2, Hold: id})), createBucketJSON(sentinel.state))
 	require.Equal(t, []string{"intent", "done"}, createBucketEntries(h.journal(id), createBucketCommand))
 }
 
@@ -366,7 +366,7 @@ func TestCreateBucketsRerunAdoptsOnlyItsOwnBucket(t *testing.T) {
 				_, err := store.Write(ctx, "ses_other", selection.Record{Start: 1}, 0)
 				require.NoError(t, err)
 			}},
-			{"another boundary", `its sentinel {"boundary":6`, func(nc *nats.Conn, _ jetstream.JetStream) {
+			{"another boundary", `its sentinel {"key":"envoy.bucket","family":"session","boundary":6`, func(nc *nats.Conn, _ jetstream.JetStream) {
 				createBucketMakeBucket(t, nc, selection.StoreState{Boundary: boundary + 1, Hold: id})
 			}},
 		} {
@@ -416,7 +416,7 @@ func TestCreateBucketsRerunAdoptsOnlyItsOwnBucket(t *testing.T) {
 		require.Contains(t, stdout, "which held no key: its sentinel written with boundary 5")
 		_, _, sentinel, found := createBucketState(h)
 		require.True(t, found)
-		require.Equal(t, createBucketJSON(selection.StoreState{Boundary: boundary, Hold: id}), createBucketJSON(sentinel.state))
+		require.Equal(t, createBucketJSON(ownSentinel(familySession, selection.StoreState{Boundary: boundary, Hold: id})), createBucketJSON(sentinel.state))
 		require.Equal(t, []string{"intent", "intent", "done"}, createBucketEntries(h.journal(id), createBucketCommand))
 	})
 }
@@ -478,8 +478,8 @@ func TestCreateBucketAfterLossRecordsItsInputsAndListsTheOrphans(t *testing.T) {
 	_, present, sentinel, found := createBucketState(h)
 	require.True(t, present)
 	require.True(t, found)
-	require.Equal(t, createBucketJSON(selection.StoreState{Cutover: selection.CutoverDone, ReplayFrom: 7, Orphans: []string{orphan},
-		BackupSHA256: createBucketNoBackup, Hold: id}), createBucketJSON(sentinel.state))
+	require.Equal(t, createBucketJSON(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, ReplayFrom: 7, Orphans: []string{orphan},
+		BackupSHA256: createBucketNoBackup, Hold: id})), createBucketJSON(sentinel.state))
 	d := h.journal(id)
 	require.Equal(t, append(createBucketRefused(holdrecord.WorkflowSelectionRecovery, createBucketAfterLossCommand), "intent", "done"), createBucketEntries(d, createBucketAfterLossCommand))
 	require.True(t, d.Complete, "create-bucket --after-loss is selection-recovery's final command")
@@ -589,8 +589,8 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		killed, present, first, found := createBucketState(h)
 		require.True(t, present)
 		require.True(t, found)
-		require.Equal(t, createBucketJSON(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 3, ReplayFrom: 1, Orphans: []string{orphan},
-			BackupSHA256: in.BackupSHA256, Hold: id}), createBucketJSON(first.state))
+		require.Equal(t, createBucketJSON(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 3, ReplayFrom: 1, Orphans: []string{orphan},
+			BackupSHA256: in.BackupSHA256, Hold: id})), createBucketJSON(first.state))
 
 		// The notification stream moves on: it keeps only its last 4 messages.
 		_, js := h.operator()
@@ -918,7 +918,7 @@ func TestCreateBucketTakesABucketHoldingAnotherHoldsBarrier(t *testing.T) {
 		require.Contains(t, stdout, "which held no key: its sentinel written with boundary 4")
 		info, _, sentinel, found := createBucketState(h)
 		require.True(t, found)
-		require.Equal(t, createBucketJSON(selection.StoreState{Boundary: 4, Hold: id}), createBucketJSON(sentinel.state))
+		require.Equal(t, createBucketJSON(ownSentinel(familySession, selection.StoreState{Boundary: 4, Hold: id})), createBucketJSON(sentinel.state))
 		require.Contains(t, info.State.Subjects, otherKey, "create-bucket removed the other hold's barrier key")
 		require.Equal(t, "done", h.lastEntry(id, createBucketCommand).State)
 	})

@@ -151,7 +151,9 @@ func (r *run) replaceListener(ctx context.Context) error {
 // replaceNames is the selection protocol over the listener durable m's record in store, on the
 // operator's connection nc, as the listener runs it for its own durable
 // (cmd/listener/listener_durable_names.go, durableNames): the durable's own name as each fresh
-// name's prefix, its floor the ack floor, and its key DurableKey's.
+// name's prefix, its floor the ack floor, its key DurableKey's, and the metadata its consumers
+// carry, envoy.logical naming the durable itself (member.Metadata, the listener's durableMetadata),
+// which the protocol's owner check holds every consumer the record names to (selection.Names.Owns).
 func replaceNames(nc *nats.Conn, store selection.Store, m member, holdID string) *selection.Names {
 	return selection.New(selection.Config{
 		Store:  store,
@@ -166,6 +168,7 @@ func replaceNames(nc *nats.Conn, store selection.Store, m member, holdID string)
 			return selection.StreamIdentity(info), nil
 		},
 		CheckKey: selection.CheckDurableKey,
+		Metadata: func(string) map[string]string { return m.Metadata() },
 		Owner:    "envoy-infra consumer-names replace, hold " + holdID,
 	})
 }

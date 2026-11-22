@@ -590,7 +590,7 @@ func convertOwner() string {
 //
 //   - An open operation is settled first (Step 0, convertSettle), and the record read again.
 //   - A record whose current is a fresh name is converted already; a fixed name still present is
-//     a stray, retired and deleted.
+//     a stray, which convert deletes itself: no record retires the logical's fixed name (retire).
 //   - With F present: the start S is the lowest of F's ack floor + 1, Dispatch's hold-token start
 //     and any start the record holds, with today's clamp (clampStart). The record is written
 //     op = {replace, old F, candidate N} and start = S, then F is deleted, then N is created at S
@@ -639,23 +639,16 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			return false, nil, unknownf(err, "the info of %s", name.Fixed)
 		}
 		if record.Current != "" && record.Current != name.Fixed {
-			if info == nil || slices.Contains(record.Retired, name.Fixed) {
-				if info != nil {
-					if err := deleteConsumer(ctx, nc, notifications, name.Fixed); err != nil {
-						return false, nil, fmt.Errorf("delete %s, which %s's record retired: %w", name.Fixed, m.Logical, err)
-					}
+			// Converted already. F is no name the record selects or may retire, as the selection
+			// package's own replace never retires the fixed name and deletes it itself; convert
+			// holds F's delete. A crash before it leaves F listed, which this command's rerun and
+			// final listing delete again.
+			if info != nil {
+				if err := deleteConsumer(ctx, nc, notifications, name.Fixed); err != nil {
+					return false, nil, fmt.Errorf("delete %s, which %s's record no longer selects: %w", name.Fixed, m.Logical, err)
 				}
-				return false, nil, nil
 			}
-			next := convertClone(record)
-			next = retire(next, name.Fixed)
-			if _, err := st.Write(ctx, m.Logical, next, revision); err != nil {
-				if errors.Is(err, selection.ErrConflict) {
-					continue
-				}
-				return false, nil, fmt.Errorf("retire %s in %s's record: %w", name.Fixed, m.Logical, err)
-			}
-			continue
+			return false, nil, nil
 		}
 		stream, err := streamInfo(ctx, nc, notifications)
 		if err != nil {
@@ -682,7 +675,6 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			next := convertClone(record)
 			if next.Current == name.Fixed {
 				next.Current = ""
-				next = retire(next, name.Fixed)
 			}
 			next.Start = clampStart(slices.Min(starts), stream.State)
 			next.LastFloor, next.Restore = nil, nil
@@ -732,10 +724,11 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 // settle is Step 0 for convert: it settles record's open operation, writing the record, and
 // answers selection.ErrConflict when the write was refused, so the caller reads again.
 //
-//   - replace (old O, candidate N, start S): N present is published, O retired and deleted; N
-//     absent, once the operation is convertSettleAge old, is retired and a fresh N′ created at S
-//     from the saved configuration, then published. A replace with no start destroyed nothing: its
-//     candidate is retired and the operation cleared.
+//   - replace (old O, candidate N, start S): N present is published, O retired (unless it is the
+//     fixed name, which no record retires) and deleted; N absent, once the operation is
+//     convertSettleAge old, is retired and a fresh N′ created at S from the saved configuration,
+//     then published. A replace with no start destroyed nothing: its candidate is retired and the
+//     operation cleared.
 //   - create (candidate N): N present is published; N absent is retired and the operation cleared,
 //     its start kept.
 //   - delete (old O): O's floor is recorded as the start unless it was, O deleted, the current
@@ -769,7 +762,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 		return err
 	}
 	if op.Kind == selection.OpReplace && record.Start == 0 {
-		next := retire(convertClone(record), op.Candidate)
+		next := retire(convertClone(record), m.Fixed, op.Candidate)
 		next.Op = nil
 		_, err := st.Write(ctx, m.Logical, next, revision)
 		return err
@@ -782,7 +775,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 		return c.publish(ctx, nc, st, m, record, revision, info)
 	}
 	if op.Kind != selection.OpReplace {
-		next := retire(convertClone(record), op.Candidate)
+		next := retire(convertClone(record), m.Fixed, op.Candidate)
 		next.Op = nil
 		_, err := st.Write(ctx, m.Logical, next, revision)
 		return err
@@ -852,7 +845,7 @@ func (c convertRule) awaitCandidate(ctx context.Context, r *run, nc *nats.Conn, 
 // rereserve retires record's open operation's candidate and reserves a fresh one, with the same
 // start, by a conditional write, and answers the record written and its revision.
 func (c convertRule) rereserve(ctx context.Context, r *run, st familyStore, m member, record selection.Record, revision uint64) (selection.Record, uint64, error) {
-	next := retire(convertClone(record), record.Op.Candidate)
+	next := retire(convertClone(record), m.Fixed, record.Op.Candidate)
 	retry := *record.Op
 	retry.Candidate, retry.ReservedAt, retry.Owner = selection.FreshName(m.Prefix), r.now(), convertOwner()
 	next.Op = &retry
@@ -912,8 +905,9 @@ func (c convertRule) launch(ctx context.Context, r *run, nc *nats.Conn, st famil
 }
 
 // publish makes the candidate info created the record's current, retires the operation's old
-// name and clears the operation, then deletes the old name (retired, so cleanup deletes it if
-// this delete fails).
+// name unless it is the logical's fixed name (retire) and clears the operation, then deletes the
+// old name (retired, so cleanup deletes it if this delete fails; the fixed name, which convert's
+// rerun and final listing delete again).
 func (c convertRule) publish(ctx context.Context, nc *nats.Conn, st familyStore, m member, record selection.Record, revision uint64, info *jetstream.ConsumerInfo) error {
 	op := record.Op
 	next := convertClone(record)
@@ -922,7 +916,7 @@ func (c convertRule) publish(ctx context.Context, nc *nats.Conn, st familyStore,
 		next.Start = info.Config.OptStartSeq
 	}
 	if op.Kind == selection.OpReplace {
-		next = retire(next, op.Old)
+		next = retire(next, m.Fixed, op.Old)
 	}
 	next.Op, next.LastFloor, next.Restore = nil, nil, nil
 	if _, err := st.Write(ctx, m.Logical, next, revision); err != nil {
@@ -1022,9 +1016,12 @@ func convertClone(record selection.Record) selection.Record {
 }
 
 // retire is record with name added to its retired names, once, in a copy of its list: convert,
-// replay and restore each retire a name a record no longer selects through it.
-func retire(record selection.Record, name string) selection.Record {
-	if name != "" && !slices.Contains(record.Retired, name) {
+// replay and restore each retire a name a record no longer selects through it. It never retires
+// fixed, the logical's fixed name: the selection package refuses a record that names it anywhere
+// but as an open operation's old name (consumernames checkNames), and its own replace deletes the
+// fixed name rather than retiring it, so whoever replaces the fixed name deletes it.
+func retire(record selection.Record, fixed, name string) selection.Record {
+	if name != "" && name != fixed && !slices.Contains(record.Retired, name) {
 		record.Retired = append(slices.Clone(record.Retired), name)
 	}
 	return record
