@@ -830,8 +830,8 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/priorities/{id}/history": {Status: http.StatusOK, Response: []model.PriorityAct{}},
 	"GET /api/v1/issues": {
 		Status: http.StatusOK, Response: []model.IssueSummary{}, Params: issueListQuery{},
-		// A request naming limit or offset is answered the page wrapper instead
-		// (issue_page.go).
+		// A request naming limit or offset is answered the page wrapper instead, which names the
+		// sort the request sent (issue_page.go).
 		Also: []routeAnswer{{Status: http.StatusOK, Body: model.IssueSummaryPage{}}},
 	},
 	"POST /api/v1/issues": {

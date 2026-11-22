@@ -266,6 +266,49 @@ func TestARouteStatusListingTakesTheSort(t *testing.T) {
 	}
 }
 
+// A page names the sort the route applied, as the request sent it, and a page read with no sort
+// names none: a server older than sort ignores it and names none either, so a caller that sent
+// one can tell a page in that order from one in the route's own. The route_status page, which Go
+// cuts after the read rather than SQL, names it as the SQL-cut page does.
+func TestAPageNamesTheSortItApplied(t *testing.T) {
+	roster := &fakeRoster{}
+	handler, _ := routeStatusServer(t, roster)
+	keys := createListedIssues(t, handler, "TEST", 2)
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+keys[0], map[string]any{"route": "role:reviewer"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("route %s: status=%d body=%s", keys[0], response.Code, response.Body.String())
+	}
+	roster.set("reviewer-session", "reviewer")
+	for _, filter := range []string{"project=TEST", "project=TEST&route_status=live"} {
+		for _, test := range []struct{ sort, want string }{
+			{"&sort=-closed_at", `"-closed_at"`},
+			{"&sort=closed_at", `"closed_at"`},
+			{"", ""},
+		} {
+			query := filter + test.sort + "&limit=1"
+			response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+			if response.Code != http.StatusOK {
+				t.Errorf("?%s: status=%d body=%s, want 200 with a page", query, response.Code, response.Body.String())
+				continue
+			}
+			var page map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+				t.Errorf("?%s: decode page: %v; body=%s", query, err, response.Body.String())
+				continue
+			}
+			if issues := string(page["issues"]); !strings.Contains(issues, keys[0]) {
+				t.Errorf("?%s: issues %s, want the page to hold %s", query, issues, keys[0])
+			}
+			sort, named := page["sort"]
+			switch {
+			case test.want == "" && named:
+				t.Errorf("?%s: sort %s, want no sort key", query, sort)
+			case test.want != "" && string(sort) != test.want:
+				t.Errorf("?%s: sort %s (named %t), want %s", query, sort, named, test.want)
+			}
+		}
+	}
+}
+
 // Tied issues come in key order when the listing also holds issues that do not tie with them.
 // Postgres's sort does not keep the order its input arrives in, so without the key it hands back
 // a tie among other rows in an order of its own making, and a write anywhere in the listing can

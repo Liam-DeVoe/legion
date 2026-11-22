@@ -9,7 +9,7 @@ import {
   projectIssuesQuery,
   sameDoneWindow,
 } from "../../api/queries";
-import type { IssueSummary, IssueSummaryPage, LegionBoardResponse } from "../../api/types";
+import type { IssueSummary, LegionBoardResponse } from "../../api/types";
 import type { ClosedWindow } from "../../lib/closed-window";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
@@ -103,28 +103,16 @@ const NO_FACTS: Readonly<Record<string, LegionFacts>> = {};
 export const CLOSE_ITEMS_AGAIN_MS = 60_000;
 
 /**
- * The count of every done issue a page read of Done holds, which Done's tab and its pager count:
- * the read's `total`, or 0 where the page lists none of the rows it answered (`listedDoneRows`),
- * since that `total` then counts rows that no view lists.
- */
-export function donePageTotal(page: IssueSummaryPage): number {
-  const rows = page.issues ?? NO_ISSUES;
-  return rows.length > 0 && listedDoneRows(rows, { windowed: false, paged: true }).length === 0
-    ? 0
-    : page.total;
-}
-
-/**
  * One listing's issues as the table shows them.
  *
  * A project's listing: the open listing once, unless the view lists only done issues, and the
  * done issues the view lists (`DoneRead`), never the full listing. The open rows come first,
- * then the done ones, as the listing's own order has them. A Done read none of whose rows
- * carries `closed_at` lists none of them where it has a window or is a page
- * (`listedDoneRows`). In a project with a Legion daemon the board is read, and the facts of the
- * listed done rows its map does not hold come from the items of `legion-work-time` over their
- * close days, read once the board has answered; items of rows the view does not list are
- * dropped.
+ * then the done ones, as the listing's own order has them. A Done read with a window none of
+ * whose rows carries `closed_at` lists none of them (`listedDoneRows`), and a page read whose
+ * answer does not name its sort fails (`UnsortedPageError`). In a project with a Legion daemon
+ * the board is read, and the facts of the listed done rows its map does not hold come from the
+ * items of `legion-work-time` over their close days, read once the board has answered; items of
+ * rows the view does not list are dropped.
  *
  * A listing that advances a priority: its open read, and its whole listing once the reader lets
  * closed issues through. Two reads, never three: the open read stops once the whole one has
@@ -195,10 +183,7 @@ export function useIssueTableItems(
     () =>
       project === undefined || done === undefined || readRows === undefined
         ? NO_ISSUES
-        : listedDoneRows(readRows, {
-            windowed: done.window !== undefined,
-            paged: done.kind === "page",
-          }),
+        : listedDoneRows(readRows, done.window !== undefined),
     [project, done, readRows]
   );
   const all = useMemo(() => {
@@ -279,9 +264,8 @@ export function useIssueTableItems(
     board,
     doneLoaded,
     doneRead,
-    /** Every done issue the paged read's window holds, where the view reads a page
-     *  (`donePageTotal`). */
-    doneTotal: paged && donePage.data !== undefined ? donePageTotal(donePage.data) : undefined,
+    /** Every done issue the paged read's window holds, where the view reads a page. */
+    doneTotal: paged ? donePage.data?.total : undefined,
     issues,
     items,
     itemsStatus,

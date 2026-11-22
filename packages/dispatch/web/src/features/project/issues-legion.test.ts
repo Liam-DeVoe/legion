@@ -408,8 +408,8 @@ test("an items page with no rows ends its window, whatever its total says", asyn
   expect(Object.keys(facts)).toEqual(["ACME-1"]);
 });
 
-test("a windowed or paged Done read none of whose rows carries closed_at lists no row", () => {
-  // An older server writes no `closed_at` and ignores the window and the sort.
+test("a windowed Done read none of whose rows carries closed_at lists no row", () => {
+  // A server older than `closed_at` writes none and ignores the window.
   const older: { key: string; closed_at?: string | null }[] = [
     { key: "INFRA-2" },
     { key: "INFRA-3" },
@@ -418,12 +418,11 @@ test("a windowed or paged Done read none of whose rows carries closed_at lists n
     { key: "INFRA-7", closed_at: "2026-11-14T10:00:00Z" },
     { key: "INFRA-3", closed_at: null },
   ];
-  expect(listedDoneRows(older, { windowed: true, paged: false })).toEqual([]);
-  expect(listedDoneRows(older, { windowed: false, paged: true })).toEqual([]);
+  expect(listedDoneRows(older, true)).toEqual([]);
   // A read of every done issue with no window lists what it read.
-  expect(listedDoneRows(older, { windowed: false, paged: false })).toBe(older);
+  expect(listedDoneRows(older, false)).toBe(older);
   // One row that carries `closed_at` is a server that writes it.
-  expect(listedDoneRows(current, { windowed: true, paged: true })).toBe(current);
+  expect(listedDoneRows(current, true)).toBe(current);
 });
 
 test("a 404 EVAL_NOT_FOUND from the items route is a failed read, not an issue with no Legion work", async () => {

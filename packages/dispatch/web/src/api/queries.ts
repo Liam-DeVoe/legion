@@ -454,13 +454,30 @@ export const projectDoneIssuesQuery = (project: string, window: ClosedWindow | u
   });
 };
 
+/** The order Done's page read asks the list route for, which its answer must name. */
+const DONE_PAGE_SORT = "-closed_at";
+
+/** The failure of a page read of Done whose answer does not name `DONE_PAGE_SORT` as its `sort`.
+ *  A server older than `sort` ignores it and answers the route's own order, so its page holds the
+ *  first done issues by rank, not the newest closes. No rule on the rows can tell such a page from
+ *  a sorted one, since that server can write `closed_at` too. */
+export class UnsortedPageError extends Error {
+  constructor() {
+    super("The list route answered a page of closed issues without the sort it was sent.");
+    this.name = "UnsortedPageError";
+  }
+}
+
 /** One page of a project's done issues, newest close first, with the count of every done issue
  *  the window holds (`total`): what Done reads while it is sorted by Closed and narrowed by
  *  nothing but a Closed window. `size` is the page's rows and `offset` the rows before it. The
  *  read sends the window's own first moment, so its rows and its `total` are the window's. For a
  *  rolling window that moment moves with the clock the caller reads, and each new moment is a new
  *  read. A window that holds no moment is an empty page that asks the route nothing
- *  (`holdsNoMoment`). Under the project listing's prefix, as `projectDoneIssuesQuery`. */
+ *  (`holdsNoMoment`). An answer that does not name the sort the read sent fails the read
+ *  (`UnsortedPageError`), so the query never holds such a page and no count is taken from it.
+ *  The shared retry policy reads it again twice, as any failed read (`queryRetry`). Under the
+ *  project listing's prefix, as `projectDoneIssuesQuery`. */
 export const projectDonePageQuery = (
   project: string,
   page: { readonly offset: number; readonly size: number; readonly window?: ClosedWindow }
@@ -480,14 +497,16 @@ export const projectDonePageQuery = (
       if (holdsNoMoment(page.window))
         return { issues: [], limit: page.size, offset: page.offset, total: 0 };
       await boardMovesSettled(context, project);
-      return api.listIssuePage({
+      const answer = await api.listIssuePage({
         project,
         status: ["done"],
-        sort: "-closed_at",
+        sort: DONE_PAGE_SORT,
         limit: page.size,
         offset: page.offset,
         ...range,
       });
+      if (answer.sort !== DONE_PAGE_SORT) throw new UnsortedPageError();
+      return answer;
     },
   });
 };

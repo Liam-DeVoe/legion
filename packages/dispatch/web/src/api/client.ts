@@ -1118,15 +1118,15 @@ export class DispatchApiClient {
 
   /** One page of the issue list with the count of every issue its narrowings match (`total`),
    *  which `listIssues` drops: Open's tab count read off a one-row page, and the Done view's page
-   *  ordered by close (`sort`). Its `issues` is never null. An older server that answers the
-   *  plain list is read as one page of everything it answered. */
+   *  ordered by close, whose answer names the sort the route applied (`sort`). Its `issues` is
+   *  never null. An older server that answers the plain list is read as one page of everything
+   *  it answered, which names no sort. */
   async listIssuePage(query: Query<"/api/v1/issues", "get">): Promise<IssueSummaryPage> {
     const answer = await this.read("/api/v1/issues", {}, query);
     if (Array.isArray(answer)) {
       return { issues: answer, total: answer.length, limit: answer.length, offset: 0 };
     }
-    const { issues, total, limit, offset } = answer;
-    return { issues: issues ?? [], total, limit, offset };
+    return { ...answer, issues: answer.issues ?? [] };
   }
 
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`

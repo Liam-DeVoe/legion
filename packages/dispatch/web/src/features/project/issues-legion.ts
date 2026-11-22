@@ -307,16 +307,17 @@ export async function readLegionItems(
 const NO_ROWS: readonly never[] = [];
 
 /**
- * The rows a Done read lists. An older server, during a rolling deploy, writes no `closed_at`
- * and ignores `closed_since`, `closed_before` and `sort`. So a read with a window, or a page read,
- * none of whose rows carries `closed_at`, lists no row, rather than every done issue or a page of
- * them in the route's own order. The view lists rows again once a server that carries
- * `closed_at` answers.
+ * The rows a Done read lists. A server older than `closed_at`, during a rolling deploy, writes
+ * no `closed_at` and ignores `closed_since` and `closed_before`. So a read with a window none of
+ * whose rows carries `closed_at` lists no row, rather than every done issue. The view lists rows
+ * again once a server that carries `closed_at` answers. Whether a page read's rows are in the
+ * sort it sent is for its answer to say (`sort`), not its rows: a server that ignores `sort` may
+ * write `closed_at` too, and the page read fails on such an answer (`UnsortedPageError`).
  */
 export function listedDoneRows<Row extends { readonly closed_at?: string | null }>(
   rows: readonly Row[],
-  read: { readonly windowed: boolean; readonly paged: boolean }
+  windowed: boolean
 ): readonly Row[] {
-  if (!read.windowed && !read.paged) return rows;
+  if (!windowed) return rows;
   return rows.some((row) => typeof row.closed_at === "string") ? rows : NO_ROWS;
 }

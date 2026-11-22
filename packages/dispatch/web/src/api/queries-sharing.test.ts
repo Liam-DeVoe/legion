@@ -12,6 +12,7 @@ import {
   projectDonePageQuery,
   projectIssuesQuery,
   projectOpenCountQuery,
+  UnsortedPageError,
 } from "./queries";
 import type { IssueSummary } from "./types";
 
@@ -140,7 +141,14 @@ test("an advances listing keeps the object of every issue a read did not change"
 });
 
 test("a page of Done keeps its unchanged issues by key, and the cached page when nothing changed", async () => {
-  const page = (issues: IssueSummary[], total: number) => ({ issues, limit: 3, offset: 0, total });
+  // The route names the sort it applied, as it answers Done's read.
+  const page = (issues: IssueSummary[], total: number) => ({
+    issues,
+    limit: 3,
+    offset: 0,
+    total,
+    sort: "-closed_at" as const,
+  });
   const listIssuePage = spyOn(api, "listIssuePage")
     .mockResolvedValueOnce(page(firstRead(), 3))
     .mockResolvedValueOnce(page(movedRead(), 4))
@@ -175,6 +183,7 @@ test("a page of Done reads its window's own first moment, newest close first", a
     limit: 50,
     offset: 50,
     total: 0,
+    sort: "-closed_at",
   });
   try {
     await client().fetchQuery(
@@ -193,6 +202,24 @@ test("a page of Done reads its window's own first moment, newest close first", a
   } finally {
     listIssuePage.mockRestore();
   }
+});
+
+// A server older than `sort` ignores it and answers the route's own order, with no `sort` in its
+// page. Done's read, through the client, fails on that page rather than hold it, and on a page in
+// the other order, and holds the page whose answer names `-closed_at`.
+test("a page of Done whose answer does not name sort=-closed_at fails the read", async () => {
+  const answer = {
+    issues: [issue("CORE-1", "2026-10-03T00:00:00Z")],
+    limit: 50,
+    offset: 0,
+    total: 1,
+  };
+  const answers = [answer, { ...answer, sort: "closed_at" }, { ...answer, sort: "-closed_at" }];
+  answerRequests(http.get("/api/v1/issues", () => Response.json(answers.shift())));
+  const read = () => client().fetchQuery(projectDonePageQuery("CORE", { offset: 0, size: 50 }));
+  await expect(read()).rejects.toBeInstanceOf(UnsortedPageError);
+  await expect(read()).rejects.toBeInstanceOf(UnsortedPageError);
+  expect(await read()).toEqual({ ...answer, sort: "-closed_at" });
 });
 
 test("a read of every done issue starts a rolling window on its hour, and a range at its own ends", async () => {

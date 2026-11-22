@@ -1293,29 +1293,48 @@ test("a Closed window the list route would refuse draws no failed read: To befor
   }
 });
 
-// R2 and the Design's Loading, found by INFRA-3221's tester: a page read none of whose rows carries
-// `closed_at` (an older server while a release rolls out) lists no row, and the tab and the pager
-// count the rows the table lists, so neither counts the rows that page left out.
-// SLOW(>=2s): ACME seeded, and Done opened over page reads whose rows lose their closed_at.
-test("a Done page none of whose rows carries closed_at lists no row and counts none on its tab or its pager", async ({
+// R2, the Design's Loading and the architect's ruling on INFRA-3221's review: a page read whose
+// answer names no `sort` comes from a server older than `sort` while a release rolls out, which
+// answers the route's own order with `closed_at` on its rows. Done draws none of its rows and
+// counts none on its tab or its pager: it reads the page again, then says the server did not sort
+// the closed issues, with Retry. Once a server that applies the sort answers, Retry draws the page.
+// SLOW(>=2s): ACME seeded, and Done opened over page reads whose answers lose their sort.
+test("a Done page whose answer names no sort draws no row, counts none, and says the server did not sort it, with Retry", async ({
   browser,
 }) => {
   const daemon = await seedAcme();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    const table = issuesTable(page);
+    const done = page.getByRole("tab", { name: /^Done/ });
+    let older = true;
+    let reads = 0;
     await page.route(/\/api\/v1\/issues\?.*sort=-closed_at/, async (route) => {
+      reads += 1;
+      if (!older) return route.continue();
       const response = await route.fetch();
-      const body: { issues?: Partial<IssueSummary>[] } = await response.json();
-      for (const issue of body.issues ?? []) delete issue.closed_at;
+      const body: { sort?: string } = await response.json();
+      delete body.sort;
       await route.fulfill({ response, json: body });
     });
     await page.goto(`/projects/${ACME}/issues?view=done`);
-    await expect(page.getByText("No issues match these filters.")).toBeVisible();
-    expect([tabName("Done"), tabName("Done", 0)]).toContain(
-      await page.getByRole("tab", { name: /^Done/ }).getAttribute("aria-label")
-    );
+    const unsorted = page
+      .getByRole("alert")
+      .filter({ hasText: "The server did not sort the closed issues by close time." });
+    await expect(unsorted).toBeVisible();
+    // The first read and the two the shared retry policy makes again, none of them drawn.
+    expect(reads).toBeGreaterThanOrEqual(3);
+    await expect(table.locator("tbody tr[data-issue-row]")).toHaveCount(0);
+    await expect(done).toHaveAttribute("aria-label", tabName("Done"));
     await expect(page.getByText(/^Rows 1–/)).toHaveCount(0);
+
+    older = false;
+    await unsorted.getByRole("button", { name: "Retry loading issues" }).click();
+    const closed = await listIssuesWhere({ project: ACME, status: ["done"] });
+    await expect(done).toHaveAttribute("aria-label", tabName("Done", closed.length));
+    await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+    await expect(unsorted).toHaveCount(0);
   } finally {
     await context.close();
     await daemon.close();

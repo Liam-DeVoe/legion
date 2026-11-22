@@ -721,13 +721,13 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if inSQL {
-		WriteJSON(w, http.StatusOK, page.holding(issues, total))
+		WriteJSON(w, http.StatusOK, page.holding(issues, total, sort))
 		return
 	}
 	// A route_status page is cut from the listing every filter has narrowed, that one included,
 	// so total counts what the caller's filters match.
 	if page != nil {
-		WriteJSON(w, http.StatusOK, page.of(issues))
+		WriteJSON(w, http.StatusOK, page.of(issues, sort))
 		return
 	}
 	WriteJSON(w, http.StatusOK, issues)

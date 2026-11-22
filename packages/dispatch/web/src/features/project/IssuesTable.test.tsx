@@ -12,6 +12,7 @@ import { answerBoard, liveSockets, waitMs } from "../../__tests__/live-socket-ha
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, legionBoardQuery, projectIssuesQuery } from "../../api/queries";
+import { queryRetry } from "../../api/query-client";
 import type {
   EvalItemRow,
   Issue,
@@ -104,9 +105,12 @@ afterEach(() => {
 /** Draws the List over `issues`. `full` answers the listing of the closed issues, and `open` the
  *  one that holds the open ones alone, in place of `issues` itself; `rescued` draws the List in
  *  the shell's main content with the page's focus rescue mounted (`RescuedMain`), after a link
- *  that stands for the shell's navigation; `props` is what a caller other than the project page
- *  passes: a listing of its own, the priorities' titles and the prefix its view is written
- *  under. `daemon` is the project's Legion daemon setting, none by default. */
+ *  that stands for the shell's navigation; `sortApplied` says whether the server applies a page
+ *  read's `sort` and names it in the answer, which a server older than `sort` does not;
+ *  `retries` reads a failed read again as the app's shared policy does (`queryRetry`), with no
+ *  wait between the reads. `props` is what a caller other than the project page passes: a
+ *  listing of its own, the priorities' titles and the prefix its view is written under. `daemon`
+ *  is the project's Legion daemon setting, none by default. */
 function table(
   issues: IssueSummary[],
   search = "",
@@ -114,7 +118,15 @@ function table(
     full,
     open,
     rescued = false,
-  }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]>; rescued?: boolean } = {},
+    retries = false,
+    sortApplied = () => true,
+  }: {
+    full?: Promise<IssueSummary[]>;
+    open?: Promise<IssueSummary[]>;
+    rescued?: boolean;
+    retries?: boolean;
+    sortApplied?: () => boolean;
+  } = {},
   props: {
     listing?: IssueListing;
     priorityTitles?: ReadonlyMap<string, string>;
@@ -137,14 +149,22 @@ function table(
     if (options.open && open) return open;
     return issues.filter(answers(options));
   });
-  // One page of it, as `limit` and `offset` ask, newest close first for `sort=-closed_at`.
+  // One page of it, as `limit` and `offset` ask, newest close first for `sort=-closed_at`, with
+  // the sort it applied named in the answer.
   const page = spyOn(api, "listIssuePage").mockImplementation(async (options) => {
     const rows = issues.filter(answers(options));
-    if (options.sort === "-closed_at")
+    const sorted = options.sort !== undefined && sortApplied();
+    if (sorted && options.sort === "-closed_at")
       rows.sort((a, b) => (b.closed_at ?? "").localeCompare(a.closed_at ?? ""));
     const offset = options.offset ?? 0;
     const limit = options.limit ?? rows.length;
-    return { issues: rows.slice(offset, offset + limit), limit, offset, total: rows.length };
+    return {
+      issues: rows.slice(offset, offset + limit),
+      limit,
+      offset,
+      total: rows.length,
+      ...(sorted ? { sort: options.sort } : {}),
+    };
   });
   const setting = spyOn(api, "getLegionDaemon").mockImplementation(() => daemon);
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -165,7 +185,9 @@ function table(
         : (descriptor?.get?.call(this) ?? 0);
     },
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: retries ? { retry: queryRetry, retryDelay: 0 } : { retry: false } },
+  });
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
   const list = <IssuesTable listing={{ project: "CORE" }} {...props} />;
   const view = render(
@@ -3076,6 +3098,41 @@ test("Done's second server page reads Rows 51–100 of the server's count", asyn
   expect(within(pager).getByText("Rows 51–100")).toBeDefined();
   expect(within(pager).getByText("Page 2 of 3")).toBeDefined();
   expect(pager.textContent).not.toMatch(/120|issues/);
+});
+
+// While a release rolls out, a server older than the list route's `sort` ignores it and answers
+// the first done issues by rank, `closed_at` and all. Its answer names no sort, so Done draws
+// none of its rows and counts none of them on its tab: the shared retry policy reads it twice
+// more, and then Done says the server did not sort them, with Retry. Once the server applies the
+// sort, Retry reads the page again and Done draws it, newest close first.
+test("Done draws no page whose answer names no sort, reads it again, then says so with Retry", async () => {
+  const user = userEvent.setup();
+  let updated = false;
+  const { page } = table(
+    [
+      issue("CORE-1", { status: "done", closed_at: "2026-11-04T10:00:00Z" }),
+      issue("CORE-2", { status: "done", closed_at: "2026-11-05T10:00:00Z" }),
+    ],
+    "?view=done",
+    { retries: true, sortApplied: () => updated }
+  );
+  const pageReads = () => page.mock.calls.filter(([options]) => options.sort === "-closed_at");
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain(
+    "The server did not sort the closed issues by close time. Retry when the server update is complete."
+  );
+  expect(pageReads().length).toBe(3);
+  expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+  expect(screen.queryByRole("row", { name: "CORE-2 Work CORE-2" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "Done" })).toBeDefined();
+
+  updated = true;
+  await user.click(within(alert).getByRole("button", { name: "Retry loading issues" }));
+  expect(await screen.findByRole("tab", { name: "Done, 2 issues" })).toBeDefined();
+  expect(pageReads().length).toBe(4);
+  const rows = screen.getAllByRole("row").filter((row) => row.hasAttribute("data-issue-row"));
+  expect(rows.map((row) => row.getAttribute("data-issue-row"))).toEqual(["CORE-2", "CORE-1"]);
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 /** A card of the board's Queue column that waits for capacity, its worker at work. */

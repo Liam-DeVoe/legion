@@ -13,6 +13,7 @@ import {
   projectDoneIssuesQuery,
   projectDonePageQuery,
   projectOpenCountQuery,
+  UnsortedPageError,
   userStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -87,7 +88,6 @@ import {
 import {
   answeredWhole,
   type DoneRead,
-  donePageTotal,
   type IssueListing,
   useIssueTableItems,
 } from "./issues-table-data";
@@ -165,6 +165,12 @@ const ROW_CHECKBOX = 'input[type="checkbox"]';
 
 /** What an answer the server gave no words for is called in an alert. */
 const NO_ANSWER = "Dispatch did not answer.";
+
+/** What Done's alert says where its page read failed on an answer that does not name the sort it
+ *  was sent (`UnsortedPageError`): a server older than the list route's `sort` answers it while a
+ *  release rolls out. */
+const UNSORTED_DONE_PAGE =
+  "The server did not sort the closed issues by close time. Retry when the server update is complete.";
 
 /** A read that can fail and be made again: what `readFailure` reads off a query. */
 interface Rereadable {
@@ -1225,7 +1231,7 @@ function IssueTableBody({
       offset: heldDone?.kind === "page" ? heldDone.offset : 0,
       size: heldDone?.kind === "page" ? heldDone.size : 0,
     }),
-    select: donePageTotal,
+    select: (page) => page.total,
     refetchOnMount: false,
     enabled: tab !== undefined && heldDone?.kind === "page" && !onDone,
   });
@@ -1330,13 +1336,18 @@ function IssueTableBody({
     );
   const layoutSwitch =
     tab === undefined ? null : <LayoutSwitch layout={tab.layout} onLayout={tab.setLayout} />;
+  // Done's page read failed on an answer the server did not sort: its alerts say so in place of
+  // a failed read's words, and keep their Retry.
+  const unsorted = done !== undefined && doneRead.error instanceof UnsortedPageError;
   // What the listing reads say over the rows, in both layouts, once the rows are in: a failed read
   // of the listing with its Retry, and the done issues still being read beside the open ones.
   const listingNotices = loaded ? (
     <>
       {listingError ? (
         <p className={dangerText} role="alert">
-          Could not load {done !== undefined ? "closed " : ""}issues.{" "}
+          {unsorted
+            ? UNSORTED_DONE_PAGE
+            : `Could not load ${done !== undefined ? "closed " : ""}issues.`}{" "}
           <button
             type="button"
             aria-label={done !== undefined ? "Retry loading closed issues" : "Retry loading issues"}
@@ -1359,7 +1370,7 @@ function IssueTableBody({
       {loading ? <LoadingSkeleton label="Loading issues" /> : null}
       {failed ? (
         <p className={dangerText} role="alert">
-          Could not load issues.{" "}
+          {unsorted ? UNSORTED_DONE_PAGE : "Could not load issues."}{" "}
           <button
             type="button"
             onClick={() => {
