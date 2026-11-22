@@ -38,8 +38,9 @@ import (
 // update of the stream, so its client owns none (bus.Connect), names its inboxes under its
 // machine's prefix, and its start waits out a refusal of the connect, then reads the stream and
 // refuses, naming it, when the server has none (edgeStreamPresent); that read is not waited out,
-// so a grant that refuses it ends the start at once. A failed read closes the client, which stops
-// everything it runs. Its grant creates and raises no bucket's stream either, so each bucket is
+// so a grant that refuses it ends the start after the read, within edgeStreamRead (10 s). A failed
+// read closes the client, which stops everything it runs. Its grant creates and raises no bucket's
+// stream either, so each bucket is
 // found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
 // than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server refused; no
 // keeper raises a bucket after.

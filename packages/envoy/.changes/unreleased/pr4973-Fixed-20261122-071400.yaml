@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A message the deployed stream cannot store is refused with a retryable error, and never sent
+  over core NATS and answered as delivered. While the deployed `ENVOY_NOTIFICATIONS` stream, as the
+  client last read its subjects, does not capture a topic this build stores (a hub move's quiesce
+  narrows it, or an operator edits it), every publish sends nothing and fails with
+  `bus.ErrSubjectNotDeployed`. A sender now gets a `503` with `Retry-After: 1` from
+  `POST /v1/messages/send` and `POST /v1/messages/publish`, in place of a `200` for a message
+  nothing stored or a `400` that said no stream captures the topic. The refused message costs the
+  sender limit nothing. The webhooks answer `503`, so GitHub delivers again. Dispatch settles a
+  queued message failed, and the build announcer tries again at its next pass. A session's consumer
+  filter now keeps every topic of its row whatever the deployed stream captures, so a message
+  stored on the topic once the stream captures it again is delivered. It leaves out a topic outside
+  `notifications.`, and every wildcard topic whose merge with another would reach another
+  session's messages.
+time: 2026-11-22T07:14:00Z
+custom:
+    Issue: pr4973

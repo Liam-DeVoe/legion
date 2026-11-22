@@ -660,7 +660,9 @@ func runStartChild(seedFile string) {
 // listener whose credential the server never admits exits 1 once the bound has passed, its last
 // line naming its credential's public key and the last refusal; a start whose server is not there
 // at all ends after main's ten tries, not at the bound; and the production start's bound is 180 s,
-// which main alone passes to ConnectOwningStream.
+// which main passes to the start (runListener, newNATSStart), whose option connectListenerBus hands
+// to the owning connect and, on an edge listener, to bus.Connect: bus.WithCredentialWait has one
+// call outside tests, in cmd/listener.
 func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	if seedFile, child := os.LookupEnv(startChildSeedFile); child {
 		runStartChild(seedFile)

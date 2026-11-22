@@ -24,9 +24,10 @@ import (
 const listenerCredentialWait = 180 * time.Second
 
 // natsStart is the listener's start on NATS (Phase 5, connectListenerBus) as its probe routes
-// report it. wait is the credential wait its owning client is started with (option), and refusal
-// the last refusal of the credential the start is waiting out: nil before the first refusal and
-// once the start has succeeded.
+// report it. wait is the credential wait its main client is started with (option), an owning
+// client's or, on an edge listener, the client bus.Connect returns, and refusal the last refusal of
+// the credential the start is waiting out: nil before the first refusal and once the start has
+// succeeded.
 type natsStart struct {
 	wait    time.Duration
 	refusal atomic.Pointer[string]
@@ -35,8 +36,8 @@ type natsStart struct {
 // newNATSStart is a start that waits out a refusal of the credential for up to wait.
 func newNATSStart(wait time.Duration) *natsStart { return &natsStart{wait: wait} }
 
-// option is the option the owning client's start takes: the start's wait, handing each refusal to
-// refused as the bus meets it.
+// option is the option the main client's start takes, an owning client's or an edge listener's: the
+// start's wait, handing each refusal to refused as the bus meets it.
 func (s *natsStart) option() bus.ConnectOption { return bus.WithCredentialWait(s.wait, s.refused) }
 
 // refused records err as the last refusal of the credential.
