@@ -167,10 +167,13 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   skill other than SKILL.md (`cases whose real step reads a file of the skill other than SKILL.md,
   which the arm with no skill does not have, so it fails them by construction: <n> of <screened>
   screened (<id> reads <path>; …)`, or `none of <screened> screened`), a read being a `read` of
-  `skill://<skill>/<path>` or of a path that ends with the skill's installed directory and
-  `/<path>`, `<path>` a file of `--old`, as the arms tell a read of a file of the skill; the arm
-  with no skill, in the screen whatever is compared, fails such a step whatever the skill's text
-  teaches; a screened case whose arms the runner cannot build (`buildArm` throws) is named in it
+  `skill://<skill>/<path>`, a whole read by path of the case's own copy (`pathCopy`; a relative or
+  `~` path resolved against its `cwd` and `home` as Oh My Pi's read resolves it), or, for a case
+  that names no copy, a read of a path that ends with the skill's installed directory and
+  `/<path>`, `<path>` a file of `--old`, as the arms tell a read of a file of the skill
+  (`cases.ts`'s `stepSkillFiles`); the arm with no skill, in the screen whatever is compared, fails
+  such a step whatever the skill's text teaches; a screened case whose arms the runner cannot
+  build (`buildArm` throws) is named in it
   as `<id>: its reads cannot be told (<the first line of why>)` and counted in neither, and the
   line gives how many of the other screened cases are informative, flagged and confirmed losses;
   the mean over the screened cases of old's screen pass
@@ -1651,12 +1654,15 @@ a read: a step that reads a file of the skill under a line that is not a navigat
 case (a step under "Read `references/scope.md` and resolve the reviewed diff" is one). In the
 session form, a step under a navigation line gives no case, and the files it read are the files of
 its replacement: those its `read` calls read by the rule the arms and `behaviour report` use
-(`cases.ts`'s `stepSkillFiles`: a read of `skill://<skill>/<path>`, or of a path that ends with
-`<installed dir>/<path>`, the installed directory being the one the session's first read before
-the step shows). The `case` reader goes on from the window that starts right after that step,
-whether the reader saw it in its window or among the messages shown before it (so no later step of
-that window is passed over), within the 6 windows, offered only those files' lines (the lines the
-session's own reads of them held, as the reader's offered lines always are).
+(`cases.ts`'s `stepSkillFiles`: a read of `skill://<skill>/<path>`; a whole read by path, absolute,
+relative or under `~`, of the copy a case at the step would name (`pathCopy`: the cut's copy that
+the session's first read by path a case is built from, before the step, read); or, where there is
+no such copy, a read of a path that ends with `<installed dir>/<path>`, the installed directory
+being the one the session's first read before the step shows). The `case` reader goes on from the
+window that starts right after that step, whether the reader saw it in its window or among the
+messages shown before it (so no later step of that window is passed over), within the 6 windows,
+offered only those files' lines (the lines the session's own reads of them held, as the reader's
+offered lines always are).
 Its first proposal there is the replacement case, with that file's line as its line: it must be a
 later step, and it goes through every check any proposal goes through, the navigation reader
 first, then the line's checks, the restatement check and the audit (and, later, the judge
@@ -1698,14 +1704,20 @@ on a model the gateway serves and whose rebuilt profile installs the cut reposit
 set's) copy of the skill; when no such session is on a served model, the first whose profile
 installs it, on any model. `--context-session` with `--sessions` or `--seed` is refused (exit 2),
 since the build would read neither. A session gives a context as a session gives a case: its first
-successful read of the skill must be placed at the cut repository's copy by `attribute.ts`'s
-rules, the model and thinking level are those in effect at that read, its context (`devbox`,
-its Legion role, or a subagent's recorded prompt and tools) is rebuilt as build-cases rebuilds a
-case's, and its profile is built from its reads up to and including that read, as a session
-case's is from the reads before its step, at the time `--reprofile` reads a written case's (a
-written case records no time of its step): a top-level session's at its start, its first prompt
-build, and its listing measured against the earliest subagent of it spawned under that build; a
-subagent's at its root's last prompt build before its start. The summary's `contextSession` names
+successful read of the skill is the earlier of its first successful `skill://` read, which
+`attribute.ts`'s rules must place at the cut repository's copy, and its first successful whole read
+by path (absolute, relative to its working directory, or under `~`, as above) that they place at
+the cut repository's copy; a session whose only successful reads of the skill are reads by path of
+another kind is passed over under the first of them that applies (`path-range`, `other-copy`,
+`unattributed`, `path-relative`), as the session form drops it, and one with none as `no-read`.
+The model and thinking level are those in effect at that read, its context (`devbox`, its Legion
+role, or a subagent's recorded prompt and tools) is rebuilt as build-cases rebuilds a case's, and
+its profile is built from its reads up to and including that read (a read by path of the copy
+among them), as a session case's is from the reads before its step, at the time `--reprofile`
+reads a written case's (a written case records no time of its step): a top-level session's at its
+start, its first prompt build, and its listing measured against the earliest subagent of it
+spawned under that build; a subagent's at its root's last prompt build before its start. The
+summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
 detail, or `model-not-served` for a session on a model the gateway does not serve). A case's
 `model` is the context session's when the gateway serves it; else the served model with the most
@@ -1725,15 +1737,19 @@ number and text; its schema refuses one that is not that line of the base text, 
 navigation line given, by its file and text), the criterion, a following step and a violating
 step. Each task gives a case whose `messages` are the task as the user's message, an assistant
 call `read skill://<skill>` and its result: the base text's `SKILL.md`, answered as the arms
-answer a history read, in the directory the context session's first read of the skill showed;
-then, for each file of `reads` in its order, a call `read skill://<skill>/<path>` and its result,
-that file of the base text answered the same way (`skillReads` points at every read result). Its
-`realStep` is the following step, its `violatingStep` the violating one, its `source` the context
-session's store and path hash with `kind` `written`, and its profile, working directory and
-system context the context session's; its evidence names each read of the context session its
-profile is built from (`context session read: …`), the task (and the navigation lines given),
-each read of `reads` (`written case: reads skill://<skill>/<path> after the skill`, with the
-navigation lines that send the agent there), the context session and the model. Secrets are taken
+answer a history read, in the directory the context session's first read of the skill showed (for
+a read by path, the directory of the copy it read: the path read, resolved, less the file inside
+the skill); then, for each file of `reads` in its order, a call `read skill://<skill>/<path>` and
+its result, that file of the base text answered the same way (`skillReads` points at every read
+result). Its `realStep` is the following step, its `violatingStep` the violating one, its `source`
+the context session's store and path hash with `kind` `written`, and its profile, working
+directory and system context the context session's; its evidence names each read of the context
+session its profile is built from, and so how it read the skill (`context session read: message
+<n> reads [Skill file: <path>]` for a `skill://` read, `context session read: message <n> reads
+<path> by its path` for a whole read by path of the cut's copy, its source naming the copy's
+directory), the task (and the navigation lines given), each read of `reads` (`written case: reads
+skill://<skill>/<path> after the skill`, with the navigation lines that send the agent there), the
+context session and the model. Secrets are taken
 out as from a session case. The `restate` reader reads the task and the read calls (never a
 file's text): a restatement of the line drops the task (`written-restates`). The `audit` reader
 reads the line, the messages as the judge reads them and the following step: anything but

@@ -418,7 +418,9 @@
  * must call `follows` (else `written-not-followed`), in a task the restate reader finds no
  * statement of the line in (else `written-restates`); its `source.kind` `written`. The context
  * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
- * is refused (exit 2), since it would read neither `--sessions` nor `--seed`.
+ * is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first read of
+ * the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://` read, or
+ * a whole read by path of the cut's copy, whose copy's directory the written case's reads show.
  *
  * **--drop-navigation** (both forms; README.md, "build-cases and build-tasks") gives no case of a
  * navigation line: a line whose only instruction a step could show is to read or open a file of
@@ -428,10 +430,12 @@
  * for a read: a step that reads a file of the skill under a line that is not a navigation line
  * stays a case. In the session form, a step under a navigation line gives no case; its
  * replacement may. The files that step read, as cases.ts's `stepSkillFiles` tells them (the
- * arms' and the behaviour report's rule, at the installed directory the session's reads before
- * the step show), are the replacement's files: the case reader goes on from the window that
- * starts right after that step (in the window, or among the messages shown before it), within
- * READER_WINDOWS, offered only those files' lines (step 4's rule, restricted to them), and its
+ * arms' and the behaviour report's rule: a `skill://` read, a whole read by path of the copy a
+ * case at the step would name, or, where it would name none, a read at the installed directory
+ * the session's reads before the step show), are the replacement's files: the case reader goes
+ * on from the window that starts right after that step (in the window, or among the messages
+ * shown before it), within READER_WINDOWS, offered only those files' lines (step 4's rule,
+ * restricted to them), and its
  * first proposal there is the replacement, which must be a later step and goes through every
  * check, the navigation reader first. Where the step read no file of the skill, the windows run
  * out, the replacement's own line is a navigation line, or any check drops it, the session gives
@@ -6176,8 +6180,9 @@ async function sessionProfile(
 }
 
 /** Why the first read `first` of a session in the store `store` gives no case (a session case, or
- *  written cases' context): attribute.ts's rules (`run.placer`) place it at no copy, or at a copy
- *  of another repository than the cut's; undefined when they place it at the cut repository's. */
+ *  written cases' context), when it is a `skill://` read: attribute.ts's rules (`run.placer`) place
+ *  it at no copy, or at a copy of another repository than the cut's; undefined when they place it
+ *  at the cut repository's. */
 function placementDrop(
   run: CaseRun,
   store: string,
@@ -6198,6 +6203,43 @@ function placementDrop(
     };
   }
   return undefined;
+}
+
+/** The first successful read of the skill `skill` that a case is built from, in a session whose
+ *  `skill://` reads of it are `reads` and whose reads of it by path are `byPath`: the earlier of
+ *  its first successful `skill://` read (`url`) and its first successful whole read by path that
+ *  attribute.ts's rules place at the cut's copy (`path`, a `source`). Else why the session gives
+ *  none: a session whose only successful reads of the skill are reads by path that no case is
+ *  built from is dropped by the first of their kinds, in EXCLUDED_KINDS' order, and one with no
+ *  successful read as `no-read`. The rule of a session case (`caseOf`) and of the context of
+ *  written cases (`writtenContext`). */
+function firstSkillRead(
+  skill: string,
+  reads: readonly SkillRead[],
+  byPath: readonly PathRead[]
+):
+  | { readonly url: SkillRead }
+  | { readonly path: PathRead & { readonly dir: string } }
+  | { readonly drop: DropReason; readonly detail: string } {
+  const url = reads.find((read) => read.ok);
+  const source = byPath.find(
+    (read): read is PathRead & { readonly dir: string } =>
+      read.ok && read.kind === "source" && read.dir !== undefined
+  );
+  if (url !== undefined && (source === undefined || url.index < source.index)) return { url };
+  if (source !== undefined) return { path: source };
+  const excluded = byPath.filter((read) => read.ok);
+  const kind = EXCLUDED_KINDS.find((each) => excluded.some((read) => read.kind === each));
+  if (kind !== undefined) {
+    return {
+      drop: kind,
+      detail: `the session reads ${skill} by path only so: ${excluded.map((read) => excludedRead(read)).join("; ")}`,
+    };
+  }
+  return {
+    drop: "no-read",
+    detail: `${reads.length} read results of skill://${skill} files and ${byPath.length} of reads of its files by path, none successful`,
+  };
 }
 
 /** Whether `profile` installs the copy of the skill `skill` of the repository `repo` under no
@@ -6268,7 +6310,7 @@ async function caseOf(
   // The session's reads of the skill: by a skill:// URL, and by its path (count.sql's rule). A case
   // is built from a successful skill:// read, or from a successful whole read by path that
   // attribute.ts's rules place at the cut's copy (a source); the step comes after the first of
-  // them.
+  // them (`firstSkillRead`).
   const reads = skillReads(allMessages, run.skill);
   const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
   // A read by path relative to the session's working directory, or under `~`, resolves against
@@ -6278,28 +6320,9 @@ async function caseOf(
   const sourceCopies = [
     ...new Set(byPath.flatMap((read) => (read.ok && read.dir !== undefined ? [read.dir] : []))),
   ].map((dir): CopyPlace => ({ dir, ...dirs }));
-  const firstUrl = reads.find((read) => read.ok);
-  const firstPath = byPath.find((read) => read.ok && read.kind === "source");
-  const first =
-    firstPath === undefined || (firstUrl !== undefined && firstUrl.index < firstPath.index)
-      ? firstUrl
-      : firstPath;
-  if (first === undefined) {
-    // A session whose only successful reads of the skill are reads by path that no case is built
-    // from is dropped by the first of their kinds, in EXCLUDED_KINDS' order.
-    const excluded = byPath.filter((read) => read.ok);
-    const kind = EXCLUDED_KINDS.find((each) => excluded.some((read) => read.kind === each));
-    if (kind !== undefined) {
-      return drop(
-        kind,
-        `the session reads ${run.skill} by path only so: ${excluded.map((read) => excludedRead(read)).join("; ")}`
-      );
-    }
-    return drop(
-      "no-read",
-      `${reads.length} read results of skill://${run.skill} files and ${byPath.length} of reads of its files by path, none successful`
-    );
-  }
+  const chosen = firstSkillRead(run.skill, reads, byPath);
+  if ("drop" in chosen) return drop(chosen.drop, chosen.detail);
+  const first = "url" in chosen ? chosen.url : chosen.path;
   const firstAt = t.items[first.index]?.at ?? 0;
   record.model = lastBefore(t.branch, firstAt, modelChange);
   // The copy a skill:// read read, placed by attribute.ts's own rules from the same count and
@@ -6307,8 +6330,8 @@ async function caseOf(
   // cut's copy: a read in a checkout or one the store's context places, as well as one the prefix
   // table maps (`placementDrop`). A read by path is a source only when they place it at the cut's
   // copy.
-  if (first === firstUrl) {
-    const misplaced = placementDrop(run, store.name, firstUrl);
+  if ("url" in chosen) {
+    const misplaced = placementDrop(run, store.name, chosen.url);
     if (misplaced !== undefined) return misplaced;
   }
 
@@ -6570,15 +6593,24 @@ async function caseOf(
         }
         replaced = pass;
         noStep = "";
-        // The replacement's files: those the step read, at the installed directory of the first of
-        // the session's skill reads before it whose header shows one (else `/skills/<skill>`, as
-        // the arms take it).
+        // The replacement's files: those the step read, as the arms of a case at it tell them: a
+        // skill:// read, a whole read by path of the copy that case would name (its `pathCopy`:
+        // the cut's copy the first source read by path before the step read), or, with no such
+        // copy, a read at the installed directory of the first of the session's skill reads
+        // before it whose header shows one (else `/skills/<skill>`, as the arms take it).
         const installedDir =
           reads
             .filter((read) => read.index < stepIndex)
             .map((read) => installedDirOf(read.header, read.file))
             .find((dir) => dir !== undefined) ?? path.posix.join("/skills", run.skill);
-        const read = stepSkillFiles(t.message(stepIndex), run.skill, installedDir, run.skillPaths);
+        const copyDir = byPath.find(
+          (read) => read.ok && read.kind === "source" && read.index < stepIndex
+        )?.dir;
+        const stepCase = {
+          skill: run.skill,
+          ...(copyDir === undefined ? {} : { pathCopy: { dir: copyDir, ...dirs } }),
+        };
+        const read = stepSkillFiles(t.message(stepIndex), stepCase, installedDir, run.skillPaths);
         if (read.length === 0) return noReplacement(pass, "the step read no file of the skill");
         offering = offered.filter((each) => read.includes(each.path));
         if (offering.length === 0) {
@@ -7012,23 +7044,32 @@ const NO_SESSION_HEAD = "no session head";
 const WRITTEN_EVIDENCE = "written case: ";
 /** The start of the item of each read of the context session that a written case's profile is
  *  built from, `context session read: message <n> reads [Skill file: <path>]`, its source naming
- *  the skill its call read; `--reprofile` builds the profile again from these. */
+ *  the skill its call read, or, for a whole read by path of the cut's copy, `context session read:
+ *  message <n> reads <path> by its path`, its source naming the skill and the copy's directory;
+ *  `--reprofile` builds the profile again from these. */
 const CONTEXT_READ = "context session read: ";
 
 /** What follows CONTEXT_READ in a written case's evidence item: the message's index and the
- *  read's `[Skill file: …]` path. */
+ *  read's `[Skill file: …]` path, or the path a read by path read. */
 const CONTEXT_READ_REST = /^message (\d+) reads \[Skill file: (\/.*)\]$/;
+const CONTEXT_READ_PATH = /^message (\d+) reads (.+) by its path$/;
 
-/** The reads a written case's evidence names (CONTEXT_READ), in its order, as `shownReads` gives
- *  reads; undefined for a case whose evidence names none (a session case). */
+/** The reads a written case's evidence names (CONTEXT_READ), in its order, as `profileReads`
+ *  gives reads; undefined for a case whose evidence names none (a session case). */
 function contextReads(evidence: readonly Evidence[]): ShownRead[] | undefined {
   const reads = evidence.flatMap((each): ShownRead[] => {
-    const read = each.item.startsWith(CONTEXT_READ)
-      ? CONTEXT_READ_REST.exec(each.item.slice(CONTEXT_READ.length))
-      : null;
-    if (read === null) return [];
-    const skill = /^a read of skill:\/\/([^/:?#\s]+) /.exec(each.source)?.[1];
-    return [{ index: Number(read[1]), header: read[2] ?? "", skill }];
+    if (!each.item.startsWith(CONTEXT_READ)) return [];
+    const rest = each.item.slice(CONTEXT_READ.length);
+    const shown = CONTEXT_READ_REST.exec(rest);
+    if (shown !== null) {
+      const skill = /^a read of skill:\/\/([^/:?#\s]+) /.exec(each.source)?.[1];
+      return [{ index: Number(shown[1]), header: shown[2] ?? "", skill }];
+    }
+    const byPath = CONTEXT_READ_PATH.exec(rest);
+    const skill = /^a whole read by path of the cut's copy of (\S+) at /.exec(each.source)?.[1];
+    return byPath === null
+      ? []
+      : [{ index: Number(byPath[1]), header: byPath[2] ?? "", skill, byPath: true }];
   });
   return reads.length === 0 ? undefined : reads;
 }
@@ -7357,8 +7398,14 @@ interface WrittenContext {
   readonly hash: string;
   readonly filePath: string;
   readonly t: Transcript;
-  /** The session's first successful read of the skill. */
-  readonly first: SkillRead;
+  /** The session's first successful read of the skill a case is built from (`firstSkillRead`): a
+   *  `skill://` read, or a whole read by path of the cut's copy; its result's index and its
+   *  call's. */
+  readonly first: { readonly index: number; readonly call: number };
+  /** The directory a written case's reads of the skill show: the one the first read's `[Skill
+   *  file: …]` line shows, or, for a read by path, the directory of the copy it read (the path
+   *  read, resolved as Oh My Pi's read resolves it, less the file inside the skill). */
+  readonly installedDir: string;
   /** The model and thinking level in effect at that read, and whether the gateway serves it. */
   readonly model: string;
   readonly served: boolean;
@@ -7379,14 +7426,18 @@ interface WrittenContext {
 
 /**
  * The session in `store`'s file `filePath`, pulled into `spool`, as the context of written cases,
- * or why it is none. Its first successful read of the skill must be placed at the cut repository's
- * copy by attribute.ts's rules, as a session case's first read must; the model and thinking level
- * in effect at that read are the ones a written case takes; its context is `sessionContext`'s; and
- * its profile is built from its reads up to and including that read, as a session case's is from
- * the reads before its step, at the time `--reprofile` reads a written case's, which records no
- * time of its step: a subagent's at its root's last prompt build before its start
- * (PARENT_LOAD_RULE), a top-level session's at its first build, the session's start
- * (TOP_BUILD_RULE, `stepBuild`); it must install the cut repository's copy of the skill.
+ * or why it is none. Its first successful read of the skill is the one a session case's step comes
+ * after (`firstSkillRead`): a `skill://` read, which attribute.ts's rules must place at the cut
+ * repository's copy (`placementDrop`), or a whole read by path that they place at the cut's copy;
+ * a session whose only successful reads of the skill by path are of a kind no case is built from
+ * is dropped by that kind, as a session case's is. The model and thinking level in effect at that
+ * read are the ones a written case takes; its context is `sessionContext`'s; and its profile is
+ * built from its reads up to and including that read (`profileReads`, a read by path of the copy
+ * among them), as a session case's is from the reads before its step, at the time `--reprofile`
+ * reads a written case's, which records no time of its step: a subagent's at its root's last
+ * prompt build before its start (PARENT_LOAD_RULE), a top-level session's at its first build, the
+ * session's start (TOP_BUILD_RULE, `stepBuild`); it must install the cut repository's copy of the
+ * skill.
  */
 async function writtenContext(
   run: CaseRun,
@@ -7412,15 +7463,28 @@ async function writtenContext(
   if ("drop" in header) return header;
   const all = t.items.map((item) => item.slim);
   const reads = skillReads(all, run.skill);
-  const first = reads.find((read) => read.ok);
-  if (first === undefined) {
-    return drop(
-      "no-read",
-      `${reads.length} read results of skill://${run.skill} files, none successful`
-    );
+  const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
+  const dirs = sessionDirs(header.cwd, filePath);
+  const chosen = firstSkillRead(
+    run.skill,
+    reads,
+    pathReads(all, run.skill, placeRead, run.cut.repo, dirs)
+  );
+  if ("drop" in chosen) return chosen;
+  // The directory a written case's reads of the skill show, and, for a first read by path, the
+  // copy it read, whose reads up to it the profile is built from as a session case's pathCopy is.
+  let installedDir: string;
+  let pathCopy: CopyPlace | undefined;
+  if ("url" in chosen) {
+    const misplaced = placementDrop(run, store.name, chosen.url);
+    if (misplaced !== undefined) return misplaced;
+    const headerPath = chosen.url.header ?? "";
+    installedDir = installedDirOf(headerPath, chosen.url.file) ?? path.posix.dirname(headerPath);
+  } else {
+    installedDir = chosen.path.dir;
+    pathCopy = { dir: chosen.path.dir, ...dirs };
   }
-  const misplaced = placementDrop(run, store.name, first);
-  if (misplaced !== undefined) return misplaced;
+  const first = "url" in chosen ? chosen.url : chosen.path;
   const firstAt = t.items[first.index]?.at ?? 0;
   const model = lastBefore(t.branch, firstAt, modelChange);
   if (model === undefined) return drop("no-model", "no model_change before the skill's first read");
@@ -7430,7 +7494,11 @@ async function writtenContext(
   }
   const rebuilt = sessionContext(store, t, filePath);
   if ("drop" in rebuilt) return rebuilt;
-  const shown = shownReads(all.slice(0, first.index + 1));
+  const shown = profileReads(
+    all.slice(0, first.index + 1),
+    run.skill,
+    pathCopy === undefined ? [] : [pathCopy]
+  );
   const digest = promptDigestBefore(t.branch, firstAt);
   let readTime: ReadTime;
   let build: BuildWindow | undefined;
@@ -7467,6 +7535,7 @@ async function writtenContext(
     filePath,
     t,
     first,
+    installedDir,
     model,
     served: served(model, run.servedIds).served,
     thinking: thinking.data,
@@ -7641,7 +7710,8 @@ function sessionNavigation(casesFile: string): WrittenCaseInput["navigation"] {
  * messages are the task, a read of `skill://<skill>` and its result, then a read of
  * `skill://<skill>/<path>` and its result for each file of the task's `reads` (each from `--old`,
  * as arms.ts answers a history read, at the directory the context session's first read of the
- * skill showed), unless the restate reader finds the line stated in the task (`written-restates`)
+ * skill showed, or, for a first read by path, the directory of the copy it read), unless the
+ * restate reader finds the line stated in the task (`written-restates`)
  * or the audit does not call the task's following step `follows` (`written-not-followed`). The
  * peak memory is read after each task decided, and above RUN_MEMORY_LIMIT_BYTES no task after it
  * is read (`BuildPeak`). Writes the cases file and `<out>.summary.json` whole at the end; it does
@@ -7880,8 +7950,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
 
     // What every case takes from the context session: its profile, the listing measure (a
     // top-level session's against the earliest subagent of it spawned under the build its profile
-    // is read at), the read calls' message and the directory its first read of the skill showed.
-    const { first, init, profiled, listing } = chosen;
+    // is read at), the read calls' message and the directory its first read of the skill showed
+    // (of a read by path, the directory of the copy it read).
+    const { first, installedDir, init, profiled, listing } = chosen;
     const between = betweenOf(listing);
     let read = unasked(listing);
     if (between !== undefined) {
@@ -7895,8 +7966,6 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       }
     }
     const measure = listingMeasure(listing, read);
-    const header = first.header ?? "";
-    const installedDir = installedDirOf(header, first.file) ?? path.posix.dirname(header);
     const target = `skill://${given.skill}`;
     const oldArm: Arm = {
       name: "old",
@@ -7924,10 +7993,22 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     const navigationWords = navigation
       .map((line) => `${line.file}:${line.number} ${JSON.stringify(line.text)}`)
       .join("; ");
-    const readItems: Evidence[] = chosen.reads.map((read) => ({
-      item: `${CONTEXT_READ}message ${read.index} reads [Skill file: ${read.header}]`,
-      source: `${read.skill === undefined ? "a read of no skill:// URL" : `a read of skill://${read.skill}`} in the context session, before the written task: a written case's profile is built from the context session's reads up to its first read of the skill, as a session case's is from the reads before its step`,
-    }));
+    // Each read of the context session the profile is built from, as it read the skill's file: a
+    // read by path of the cut's copy is among them only when the first read is one, whose copy's
+    // directory is the installed directory.
+    const profileWords =
+      "a written case's profile is built from the context session's reads up to its first read of the skill, as a session case's is from the reads before its step";
+    const readItems: Evidence[] = chosen.reads.map((read) =>
+      read.byPath === true
+        ? {
+            item: `${CONTEXT_READ}message ${read.index} reads ${read.header} by its path`,
+            source: `a whole read by path of the cut's copy of ${given.skill} at ${installedDir} in the context session, before the written task: ${profileWords}, and its read of ${target} shows that copy's directory`,
+          }
+        : {
+            item: `${CONTEXT_READ}message ${read.index} reads [Skill file: ${read.header}]`,
+            source: `${read.skill === undefined ? "a read of no skill:// URL" : `a read of skill://${read.skill}`} in the context session, before the written task: ${profileWords}`,
+          }
+    );
 
     const built: Case[] = [];
     const records: Record<string, unknown>[] = [];

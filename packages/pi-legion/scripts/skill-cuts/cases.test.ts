@@ -11,6 +11,7 @@ import {
   pathReadFile,
   resolvedReadPath,
   skillReadFile,
+  stepSkillFiles,
 } from "./cases";
 
 // The loader of the case file, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch
@@ -422,6 +423,63 @@ test("pathReadFile resolves a relative read against the copy's cwd and a ~ read 
   // An absolute path is kept as written; a URL is no path.
   expect(resolvedReadPath("/srv/a/../b", { cwd })).toBe("/srv/a/../b");
   expect(resolvedReadPath("https://example.com/skills/alpha/SKILL.md", { cwd })).toBeUndefined();
+});
+
+// Catches: a step's read of the case's own copy by a relative or `~` path, which the arms answer
+// from the skill's file, left out of the step's reads because it does not end with the installed
+// directory; or a `skill://` read, or a read at the installed directory of a case that names no
+// copy, no longer counted.
+test("stepSkillFiles counts a step's relative and ~ reads by path of the case's own copy as the arms tell them, its skill:// reads as before, and the installed directory's reads for a case with no copy", () => {
+  const files = ["references/x.md", "references/y.md", "references/z.md"];
+  // Where the skill is installed: no suffix of a read of the copy.
+  const installedDir = "/profiles/p/agent/skills/alpha";
+  /** An assistant step whose read calls read `targets`, in order. */
+  const step = (...targets: string[]): SessionMessage => ({
+    role: "assistant",
+    content: targets.map((target, n) => ({
+      type: "toolCall",
+      id: `read_${n}`,
+      name: "read",
+      arguments: { path: target },
+    })),
+  });
+  const copy = {
+    skill: "alpha",
+    pathCopy: { dir: COPY, cwd: "/home/agent/src/acme-skills", home: "/home/agent" },
+  };
+  // A relative read and a `~` read of the copy, and a skill:// read: each file once, in order.
+  const reads = step(
+    "skills/alpha/references/x.md",
+    "~/src/acme-skills/skills/alpha/references/y.md",
+    "skill://alpha/references/z.md",
+    "./skills/alpha/references/x.md"
+  );
+  expect(stepSkillFiles(reads, copy, installedDir, files)).toEqual(files);
+  // A read with a selector, of SKILL.md (no file of `files`), of a file of no `files`, of another
+  // copy, and, for a case that names a copy, at the installed directory outside it: none.
+  const none = step(
+    "skills/alpha/references/x.md:1-5",
+    "skills/alpha/SKILL.md",
+    "skills/alpha/references/missing.md",
+    `${OTHER_COPY}/references/x.md`,
+    `${installedDir}/references/x.md`
+  );
+  expect(stepSkillFiles(none, copy, installedDir, files)).toEqual([]);
+  // A case that names no copy: its skill:// reads, and its reads that end with the installed
+  // directory and the file, as before; a relative read resolves to no copy.
+  const noCopy = { skill: "alpha" };
+  expect(
+    stepSkillFiles(
+      step(
+        "skill://alpha/references/z.md",
+        `${installedDir}/references/x.md`,
+        "skills/alpha/references/y.md"
+      ),
+      noCopy,
+      installedDir,
+      files
+    )
+  ).toEqual(["references/z.md", "references/x.md"]);
 });
 
 /** F1's case whose session also read alpha's SKILL.md by path in COPY (8), its first five lines

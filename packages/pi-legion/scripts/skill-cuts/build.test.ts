@@ -4949,6 +4949,114 @@ test("the context session is the first served reading session whose rebuilt prof
   expect(existsSync(nowhere)).toBe(false);
 }, 120_000);
 
+// Catches: a context session whose only successful read of the skill is a whole read by path of
+// the cut's copy passed over as one that never read the skill (`no-read`), though the session build
+// builds a case from it; a written case's read of the skill shown at the path as read, not at the
+// copy's directory; and a session whose reads by path are of a kind no case is built from passed
+// over under another reason than that kind.
+describe("build-cases --written over context sessions that read the skill by path", () => {
+  const out = path.join(scratch, "written-by-path", "cases.jsonl");
+  const names = ["path-range", "path-relative-read"];
+  const printed: string[] = [];
+  let code = -1;
+  beforeAll(async () => {
+    const candidates = names.map((name) => ({
+      store: "store_a",
+      hash: fileHash(sessionPath(name)),
+      path: sessionPath(name),
+    }));
+    // A seed whose order puts path-range first.
+    const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
+      (each) => blindOrder(candidates, each)[0]?.item.path === sessionPath("path-range")
+    );
+    const sessions = sessionsFile("written-by-path.jsonl", names);
+    const args = writtenArgs(out, "--sessions", sessions, "--seed", seed ?? "");
+    args[args.indexOf("--written") + 1] = "1";
+    code = await main(args, io(printed));
+  }, 60_000);
+
+  test("a context session whose only successful read of the skill is a whole read by path of the cut's copy is chosen, and its written case reads skill://alpha answered at the copy's directory", () => {
+    expect({ code, failed: printed.join("").includes("failed") }).toEqual({
+      code: 0,
+      failed: false,
+    });
+    const chosen = sessionPath("path-relative-read");
+    const summary = summaryOf<WrittenSummary>(out);
+    expect(summary.contextSession).toMatchObject({
+      store: "store_a",
+      hash: fileHash(chosen),
+      pathHash: pathHash(chosen),
+    });
+    expect(summary.contextSession.how).toContain("place 2 of 2");
+    const cases = loadCases(out, old);
+    expect(cases.map((each) => each.id)).toEqual([`skills-1-${pathHash(chosen).slice(0, 12)}-w1`]);
+    const [c] = cases;
+    expect(c?.source).toEqual({ store: "store_a", pathHash: pathHash(chosen), kind: "written" });
+    // The task, then a read of skill://alpha answered from the old text under the copy the session
+    // read relative to its working directory, resolved: F1's own read result there.
+    expect(c?.messages).toHaveLength(3);
+    expect(c?.messages[1]).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "written_read",
+          name: "read",
+          arguments: { path: "skill://alpha" },
+        },
+      ],
+    });
+    expect(c?.messages[2]?.content?.[0]?.text).toStartWith(
+      `[Skill file: ${F1_SKILLS}/alpha/SKILL.md]`
+    );
+    expect(c?.messages[2]?.content).toEqual(f1Messages()[2]?.content);
+    expect(c?.skillReads).toEqual([2]);
+    expect(c?.pathCopy).toBeUndefined();
+    // The model and thinking level at that read, and the profile its reads up to it give, which
+    // installs the cut's copy.
+    expect([c?.model, c?.thinking]).toEqual(["anthropic/claude-sonnet-5-5", "off"]);
+    expect(c?.profile.skills.filter((skill) => skill.name === "alpha")).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+    ]);
+    // Its evidence names how the context session read the skill: by path, with the path.
+    expect(c?.evidence).toContainEqual({
+      item: `context session read: message 2 reads ${F1_RELATIVE}/SKILL.md by its path`,
+      source: `a whole read by path of the cut's copy of alpha at ${F1_SKILLS}/alpha in the context session, before the written task: a written case's profile is built from the context session's reads up to its first read of the skill, as a session case's is from the reads before its step, and its read of skill://alpha shows that copy's directory`,
+    });
+  });
+
+  test("a context session whose only successful reads of the skill are reads by path of a kind no case is built from is passed over under that kind, as the session build drops it", () => {
+    const hash = fileHash(sessionPath("path-range"));
+    const why = `path-range: the session reads alpha by path only so: message 2 answers the read of ${F1_SKILLS}/alpha/SKILL.md:1-20 (path-range: a read selector after its last /); message 4 answers the read of ${F1_SKILLS}/alpha/references/x.md:raw (path-range: a read selector after its last /)`;
+    expect(summaryOf<WrittenSummary>(out).contextSession.passed).toEqual([
+      { store: "store_a", hash, why },
+    ]);
+    expect(printed.join("")).toContain(
+      `build-cases: context session place 1 of 2, store_a ${hash}: passed over (${why})\n`
+    );
+  });
+
+  // Catches: a written case whose context session read the skill by path given, by --reprofile,
+  // a profile built from its own messages, since its evidence's read is in no form it reads.
+  test("--reprofile builds that written case's profile again from the read by path its evidence names", async () => {
+    const fresh = path.join(scratch, "written-by-path", "reprofiled.jsonl");
+    const args = [
+      ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+      ...["--count", countDir, "--reprofile", out, "--out", fresh],
+    ];
+    expect(await main(args, io([]))).toBe(EXIT.ok);
+    const [before] = loadCases(out, old);
+    const [after] = loadCases(fresh, old);
+    expect(after?.profile).toEqual(before?.profile);
+    const byPath = (c: Case | undefined) =>
+      (c?.evidence ?? []).filter((each) =>
+        each.source.startsWith(`message 2 reads ${F1_RELATIVE}/SKILL.md by its path`)
+      );
+    expect(byPath(before).length).toBeGreaterThan(0);
+    expect(byPath(after)).toEqual(byPath(before));
+  }, 60_000);
+});
+
 // Catches: a --context-session build given --sessions or --seed, which it never reads, that then
 // records their digest and seed in its summary as if it had.
 test("build-cases --written with --context-session refuses --sessions and --seed, before any read", async () => {

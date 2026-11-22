@@ -3711,11 +3711,12 @@ function shapesLine(b: Behaviour, score: SkillScore): string {
 
 /** The files of `files` (paths inside `old` of its files other than SKILL.md) that case `c`'s
  *  real step reads, each once, in order, as the arms tell a read of a file of the skill (cases.ts's
- *  `stepSkillFiles`), at the installed directory the arms show (`buildArm`'s, of the arm with no
- *  skill, which reads no directory and writes nothing). */
+ *  `stepSkillFiles`: a `skill://` read, or a whole read by path of the case's own copy, its
+ *  relative or `~` path resolved), at the installed directory the arms show (`buildArm`'s, of the
+ *  arm with no skill, which reads no directory and writes nothing). */
 function stepSkillReads(c: Case, old: string, files: readonly string[]): string[] {
   const arm = buildArm(c, "none", { old }, path.join(tmpdir(), SCRATCH_DIR));
-  return stepSkillFiles(c.realStep, arm.skill, arm.installedDir, files);
+  return stepSkillFiles(c.realStep, arm, arm.installedDir, files);
 }
 
 /** The report's line of the screened cases whose real step reads a file of the skill under `old`

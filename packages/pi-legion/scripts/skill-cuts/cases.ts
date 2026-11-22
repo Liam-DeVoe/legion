@@ -227,20 +227,24 @@ export function skillReadFile(skill: string, target: string): string | undefined
 }
 
 /** The files of `files` (paths inside the skill's directory) that the `read` calls of `step` read,
- *  each once, in order, as the arms tell a read of a file of the skill: a read of
- *  `skill://<skill>/<path>` (`skillReadFile`), or of a path that ends `<installedDir>/<path>`, the
- *  directory the skill is installed at. The rule of the behaviour report's line on such steps
- *  (cli.ts) and of build-cases' `--drop-navigation` (build.ts). */
+ *  each once, in order, as the arms tell a read of a file of the skill of case `c`: a read of
+ *  `skill://<skill>/<path>`, or a whole read by path of the case's own copy (`caseReadFile`, which
+ *  resolves a relative or `~` path as Oh My Pi's read does); for a case that names no copy, a read
+ *  of a path that ends `<installedDir>/<path>`, the directory the skill is installed at, too. The
+ *  rule of the behaviour report's line on such steps (cli.ts) and of build-cases'
+ *  `--drop-navigation` (build.ts). */
 export function stepSkillFiles(
   step: SessionMessage,
-  skill: string,
+  c: Pick<Case, "skill" | "pathCopy">,
   installedDir: string,
   files: readonly string[]
 ): string[] {
   const read = readCalls([{ message: step }]).flatMap(({ target }) => {
     const file =
-      skillReadFile(skill, target) ??
-      files.find((each) => target.endsWith(`${installedDir}/${each}`));
+      caseReadFile(c, target) ??
+      (c.pathCopy === undefined
+        ? files.find((each) => target.endsWith(`${installedDir}/${each}`))
+        : undefined);
     return file !== undefined && files.includes(file) ? [file] : [];
   });
   return [...new Set(read)];
