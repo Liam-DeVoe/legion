@@ -2205,11 +2205,11 @@ func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
 // daemon with no store, while the daemon named before still publishes under the same project, in
 // its own store and run, at its next sequences. None of its messages is applied, none gives the
 // cursor its store, none holds a read, and the drop is logged once: each is finished at its first
-// delivery, and none makes a read. R3 says a failed starting read is one that no message holds,
-// so the message of the daemon named before that arrives a minute on, once the owed read is due,
-// makes no read either. The named daemon's own next message, of its own store and run while the
-// cursor holds no store, makes the due read, which takes the named daemon's state and store, and
-// that message is applied on it.
+// delivery, and inside the minute none makes a read. R3 tries a failed read again at the project's
+// next message, so the one that arrives a minute on, once the owed read is due, calls for it: it
+// is finished unapplied at once all the same, and the project's runner then makes the read as a
+// call no message makes. The read takes the named daemon's state and store, and the named
+// daemon's own next event is applied on it.
 func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore(t *testing.T) {
 	const namedRun, namedStore = "2c7e9a14-5b3d-4f86-a1e0-8d6c4b2f9e37", "6e1f3a8c-2d4b-4c97-b5a0-9f7e1d3c8b26"
 	rig := newIntakeRig(t)
@@ -2244,43 +2244,42 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	}
 
 	// A minute on, the owed read is due, and the named daemon answers, in a store and under a run
-	// of its own. The daemon named before publishes again: its message makes no read, holds none,
-	// and is not applied.
+	// of its own. The daemon named before publishes again: its message calls for the owed read,
+	// holds none, and is not applied. The project's runner makes the read after the message is
+	// acknowledged.
 	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
 	named.serves(strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publish("INFRA", change(2000004, "INFRA-1", moved("phase", "merging")))
 	rig.settled()
-	if served := named.served(); served != 1 {
-		t.Errorf("the named daemon served %d reads after the message of the daemon named before a minute on, want its failed one alone: that message made a read", served)
-	}
-	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq != nil || c.stateID != nil || c.readHolder != nil || c.readHolds != 0 {
-		t.Errorf("the cursor is %s, want the read still owed, no sequence, no store and no holder", c)
-	}
-
-	// The named daemon's own next message, of its own store and run while the cursor holds no
-	// store, makes the due read and is applied on it.
-	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
-	rig.settled()
+	rig.awaitWholeReads(3)
 	if served := named.served(); served != 2 {
-		t.Errorf("the named daemon served %d reads, want the failed one and the one its own message made", served)
+		t.Errorf("the named daemon served %d reads, want the failed one and the one the message a minute on called for", served)
 	}
 	whole := wholeReadsOf(t, rig.database, "INFRA")
 	if len(whole) != 3 {
 		t.Fatalf("whole reads = %v, want the first daemon's, the named daemon's failed one and its good one", whole)
 	}
 	requireWholeRead(t, whole[2], ReadReasonRetry, true)
-	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 6 || c.stateID == nil || *c.stateID != namedStore || c.readHolder != nil {
-		t.Errorf("the cursor is %s, want the named daemon's message's sequence 6 on the read's store %s, nothing owed and no holder", c, namedStore)
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 5 || c.stateID == nil || *c.stateID != namedStore || c.readHolder != nil {
+		t.Errorf("the cursor after the good read is %s, want the named daemon's sequence 5 and store %s, nothing owed and no holder", c, namedStore)
 	}
 	if drops := rig.awaitLogRecords(forgottenLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["stateId"] != rigStateID {
 		t.Errorf("the drops logged = %v, want one naming INFRA and the message's store", drops)
 	}
 	if held := rig.logRecords(heldLine); len(held) != 0 {
-		t.Errorf("the messages sent back = %v, want none: no message of the daemon the setting named before holds a read, and the named daemon's message found the read due", held)
+		t.Errorf("the messages sent back = %v, want none: no message of the daemon the setting named before holds a read", held)
 	}
+
+	// The named daemon's own next event is applied on the read.
+	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
+	rig.settled()
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"testing"`}) {
 		t.Errorf("the phase's history is %v, want the first daemon's read's planning, the named daemon's read's implementing and its event's testing, and no merging", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 6)
+	if served := named.served(); served != 2 {
+		t.Errorf("the named daemon served %d reads, want the failed one and the good one", served)
 	}
 }
 

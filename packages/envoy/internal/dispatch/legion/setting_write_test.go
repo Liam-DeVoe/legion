@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestAMessageOfTheStoreASettingNamedBeforeMakesNoStartingRead: R3 applies no message of the
@@ -227,11 +228,11 @@ func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *test
 // That memory can be out of date. Here INFRA's setting names another URL, whose starting read
 // fails, so the intake remembers the store INFRA's cursor followed as one it drops. Then a whole
 // read made outside the intake (ReadWhole) finds the daemon behind that URL is the daemon the
-// setting named before, in its own store, and gives the cursor that store. The intake still
-// remembers the store as dropped, so the daemon's next message is keyed beside the runner, where
-// the cursor shows the store is not dropped now. The message goes back to the stream once, and
-// that is logged (notForgottenLine); its next delivery runs on the project's runner, which applies
-// it with no read.
+// setting named before, in its own store, and gives the cursor that store, which clears the record
+// of it (recordWhole). The intake still remembers the store as dropped, so the daemon's next
+// message is keyed beside the runner, where the cursor shows the store is not dropped now. The
+// message goes back to the stream once, and that is logged (notForgottenLine); its next delivery
+// runs on the project's runner, which applies it with no read.
 func TestAMessageKeyedByAnOldMemoryOfAForgottenStoreGoesBackToItsProjectsRunner(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -258,8 +259,8 @@ func TestAMessageKeyedByAnOldMemoryOfAForgottenStoreGoesBackToItsProjectsRunner(
 		t.Fatalf("read INFRA's daemon whole outside the intake: %v", err)
 	}
 	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq == nil || *c.lastSeq != 12 || c.stateID == nil || *c.stateID != rigStateID ||
-		c.previousStateID == nil || *c.previousStateID != rigStateID {
-		t.Fatalf("INFRA's cursor after the read outside the intake is %s, want it at the read's 12 in the store %s, which is the store recorded", c, rigStateID)
+		c.previousStateID != nil || c.previousStateURL != nil {
+		t.Fatalf("INFRA's cursor after the read outside the intake is %s, want it at the read's 12 in the store %s, and that store no longer recorded", c, rigStateID)
 	}
 
 	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "testing")))
@@ -293,7 +294,8 @@ func TestAMessageKeyedByAnOldMemoryOfAForgottenStoreGoesBackToItsProjectsRunner(
 // read has failed, the intake stops and a second intake takes the durable over. Its take-over reads
 // the named daemon again, since the failed read is due, and that read holds INFRA's runner for
 // readWindow. The daemon named before publishes meanwhile: its message is finished unapplied
-// within finishedWithin of its publish, and makes no read.
+// within finishedWithin of its publish, and makes no read before it is finished: the owed read it
+// calls for waits on the runner behind the take-over's read.
 func TestATakeOverFinishesAMessageOfTheStoreASettingNamedBeforeBesideAReadOfItsProject(t *testing.T) {
 	const readWindow = 5 * time.Second
 	const finishedWithin = 3 * time.Second
@@ -334,9 +336,176 @@ func TestATakeOverFinishesAMessageOfTheStoreASettingNamedBeforeBesideAReadOfItsP
 			took.Round(time.Millisecond), finishedWithin, readWindow)
 	}
 	if served := named.served(); served != 2 {
-		t.Errorf("the named daemon served %d reads, want the write's and the take-over's: the message of the daemon named before made a read", served)
+		t.Errorf("the named daemon served %d reads, want the write's and the take-over's: the message of the daemon named before made a read before it was finished", served)
 	}
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
 		t.Errorf("the phase's history is %v: the message of the daemon the setting named before was applied", got)
 	}
+}
+
+// TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedReadWhileTheNewURLIsUnverified: until a
+// read of the URL a write of the setting names has succeeded, Dispatch cannot know whether that URL
+// names another store or the same store behind a new URL. So, while the cursor holds no store, a
+// message of the store the setting named before calls for the owed read where it is due and no
+// message holds it. The message is finished unapplied at once, and the project's runner makes the
+// read after it (callRead). At most one such call waits for each project. Once a read has given
+// the cursor another store, such a message calls for no read. In each subtest INFRA's daemon has
+// served a good starting read in the rig's store, and then a write of INFRA's setting names a
+// second URL, which the write's wake reads (repoint).
+func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedReadWhileTheNewURLIsUnverified(t *testing.T) {
+	const namedRun, namedStore = "7a3d9e2b-4c1f-4b86-9e5a-2f8c6d1b3e74", "5d8b2e6f-1a4c-4f97-b3e0-6c9a2d7f1b58"
+	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
+	// repoint starts the rig with INFRA's daemon read whole, writes INFRA's setting naming named,
+	// and waits for the wake's starting read of named. It answers the rig and INFRA's first daemon.
+	repoint := func(t *testing.T, named *fakeDaemon) (*intakeRig, *fakeDaemon) {
+		t.Helper()
+		rig := newIntakeRig(t)
+		daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+		seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+		rig.start()
+		rig.awaitStartingRead("INFRA")
+		if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+			t.Fatalf("point INFRA at a second URL: %v", err)
+		}
+		rig.wake <- struct{}{}
+		rig.awaitWholeReads(2)
+		return rig, daemon
+	}
+
+	// The daemon behind the second URL serves INFRA's own store, and its first read fails. A
+	// minute on, the read is due, and a later message of that store is acknowledged while the read
+	// it calls for waits for the daemon's answer. That read is good, so it clears the record of the
+	// store, and the project's next message of that store is applied.
+	t.Run("the same store behind a new URL whose first read fails", func(t *testing.T) {
+		alias := newFakeDaemon(t, "")
+		alias.refuses(http.StatusServiceUnavailable)
+		rig, daemon := repoint(t, alias)
+		reads := wholeReadsOf(t, rig.database, "INFRA")
+		requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
+		if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil ||
+			c.previousStateID == nil || *c.previousStateID != rigStateID || c.previousStateURL == nil || *c.previousStateURL != daemon.URL {
+			t.Fatalf("INFRA's cursor after the failed starting read is %s, want the read owed for retry, no store, no holder and the store %s recorded with the URL %s",
+				c, rigStateID, daemon.URL)
+		}
+
+		// Each answer of the daemon behind the second URL waits until the test releases it, so the
+		// message is acknowledged while the read it calls for is not answered yet.
+		alias.serves(daemonState("INFRA", 12, implementing))
+		release := alias.holds(t)
+		rig.clock.advance(ReadRetryAfter + time.Second)
+		rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
+		rig.settled()
+		rig.waitFor(20*time.Second, func() bool { return alias.served() >= 2 }, func() string {
+			return fmt.Sprintf("the daemon behind the second URL served %d reads after the message of its store, want the failed starting read and the read the message called for", alias.served())
+		})
+		release()
+		rig.awaitWholeReads(3)
+		reads = wholeReadsOf(t, rig.database, "INFRA")
+		requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, true)
+		if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 12 || c.stateID == nil || *c.stateID != rigStateID ||
+			c.readHolder != nil || c.readHolds != 0 || c.previousStateID != nil || c.previousStateURL != nil {
+			t.Fatalf("INFRA's cursor after the good read is %s, want it at the read's 12 in the store %s, nothing owed, no holder and no store recorded", c, rigStateID)
+		}
+		if held := rig.logRecords(heldLine); len(held) != 0 {
+			t.Errorf("the messages sent back = %v, want none: no message holds the read", held)
+		}
+
+		rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "testing")))
+		rig.settled()
+		if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"testing"`}) {
+			t.Errorf("the phase's history is %v, want the first read's planning, the good read's implementing and the next message's testing, and no merging", got)
+		}
+		requireLastSeq(t, rig.database, "INFRA", 13)
+		if drops := rig.awaitLogRecords(forgottenLine, 1); len(drops) != 1 || drops[0]["stateId"] != rigStateID || drops[0]["seq"] != float64(11) {
+			t.Errorf("the drops logged = %v, want one, of the message at 11 before the good read", drops)
+		}
+		if served := alias.served(); served != 2 {
+			t.Errorf("the daemon behind the second URL served %d reads, want the failed starting read and the good one", served)
+		}
+	})
+
+	// The daemon behind the second URL serves a store of its own, and its starting read is good.
+	// No cheap path of the intake then leaves the cursor owing a read that is due and that no
+	// message holds, so the test writes INFRA's cursor so by hand: a call no message makes would
+	// make a read now. A message of the store the setting named before makes no read all the same.
+	t.Run("another store, verified", func(t *testing.T) {
+		named := newFakeDaemon(t, strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
+		rig, _ := repoint(t, named)
+		reads := wholeReadsOf(t, rig.database, "INFRA")
+		requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, true)
+		if _, err := rig.database.Pool.Exec(t.Context(), `
+			update legion_event_cursors set read_reasons = '{retry}', read_tried_at = now() - interval '2 minutes', read_holder = null, read_holds = 0
+			where project = 'INFRA'
+		`); err != nil {
+			t.Fatalf("write INFRA's cursor: %v", err)
+		}
+		_, current, found, err := readPosition(t.Context(), rig.database.Pool, "INFRA", false)
+		if err != nil || !found {
+			t.Fatalf("read INFRA's cursor: found %v, %v", found, err)
+		}
+		if current.stateID == nil || *current.stateID != namedStore || !current.forgets(rigStateID) || !current.readFor("", rig.clock.now(), 0, false).read {
+			t.Fatalf("INFRA's cursor is %s, want the store %s, the store %s dropped, and a read that a call no message makes would make now",
+				cursorOf(t, rig.database, "INFRA"), namedStore, rigStateID)
+		}
+
+		rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
+		rig.settled()
+		if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return named.served() > 1 }) {
+			t.Errorf("the daemon the setting names served %d reads after the message of the store the setting named before, want its starting read alone: the message called for a read while the cursor held another store", named.served())
+		}
+		if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID == nil || *c.stateID != namedStore ||
+			c.previousStateID == nil || *c.previousStateID != rigStateID {
+			t.Errorf("INFRA's cursor is %s, want the read still owed for retry, the store %s and the store %s still recorded", c, namedStore, rigStateID)
+		}
+		if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
+			t.Errorf("the phase's history is %v: the message of the store the setting named before was applied", got)
+		}
+		if drops := rig.awaitLogRecords(forgottenLine, 1); len(drops) != 1 || drops[0]["stateId"] != rigStateID {
+			t.Errorf("the drops logged = %v, want one naming the store %s", drops, rigStateID)
+		}
+	})
+
+	// The first read of the daemon behind the second URL fails, and each read of it from then on
+	// lasts a minute on the intake's clock, as a read that the daemon never answers within
+	// RequestTimeout does: each read of it that fails is due again at once. A minute on, the read
+	// is due, and several messages of the store the setting named before arrive while the read the
+	// first one called for waits for the daemon's answer. They queue one read, not one each.
+	t.Run("a burst queues one read", func(t *testing.T) {
+		const burst = 4
+		named := newFakeDaemon(t, "")
+		named.refuses(http.StatusServiceUnavailable)
+		rig, _ := repoint(t, named)
+		reads := wholeReadsOf(t, rig.database, "INFRA")
+		requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
+
+		var lasts func()
+		lasts = func() {
+			rig.clock.advance(ReadRetryAfter)
+			named.lagsNext(lasts)
+		}
+		named.lagsNext(lasts)
+		release := named.holds(t)
+		rig.clock.advance(ReadRetryAfter + time.Second)
+		for i := range burst {
+			rig.publish("INFRA", change(11+i, "INFRA-1", moved("phase", "merging")))
+		}
+		rig.settled()
+		rig.waitFor(20*time.Second, func() bool { return named.served() >= 2 }, func() string {
+			return fmt.Sprintf("the daemon the setting names served %d reads after the burst, want the failed starting read and the read the burst called for", named.served())
+		})
+		release()
+		rig.awaitWholeReads(3)
+		if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return named.served() > 2 }) {
+			t.Errorf("the daemon the setting names served %d reads after a burst of %d messages of the store the setting named before, want the failed starting read and one read for the burst",
+				named.served(), burst)
+		}
+		reads = wholeReadsOf(t, rig.database, "INFRA")
+		requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, false)
+		if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
+			t.Errorf("the phase's history is %v: a message of the store the setting named before was applied", got)
+		}
+		if held := rig.logRecords(heldLine); len(held) != 0 {
+			t.Errorf("the messages sent back = %v, want none: no message holds the read", held)
+		}
+	})
 }

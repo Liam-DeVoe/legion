@@ -37,9 +37,11 @@ body: |-
   whole read. A `PUT` of the same URL while a message holds the project's owed read joins that
   read, so the count of the message's hand-backs goes on. After a `PUT` that names another daemon,
   Dispatch applies no message of the store that the project followed before, until a `PUT` names
-  the URL of that daemon again. Such a message does not hold a read and does not call for a read.
-  Dispatch finishes it at once, beside the other messages of the project, and it does not wait for
-  a read of the project.
+  the URL of that daemon again. Such a message does not hold a read. While no read of the newly
+  named daemon has succeeded, it asks for the owed read when that read is due, at most once a
+  minute; once a read gives another store, it asks for none, and a read that gives the same store
+  clears the record. Dispatch finishes it at once, beside the other messages of the project, and
+  it does not wait for a read of the project.
   A whole read asks for `GET /legion/v1/state?view=observed`, which carries only the fields
   Dispatch reads. A daemon of an earlier build ignores the query and serves its whole state, which
   Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 32 MiB, and

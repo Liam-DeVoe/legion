@@ -120,7 +120,8 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string) (Setting
 // write of the same URL joins that read and forgets nothing: the message's redelivery makes the
 // read, a whole read, and the hold's count of hand-backs goes on. After a write that names another
 // daemon, the intake finishes each message of the store the project followed before, unapplied,
-// until a write names that daemon's URL again.
+// until a write names that daemon's URL again or a good read of the daemon the setting names gives
+// that same store (recordWhole).
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {
@@ -192,7 +193,8 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 //     unapplied (outcomeForgotten), so the message that held the read holds it no more. A write of
 //     the URL recorded there names that daemon again, so it clears the pair, and the daemon's
 //     messages are judged as the setting's daemon's: they hold and make an owed read as every
-//     message does. A write of the same daemon keeps what is recorded there.
+//     message does. A good read that gives the cursor the store recorded there clears the pair too
+//     (recordWhole). A write of the same daemon keeps what is recorded there.
 //   - A delete deletes the cursor, and with it the held parts (their foreign key).
 func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
 	var err error

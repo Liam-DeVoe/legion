@@ -212,9 +212,12 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 // of the daemon a setting named before once it names another, and a failed starting read is one
 // "which no message holds". So, after a write that names another daemon, the old daemon's held
 // message is finished unapplied at its next redelivery, at once: it waits on no read, and makes
-// no read of its own or of the new daemon. A later message of the old daemon's store is
-// acknowledged unapplied the same way and calls for no read, even once the new daemon's failed
-// starting read is due again.
+// no read of its own or of the new daemon. Once the new daemon's failed starting read is due
+// again, a later message of the old daemon's store is acknowledged unapplied the same way, within
+// finishedWithin of its publish: it waits on no read and holds none. Until a read of the new URL
+// has succeeded, Dispatch cannot know whether the URL names another store or the same store
+// behind a new URL, so that message calls for the owed read, which the project's runner makes
+// after the message is acknowledged, and it calls for no more than that one read.
 //
 // The rig's client window is readWindow, long enough to tell a message that waits behind a read,
 // or makes one, from one that does neither. INFRA's daemon stops answering after its good starting
@@ -227,7 +230,7 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 // starting read of the new daemon, then makes the new daemon's read owed for retry
 // (outcomeForgotten calls readFor as a call no message makes), and is finished only after it: on
 // the real programs 2m0s after the write. A later message of the old store makes that read too
-// once it is due.
+// once it is due, before it is acknowledged.
 func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *testing.T) {
 	const readWindow = 5 * time.Second
 	const finishedWithin = 3 * time.Second
@@ -276,17 +279,29 @@ func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *t
 		t.Errorf("the daemon the setting names served %d reads by the time the old daemon's message was finished, want 1, the write's own starting read: the old daemon's message made a read", served)
 	}
 
-	// The new daemon's failed starting read is due again a minute on; a later message of the old
-	// daemon's store is acknowledged unapplied and makes no read.
+	// The new daemon's failed starting read is due again a minute on. A later message of the old
+	// daemon's store is acknowledged unapplied within finishedWithin of its publish, and at most
+	// one read of the new daemon follows it while the new URL is unverified.
+	rig.waitFor(time.Minute, func() bool { return cursorOf(t, rig.database, "INFRA").readOwed }, func() string {
+		return fmt.Sprintf("the new daemon's starting read has not failed a minute after the write: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil {
+		t.Fatalf("INFRA's cursor after the new daemon's failed starting read is %s, want the read owed for retry, no store and no holder", c)
+	}
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	before := named.served()
+	published := time.Now()
 	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "testing")))
 	later := rig.lastStreamSeq()
 	rig.waitFor(time.Minute, finishedThrough(later), func() string {
 		return fmt.Sprintf("the later message of the old daemon's store is not finished: %+v", rig.consumerInfo())
 	})
-	if served := named.served(); served != before {
-		t.Errorf("the daemon the setting names served %d reads after the later message of the old daemon's store, want %d: that message made a read", served, before)
+	if took := time.Since(published); took >= finishedWithin {
+		t.Errorf("the later message of the old daemon's store was finished %s after its publish, want less than %s: it waited behind a read, or made one, of %s",
+			took.Round(time.Millisecond), finishedWithin, readWindow)
+	}
+	if testwait.Holds(readWindow+2*time.Second, 25*time.Millisecond, func() bool { return named.served() > before+1 }) {
+		t.Errorf("the daemon the setting names served %d reads after the later message of the old daemon's store, want %d at the most: that message called for more than the one owed read", named.served(), before+1)
 	}
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) || slices.Contains(got, `"testing"`) {
 		t.Errorf("the phase's history is %v: a message of the daemon the setting named before was applied", got)

@@ -85,13 +85,18 @@
 --   another daemon: the write sets it to the row's state_id, and keeps it where state_id is null.
 --   The intake finishes each message of this store unapplied while state_id is null or another
 --   store (legion's outcomeForgotten): R3 applies no message of the daemon the setting named
---   before. Such a message calls for no read and holds none. A write of previous_state_url clears
---   it. A write of the URL the row follows and a whole read keep it. Null for none.
+--   before. Such a message holds no read. While state_id is null, it calls for the owed read where
+--   that read is due and no message holds it, and the intake makes the read after it acknowledges
+--   the message, at most once a minute; while state_id is another store, it calls for none. A
+--   write of previous_state_url clears it, and so does a good whole read whose state_id is this
+--   store. A write of the URL the row follows and every other whole read keep it. Null for none.
 -- - previous_state_url is the URL the row followed when the write set previous_state_id: the
 --   write sets it to the row's state_url with previous_state_id, and keeps it with
 --   previous_state_id. A write of this URL names that daemon again, so it clears both columns,
---   and the intake then judges the daemon's messages as the messages of the setting's daemon. A
---   write of the URL the row follows and a whole read keep it. Null for none.
+--   and so does a good whole read whose state_id is previous_state_id: the daemon is the one the
+--   setting names, behind another URL. The intake then judges the daemon's messages as the
+--   messages of the setting's daemon. A write of the URL the row follows and every other whole
+--   read keep it. Null for none.
 --
 -- legion_event_parts holds the messages of a transaction the daemon split over several messages
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies
