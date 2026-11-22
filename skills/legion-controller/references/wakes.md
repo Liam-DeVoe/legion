@@ -20,8 +20,8 @@ Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it
 
 `reason` begins with its arm; `issues.<KEY>.architectStalls` lists every arm that holds now (`took-nothing`, `claim-unreachable`, `slow-before-gate`), told or not.
 
-1. "the architect took nothing": while `issues.<KEY>.architect.state` is `working`, take nothing and put the root in your daily report. Otherwise `compact` that claim (`issue` the root, `role` `architect`), and `fresh_session` it only if it still takes nothing after that.
-2. "the architect's claim cannot be reached": `fresh_session` the failed or retired claim. While the reason says the root waits on a person, take nothing, since the answer's start relaunches it: put the root and its `waitingOn` in your daily report, and at each later `tick` without `waitingOn`, `fresh_session` it if `architectStalls` still lists `claim-unreachable`. A root with no architect claim (`NO_CLAIM`): when the reason says the daemon wrote its start again, take nothing and put the root in your daily report; else put it there as a root the daemon could not start.
+1. "the architect took nothing": while `issues.<KEY>.architect.state` is `working`, take nothing and put the root in your daily report. Otherwise `compact` that architect (`issue` the root, `role` `architect`), and `fresh_session` it only if it still takes nothing after that.
+2. "the architect's claim cannot be reached": `fresh_session` the architect whose claim failed or retired. While the reason says the root waits on a person, take nothing, since the answer's start relaunches it: put the root and its `waitingOn` in your daily report, and at each later `tick` without `waitingOn`, `fresh_session` it if `architectStalls` still lists `claim-unreachable`. A root with no architect claim (`NO_CLAIM`): when the reason says the daemon wrote its start again, take nothing and put the root in your daily report; else put it there as a root the daemon could not start.
 3. "the root is slow before its gate": decide what the time means. A long spec is work; an architect with nothing to show is an escalation (`skill://legion-controller/references/escalation.md`).
 
 ## `held`
@@ -42,11 +42,11 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 ## `provider-errors`
 
-Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. It tells the architect that owns the issue too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. It tells the architect that owns the issue too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
 ## A root architect's stuck tool call
 
-Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call: `suspend` the root's architect claim, then `resume_agent` it once `read_state` shows it suspended, so it starts again in its own session with the task it owes (`skill://legion-controller/references/operations.md`).
+Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call: `suspend` the root's architect, then `resume_agent` it once `read_state` shows its claim suspended, so it starts again in its own session with the task it owes (`skill://legion-controller/references/operations.md`).
 
 ## GitHub mentions
 

@@ -30,8 +30,8 @@ The daemon replaces a pod whose configuration moved, or one you asked `replace_p
 For each hold that `reason` names:
 
 - The operator's suspension: open a finding ask that names the issue and each role the operator suspended.
-- Your own suspension: `resume_agent` the claim once its cause is gone, or keep it held. Open no ask.
-- An architect's suspension told to you: `resume_agent` that claim, and answer a failed root architect's `worker-died`. Open no ask, and send no architect anything.
+- Your own suspension: `resume_agent` the agent once its cause is gone, or keep its claim held. Open no ask.
+- An architect's suspension told to you: `resume_agent` that agent, and answer a failed root architect's `worker-died`. Open no ask, and send no architect anything.
 - Anything else (a refused pod replacement, no process in the pod, two pods): open a finding ask naming the issue, the round and `reason`, so an operator acts on it.
 
 Send no role a message about the round, park nothing and write no status: the daemon replaces the pod once the hold clears.

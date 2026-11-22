@@ -1155,7 +1155,7 @@ func TestHealthGolden(t *testing.T) {
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
 // INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
-// operator claim routes and to the controller's four agent actions alone
+// operator claim routes and to four of the six agent actions alone
 // (AgentActionResponse), which no plugin below the contract that added them calls; the guard
 // beside `legion-api.test.ts`'s schema tests holds the same property on the schema side.
 func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {

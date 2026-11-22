@@ -353,24 +353,24 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "reaches, and one left working under a relaunch the wake pacing parked " +
   "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
   "and for role controller. " +
-  "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent " +
-  "(stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role); the four " +
+  "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent, " +
+  "each naming one agent by its issue and role; the four " +
   "are the operator's own. Each answers " +
   "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
   "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
-  "stop ends the claim: the daemon stops its agent at once, also in a turn, which loses that turn, and " +
-  "retires the claim with its session kept on record. Only retry, or a start of its issue's phase, runs " +
+  "stop ends the agent: the daemon stops it at once, also in a turn, which loses that turn, and " +
+  "retires its claim with its session kept on record. Only retry, or a start of its issue's phase, runs " +
   "it again. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
   "it instead. " +
-  "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
+  "retry starts an agent that failed, or whose claim a stop retired, again in the session its claim recorded, with " +
   "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
   "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
-  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_agent that one, unless the operator suspended it. " +
+  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_agent that agent instead, unless the operator suspended it. " +
   "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
   "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
-  "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
-  "again until your resume_agent or the operator's resume. " +
-  "resume_agent starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
+  "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
+  "again until your resume_agent or the operator's legion claims resume. " +
+  "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
   "The daemon refuses resume_agent for a claim stored working (CLAIM_IN_A_TURN). " +
   "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
   "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
@@ -381,11 +381,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "in its own codes. The four " +
   "refuse role controller as fresh_session and compact do. " +
   "An architect has the same six agent actions, fresh_session, compact, stop, retry, suspend and " +
-  "resume_agent (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
-  "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on a claim " +
+  "resume_agent (issue, role), for the agents of the issues it owns alone: a root architect owns every issue of " +
+  "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on an agent " +
   "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
-  "architect another tree's claim (ISSUE_OUTSIDE_TREE), a claim of an issue of its tree that it does not own, " +
-  "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own claim " +
+  "architect another tree's agent (ISSUE_OUTSIDE_TREE), an agent of an issue of its tree that it does not own, " +
+  "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own agent " +
   "(OWN_AGENT). It refuses " +
   "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
   "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
@@ -395,7 +395,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "An architect's suspension is recorded as architect. An architect's resume_agent lifts it, and the " +
   "controller's resume_agent and the operator's resume lift it too. An architect's resume_agent, suspend, stop and " +
   "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
-  "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
+  "of such an agent is refused too, since retry reaches no suspended agent. Its suspend takes " +
   "over a claim the daemon released, and its stop retires one. " +
   "An architect's retry and fresh_session are refused for a claim that failed or that a stop " +
   "retired while the claim's issue is parked or closed, or its tree's root is parked, closed or " +
@@ -417,7 +417,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
   "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
   "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. A claim a " +
-  "suspension holds when the project is resumed stays suspended until that suspension's own resume lifts it. " +
+  "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
+  "suspension, or the operator's legion claims resume, lifts it. " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
 
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
@@ -2085,7 +2086,7 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
 });
 
-test("the controller stops, retries, suspends and resumes a claim it names by issue and role", async () => {
+test("the controller stops, retries, suspends and resumes an agent it names by issue and role", async () => {
   const minted: string[] = [];
   // What the daemon answers each action (agent-*.json): the claim as it left it, and who
   // holds a suspension over it.
@@ -2334,8 +2335,8 @@ test("an architect acts on a claim of an issue it owns with its own grant", asyn
   }
   expect(calls).toHaveLength(before);
 
-  // The daemon's refusals reach the architect in their own code and words: another tree's claim,
-  // a claim of an issue of its tree it does not own, its own claim, and a claim the controller's
+  // The daemon's refusals reach the architect in their own code and words: another tree's agent,
+  // an agent of an issue of its tree it does not own, its own agent, and a claim the controller's
   // suspension holds.
   for (const [route, op, path, status, code] of [
     ["stopAgent", "stop", "/legion/v1/agents/stop", 403, "ISSUE_OUTSIDE_TREE"],
@@ -2592,11 +2593,11 @@ test("pause and resume are offered to no architect and no phase worker", async (
 });
 
 // The controller's resume_agent and the project's resume are two operations: resume_agent names
-// a claim by issue and role and posts that claim's resume, and resume names nothing and is
-// refused a claim's fields. A resume_agent the daemon refuses because the project is paused
+// an agent by issue and role and posts that agent's resume, and resume names no issue and is
+// refused the agent's two fields. A resume_agent the daemon refuses because the project is paused
 // reaches the controller in the daemon's own words, which name the resume operation that lifts
 // the pause, so a controller that meant the project's resume reads which operation that is.
-test("resume_agent resumes a claim, resume takes no claim, and a paused project's refusal names resume", async () => {
+test("resume_agent resumes an agent, resume names no issue, and a paused project's refusal names resume", async () => {
   const { calls, daemon } = recordingDaemon({ answers: { resumeAgent: { state: "launching" } } });
   const tool = controllerTool(daemon, []);
   await tool.execute(
@@ -2845,7 +2846,7 @@ test("read_state's summary prints the pause's line while the project is paused a
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
 // many wakes the pacing holds until their turn and when the earliest of them is due. The
 // controller's skill has it read that count before it asks for a start again
-// (`skills/legion-controller/references/operations.md`, step 3 of "A claim's state"), so a
+// (`skills/legion-controller/references/operations.md`, step 3 of "Actions on an agent"), so a
 // summary without the line leaves that step with nothing to read.
 test("read_state's summary counts the wakes the pacing holds and says when the earliest is due", async () => {
   const wakesLines = (lines: readonly string[]) =>

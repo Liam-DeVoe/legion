@@ -3020,11 +3020,11 @@ package api
 // number and every open pull request again at every forward merge rather than from this line.)
 //
 // 215: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
-// resume, compact and fresh session of one agent, named by its issue and role) it lacked, the
+// resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
 // the same door
-// (agentDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
+// (agentDoor: a controller grant, or an architect grant for an agent of an issue it owns, or `403
 // CONTROLLER_REQUIRED`, a claim the daemon supervises or `404 NO_CLAIM`, built from the daemon's
 // own project, so another project's claim cannot be named): `POST /legion/v1/agents/stop` runs
 // `legion claims stop`'s effect, `POST /legion/v1/agents/retry` the plain `legion claims retry`

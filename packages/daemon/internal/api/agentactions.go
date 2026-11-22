@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// AgentActionResponse is what the agent door's four agent actions answer — stop, retry,
+// AgentActionResponse is what four of the agent door's six agent actions answer — stop, retry,
 // suspend and resume (stopAgent, retryAgent, suspendAgent, resumeAgent), the controller's and an
 // architect's alike: the claim as the request left it, read from its machine's published view as
 // every operator request on a claim reads it (claimRequest).
@@ -99,29 +99,29 @@ const (
 var (
 	stopOp = agentAction{
 		name:        "a stop",
-		invalidRole: "the controller does not stop its own claim",
+		invalidRole: "the controller does not stop its own agent",
 		request:     "stop",
 		did:         "stopped",
 	}
 	retryOp = agentAction{
 		name:        "a retry",
-		invalidRole: "the controller does not retry its own claim",
+		invalidRole: "the controller does not retry its own agent",
 		did:         "retried",
-		reaches:     "A retry reaches a claim that failed and one a stop retired",
+		reaches:     "A retry reaches an agent that failed and one whose claim a stop retired",
 	}
 	suspendOp = agentAction{
 		name:        "a suspension",
-		invalidRole: "the controller does not suspend its own claim",
+		invalidRole: "the controller does not suspend its own agent",
 		request:     "suspend",
 		did:         "suspended",
 	}
 	resumeOp = agentAction{
 		name:         "a resume",
-		invalidRole:  "the controller does not resume its own claim",
+		invalidRole:  "the controller does not resume its own agent",
 		request:      "resume",
 		did:          "resumed",
 		refusesATurn: true,
-		reaches:      "A resume reaches a suspended claim: the controller's every one but one the operator's own suspension holds, and an architect's one an architect suspended",
+		reaches:      "A resume reaches a suspended agent: the controller's every one but one the operator's own suspension holds, and an architect's one an architect suspended",
 	}
 )
 
@@ -265,7 +265,7 @@ func (s *server) refuseStartOfStoppedWork(w http.ResponseWriter, r *http.Request
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		read, err := s.recordedIssue(r.Context(), issue.Tree)
 		if err != nil {
-			s.logRequestFailure(r, err, "api: read the root of the tree of a claim an architect would start", "claim", target.token, "tree", issue.Tree)
+			s.logRequestFailure(r, err, "api: read the root of the tree of an agent an architect would start", "claim", target.token, "tree", issue.Tree)
 			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the root of "+issue.Key+"'s tree")
 			return true
 		}
@@ -275,7 +275,7 @@ func (s *server) refuseStartOfStoppedWork(w http.ResponseWriter, r *http.Request
 		return false
 	}
 	s.writeFailure(w, r, http.StatusConflict, issueOutOfWorkflow, fmt.Sprintf(
-		"%s is %s, and the daemon has stopped its issue's work: %s. %s by %s would start the claim on that stopped work, so it %s. The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and %s by the controller or the operator reaches the claim meanwhile",
+		"%s is %s, and the daemon has stopped its issue's work: %s. %s by %s would start the agent on that stopped work, so it %s. The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and %s by the controller or the operator reaches the agent meanwhile",
 		target.token, state, stoppedWork(issue, root), capitalized(op.name), callerName(target.by), nothingChanged, op.name))
 	return true
 }
@@ -427,7 +427,7 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 			"Ask the controller: its `resume_agent` is its own to run", true
 	case errors.Is(err, supervise.ErrNotTheArchitectsSuspension):
 		return suspendedByDaemon, "suspended by the daemon, not by an architect",
-			"The daemon's own rules start such a claim again — its issue's phase, or its role's next wake — and so do the controller's `resume_agent` and the operator's `legion claims resume`", true
+			"The daemon's own rules start such an agent again — its issue's phase, or its role's next wake — and so do the controller's `resume_agent` and the operator's `legion claims resume`", true
 	}
 	return "", "", "", false
 }
@@ -442,7 +442,7 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 // action reaches and sends the caller to the state (askAgainLater).
 func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, token claim.Token, op agentAction) {
 	s.writeFailure(w, r, http.StatusConflict, claimInATurn, fmt.Sprintf(
-		"%s is stored working, and %s reaches no claim in a turn. %s. %s", token, op.name, op.reaches, askAgainLater))
+		"%s is stored working, and %s reaches no agent in a turn. %s. %s", token, op.name, op.reaches, askAgainLater))
 }
 
 // answerAgentAction writes the claim as the caller's action left it (AgentActionResponse) under
@@ -458,7 +458,7 @@ func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, targe
 	if view.State == supervise.StateSuspended {
 		answer.SuspendedBy = string(view.SuspendedBy)
 	}
-	s.log.Info("api: "+callerName(target.by)+" "+did+" a claim", "claim", target.token, "issue", target.issue, "role", target.role,
+	s.log.Info("api: "+callerName(target.by)+" "+did+" an agent", "claim", target.token, "issue", target.issue, "role", target.role,
 		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status)
 	s.writeAnswer(w, r, AnswerAgentAction, status, answer)
 }

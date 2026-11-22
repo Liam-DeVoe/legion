@@ -9,18 +9,18 @@ Read this before an operation of your own work, and before you send another sess
 1. Read `kubectl auth can-i delete pods -n <namespace>`. It prints `yes` or `no`.
 2. On `no`, or when `kubectl` fails, run no operation that needs the right. Name it in the day's report with the read and its answer.
 
-## A claim's state
+## Actions on an agent
 
-These are the actions on an agent (stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role). Use them on a claim of your project that needs action, a tree's architect claim included: `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`. Each refuses your own claim.
+These are the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one agent, named by its issue and role). Use them on an agent of your project that needs action, a tree's architect included: `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`. Each refuses your own agent.
 
 | `op` | What it does |
 | --- | --- |
 | `suspend` | Stops the claim's agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
-| `resume_agent` | Starts a suspended claim again in its recorded session with the task it owes, an architect's suspension included. |
-| `stop` | Ends the claim at once, also in a turn, and retires it; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that claim. |
-| `retry` | Starts a failed or stopped claim again in its recorded session, with new launch budgets. A suspended claim takes `resume_agent`. |
-| `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; a claim with no process (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
-| `fresh_session` | Starts the claim in a new session, leaving the old one and all it knew. Use it for a claim no process stands behind, or one still refused after `compact`. |
+| `resume_agent` | Starts a suspended agent again in its recorded session with the task it owes, an architect's suspension included. |
+| `stop` | Ends the agent at once, also in a turn, and retires its claim; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
+| `retry` | Starts a failed or stopped agent again in its recorded session, with new launch budgets. A suspended agent takes `resume_agent`. |
+| `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; an agent with no process behind its claim (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
+| `fresh_session` | Starts the agent in a new session, leaving the old one and all it knew. Use it for an agent whose claim no process stands behind, or one still refused after `compact`. |
 
 1. Run the operation, read its answer, then read the claim in `read_state`.
 2. After a refusal, ask again later: the refusal says what the claim does now. For a root with no architect claim, `compact` and `fresh_session` answer `NO_CLAIM`.
@@ -30,7 +30,7 @@ While your project is paused (the summary's `paused:` line), the daemon refuses 
 
 ## A restart of your project's daemon
 
-Restart it only when a person asks, your deployment instructions name the case, or a change your work waits on reaches the daemon only at its boot. Never restart it to reach one claim, and never while a wave runs. `<daemon label>` is the daemon pod's label your deployment instructions give; with none, delete nothing and name the operation you lack in the day's report.
+Restart it only when a person asks, your deployment instructions name the case, or a change your work waits on reaches the daemon only at its boot. Never restart it to reach one agent, and never while a wave runs. `<daemon label>` is the daemon pod's label your deployment instructions give; with none, delete nothing and name the operation you lack in the day's report.
 
 1. `kubectl -n <namespace> get pods -l '<daemon label>' -o wide` lists one pod: note its name. With no pod or several, delete nothing and name it in the day's report.
 2. `kubectl -n <namespace> delete pod -l '<daemon label>'`. The daemon's Deployment makes a new pod.
@@ -41,7 +41,7 @@ Publish to no role topic while the restart runs: a message starts a turn that th
 
 ## A replacement of an issue's pod
 
-Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one claim. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens an update round: it asks each role to push, then replaces the pod.
+Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one agent. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens an update round: it asks each role to push, then replaces the pod.
 
 1. `legion({ op: "replace_pod", issue: "<KEY>" })`. A round already open is answered as it stands.
 2. On a refusal: `NO_CLAIM`, there is no pod to replace; `NO_POD`, ask again once a role runs in the pod; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
@@ -65,7 +65,7 @@ Your `gh` only reads: it holds the review App's read-only lease. This re-run and
 
 `409 SUSPENDED_BY_OPERATOR` means that only the operator lifts the hold.
 
-1. Open a `dispatch ask` on the report issue that names the claim, quotes the refusal and says why the claim needs `<op>`, with the options `Resume it: the operator runs legion claims resume on the claim, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
+1. Open a `dispatch ask` on the report issue that names the claim, quotes the refusal and says why its agent needs `<op>`, with the options `Resume it: the operator runs legion claims resume on the claim, and I then run <op> on its agent` and `Keep it held: <what stays as it is>`.
 2. Send no Envoy message to the session that holds the operator's token, and ask no other session to lift the hold.
 3. Name the ask in your summary, and in the day's report while it is open.
 4. On `Resume it`, run `<op>` again; on a second 409, reply under the ask with the refusal, and run it again at the next reply. On `Keep it held`, run nothing.

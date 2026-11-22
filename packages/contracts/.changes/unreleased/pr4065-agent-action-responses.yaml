@@ -1,8 +1,8 @@
 kind: Added
 body: |-
-  The response schema of four of the actions on an agent (stop, retry, suspend, resume, compact
-  and fresh session of one agent, named by its issue and role) that the controller and a tree's
-  architect hold (`stop`, `retry`, `suspend`, `resume_agent`): the claim's state, and who
+  The response schema of four of the actions on an agent (stop, retry, suspend, resume_agent,
+  compact and fresh session of one agent, named by its issue and role) that the controller and a
+  tree's architect hold (`stop`, `retry`, `suspend`, `resume_agent`): the claim's state, and who
   suspended it or holds a suspension for its turn. `suspendedBy` and `suspensionHeldBy` take
   `architect` as well as `controller`. Every field of it is optional, since no plugin code reads
   one: the `legion` tool hands the answer on whole. The daemon's table of answers

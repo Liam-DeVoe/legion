@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// agentActionRoutes is the controller's four agent actions, each by its route and the
+// agentActionRoutes is four of the controller's six agent actions, each by its route and the
 // words its refusal of the role `controller` gives.
 var agentActionRoutes = []struct {
 	name        string
@@ -222,7 +222,7 @@ func TestTheControllersRetryAndResumeRefuseAnAgentInATurn(t *testing.T) {
 
 			refusedSaying(t, askAgentAction(t, h, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, claimInATurn,
-				string(token)+" is stored working, and "+op.op.name+" reaches no claim in a turn. "+op.op.reaches+". "+wantAskAgainLater)
+				string(token)+" is stored working, and "+op.op.name+" reaches no agent in a turn. "+op.op.reaches+". "+wantAskAgainLater)
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateWorking || view.SuspensionHeld {
 				t.Fatalf("the refused claim is %s with a suspension held %t, want it working with none", view.State, view.SuspensionHeld)
@@ -231,10 +231,10 @@ func TestTheControllersRetryAndResumeRefuseAnAgentInATurn(t *testing.T) {
 	}
 }
 
-// controllerHoldOperations is the operations of the controller's door that the operator's own
+// controllerHoldActions is the actions of the controller's door that the operator's own
 // suspension refuses: every one of the agent door's but the one it lets past, the compaction
 // (compactOp.controllerPassesHold).
-var controllerHoldOperations = slices.DeleteFunc(slices.Clone(agentDoorActions), func(op agentDoorAction) bool {
+var controllerHoldActions = slices.DeleteFunc(slices.Clone(agentDoorActions), func(op agentDoorAction) bool {
 	return op.as.controllerPassesHold
 })
 
@@ -268,7 +268,7 @@ func operatorHeldCompactionRefusal(token claim.Token) string {
 // it. Each of the five is refused SUSPENDED_BY_OPERATOR with nothing of the claim changed, and the
 // operator's own resume then lifts the suspension as before.
 func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
-	for _, op := range controllerHoldOperations {
+	for _, op := range controllerHoldActions {
 		t.Run(op.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := operatorSuspendedImplementer(t, h)
@@ -303,7 +303,7 @@ func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 // suspension — so the controller would read a claim it may ask again for where only the operator
 // can act (agentDoor).
 func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
-	for _, op := range controllerHoldOperations {
+	for _, op := range controllerHoldActions {
 		t.Run(op.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := workingImplementer(t, h)
@@ -665,8 +665,8 @@ func TestAnArchitectsAgentActionsRefuseItsOwnAgent(t *testing.T) {
 			refusedSaying(t, askAsArchitect(t, h, architect, op.route, "LEGION-208", claim.RoleArchitect),
 				http.StatusForbidden, ownAgent,
 				string(architect.token)+" is the claim of the architect that asks, and "+op.as.name+
-					" of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. "+
-					"An architect's own claim is the controller's, the operator's and any architect's above it in the tree to recover")
+					" of its agent would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. "+
+					"An architect's own agent is the controller's, the operator's and any architect's above it in the tree to recover")
 			m, _ := h.supervisor.Machine(architect.token)
 			if view := m.View(); view.State != supervise.StateWorking || view.SuspensionHeld || view.Session != architect.session {
 				t.Fatalf("the architect's claim is %s with a suspension held %t on session %q, want it working on %q with none",
@@ -822,7 +822,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAnAgentTheDaemon
 				refusedSaying(t, recorder, http.StatusConflict, suspendedByDaemon,
 					string(token)+" is suspended by the daemon, not by an architect, and "+op.as.name+
 						" by the architect does not reach the daemon's suspension, so it is refused and nothing of the claim changed. "+
-						"The daemon's own rules start such a claim again — "+
+						"The daemon's own rules start such an agent again — "+
 						"its issue's phase, or its role's next wake — and so do the controller's `resume_agent` and the operator's `legion claims resume`")
 			}
 			if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Session != "ses_implementer" {
@@ -893,9 +893,9 @@ func TestAnArchitectsStartOfAStoppedWorkerIsRefusedOnceItsIssuesWorkStopped(t *t
 
 				refusedSaying(t, recorder, http.StatusConflict, issueOutOfWorkflow,
 					string(token)+" is retired, and the daemon has stopped its issue's work: "+stopped.why+". "+
-						capitalized(op.as.name)+" by the architect would start the claim on that stopped work, so it is refused and nothing of the claim changed. "+
+						capitalized(op.as.name)+" by the architect would start the agent on that stopped work, so it is refused and nothing of the claim changed. "+
 						"The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and "+
-						op.as.name+" by the controller or the operator reaches the claim meanwhile")
+						op.as.name+" by the controller or the operator reaches the agent meanwhile")
 				if got := h.stored(token); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
 					t.Fatalf("the refused claim is %s on session %q, want it retired on ses_implementer", got.State, got.Session)
 				}

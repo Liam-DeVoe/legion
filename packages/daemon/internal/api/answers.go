@@ -205,9 +205,9 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 215: the claim as one of the four agent actions of the controller and of an
-	// architect left it (`api.AgentActionResponse`). The routes arrive with the answer, so no
-	// contract below 215 records either.
+	// version.go's 215: the claim as one of the four agent actions on the `agents/` routes, the
+	// controller's or an architect's, left it (`api.AgentActionResponse`). The routes arrive with
+	// the answer, so no contract below 215 records either.
 	{ID: AnswerAgentAction, Routes: []string{
 		"POST /legion/v1/agents/stop",
 		"POST /legion/v1/agents/retry",
@@ -301,7 +301,7 @@ func enumeratedFields() []EnumeratedField {
 	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
 	// registration answers `controller` under a `z.literal` and is no row.
 	fields = append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles})
-	// `state`, `suspendedBy` and `suspensionHeldBy` of what the four agent actions answer
+	// `state`, `suspendedBy` and `suspensionHeldBy` of what four of the six agent actions answer
 	// (AgentActionResponse). All three arrived with that answer at agentActionsContract,
 	// so no value of any of them is served down. `suspensionHeld` is a `z.literal` and no row.
 	return append(fields,

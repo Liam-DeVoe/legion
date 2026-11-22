@@ -186,7 +186,7 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 		by = supervise.SuspendedByArchitect
 	default:
 		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED",
-			op.name+" requires a controller grant, or an architect grant for a claim of an issue it owns")
+			op.name+" requires a controller grant, or an architect grant for an agent of an issue it owns")
 		return claimTarget{}, false
 	}
 	m, supervised := s.supervisor.Machine(token)
@@ -196,7 +196,7 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 	}
 	if by == supervise.SuspendedByArchitect && token == grant.Claim {
 		s.writeFailure(w, r, http.StatusForbidden, ownAgent, fmt.Sprintf(
-			"%s is the claim of the architect that asks, and %s of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own claim is the controller's, the operator's and any architect's above it in the tree to recover",
+			"%s is the claim of the architect that asks, and %s of its agent would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own agent is the controller's, the operator's and any architect's above it in the tree to recover",
 			token, op.name))
 		return claimTarget{}, false
 	}

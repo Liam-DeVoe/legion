@@ -14,7 +14,7 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 
 - `read_state` with no field: a summary in lines, its first line naming what the others are (the project and its pause, the admission lines, one `<KEY> <phase> <status>` line for every issue the daemon records, and under each issue Legion still runs its slot, hold, gate and claims). With `issue`, `issues`, `phase` or `settings: true`: the full records it names, such as `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`) and `settings`, the resolved `legion.yaml`. The tool's output reaches you cut at about 41 KB, so read records ten keys at a time.
 - `set_status` (`issue`, `status`: `todo`, `backlog` or `icebox`). Each call mints its grant from the secret the session registered with. You cannot set `done`.
-- `stop`, `retry`, `suspend`, `resume_agent`, `compact` and `fresh_session` (`issue`, `role`): the actions on an agent (stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role), and `replace_pod` (`issue`): the update round over one issue's pod (`skill://legion-controller/references/operations.md`).
+- `stop`, `retry`, `suspend`, `resume_agent`, `compact` and `fresh_session` (`issue`, `role`): the actions on an agent, each naming one agent by its issue and role, and `replace_pod` (`issue`): the update round over one issue's pod (`skill://legion-controller/references/operations.md`).
 
 ## `gh`
 

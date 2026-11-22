@@ -163,8 +163,8 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // The four agent actions of the controller and of an architect (contract 215): the claim as
-  // each left it, and who holds a suspension over it.
+  // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
+  // resume (contract 215): the claim as each left it, and who holds a suspension over it.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,
@@ -448,8 +448,8 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
-  // The four agent actions of the controller and of an architect (contract 215): the claim's
-  // `state`, and who holds a suspension over it.
+  // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
+  // resume (contract 215): the claim's `state`, and who holds a suspension over it.
   "agent-action": LegionAgentActionResponse,
 };
 
@@ -2632,13 +2632,13 @@ const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimsResponse: true,
 };
 
-/** The one session-facing exception: the four agent actions of the controller and of an
+/** The one session-facing exception: four of the six agent actions of the controller and of an
  * architect (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
- * because those routes are where the caller reads whether its own resume lifts it. The reason the
- * guard exists does not reach them: they arrived with contract 215, so only a plugin at that
- * contract or later calls them, and no reader of these bodies predates the key. The schema and the
- * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
- * suspender still fails the walk below. */
+ * because those routes are where the caller reads whether its own resume_agent lifts it. The
+ * reason the guard exists does not reach them: they arrived with contract 215, so only a plugin at
+ * that contract or later calls them, and no reader of these bodies predates the key. The schema
+ * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
+ * names a suspender still fails the walk below. */
 const agentActionSchemas: Record<string, true> = { LegionAgentActionResponse: true };
 const agentActionFixtures: Record<string, true> = {
   "agent-stop.json": true,

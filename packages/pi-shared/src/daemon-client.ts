@@ -212,8 +212,8 @@ export interface LegionDaemonClient {
    * stopped is the project's resume's to bring back. A stop and a suspension still run while the
    * project is paused. The answer is the claim as the resume left it.
    *
-   * An architect's grant reaches the claims of the issues it owns alone, through all six of these
-   * agent actions: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
+   * An architect's grant reaches the agents of the issues it owns alone, through all six of these
+   * agent actions: another tree's agent is refused (`ISSUE_OUTSIDE_TREE`), and so is an agent of
    * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_AGENT`), a
    * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_agent`,
    * suspend, stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and,

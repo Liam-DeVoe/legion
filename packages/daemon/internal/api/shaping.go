@@ -861,7 +861,7 @@ const quietTimeContract = 111
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
 
-// agentActionsContract is the daemon contract the agent door's four agent actions and the
+// agentActionsContract is the daemon contract four of the agent door's six agent actions and the
 // controller's pod update arrived at (version.go's 215): `POST /legion/v1/agents/stop`, `retry`,
 // `suspend` and `resume`, which answer AgentActionResponse (AnswerAgentAction), and
 // `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse (AnswerPodUpdate). Each
@@ -986,8 +986,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is a number of answers.go's SupportedContracts, just
-// below agentActionsContract, which names the constant rather than its number for that reason.
+// with this change's own number, and for that reason answers.go's SupportedContracts names this
+// constant rather than its number, just below childRouteRemovedContract (205, requests.go).
 const repositoriesLiveContract = 202
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the

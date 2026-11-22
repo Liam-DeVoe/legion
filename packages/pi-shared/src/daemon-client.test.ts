@@ -430,8 +430,9 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
     ],
-    // The controller's four agent actions take the recoveries' body and answer the claim as
-    // each left it, with who holds a suspension over it.
+    // Four of the six agent actions (stop, retry, suspend, resume) take the body of the other
+    // two, the recoveries, and answer the claim as each left it, with who holds a suspension
+    // over it.
     [
       "stopAgent",
       "/legion/v1/agents/stop",

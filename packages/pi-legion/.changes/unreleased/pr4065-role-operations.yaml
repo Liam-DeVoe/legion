@@ -10,4 +10,4 @@ body: |-
   writes a request to merge or queue a pull request to the owning tree's architect by a mention.
   A phase worker makes a GitHub write that its own `gh` cannot make with the same lent token,
   opens a `dispatch ask` for a deploy that only a person may make, and reports a fault of Legion's
-  own machinery as a finding rather than as a request to change its claim or its session.
+  own machinery as a finding rather than as a request to act on its agent or its session.

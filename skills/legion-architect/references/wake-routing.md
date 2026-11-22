@@ -31,7 +31,7 @@ child's own architect asks the architect above it.
 | `worker-stalled` | The daemon relaunched or queued the turn. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the claim, `resume_agent` your own; ask the holder of any other. |
 | `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Check its account of the work against the record, then send it with `envoy_publish` each decision it can no longer read. Your own lost session: read your record and your tree's issues first. |
-| `provider-errors`, `update-stalled` | `skill://legion-architect/references/operations.md#a-claim-of-your-tree` |
+| `provider-errors`, `update-stalled` | `skill://legion-architect/references/operations.md#actions-on-an-agent-of-your-tree` |
 | `merge-holds-changed` | `skill://legion-architect/references/acceptance.md#a-merge-hold` |
 | `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
 | `held` | No `reason`: answer the `worker-died` that comes with it. Only your `escalate` hands it to the controller. `reason: "escalated"`: the controller has it; start nothing. |

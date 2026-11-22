@@ -10,6 +10,6 @@ body: |-
   architect: the daemon sends it there now. A run of a child's own architect's claim goes to the
   architect above that child, and a run of the tree root's architect's own claim goes to the
   controller alone. The architect's skill gets a `provider-errors` row: the controller compacts or
-  refreshes the claim, and the architect narrows the work the provider keeps refusing without the
+  refreshes the agent, and the architect narrows the work the provider keeps refusing without the
   controller's word. It no longer says that the controller hears of every hold and of every stall
   of a tree's architect.
