@@ -240,10 +240,8 @@ export function specDecidedBy({
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
-    runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
+    runs: { decision?: SpecDecision; key?: string; statements: SpecStatement[] }[];
   }[] = [];
-  // The key of the last run built, which the next statement's head is matched against.
-  let runKey: string | undefined;
   // Every row the Spec filter kept, in the order it draws them but for the statements it folds
   // to a line: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`).
@@ -283,12 +281,11 @@ export function specDecidedBy({
     const run = group?.runs.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
       groups.push({ ...(parent === undefined ? {} : { parent }), runs: [fresh] });
-    } else if (run === undefined || runKey !== head?.key) {
+    } else if (run === undefined || run.key !== head?.key) {
       group.runs.push(fresh);
     } else {
       run.statements.push(statement);
     }
-    runKey = head?.key;
   }
   return { groups, others: rows.filter((row) => !isStatement(row)) };
 }

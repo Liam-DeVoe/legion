@@ -1047,16 +1047,13 @@ interface Headed {
  */
 function runsOf(headed: readonly Headed[]): SpecRun[] {
   const runs: { decision?: SpecDecision; key?: string; statements: SpecStatement[] }[] = [];
-  // The key of the last run built, which the next statement's head is matched against.
-  let runKey: string | undefined;
   for (const { head, statement } of headed) {
     const last = runs.at(-1);
-    if (last !== undefined && runKey === head.key) {
+    if (last !== undefined && last.key === head.key) {
       last.statements.push(statement);
     } else {
       runs.push({ ...head, statements: [statement] });
     }
-    runKey = head.key;
   }
   return runs;
 }
