@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  The secrets broker answers every `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, the wait
+  the Envoy listener names for the same fault: at enrollment, renewal, the token login, the
+  pod-session routes, the listed caller's and the edge listener's routes, and the token exchange.
+  A listed caller's or an edge listener's Google identity token whose key the broker cannot read,
+  because Google's key set cannot be read, is answered that `503`, where it was
+  `401 ACCOUNT_TOKEN_INVALID`. At the token exchange, a machine's or a person's Google identity
+  token, a machine's actor token and a GitHub workflow run's token whose issuer's key set cannot be
+  read are answered that `503` too, where they were `400 invalid_request` as a token the exchange
+  could not parse, which the broker's token clients take as final. A token signed by a key its
+  issuer never published is refused as before.
+  `agent-secrets enroll --pod` makes its token login, its enrollment, and the renewal of an
+  enrollment it already holds again after a `503`: after the answer's `Retry-After`, or 2 seconds
+  doubling to 10 where it names none, printing one line for each wait. It refuses as before once
+  its waits for one call would pass two minutes.
+time: 2026-11-22T02:39:23Z
+custom:
+    Issue: pr4942
