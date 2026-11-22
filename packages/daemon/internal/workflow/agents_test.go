@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -61,7 +62,9 @@ func TestALaterVersionGivesAFreshAgentANameOfItsOwnBesideAKeysName(t *testing.T)
 // Each case runs version 1 to the step whose agent last ran on the claim the later step takes,
 // stops the task, gives version 2, and reads the agent version 2's first step names. The step's
 // agent takes the name, and so the claim, the earlier agent ran on: the name implementer in each
-// case, so each case is one claim and the question is whose session it resumes.
+// case, so each case is one claim and the question is whose session it resumes. The one exception
+// is the step whose key was taken off: the name a key held is that key's (record.NameAgents), so
+// that step takes implementer-2, a claim of its own, and key k's claim waits for key k.
 //   - A keyed agent keeps its own session across a version that moves its second step: v1
 //     `implementer:a tester:a reviewer`, v2 `implementer:a reviewer tester:a`. Before, the entry
 //     judged the claim's last row, place 2, by the plan in force, where place 2 is now the reviewer,
@@ -69,8 +72,8 @@ func TestALaterVersionGivesAFreshAgentANameOfItsOwnBesideAKeysName(t *testing.T)
 //   - A new key in a new task, and a key added at the place an agent with no key ran, are agents
 //     of their own. Before, a keyed step was taken for the same agent as any row of a task the plan
 //     no longer held, and a re-keyed place for the agent of the place.
-//   - A step whose key was taken off is a fresh agent. Before, the place's agent with no key was
-//     taken for the same agent as the key's.
+//   - A step whose key was taken off is a fresh agent, on a name of its own. Before, the place's
+//     agent with no key was taken for the same agent as the key's, and then it took the key's name.
 //   - A key's agent across two tasks is one agent.
 //
 // The fault in each: the agent the later step names is not the agent whose session it should
@@ -88,6 +91,8 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 		// ran is the agent of the last step of version 1 that ran on the claim, and agent the agent
 		// of version 2's step 1.
 		ran, agent string
+		// named is the name version 2's step 1 takes, where it is not implementer.
+		named claim.Agent
 	}{
 		{name: "a keyed agent keeps its session across a version that moves its step", firstTask: "a", first: []string{"implementer:a", "tester:a", "reviewer"},
 			laterTask: "a", later: []string{"implementer:a", "reviewer", "tester:a"}, ranStep2: true, ran: "key:a", agent: "key:a"},
@@ -98,7 +103,7 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 		{name: "a key added at the place of an agent with no key is an agent of its own", firstTask: "a", first: []string{"implementer", "reviewer"},
 			laterTask: "a", later: []string{"implementer:k", "reviewer"}, ran: "step:1:a", agent: "key:k"},
 		{name: "a step whose key was taken off is an agent of its own", firstTask: "a", first: []string{"implementer:k", "reviewer"},
-			laterTask: "a", later: []string{"implementer", "reviewer"}, ran: "key:k", agent: "step:1:a"},
+			laterTask: "a", later: []string{"implementer", "reviewer"}, ran: "key:k", agent: "step:1:a", named: "implementer-2"},
 		{name: "a key's agent in two tasks is one agent", firstTask: "a", first: []string{"implementer:k", "reviewer"},
 			laterTask: "b", later: []string{"implementer:k", "reviewer"}, ran: "key:k", agent: "key:k"},
 		{name: "control: an agent with no key that returns to its place is one agent", firstTask: "a", first: []string{"implementer", "reviewer"},
@@ -129,8 +134,12 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 			later := givenTask(t, "Build the manual.", tc.later...)
 			later.ID = tc.laterTask
 			mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, later)))
-			if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, tc.laterTask); len(got) == 0 || got[0] != "implementer" {
-				t.Fatalf("the agents of version 2's task %s = %q, want step 1's named implementer, the claim version 1's agent ran on", tc.laterTask, got)
+			named := tc.named
+			if named == "" {
+				named = "implementer"
+			}
+			if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, tc.laterTask); len(got) == 0 || got[0] != named {
+				t.Fatalf("the agents of version 2's task %s = %q, want step 1's named %s", tc.laterTask, got, named)
 			}
 			start := lastStartOf(t, pool, key, claim.RoleImplementer)
 			if start.Agent != tc.agent {
@@ -140,6 +149,54 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 				t.Errorf("the start of version 2's step 1 asks for a fresh session of its own, want the claim's record of its session's agent to decide: %+v", start)
 			}
 		})
+	}
+}
+
+// A key that one version leaves out finds its name, and so its claim and the session that claim
+// holds, when a later version gives it again. Version 1, `implementer:k reviewer`, runs step 1 on
+// the claim implementer, and the owner stops the task. Version 2, `implementer reviewer`, runs its
+// step 1, which has no key, on implementer-2, a claim of its own, and the owner stops it again.
+// Version 3, `implementer:k reviewer`, starts key k on implementer and names key k, the agent of
+// every start that claim was given, so the session it holds is key k's own to resume. The fault:
+// version 2's step with no key took implementer, the runner left key k's session behind as another
+// agent's, and key k's return found that claim holding the other agent's session.
+func TestAKeyLeftOutOfOneVersionFindsItsClaimWhenALaterVersionGivesItAgain(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	tickingClock(engine)
+	apply := applyFacts(t, pool, engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	for i, v := range []struct {
+		steps []string
+		// name is the name of the claim the version's step 1 starts on, agent the agent it names.
+		name  claim.Agent
+		agent string
+	}{
+		{steps: []string{"implementer:k", "reviewer"}, name: "implementer", agent: "key:k"},
+		{steps: []string{"implementer", "reviewer"}, name: "implementer-2", agent: "step:1:a"},
+		{steps: []string{"implementer:k", "reviewer"}, name: "implementer", agent: "key:k"},
+	} {
+		version := i + 1
+		mustTake(t, fmt.Sprintf("version %d", version), apply(planID(key, gen, version), ownersPlan(t, key, gen, version, givenTask(t, "Build the widget.", v.steps...))))
+		if version == 1 {
+			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		}
+		start := lastStartOf(t, pool, key, claim.RoleImplementer)
+		if reason := fmt.Sprintf("the owner gave version %d of the plan", version); version > 1 && !strings.Contains(start.Task, reason) {
+			t.Fatalf("version %d: the implementer's last start = %+v, want the start of this version, which says %q", version, start, reason)
+		}
+		if start.Agent != v.agent || start.FreshSession {
+			t.Fatalf("version %d: step 1's start = %+v, want it to name the agent %q and ask for no fresh session", version, start, v.agent)
+		}
+		if row := roleRowNow(t, pool, engine, key, claim.RoleImplementer); row.Claim != agentToken(t, v.name) {
+			t.Fatalf("version %d: step 1 runs on the claim %q, want %q", version, row.Claim, agentToken(t, v.name))
+		}
+		if version < 3 {
+			if result := apply(fmt.Sprintf("stop %d", version), ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("version %d: the owner's stop was refused: %+v", version, result.Refusal)
+			}
+		}
 	}
 }
 

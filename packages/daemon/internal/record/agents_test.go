@@ -97,8 +97,9 @@ func TestASecondAgentOfOneRoleGetsANameOfItsOwn(t *testing.T) {
 	}
 }
 
-// Two keys can hold one name across generations: generation 1 names key a implementer, and in
-// generation 2, where no step names key a, key b takes implementer by pass 4. A later version that
+// Rows written before a name a key held was kept for it can show two keys that held one name
+// across generations: generation 1 names key a implementer, and in generation 2, where no step
+// names key a, key b took implementer by pass 4. A later version that
 // names both keys gives the name to one key alone, the one whose row held it last, key b, whose
 // agent ran on that name's claim last; key a gets a name of its own, implementer-2. So one name is
 // one claim and one session for one agent. The fault: pass 2 gave each key the name its first row
@@ -126,5 +127,67 @@ func TestTwoKeysThatHeldOneNameInTurnGetTwoNames(t *testing.T) {
 		{Generation: 3, Task: "w", Position: 2, Role: "implementer", AgentKey: "b"},
 	}); again[0].Agent != got[0].Agent || again[1].Agent != got[2].Agent {
 		t.Errorf("a later version names key a %q and key b %q, want each the name it had, %q and %q", again[0].Agent, again[1].Agent, got[0].Agent, got[2].Agent)
+	}
+}
+
+// A name an earlier row of a key held is that key's: no agent of a later version takes it but that
+// key, so the claim of the name, and the session it holds, wait for the key across a version that
+// leaves the key out. v1 `implementer:k reviewer` names key k implementer; v2 `implementer
+// reviewer` gives step 1, which has no key, implementer-2, a name of its own, at the cost of a slot
+// of its own; v3 `implementer:k reviewer` gives key k implementer again. Another key is held to the
+// same rule, and so is a step with no key whose place had the name before the key took it. A name
+// only steps with no key held stays free: a new task's step with no key takes the name of a
+// stopped task's step of its role. The fault: the step with no key of v2 took implementer, so key
+// k's return in v3 found that name's claim holding another agent's session, and started fresh.
+func TestANameAKeyHeldIsKeptForThatKey(t *testing.T) {
+	v1 := NameAgents(nil, []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
+	})
+	if v1[0].Agent != "implementer" {
+		t.Fatalf("key k in version 1: name %q, want implementer", v1[0].Agent)
+	}
+	v2 := NameAgents(v1, []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
+	})
+	if v2[0].Agent != "implementer-2" || v2[1].Agent != "reviewer" {
+		t.Fatalf("version 2, which leaves key k out: names %q and %q, want implementer-2, a name of its own beside key k's, and reviewer",
+			v2[0].Agent, v2[1].Agent)
+	}
+	// The version written replaces the steps of the task it gives, so the rows version 3 is named
+	// from are version 2's.
+	v3 := NameAgents(v2, []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
+	})
+	if v3[0].Agent != "implementer" {
+		t.Errorf("key k back in version 3: name %q, want implementer, the name whose claim holds its session", v3[0].Agent)
+	}
+	if other := NameAgents(v1, []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "j"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
+	}); other[0].Agent != "implementer-2" {
+		t.Errorf("key j in the place of key k: name %q, want implementer-2, since key k held implementer", other[0].Agent)
+	}
+	// Generation 1 ran task a with a step with no key named implementer, and generation 2 gave
+	// that place to key k, which took the name. A later version of generation 2 that takes the key
+	// off again finds the place's name of generation 1, which key k holds now.
+	keyed := []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer", Agent: "reviewer"},
+		{Generation: 2, Task: "a", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"},
+		{Generation: 2, Task: "a", Position: 2, Role: "reviewer", Agent: "reviewer"},
+	}
+	if place := NameAgents(keyed, []PlanStep{
+		{Generation: 2, Task: "a", Position: 1, Role: "implementer"},
+		{Generation: 2, Task: "a", Position: 2, Role: "reviewer"},
+	}); place[0].Agent != "implementer-2" {
+		t.Errorf("a step with no key at a place whose name key k took: name %q, want implementer-2", place[0].Agent)
+	}
+	if free := NameAgents(v2, []PlanStep{
+		{Generation: 1, Task: "p", Position: 1, Role: "reviewer"},
+	}); free[0].Agent != "reviewer" {
+		t.Errorf("control: a new task's reviewer, where only a step with no key held reviewer: name %q, want reviewer", free[0].Agent)
 	}
 }
