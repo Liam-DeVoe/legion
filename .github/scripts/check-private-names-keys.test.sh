@@ -218,11 +218,28 @@ release legion-v9.1.0 2026-11-20T06:00:00Z
 key_run
 check "a 504 whose message says (HTTP 404) exits 2" "$(is "$status" 2)"
 check "a 504 whose message says (HTTP 404) is read again, never once as a 404" \
-  "$(is "$(release_calls | grep -c -x 'legion-v9\.0\.0')" 5)"
-check "a 504 whose message says (HTTP 404) names the release it could not read, by gh's own line" \
-  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9.0.0 (gh: upstream said (HTTP 404) (HTTP 504))')"
+  "$(is "$(release_calls | grep -c -E '^legion-v9\.0\.0( |$)')" 5)"
+check "a 504 whose message says (HTTP 404) names the release it could not read, and its 504" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 (.*504')"
 check "a 504 whose message says (HTTP 404) takes no later release as the cutoff" \
   "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
+# A 504 whose message holds a newline, so that a whole line of gh's error is a 404's: gh 2.98.0
+# printed `gh: upstream said (HTTP 404)` then `retry later (HTTP 504)` for one, and `gh: upstream`,
+# `gh: Not Found (HTTP 404)`, `retry later (HTTP 504)` for one whose message carries a whole fake
+# 404 line (driven against a local server, dispatch://INFRA-1545, round 53). No text a server can
+# echo decides the outcome: each is retried and then UNKNOWN.
+for answer in 'HTTP 504 with a 404 line' 'HTTP 504 with a fake 404 line'; do
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  marker_on_main
+  echo "$answer" > "$work/release.legion-v9.0.0"
+  release legion-v9.1.0 2026-11-20T06:00:00Z
+  key_run
+  check "$answer: exits 2" "$(is "$status" 2)"
+  check "$answer: is read again, never once as a 404" "$(is "$(release_calls | grep -c -E '^legion-v9\.0\.0( |$)')" 5)"
+  check "$answer: is UNKNOWN for that release" \
+    "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 ')"
+  check "$answer: takes no later release as the cutoff" "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
+done
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 mv "$work/remote" "$work/remote.held"

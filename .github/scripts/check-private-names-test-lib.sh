@@ -183,8 +183,11 @@ GREP
 # touch the cutoff marker on the pull request's base branch, whichever it is
 # (`$work/cutoff-commits`, else none, so the rule is inactive); one
 # release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, a file holding
-# `HTTP 500` a server error, and a file holding `HTTP 504 saying 404` a gateway's 504 whose body
-# message carries `(HTTP 404)`, as gh 2.98.0 prints one: the body's message, then the status);
+# `HTTP 500` a server error, a file holding `HTTP 504 saying 404` a gateway's 504 whose body
+# message carries `(HTTP 404)`, as gh 2.98.0 prints one: the body's message, then the status;
+# and a file holding `HTTP 504 with a 404 line` or `HTTP 504 with a fake 404 line` a 504 whose
+# message holds a newline, so that a whole line of gh's error reads as a 404's, as gh 2.98.0
+# printed them against a local server in round 53 of dispatch://INFRA-1545);
 # one commit's files (`$work/commit.<sha>`, else a refusal); and the
 # pull request's files (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints
 # them, else a refusal; read without --paginate, also a refusal). The repository's history and
@@ -218,9 +221,32 @@ case "$1 $2" in
     if [ -e "$PR_TEXT_TEST_DIR/cutoff-commits" ]; then cat "$PR_TEXT_TEST_DIR/cutoff-commits"; else echo '[]'; fi ;;
   "api repos/example/repo/releases/tags/"*)
     file="$PR_TEXT_TEST_DIR/release.${2#repos/example/repo/releases/tags/}"
-    if [ ! -e "$file" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
-    if grep -q -x 'HTTP 500' "$file"; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
-    if grep -q -x 'HTTP 504 saying 404' "$file"; then echo "gh: upstream said (HTTP 404) (HTTP 504)" >&2; exit 1; fi
+    include=false
+    for arg in "$@"; do case $arg in -i | --include) include=true ;; esac; done
+    # failed <status> <reason> <message>: gh 2.98.0's answer to an HTTP error, as measured against
+    # GitHub and a local server: with -i (or --include), the status line, a header, a blank line
+    # and the JSON body on stdout; always `gh: <message> (HTTP <status>)` on stderr, the message's
+    # own newlines kept; exit 1.
+    failed() {
+      if $include; then
+        printf 'HTTP/2.0 %s %s\n' "$1" "$2"
+        printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+        jq -nc --arg m "$3" '{message: $m}'
+      fi
+      printf 'gh: %s (HTTP %s)\n' "$3" "$1" >&2
+      exit 1
+    }
+    [ -e "$file" ] || failed 404 "Not Found" "Not Found"
+    grep -q -x 'HTTP 500' "$file" && failed 500 "Internal Server Error" "Server Error"
+    grep -q -x 'HTTP 504 saying 404' "$file" && failed 504 "Gateway Timeout" "upstream said (HTTP 404)"
+    grep -q -x 'HTTP 504 with a 404 line' "$file" &&
+      failed 504 "Gateway Timeout" $'upstream said (HTTP 404)\nretry later'
+    grep -q -x 'HTTP 504 with a fake 404 line' "$file" &&
+      failed 504 "Gateway Timeout" $'upstream\ngh: Not Found (HTTP 404)\nretry later'
+    if $include; then
+      printf 'HTTP/2.0 200 OK\n'
+      printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+    fi
     cat "$file" ;;
   "api repos/example/repo/pulls/7/files?per_page=100")
     [[ " $* " == *" --paginate "* ]] || { echo "files route read without --paginate: $*" >&2; exit 3; }
