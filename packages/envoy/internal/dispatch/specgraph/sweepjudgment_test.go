@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -172,18 +173,19 @@ func movesBeyond(whole, got map[string]string, hasRight bool, allowed map[string
 
 // judgeAnswer is the judgment of the reader's answer to one input, as sweepAgainst hands it over,
 // unchanged, for each input that reads another state than its base: whole, the states of the base;
-// got, the input's; and the input's right, right ("" for none), with allowed, each place that it
-// names with the one state that it allows there (nil for a right that names no place). It gives
-// toward, the line of each place that moved toward true (movesBeyond with no right), and beyond, the
-// line of each that moved toward true beyond the input's right (movesBeyond with that right, and
-// toward where the input has none), or the error of either. Its callers are sweepAgainst and
-// TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain, which hands it whole answers of
-// each base (eachAnswer) and holds each to the definition applied place by place (definedAnswer).
-func judgeAnswer(whole, got map[string]string, right string, allowed map[string]string) (toward, beyond []string, err error) {
+// got, the input's; hasRight, whether the input has a right; and allowed, each place that its right
+// names with the one state that it allows there (nil for a right that names no place). Of a right it
+// reads whether there is one and its places, and no words. It gives toward, the line of each place
+// that moved toward true (movesBeyond with no right), and beyond, the line of each that moved toward
+// true beyond the input's right (movesBeyond with that right, which is toward where the input has
+// none), or the error of either. Its callers are sweepAgainst and
+// TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain, which hands it answers of each base
+// whose arguments it ranges over by their types (eachAnswer) and holds each to the definition applied
+// place by place (definedAnswer).
+func judgeAnswer(whole, got map[string]string, hasRight bool, allowed map[string]string) (toward, beyond []string, err error) {
 	toward, err = movesBeyond(whole, got, false, nil)
-	beyond = toward
-	if err == nil && right != "" {
-		beyond, err = movesBeyond(whole, got, true, allowed)
+	if err == nil {
+		beyond, err = movesBeyond(whole, got, hasRight, allowed)
 	}
 	return toward, beyond, err
 }
@@ -271,84 +273,90 @@ func TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec(t *testing.T) {
 	}
 }
 
-// rightsOf is each right at one place of a state of the kind k: each form that the judgment has a
-// rule for (rightForms), and for a right that names the place, one for each state of k.
-func rightsOf(k judgedKind) []placeRight {
+// rightValues is each value that a right can name a place with, by the values of its type that the
+// judgment tells apart: each state of each kind of state (judgedKinds), the empty string, and a word
+// that names no state ("any"). Of a place's kind, its own states are the values that a right allows
+// there; each other value is one that the judgment refuses there (movedBeyond).
+func rightValues(kinds []judgedKind) []string {
+	values := []string{"", "any"}
+	for _, k := range kinds {
+		values = append(values, k.states...)
+	}
+	slices.Sort(values)
+	return slices.Compact(values)
+}
+
+// rightsOf is each right at one place of a state of the kind k, by each field of a right at a place
+// (placeRight): each form that the judgment has a rule for (rightForms), and for a right that names
+// the place, each value that a right can name it with (values, rightValues).
+func rightsOf(k judgedKind, values []string) []placeRight {
 	var rights []placeRight
 	for _, form := range rightForms() {
 		if form != rightNamed {
 			rights = append(rights, placeRight{form: form})
 			continue
 		}
-		for _, state := range k.states {
-			rights = append(rights, placeRight{form: form, state: state})
+		for _, value := range values {
+			rights = append(rights, placeRight{form: form, state: value})
 		}
 	}
 	return rights
 }
 
-// answerRight is the words of the right of each input that the domain test writes with a right: the
-// judgment reads a right's words for whether there is one and nothing else (judgeAnswer).
-const answerRight = "the right of an answer that the domain test writes"
-
-// answerRights is each right of an input as a whole, by the forms that it gives its places (rightAt):
-// no right, a right that names no place, and a right that names its places, which leaves each other
-// place out. The domain test fails by name a form of the judgment's rules (rightForms) that none of
-// them holds, so each form that the judgment reads is a form that the test writes in whole answers.
-func answerRights() [][]string {
-	return [][]string{{rightNone}, {rightEach}, {rightLeftOut, rightNamed}}
-}
-
-// answer is one answer that the domain test hands the judgment of an answer (judgeAnswer), as
-// sweepAgainst hands one over: the states of the base, whole; the input's, got; and the input's right,
-// right ("" for none), with allowed (nil for a right that names no place). rights is the right that
-// the input has at each place of got, which the definition reads place by place (definedAnswer).
+// answer is one value of the arguments of the judgment of an answer (judgeAnswer), as sweepAgainst
+// hands them over: the states of the base, whole; the input's, got; whether the input has a right,
+// hasRight; and allowed, each place that its right names with the value that it names there (nil for
+// a right that names no place).
 type answer struct {
 	whole, got, allowed map[string]string
-	right               string
-	rights              map[string]placeRight
+	hasRight            bool
 }
 
-// newAnswer is the answer whose base reads whole and whose input reads got, with the right that
-// rights gives at each place written as one right of the input: no right where each place has none, a
-// right that names no place where each has that, and else a right that names each place that rights
-// names, with its state, and leaves out each other. It is false where rights gives a form that no
-// right of an answer holds (answerRights) or the forms of two of them.
-func newAnswer(whole, got map[string]string, rights map[string]placeRight) (answer, bool) {
-	forms := map[string]bool{}
-	for _, r := range rights {
-		forms[r.form] = true
+// rightOfAnswer is one value of the right of an input as judgeAnswer takes it, by the type of each of
+// its two arguments: hasRight, false or true, and named, whether allowed is a map of places (true) or
+// nil (false).
+type rightOfAnswer struct{ hasRight, named bool }
+
+// answerPlace is the case of one place in an answer that the domain test writes: the state that the
+// base reads there and the input's, each "" where its answer lacks the place, and, where the right of
+// the answer is a map of places, whether it names the place, with value.
+type answerPlace struct {
+	base, input, value string
+	named              bool
+}
+
+// definedRightAt is the input's right at the place at, as the definition reads it from the approved
+// words, apart from the judgment's reading (rightAt): an input with no right has none at any place; a
+// right that names no place (allowed nil) covers each place, as a repository path of a tree written as
+// one space ends each carry across that tree (R8); and a right that names its places names the place
+// at with the one value that allowed gives it there, or leaves it out.
+func definedRightAt(hasRight bool, allowed map[string]string, at string) placeRight {
+	if !hasRight {
+		return placeRight{form: rightNone}
 	}
-	a := answer{whole: whole, got: got, rights: rights}
-	switch {
-	case len(forms) == 1 && forms[rightNone]:
-		return a, true
-	case len(forms) == 1 && forms[rightEach]:
-		a.right = answerRight
-		return a, true
+	if allowed == nil {
+		return placeRight{form: rightEach}
 	}
-	a.right, a.allowed = answerRight, map[string]string{}
-	for at, r := range rights {
-		switch r.form {
-		case rightLeftOut:
-		case rightNamed:
-			a.allowed[at] = r.state
-		default:
-			return answer{}, false
-		}
+	if value, named := allowed[at]; named {
+		return placeRight{form: rightNamed, state: value}
 	}
-	return a, true
+	return placeRight{form: rightLeftOut}
 }
 
 // definedAnswer is the definition (definedBeyond) applied to the answer a place by place: the line of
 // each place of a.got that moved toward true with no right, and of each that moved toward true beyond
-// a's right there, as judgeAnswer writes them, in the order of the places; kinds is the kind of each
-// place.
-func definedAnswer(a answer, kinds map[string]judgedKind) (toward, beyond []string) {
+// a's right there (definedRightAt), as judgeAnswer writes them, in the order of the places; kinds is
+// the kind of each place. covered is false where the definition covers no reading of a place of a.got,
+// as at a place that a right names with a value that is no state of its kind: the judgment must refuse
+// such an answer.
+func definedAnswer(a answer, kinds map[string]judgedKind) (toward, beyond []string, covered bool) {
 	for _, at := range slices.Sorted(maps.Keys(a.got)) {
-		kind, right := kinds[at].name, a.rights[at]
-		towardHere, _ := definedBeyond(kind, a.whole[at], a.got[at], placeRight{form: rightNone})
-		beyondHere, _ := definedBeyond(kind, a.whole[at], a.got[at], right)
+		kind := kinds[at].name
+		towardHere, coveredToward := definedBeyond(kind, a.whole[at], a.got[at], placeRight{form: rightNone})
+		beyondHere, coveredBeyond := definedBeyond(kind, a.whole[at], a.got[at], definedRightAt(a.hasRight, a.allowed, at))
+		if !coveredToward || !coveredBeyond {
+			return nil, nil, false
+		}
 		if !towardHere && !beyondHere {
 			continue
 		}
@@ -360,89 +368,200 @@ func definedAnswer(a answer, kinds map[string]judgedKind) (toward, beyond []stri
 			beyond = append(beyond, line)
 		}
 	}
-	return toward, beyond
+	return toward, beyond, true
+}
+
+// rightWords is the words of the right r of an answer, for a line of a failure.
+func rightWords(r rightOfAnswer) string {
+	switch {
+	case !r.hasRight && !r.named:
+		return "no right"
+	case !r.hasRight:
+		return "no right, with a map of places"
+	case !r.named:
+		return "a right that names no place"
+	}
+	return "a right that names its places"
+}
+
+// answerCase is the words of the case p of a place of the kind kind under the right r, for a line of
+// a failure.
+func answerCase(kind string, r rightOfAnswer, p answerPlace) string {
+	read := func(state string) string {
+		if state == "" {
+			return "none"
+		}
+		return strconv.Quote(state)
+	}
+	words := fmt.Sprintf("%s at %s in the base and %s at the input, %s", kind, read(p.base), read(p.input), rightWords(r))
+	switch {
+	case r.named && p.named:
+		words += fmt.Sprintf(", which names the place with %q", p.value)
+	case r.named:
+		words += ", which leaves the place out"
+	}
+	return words
+}
+
+// background is the case of each other place of an answer beside a place on a case of its own (an
+// answerPlace of each): as the base reads it, or taken out of the input's answer (out); and, where the
+// right of the answer is a map of places, named with the state that the base reads there, or left
+// out of it (named).
+type background struct{ out, named bool }
+
+// backgroundWords is the words of the background bg under the right r, for a line of a failure.
+func backgroundWords(r rightOfAnswer, bg background) string {
+	words := "each other place as the base reads it"
+	if bg.out {
+		words = "each other place taken out of the input's answer"
+	}
+	switch {
+	case r.named && bg.named:
+		words += " and named with the base's state"
+	case r.named:
+		words += " and left out of the right"
+	}
+	return words
 }
 
 // eachAnswer hands judge each answer that the domain test judges of one base, whose reader's answer
 // is whole, each place of it of the kind that kinds gives, with the words of its case and where in the
-// base it is. For each place, each case of its kind there (each state that the base reads and none,
-// each state that the input reads, and each right at the place, rightsOf), with each other place as the
-// base reads it, under the same right of the answer (answerRights), which names it with the base's
-// state where that right names places. And for each right of an answer, answers that move each place
-// at once: in the answer n, the place i takes the case n+i of its kind under that right, so that each
-// place takes each case of its kind, beside other places' cases. A form of right that no right of an
-// answer holds is in no answer, and the domain test fails it by name.
-func eachAnswer(t *testing.T, whole map[string]string, kinds map[string]judgedKind, judge func(c, where string, a answer)) {
+// base it is. Each answer is a value of judgeAnswer's arguments, each ranged over by its type: the
+// input's right (rightOfAnswer), hasRight false or true, with allowed nil or a map of places; and at
+// each place (answerPlace), the state that the base reads, none or each state of its kind; the
+// input's, none (the place taken out of its answer) or each state of its kind; and, where allowed is a
+// map, the place left out of it or named with each value that a right can name it with (values,
+// rightValues). Under each right, at each place:
+//   - each case of its kind there (each state that the base reads and none, each state that the input
+//     reads and none, and, where the right is a map, the place left out of it or named with each state
+//     of its kind), with each other place as the base reads it and, where the right is a map, named
+//     with that state;
+//   - where the right is a map, each value that is no state of its kind, named at the place, with
+//     each state that the input reads there and none, the base's state as it reads it, and each other
+//     place as above;
+//   - and each state that the base reads and none, with each state that the input reads and none, the
+//     place left out of a right that is a map, so that each move there is beyond such a right, beside
+//     each other background (background): each other place taken out of the input's answer, and,
+//     where the right is a map, each other place left out of it, as the base reads it or taken out.
+//
+// So each base has answers in which every place is taken out, answers that lack a place of the base
+// beside a move toward true, answers whose right names places and none of the answer's, and answers
+// whose right is a map that names no place. And under each right, answers that move each place at
+// once: in the answer n, the place i takes the case n+i of its kind, so that each place takes each
+// case of its kind beside other places' cases.
+func eachAnswer(t *testing.T, whole map[string]string, kinds map[string]judgedKind, values []string, judge func(c, where string, a answer)) {
 	t.Helper()
 	places := slices.Sorted(maps.Keys(whole))
-	type place struct {
-		base, input string
-		right       placeRight
+	var rights []rightOfAnswer
+	for _, hasRight := range []bool{false, true} {
+		for _, named := range []bool{false, true} {
+			rights = append(rights, rightOfAnswer{hasRight: hasRight, named: named})
+		}
 	}
-	// casesOf is each case of the kind k under the right of an answer that holds forms.
-	casesOf := func(k judgedKind, forms []string) []place {
-		var cases []place
-		for _, base := range append([]string{""}, k.states...) {
-			for _, input := range k.states {
-				for _, right := range rightsOf(k) {
-					if slices.Contains(forms, right.form) {
-						cases = append(cases, place{base, input, right})
-					}
+	// casesOf is each case of a place of the kind k under the right r: each state that the base reads
+	// and none, each state that the input reads and none, and, where the right is a map, the place left
+	// out of it or named with each state of k.
+	casesOf := func(k judgedKind, r rightOfAnswer) []answerPlace {
+		entries := []answerPlace{{}}
+		if r.named {
+			for _, state := range k.states {
+				entries = append(entries, answerPlace{named: true, value: state})
+			}
+		}
+		states := append([]string{""}, k.states...)
+		var cases []answerPlace
+		for _, base := range states {
+			for _, input := range states {
+				for _, e := range entries {
+					cases = append(cases, answerPlace{base: base, input: input, value: e.value, named: e.named})
 				}
 			}
 		}
 		return cases
 	}
-	// write hands judge the answer of the base with each place set to its case of cases.
-	write := func(c, where string, cases map[string]place) {
-		before, after, rights := maps.Clone(whole), maps.Clone(whole), map[string]placeRight{}
+	// write hands judge the answer of the base under the right r with each place on its case of cases.
+	write := func(c, where string, r rightOfAnswer, cases map[string]answerPlace) {
+		a := answer{whole: maps.Clone(whole), got: maps.Clone(whole), hasRight: r.hasRight}
+		if r.named {
+			a.allowed = map[string]string{}
+		}
 		for _, at := range places {
 			p := cases[at]
 			if p.base == "" {
-				delete(before, at)
+				delete(a.whole, at)
 			} else {
-				before[at] = p.base
+				a.whole[at] = p.base
 			}
-			after[at], rights[at] = p.input, p.right
-		}
-		a, ok := newAnswer(before, after, rights)
-		if !ok {
-			t.Errorf("%s: the domain test writes no input that holds the rights %v (newAnswer)", c, rights)
-			return
+			if p.input == "" {
+				delete(a.got, at)
+			} else {
+				a.got[at] = p.input
+			}
+			if r.named && p.named {
+				a.allowed[at] = p.value
+			}
 		}
 		judge(c, where, a)
 	}
-	for _, forms := range answerRights() {
-		for _, at := range places {
-			for _, focus := range casesOf(kinds[at], forms) {
-				cases := map[string]place{}
-				for _, other := range places {
-					steady := placeRight{form: forms[0]}
-					if slices.Contains(forms, rightNamed) {
-						steady = placeRight{form: rightNamed, state: whole[other]}
-					}
-					cases[other] = place{whole[other], whole[other], steady}
+	// each writes, for each case of cases, the answer with the place at on that case and each other
+	// place on the background bg, under the right r.
+	each := func(r rightOfAnswer, bg background, at string, cases []answerPlace) {
+		for _, focus := range cases {
+			all := make(map[string]answerPlace, len(places))
+			for _, other := range places {
+				p := answerPlace{base: whole[other], input: whole[other], value: whole[other], named: bg.named}
+				if bg.out {
+					p.input = ""
 				}
-				cases[at] = focus
-				write(cell(kinds[at].name, focus.base, focus.input, focus.right), "at "+at, cases)
+				all[other] = p
+			}
+			all[at] = focus
+			write(answerCase(kinds[at].name, r, focus)+"; "+backgroundWords(r, bg), "at "+at, r, all)
+		}
+	}
+	for _, r := range rights {
+		backgrounds := []background{{out: true}}
+		if r.named {
+			backgrounds = []background{{}, {out: true}, {out: true, named: true}}
+		}
+		for _, at := range places {
+			k := kinds[at]
+			states := append([]string{""}, k.states...)
+			each(r, background{named: r.named}, at, casesOf(k, r))
+			if r.named {
+				var off []answerPlace
+				for _, input := range states {
+					for _, value := range values {
+						if !slices.Contains(k.states, value) {
+							off = append(off, answerPlace{base: whole[at], input: input, value: value, named: true})
+						}
+					}
+				}
+				each(r, background{named: true}, at, off)
+			}
+			var moves []answerPlace
+			for _, base := range states {
+				for _, input := range states {
+					moves = append(moves, answerPlace{base: base, input: input})
+				}
+			}
+			for _, bg := range backgrounds {
+				each(r, bg, at, moves)
 			}
 		}
 	}
-	for _, forms := range answerRights() {
-		of, rounds := map[string][]place{}, 0
+	for _, r := range rights {
+		of, rounds := map[string][]answerPlace{}, 0
 		for _, at := range places {
-			of[at] = casesOf(kinds[at], forms)
+			of[at] = casesOf(kinds[at], r)
 			rounds = max(rounds, len(of[at]))
 		}
 		for n := range rounds {
-			cases := map[string]place{}
+			cases := make(map[string]answerPlace, len(places))
 			for i, at := range places {
-				if len(of[at]) == 0 {
-					continue
-				}
 				cases[at] = of[at][(n+i)%len(of[at])]
 			}
-			write(fmt.Sprintf("answers that move each place at once, with %s", strings.Join(forms, " or ")), fmt.Sprintf("answer %d", n), cases)
+			write("answers that move each place at once, with "+rightWords(r), fmt.Sprintf("answer %d", n), r, cases)
 		}
 	}
 }
@@ -502,19 +621,25 @@ func cell(kind, base, input string, right placeRight) string {
 // statementstate.go, a statement's own state's too, and of "The states of a wait (R29)." in
 // sweepreader's main.go, each read from the file that the build of the reader's binary reads, its
 // overlay included (declaredStates). The test generates each case: each kind, each state that the
-// base reads and none, each state that the input reads, and each form of right that the judgment has
-// a rule for (rightForms, rightRules) with each state of the kind for a right that names the place;
-// it fails where the definition does not cover a case, where the judgment refuses one, and where the
-// two disagree, by the case. So a state, a kind or a form of right that the code gains with no word of
-// the definition for it fails by name. Outside the domain, the judgment refuses a state of no kind, a
-// place of no kind and a form of right that it has no rule for. And it reads each base of the sweeps
-// (sweepBases) in the reader's process: each place of each base is of a kind and each state that it
-// reads is a state of that kind; and it hands judgeAnswer whole answers of each base, as sweepAgainst
-// hands it the reader's answer and the input's right (eachAnswer): each case of its kind at each
-// place, with each other place as the base reads it, and answers that move each place at once, each
-// under each right of an answer; and it holds what judgeAnswer reports of each to the definition
-// applied place by place (definedAnswer). So a judgment of an answer that drops or adds a place, or
-// reads another right at a place than the input's, in those answers, fails by the case. It does not
+// base reads and none, each state that the input reads, and each value of each field of a right at
+// the place (placeRight): each form of right that the judgment has a rule for (rightForms,
+// rightRules), and for a right that names the place, each value that a right can name it with
+// (rightValues). Where that value is a state of the kind, it fails where the definition does not
+// cover the case, where the judgment refuses it, and where the two disagree, by the case; where it is
+// no state of the kind, where the judgment reads it or the definition covers it. So a state, a kind or
+// a form of right that the code gains with no word of the definition for it fails by name. Outside the
+// domain, the judgment refuses a state of no kind at the base or the input, a place of no kind and a
+// form of right that it has no rule for. And it reads each base of the sweeps (sweepBases) in the
+// reader's process: each place of each base is of a kind and each state that it reads is a state of
+// that kind; and it hands judgeAnswer answers of each base whose arguments it ranges over by their
+// types (eachAnswer): the input's right, whether there is one and allowed nil or a map; and at each
+// place, the base's state and the input's, each none or each state of its kind, and the value that a
+// map names the place with, or none. It holds what judgeAnswer reports of each to the definition
+// applied place by place (definedAnswer), and an answer that the definition covers no reading of to
+// the judgment's refusal. So a judgment of an answer that reads an answer by its shape (a place that
+// it lacks or holds, a right that names no place of it, or none at all), or reads another right at a
+// place than the input's, fails by the case. It fails by name where a right at a place (placeRight)
+// gains a field, or judgeAnswer an argument or a type of one, that it does not range over. It does not
 // show that sweepAgainst hands judgeAnswer the reader's answer and the input's right; the known
 // positives (knownPositives) show that at their bases.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
@@ -542,15 +667,42 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 			t.Errorf("the reader's code declares the states of %s, which the judgment does not know (judgedKinds)", name)
 		}
 	}
+	// The domain ranges over each field of a right at a place and each argument of judgeAnswer by its
+	// type: a field or an argument that the code gains, or a type that one of them takes, which the
+	// generation does not range over, fails by name.
+	for _, f := range reflect.VisibleFields(reflect.TypeFor[placeRight]()) {
+		if f.Name != "form" && f.Name != "state" {
+			t.Errorf("a right at a place (placeRight) holds the field %s, which the domain test does not range over (rightsOf)", f.Name)
+		}
+	}
+	stateMap := reflect.TypeFor[map[string]string]()
+	ranged := []reflect.Type{stateMap, stateMap, reflect.TypeFor[bool](), stateMap}
+	if judge := reflect.TypeOf(judgeAnswer); judge.NumIn() != len(ranged) {
+		t.Errorf("the judgment of an answer (judgeAnswer) takes %d arguments, and the domain test ranges over %d (eachAnswer)", judge.NumIn(), len(ranged))
+	} else {
+		for i, want := range ranged {
+			if judge.In(i) != want {
+				t.Errorf("the judgment of an answer (judgeAnswer) takes a %s as its argument %d, and the domain test ranges over a %s there (eachAnswer)", judge.In(i), i+1, want)
+			}
+		}
+	}
+	values := rightValues(kinds)
 	cases := 0
 	for _, k := range kinds {
 		for _, base := range append([]string{""}, k.states...) {
 			for _, input := range k.states {
-				for _, right := range rightsOf(k) {
+				for _, right := range rightsOf(k, values) {
 					cases++
 					got, err := movedBeyond(k, base, input, right)
 					want, covered := definedBeyond(k.name, base, input, right)
 					switch {
+					case right.form == rightNamed && !slices.Contains(k.states, right.state):
+						if err == nil {
+							t.Errorf("%s: the judgment (movedBeyond) reads it", cell(k.name, base, input, right))
+						}
+						if covered {
+							t.Errorf("%s: the definition (definedBeyond) covers it", cell(k.name, base, input, right))
+						}
 					case !covered:
 						t.Errorf("%s: the definition (definedBeyond) does not cover it", cell(k.name, base, input, right))
 					case err != nil:
@@ -576,7 +728,6 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 	}{
 		{"an input that reads a state of no kind", stateCheck, "", statementMet, placeRight{form: rightNone}},
 		{"a base that reads a state of no kind", stateCheck, statementMet, checkTrue, placeRight{form: rightNone}},
-		{"a right that allows a state of no kind", stateCheck, "", checkTrue, placeRight{form: rightNamed, state: statementMet}},
 		{"a form of right that the judgment has no rule for", stateCheck, "", checkTrue, placeRight{form: "a right that names the place twice"}},
 		{"a kind that no list holds", "a deploy", "", checkTrue, placeRight{form: rightNone}},
 	} {
@@ -587,26 +738,14 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 			t.Errorf("%s: the definition (definedBeyond) covers it", out.what)
 		}
 	}
-	if _, _, err := judgeAnswer(map[string]string{}, map[string]string{"subject 1 note of c": checkTrue}, "", nil); err == nil {
+	if _, _, err := judgeAnswer(map[string]string{}, map[string]string{"subject 1 note of c": checkTrue}, false, nil); err == nil {
 		t.Errorf("a place of no kind: the judgment of an answer (judgeAnswer) reads it")
-	}
-	// Each form of the judgment's rules is in one right of an answer that the test writes, and each
-	// form that the test writes in answers is one that the judgment has a rule for.
-	written := slices.Concat(answerRights()...)
-	for _, form := range rightForms() {
-		if n := len(slices.DeleteFunc(slices.Clone(written), func(f string) bool { return f != form })); n != 1 {
-			t.Errorf("the judgment has a rule for the form %q, which %d rights of an answer that the domain test writes hold, not one (answerRights)", form, n)
-		}
-	}
-	for _, form := range written {
-		if !slices.Contains(rightForms(), form) {
-			t.Errorf("the domain test writes answers with the form %q, which the judgment has no rule for (rightRules)", form)
-		}
 	}
 	bases := sweepBases(t)
 	p := newSweepReader(t).start(t)
 	places, answers := 0, 0
 	disagree := map[string][]string{}
+	held := map[string]bool{} // the form of each right at a place of an answer, as the definition reads it
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		whole := baseStates(t, p, bases[name])
 		kindOf := map[string]judgedKind{}
@@ -624,14 +763,32 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 			continue
 		}
 		places += len(whole)
-		eachAnswer(t, whole, kindOf, func(c, where string, a answer) {
+		eachAnswer(t, whole, kindOf, values, func(c, where string, a answer) {
 			answers++
-			wantToward, wantBeyond := definedAnswer(a, kindOf)
-			toward, beyond, err := judgeAnswer(a.whole, a.got, a.right, a.allowed)
-			if err != nil || !slices.Equal(toward, wantToward) || !slices.Equal(beyond, wantBeyond) {
+			for at := range a.got {
+				held[definedRightAt(a.hasRight, a.allowed, at).form] = true
+			}
+			wantToward, wantBeyond, covered := definedAnswer(a, kindOf)
+			toward, beyond, err := judgeAnswer(a.whole, a.got, a.hasRight, a.allowed)
+			switch {
+			case !covered && err == nil:
+				disagree[c] = append(disagree[c], fmt.Sprintf("%s, %s: the judgment gives %q toward true and %q beyond the right, and the definition covers no reading of it", name, where, toward, beyond))
+			case covered && (err != nil || !slices.Equal(toward, wantToward) || !slices.Equal(beyond, wantBeyond)):
 				disagree[c] = append(disagree[c], fmt.Sprintf("%s, %s: the judgment gives %q toward true and %q beyond the right (%v), and the definition %q and %q", name, where, toward, beyond, err, wantToward, wantBeyond))
 			}
 		})
+	}
+	// Each form of the judgment's rules is the form of a right at a place of an answer that the test
+	// writes, and each such form is one that the judgment has a rule for.
+	for _, form := range rightForms() {
+		if !held[form] {
+			t.Errorf("the judgment has a rule for the form %q, which no right at a place of an answer that the domain test writes holds (eachAnswer, definedRightAt)", form)
+		}
+	}
+	for _, form := range slices.Sorted(maps.Keys(held)) {
+		if !slices.Contains(rightForms(), form) {
+			t.Errorf("the domain test writes answers whose rights hold the form %q at a place, which the judgment has no rule for (rightRules)", form)
+		}
 	}
 	for _, c := range slices.Sorted(maps.Keys(disagree)) {
 		t.Errorf("%s: the judgment of an answer (judgeAnswer) disagrees with the definition applied place by place (definedAnswer) in %d answers, the first %s", c, len(disagree[c]), disagree[c][0])

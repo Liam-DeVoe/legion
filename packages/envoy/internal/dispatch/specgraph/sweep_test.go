@@ -256,7 +256,7 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 				n.same++
 			}
 		default:
-			toward, beyond, err := judgeAnswer(whole, got, in.right, in.allowed)
+			toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
 			switch {
 			case err != nil:
 				t.Errorf("%s: %v", in.what, err)
