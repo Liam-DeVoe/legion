@@ -1067,8 +1067,8 @@ type ConflictRead struct {
 // stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
 // until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review and its task has a reviewer step (workflow's
-// mergeForwardLanded), and which the merger's task and its landed message read. Earlier is every
+// it does when the reviewer step of the issue's task already ran (workflow's mergeForwardLanded),
+// and which the merger's task and its landed message read. Earlier is every
 // merge forward that landed before this ask in the same stretch of work, oldest first: a later ask
 // replaces the one the record holds, so when the head a merge left conflicts in its turn and is
 // merged forward again, Earlier is what still names the head the first merge replaced
@@ -1103,8 +1103,8 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in accepting, retro or merging, or is held from one of
-	// them (PastReview).
+	// ConflictMergeNext: the merge comes next for the issue: it stands in retro or merging, or in
+	// accepting where no step of its task follows the acceptance (classify.MergeComesNext).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"

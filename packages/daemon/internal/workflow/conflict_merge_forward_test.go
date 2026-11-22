@@ -691,10 +691,10 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 	}
 }
 
-// Once a merge forward lands on an issue in accepting, retro or merging (record.PastReview), the
-// approval the issue stands on, in the default steps, is of the head the merge replaced, so the
-// reviewer is asked to read the merge and approve the new head or request changes
-// (dispatch://INFRA-4374 R1), one review message naming both heads, and the record keeps that the
+// Once a merge forward lands on an issue in accepting, retro or merging of the default steps, where
+// the reviewer step already ran (mergeForwardLanded), the approval the issue stands on is of the
+// head the merge replaced, so the reviewer is asked to read the merge and approve the new head or
+// request changes (dispatch://INFRA-4374 R1), one review message naming both heads, and the record keeps that the
 // review was asked for. The merger, the worker of merging, is told the merge landed; the
 // architect in accepting and the implementer in retro are told nothing, since the one asked for
 // the merge and the other made it. A merger that enters merging while that review stands for the

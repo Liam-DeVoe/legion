@@ -100,19 +100,20 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 
 // mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once
 // the move has put issue in the phase it now stands in and written that phase's start
-// (transition), from being the phase the move left. The pull request is read again in the
-// transaction, since the copy a transition is handed can be none, or one read before the
-// transaction's other writes.
+// (transition), from being the phase the move left. w is the walk of issue's run, as the move left
+// it. The pull request is read again in the transaction, since the copy a transition is handed can
+// be none, or one read before the transaction's other writes.
 //
 //   - A move into implementing drops the record's merge forward (clearMergeForward): the
 //     implementer works the head there, and a head it pushes is read for a conflict of its own.
-//   - At a head the record holds in a confirmed conflict (classify.ConflictRound), a move into
-//     accepting, retro or merging asks for the merge forward for record.ConflictMergeNext: in the
-//     default steps the merge comes next there, and GitHub merges no head that conflicts with its
-//     base. In the default steps this is where an approval of a conflicting head, which ends its
-//     round (reviewRound) and moves the issue into accepting, is acted on (dispatch://INFRA-4374
-//     R0); on a task whose review is followed by a tester or a planner step, this ask comes at the
-//     issue's later move into one of those three phases.
+//   - At a head the record holds in a confirmed conflict (classify.ConflictRound), a move to where
+//     the merge comes next (classify.MergeComesNext: retro, merging, or accepting where no step of
+//     the task follows the acceptance) asks for the merge forward for record.ConflictMergeNext,
+//     since GitHub merges no head that conflicts with its base. In the default steps this is where
+//     an approval of a conflicting head, which ends its round (reviewRound) and moves the issue
+//     into accepting, is acted on (dispatch://INFRA-4374 R0). On a task where a step follows the
+//     review or the acceptance, this ask comes at the issue's later move to where the merge comes
+//     next.
 //   - At such a head, a move out of implementing into a phase after it in phase.Order (so a move
 //     into planning asks nothing, wherever the task places the planner) asks again
 //     what was asked in implementing, for the reason it was asked for (record.MergeForward.Why):
@@ -122,7 +123,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 // mergeForward asks once for each head, so a move at a head already asked of in a phase after
 // implementing - in the default steps, an ask in reviewing, then the round's end into accepting -
 // asks nothing more.
-func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase) error {
+func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, from phase.Phase) error {
 	if issue.Phase == phase.Implementing {
 		return e.clearMergeForward(ctx, tx, issue.Key)
 	}
@@ -132,7 +133,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	asked := pr.MergeForward
 	switch {
-	case record.PastReview(issue):
+	case classify.MergeComesNext(issue, w.Line):
 		return e.mergeForward(ctx, tx, issue, pr, record.ConflictMergeNext)
 	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) &&
 		asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing:
@@ -164,17 +165,17 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 //
 // The worker of the phase the issue stands in, when the landed reaches it - the tester, the
 // reviewer or the merger (record.MergeForwardReaches) - is told the old head and the new one and
-// to read what the merge changed before it goes on (record.MergeForwardLanded). An issue in
-// accepting, retro or merging (record.PastReview) stands, in the default steps, on a review of
-// the old head, so the reviewer is asked to read the merge and approve the new head or request
-// changes (record.MergeForwardReview), and the record keeps that the review was asked for
-// (ReviewAsked), which the merger's task (task) and the landed the merger is told in merging
-// (record.MergeForwardMessage.Message) read. That holds only where the issue's task has a
-// reviewer step (the walk's line holds reviewing), wherever that step stands: the place is not
-// read, so a reviewer step after the acceptance that has not run yet is asked too. A task whose
-// plan has no reviewer step stands on no review of the old head, no reviewer step runs for it,
-// and a merger told to wait for a reviewer's approval would wait for good, so nothing is asked
-// and the merger goes on at the new head.
+// to read what the merge changed before it goes on (record.MergeForwardLanded). An issue whose
+// task's reviewer step already ran - that step stands before the place the issue stands at on the
+// walk's line (Walk.MovesBack) - stands on a review of the old head, so the reviewer is asked to
+// read the merge and approve the new head or request changes (record.MergeForwardReview), and the
+// record keeps that the review was asked for (ReviewAsked), which the merger's task (task) and the
+// landed the merger is told in merging (record.MergeForwardMessage.Message) read. In the default
+// steps that is an issue in accepting, retro or merging. A reviewer step still to come reviews
+// the head the issue stands at when it runs, so it is asked nothing now. A task whose plan has no
+// reviewer step stands on no review of the old head, no reviewer step runs for it, and a merger
+// told to wait for a reviewer's approval would wait for good, so nothing is asked and the merger
+// goes on at the new head.
 // The daemon records no decision outside reviewing, so that review is the roles' to hold to the
 // head they merge. The architect and the implementer are told nothing: the architect's checks-red
 // notice already said the merge was asked for, and the implementer pushed it. A tree that lingers
@@ -192,7 +193,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return err
 	}
-	review := record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing)
+	review := w.MovesBack(at, phase.Reviewing)
 	var recipients []roleRecipient
 	if worker := RoleFor(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})

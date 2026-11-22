@@ -302,8 +302,12 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		return intake.Result{}, err
 	}
 	if decide {
+		w, err := e.walk(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
 		green := classify.GreenContexts(*pr)
-		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
+		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
 			if err := e.mergeForward(ctx, tx, *issue, pr, why); err != nil {
 				return intake.Result{}, err
 			}
@@ -1086,8 +1090,8 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
 // (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
-// implementer merges the base forward, and the merge forward is asked on the issue's move into
-// accepting, retro or merging (transition, mergeForwardOnEntry, record.ConflictMergeNext), which
+// implementer merges the base forward, and the merge forward is asked on the issue's move to where
+// the merge comes next (transition, mergeForwardOnEntry, classify.MergeComesNext), which
 // in the default steps is the move this approval makes, into accepting. While the first
 // conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported

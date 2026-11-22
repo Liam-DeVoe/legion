@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -1190,8 +1191,8 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
-// head will change until the implementer merges the base forward, and the issue's move into
-// accepting, retro or merging is what asks for that merge (dispatch://INFRA-4374 R0,
+// head will change until the implementer merges the base forward, and the issue's move to where
+// the merge comes next is what asks for that merge (dispatch://INFRA-4374 R0, MergeComesNext,
 // record.ConflictMergeNext): in the default steps, the move into accepting that the approval
 // makes. Read here, the state build shows no mergeWait for the round the engine has just ended.
 //
@@ -1238,9 +1239,9 @@ const (
 //     of the two reads that confirm a conflict (R2).
 //   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
 //     or merging. GitHub sends no event of the pull request while it computes whether the head
-//     still merges into the moved base. In accepting, retro and merging
-//     (record.ConflictMergeNext) a conflict is acted on at once (R0). In testing and
-//     reviewing the record otherwise keeps the state the read before the push left: a record read
+//     still merges into the moved base. Where the merge comes next (MergeComesNext,
+//     record.ConflictMergeNext) a conflict is acted on at once (R0). Elsewhere, without a read,
+//     the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
 //     before it: there the head the implementer pushes next is read, by the reason above.
@@ -1264,12 +1265,12 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 
 // ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the
 // head that conflicts with its base must be merged forward now, or "" when nothing needs that yet,
-// and the conflict is recorded and nothing else is done. The reasons are read in this order, and
-// the first that holds is the answer:
+// and the conflict is recorded and nothing else is done. line is the phases the issue's task walks
+// (the workflow's Walk.Line: one for each step, then retro and merging). The reasons are read in
+// this order, and the first that holds is the answer:
 //
-//   - record.ConflictMergeNext: the issue stands in accepting, retro or merging,
-//     or is held from one of them (record.PastReview). In the default steps the merge comes next
-//     there, and GitHub merges no head that conflicts with its base.
+//   - record.ConflictMergeNext: the merge comes next for the issue (MergeComesNext), and GitHub
+//     merges no head that conflicts with its base.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
@@ -1286,15 +1287,15 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //     once rather than wait for it.
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
-// be current: the tester and the reviewer go on at that head, and the merge forward waits for the
-// step that needs it, the issue's move into accepting, retro or merging, where record.ConflictMergeNext holds.
+// be current: the step the issue stands at goes on at that head, and the merge forward waits for
+// the issue's move to where the merge comes next, where record.ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the
 // contexts green on the head when nothing needs a merge yet, reads them once.
-func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []string) record.ConflictWhy {
+func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.BaseRules, green []string) record.ConflictWhy {
 	switch {
-	case record.PastReview(issue):
+	case MergeComesNext(issue, line):
 		return record.ConflictMergeNext
 	case rules == nil || rules.Unread != "":
 		return record.ConflictRulesUnread
@@ -1307,6 +1308,25 @@ func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []str
 		}
 	}
 	return ""
+}
+
+// MergeComesNext says whether the merge is the next step for issue, whose task walks line (one
+// phase for each step, then retro and merging): the issue stands in its retro or its merge, or in
+// accepting where no step of the task follows the acceptance, or is held from one of them
+// (record.StandsAt). The retro commits nothing, so the head it stands on is the head the merge
+// merges. In the default steps these are accepting, retro and merging. Where a step of the task
+// follows the acceptance, that step runs at the head before the merge, as a tester or a reviewer
+// does after the implementer. A line that holds no acceptance has no acceptance a step follows,
+// so it answers false in accepting.
+func MergeComesNext(issue record.Issue, line []phase.Phase) bool {
+	switch record.StandsAt(issue) {
+	case phase.Retro, phase.Merging:
+		return true
+	case phase.Accepting:
+		at := slices.Index(line, phase.Accepting)
+		return at >= 0 && at+1 < len(line) && line[at+1] == phase.Retro
+	}
+	return false
 }
 
 // GreenContexts is every context green on the pull request's current head, each once and sorted:
