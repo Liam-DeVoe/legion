@@ -762,9 +762,10 @@ func reforwardShare(ctx context.Context) (context.Context, context.CancelFunc, b
 
 // stopHolding ends the forwarder's further delivery attempts: no slot is given out from now on, a
 // message the lane's handler takes from now on, or is waiting for a slot for, is kept on its
-// role's kept lane at once (keepHeld), a message the lane holds parks until keepHeldNow, and a held
-// message's retry that is running has the NATS step it is in cut (stopCtx), so it holds and parks
-// too. It runs once however often it is called.
+// role's kept lane at once (keepHeld), a message the lane holds parks until keepHeldNow, and a
+// delivery off the lane's handler (a held message's retry, a queued forward resolved again) that is
+// running has the NATS step it is in cut (stopCtx), so it holds and parks too. It runs once however
+// often it is called.
 func (f *roleForwarder) stopHolding() {
 	f.cancelStop()
 }

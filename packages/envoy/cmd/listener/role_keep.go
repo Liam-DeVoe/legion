@@ -488,13 +488,14 @@ type keptRolePublish func(ctx context.Context, subject string, item contracts.En
 // lane holds for it, or the keep's failure (storeKeptRoleCopy), which a caller answering a sender
 // reads: a keep whose publish went unacknowledged may have stored the copy (bus.ErrUnacknowledged).
 // parent is the caller's bound on the whole of its own end: the role lane's stop deadline for a
-// message it held (roleForwarder.keepHeld), the forwarder's stop context for a held message's
-// retry (roleForwarder.stopCtx), and context.Background() for every caller with none. A keep that
-// failed is logged here, the one failure line both give-up paths write (the publish route's
-// noHolder and the role lane's keepRoleLaneMessage), so neither carries a copy of it; the error
-// goes back to the caller, which decides from it whether the message is held for another attempt
-// (resolveCoreRoleHolder). A keep the caller cut itself - its context cancelled, as the stop
-// cancels a delivery off the lane's handler - with a failure that holds the message
+// message it held (roleForwarder.keepHeld), the forwarder's stop context for a delivery off the
+// lane's handler (a held message's retry, a queued forward resolved again; roleForwarder.stopCtx),
+// and context.Background() for every caller with none. A keep that failed is logged here, the one
+// failure line both give-up paths write (the publish route's noHolder and the role lane's
+// keepRoleLaneMessage), so neither carries a copy of it; the error goes back to the caller, which
+// decides from it whether the message is held for another attempt (resolveCoreRoleHolder). A keep
+// the caller cut itself - its context cancelled, as the stop cancels a delivery off the lane's
+// handler - with a failure that holds the message
 // (keepFailureHolds) is no failure of the keep's: the caller holds the message and keeps it again,
 // so the line is roleKeepCutLine at INFO rather than roleKeepFailedLine at ERROR. A keep a rule
 // refused for good is logged at ERROR even then: the caller gives the message up, and this line is

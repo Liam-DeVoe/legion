@@ -18,12 +18,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt names no symbol this round added, so
-// it builds against the forwarder before it and fails there for the reason it names. The other two
-// rows read the claim through the delivery configuration's claim store (claims), and
-// TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait checks the cut keep's line
-// (roleKeepCutLine), both this round's; their controls are the head with the delivery off the
-// handler under context.Background(), as it was at 106f8d769f for a queued forward resolved again.
+// The four rows of this file. TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt names no
+// symbol the stop context's rounds added, so it builds against the forwarder before them and fails
+// there for the reason it names. TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait and
+// TestAForwardResolvedAgainOnItsWorkerAtTheStopEndsBeforeTheDrainsWait read the claim through the
+// delivery configuration's claim store (cfg.claims, added at 106f8d769f), and the first of them
+// checks the cut keep's line (roleKeepCutLine, added at 106f8d769f); their controls are the head
+// with the delivery off the handler under context.Background() - the hold timer's, then publish's,
+// as it was at 106f8d769f for a queued forward resolved again.
+// TestAKeepARuleRefusesAtTheStopIsLoggedAsAFailure holds that a keep a rule refuses while the stop
+// cancels its caller is logged at ERROR, and its control that one whose failure holds the message
+// is the cut line at INFO; it fails at 106f8d769f, which logged both at INFO.
 
 // keepThatNeverAnswers is a keep whose publish NATS never answers: it waits for its context to
 // end and fails with the context's error, as a keep over a connection whose replies are lost does.
