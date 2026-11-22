@@ -611,7 +611,8 @@ test("the header holds its list and its limits at every width @phone", async ({ 
 // and HDRMMMMM and passed it under HDR11111 and HDRJJJJJ. This row seeds the widest key that draw
 // can give. The fixed key is safe: no other row writes it, and every worker, and so every repeat
 // and every retry, starts on a database of its own, emptied (`workerDatabase`, e2e/test.ts).
-// SLOW(>=2s): one load of the issue at 390 px, with every part of the header read whole.
+// SLOW(>=2s): 1.6 to 1.9 s in builds Job infra983-red-jtbd8 at 6bfdf5c3 (4 CPUs): one load of the
+// issue at 390 px, with every part of the header read whole, at the edge of 2 s on a slower runner.
 test("the header holds its 390 px limit under the widest key the row's own key can be @phone", async ({
   browser,
 }) => {
