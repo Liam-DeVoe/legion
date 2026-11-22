@@ -26,7 +26,7 @@ func ownersPlanOf(issue string, generation uint64, steps string, place TaskPlace
 	return v, tasks, rows
 }
 
-// While the owner does a step of its task, its slot acts as that step's role (O12), and only then:
+// While the owner does a step of its task, its slot acts as that step's role, and only then:
 // the issues are read back from the store, so the role the slot acts as is decided on the issue's
 // own plan rows. `implementer:owner reviewer` at step 1 acts as the implementer; `implementer
 // reviewer:owner` at step 2 as the reviewer, and at step 1, a step of another agent, as nothing;

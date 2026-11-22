@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// The daemon's ActsAs is the owner's step (O12): LEGION-1 stands at step 1 of `implementer:owner
+// The daemon's ActsAs is the owner's step: LEGION-1 stands at step 1 of `implementer:owner
 // reviewer`, which its owner, LEGION-1's own architect, does. Its architect's slot acts as the
 // implementer; LEGION-2's architect, the owner of an issue that is not LEGION-1, and LEGION-1's
 // implementer act as nothing, and neither does a token of an issue the daemon does not record.
