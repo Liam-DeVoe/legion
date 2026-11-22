@@ -2323,10 +2323,10 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	rest := func(visibility string) string {
 		return "printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' " + visibility + "\nexit 0\n"
 	}
-	// A spent core limit that names no reset, which the guard does not wait for (Guard.waitFits):
-	// the answer's bound here is the test binary's own deadline (boundByTheDeadline), so a reset
-	// the read named would be waited for under a deadline long enough to hold the wait.
-	restSpent := "printf '%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' ''\n" +
+	// A spent core limit whose reset is half an hour away, past the longest the guard waits for a
+	// reset (Guard.waitFits, rateLimitWaitBound), so the guard does not wait for it whatever bound
+	// the answer has.
+	restSpent := fmt.Sprintf("printf '%%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' 'X-Ratelimit-Reset: %d' ''\n", time.Now().Add(30*time.Minute).Unix()) +
 		`printf '%s\n' '{"message":"API rate limit exceeded for installation ID 1."}'` + "\n" +
 		"echo 'gh: API rate limit exceeded for installation ID 1. (HTTP 403)' >&2\nexit 1\n"
 	restFails := "printf '%s\\r\\n' 'HTTP/2.0 500 Internal Server Error' ''\nprintf '%s\\n' '{\"message\":\"invented\"}'\nexit 1\n"

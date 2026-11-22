@@ -7,9 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -20,27 +21,28 @@ import (
 // waited for by nobody; under a gh that led back to `legion gh`, every level of the chain was such
 // a helper.
 //
-// The row reads that in two reads, so that no verdict of it is a race with the clock. In the
-// first, ghHelpTimeout is a second and gh never answers: readGhHelp gives up naming the timeout and
-// the stop of gh's process group, which it says only where procgroup's stop ended the read. In the
-// second, gh starts a helper of its own, detached from gh's output so nothing holds the read's
+// The row reads that in three reads, so that no verdict of it is a race with the clock. In the
+// first, gh never answers, and the read's deadline passes once gh has recorded its pid: readGhHelp
+// gives up naming the timeout and the stop of gh's process group, which it says only where
+// procgroup's stop ended the read. The deadline is passed by hand (passedDeadline), since a
+// timeout of a second could pass before a loaded machine started gh, which is the second read's
+// case: under a timeout that has already passed, gh never starts and the read says so. In the
+// third, gh starts a helper of its own, detached from gh's output so nothing holds the read's
 // pipes, and never answers, and the read's context ends once gh has recorded that helper:
 // readGhHelp gives up naming the stop of gh's group, and the helper is gone too. exec runs the one
-// stop procgroup gives the read whichever end of its context comes, the timeout's or this one. In
-// one read under a timeout of a second, a loaded machine let the timeout stop gh before gh had
-// recorded its helper, and the row failed with "gh recorded no helper". Each wait has the test
-// binary's deadline as its only bound, and each stand-in sleeps about a day, so a stop that never
-// comes fails the row by name and no sleep ends by itself before it.
+// stop procgroup gives the read whichever end of its context comes, the timeout's or this one. Each
+// wait has the test binary's deadline as its only bound, and each stand-in sleeps about a day, so a
+// stop that never comes fails the row by name and no sleep ends by itself before it.
 func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether gh's helper is still running", err)
 	}
-	// read starts readGhHelp of gh's `pr` help and answers the channel its error comes on and the
-	// cancel of its context. The end of t cancels that context and waits for the read before the
-	// cleanups registered earlier run, so a read the row gave up on is stopped, and never reads
-	// ghHelpTimeout while a cleanup puts it back.
-	read := func(t *testing.T, gh string) (<-chan error, context.CancelFunc) {
-		ctx, cancel := context.WithCancel(context.Background())
+	// read starts readGhHelp of gh's `pr` help under parent and answers the channel its error comes
+	// on and the cancel of its context. The end of t cancels that context and waits for the read
+	// before the cleanups registered earlier run, so a read the row gave up on is stopped, and never
+	// reads ghHelpTimeout while a cleanup puts it back.
+	read := func(t *testing.T, parent context.Context, gh string) (<-chan error, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(parent)
 		answered, ended := make(chan error, 1), make(chan struct{})
 		go func() {
 			defer close(ended)
@@ -60,17 +62,17 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		if err := os.WriteFile(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		timeout := ghHelpTimeout
-		ghHelpTimeout = time.Second
-		t.Cleanup(func() { ghHelpTimeout = timeout })
 		killRecordedHelper(t, ghPid, ghSeconds)
-		answered, _ := read(t, gh)
-		err := testwait.Receive(t, "the help read of a gh that never answers to end at its timeout of 1s", answered)
-		// A loaded machine can start gh after its second has passed; the read then says the timeout
-		// as one that passed before gh started, and stops no group (the row below).
-		stopped, early := "gh did not answer its help within 1s, and its process group was stopped", "gh did not answer its help within 1s: the time passed before gh started"
-		if err == nil || (err.Error() != stopped && err.Error() != early) {
-			t.Fatalf("readGhHelp of a gh that never answers = %v; want %q, or %q where gh started late", err, stopped, early)
+		deadline := newPassedDeadline()
+		answered, _ := read(t, deadline, gh)
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "gh to start", func() bool {
+			_, running := recordedHelper(ghPid, ghSeconds)
+			return running
+		})
+		deadline.pass()
+		err := testwait.Receive(t, "the help read of a gh that never answers to end once its deadline passed", answered)
+		if err == nil || !helpTimedOutStopped.MatchString(err.Error()) {
+			t.Fatalf("readGhHelp of a gh that never answers, its deadline passed = %v; want it to match %q", err, helpTimedOutStopped)
 		}
 	})
 	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
@@ -82,7 +84,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		timeout := ghHelpTimeout
 		ghHelpTimeout = 0
 		t.Cleanup(func() { ghHelpTimeout = timeout })
-		answered, _ := read(t, gh)
+		answered, _ := read(t, context.Background(), gh)
 		err := testwait.Receive(t, "the help read whose timeout has passed to end", answered)
 		if want := "gh did not answer its help within 0s: the time passed before gh started"; err == nil || err.Error() != want {
 			t.Fatalf("readGhHelp under a timeout that passed before gh started = %v; want %q", err, want)
@@ -101,7 +103,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		}
 		killRecordedHelper(t, helperPid, helperSeconds)
 		killRecordedHelper(t, ghPid, ghSeconds)
-		answered, stop := read(t, gh)
+		answered, stop := read(t, context.Background(), gh)
 		var pid int
 		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "gh to record the helper it starts", func() bool {
 			var running bool
@@ -119,6 +121,36 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 			fmt.Sprintf("gh's helper (pid %d) to end once the help read was stopped: want the stop to reach gh's whole process group", pid),
 			func() bool { return !helperRunning(pid, helperSeconds) })
 	})
+}
+
+// helpTimedOutStopped is how readGhHelp says a read whose deadline passed while gh ran: the
+// timeout, whatever bound the read took (programbound), and the stop of gh's process group.
+var helpTimedOutStopped = regexp.MustCompile(`^gh did not answer its help within \S+, and its process group was stopped$`)
+
+// passedDeadline is a context whose deadline a test passes by hand, once what it waits for has
+// happened: Done closes, and Err answers context.DeadlineExceeded, from pass on. A context derived
+// from it ends then with that error, as one whose deadline passed does.
+type passedDeadline struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newPassedDeadline() *passedDeadline {
+	return &passedDeadline{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (d *passedDeadline) pass() { d.once.Do(func() { close(d.done) }) }
+
+func (d *passedDeadline) Done() <-chan struct{} { return d.done }
+
+func (d *passedDeadline) Err() error {
+	select {
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }
 
 // A signal the terminal sends `legion gh`'s process group stops everything `legion gh` started

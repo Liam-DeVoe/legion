@@ -567,7 +567,7 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			started := filepath.Join(t.TempDir(), "started")
-			rig := newTransportRig(t, ": > "+shQuote(started)+"\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+			rig := newTransportRig(t, ": > "+shQuote(started)+"\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
 			ctx := tc.caller(t, started)
 			var visibility Visibility
 			var err error
@@ -654,7 +654,7 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 // curl nor git runs. The guard's bound is shortened to 1 s inside the caller's minute.
 func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 	shorten(t, &ghReadBound, time.Second)
-	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
 	ctx := bound(t)
 	var visibility Visibility
 	var err error

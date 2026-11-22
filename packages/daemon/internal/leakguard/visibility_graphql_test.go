@@ -642,7 +642,7 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 	reset := clock.Now().Add(30 * time.Minute)
 	bin, records := t.TempDir(), t.TempDir()
 	started, record := filepath.Join(records, "started"), filepath.Join(records, "git")
-	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nsleep 30\n")
+	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nexec sleep 86400\n")
 	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
