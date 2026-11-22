@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
@@ -28,65 +29,27 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
-// recordWaitMargin is how long before the test binary's deadline a wait that ends at the test's
-// end (testEnd) gives up, as testwait's waits do: the time the failing test's cleanups and its
-// failure have to run in before Go's alarm panics the binary. It is longer than any bound it
-// replaces (recordWait, and the 5 s and 10 s the helpers waited before), so a wait never has less
-// time than it had then.
-const recordWaitMargin = 30 * time.Second
-
-// testEnd is the moment a wait of t that begins now gives up (endBefore of t's own deadline), and
-// false under -timeout 0 and for a benchmark, which has no deadline: only the fact a wait waits for
-// ends it then.
-func testEnd(t testing.TB) (time.Time, bool) {
-	timed, ok := t.(interface{ Deadline() (time.Time, bool) })
-	if !ok {
-		return time.Time{}, false
-	}
-	deadline, bounded := timed.Deadline()
-	if !bounded {
-		return time.Time{}, false
-	}
-	return endBefore(deadline, time.Now()), true
-}
-
-// endBefore is when a wait that begins at now gives up, for a test binary whose deadline is
-// deadline: the deadline less recordWaitMargin while more than twice the margin is left, so the
-// wait still has more than the margin; with less left, as under a short -timeout, the deadline
-// itself, where Go's alarm names the test. Either way the wait has at least the time it had
-// before, or all that is left.
-func endBefore(deadline, now time.Time) time.Time {
-	if deadline.Sub(now) > 2*recordWaitMargin {
-		return deadline.Add(-recordWaitMargin)
-	}
-	return deadline
-}
-
-// untilTheTestEnds is ctx bounded by the test's end (testEnd).
-func untilTheTestEnds(ctx context.Context, t testing.TB) (context.Context, context.CancelFunc) {
-	if end, bounded := testEnd(t); bounded {
-		return context.WithDeadline(ctx, end)
-	}
-	return context.WithCancel(ctx)
-}
-
-// openStore opens the store for a test and waits for its cache to be ready. Every Record and
-// RecordSuite of the store ends at the test's end (untilTheTestEnds) rather than at recordWait, 4 s
-// on the wall clock, which bounds each record a webhook delivery makes in production and which no
-// test that records to set up what it tests measures: under load a KV call takes the machine's
-// time. A record that a broken hand-over leaves waiting on its record's writer still fails its
-// test then, since a queued caller waits only while its context lasts (update).
+// openStore opens the store for a test and waits for its cache to be ready (by the bound end of
+// the 10 s it waited before, testwait.WithBoundEnd). A test's store gives up each Record and
+// RecordSuite at the bound end of recordWait rather than at recordWait itself: recordWait bounds
+// each record a webhook delivery makes in production, for a bus that never answers, and a test
+// that records to set up what it tests does not measure it, while under load a KV call takes the
+// machine's time. A record that a broken hand-over leaves waiting on its record's writer still
+// fails its test then, since a queued caller waits only while its context lasts (update). A
+// benchmark keeps recordWait: it measures the store under the product's own bound.
 func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	t.Helper()
 	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	st.armRecordWait = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		return untilTheTestEnds(ctx, t)
+	if _, isTest := t.(*testing.T); isTest {
+		st.armRecordWait = func(ctx context.Context) (context.Context, context.CancelFunc) {
+			return testwait.WithBoundEnd(ctx, t, recordWait)
+		}
 	}
 	t.Cleanup(func() { forgetTestSummarizer(st) })
-	ctx, cancel := untilTheTestEnds(context.Background(), t)
+	ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 10*time.Second)
 	defer cancel()
 	if err := st.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("cache not ready: %v", err)
@@ -183,7 +146,7 @@ func useKV(t testing.TB, s *Store, kv natsgo.KeyValue) {
 	s.watcher.Stop()
 	s.watcher = kvwatch.New("cistore", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), ciCache{s})
 	s.watcher.Start()
-	ctx, cancel := untilTheTestEnds(context.Background(), t)
+	ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 5*time.Second)
 	defer cancel()
 	if err := s.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the rebuilt watcher: %v", err)

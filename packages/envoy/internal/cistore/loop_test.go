@@ -78,25 +78,11 @@ func cachedState(s *Store, key string) (State, bool) {
 	return State{}, false
 }
 
-// awaitCache waits until read holds, asking every testwait.Poll, until the test's end (testEnd),
-// and fails the test there with what it waited for and the last value read. It is testwait.Until
-// with the test's end in place of Until's own: under a -timeout of 30 s or less Until asks once
-// and gives up, where a wait that ends at the test's end has all that is left.
+// awaitCache waits until read holds, giving up at the bound end of the 5 s these cache waits had
+// (testwait.UntilBoundEnd): the cache's watch delivers a write in the machine's time.
 func awaitCache[T any](t *testing.T, what string, read func() (T, bool)) {
 	t.Helper()
-	var last T
-	holds := func() bool {
-		var ok bool
-		last, ok = read()
-		return ok
-	}
-	bound := time.Duration(1 << 60)
-	if end, bounded := testEnd(t); bounded {
-		bound = time.Until(end)
-	}
-	if !testwait.Holds(bound, testwait.Poll, holds) {
-		t.Fatalf("gave up waiting for %s at the test's end; last read: %+v", what, last)
-	}
+	testwait.UntilBoundEnd(t, 5*time.Second, what, read)
 }
 
 // waitCacheChecks waits until the WatchAll cache shows n checks for the commit.
