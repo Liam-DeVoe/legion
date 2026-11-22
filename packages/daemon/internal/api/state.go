@@ -702,6 +702,15 @@ type Issue struct {
 	// phase names, so the phase alone does not say who works the issue. Absent at every other
 	// phase, whose role the phase names (phase.RoleFor).
 	StepRole string `json:"stepRole,omitempty"`
+	// PlaceRole is the role of the claim that works the place where the issue's task stands
+	// (record.Issue.PlaceRole), read from the issue's plan rows: the architect at a step or a
+	// retro the owner does, `acceptance` for the fresh agent of a step `acceptance` with no key,
+	// the role of the retro's agent at the retro, and the step's own role at any other step; held
+	// with the place while a hold stands. It says who works an issue where the phase alone names
+	// the wrong role: at accepting the phase names the architect whoever accepts. Absent on an
+	// issue with no plan rows, whose phase names its role, at the merge, before the first step,
+	// and from every issue of the body served a caller below 227 (shaping.go's withoutPlaceRole).
+	PlaceRole string `json:"placeRole,omitempty"`
 	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
 	// the slot of the start's claim or the role of its step, the pod having been built before the
 	// deployment defined that name (record.Store.StartsWaitingForPod): a start that creates its

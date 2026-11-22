@@ -1340,9 +1340,14 @@ type entryBehind struct {
 // past its architect's phases are its phase worker's, which the line names for no root. The
 // numbers are named for the role a phase worker works on any other issue, which is
 // dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
-// phase.RoleFor names the architect's phase, is named for nothing. At step the role is the one
-// that runs the issue's step, which the state names (api.Issue.StepRole) and no phase does, and
-// so is the role of an issue held from step, which carries no number as every held issue does. An
+// phase.RoleFor names the architect's phase, is named for nothing. Where the state names the role
+// of the claim that works the issue's place (api.Issue.PlaceRole, an issue with plan rows) and the
+// issue is not held, that is the role: at accepting the fresh agent of a step `acceptance` with no
+// key, named as any worker, or the architect where the owner accepts or does any other step of
+// its own, named for nothing, as the projection reads the same role for the numbers
+// (record.Issue.RoleAt). At step the role is the one that runs the issue's step, which the state
+// names (api.Issue.StepRole) and no phase does, and so is the role of an issue held from step,
+// which carries no number as every held issue does. An
 // issue whose current phase names no role at all carries neither number and is never named for
 // them: the projection writes them only where a role works the issue's phase, and that is the role
 // this reads back for the line.
@@ -1351,7 +1356,10 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
 		role := phase.RoleFor(issue.Phase)
-		if issue.Phase == phase.Step || issue.Phase == phase.Held && issue.HeldFrom == string(phase.Step) {
+		switch {
+		case issue.PlaceRole != "" && issue.Phase != phase.Held:
+			role = legionclaim.Role(issue.PlaceRole)
+		case issue.Phase == phase.Step || issue.Phase == phase.Held && issue.HeldFrom == string(phase.Step):
 			role = legionclaim.Role(issue.StepRole)
 		}
 		if legionclaim.IsTreeRoot(key, issue.Tree) {

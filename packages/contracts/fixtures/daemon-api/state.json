@@ -637,6 +637,7 @@
       "generation": 1,
       "phase": "step",
       "stepRole": "checker",
+      "placeRole": "checker",
       "startWaitsForPod": [
         "checker"
       ],
@@ -651,6 +652,7 @@
       "generation": 1,
       "phase": "held",
       "stepRole": "checker",
+      "placeRole": "checker",
       "status": "in_progress",
       "tree": "LEGION-241",
       "repo": "acme/widgets",

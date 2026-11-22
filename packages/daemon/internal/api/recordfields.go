@@ -217,8 +217,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 	{Field: "StepRole", Column: ColumnAgents, Keys: []string{"stepRole"},
 		Reason: "the role that works an issue at step, or held from it, which the phase alone does not name"},
-	{Field: "PlaceRole", Column: ColumnWithheld,
-		Reason: "the role of the claim that works the task's place, read with the issue from its plan rows for the daemon's own readers"},
+	{Field: "PlaceRole", Column: ColumnAgents, Keys: []string{"placeRole"},
+		Reason: "the role of the claim that works the task's place, which the phase alone does not name where a fresh agent of acceptance accepts or the owner does a step"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

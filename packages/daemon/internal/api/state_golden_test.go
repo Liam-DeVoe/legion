@@ -714,19 +714,22 @@ func populatedState(t *testing.T) State {
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
 			// no memory group.
 			// LEGION-240 stands at step: its task runs the step of checker, a role the deployment
-			// defines, which the phase alone does not name (`stepRole`). It holds a slot and is at
+			// defines, which the phase alone does not name (`stepRole`), and the checker is the
+			// claim that works that place (`placeRole`). It holds a slot and is at
 			// work (deploymentRolesContract), but its pod was built before the deployment defined
 			// the checker, so the checker's start waits for that pod's update round or its release
 			// (record.Store.StartsWaitingForPod): the issue names the checker in `startWaitsForPod`
 			// and no claim of the checker exists yet, so it carries no worker.
 			// LEGION-241 is held from that step, its checker's claim failed, so its hold names the
-			// phase it left and the role of that step, and the failed claim stays its worker, keyed
+			// phase it left and the role of that step, its task keeps the place the checker works,
+			// and the failed claim stays its worker, keyed
 			// by the role of the deployment, as LEGION-210's failed implementer stays its own.
 			"LEGION-240": {
 				Key:              "LEGION-240",
 				Generation:       1,
 				Phase:            phase.Step,
 				StepRole:         "checker",
+				PlaceRole:        "checker",
 				Status:           "in_progress",
 				Tree:             "LEGION-240",
 				Repo:             "acme/widgets",
@@ -740,6 +743,7 @@ func populatedState(t *testing.T) State {
 				Phase:         phase.Held,
 				HeldFrom:      string(phase.Step),
 				StepRole:      "checker",
+				PlaceRole:     "checker",
 				Status:        "in_progress",
 				Tree:          "LEGION-241",
 				Repo:          "acme/widgets",

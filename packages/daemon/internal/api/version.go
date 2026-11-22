@@ -3139,13 +3139,19 @@ package api
 // role of the deployment or of the plan, the role acceptance, a reviewer of an issue with no pull
 // request, and the owner in a review step report a verdict`. `POST /legion/v1/signoff` refuses a
 // sign-off of an acceptance that is not its owner's own step, a step `acceptance` with no key,
-// whose fresh agent ends it with its own verdict, `409 SIGNOFF_NOT_THE_OWNERS`. No answer a plugin
-// parses changes shape: the request records of 227 hold the new route's request, and no recorded
-// request field leaves. A claim of the role `acceptance`, the fresh agent of a step `acceptance`
-// with no key, is a role outside Legion's six, which 221's band already leaves out of the state
-// served a caller below 221. The notice kind this entry adds
-// (`owner-step`) rides inside a notice row's payload, as 189's does, and is no key or value of an
-// answer a plugin parses. From this entry the last number of answers.go's SupportedContracts is
+// whose fresh agent ends it with its own verdict, `409 SIGNOFF_NOT_THE_OWNERS`. Each issue of the
+// state, and the record route's issue, gains `placeRole`, the role of the claim that works its
+// task's place (record.Issue.PlaceRole): the architect at a step or a retro the owner does,
+// `acceptance` for the fresh agent of a step `acceptance` with no key, so a reader such as `legion
+// state` names who works an issue at accepting, which the phase alone names as the architect. A
+// caller below 227 is served each issue without it (one band of shaping.go at
+// `completeStepContract`, withoutPlaceRole): a plugin before INFRA-1048 reads an issue as a strict
+// object. The request records of 227 hold the new route's request, and no recorded request field
+// leaves. A claim of the role `acceptance`, the fresh agent of a step `acceptance` with no key, is
+// a role outside Legion's six, which 221's band already leaves out of the state served a caller
+// below 221. The notice kind this entry adds (`owner-step`) rides inside a notice row's payload, as
+// 189's does, and is no key or value of an answer a plugin parses. From this entry the last number
+// of answers.go's SupportedContracts is
 // `api.completeStepContract`; `deploymentRolesContract` stays 221 and `strandedTokenContract` 222.
 // (This entry takes 227, above 222 (the stranded claims' token, the entry above) and above every
 // number another open pull request declared, with 225 to 226 left to the changes that build on the

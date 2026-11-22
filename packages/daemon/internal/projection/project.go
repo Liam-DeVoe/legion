@@ -244,6 +244,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if issue.Phase == phase.Step || issue.Hold != nil && issue.Hold.From == phase.Step {
 			view.StepRole = string(issue.StepRole)
 		}
+		// The role of the claim that works the task's place, as the record reads it from the plan
+		// rows (api.Issue.PlaceRole): where the phase names another role, at accepting a fresh
+		// agent of acceptance does, and at a step or a retro the owner does, it is the one that
+		// says who works the issue.
+		view.PlaceRole = string(issue.PlaceRole)
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
 		}

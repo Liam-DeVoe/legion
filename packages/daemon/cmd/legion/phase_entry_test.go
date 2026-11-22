@@ -30,10 +30,13 @@ import (
 // numbers, and its worker is not named for the numbers at all. An issue that is not its tree's
 // root is named for its numbers where they differ, as every role a phase worker works is.
 //
-// The role is the one the issue's current phase names (phase.RoleFor), and at step the role of
-// the running step, which the state names (api.Issue.StepRole): an issue whose phase names no
-// role carries neither number, so the line never names one, and neither does an issue held from
-// step, which names its step's role and carries no number.
+// The role is the one that works the place the issue's task stands at, which the state names
+// (api.Issue.PlaceRole) where the issue has plan rows: at accepting, the fresh agent of a step
+// `acceptance` with no key, whose numbers the line names as any worker's, or the architect where
+// the owner accepts. Where the state names none, it is the role the issue's current phase names
+// (phase.RoleFor), and at step the role of the running step (api.Issue.StepRole): an issue whose
+// phase names no role carries neither number, so the line never names one, and neither does an
+// issue held from step, which names its step's role and carries no number.
 func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor(t *testing.T) {
 	now := time.Now().UTC()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
@@ -92,6 +95,13 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		`"workers":{},"phaseEntry":3,"givenEntry":2},` +
 		`"LEGION-501":{"key":"LEGION-501","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-500",` +
 		`"workers":{},"phaseEntry":4,"givenEntry":3}`
+	// Two children at accepting, each behind the entry its row names: LEGION-600's step
+	// `acceptance` has no key, so a fresh agent of acceptance works it and is named; LEGION-601's
+	// is `acceptance:owner`, whose architect, on a child, is named for nothing.
+	accepting := `"LEGION-600":{"key":"LEGION-600","generation":1,"phase":"accepting","placeRole":"acceptance","status":"needs_review",` +
+		`"tree":"LEGION-599","workers":{},"phaseEntry":3,"givenEntry":1},` +
+		`"LEGION-601":{"key":"LEGION-601","generation":1,"phase":"accepting","placeRole":"architect","status":"needs_review",` +
+		`"tree":"LEGION-599","workers":{},"phaseEntry":2,"givenEntry":1}`
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -125,6 +135,11 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 			name:   "none",
 			issues: `{"issues":{` + `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"testing","status":"testing","workers":{},"phaseEntry":2,"givenEntry":2}` + `}}`,
 			want:   "roles not given their phase entry, and roots a wake names: none\n",
+		},
+		{
+			name:   "an accepting a fresh agent works, beside one the owner works",
+			issues: `{"issues":{` + accepting + `}}`,
+			want:   "roles not given their phase entry, and roots a wake names: 1 — LEGION-600 acceptance: entry 3, given 1\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

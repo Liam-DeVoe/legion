@@ -748,6 +748,14 @@ const legionIssue = z.object({
    * phase names, and from every issue of the body the route serves a caller before 221, which is
    * served an issue at `step` as `implementing`. */
   stepRole: stepRole.optional(),
+  /** The role of the claim that works the place where the issue's task stands (contract 227),
+   * read from its plan rows: `architect` at a step or a retro the owner does, `acceptance` for
+   * the fresh agent of a step `acceptance` with no key, the role of the retro's agent at the
+   * retro, and the step's own role at any other step; kept while a hold stands. It names who works
+   * an issue where the phase names another role: at `accepting` the phase names the architect
+   * whoever accepts. Absent on an issue with no plan rows, at the merge, before the first step,
+   * and from every issue of the body the route serves a caller before 227. */
+  placeRole: stepRole.optional(),
   status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child
    * holds an admission slot of its own, so neither `admission.active` nor `admission.waiting`

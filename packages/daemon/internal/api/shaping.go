@@ -602,6 +602,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
+	{contract: completeStepContract, issue: withoutPlaceRole, dropped: "the issues' placeRole"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1515,6 +1516,17 @@ func withoutStrandedTokens(state State) (State, bool) {
 	}
 	state.StrandedClaims = stranded
 	return state, true
+}
+
+// withoutPlaceRole is the issue as a caller below completeStepContract reads it: with no
+// `placeRole`, the key that contract added. A plugin before INFRA-1048 reads an issue as a strict
+// object and refuses the whole state over a key it does not know, and a later plugin below the
+// contract strips it. The issue is a value of its own, so clearing the field leaves the state the
+// source answered as it was.
+func withoutPlaceRole(issue Issue) (Issue, bool) {
+	moved := issue.PlaceRole != ""
+	issue.PlaceRole = ""
+	return issue, moved
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no
