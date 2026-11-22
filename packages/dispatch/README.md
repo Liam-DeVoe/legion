@@ -141,7 +141,9 @@ machine makes none, the run says so once and Chromium shares the host's network.
 an error, and `host` runs Chromium on the host's network, as CI does. A row that
 sets `launchOptions` of its own builds them with `chromiumLaunchOptions`, since
 they replace the project's whole. Firefox, WebKit and the visual review's
-container start their browsers as before.
+container start their browsers as before. A headed run whose display is forwarded
+over SSH (`DISPLAY=localhost:10`) cannot reach that display's TCP port from inside
+the namespace: run it with `DISPATCH_E2E_BROWSER_NETWORK=host`.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
 server's meaning search at it: the server calls it as it calls Bedrock, and it counts the calls
