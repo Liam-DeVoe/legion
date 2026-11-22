@@ -26,8 +26,10 @@
 #     default steps; `legion state` prints `planning: 3 issues — 2 a (on), 1 b (on)`, the issues
 #     drawn before the second boot keeping the arm `a`;
 #   - variant-on-steps: the real `dispatch steps --issue <KEY>` prints `Experiment planning:
-#     variant b.` above the steps of the third issue and `Experiment planning: variant a.` above the
-#     first's, as each record of a step names the variant of its issue's draw.
+#     variant b.` right after the third issue's header and before its first run, and `Experiment
+#     planning: variant a.` there for the first, as each record of a step names the variant of its
+#     issue's draw; control, run by hand: with envoy-client's `dispatch steps` printing the line
+#     after the runs, this check fails, naming where the line stands.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as

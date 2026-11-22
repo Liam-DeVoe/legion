@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -194,12 +195,14 @@ func (l *experimentLive) defaultNotTaken() {
 
 // variantOnSteps reads the variant of each issue as a person reads it, with the real `dispatch
 // steps --issue <KEY>` under bun: the third issue, drawn at the arm b, prints `Experiment
-// planning: variant b.` above its steps, and the first, drawn at the arm a, `Experiment planning:
-// variant a.`. The daemon writes each step record of an issue in a group with the experiment and
-// the variant of its draw (the workflow's stepWrite), and its outbox sends the pair after the
-// record, on the record's experiment route of this checkout's Dispatch, so the line stands once
-// that row has run: the command runs again until it prints the line, within the wait's bound.
-// Control: a daemon whose step write leaves the pair out prints neither line, and this step fails.
+// planning: variant b.` right after its header and before its first run, and the first, drawn at
+// the arm a, `Experiment planning: variant a.` there. The daemon writes each step record of an
+// issue in a group with the experiment and the variant of its draw (the workflow's stepWrite), and
+// its outbox sends the pair after the record, on the record's experiment route of this checkout's
+// Dispatch, so the line stands once that row has run: the command runs again until it prints the
+// line, within the wait's bound, and the line must then stand in that place (variantPlace).
+// Control: a daemon whose step write leaves the pair out prints neither line, and this step fails;
+// a `dispatch steps` that prints the line after the runs fails it too, naming where the line stands.
 func (l *experimentLive) variantOnSteps() {
 	shell := cliShell{t: l.t, dir: l.cliHome, session: scratchSession, base: l.r.baseURL, token: scratchAgentToken}
 	for _, want := range []struct {
@@ -209,16 +212,49 @@ func (l *experimentLive) variantOnSteps() {
 		{issue: l.drawnB, line: "Experiment planning: variant b."},
 		{issue: l.drawnA[0], line: "Experiment planning: variant a."},
 	} {
-		var out string
+		var printed, out string
 		if !testwait.Holds(testwait.Bounded(l.t, time.Minute, 5*time.Second), 500*time.Millisecond, func() bool {
 			ran, code := shell.bun(nil, dispatchCLI(l.root), "steps", "--issue", want.issue.Key)
-			out = string(ran.stdout) + string(ran.stderr)
-			return code == 0 && slices.Contains(strings.Split(out, "\n"), want.line)
+			printed = string(ran.stdout)
+			out = printed + string(ran.stderr)
+			return code == 0 && slices.Contains(strings.Split(printed, "\n"), want.line)
 		}) {
 			l.t.Fatalf("`dispatch steps --issue %s` never printed the line %q; its last run printed:\n%s", want.issue.Key, want.line, out)
 		}
-		l.note("`dispatch steps --issue %s` prints %q above its steps", want.issue.Key, want.line)
+		if err := variantPlace(want.issue.Key, want.line, printed); err != nil {
+			l.t.Fatalf("`dispatch steps --issue %s` printed the line %q out of its place: %v; it printed:\n%s", want.issue.Key, want.line, err, out)
+		}
+		l.note("`dispatch steps --issue %s` prints %q right after its header and before its first run", want.issue.Key, want.line)
 	}
+}
+
+// variantPlace answers nil where line stands in printed, the stdout of `dispatch steps --issue
+// key`, where the command prints the variant of the issue: right after the header `<key>: <n>
+// steps in <m> tasks` and before the first run, with the header's n runs below it and nothing
+// else. It answers where the line stands otherwise.
+func variantPlace(key, line, printed string) error {
+	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
+	header, ok := strings.CutPrefix(lines[0], key+": ")
+	var steps, tasks int
+	if _, err := fmt.Sscanf(header, "%d steps in %d tasks", &steps, &tasks); !ok || err != nil {
+		return fmt.Errorf("the first line %q is no header of %s", lines[0], key)
+	}
+	if at := slices.Index(lines, line); at != 1 {
+		if at < 1 {
+			return fmt.Errorf("no line below the header is %q", line)
+		}
+		return fmt.Errorf("it is line %d of %d, after %q; want it right after the header and before the first run", at+1, len(lines), lines[at-1])
+	}
+	runs := lines[2:]
+	for _, run := range runs {
+		if fields := strings.Fields(run); len(fields) != 12 || fields[5] != "attempt" {
+			return fmt.Errorf("the line %q below it is no run", run)
+		}
+	}
+	if steps == 0 || len(runs) != steps {
+		return fmt.Errorf("the header says %d steps and %d runs follow the line", steps, len(runs))
+	}
+	return nil
 }
 
 // writePlan writes ownersPlan as the document plan.md of key with the real `dispatch artifact`,
