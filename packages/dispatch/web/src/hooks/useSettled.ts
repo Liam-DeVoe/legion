@@ -12,10 +12,12 @@ export function useSettled<T>(value: T, delayMs: number): T {
   // Set during render (React's pattern for state derived from props), so a value let through at
   // once is what the wait starts from when the next value has to wait again.
   if (atOnce && !Object.is(settled, value)) setSettled(value);
+  // A value already settled has nothing to wait for: no timer is armed for it, so a mount, or a
+  // value that moved back before its wait ran out, leaves no update behind to land later.
   useEffect(() => {
-    if (atOnce) return;
+    if (atOnce || Object.is(settled, value)) return;
     const timer = window.setTimeout(() => setSettled(value), delayMs);
     return () => window.clearTimeout(timer);
-  }, [atOnce, delayMs, value]);
+  }, [atOnce, delayMs, settled, value]);
   return atOnce ? value : settled;
 }
