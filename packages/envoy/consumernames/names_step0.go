@@ -16,8 +16,9 @@ import (
 // does not hold, whether this call has waited the settle age for it itself. A replace whose
 // candidate is already the current is a published replace of the fixed name whose delete has not
 // been confirmed: its delete is retried first, before anything else (finishFixedDelete). A replace
-// reserved with no start has destroyed nothing, so its candidate is retired, a fresh one reserved,
-// and the start read from the predecessor then.
+// reserved with its start pending (Op.StartPending) or with no start at all has destroyed nothing,
+// so its candidate is retired, a fresh one reserved, and the start read from the predecessor then;
+// a call that creates nothing closes it instead (abandon), keeping the record's saved start.
 func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, waited func(string) bool) (Selection, error) {
 	op := sel.Record.Op
 	if op.Kind == OpReplace && op.Candidate != "" && op.Candidate == sel.Record.Current && op.Old == n.fixed(sel.Logical) {
@@ -26,7 +27,7 @@ func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, 
 	if op.Kind == OpDelete {
 		return n.settleDelete(ctx, sel)
 	}
-	if op.Kind == OpReplace && sel.Record.Start == 0 {
+	if op.Kind == OpReplace && (op.StartPending || sel.Record.Start == 0) {
 		if create == nil {
 			return n.abandon(ctx, sel)
 		}
@@ -90,8 +91,8 @@ func (n *Names) abandon(ctx context.Context, sel Selection) (Selection, error) {
 }
 
 // saveReplaceStart writes the start of a replace reserved with no start: the sequence after the
-// predecessor's floor. A predecessor the server does not hold leaves the operation open with an
-// error.
+// predecessor's floor, which ends its pending start (Op.StartPending). A predecessor the server
+// does not hold leaves the operation open with an error.
 func (n *Names) saveReplaceStart(ctx context.Context, sel Selection) (Selection, error) {
 	op := sel.Record.Op
 	info, err := n.info(ctx, sel.Logical, op.Old)
@@ -103,6 +104,7 @@ func (n *Names) saveReplaceStart(ctx context.Context, sel Selection) (Selection,
 	}
 	record := sel.Record.clone()
 	record.Start = n.cfg.Floor(info) + 1
+	record.Op.StartPending = false
 	return n.write(ctx, sel, record)
 }
 

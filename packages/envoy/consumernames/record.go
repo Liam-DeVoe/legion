@@ -98,6 +98,11 @@ type Op struct {
 	Old string `json:"old,omitempty"`
 	// FloorRecorded is set once a delete wrote Old's floor into Record.Start.
 	FloorRecorded bool `json:"floor_recorded,omitempty"`
+	// StartPending marks a replace reserved with no start (Names.Replace at start 0): its start is
+	// read from Old's floor after the reservation (saveReplaceStart), and until then Record.Start is
+	// still the start the record held before, which a call that closes the replace without creating
+	// keeps.
+	StartPending bool `json:"start_pending,omitempty"`
 	// Native is the native policy the candidate's create keeps, for a native first create, whose
 	// Record.Start is then the numeric boundary recovery creates at instead, or 0 where the first
 	// create read no stream (Config.NativeFirstCreate): a retry then keeps the native policy too.

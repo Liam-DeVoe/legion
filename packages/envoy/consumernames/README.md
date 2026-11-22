@@ -40,7 +40,7 @@ revision:
 | --- | --- |
 | `key` | the key the record is stored under (below); a read refuses a record carrying any other |
 | `current` | the selected physical name, or empty |
-| `op` | the operation in flight: `create`, `replace` or `delete`, with its owner, candidate, old name, reservation time and `floor_recorded` |
+| `op` | the operation in flight: `create`, `replace` or `delete`, with its owner, candidate, old name, reservation time, `floor_recorded`, and `start_pending` for a replace whose start is read from its old name after the reservation (the record's saved start stands until then, and stays if the replace closes without a create) |
 | `start` | the saved start, written before any destructive step |
 | `last_floor` | the current consumer's last ack floor, with the name and the stream identity it was read on |
 | `retired` | names never selected again; only these are ever deleted by a cleanup |

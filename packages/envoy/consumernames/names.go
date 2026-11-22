@@ -485,17 +485,21 @@ func (n *Names) reserve(ctx context.Context, sel Selection, start Start, create 
 
 // Replace replaces sel's current with a fresh consumer at start: it reserves the replace with the
 // start, creates the candidate, publishes it and retires the predecessor, then deletes the
-// predecessor. A start of 0 reserves the replace with no start, and the start is read from the
-// predecessor's floor after the reservation. At the stream's max_consumers it deletes the retired
-// names the server holds and tries again, and then deletes the predecessor, whose start is saved,
-// and creates the candidate: the cap is never updated.
+// predecessor. A start of 0 reserves the replace with its start pending (Op.StartPending), keeping
+// the record's saved start, and the start is read from the predecessor's floor after the
+// reservation: such a replace has destroyed nothing, so a call that closes it without creating
+// leaves the saved start as it was (plan §2, Step 0's replace with no start yet). At the stream's
+// max_consumers it deletes the retired names the server holds and tries again, and then deletes the
+// predecessor, whose start is saved, and creates the candidate: the cap is never updated.
 func (n *Names) Replace(ctx context.Context, sel Selection, start uint64, create CreateFunc) (Selection, error) {
 	if sel.Record.Current == "" {
 		return sel, fmt.Errorf("consumer names: %s has no current to replace: %w", sel.Logical, ErrNotFound)
 	}
 	record := sel.Record.clone()
-	record.Op = &Op{Kind: OpReplace, Owner: n.cfg.Owner, Old: sel.Record.Current, Candidate: FreshName(n.cfg.Prefix(sel.Logical)), ReservedAt: n.cfg.Now()}
-	record.Start = start
+	record.Op = &Op{Kind: OpReplace, Owner: n.cfg.Owner, Old: sel.Record.Current, Candidate: FreshName(n.cfg.Prefix(sel.Logical)), StartPending: start == 0, ReservedAt: n.cfg.Now()}
+	if start > 0 {
+		record.Start = start
+	}
 	next, err := n.write(ctx, sel, record)
 	if err != nil {
 		n.observeErr(OperationReplace, err)
