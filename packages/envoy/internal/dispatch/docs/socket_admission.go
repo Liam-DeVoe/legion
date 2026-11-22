@@ -39,7 +39,7 @@ type admissionRendering struct {
 }
 
 // preloadedDocument is the durable state a document socket's admission check decoded, kept for the
-// load ygo makes of the room next (servicePersistenceAdapter.LoadDoc), so a cold connection reads
+// load ygo makes of the room next (servicePersistenceAdapter.LoadDocContext), so a cold connection reads
 // and decodes the history once, and what that check made of that state (admissionRendering), which
 // the room's load takes in place of reading and rendering the room again (onLoadDocument) and
 // hands its replica as the rendering of the state the replica starts from (keepReplica), so a cold

@@ -115,7 +115,7 @@ func runsState(ctx context.Context, version persistence.Version, runs [][]byte, 
 // (runsThrough): it makes no state, so Load and MaterializeAt answer it as this error, which is
 // ErrDocumentUnloadable, and no bytes. A socket's admission (loadTree) and a cold write's fork
 // (coldFork) answer it as the document's own failure, as they answer a history ygo refuses the
-// bytes of, and a room's load fails on it (LoadDoc). What the rebuild ErrDocumentUnloadable offers
+// bytes of, and a room's load fails on it (LoadDocContext). What the rebuild ErrDocumentUnloadable offers
 // reads of a history (rebuildSource) it carries itself: the version the history stands at, and
 // every client its runs name at the clock each reached, which for a history ygo refuses the bytes
 // of is read from those bytes (undecodableHistoryClients).

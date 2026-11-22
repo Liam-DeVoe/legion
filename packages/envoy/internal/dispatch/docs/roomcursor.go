@@ -87,12 +87,12 @@ type loadedState struct {
 	// bytes runs as this decode did, with the format cleanup off and under the same pending cap
 	// (bootstrapLoadedState), so the room holds item for item what the copy holds.
 	decoded decodedState
-	// slot is the load's slot of the pod's load concurrency (loadSlots), which covers LoadDoc's
+	// slot is the load's slot of the pod's load concurrency (loadSlots), which covers LoadDocContext's
 	// read - its fold of a history of several updates, taken where the rows are read (foldRead) -
 	// and its decode, and the room's own decode of the state after it; a load that took a
 	// socket's preload reads nothing and the slot covers those two decodes, the socket's own
-	// having covered its read and the decode of its schema check (loadTree). LoadDoc's wait has
-	// no deadline, ygo handing it no context, and holds no slot while
+	// having covered its read and the decode of its schema check (loadTree). LoadDocContext's wait
+	// has no deadline - the caller's context decides only whether the load is refused - and holds no slot while
 	// it waits. Whoever takes the record gives the slot back: onLoadDocument, once its decode has
 	// returned, and the room's next load, which replaces a record ygo never handed to that hook
 	// (beginRoomLoad).
@@ -100,7 +100,7 @@ type loadedState struct {
 }
 
 // roomLoad is one room load's record of the durable history behind the room it loads, kept from
-// before the load reads the store (servicePersistenceAdapter.LoadDoc) until the instance that
+// before the load reads the store (servicePersistenceAdapter.LoadDocContext) until the instance that
 // load leaves behind stands in its place (keepInstance, which onLoadDocument calls on the same
 // goroutine, ygo's loadRoom). ygo publishes no document for a room while it loads (Server.GetDoc
 // reports a loading room as absent), so a version this process appends in that window reaches no
@@ -141,7 +141,7 @@ type roomLoad struct {
 // record of the room's last load, which ygo has finished with - one room loads at a time
 // (getOrCreateRoom) - so the records never outnumber the documents this process has loaded. A
 // record goes when the document of the load that left it is collected (keepInstance), or, for a
-// load that left none, where the failure that ended it was met (LoadDoc, onLoadDocument). A
+// load that left none, where the failure that ended it was met (LoadDocContext, onLoadDocument). A
 // record that is replaced, or dropped by such a failure, while it still holds what its load read
 // gives up its state, its copy and its slot with it (take, failRoomLoad).
 func (s *Service) beginRoomLoad(room string) *roomLoad {

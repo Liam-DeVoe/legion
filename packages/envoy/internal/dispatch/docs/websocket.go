@@ -539,7 +539,7 @@ func decodeStoredState(doc *crdt.Doc, state []byte) error {
 
 // bootstrapLoadedState decodes state, what room's load read (takeLoadedState), into doc, the
 // room's document. It is the decode the room's load makes of its own: ygo is handed no bytes
-// (servicePersistenceAdapter.LoadDoc), so it decodes under the pending caps ygo set on doc before
+// (servicePersistenceAdapter.LoadDocContext), so it decodes under the pending caps ygo set on doc before
 // its load hook ran, the server's MaxPendingItems and MaxPendingDeleteRanges, which New sets to
 // maxParkedStructs and maxParkedDeleteRanges, and through decodeStoredState, so a refusal reads
 // as every other decode of stored state does: a state that would park past either fails the
@@ -749,7 +749,7 @@ func (s *Service) allowInject(ctx context.Context, info websocket.InjectInfo) er
 
 // onLoadDocument is the room's load hook, which ygo runs once it has made room's document and set
 // its pending cap, and before it hands the document to anyone. It decodes the state the room's
-// load read (servicePersistenceAdapter.LoadDoc) into doc (bootstrapLoadedState), and a state that
+// load read (servicePersistenceAdapter.LoadDocContext) into doc (bootstrapLoadedState), and a state that
 // does not decode fails the room and drops the load's record (failRoomLoad) with the decode's
 // error, which it returns to ygo, so the room is not published and its next access loads it
 // afresh. A state the decode refuses for parking past one of the room's caps is logged as well,
@@ -772,7 +772,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// this runs on that load's own goroutine, so the record read here is this load's own
 	// (sjawhar/legion#2519).
 	//
-	// What LoadDoc recorded is taken first, so a load refused below leaves neither the state nor
+	// What LoadDocContext recorded is taken first, so a load refused below leaves neither the state nor
 	// its copy on the record it drops (loadedState). The two copies the load made are the room's
 	// from here: the budget charges them below, at the bytes of the state they were built from
 	// (chargeLoadedRoom).
@@ -820,7 +820,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 			s.roomUnloaded(room, counted)
 		}
 	}()
-	// The state is decoded into the room's own document here rather than through ygo (LoadDoc),
+	// The state is decoded into the room's own document here rather than through ygo (LoadDocContext),
 	// before anything reads or observes the document (bootstrapLoadedState). It is the last thing
 	// the load's grant covers, so it is given back as soon as it returns: the reads below wait
 	// on the rooms pool, and must hold nothing of it while they do (podLoadSlots).
@@ -940,7 +940,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
 	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on
 	// (offerPreload). An offer that checked before that count and has stored its preload is under
-	// the room's name now, and it is not this load's - LoadDoc's takePreload ran before any of this
+	// the room's name now, and it is not this load's - LoadDocContext's takePreload ran before any of this
 	// - so it is one no load of this room will ever use, and it is taken out here, under the room's
 	// record that the offer stored it under, rather than left for the socket that offered it to
 	// withdraw hours later.
@@ -994,7 +994,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	//
 	// The room's scan total starts at what the decode of the state the load read scanned, and the
 	// room's replica is the copy that decode made: the decode the load made of its own
-	// (LoadDoc, decodeStoredCopy), which this hook's own decode of the same bytes into this
+	// (LoadDocContext, decodeStoredCopy), which this hook's own decode of the same bytes into this
 	// document matches item for item - both run with the format cleanup off and under the same
 	// pending cap - scanning the same items, and reporting none, since that decode ran before
 	// newRoomScans listed the document. Nothing else holds that copy - the preload and the load's
@@ -1879,13 +1879,14 @@ func (s *Service) settleLastPeer(_ context.Context, room string) {
 	s.followUpSettlement(room, s.settleRoomWithin(withSettlementLoad(context.Background()), room, generation, false))
 }
 
-// loadDecoded is LoadDoc's own read of room's stored state and its decode
+// loadDecoded is LoadDocContext's own read of room's stored state and its decode
 // (loadDecodedHistory), both under slot, the load's (loadedState.slot): the read's fold of a
 // history of several updates takes it where it reads the rows (foldRead), and the decode runs
 // inside it, as the room's load hook's decode into the room's own document does
-// (bootstrapLoadedState). ygo hands LoadDoc no context, so the wait has no deadline and holds
-// no slot meanwhile (loadSlot.take), and the slot is the caller's to give back rather than the
-// helper's.
+// (bootstrapLoadedState). The wait has no deadline: the caller's context decides only whether
+// the load is refused (LoadDocContext), since one load serves every caller waiting for the room
+// and one caller's end must not fail it for the others. It holds no slot meanwhile
+// (loadSlot.take), and the slot is the caller's to give back rather than the helper's.
 //
 // A history too large for one update is refused from its header, before the slot is taken and
 // before anything is decoded (loadableHistory): no room could take it, and the refusal names the

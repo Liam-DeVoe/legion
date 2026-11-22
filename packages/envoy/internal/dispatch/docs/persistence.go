@@ -265,7 +265,7 @@ func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, r
 }
 
 // Head is the version Load folds the room up to now, read through the pool that owns loads, as
-// Load reads it: a room load (servicePersistenceAdapter.LoadDoc) asks it.
+// Load reads it: a room load (servicePersistenceAdapter.LoadDocContext) asks it.
 func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Version, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {

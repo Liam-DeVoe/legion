@@ -232,7 +232,7 @@ const (
 // a client of its own so none merges with its neighbour, and then items of one client each naming
 // the chain's first as its left origin and no right origin, so each scans the chain to its end
 // (Item.integrate, sjawhar/ygo v1.55.1-sami.8, crdt/item.go:185-250). The room the next load
-// makes counts its scan total from that re-scan (servicePersistenceAdapter.LoadDoc), so it is
+// makes counts its scan total from that re-scan (servicePersistenceAdapter.LoadDocContext), so it is
 // used up: typing in place goes on within usedUpScanBudget, a larger apply is refused
 // DOC_NEEDS_REBUILD, and a rebuild takes the document (nearACap). A real document reaches that
 // only past about fifteen honest long sessions (roomScanTotal), which no browser test can type.

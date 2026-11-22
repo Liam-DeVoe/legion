@@ -365,7 +365,7 @@ func refusedForTheItemCap(t *testing.T, what string, err error, items uint64) {
 // The store judges an update by the item count its header declares (updateItems) rather than by
 // decoding it: a transaction's append of an update this process encoded is refused past the cap
 // from that header (AppendUpdateTx, refuseUpdateItemCap), and so is a stored history a room is
-// about to take (servicePersistenceAdapter.LoadDoc, loadableHistory), which took that decode off
+// about to take (servicePersistenceAdapter.LoadDocContext, loadableHistory), which took that decode off
 // every cold load of a document one client wrote (sjawhar/legion#2519).
 //
 // A header that reads says nothing about the body behind it, so the append of a malformed update
@@ -455,7 +455,7 @@ func TestTheStoreJudgesAnUpdateByItsHeader(t *testing.T) {
 }
 
 // panickingRoomLoadStore panics in the store read a room's load makes
-// (servicePersistenceAdapter.LoadDoc), for the first load of one room and no other read. That
+// (servicePersistenceAdapter.LoadDocContext), for the first load of one room and no other read. That
 // panic is the one way a load fails with nothing of this service still to run on its goroutine:
 // the read hands ygo no bytes, so ygo decodes nothing after it, and a panic out of the hook ygo
 // calls next is recovered there (bootstrapLoadedState) or swallowed by ygo's own safeHook.
@@ -480,7 +480,7 @@ func (s *panickingRoomLoadStore) Load(ctx context.Context, room string) (persist
 }
 
 // A load that panics is failed where the panic is met, on the load's own goroutine and before ygo
-// closes the room's barrier (LoadDoc), as the store's refusal and a history the room's document
+// closes the room's barrier (LoadDocContext), as the store's refusal and a history the room's document
 // cannot take are failed there (loadableHistory, bootstrapLoadedState). It was once left to whichever
 // caller's Apply met ygo's recovery of it (sjawhar/ygo v1.55.1-sami.7,
 // provider/websocket/server.go:2010-2029), and such a caller can answer for no load: ygo removes

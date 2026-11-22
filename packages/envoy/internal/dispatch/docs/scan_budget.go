@@ -294,7 +294,7 @@ type decodedState struct {
 
 // decodeStoredCopy is rescan keeping the copy it decoded: the one decode of the stored state a
 // room's load makes beside the room's own (bootstrapLoadedState), whose scans are the room's
-// scan count (LoadDoc) and whose copy the room's replica takes as its own (keepReplica); a
+// scan count (LoadDocContext) and whose copy the room's replica takes as its own (keepReplica); a
 // socket admission's schema check makes one of these too, of its own (loadTree). It decodes
 // under maxPending, the service's own pending queue (Service.maxPendingItems), which is no lower
 // than the room's own (maxParkedStructs, bootstrapLoadedState), so a history this refuses is one
