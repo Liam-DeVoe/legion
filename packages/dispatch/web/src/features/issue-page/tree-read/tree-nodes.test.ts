@@ -267,6 +267,7 @@ function question(id: string, extra: Partial<Ask> = {}): Ask {
 /** A decision's link to the node `ref` addresses, as the decisions read answers one. */
 function linkTo(ref: string): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
     from_block: "d1",
