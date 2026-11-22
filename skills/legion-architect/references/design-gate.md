@@ -148,8 +148,9 @@ For an ancestor of another project, read `GET /api/v1/projects/<KEY>/legion/daem
 Take the ancestor's architect from its `architect` claim and whether its tree runs from `treeRuns` on its tree root, never from Dispatch's `Claimed by` line or a session's registry state.
 Where that daemon cannot be read, ask that project's controller for these two facts before you choose a branch of "Sending a requirement up".
 Reach that architect with `envoy_send` to its session wherever this page says to tell it or to publish to its role topic.
-Your credential is scoped to your own project, so Dispatch refuses you a write to the ancestor (`PROJECT_SCOPE`).
-Where the ancestor's tree does not run, have that project's controller make the ancestor's edits and request its approval, and register only your own root's gate.
+Where your credential is scoped to your own project, Dispatch refuses a write to the ancestor (`PROJECT_SCOPE`).
+In that case, where the ancestor's tree does not run, have that project's controller make the ancestor's edits and request its approval, and register only your own root's gate.
+Otherwise follow the stopped-tree procedure in "Sending a requirement up".
 
 ### When the root is a view
 

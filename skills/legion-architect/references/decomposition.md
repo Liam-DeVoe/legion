@@ -102,10 +102,10 @@ every repository your App is installed on (`-R owner/repo`).
 
 A change in a repository that another project's deployment runs is filed in that project, with `--parent` your root:
 `dispatch issue --project <KEY> --parent <root> --repo <owner/name> …`.
+Tell that project's controller with `envoy_publish` on `notifications.role.legion-<project>-controller` (its key in lower case).
 That project's daemon runs the child, and your root waits for it as for an open child of its own.
-A credential scoped to one project cannot make this link, whichever end it holds: the create answers `PROJECT_SCOPE`, to you and to that project's controller alike.
-So tell that project's controller, with `envoy_publish` on `notifications.role.legion-<project>-controller` (its key in lower case), what to file and under which root.
-It files the issue in its own project and has the parent set by a credential that names no single project, such as the operator's.
+A credential scoped to one project cannot make this link from either end: the create answers `PROJECT_SCOPE`.
+Where yours is scoped, tell that controller what to file and under which root instead; it files the issue in its own project and has the parent set by a credential that names no single project, such as the operator's.
 Release no such child with `release_children`: it answers `ISSUE_OUTSIDE_TREE`.
 That project's controller takes it as a root of its own, and its architect writes it as a view on your root where your root's approval allows ("A root under an approved ancestor" in `design-gate.md`).
 
