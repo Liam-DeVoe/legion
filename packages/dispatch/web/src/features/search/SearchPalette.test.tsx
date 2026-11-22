@@ -1729,7 +1729,7 @@ test("while a plan waits the box reads Say what to change…, words in it say En
   }
 });
 
-test("an answer that asks the person a question makes the box read Answer…", async () => {
+test("an answer whose frame says it waits for the person makes the box read Answer…, and the answer end Waits for your answer", async () => {
   const user = userOnFakeClock();
   const bar = answerTheBar();
   const view = openTheBar();
@@ -1738,11 +1738,35 @@ test("an answer that asks the person a question makes the box read Answer…", a
     await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
     bar.send("r-1", "reply", {
       labels: [],
-      text: "Which changes hand it over: a label, a status?",
+      text: "Which changes hand it over: a label or a status",
       tools: [],
+      waits_for_person: true,
     });
     bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
     expect(talkBox()).toHaveAttribute("placeholder", "Answer…");
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent("Waits for your answer");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("an answer that ends in a question mark but whose frame does not say it waits ends Done, and the box reads Ask a follow-up…", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, "how many moons does Mars have");
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "reply", {
+      labels: [],
+      text: "Two. Did you mean its natural moons?",
+      tools: [],
+    });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    expect(talkBox()).toHaveAttribute("placeholder", "Ask a follow-up…");
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent("Done");
   } finally {
     bar.restore();
     view.unmount();

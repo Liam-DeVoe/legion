@@ -4,10 +4,11 @@ import { type RunFrames, STARTED_RUN, withRunFrame } from "./run-frames";
 
 // A run's steps as its frames say them, keyed by their step numbers: each call's words while it
 // runs, from its call frame or from the reply that made it, then from its own tool frame, with
-// the kind of step it is and the items it named; one line for each call whatever order its call,
-// tool and reply frames came in, and none left running once the run ends; the prose beside calls
-// is the words of the run while they run, never part of its answer; and the answer's reply says
-// how many tool results were withheld from the model.
+// the kind of step it is, how many results it answered and the items it named; one line for each
+// call whatever order its call, tool and reply frames came in, and none left running once the run
+// ends; the prose beside calls is the words of the run while they run and the header of those
+// calls, never part of its answer; the answer's reply says how many tool results were withheld
+// from the model; and the frame that ends the answer says whether it waits for the person.
 
 /** The run once each frame of `frames` arrived, in order. */
 function framed(frames: readonly (readonly [string, unknown])[]): RunFrames {
@@ -40,6 +41,8 @@ test("each call runs with its reply's present words, and ends with its frame's p
     tool: "call_tool",
   });
   expect(ended.steps[1]).toEqual({
+    count: 0,
+    header: "Checking the issue.",
     id: 1,
     items: ["DEMO-7"],
     kind: "read",
@@ -99,6 +102,8 @@ test("a row an approved plan's runner made, which no reply named, is a write ste
   ]);
   expect(run.steps).toEqual([
     {
+      count: 0,
+      header: "",
       id: 0,
       items: ["DEMO-7"],
       kind: "write",
@@ -257,4 +262,77 @@ test("once the run ends, no call stays running: a call no tool frame ended draws
   // A run recorded before call frames, cut after its reply, drops the call its reply named.
   const cut = framed([REPLY, ended(2), ["end", { offers: [], reason: "", state: "failed" }]]);
   expect(lines(cut)).toEqual([["Read DEMO-15", false]]);
+});
+
+/** Each step's words and the header it is drawn under. */
+function headed(run: RunFrames): readonly (readonly [string, string])[] {
+  return run.steps.map((step) => [step.label, step.header]);
+}
+
+test("each call is headed by the prose its model call wrote beside it, whichever frame brought the prose", () => {
+  // Call frames: the first one's prose heads every call of its model call; the next model call's
+  // calls are headed by its own prose, or by none.
+  const called = framed([
+    call(2, "Checking DEMO-15 and DEMO-7."),
+    call(3),
+    ended(2),
+    ended(3),
+    REPLY,
+    ["call", { kind: "look", label: "Looking for a way", step: 5, text: "", tool: "find_tools" }],
+  ]);
+  expect(headed(called)).toEqual([
+    ["Read DEMO-15", "Checking DEMO-15 and DEMO-7."],
+    ["Read the messages of DEMO-7", "Checking DEMO-15 and DEMO-7."],
+    ["Looking for a way", ""],
+  ]);
+  // A run recorded before call frames: its reply's prose heads the calls whose tool frames came
+  // first, and the calls it adds.
+  expect(headed(framed([ended(2), REPLY]))).toEqual([
+    ["Read DEMO-15", "Checking DEMO-15 and DEMO-7."],
+    ["Reading the messages of DEMO-7", "Checking DEMO-15 and DEMO-7."],
+  ]);
+  // A tool frame before its call frame: the late call frame's prose heads the ended call.
+  expect(headed(framed([ended(2), call(2, "Checking")]))).toEqual([["Read DEMO-15", "Checking"]]);
+});
+
+test("a tool frame's count is the step's, and a step that answered no list counts none", () => {
+  const run = framed([
+    [
+      "call",
+      { kind: "search", label: 'Searching DEMO for "three things"', step: 2, tool: "search" },
+    ],
+    [
+      "tool",
+      {
+        count: 3,
+        items: ["DEMO-1", "DEMO-2", "DEMO-3"],
+        kind: "search",
+        label: 'Searched DEMO for "three things" · 3 hits',
+        step: 2,
+        tool: "search",
+      },
+    ],
+    ended(3),
+  ]);
+  expect(run.steps.map((step) => [step.label, step.count])).toEqual([
+    ['Searched DEMO for "three things" · 3 hits', 3],
+    ["Read the messages of DEMO-7", 0],
+  ]);
+});
+
+test("an answer waits for the person only where the frame that ends it says so, never for a question mark", () => {
+  const asked = (reply: Record<string, unknown>, end: Record<string, unknown> = {}) =>
+    framed([
+      ["reply", { labels: [], tools: [], ...reply }],
+      ["end", { offers: [], reason: "", state: "done", ...end }],
+    ]).waitsForPerson;
+  expect(asked({ text: "Which changes hand it over?" })).toBe(false);
+  expect(asked({ text: "Which changes hand it over", waits_for_person: true })).toBe(true);
+  expect(asked({ text: "Which changes hand it over" }, { waits_for_person: true })).toBe(true);
+  // A reply that makes calls ends no turn, and says nothing of it.
+  expect(
+    framed([
+      ["reply", { labels: ["Reading DEMO-1"], text: "", tools: ["read"], waits_for_person: true }],
+    ]).waitsForPerson
+  ).toBe(false);
 });

@@ -72,7 +72,7 @@ function renderHistory(onOpen: () => void = () => {}): void {
 
 /** The conversation as the bar draws it beside History. */
 function Conversation(): ReactNode {
-  return <ConversationView answering={useOpenPlan()} onContinue={() => {}} />;
+  return <ConversationView answering={useOpenPlan()} onContinue={() => {}} onRetry={() => {}} />;
 }
 
 afterEach(() => {

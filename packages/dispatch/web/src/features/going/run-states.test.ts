@@ -102,6 +102,8 @@ test("a reply's tool calls show as running steps until each call's frame ends it
   });
   expect(replied.steps).toEqual([
     {
+      count: 0,
+      header: "Reading the issue.",
       id: 0,
       items: [],
       kind: "",
@@ -123,6 +125,8 @@ test("a reply's tool calls show as running steps until each call's frame ends it
   });
   expect(ended.steps).toEqual([
     {
+      count: 0,
+      header: "Reading the issue.",
       id: 0,
       items: ["CORE-1"],
       kind: "read",

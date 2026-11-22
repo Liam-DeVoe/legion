@@ -886,7 +886,11 @@ function PaletteDialog({
                 <History onOpen={() => setHistory(false)} />
               </div>
             ) : (
-              <ConversationView answering={asking.answering} onContinue={asking.onContinue} />
+              <ConversationView
+                answering={asking.answering}
+                onContinue={asking.onContinue}
+                onRetry={asking.retry}
+              />
             )
           ) : null}
           <div className={`shrink-0 p-3 ${talking ? "border-t" : "border-b"} ${borderDefault}`}>

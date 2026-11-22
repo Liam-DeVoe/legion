@@ -33,6 +33,9 @@ export interface Asking {
   readonly escape: (words: string) => void;
   readonly stop: () => void;
   readonly onContinue: (run: string) => void;
+  /** Retry under an answer: a new run of the same `words`, started as Enter starts one, a
+   *  follow-up of the conversation where its newest run has ended. */
+  readonly retry: (words: string) => void;
 }
 
 /**
@@ -81,6 +84,7 @@ export function useAsk(context: GoingContextInput): Asking {
     },
     onContinue: (run) => listed(continueRun(run, context, login)),
     planWaits,
+    retry: (words) => listed(startRun(words, context, login)),
     runWaits,
     stop: () => {
       const run = newestRun();

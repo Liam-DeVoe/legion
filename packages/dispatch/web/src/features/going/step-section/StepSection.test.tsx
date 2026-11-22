@@ -1,0 +1,257 @@
+import { afterEach, expect, test } from "bun:test";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import { onFakeClock, tick } from "../../../__tests__/fake-clock";
+import type { RunStep } from "../run-frames";
+import { elapsedTimeWords, foldWords, StepSection, workedWords } from "./StepSection";
+
+// A run's steps as the bar draws them (design v2, states 3 and 4): one line for each call, the
+// running ones in the present tense with a shimmer and the ended ones in the past tense, the
+// newest line with the run's timer; past three calls at once, "and 2 more…"; at most three
+// finished lines, the older ones folded into one line that opens on a click; the model's prose as
+// a grey header above its calls; keys as plain links; and once the answer or the plan came, every
+// step folded into "Worked for 1 min 48 s · read 14 items, searched twice ›".
+
+afterEach(cleanup);
+
+/** An ended read of `DEMO-<id>`, as a tool frame leaves it, with `fields` over it. */
+function step(id: number, fields: Partial<RunStep> = {}): RunStep {
+  return {
+    count: 0,
+    header: "",
+    id,
+    items: [`DEMO-${id + 1}`],
+    kind: "read",
+    label: `Read DEMO-${id + 1}`,
+    refused: false,
+    running: false,
+    step: id + 2,
+    tool: "read",
+    ...fields,
+  };
+}
+
+/** A call of `id` that runs, as its call frame starts it. */
+function running(id: number, label: string): RunStep {
+  return step(id, { items: [], label, running: true });
+}
+
+/** The words of each step line drawn, without the timer. */
+function labels(): readonly (string | null)[] {
+  return screen
+    .queryAllByTestId("going-step")
+    .map((line) => within(line).getByTestId("going-step-label").textContent);
+}
+
+test("an elapsed time is said in its smallest useful units", () => {
+  expect(elapsedTimeWords(0)).toBe("0 s");
+  expect(elapsedTimeWords(999)).toBe("0 s");
+  expect(elapsedTimeWords(-5_000)).toBe("0 s");
+  expect(elapsedTimeWords(59_999)).toBe("59 s");
+  expect(elapsedTimeWords(108_000)).toBe("1 min 48 s");
+  expect(elapsedTimeWords(7_500_000)).toBe("2 h 5 min");
+});
+
+test("a fold says what its steps were made of: items read, how often it searched or looked, and what it drew", () => {
+  const search = (id: number) => step(id, { kind: "search", tool: "search" });
+  expect(foldWords([step(0), step(1, { count: 12 }), step(2)])).toBe("read 14 items");
+  expect(foldWords([step(0)])).toBe("read 1 item");
+  expect(foldWords([search(0)])).toBe("searched once");
+  expect(foldWords([search(0), search(1)])).toBe("searched twice");
+  expect(foldWords([search(0), search(1), search(2)])).toBe("searched 3 times");
+  expect(foldWords([step(0, { kind: "look", tool: "find_tools" })])).toBe("looked for a way once");
+  expect(foldWords([step(0, { kind: "chart", tool: "draw_block" })])).toBe("drew a chart");
+  expect(
+    foldWords([step(0, { kind: "chart", tool: "draw_block" }), step(1, { kind: "chart" })])
+  ).toBe("drew 2 charts");
+  // Each kind in one order, joined with ", "; a failed call counts as failed, not as its kind.
+  expect(
+    foldWords([
+      search(0),
+      step(1, { count: 3 }),
+      search(2),
+      step(3, { refused: true }),
+      step(4, { kind: "", tool: "call_tool" }),
+    ])
+  ).toBe("read 3 items, searched twice, 1 other step, 1 step failed");
+  expect(workedWords([step(0), search(1), search(2)], 108_000)).toBe(
+    "Worked for 1 min 48 s · read 1 item, searched twice"
+  );
+  // A run that worked for less than a second, or for a time the page does not know, says none.
+  expect(workedWords([step(0)], 400)).toBe("Read 1 item");
+  expect(workedWords([step(0)], undefined)).toBe("Read 1 item");
+});
+
+test("a running call's line is its present words with a shimmer, and the newest line carries the run's timer", async () => {
+  await onFakeClock(async () => {
+    render(
+      <StepSection
+        folded={false}
+        live
+        since={Date.now()}
+        steps={[step(14), running(15, "Reading the comments of DEMO-7")]}
+        workedMs={undefined}
+      />
+    );
+    expect(labels()).toEqual(["Read DEMO-15", "Reading the comments of DEMO-7…"]);
+    const [ended, live] = screen.getAllByTestId("going-step");
+    expect(live?.getAttribute("data-running")).toBe("true");
+    expect(within(live as HTMLElement).getByTestId("going-step-label").className).toContain(
+      "motion-safe:animate-pulse"
+    );
+    expect(within(ended as HTMLElement).getByTestId("going-step-label").className).not.toContain(
+      "animate-pulse"
+    );
+    // One timer, on the newest line, counting from the person's question.
+    expect(screen.getAllByTestId("going-step-timer")).toHaveLength(1);
+    const timer = within(live as HTMLElement).getByTestId("going-step-timer");
+    expect(timer.textContent).toBe("0 s");
+    await tick(2000);
+    expect(timer.textContent).toBe("2 s");
+  });
+});
+
+test("calls that run at once each have a line, and past three the rest fold into and 2 more…", () => {
+  render(
+    <StepSection
+      folded={false}
+      live
+      since={Date.now()}
+      steps={[1, 2, 3, 4, 5].map((id) => running(id, `Reading DEMO-${id}`))}
+      workedMs={undefined}
+    />
+  );
+  expect(labels()).toEqual(["Reading DEMO-1…", "Reading DEMO-2…", "Reading DEMO-3…"]);
+  const more = screen.getByTestId("going-steps-more");
+  expect(within(more).getByText("and 2 more…")).toBeInTheDocument();
+  // The fold is the newest line, so it carries the timer.
+  expect(within(more).getByTestId("going-step-timer")).toBeInTheDocument();
+  expect(screen.getAllByTestId("going-step-timer")).toHaveLength(1);
+});
+
+test("at most three finished lines show, and the older ones fold into one line that a click opens", async () => {
+  const user = userEvent.setup();
+  render(
+    <StepSection
+      folded={false}
+      live
+      since={Date.now()}
+      steps={[
+        step(0, { count: 3, kind: "search", label: "Searched DEMO for “moons” · 3 hits" }),
+        step(1),
+        step(2),
+        step(3),
+        step(4),
+        running(5, "Reading DEMO-6"),
+      ]}
+      workedMs={undefined}
+    />
+  );
+  expect(labels()).toEqual(["Read DEMO-3", "Read DEMO-4", "Read DEMO-5", "Reading DEMO-6…"]);
+  const older = screen.getByTestId("going-steps-older");
+  expect(older.textContent).toBe("Read 1 item, searched once›");
+  expect(older).toHaveAccessibleName("Read 1 item, searched once");
+  expect(older.getAttribute("aria-expanded")).toBe("false");
+
+  await user.click(older);
+  expect(older.getAttribute("aria-expanded")).toBe("true");
+  expect(labels()).toEqual([
+    "Searched DEMO for “moons” · 3 hits",
+    "Read DEMO-2",
+    "Read DEMO-3",
+    "Read DEMO-4",
+    "Read DEMO-5",
+    "Reading DEMO-6…",
+  ]);
+  await user.click(older);
+  expect(labels()).toHaveLength(4);
+});
+
+test("the model's prose heads its calls as one grey line, and folds with them", async () => {
+  const user = userEvent.setup();
+  const children = "Checking the children of DEMO-1.";
+  render(
+    <StepSection
+      folded={false}
+      live
+      since={Date.now()}
+      steps={[
+        step(0, { header: "Reading the issue first." }),
+        step(1, { header: children }),
+        step(2, { header: children }),
+        step(3, { header: children }),
+        running(4, "Reading DEMO-5"),
+      ]}
+      workedMs={undefined}
+    />
+  );
+  // The first call folded, and its header with it; the others stand under theirs.
+  expect(screen.getAllByTestId("going-step-words").map((line) => line.textContent)).toEqual([
+    children,
+  ]);
+  expect(labels()).toEqual(["Read DEMO-2", "Read DEMO-3", "Read DEMO-4", "Reading DEMO-5…"]);
+  await user.click(screen.getByTestId("going-steps-older"));
+  expect(screen.getAllByTestId("going-step-words").map((line) => line.textContent)).toEqual([
+    "Reading the issue first.",
+    children,
+  ]);
+});
+
+test("keys in a step's line are plain links to their issues, and a failed call reads as its sentence", () => {
+  render(
+    <StepSection
+      folded={false}
+      live={false}
+      since={Date.now()}
+      steps={[
+        step(0, { items: ["DEMO-15", "DEMO-7"], label: "Read DEMO-15 and its parent DEMO-7" }),
+        step(1, {
+          items: ["DEMO-12"],
+          label: "Could not read DEMO-12: you have no access",
+          refused: true,
+        }),
+      ]}
+      workedMs={undefined}
+    />
+  );
+  expect(screen.getByRole("link", { name: "DEMO-15" }).getAttribute("href")).toBe(
+    "/issues/DEMO-15"
+  );
+  expect(screen.getByRole("link", { name: "DEMO-7" }).getAttribute("href")).toBe("/issues/DEMO-7");
+  expect(screen.queryByTestId("item-chip")).toBeNull();
+  expect(labels()).toEqual([
+    "Read DEMO-15 and its parent DEMO-7",
+    "Could not read DEMO-12: you have no access",
+  ]);
+  // A run that no longer works draws no timer.
+  expect(screen.queryByTestId("going-step-timer")).toBeNull();
+});
+
+test("once the answer came, every step folds into Worked for… with what they were made of, and a click opens them", async () => {
+  const user = userEvent.setup();
+  const search = (id: number) => step(id, { kind: "search", tool: "search" });
+  render(
+    <StepSection
+      folded
+      live={false}
+      since={Date.now()}
+      steps={[search(0), step(1, { count: 12 }), search(2), step(3), step(4)]}
+      workedMs={108_000}
+    />
+  );
+  const fold = screen.getByTestId("going-steps-fold");
+  expect(fold.textContent).toBe("Worked for 1 min 48 s · read 14 items, searched twice›");
+  expect(fold.getAttribute("aria-expanded")).toBe("false");
+  expect(labels()).toEqual([]);
+
+  await user.click(fold);
+  expect(labels()).toEqual([
+    "Read DEMO-1",
+    "Read DEMO-2",
+    "Read DEMO-3",
+    "Read DEMO-4",
+    "Read DEMO-5",
+  ]);
+  expect(screen.queryByTestId("going-step-timer")).toBeNull();
+});

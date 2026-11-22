@@ -140,7 +140,11 @@ export function SidePanel(): ReactNode {
           <History onOpen={() => setHistory(false)} />
         </div>
       ) : (
-        <ConversationView answering={asking.answering} onContinue={asking.onContinue} />
+        <ConversationView
+          answering={asking.answering}
+          onContinue={asking.onContinue}
+          onRetry={asking.retry}
+        />
       )}
       <div className={`shrink-0 border-t p-3 ${borderDefault}`}>
         <BoxRow

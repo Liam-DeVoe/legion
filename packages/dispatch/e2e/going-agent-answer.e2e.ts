@@ -68,21 +68,29 @@ test("Enter starts a run: each tool call is a step sent as it starts and again a
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, words);
     const run = newestRun(page);
-    await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-tool", "call_tool", {
-      timeout: RUN_STEPS_MS,
-    });
-    await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-running", "false", {
-      timeout: RUN_STEPS_MS,
-    });
-    // The ended step reads as words: the read's past form, never the tool's name or its JSON.
+    await expect(run).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
+    // Once the answer came, the steps fold into one line above it, which says what they did and
+    // opens them on a click.
+    const fold = run.getByTestId("going-steps-fold");
+    await expect(fold).toHaveAccessibleName(/read 1 item$/i);
+    await fold.click();
+    await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-tool", "call_tool");
+    await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-running", "false");
+    // The ended step reads as words: the read's past form, never the tool's name or its JSON, and
+    // its key is a plain link.
     await expect(run.getByTestId("going-step").first()).toHaveText(`Read ${issue.key}`);
+    await expect(
+      run.getByTestId("going-step").first().getByRole("link", { name: issue.key })
+    ).toHaveAttribute("href", `/issues/${issue.key}`);
+    // The answer's link to the item it read is the item's chip: its key, status and title.
     const answer = run.getByTestId("going-run-answer");
     await expect(answer.getByRole("link", { name: issue.key })).toHaveAttribute(
       "href",
-      `/issues/${issue.key}`,
-      { timeout: RUN_STEPS_MS }
+      `/issues/${issue.key}`
     );
-    await expect(run).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
+    await expect(answer.getByTestId("item-chip")).toContainText(issue.key);
+    await expect(answer.getByTestId("item-chip")).toContainText("Map the lunar craters");
+    await expect(run.getByTestId("going-run-state")).toHaveText("Done");
     // The run's stream, as the person reads it: the read's call frame, with its present words,
     // comes before the tool frame that ends the same step. Both can reach the page in one render,
     // so the running line itself is proven in `run-frames.test.ts` and `ConversationView.test.tsx`.

@@ -1,17 +1,24 @@
 import type { Node as ProseMirrorNode } from "prosemirror-model";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { DisplayTree } from "../../api/types";
+import { ItemChip } from "./ItemChip";
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
+import type { ReferenceAnchor } from "./RefLink";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
 import {
   ATTACH_BATCH,
+  type DecorateMarkdown,
   type PaintMarkdown,
   type SliceYield,
   useRenderedMarkdown,
 } from "./useRenderedMarkdown";
 import { useTextReferences } from "./useTextReferences";
+
+/** The chips of a body that draws none: one shared value, so such a body keeps one state. */
+const NO_CHIPS: readonly ReferenceAnchor[] = [];
 
 /** The first textblock's own inline content (marks intact), plus the flattened plain text of
  * every textblock after it, joined with a single space - see `flattenInline`. */
@@ -281,8 +288,13 @@ function* paintBlockInSlices(
  * against; text that is no record's passes nothing and gets no `#id` links, which is right.
  * The text those references are read from is `markdown`, unless the caller names another in
  * `referenceText`.
+ *
+ * With `chips`, as the command bar draws an answer (design v2, state 4), each link to an issue
+ * draws as the issue's chip (`ItemChip`): its key, a dot in its status's colour and its title, on
+ * one line. Every other reference keeps its `RefLink`.
  */
 export function MarkdownBody({
+  chips = false,
   markdown,
   onRendered,
   referenceText = markdown,
@@ -291,6 +303,9 @@ export function MarkdownBody({
   tree,
   variant = "block",
 }: {
+  /** Whether each link to an issue draws as the issue's chip (`ItemChip`) rather than its key
+   *  and title as words (`RefLink`). */
+  chips?: boolean;
   /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
    *  element as its literal characters where neither the tree nor the markdown could be drawn -
    *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
@@ -328,18 +343,32 @@ export function MarkdownBody({
   const inlineRoot = useRef<HTMLSpanElement>(null);
   const inline = variant === "inline";
   const references = useTextReferences(referenceText, source);
+  // A body drawn with `chips` takes the links to issues from the link pass's anchors and draws
+  // each one's chip itself; every other anchor goes back to the pass, which draws its `RefLink`.
+  const [chipAnchors, setChipAnchors] = useState<readonly ReferenceAnchor[]>(NO_CHIPS);
+  const takeIssueLinks = useCallback<DecorateMarkdown>((_element, anchors) => {
+    const issues = anchors.filter((reference) => reference.route.kind === "issue");
+    setChipAnchors(issues.length === 0 ? NO_CHIPS : issues);
+    return issues.length === 0
+      ? anchors
+      : anchors.filter((reference) => reference.route.kind !== "issue");
+  }, []);
   const { isFallback, isPending, portals } = useRenderedMarkdown(
     inline ? inlineRoot : blockRoot,
     markdown,
     tree,
     inline ? paintInline : paintBlock,
     {
+      decorate: chips ? takeIssueLinks : undefined,
       pictures: variant,
       onRendered,
       paintInSlices: inline ? undefined : paintBlockInSlices,
       references,
       softBreaks,
     }
+  );
+  const chipPortals = chipAnchors.map(({ anchor, key, route }) =>
+    route.kind === "issue" ? createPortal(<ItemChip issue={route.key} />, anchor, key) : null
   );
 
   return inline ? (
@@ -350,6 +379,7 @@ export function MarkdownBody({
       ref={inlineRoot}
     >
       {portals}
+      {chipPortals}
     </span>
   ) : (
     <div
@@ -359,6 +389,7 @@ export function MarkdownBody({
       ref={blockRoot}
     >
       {portals}
+      {chipPortals}
     </div>
   );
 }

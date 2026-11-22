@@ -182,15 +182,21 @@ const GOING_FRAMES: ReadonlySet<string> = new Set([
   GOING_EVENT_TEXT,
 ]);
 
-/** How many times in a row a stream of the bar - a short answer's or an agent run's - is opened
- *  again after a connection that ended before the frame ending its run and brought nothing new,
- *  before the page gives it up. Each reopening resumes after the last frame in hand
- *  (`Last-Event-ID`); a stream of a run past its window is ended by the reader that opens it, so
- *  one reopening normally brings the ending. A run's stream the server closed for being idle is
- *  read again however often it closes, and counts nothing. */
+/** How many times in a row the short answer's stream is opened again after a connection that
+ *  ended before the frame ending its run and brought nothing new, before the page gives it up.
+ *  Each reopening resumes after the last frame in hand (`Last-Event-ID`); a stream of a run past
+ *  its window is ended by the reader that opens it, so one reopening normally brings the ending. */
 const GOING_STREAM_REOPENS = 3;
-/** The wait before a stream of the bar is opened again. */
+/** The wait before a stream of the bar is opened again: the short answer's each time, and an agent
+ *  run's after a drop that brought something new or the first of a row that brought nothing. */
 const GOING_STREAM_REOPEN_MS = 500;
+/** The longest wait before an agent run's stream is opened again: each further drop in a row that
+ *  brings nothing new doubles the wait from `GOING_STREAM_REOPEN_MS`, up to this. */
+const GOING_RUN_REOPEN_MAX_MS = 5_000;
+/** How long an agent run's stream waits through drops in a row that bring nothing new before the
+ *  page gives it up. A run goes on in the server through a restart (R11), so its stream waits out
+ *  one: two minutes, as long as the live socket reconnects before the page says it is stuck. */
+const GOING_RUN_STREAM_PATIENCE_MS = 120_000;
 
 /** The frame a run's stream writes before the server closes it for being idle, which names no
  *  sequence: the run waits, and its stream is opened again after the last frame in hand. */
@@ -873,7 +879,8 @@ function watchBody(response: Response, arrived: () => void): Response {
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
    *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
-   *  a no-route retry waits (`answered`). */
+   *  a no-route retry waits (`answered`), and how a run's dropped stream waits to be opened again
+   *  (`streamGoingRunEvents`). */
   constructor(
     private readonly fetchImpl: FetchImplementation,
     private readonly upload?: UploadImplementation,
@@ -1353,20 +1360,29 @@ export class DispatchApiClient {
    * `onFrame` by its name and its decoded data, from the run's first frame until the `end` frame
    * of a run that has ended (done, stopped or failed). A run that waits for its person keeps its
    * stream open; the server closes an idle one after a `keepalive` frame, and this opens it again
-   * after the last frame `onFrame` took (`Last-Event-ID`), so nothing is lost or repeated. A
-   * connection that fails, or that ends with nothing new and no `keepalive`, is opened again too,
-   * and one that keeps doing so is given up (`GOING_STREAM_REOPENS`); a refusal of the route
-   * itself (`ApiError`: the run is gone, or too many readers) is the answer, and is not asked
-   * again. `signal` ends it sooner.
+   * after the last frame `onFrame` took (`Last-Event-ID`), so nothing is lost or repeated.
+   *
+   * A connection that fails, that a gateway answers with a 5xx while Dispatch is down, or that ends
+   * before the run's end with no `keepalive`, is a drop: `onDropped(true)` says so before the
+   * stream waits to open it again, and `onDropped(false)` once a connection opened after a drop is
+   * answered. The wait is `GOING_STREAM_REOPEN_MS`, doubled for each further drop in a row that
+   * brings nothing new up to `GOING_RUN_REOPEN_MAX_MS`, so the stream waits out a restart of the
+   * server; one that has waited `GOING_RUN_STREAM_PATIENCE_MS` through such drops is given up. A
+   * refusal of the route itself (an `ApiError` below 500: the run is gone, or too many readers) is
+   * the answer, and is not asked again. `signal` ends it sooner.
    */
   async streamGoingRunEvents(
     id: string,
     onFrame: (name: string, data: unknown) => void,
-    signal: AbortSignal
+    signal: AbortSignal,
+    onDropped?: (dropped: boolean) => void
   ): Promise<void> {
     const path = routeUrl("/api/v1/going/runs/{id}/events", { id });
     let after = 0;
+    // The drops in a row that brought nothing new, and how long the stream waited through them.
     let fruitless = 0;
+    let waited = 0;
+    let dropped = false;
     for (;;) {
       const before = after;
       let ended = false;
@@ -1378,6 +1394,10 @@ export class DispatchApiClient {
           { headers: { Accept: "text/event-stream", "Last-Event-ID": String(after) }, signal },
           null
         );
+        if (dropped) {
+          dropped = false;
+          onDropped?.(false);
+        }
         if (response.body !== null) {
           ended = await readEventStream(response.body, (event) => {
             if (event.name === GOING_RUN_KEEPALIVE) {
@@ -1395,7 +1415,7 @@ export class DispatchApiClient {
           });
         }
       } catch (error) {
-        if (signal.aborted || error instanceof ApiError) {
+        if (signal.aborted || (error instanceof ApiError && error.status < 500)) {
           throw error;
         }
         failed = error;
@@ -1405,14 +1425,28 @@ export class DispatchApiClient {
       }
       // A stream the server closed for being idle is a run that waits, and is read again as often
       // as it closes; one that failed, or closed with nothing new, counts towards giving it up.
-      fruitless = idle || after !== before ? 0 : fruitless + 1;
-      if (fruitless >= GOING_STREAM_REOPENS) {
+      if (idle || after !== before) {
+        fruitless = 0;
+        waited = 0;
+      } else {
+        fruitless += 1;
+      }
+      if (waited >= GOING_RUN_STREAM_PATIENCE_MS) {
         throw new NetworkError(
           path,
           failed ?? new Error("the run's stream kept ending before its run did")
         );
       }
-      await sleep(GOING_STREAM_REOPEN_MS, signal);
+      if (!idle && !dropped) {
+        dropped = true;
+        onDropped?.(true);
+      }
+      const wait = Math.min(
+        GOING_STREAM_REOPEN_MS * 2 ** Math.max(0, fruitless - 1),
+        GOING_RUN_REOPEN_MAX_MS
+      );
+      waited += fruitless > 0 ? wait : 0;
+      await this.wait(wait, signal);
     }
   }
 

@@ -26,8 +26,9 @@ import { type RunState, runEnded, runNext } from "./run-states";
 
 /** One run as the page knows it: its record (its words, its conversation, and how it stood when
  *  it was started, listed in History or stopped), what its frames say, whether it was started on
- *  this page, whether the person has seen how it ended, why its stream could not be read, and
- *  when the person asked for it. */
+ *  this page, whether the person has seen how it ended, why its stream could not be read, whether
+ *  its stream dropped and is being opened again, when the person asked for it, and when its work
+ *  first came to rest. */
 export interface RunEntry {
   readonly id: string;
   readonly record: GoingRun;
@@ -37,9 +38,17 @@ export interface RunEntry {
   readonly startedHere: boolean;
   readonly seen: boolean;
   readonly unreadable: string | undefined;
+  /** Whether the run's stream dropped, such as when the server restarts (R11), and is being
+   *  opened again: true from the drop until a connection is answered again, a frame comes, or
+   *  the stream ends or is given up. */
+  readonly reconnecting: boolean;
   /** When the person asked for the run, in this page's clock: the moment of Enter for a run
    *  started here, else its record's start. Its "Thinking…" timer counts from it. */
   readonly since: number;
+  /** When this page first read a frame that left the run no longer working - its end, or its
+   *  plan waiting - in this page's clock; undefined until then. "Worked for" counts from `since`
+   *  to it for a run whose record was read while it worked. */
+  readonly settledAt: number | undefined;
 }
 
 /** The person's answer to the open plan so far: the rows they unticked, and the values they
@@ -229,24 +238,18 @@ export function conversationTitle(of: GoingState = state): string {
   return (first === undefined ? undefined : of.runs.get(first))?.record.words ?? "";
 }
 
-/** An answer that ends in a question mark, past any closing quote, bracket or emphasis. */
-const ENDS_IN_A_QUESTION = /\?[\s"'”’)\]*_`]*$/u;
-
 /** Whether the open conversation's newest run ended done on an answer that asks the person a
- *  question (R8: the agent asks which changes to make, and shows no plan). No frame says that a
- *  run asked, so the bar reads it from the answer: its last reply ends in a question mark. */
+ *  question and waits for their answer (R8: the agent asks which changes to make, and shows no
+ *  plan), as the frame that ended its answer says (`RunFrames.waitsForPerson`). */
 export function asksPerson(of: GoingState = state): boolean {
   const run = newestRun(of);
-  return (
-    run !== undefined &&
-    shownState(run) === "done" &&
-    ENDS_IN_A_QUESTION.test(run.frames.replies.at(-1) ?? "")
-  );
+  return run !== undefined && shownState(run) === "done" && run.frames.waitsForPerson;
 }
 
 /** Reads the run's stream until it ends, folding each frame into the run. The stream starts at
  *  the run's first frame, so its first frame starts the run's frames again: a run read before
- *  is not drawn twice. */
+ *  is not drawn twice. While its stream is dropped and opened again, the run is `reconnecting`;
+ *  a frame, an answered connection, the stream's end and giving it up each end that. */
 function follow(id: string): void {
   if (following.has(id)) {
     return;
@@ -260,13 +263,21 @@ function follow(id: string): void {
       (name, data) => {
         const first = read === 0;
         read += 1;
-        withRun(id, (run) => ({
-          ...run,
-          frames: withRunFrame(first ? STARTED_RUN : run.frames, name, data),
-          read,
-        }));
+        withRun(id, (run) => {
+          const frames = withRunFrame(first ? STARTED_RUN : run.frames, name, data);
+          return {
+            ...run,
+            frames,
+            read,
+            reconnecting: false,
+            settledAt: run.settledAt ?? (frames.state === "working" ? undefined : Date.now()),
+          };
+        });
       },
-      controller.signal
+      controller.signal,
+      (dropped) => {
+        withRun(id, (run) => ({ ...run, reconnecting: dropped }));
+      }
     )
     .catch((error: unknown) => {
       if (controller.signal.aborted) {
@@ -274,12 +285,17 @@ function follow(id: string): void {
       }
       withRun(id, (run) => ({
         ...run,
+        reconnecting: false,
         unreadable: apiErrorMessage(error, "The run's steps could not be read."),
       }));
     })
     .finally(() => {
       if (following.get(id) === controller) {
         following.delete(id);
+      }
+      // A stream that ended, or was given up, is no longer being opened again.
+      if (state.runs.get(id)?.reconnecting === true) {
+        withRun(id, (run) => ({ ...run, reconnecting: false }));
       }
     });
 }
@@ -384,8 +400,10 @@ function entryOf(record: GoingRun, startedHere: boolean, since?: number): RunEnt
     frames: STARTED_RUN,
     id: record.id,
     read: 0,
+    reconnecting: false,
     record,
     seen: !startedHere,
+    settledAt: undefined,
     since: since ?? Date.parse(record.created_at),
     startedHere,
     unreadable: undefined,

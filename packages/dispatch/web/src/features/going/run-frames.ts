@@ -10,8 +10,8 @@ import { type RunEvent, type RunState, runEnded, runNext } from "./run-states";
  */
 
 /** A tool call of a run: its place among the run's steps (`id`, which never changes), its tool,
- *  the words the bar shows for it, the kind of step its frame says it is, the items it named and
- *  answered, and whether it was refused. */
+ *  the words the bar shows for it, the kind of step its frame says it is, the prose that heads it,
+ *  how many results it answered, the items it named and answered, and whether it was refused. */
 export interface RunStep {
   readonly id: number;
   readonly tool: string;
@@ -27,6 +27,13 @@ export interface RunStep {
    *  its tool frame says it; empty for a call only a reply named. A write is a change of an
    *  approved plan, which the plan's card shows. */
   readonly kind: string;
+  /** The prose the model wrote beside this call and the others of the same model call, which the
+   *  bar shows as their header line: the first call frame's of that model call, or its reply's.
+   *  Empty where it wrote none, and for a call no model call made. */
+  readonly header: string;
+  /** How many results the call answered, as its tool frame says, for a call that lists or
+   *  searches; 0 for any other, and while it runs. */
+  readonly count: number;
   /** The keys and references of the items the call named and answered. */
   readonly items: readonly string[];
   readonly refused: boolean;
@@ -53,6 +60,10 @@ export interface RunFrames {
   /** How many tool results the run withheld from the model, as the reply that ended its turn
    *  says: the answer may miss what they hold. */
   readonly withheld: number;
+  /** Whether the answer that ended the run's turn asks its person a question and waits for their
+   *  answer (R8: the agent asks which changes to make, and shows no plan), as the reply that ended
+   *  the turn says, or its end frame. */
+  readonly waitsForPerson: boolean;
   readonly blocks: readonly GoingBlockData[];
   /** The plan's number and state as the last plan frame said them. */
   readonly plan: { readonly number: number; readonly state: string } | undefined;
@@ -71,6 +82,7 @@ export const STARTED_RUN: RunFrames = {
   replies: [],
   state: "working",
   steps: [],
+  waitsForPerson: false,
   withheld: 0,
   working: "",
 };
@@ -93,15 +105,18 @@ function nextId(run: RunFrames): number {
   return (run.steps.at(-1)?.id ?? -1) + 1;
 }
 
-/** The running steps a reply frame adds: one for each of its calls that no call frame or tool
- *  frame named yet. Such a frame is of the call's tool, and its step comes after the reply's own,
- *  by at most as many as the reply made calls; each frame names one call, in the order of the
- *  calls. A reply with no step names none, as a run recorded before replies carried one. */
-function replySteps(
+/** The run's steps with a reply frame's calls: one running step added for each of its calls that
+ *  no call frame or tool frame named yet, headed by `header`, the prose the reply wrote beside
+ *  them, which also heads a step a frame named before with none of its own. Such a frame is of the
+ *  call's tool, and its step comes after the reply's own, by at most as many as the reply made
+ *  calls; each frame names one call, in the order of the calls. A reply with no step names none,
+ *  as a run recorded before replies carried one. */
+function withReplySteps(
   run: RunFrames,
   reply: number | undefined,
   tools: readonly string[],
-  labels: readonly string[]
+  labels: readonly string[],
+  header: string
 ): readonly RunStep[] {
   const named = new Set<number>();
   const added: RunStep[] = [];
@@ -122,6 +137,8 @@ function replySteps(
       return;
     }
     added.push({
+      count: 0,
+      header,
       id: nextId(run) + added.length,
       items: [],
       kind: "",
@@ -132,7 +149,12 @@ function replySteps(
       tool,
     });
   });
-  return added;
+  return [
+    ...run.steps.map((step) =>
+      named.has(step.id) && step.header === "" && header !== "" ? { ...step, header } : step
+    ),
+    ...added,
+  ];
 }
 
 /** The event an `end` frame is to the run's state: a turn that waits on its plan, done, failed,
@@ -164,14 +186,26 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       // which heads them; a later one carries none.
       const working = typeof fields.text === "string" ? fields.text : run.working;
       const at = step === undefined ? -1 : run.steps.findIndex((known) => known.step === step);
-      // A call whose tool frame came first has ended, and keeps its one line. A step of its
-      // number that still runs is a call cut with its agent, which the model call made again
-      // under the same number: this call takes its line.
-      if (run.steps[at]?.running === false) {
-        return { ...run, working };
+      // A call whose tool frame came first has ended, and keeps its one line, headed by this
+      // frame's prose where it has none. A step of its number that still runs is a call cut with
+      // its agent, which the model call made again under the same number: this call takes its
+      // line.
+      const held = run.steps[at];
+      if (held?.running === false) {
+        return held.header === "" && working !== ""
+          ? {
+              ...run,
+              steps: run.steps.map((other, index) =>
+                index === at ? { ...held, header: working } : other
+              ),
+              working,
+            }
+          : { ...run, working };
       }
       const started: RunStep = {
-        id: run.steps[at]?.id ?? nextId(run),
+        count: 0,
+        header: working,
+        id: held?.id ?? nextId(run),
         items: [],
         kind: textOf(fields.kind),
         label: textOf(fields.label),
@@ -198,10 +232,15 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         ...run,
         replies: calls || reply === "" ? run.replies : [...run.replies, reply],
         state: runNext(run.state, "step").state,
-        steps: [
-          ...run.steps,
-          ...replySteps(run, numberOf(fields.step), tools, textsOf(fields.labels)),
-        ],
+        steps: withReplySteps(
+          run,
+          numberOf(fields.step),
+          tools,
+          textsOf(fields.labels),
+          calls ? reply : ""
+        ),
+        // A reply that made calls ends no turn; the one that does says whether it asks.
+        waitsForPerson: calls ? run.waitsForPerson : fields.waits_for_person === true,
         withheld: typeof fields.withheld === "number" ? fields.withheld : run.withheld,
         working: calls ? reply : "",
       };
@@ -221,6 +260,8 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
               (known) => known.running && known.step === undefined && known.tool === tool
             );
       const ended: RunStep = {
+        count: numberOf(fields.count) ?? 0,
+        header: run.steps[at]?.header ?? "",
         id: run.steps[at]?.id ?? nextId(run),
         items: textsOf(fields.items),
         kind: textOf(fields.kind),
@@ -267,6 +308,10 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         planReads: reread ? run.planReads + 1 : run.planReads,
         state,
         steps,
+        waitsForPerson:
+          typeof fields.waits_for_person === "boolean"
+            ? fields.waits_for_person
+            : run.waitsForPerson,
       };
     }
     default:

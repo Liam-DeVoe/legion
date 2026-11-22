@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { waitFor } from "@testing-library/react";
 
 import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
@@ -15,10 +16,11 @@ import {
   startRun,
 } from "./going-store";
 
-// The bar's store (design v2, state 2 and the Keys table): Ctrl-K opens the bar on the
+// The bar's store (design v2, states 2 and 3 and the Keys table): Ctrl-K opens the bar on the
 // conversation while its run works or its plan waits, else on the search; words sent while the
 // run works start no second conversation beside it, and wait for it; the title is the first
-// question; and an answer that asks the person a question reads as one.
+// question; an answer asks the person a question where the frame that ended it says so; and a
+// run whose stream dropped is reconnecting until the stream comes back, ends or is given up.
 
 const CONTEXT = { path: "/projects/CORE/issues" };
 
@@ -137,14 +139,15 @@ test("New lets the words that wait go with the conversation", async () => {
   }
 });
 
-test("the title is the first question, from the moment of Enter, and an answer that ends in a question asks the person", async () => {
+test("the title is the first question, from the moment of Enter, and an answer asks the person only where its frame says it waits for them", async () => {
   const { promise: answered, resolve: answer } = Promise.withResolvers<GoingRun>();
   const start = spyOn(api, "createGoingRun").mockReturnValue(answered);
-  let frames: ((name: string, data: unknown) => void) | undefined;
-  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
-    frames = onFrame;
+  const frames = new Map<string, (name: string, data: unknown) => void>();
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    frames.set(id, onFrame);
     return Promise.withResolvers<void>().promise;
   });
+  const send = (id: string, name: string, data: unknown) => frames.get(id)?.(name, data);
   try {
     const started = startRun("Hand CORE-1 to Legion", CONTEXT, "alice");
     expect(goingState().starting?.words).toBe("Hand CORE-1 to Legion");
@@ -154,14 +157,89 @@ test("the title is the first question, from the moment of Enter, and an answer t
     expect(goingState().starting).toBeUndefined();
     expect(conversationTitle()).toBe("Hand CORE-1 to Legion");
 
-    frames?.("reply", {
+    // An answer that ends in a question mark is no question to the person by itself.
+    send("r-1", "reply", { labels: [], text: "Did you mean CORE-1 itself?", tools: [] });
+    send("r-1", "end", ENDED_DONE);
+    expect(asksPerson()).toBe(false);
+
+    // The reply that ends the turn says the answer waits for the person.
+    start.mockResolvedValueOnce(record("r-2", "c-1", "yes"));
+    await startRun("yes", CONTEXT, "alice");
+    send("r-2", "reply", {
       labels: [],
-      text: "Which changes hand it over: a label, a status?",
+      text: "Which changes hand it over: a label or a status",
       tools: [],
+      waits_for_person: true,
     });
     expect(asksPerson()).toBe(false);
-    frames?.("end", ENDED_DONE);
+    send("r-2", "end", ENDED_DONE);
     expect(asksPerson()).toBe(true);
+
+    // So may the end frame.
+    start.mockResolvedValueOnce(record("r-3", "c-1", "both"));
+    await startRun("both", CONTEXT, "alice");
+    send("r-3", "reply", { labels: [], text: "Both, or only the label", tools: [] });
+    send("r-3", "end", { ...ENDED_DONE, waits_for_person: true });
+    expect(asksPerson()).toBe(true);
+    expect(goingState().conversation).toEqual(["r-1", "r-2", "r-3"]);
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+test("a run whose stream drops is reconnecting until the stream is answered again, a frame comes, or the stream ends or is given up", async () => {
+  const start = spyOn(api, "createGoingRun")
+    .mockResolvedValueOnce(record("r-1", "c-1", "watch the comet"))
+    .mockResolvedValueOnce(record("r-2", "c-2", "watch the moon"));
+  const streams = new Map<
+    string,
+    {
+      readonly dropped: (dropped: boolean) => void;
+      readonly frame: (name: string, data: unknown) => void;
+      readonly ended: {
+        readonly resolve: (value: undefined) => void;
+        readonly reject: (error: Error) => void;
+      };
+    }
+  >();
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(
+    (id, onFrame, _signal, onDropped) => {
+      const ended = Promise.withResolvers<void>();
+      streams.set(id, { dropped: (dropped) => onDropped?.(dropped), ended, frame: onFrame });
+      return ended.promise;
+    }
+  );
+  const reconnecting = (id: string) => goingState().runs.get(id)?.reconnecting;
+  try {
+    await startRun("watch the comet", CONTEXT, "alice");
+    const comet = streams.get("r-1");
+    expect(reconnecting("r-1")).toBe(false);
+
+    comet?.dropped(true);
+    expect(reconnecting("r-1")).toBe(true);
+    comet?.dropped(false);
+    expect(reconnecting("r-1")).toBe(false);
+
+    comet?.dropped(true);
+    comet?.frame("call", { kind: "read", label: "Reading CORE-1", step: 2, tool: "read" });
+    expect(reconnecting("r-1")).toBe(false);
+
+    // Given up: the run says its steps could not be read, and no longer that it reconnects.
+    comet?.dropped(true);
+    comet?.ended.reject(new Error("the run's stream kept ending before its run did"));
+    await waitFor(() => expect(goingState().runs.get("r-1")?.unreadable).toBeDefined());
+    expect(reconnecting("r-1")).toBe(false);
+
+    // Ended while it waited to open the stream again.
+    newConversation();
+    await startRun("watch the moon", CONTEXT, "alice");
+    const moon = streams.get("r-2");
+    moon?.dropped(true);
+    expect(reconnecting("r-2")).toBe(true);
+    moon?.ended.resolve(undefined);
+    await waitFor(() => expect(reconnecting("r-2")).toBe(false));
+    expect(goingState().runs.get("r-2")?.unreadable).toBeUndefined();
   } finally {
     start.mockRestore();
     stream.mockRestore();

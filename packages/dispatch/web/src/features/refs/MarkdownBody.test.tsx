@@ -2040,3 +2040,35 @@ describe("A long body parsed in the worker", () => {
     }
   });
 });
+
+// The command bar draws an answer with `chips` (design v2, state 4): each link to an issue is
+// the issue's chip (`ItemChip`), its key, a status dot and its title; every other reference
+// keeps its words.
+test("a body drawn with chips draws each link to an issue as its chip, and any other reference as its words", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-7",
+    project: "DEMO",
+    status: "done",
+    title: "Map the lunar craters",
+  });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Mapped in [DEMO-7](dispatch://DEMO-7), as [its spec](dispatch://DEMO-7/spec) says."
+      referenceText=""
+    />
+  );
+  try {
+    const chip = await view.findByTestId("item-chip");
+    await waitFor(() => expect(chip.textContent).toBe("DEMO-7DoneMap the lunar craters"));
+    expect(chip.closest("a")).toHaveAttribute("href", "/issues/DEMO-7");
+    expect(view.getAllByTestId("item-chip")).toHaveLength(1);
+    const links = view.getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(within(links[1] as HTMLElement).queryByTestId("item-chip")).toBeNull();
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});

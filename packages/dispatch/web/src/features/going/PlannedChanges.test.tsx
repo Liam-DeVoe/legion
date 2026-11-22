@@ -737,7 +737,7 @@ test("a refusal that names a dispatch command says what happened in the page's w
 // No plan frame says that a row ran, so the plan is read again once the run ends: the rows it
 // ran show as done, and the run's result offers Undo.
 function Conversation(): ReactNode {
-  return <ConversationView answering={useOpenPlan()} onContinue={() => {}} />;
+  return <ConversationView answering={useOpenPlan()} onContinue={() => {}} onRetry={() => {}} />;
 }
 
 test("a run whose plan ran offers Undo once it ends, its plan read again", async () => {
