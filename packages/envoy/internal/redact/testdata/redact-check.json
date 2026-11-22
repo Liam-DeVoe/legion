@@ -6629,11 +6629,11 @@
       "production": "legion CLI checkControllerRepositories: the state decodes through oauth2call.Answer.Decode, whose error quotes no value"
     },
     {
-      "id": "legion-cli-state-mapped-parse-echo",
+      "id": "legion-cli-state-live-parse-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
-      "test": "TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes/repositories-mapped",
-      "production": "legion CLI checkControllerRepositories: a mapped repository that is not owner/name is named by its place, and neither it nor ghrepo.Parse's error, which quotes it, is printed"
+      "test": "TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes/repositories-live",
+      "production": "legion CLI checkControllerRepositories: a live repository that is not owner/name is named by its place, and neither it nor ghrepo.Parse's error, which quotes it, is printed"
     },
     {
       "id": "legion-cli-state-decode-echo",
@@ -8241,7 +8241,7 @@
     {
       "site": "legion CLI checkControllerRepositories: a mapped repository printed raw beside ghrepo.Parse's error, which quoted it again",
       "source": "the review of #4368 round 5, finding 3 (controller.go:528, same shape, not probed)",
-      "guard": "legion-cli-state-mapped-parse-echo"
+      "guard": "legion-cli-state-live-parse-echo"
     },
     {
       "site": "legion state: get handed back the 2xx bytes (StreamTo), and a state that did not decode printed the decoder's error, which quoted the value",
