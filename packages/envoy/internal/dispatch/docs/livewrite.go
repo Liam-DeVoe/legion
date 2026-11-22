@@ -266,7 +266,11 @@ func joinedLiveWrite(ctx context.Context, artifactID string) *liveWrite {
 // updates durable (flushOtherRooms), then takes the document owner's lock, refuses a failed room,
 // and then takes the writer slot (see liveWrite). The read beside that lock says whether the
 // document's issue is closed, which the write keeps (liveWrite.ownerClosed) for its fork read: a
-// comment's anchor on a closed issue forks cold (closedIssueCommentMark, readFork).
+// comment's anchor on a closed issue forks cold (closedIssueCommentMark, readFork). It also says
+// whether the document is retired (artifactOwner.Retired), which takes no new text
+// (RetireDocument): such a write is refused with a RetiredDocumentError (ErrDocumentRetired), and
+// logged naming the document, before it takes the writer slot. The retirement takes the same
+// lock, so it committed before this read or waits for the write's transaction.
 func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID string) (*liveWrite, error) {
 	if write := ledger.liveWriteFor(artifactID); write != nil {
 		return write, nil
@@ -276,9 +280,13 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 	if err := s.flushOtherRooms(ctx, ledger.tx, artifactID); err != nil {
 		return nil, err
 	}
-	_, open, err := lockArtifactOwner(ctx, ledger.tx, artifactID)
+	owner, open, err := lockArtifactOwner(ctx, ledger.tx, artifactID)
 	if err != nil {
 		return nil, err
+	}
+	if owner.Retired {
+		slog.Warn("dispatch: refuse a write into a retired document", "document", artifactID)
+		return nil, &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug}
 	}
 	if err := s.awaitRoomRecovery(ctx, artifactID); err != nil {
 		return nil, err

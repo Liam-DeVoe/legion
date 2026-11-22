@@ -838,19 +838,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
 	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
-	// looks for text in it. Typing a room took before the retirement closed it is still stored -
-	// this settlement commits the updates it read, as every settlement does - and logged, so it is
-	// kept rather than dropped, but no version of the retired document holds it.
-	if versioning {
-		retired, err := documentRetired(ctx, tx, room)
-		if err != nil {
-			return settleDone, st.abandon(err)
-		}
-		if retired {
-			slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
-				"room", room, "latest_version", st.latest.Number)
-			versioning = false
-		}
+	// looks for text in it. Whether it is retired is the read beside the owner's lock this
+	// settlement took (lockArtifactOwner, artifactOwner.Retired), the lock the retirement takes
+	// too, so a retirement either committed before that read or commits after this settlement.
+	// Typing a room took before the retirement closed it, or took in a room the retirement's close
+	// missed (ServeHTTP), is still stored - this settlement commits the updates it read, as every
+	// settlement does - and logged, so it is kept rather than dropped, but no version of the
+	// retired document holds it.
+	if versioning && st.owner.Retired {
+		slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
+			"room", room, "latest_version", st.latest.Number)
+		versioning = false
 	}
 	settledVersion := st.latest.Number
 	if versioning {
