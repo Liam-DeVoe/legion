@@ -272,7 +272,9 @@ export function preloadRouteChunk(pathname: string): void {
 // its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
 // on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
 // Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
-// bar's after the same paint (`features/search/SearchPaletteHost.tsx`), the two lists of writes'
+// bar's, the Create issue dialog's and the shortcut sheet's after the same paint
+// (`features/search/SearchPaletteHost.tsx`, `features/issue/CreateIssueDialogHost.tsx`,
+// `features/shell/ShortcutHelpHost.tsx`), the two lists of writes'
 // and the kinds of write's once the page has drawn (`features/writes/write-hosts.tsx`) and the
 // boot warm of the Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, a
 // route chunk that failed while one of those prefetches was still out would be read as that
@@ -1198,7 +1200,7 @@ function AppShell({
         <SearchPaletteHost onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawerHost onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelpHost onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialogHost onClose={() => setCreateOpen(false)} /> : null}
+        <CreateIssueDialogHost onClose={() => setCreateOpen(false)} open={createOpen} />
         <RefPreviewLayer />
       </div>
     </WithFrameProviders>

@@ -1,14 +1,20 @@
-import { createAsk, createIssue, createProject, getIssue } from "./api";
+import { setTimeout as sleep } from "node:timers/promises";
+
+import { baseUrl, createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
 import { focusThePage } from "./issue-page-g";
 import { onBody, openIssue } from "./keyboard-issue";
-import { expect, type Request, test } from "./test";
+import { navigateInApp } from "./sends";
+import { holdAsset, pageAssetPath } from "./shell";
+import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
  * The issue and project keyboard, in the rows whose claim reaches the server: a priority or a
- * pin written and read back, a refusal, and the digits that must write nothing. The roving,
- * the bands and what `?` greys where - everything the page draws over one fixed answer - is in
+ * pin written and read back, a refusal, and the digits that must write nothing - on an ask's
+ * option, on a page checkbox, and straight after a key that opens a surface over the page, with
+ * the rows on what such a surface does when its chunk lands late beside them. The roving, the
+ * bands and what `?` greys where - everything the page draws over one fixed answer - is in
  * `keyboard-issue.stub.e2e.ts`.
  */
 
@@ -410,6 +416,272 @@ test.describe("issue page", () => {
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 1 });
       await page.keyboard.press("Shift+P");
       await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+/** Counts the issue's `PATCH`es: the priority a digit writes and the title `e` edits go out as
+ *  one each. */
+async function patchesOf(page: Page, key: string): Promise<() => number> {
+  let patched = 0;
+  await page.route(`**/api/v1/issues/${key}`, (route) => {
+    if (route.request().method() === "PATCH") patched += 1;
+    return route.fallback();
+  });
+  return () => patched;
+}
+
+/** A round trip of the page's own. A write a key let through leaves in the task of that key, so
+ *  it is out before this answer can come back. */
+async function afterAnyWrite(page: Page): Promise<void> {
+  await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
+}
+
+/** The pattern of the chunk the build names `<name>-<hash>.js`. */
+function chunkFile(name: string): RegExp {
+  return new RegExp(`/assets/${name}-[\\w-]{8}\\.js$`, "u");
+}
+
+/** Brings the chunk named `name` into the page's module map, as a page that has fetched and run
+ *  it holds it, whatever the code under test starts of its own accord. The entry chunk names the
+ *  path of every chunk the shell draws a surface from, and an import of that path runs it; it
+ *  settles once the module has run, by which time every import of it the page made has settled
+ *  too. */
+async function chunkIn(page: Page, name: string): Promise<void> {
+  const entry = await pageAssetPath(
+    /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
+    "module script",
+    baseUrl
+  );
+  const source = await (await fetch(new URL(entry, baseUrl))).text();
+  const file = new RegExp(`${name}-[\\w-]{8}\\.js`, "u").exec(source)?.[0];
+  if (file === undefined) throw new Error(`the entry chunk names no ${name} chunk`);
+  await page.evaluate((path) => import(path).then(() => undefined), `/assets/${file}`);
+}
+
+/** Holds every request for the chunk named `name` on the wire until the row calls the release
+ *  this answers: a download that is still out when the reader presses the key. */
+async function holdChunk(page: Page, name: string): Promise<() => void> {
+  const held = Promise.withResolvers<void>();
+  await page.route(chunkFile(name), async (route) => {
+    await held.promise;
+    await route.continue();
+  });
+  return held.resolve;
+}
+
+/** How long React holds back the content of a `Suspense` boundary that has shown its fallback: no
+ *  sooner than 300 ms after that fallback (`FALLBACK_THROTTLE_MS` in react-dom). A surface drawn
+ *  behind `lazy` could still open that long after the press that showed its fallback. */
+const SUSPENSE_REVEAL_HOLD_MS = 300;
+
+/** The window a surface whose chunk has landed would still open in, and then two frames of the
+ *  page: React wakes with a render it schedules as a task of its own, which runs inside the frame
+ *  it was scheduled in, so a surface the landing would draw is on the page by the end. */
+async function lateOpenWindow(page: Page): Promise<void> {
+  // An absence window: these rows claim nothing opens, and a surface behind `lazy` opens within
+  // React's hold after the fallback its press showed, which began before this wait.
+  await sleep(SUSPENSE_REVEAL_HOLD_MS);
+  await page.evaluate(() => {
+    const frame = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
+    return frame.promise;
+  });
+}
+
+// The surfaces a key opens over this page - the Create issue dialog, the shortcut sheet and the
+// Inbox peek - are chunks of their own, and the keys a reader types straight after the opening key
+// are the surface's. On this page the page's own shortcuts would take them: a digit writes the
+// issue's priority and `e` puts what follows into the issue's title
+// (`web/src/features/issue/IssuePage.tsx`). So a surface whose chunk is in opens in the commit of
+// its key, and while one is not in, a box from the entry holds the focus and the keyboard and
+// hands what was typed to the surface when it lands (`web/src/features/shell/asked-surface.tsx`).
+// Behind `lazy` each drew no sooner than 300 ms after its first render, its chunk in or not, and
+// the page took the keys meanwhile.
+// SLOW(>=2s): each row lands cold on an issue page, then brings in, or holds and releases, a
+// chunk the page downloads on the wire before it reads the issue back from the server.
+test.describe("keys typed straight after a key that opens a surface", () => {
+  // The row brings the dialog's chunk in itself, so its claim is the dialog's own render and does
+  // not turn on when the page started the download.
+  test("c then 1e at once opens the create dialog with 1e in its title and writes nothing to the issue", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Keys after c" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Keys after c");
+      await chunkIn(page, "CreateIssueDialog");
+
+      await page.keyboard.press("c");
+      await page.keyboard.type("1e");
+      const title = page
+        .getByRole("dialog", { name: "Create issue" })
+        .getByRole("textbox", { name: "Title" });
+      await expect(title).toHaveValue("1e");
+      await expect(title).toBeFocused();
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      await expect
+        .poll(() => getIssue(issue.key))
+        .toMatchObject({ priority: null, title: "Keys after c" });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("? then 1 at once opens the shortcut sheet with 1 in its filter and writes no priority", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Keys after ?" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Keys after ?");
+      await chunkIn(page, "ShortcutHelp");
+
+      await page.keyboard.press("?");
+      await page.keyboard.press("1");
+      const filter = page
+        .getByRole("dialog", { name: "Keyboard shortcuts" })
+        .getByRole("searchbox", { name: "Filter shortcuts" });
+      await expect(filter).toHaveValue("1");
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+    } finally {
+      await context.close();
+    }
+  });
+
+  // The peek's chunk is not fetched in advance on an issue page (`web/src/features/inbox/
+  // InboxHost.tsx` says why), so `i` here starts its download, which this row holds on the wire.
+  test("i then 1 while the peek's chunk is on its way writes no priority, and Escape calls the peek off", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Keys after i" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await holdAsset(page, chunkFile("inbox-chunk"));
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Keys after i");
+
+      await page.keyboard.press("i");
+      await page.keyboard.press("1");
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+      const box = page.getByRole("textbox", { name: "Loading" });
+      await expect(box).toBeFocused();
+      await expect(box).toHaveValue("1");
+
+      await page.keyboard.press("Escape");
+      await expect(box).toHaveCount(0);
+      expect(await onBody(page)).toBe(true);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("c then 1e while the create dialog's chunk is on its way writes nothing, and the dialog opens with 1e in its title", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Held dialog" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const release = await holdChunk(page, "CreateIssueDialog");
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Held dialog");
+
+      await page.keyboard.press("c");
+      await page.keyboard.type("1e");
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      release();
+      const title = page
+        .getByRole("dialog", { name: "Create issue" })
+        .getByRole("textbox", { name: "Title" });
+      await expect(title).toHaveValue("1e");
+      await expect(title).toBeFocused();
+      await expect
+        .poll(() => getIssue(issue.key))
+        .toMatchObject({ priority: null, title: "Held dialog" });
+    } finally {
+      await context.close();
+    }
+  });
+
+  // A dialog whose chunk lands after the reader has moved on opens nothing: neither on a page they
+  // went back to, whose address moved under the box that held the open, nor over a field they went
+  // on to after calling the open off. The late chunk takes no focus from where they are. Before,
+  // the dialog opened whenever its download ended - minutes later, after an outage - and took the
+  // focus.
+  test("a create dialog whose chunk lands after the reader went back a page opens nothing there", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Went back" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const release = await holdChunk(page, "CreateIssueDialog");
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
+      await navigateInApp(page, `/issues/${issue.key}`);
+      await expect(
+        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Went back" })
+      ).toBeVisible();
+      await page.locator("body").focus();
+
+      await page.keyboard.press("c");
+      await page.goBack();
+      await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
+      release();
+      await chunkIn(page, "CreateIssueDialog");
+      await lateOpenWindow(page);
+      await expect(page.getByRole("dialog", { name: "Create issue" })).toHaveCount(0);
+      await expect(page.locator("main")).toBeFocused();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("a create dialog whose chunk lands after Escape and a move to another field opens nothing", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Called off" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const release = await holdChunk(page, "CreateIssueDialog");
+      await openIssue(page, issue.key, "Called off");
+
+      await page.keyboard.press("c");
+      await page.keyboard.press("Escape");
+      const status = page.getByTestId("issue-header").getByRole("combobox", { name: "Status" });
+      await status.focus();
+      release();
+      await chunkIn(page, "CreateIssueDialog");
+      await lateOpenWindow(page);
+      await expect(page.getByRole("dialog", { name: "Create issue" })).toHaveCount(0);
+      await expect(status).toBeFocused();
     } finally {
       await context.close();
     }

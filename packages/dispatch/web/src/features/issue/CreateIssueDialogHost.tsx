@@ -1,31 +1,51 @@
-import { type ReactNode, Suspense } from "react";
+import { type ReactNode, useEffect } from "react";
 
-import { lazyChunk } from "../shell/chunk-loads";
+import { askedSurface } from "../shell/asked-surface";
+import { chunk } from "../shell/chunk-component";
+import { prefetchChunk } from "../shell/chunk-loads";
+import { useContentDrawn } from "../shell/content-drawn";
 
 /**
- * Where the shell places the Create issue dialog, and where that dialog's code is fetched: when
- * a reader presses `c` or chooses Create issue, never before.
+ * Where the shell places the Create issue dialog, and where that dialog's code is fetched: once
+ * the page has drawn, never before it.
  *
  * The shell imported the dialog itself until dispatch://INFRA-1109, so every page of the
  * dashboard parsed the form, its project list, its duplicate check and the related-items list
  * under it before drawing anything - about 50,000 bytes of the entry chunk for a dialog that
- * opens on a keystroke. The shell already mounts it only while it is open, so this host changes
+ * opens on a keystroke. The dialog is still mounted only while it is open, so this host changes
  * what is downloaded and not when the dialog is on the page.
  *
- * What a reader loses by its being late: the frames between the keystroke and the chunk's
- * arrival show no dialog, and then the dialog opens with its title box focused as ever.
+ * The dialog is drawn through `askedSurface` (`features/shell/asked-surface.tsx`), not behind
+ * `lazy` and `Suspense`: with its chunk in, it opens in the commit of the `c` that asked for it,
+ * as it did from the entry, and the keys typed straight after `c` reach its title and not the
+ * page - on an issue page a digit would write the issue's priority, and `e` would put the rest
+ * into the issue's own title. So the chunk is started as soon as the page's content has drawn
+ * (`features/shell/content-drawn.ts`), as the writes hosts start theirs
+ * (`features/writes/write-hosts.tsx`): the shell mounts this host before the route's chunk and
+ * reads are in, and a start at that mount would share the landing's network with them. Nobody is
+ * waiting on it yet, which is what `prefetchChunk` tells the chunk-failure recovery
+ * (`features/shell/DeploymentResilience.tsx`).
+ *
+ * What a reader loses by its being late - a `c` in the first moments of a page, or after the
+ * download failed with nobody waiting: the dialog's place shows a small box that takes the keys
+ * until the chunk lands, and then the dialog opens with what they typed in its title.
  */
-// Through `lazyChunk`, like every chunk a `Suspense` waits on: the reader has asked for the
-// dialog, so a download that fails must spend one of the tab's recovery reloads rather than be
-// read as a prefetch's (`features/shell/DeploymentResilience.tsx`).
-const Dialog = lazyChunk(() =>
-  import("./CreateIssueDialog").then((module) => ({ default: module.CreateIssueDialog }))
+const createIssueDialogChunk = chunk(() =>
+  import("./CreateIssueDialog").then((module) => module.CreateIssueDialog)
 );
 
-export function CreateIssueDialogHost({ onClose }: { onClose: () => void }): ReactNode {
-  return (
-    <Suspense fallback={null}>
-      <Dialog onClose={onClose} />
-    </Suspense>
-  );
+const Dialog = askedSurface(createIssueDialogChunk);
+
+export function CreateIssueDialogHost({
+  onClose,
+  open,
+}: {
+  onClose: () => void;
+  open: boolean;
+}): ReactNode {
+  const drawn = useContentDrawn();
+  useEffect(() => {
+    if (drawn) prefetchChunk(createIssueDialogChunk.load);
+  }, [drawn]);
+  return open ? <Dialog onClose={onClose} /> : null;
 }

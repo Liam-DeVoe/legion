@@ -1,5 +1,6 @@
 import { type ReactNode, Suspense, useEffect, useState } from "react";
 
+import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { lazyChunk } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
 
@@ -25,7 +26,13 @@ import { useContentDrawn } from "../shell/content-drawn";
  */
 // Through `lazyChunk`, like every chunk a `Suspense` waits on: this layer is what draws the card
 // a reader is pointing at, so a download that fails must spend one of the tab's recovery reloads
-// rather than be read as a prefetch's (`features/shell/DeploymentResilience.tsx`).
+// rather than be read as a prefetch's (`features/shell/DeploymentResilience.tsx`). The shell
+// draws the layer outside the page's error boundary (`app.tsx`), and it mounts with no reader
+// action at all, so its own `ChunkBoundary` is what stops a failure of its chunk, or of a chunk a
+// card draws from (a decision card in a previewed body, `features/doc/TextAskCardHost.tsx`), from
+// reaching the app's top boundary (`main.tsx`), which would take the page and its sign-in with
+// it. A layer that cannot load draws no card for the rest of the page; the recovery's reload is
+// asked for all the same.
 const RefPreviewHost = lazyChunk(() =>
   import("./RefPreview").then((module) => ({ default: module.RefPreviewHost }))
 );
@@ -45,8 +52,10 @@ export function RefPreviewLayer(): ReactNode {
     return null;
   }
   return (
-    <Suspense fallback={null}>
-      <RefPreviewHost />
-    </Suspense>
+    <ChunkBoundary>
+      <Suspense fallback={null}>
+        <RefPreviewHost />
+      </Suspense>
+    </ChunkBoundary>
   );
 }

@@ -3,15 +3,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, test } from "./test";
+import { expect, type Route, test } from "./test";
 import { asUser } from "./users";
 
 /**
  * The command palette, in the rows whose claim is the server's: an action that writes and is
  * read back, a search the index answers, a write held in flight, a refusal, and the Agents page,
  * whose rows fold under `Inactive` once their `last_seen` is ten minutes old - which a frozen
- * recording's would be. What the palette draws over one fixed answer - its listing, its focus,
- * the addresses its rows open and the way the list fits a window - is in
+ * recording's would be. One more takes the page offline and back, which the live socket and
+ * the page's reads must live through on a server that answers them: the bar opening once its
+ * chunk comes down after an outage. What the palette draws over one fixed answer - its listing,
+ * its focus, the addresses its rows open and the way the list fits a window - is in
  * `keyboard-palette.stub.e2e.ts`.
  */
 
@@ -672,6 +674,51 @@ test("a row whose control has gone since the palette opened does nothing", async
     await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
     expect(patches).toBe(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a cold issue page, then an outage and a return, which the live socket reconnects
+// across, around two opens of the bar.
+// The bar's chunk failing while the browser is offline leaves the bar to open on a later press.
+// Its open asks for the chunk under `importWhenOnline`, and again on every open while it is not
+// in, and Escape in the box that holds the keys meanwhile calls that open off
+// (`web/src/features/shell/asked-surface.tsx`). Before, the open's one request failed offline and
+// was swallowed, the bar stayed open with nothing drawn, and each later `$mod+k` set it open again
+// and asked for nothing until a reload. The bar's prefetch is held on the wire until the page is
+// offline and then fails as a download the outage cut, and every request for the chunk fails
+// while the page is offline.
+test("a bar whose chunk failed offline opens on the next press once the browser is back online", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Offline bar" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    let network: "held" | "offline" | "online" = "held";
+    const held: Route[] = [];
+    await page.route(/\/assets\/SearchPalette-[^/]+\.js$/u, async (route) => {
+      if (network === "held") held.push(route);
+      else if (network === "offline") await route.abort("internetdisconnected");
+      else await route.continue();
+    });
+    await openIssue(page, issue.key, "Offline bar");
+    await expect.poll(() => held.length, "the bar's prefetch went out").toBeGreaterThan(0);
+    await context.setOffline(true);
+    network = "offline";
+    for (const route of held.splice(0)) await route.abort("internetdisconnected");
+
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.press("Escape");
+    // Before the window hears `online`, so the request that event asks again for goes through.
+    network = "online";
+    await context.setOffline(false);
+    await page.keyboard.press("ControlOrMeta+k");
+    const bar = page.getByRole("dialog", { name: "Search" });
+    await expect(bar).toBeVisible();
+    await expect(bar.getByRole("combobox", { name: "Search" })).toBeFocused();
   } finally {
     await context.close();
   }

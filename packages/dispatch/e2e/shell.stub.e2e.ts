@@ -304,7 +304,7 @@ test("a route chunk nothing prefetched reloads for its failure while another chu
 
 // A host's chunk, opened by the reader: the search bar's prefetch failed with nobody waiting, as
 // in the row above it, and `$mod+k` then asks for the same chunk under `renderChunk`
-// (`web/src/features/search/SearchPaletteHost.tsx`). The reader is waiting on that ask, so its
+// (`web/src/features/shell/asked-surface.tsx`). The reader is waiting on that ask, so its
 // failure reloads, although the Inbox peek's prefetch is still out beside it.
 test("a bar whose prefetch failed reloads for its chunk when the reader opens it, while another prefetch is out @pr", async ({
   baseURL,

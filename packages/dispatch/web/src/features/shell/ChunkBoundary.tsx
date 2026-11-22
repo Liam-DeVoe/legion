@@ -5,13 +5,21 @@ interface ChunkBoundaryProps {
   /** What draws in the place of `children` once a render under them has thrown: nothing, unless
    *  a host names something. */
   readonly fallback?: ReactNode;
+  /** For a host whose part the reader opened (`askedSurface`): called once a render under
+   *  `children` has thrown, to close that part, and the boundary then draws `children` again,
+   *  closed, so the reader's next open draws it afresh rather than meeting a boundary that stays
+   *  failed for the life of the page. */
+  readonly onError?: () => void;
 }
 
 /**
  * The error boundary of a host the shell draws outside the page's own boundary (`app.tsx`'s
  * `ErrorBoundary region="this page"`), around a part whose code is a chunk of its own: the two
  * lists of writes (`features/writes/write-hosts.tsx`), drawn in the status corner of every
- * signed-in page and on the sign-in page.
+ * signed-in page and on the sign-in page; the reference-preview layer
+ * (`features/refs/RefPreviewLayer.tsx`); and the surfaces a reader opens with a key - the Create
+ * issue dialog, the shortcut sheet, the search bar and the Inbox peek (`askedSurface`), whose
+ * bodies draw decision cards from a chunk of their own too (`features/doc/TextAskCardHost.tsx`).
  *
  * WHY EACH SUCH HOST NEEDS ONE. A chunk that fails to download while the browser is online is
  * thrown into the render that waits on it (`chunkComponent`, `chunk-component.tsx`), and the
@@ -29,13 +37,22 @@ interface ChunkBoundaryProps {
  * in the region's own place. A list of writes in the status corner draws nothing while it has
  * nothing to show, and one that cannot load draws nothing too; React logs the failure itself
  * (`onCaughtError`). A host whose part has something else to stand for it names it as
- * `fallback`.
+ * `fallback`, and a dialog or a drawer closes (`onError`).
  */
 export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: boolean }> {
   state = { failed: false };
 
   static getDerivedStateFromError(): { failed: boolean } {
     return { failed: true };
+  }
+
+  componentDidCatch(): void {
+    const { onError } = this.props;
+    if (onError === undefined) return;
+    // The host's close and this reset are both updates of the commit that caught the throw, so
+    // React draws them in one render: the children come back with their part closed.
+    onError();
+    this.setState({ failed: false });
   }
 
   render(): ReactNode {

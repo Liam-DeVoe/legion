@@ -4,6 +4,8 @@ import { useLocation } from "react-router-dom";
 import { landingReadOf } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { afterNextPaint } from "../shell/after-next-paint";
+import { askedSurface } from "../shell/asked-surface";
+import { chunk } from "../shell/chunk-component";
 import { lazyChunk, prefetchChunk } from "../shell/chunk-loads";
 import type { InboxProps } from "./Inbox";
 import type * as InboxChunk from "./inbox-chunk";
@@ -27,17 +29,18 @@ import type * as InboxChunk from "./inbox-chunk";
  * second time.
  */
 // Through `lazyChunk`, like every chunk a `Suspense` waits on: a reader who lands on the Inbox's
-// own page or opens the peek is in front of a page that cannot draw until this arrives, so a
-// download that fails must spend one of the tab's recovery reloads rather than be read as a
-// prefetch's (`features/shell/DeploymentResilience.tsx`).
+// own page is in front of a page that cannot draw until this arrives, so a download that fails
+// must spend one of the tab's recovery reloads rather than be read as a prefetch's
+// (`features/shell/DeploymentResilience.tsx`).
 const InboxList = lazyChunk(() => loadInboxChunk().then((module) => ({ default: module.Inbox })));
 
-const InboxPeek = lazyChunk(() =>
-  loadInboxChunk().then((module) => ({ default: module.InboxDrawer }))
-);
+// The peek opens on a key over a page whose own shortcuts take every key typed until it mounts,
+// so it is drawn through `askedSurface` (`features/shell/asked-surface.tsx`) and not behind
+// `lazy`, whose first render waits at least 300 ms also with the chunk in; `InboxDrawerHost`
+// says what the reader is shown until then.
+const inboxPeekChunk = chunk(() => loadInboxChunk().then((module) => module.InboxDrawer));
 
-/** Whether the Inbox's chunk has arrived in this tab: once it has, nothing starts it again. */
-let inboxChunkIn = false;
+const InboxPeek = askedSurface(inboxPeekChunk);
 
 /** The one import of the Inbox's chunk: the hosts below render it, and the entry starts it at
  *  the addresses whose page is the Inbox (`app.tsx`, `preloadRouteChunk`, which asks
@@ -46,10 +49,7 @@ let inboxChunkIn = false;
  *  as both are in. Named here rather than in the shell, so the chunk the entry starts cannot be
  *  another than the one these hosts render. */
 export function loadInboxChunk(): Promise<typeof InboxChunk> {
-  return import("./inbox-chunk").then((module) => {
-    inboxChunkIn = true;
-    return module;
-  });
+  return import("./inbox-chunk");
 }
 
 /**
@@ -83,14 +83,17 @@ function usePeekChunkAfterFirstPaint(asked: RefObject<boolean>): void {
   const peekIsAPressAway = landingReadOf(useLocation().pathname).page === "inbox";
   useEffect(() => {
     // A chunk that is in has nothing left to fetch. Each return to one of these addresses runs
-    // this effect again, and without this test each return asked for the chunk again.
-    if (!peekIsAPressAway || inboxChunkIn) {
+    // this effect again, and without this test each return asked for the chunk again. The test
+    // is the peek's own chunk and not the Inbox's module: a module the Inbox's page brought in
+    // costs this start no request, and it is this start that tells the peek its chunk is in, so
+    // that the press draws the drawer in its own commit rather than the box that waits for it.
+    if (!peekIsAPressAway || inboxPeekChunk.loaded() !== undefined) {
       return;
     }
     return afterNextPaint(() => {
       // A reader who opened the peek inside that first frame is waiting on this chunk under
       // `renderChunk` already, and this start would add nothing to the download they wait for.
-      if (!asked.current) prefetchChunk(loadInboxChunk);
+      if (!asked.current) prefetchChunk(inboxPeekChunk.load);
     });
   }, [asked, peekIsAPressAway]);
 }
@@ -119,6 +122,11 @@ export function InboxHost(props: InboxProps): ReactNode {
  * it. The Inbox's own page offers no peek at all - neither the rail's button nor its shortcut is
  * there (`routeIsInbox`) - and the entry has started the same chunk at that address anyway.
  *
+ * While the press waits for that download, a small box stands in the drawer's place and takes
+ * every key typed (`askedSurface`): the page under it would otherwise take them, and on an issue
+ * page a digit writes the issue's priority. Escape, or a press elsewhere, calls the peek off, and
+ * a chunk that lands after that opens nothing.
+ *
  * The host keeps the drawer mounted once it has been opened, as the shell always did: the drawer
  * holds the filters, the sort and the search text of this peek, and a reader who closes it and
  * opens it again is given the peek they left rather than a new one.
@@ -143,11 +151,5 @@ export function InboxDrawerHost({
   if (!asked.current) {
     return null;
   }
-  // `fallback={null}` is the drawer's own closed frame: the page under it is untouched until the
-  // chunk lands, which is what a reader opening the peek sees for those frames.
-  return (
-    <Suspense fallback={null}>
-      <InboxPeek onClose={onClose} open={open} />
-    </Suspense>
-  );
+  return <InboxPeek onClose={onClose} open={open} />;
 }

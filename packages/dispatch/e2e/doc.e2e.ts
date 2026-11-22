@@ -1346,6 +1346,58 @@ test("a preview layer that arrives while a button is held on a link opens no car
   });
 });
 
+// SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
+// The preview layer mounts once the page has drawn, with no reader action, and the shell draws it
+// outside the page's error boundary (`web/src/features/refs/RefPreviewLayer.tsx`). Its chunk
+// failing online in a tab whose three reloads are spent reloads nothing
+// (`web/src/features/shell/DeploymentResilience.tsx`), so nothing takes the failed page away: the
+// layer's own boundary is what keeps the throw from the app's top boundary (`web/src/main.tsx`),
+// which would replace the page and unmount the sign-in with it. React reports a throw a boundary
+// caught in the commit that draws that boundary's fallback, so its report is the moment the page
+// is read.
+test("a preview layer whose chunk fails online with the tab's reloads spent leaves the page drawn and signed in", async ({
+  browser,
+}) => {
+  await createProject({ key: "NOCARD", name: "No card" });
+  const target = await createIssue({ project: "NOCARD", title: "Card target" });
+  const source = await createIssue({
+    project: "NOCARD",
+    spec: `See [the card link](dispatch://${target.key}) for context.`,
+    title: "Card source",
+  });
+
+  await withAlice(browser, async (page) => {
+    const counts = await missEntryChunk(page, () => false, baseUrl);
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const failed = await failAssetWhen(
+      page,
+      /\/assets\/RefPreview-[^/]+\.js$/u,
+      async () => undefined
+    );
+    const caught = page.waitForEvent(
+      "console",
+      (message) =>
+        message.type() === "error" && message.text().includes("dynamically imported module")
+    );
+
+    await page.goto(`/issues/${source.key}/spec`);
+    const link = documentEditor(page).getByRole("link", { name: "the card link" });
+    await expect(link).toBeVisible();
+    await caught;
+    expect(failed(), "the layer's chunk was asked for and failed").toBeGreaterThan(0);
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    // A hover over the reference finds the page as it was, with no card to open.
+    await link.hover();
+    await expect(link).toBeVisible();
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    expect(counts.documents, "the failure reloaded nothing").toBe(2);
+    expect(await tabReloads(page)).toEqual(spent);
+  });
+});
+
 // INFRA-536: `\&` is an escaped ampersand, so `\&amp;` is the text `&amp;`, not `&` - in the
 // browser editor's engine (remark/micromark), in the server's Go reading of the document, and in
 // what an agent reads back from the command line.

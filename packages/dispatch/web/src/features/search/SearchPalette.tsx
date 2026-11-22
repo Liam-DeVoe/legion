@@ -359,9 +359,14 @@ function CommandGroup({
 export function SearchPalette({
   onClose,
   open,
+  typed = "",
 }: {
   onClose: () => void;
   open: boolean;
+  /** What the reader typed after the key that opened the bar while the bar's chunk was on its
+   *  way (`features/shell/asked-surface.tsx`): the start of this open's query, where those keys
+   *  were meant to go. */
+  typed?: string;
 }): ReactNode {
   // A chosen row runs once the bar is gone and `useDialog`'s cleanup has put focus back on
   // whatever opened it: run inside the bar, with focus in its input, it would act on nothing,
@@ -390,6 +395,7 @@ export function SearchPalette({
         pendingAction.current = run;
       }}
       onClose={onClose}
+      typed={typed}
     />
   );
 }
@@ -397,11 +403,13 @@ export function SearchPalette({
 function PaletteDialog({
   onAction,
   onClose,
+  typed,
 }: {
   onAction: (run: () => void) => void;
   onClose: () => void;
+  typed: string;
 }): ReactNode {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(typed);
   // The highlight: the row the reader sees highlighted, held by its id, beside the query whose
   // hits were listed when it was last decided ("" while none were). The two are one state
   // because they are read together, to tell a fresh query's first hits - which take the head -

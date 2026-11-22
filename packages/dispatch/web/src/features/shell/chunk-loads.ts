@@ -15,10 +15,11 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // version awaits, the headless Markdown engine a drawn body awaits and the delivery timeline's
 // charting library were all started bare, and that cost nothing while the shell prefetched no
 // chunk, since the recovery then reloaded, within its budget, for every chunk that failed online.
-// The shell now starts prefetches at a page's first paint - the search bar's, the Markdown
-// engine's warm, the writes host's three (the two lists of writes and the kinds of write,
-// `write-hosts.tsx`) and, on an address the landing read takes for the Inbox, the Inbox peek's -
-// so a bare chunk that failed in that window would reload nothing.
+// The shell now starts prefetches at a page's first paint - the search bar's, the Create issue
+// dialog's and the shortcut sheet's, the Markdown engine's warm, the writes host's three (the two
+// lists of writes and the kinds of write, `write-hosts.tsx`) and, on an address the landing read
+// takes for the Inbox, the Inbox peek's - so a bare chunk that failed in that window would reload
+// nothing.
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits
@@ -112,8 +113,9 @@ export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
  * `loadEditorLibrary` and `loadTransportModules`), the Yjs a past version awaits
  * (`features/doc/editor.ts`, `createDoc`) and the pending-edit store a removed document's edits
  * are deleted from (`features/doc/ProofDocument.tsx`) - the kinds of write the write store's
- * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), every `lazyChunk`
- * and every `chunkComponent` (`chunk-component.tsx`).
+ * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), every `lazyChunk`,
+ * every `chunkComponent` (`chunk-component.tsx`) and every surface a reader opens with a key
+ * (`asked-surface.tsx`).
  */
 export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
   for (;;) {
@@ -132,10 +134,12 @@ export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
 
 /**
  * React's `lazy`, with the download under `renderChunk` and `importWhenOnline`: how every
- * component of this app whose chunk a `Suspense` waits on is written - a route, a host's dialog
- * or sheet, a page behind a gate. React asks for the chunk the first time it renders the
- * component, so a reader is in front of the boundary that waits on it, and a download that fails
- * must spend one of the tab's recovery reloads however many prefetches are in flight beside it.
+ * component of this app whose chunk a `Suspense` waits on is written - a route, the Inbox's own
+ * page, the reference-preview layer, a page behind a gate. React asks for the chunk the first
+ * time it renders the component, so a reader is in front of the boundary that waits on it, and a
+ * download that fails must spend one of the tab's recovery reloads however many prefetches are
+ * in flight beside it. A surface a reader opens with a key is not written so: its keys would
+ * reach the page while `lazy` holds it back (`asked-surface.tsx`).
  *
  * WHY `importWhenOnline`. React's `lazy` keeps the promise its loader returned for the life of
  * the page and never calls the loader again, so a rejection it holds answers every later render

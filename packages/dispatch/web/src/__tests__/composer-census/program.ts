@@ -236,6 +236,8 @@ export function readProgram(root: string): Program {
  * component drawn as no element and stop there.
  */
 const CHUNK_COMPONENTS: Readonly<Record<string, string>> = {
+  "features/shell/asked-surface.tsx#askedSurface":
+    "draws a placeholder while the reader has the surface open and the chunk it is handed is not in (`chunk`, `CHUNK`), then the chunk's component as `<Component {...props} />`",
   "features/shell/chunk-component.tsx#chunkComponent":
     "draws its fallback until the chunk it is handed is in (`chunk`, `CHUNK`), then the chunk's component as `<Component {...props} />`",
   "features/shell/chunk-loads.ts#lazyChunk":
