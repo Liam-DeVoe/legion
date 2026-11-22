@@ -185,7 +185,7 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	reset := clock.Now().Add(30 * time.Minute)
 	bin := t.TempDir()
 	writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
-	writeProgram(t, bin, "git", "sleep 30\n")
+	writeProgram(t, bin, "git", "exec sleep 86400\n")
 	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
@@ -266,7 +266,7 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			reset := clock.Now().Add(30 * time.Minute)
 			bin, started := t.TempDir(), filepath.Join(t.TempDir(), "started")
 			writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
-			writeProgram(t, bin, "git", ": > "+shQuote(started)+"\nsleep 30\n")
+			writeProgram(t, bin, "git", ": > "+shQuote(started)+"\nexec sleep 86400\n")
 			guard := New(Options{
 				Clock: clock,
 				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),

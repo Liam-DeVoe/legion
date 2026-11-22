@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -63,11 +64,17 @@ func holdsStandIn(pidFile, seconds string) string {
 // nothing, and the stand-in is gone after it; what names the held work in a failure. Each of its
 // waits, for the stand-in, the command's end and the stand-in's, has the test binary's deadline
 // less testBoundMargin as its only bound, so a step a loaded machine makes slow passes, and a stop
-// that never comes fails the row by name. A stand-in or a command still running when the test ends
-// is killed, so a failure leaves nothing behind.
+// that never comes fails the row by name. The command itself gets a deadline two days off
+// (testDeadlineEnv), so the bounds of the work it holds, its help read's and its guard's reads,
+// outlast every wait here: only the signal can end the held work before the row gives up, and a
+// command whose signal path let the held work run on to its own bound fails the row. A stand-in or
+// a command still running when the test ends is killed, so a failure leaves nothing behind.
 func signalWhileHeld(t *testing.T, command *exec.Cmd, name, pidFile, seconds, what string, sig syscall.Signal) {
 	t.Helper()
 	killRecordedHelper(t, pidFile, seconds)
+	// A later value of a variable in Env wins (exec dedups it), so this replaces the deadline
+	// legionCommand handed the command.
+	command.Env = append(command.Env, testDeadlineEnv+"="+time.Now().Add(48*time.Hour).Format(time.RFC3339Nano))
 	// The group is the command's own, so the signal below never reaches this test binary's.
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Standard output and standard error are a file rather than a pipe, so nothing of the
@@ -108,7 +115,8 @@ func signalWhileHeld(t *testing.T, command *exec.Cmd, name, pidFile, seconds, wh
 		t.Fatal(err)
 	}
 	// The held work's group is stopped with a SIGTERM, then a SIGKILL after procgroup.StopGrace,
-	// and the stand-in, a sleep, ends on the SIGTERM; nothing else ends it before the deadline.
+	// and the stand-in, a sleep, ends on the SIGTERM; nothing else ends it before the row gives up,
+	// since the work's own bounds are two days off.
 	want := 128 + int(sig)
 	testwait.Receive(t, fmt.Sprintf("%s to end after signal %d (%v) to its group while %s was held", name, int(sig), sig, what), exited)
 	if exit, ok := waited.(*exec.ExitError); !ok || exit.ExitCode() != want {

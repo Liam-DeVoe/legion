@@ -346,9 +346,10 @@ func stopsAfterItsInput(pids string) string {
 
 // stoppedPush is a push under ctx through a guard whose shared check is stopsAfterItsInput, as
 // the setup failure it must be, and how long the push took, once the stop the guard made of the
-// check has also ended the check's sleep (sleepEnded). The shared check runs before a push reads
-// anything of its repository, so the push needs none.
-func stoppedPush(t *testing.T, ctx context.Context) (*SetupFailure, time.Duration) {
+// check has also ended the check's sleep (sleepEnded). onceSleeping, when it is not nil, runs as
+// soon as the check has written its sleep's pid, and the row then requires that sleep's end. The
+// shared check runs before a push reads anything of its repository, so the push needs none.
+func stoppedPush(t *testing.T, ctx context.Context, onceSleeping func()) (*SetupFailure, time.Duration) {
 	t.Helper()
 	pids := filepath.Join(t.TempDir(), "sleep")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput(pids)), Public)
@@ -358,6 +359,21 @@ func stoppedPush(t *testing.T, ctx context.Context) (*SetupFailure, time.Duratio
 		URL:     "https://github.com/invented-org/invented-repo.git",
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 	}
+	pushed, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		for onceSleeping != nil {
+			if text, _ := os.ReadFile(pids); strings.TrimSpace(string(text)) != "" {
+				onceSleeping()
+				return
+			}
+			select {
+			case <-pushed:
+				return
+			case <-time.After(testwait.Poll):
+			}
+		}
+	}()
 	var err error
 	var took time.Duration
 	answered(t, "the push whose shared check never answers", func() {
@@ -365,8 +381,10 @@ func stoppedPush(t *testing.T, ctx context.Context) (*SetupFailure, time.Duratio
 		err = guard.Push(ctx, req)
 		took = time.Since(began)
 	})
+	close(pushed)
+	<-watched
 	failed := setupFailure(t, err)
-	sleepEnded(t, pids)
+	sleepEnded(t, pids, onceSleeping != nil)
 	return failed, took
 }
 
@@ -388,17 +406,20 @@ func answered(t *testing.T, what string, call func()) {
 // sleep whose pid the stand-in check wrote to pids to be gone: the kill the guard sends the
 // check's process group reaches it. A sleep the kill missed would run on for a day, past any
 // deadline, so the wait fails the row by name; it is killed when the test ends, whatever the wait
-// read. A check the stop reached before it wrote the pid, which a loaded machine can make it, is
-// said in the log: the sleep it may have started is in the group the kill reached, so there is
-// nothing to wait for.
-func sleepEnded(t *testing.T, pids string) {
+// read. A check the stop reached before it wrote the pid, which a loaded machine can make it, fails
+// a row that required the sleep; any other row says in its log that it tested that case, and that
+// the kill reaching the sleep went untested in this run.
+func sleepEnded(t *testing.T, pids string, required bool) {
 	t.Helper()
 	text, err := os.ReadFile(pids)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read the stand-in check's pid of its sleep: %v", err)
 	}
 	if strings.TrimSpace(string(text)) == "" {
-		t.Logf("the stand-in check was stopped before it wrote its sleep's pid to %s", pids)
+		if required {
+			t.Fatalf("the stand-in check wrote no pid of its sleep to %s, though its stop was to come after it", pids)
+		}
+		t.Logf("this run tested a stop that came before the stand-in check wrote its sleep's pid to %s; the kill reaching that sleep went untested", pids)
 		return
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(text)))
@@ -453,7 +474,7 @@ func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing
 	const theBound = 2 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), theBound)
 	defer cancel()
-	failed, _ := stoppedPush(t, ctx)
+	failed, _ := stoppedPush(t, ctx, nil)
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("the push answered %q inside the caller's %s: the caller's deadline did not stop the check", failed.Error(), theBound)
 	}
@@ -468,14 +489,13 @@ func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing
 var theCancel = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by a cancel$`)
 
 // A shared check that a cancel stops, under a context with no deadline, says that a cancel
-// stopped it and how long it ran: there is no bound to name. The run is read against the push's
-// own time, never for an exact count: the cancel comes 2 s after the push began, and on a loaded
-// machine the check starts later in those 2 s and its stop is reaped later after them.
+// stopped it and how long it ran: there is no bound to name. The cancel comes once the check has
+// started its sleep (stoppedPush), so the row reads the kill reaching that sleep in every run, and
+// the run is read against the push's own time, never for an exact count.
 func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer time.AfterFunc(2*time.Second, cancel).Stop()
-	failed, took := stoppedPush(t, ctx)
+	failed, took := stoppedPush(t, ctx, cancel)
 	said := theCancel.FindStringSubmatch(failed.Why)
 	if said == nil {
 		t.Fatalf("the setup failure says %q, want the shared check stopped by a cancel", failed.Error())

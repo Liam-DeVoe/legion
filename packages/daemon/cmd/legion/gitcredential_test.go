@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -673,8 +674,9 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 // either directory, proves which token went. curl's last argument is the repository git named at
 // https://api.github.com, and the value after its --max-time is seconds of one decimal inside the
 // read's bound (programbound.Of of forkReadBound: the product's 10 s, and in this binary what is
-// left of its deadline when the read starts, read here before the read so it is no less than the read's);
-// leakguard's own tests read the guard's other curl options (Guard.CurlGet).
+// left of its deadline when the read starts, read here before the read so it is no less than the
+// read's), and no less than that bound less the time the call took, curlMargin and the tenth the
+// guard rounds down to; leakguard's own tests read the guard's other curl options (Guard.CurlGet).
 func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
 	forkOfAcme := forkReadFixture(t, "fork-of-a-served-repository.http")
@@ -689,8 +691,10 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 			github := newFakeGitHub(t, tc.token, printsAnswer(forkOfAcme, 0))
 			useForkRead(t, github.program, forkReadBound)
 			forkReadPane(t, root, tc.configDir)
+			readAt := time.Now()
 			bound := programbound.Of(&forkReadBound)
 			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
+			took := time.Since(readAt)
 			if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
 				t.Fatalf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
 			}
@@ -724,12 +728,18 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				maxTime = read.argv[at+1]
 			}
 			seconds, err := strconv.ParseFloat(maxTime, 64)
-			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > bound.Seconds() {
-				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most the read's bound of %s", read.argv, maxTime, bound.Round(100*time.Millisecond))
+			least := bound - took - forkCurlMargin - 100*time.Millisecond
+			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds < least.Seconds() || seconds > bound.Seconds() {
+				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, at least %s (the read's bound less the call's %s, curlMargin and a tenth) and at most the read's bound of %s",
+					read.argv, maxTime, least.Round(100*time.Millisecond), took.Round(time.Millisecond), bound.Round(100*time.Millisecond))
 			}
 		})
 	}
 }
+
+// forkCurlMargin is leakguard's curlMargin: the time the guard keeps back from a curl read's
+// --max-time, so curl stops itself before the read's deadline kills it.
+const forkCurlMargin = 500 * time.Millisecond
 
 // R2: a repository of an owner the bundle holds no directory for that GitHub answers, but that
 // is no fork of a repository the bundle serves, gets nothing, exit 1, after one read: a
@@ -1007,7 +1017,21 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 		killRecordedHelper(t, curlPid, curlSeconds)
 		answered, _ := startGitCredentialGet(t, forkRequest("outside-author/sample-project"))
 		got := testwait.Receive(t, "legion git-credential get to answer once the fork read's bound of 2 s passed", answered)
-		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", "stopped by its bound of 2 s")
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project")
+		// The guard gives curl what is left of the read's 2 s when curl starts, and names it in
+		// whole seconds (leakguard's Guard.run), so a loaded machine that starts curl late names
+		// less; one that leaves curl too little refuses the read before curl starts (curlTime).
+		if said := forkReadStopped.FindStringSubmatch(got.stderr); said != nil {
+			ran, _ := strconv.Atoi(said[1])
+			bound, _ := strconv.Atoi(said[2])
+			if bound <= 0 || bound > 2 || ran < bound {
+				t.Errorf("the helper printed %q: curl ran %d s under a bound of %d s, want a bound more than 0 and no more than the read's 2 s, and a run no shorter than it", got.stderr, ran, bound)
+			}
+		} else if strings.Contains(got.stderr, forkReadNoTime) {
+			t.Logf("the read's 2 s left curl too little before it started: %q", got.stderr)
+		} else {
+			t.Errorf("the helper printed %q, want curl stopped by its bound, or the read refused for too little time left", got.stderr)
+		}
 	})
 	t.Run("the stop reaches the sleep curl started", func(t *testing.T) {
 		root, acme := gitCredentialBundle(t)
@@ -1035,6 +1059,14 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 			func() bool { return !helperRunning(pid, sleepSeconds) })
 	})
 }
+
+// forkReadStopped is how the helper says a fork read its bound stopped: the whole seconds curl ran,
+// and the bound the guard gave it (leakguard's stoppedError).
+var forkReadStopped = regexp.MustCompile(`curl ran (\d+) s and was stopped by its bound of (\d+) s`)
+
+// forkReadNoTime is how the helper says a fork read whose bound left curl too little time before
+// curl started (leakguard's curlTime).
+const forkReadNoTime = "too little of the caller's bound is left for the read through curl"
 
 // gitCredentialAnswer is what one `legion git-credential get` answered: its exit status and what
 // it printed.

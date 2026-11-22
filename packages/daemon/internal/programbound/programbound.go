@@ -14,7 +14,9 @@
 package programbound
 
 import (
+	"fmt"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -37,10 +39,17 @@ var (
 	deadline time.Time
 )
 
+// init reads linkedDeadline. A value that is set and does not parse is a broken link of the
+// tests' build, which would quietly give the built binary the product bounds back, so it panics.
 func init() {
-	if linked, err := time.Parse(time.RFC3339Nano, linkedDeadline); err == nil {
-		deadline = linked
+	if linkedDeadline == "" {
+		return
 	}
+	linked, err := time.Parse(time.RFC3339Nano, linkedDeadline)
+	if err != nil {
+		panic(fmt.Sprintf("programbound: linkedDeadline %q is no RFC 3339 time: %v", linkedDeadline, err))
+	}
+	deadline = linked
 }
 
 // Register records each of bounds, with the value it holds now as the product's own. A package
@@ -67,8 +76,12 @@ func Of(bound *time.Duration) time.Duration {
 }
 
 // SetDeadline gives every registered bound no test has set the deadline end (Of). Only a test
-// binary calls it, from its TestMain, before any test runs.
+// binary calls it, from its TestMain, before any test runs; anywhere else it panics, so no
+// production caller can stretch every bound (testing.Testing).
 func SetDeadline(end time.Time) {
+	if !testing.Testing() {
+		panic("programbound: SetDeadline outside a test binary")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	deadline = end
