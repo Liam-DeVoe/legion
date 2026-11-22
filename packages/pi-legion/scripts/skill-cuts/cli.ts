@@ -22,6 +22,20 @@
  *   bun scripts/skill-cuts/cli.ts control <map|attack|same-job|sentence> --config <file>
  *       --key-file <file> --in <input.json> --out <result.json> [what to plant, below]
  *       [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
+ *   bun scripts/skill-cuts/cli.ts control craft (--remove-section <heading> | --join-lines <a>-<b>)
+ *       --copy-line <a>[-<b>] [--copy-kind <present|missing>]... [--copy-rule <id>]...
+ *       [--copy-claim <text>] --original-line <a>[-<b>|all] [--original-kind <k>]...
+ *       [--original-rule <id>]... [--original-claim <text>] <craft's flags> --out <dir>
+ *   bun scripts/skill-cuts/cli.ts craft-lines --list <craft-list.json>
+ *   bun scripts/skill-cuts/cli.ts craft --config <file> --key-file <file> --skill <dir>
+ *       --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text>
+ *       [--nearest <dir>]... [--skill-source <text>] --out <entry.json> [--request-log <file>]
+ *       [--budget-usd <n>] [--concurrency <n>]
+ *   bun scripts/skill-cuts/cli.ts nearest --config <file> --key-file <file> --skill <dir>
+ *       [--skill-source <text>] --candidates <source>=<root>... --out <row.json>
+ *       [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
+ *   bun scripts/skill-cuts/cli.ts craft-coverage --root <dir> [--source <text>]
+ *       [--skip <name>]... --entries <reader-findings.jsonl>
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>] [--query count|models]
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
@@ -52,8 +66,9 @@
  *       --skill <dir> --sessions <file> --seed <n> [--max <n>] --out <tasks.jsonl>
  *       [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]
  *
- * `count-sql`, `copies`, `attribute`, `set-count`, `build-cases` and `build-tasks` are the commands
- * of countsql.ts, copies.ts, attribute.ts, set-count.ts and build.ts, given their arguments whole.
+ * `count-sql`, `copies`, `attribute`, `set-count`, `craft-lines`, `build-cases` and `build-tasks`
+ * are the commands of countsql.ts, copies.ts, attribute.ts, set-count.ts, craftlist.ts and build.ts,
+ * given their arguments whole.
  *
  * **`behaviour`** runs the behaviour test of one skill: `--old` and `--new` are the skill's own
  * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
@@ -138,6 +153,28 @@
  * <id> --sentence <text>`. It writes `--out` whole: `{control, held, why, answer, refusals, spent,
  * usd}`.
  *
+ * **`craft`** runs the craft reader once (a fresh request, READER_TRIES tries) on one skill of
+ * ours: every `.md` file of `--skill`, the style text's rules with their ids (style.ts), the craft
+ * list's reader properties (craftlist.ts), and every `.md` file of each `--nearest` skill of
+ * theirs; it reads nothing else. It writes the entry to `--out` (`craftRead`) and the exact user
+ * message beside it, `<out less .json>.input.md`.
+ *
+ * **`nearest`** runs the nearest reader once on one skill (its name, whole description and
+ * SKILL.md body) and every `<root>/<name>/SKILL.md` of each `--candidates <source>=<root>`, and
+ * writes the row: the skill, the answer, and each named candidate with its whole description and
+ * source.
+ *
+ * **`craft-coverage`** (no model call) lists each `<name>/SKILL.md` under `--root` less the
+ * `--skip` names beside its craft entry in `--entries`, or none, and exits 1 naming each skill
+ * with no entry.
+ *
+ * **`control craft`** writes a copy of `--skill` with a section removed or list items joined, runs
+ * `craft` on the copy and on the unchanged skill, takes each side's candidates (gaps in its line
+ * range, of its kinds and rules), asks the claim reader once a candidate where the side gives a
+ * claim, and holds only when the copy has a candidate that states its claim (any, with none) and
+ * the unchanged skill has none that does (none at all, with none). It writes every input and
+ * answer under `--out`.
+ *
  * **`count-sql`** prints count.sql (or, with `--query models`, models.sql) filled for one store
  * and day.
  *
@@ -150,12 +187,13 @@
  * task stands for in its capture.
  *
  * Each model request goes through the request log (`loggedGateway`): one JSON line per request,
- * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour` and `load`, and
- * the `--out` file's path with `.requests.jsonl` added for `read` and `control`), holding what the
- * call was for, when it was asked for and sent and the calls in flight then, the session id it
- * went with, the model, the thinking type and budget, max_tokens, the temperature, the effort,
- * and the reply's answering model, ids, gateway headers, cache read and write tokens, usage and
- * dollars at list price; never the key and never a message's text.
+ * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour`, `load` and
+ * `control craft`, and the `--out` file's path with `.requests.jsonl` added for `read`, `control`,
+ * `craft` and `nearest`), holding what the call was for, when it was asked for and sent and the
+ * calls in flight then, the session id it went with, the model, the thinking type and budget,
+ * max_tokens, the temperature, the effort, and the reply's answering model, ids, gateway headers,
+ * cache read and write tokens, usage and dollars at list price; never the key and never a
+ * message's text.
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
  * did not hold, a call, a load test's task or an `--after-case` command that failed); 2 refused
@@ -166,6 +204,7 @@
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -192,7 +231,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, loadCases, Thinking } from "./cases";
+import { type Case, loadCases, Thinking, textLines } from "./cases";
 import {
   configFrom,
   json,
@@ -208,11 +247,13 @@ import {
   ghSource,
   localSource,
   type RepoSource,
+  readFrontmatter,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
 } from "./context";
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
+import { type CraftList, main as craftLinesMain, parseCraftList } from "./craftlist";
 import {
   BudgetSpent,
   bodyIdentity,
@@ -238,8 +279,15 @@ import { Host, LOAD_MODEL, LOAD_THINKING, runLoad } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
   ATTACK_PLANTED_LINE,
+  type ClaimAnswer,
+  ClaimInput,
   type Control,
+  type CraftAnswer,
+  type CraftGap,
+  type CraftInput,
+  craftInput,
   loadPrompt,
+  type NearestAnswer,
   plantControl,
   READER_NAMES,
   READERS,
@@ -248,6 +296,7 @@ import {
   runControl,
   runReader,
   SameJobInput,
+  skillFiles,
 } from "./readers";
 import { type Replayed, replayInterleaved } from "./replay";
 import {
@@ -278,6 +327,7 @@ import {
   stageOutcome,
 } from "./score";
 import { main as setCountMain } from "./set-count";
+import { type StyleRule, styleRules } from "./style";
 
 /** The longest one try of a model call may take: a reply with a long thinking budget is slow. */
 const CALL_TIMEOUT_MS = 600_000;
@@ -286,9 +336,9 @@ const DEFAULT_CONCURRENCY = 8;
 /** The most the runner's peak resident memory may reach: a case that ends above it stops the run
  *  (exit 3). */
 const MEMORY_LIMIT_BYTES = 1024 ** 3;
-/** The request log's name: `<out>/requests.jsonl` for `behaviour` and `load`, and the `--out`
- *  file's path with `.requests.jsonl` added for `read` and `control`, unless `--request-log`
- *  names one. */
+/** The request log's name: `<out>/requests.jsonl` for `behaviour`, `load` and `control craft`, and
+ *  the `--out` file's path with `.requests.jsonl` added for `read`, `control`, `craft` and
+ *  `nearest`, unless `--request-log` names one. */
 const REQUEST_LOG = "requests.jsonl";
 /** The directories under the system's temporary directory that `--scratch` and `--cache-dir`
  *  name unless given. */
@@ -576,6 +626,7 @@ const CONTROL_USAGE = [
   "  attack [--plant-line <line>]",
   "  same-job --planted <file holding one skill entry {id, repo, name, description}> --copy-of <id>",
   "  sentence --into <id> --sentence <text>",
+  "or the craft reader's control, which takes its own flags: control craft (--remove-section <heading> | --join-lines <a>-<b>) ...",
 ].join("\n");
 
 const CONTROL_KINDS = ["map", "attack", "same-job", "sentence"] as const;
@@ -631,9 +682,10 @@ function controlOf(
   }
 }
 
-/** `skill-cuts control <kind>`. */
+/** `skill-cuts control <kind>`; `control craft` is `controlCraftCommand`. */
 async function controlCommand(argv: readonly string[], io: CliIo): Promise<number> {
   const [kind, ...rest] = argv;
+  if (kind === "craft") return await controlCraftCommand(rest, io);
   if (!(CONTROL_KINDS as readonly (string | undefined)[]).includes(kind)) {
     throw new Refused(`control ${kind ?? ""}: no such control. ${CONTROL_USAGE}`);
   }
@@ -700,6 +752,819 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
     io.err(`control ${kind}: did not hold: ${error.message}; written to ${given.out}`);
     return EXIT.failed;
   }
+}
+
+// `craft`, `nearest`, `craft-coverage` and `control craft`: the readers of our skills.
+
+/** The SHA-256 of `bytes`, in hex. */
+function sha256(bytes: string | Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Whether `file` is a file; false where it, or a directory on its path, is none. */
+function isFile(file: string): boolean {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** `value` when it is a string that is not empty, else `otherwise`: a frontmatter field. */
+function textOr(value: unknown, otherwise: string): string {
+  return typeof value === "string" && value !== "" ? value : otherwise;
+}
+
+/** A skill directory as the readers read it: its name (its frontmatter `name`, else the
+ *  directory's) and every `.md` file under it (`skillFiles`), SKILL.md first. */
+interface ReadSkill {
+  readonly dir: string;
+  readonly name: string;
+  readonly files: readonly { readonly path: string; readonly text: string }[];
+}
+
+/** The skill in `dir`, which the flag `flag` names. Throws a refusal when `dir` cannot be read or
+ *  holds no SKILL.md. */
+function readSkill(dir: string, flag: string): ReadSkill {
+  let files: ReadSkill["files"];
+  try {
+    files = skillFiles(dir);
+  } catch (error) {
+    throw new Refused(`${flag} ${dir} cannot be read: ${messageFor(error)}`);
+  }
+  const skill = files.find((file) => file.path === "SKILL.md");
+  if (skill === undefined) throw new Refused(`${flag} ${dir} has no SKILL.md`);
+  return { dir, name: textOr(readFrontmatter(skill.text).name, path.basename(dir)), files };
+}
+
+/** Each file of `skill`: its path inside the skill and the SHA-256 of its text. */
+function fileDigests(skill: ReadSkill): { path: string; sha256: string }[] {
+  return skill.files.map((file) => ({ path: file.path, sha256: sha256(file.text) }));
+}
+
+/** The skills directly under `root`: each `<root>/<name>/SKILL.md`, by name. Throws a refusal
+ *  when `root` cannot be read or holds none. */
+function skillDirs(root: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch (error) {
+    throw new Refused(`cannot read the root ${root}: ${messageFor(error)}`);
+  }
+  const skills = names.filter((name) => isFile(path.join(root, name, "SKILL.md"))).sort();
+  if (skills.length === 0) throw new Refused(`the root ${root} holds no <name>/SKILL.md`);
+  return skills;
+}
+
+/** The file a reader's exact user message is written to: `out` less `.json`, and `.input.md`. */
+function inputFile(out: string): string {
+  return `${out.replace(/\.json$/, "")}.input.md`;
+}
+
+/** The bytes of `file`, which is `what`. Throws a refusal naming it. */
+function readBytes(file: string, what: string): Buffer {
+  try {
+    return readFileSync(file);
+  } catch (error) {
+    throw new Refused(`cannot read ${what} ${file}: ${messageFor(error)}`);
+  }
+}
+
+const CRAFT_OPTIONS = {
+  ...GATEWAY_OPTIONS,
+  skill: { type: "string" },
+  "skill-source": { type: "string" },
+  style: { type: "string" },
+  "style-source": { type: "string" },
+  craft: { type: "string" },
+  "craft-source": { type: "string" },
+  nearest: { type: "string", multiple: true },
+  out: { type: "string" },
+} as const;
+const CRAFT_REQUIRED = [
+  ...["config", "key-file", "skill", "style", "style-source", "craft", "craft-source"],
+  "out",
+] as const;
+const CRAFT_FLAGS =
+  "--config <skill-cuts.json> --key-file <file> --skill <dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> [--nearest <dir>]... [--skill-source <text>]";
+const CRAFT_USAGE = `usage: cli.ts craft ${CRAFT_FLAGS} --out <entry.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]`;
+
+/** What a craft read reads, all of it before any call: the skill, the style text and its rules,
+ *  the craft list, and each nearest skill of theirs, each with its source where it has one. */
+interface CraftReads {
+  readonly skill: ReadSkill;
+  readonly skillSource: string | null;
+  readonly style: { file: string; source: string; sha256: string; rules: readonly StyleRule[] };
+  readonly list: { file: string; source: string; sha256: string; list: CraftList };
+  readonly nearest: readonly ReadSkill[];
+}
+
+/** The reads of `craft`'s flags. Throws a refusal: a file it cannot read, a style text with no
+ *  rule, a craft list the shape refuses, a skill directory with no SKILL.md. */
+function craftReads(
+  given: Record<"skill" | "style" | "style-source" | "craft" | "craft-source", string>,
+  values: { readonly "skill-source"?: string; readonly nearest?: readonly string[] }
+): CraftReads {
+  const styleBytes = readBytes(given.style, "the style text");
+  let rules: StyleRule[];
+  try {
+    rules = styleRules(styleBytes.toString("utf8"));
+  } catch (error) {
+    throw new Refused(`the style text ${given.style} is refused: ${messageFor(error)}`);
+  }
+  const listBytes = readBytes(given.craft, "the craft list");
+  let list: CraftList;
+  try {
+    list = parseCraftList(listBytes.toString("utf8"));
+  } catch (error) {
+    throw new Refused(`the craft list ${given.craft} is refused: ${messageFor(error)}`);
+  }
+  return {
+    skill: readSkill(given.skill, "--skill"),
+    skillSource: values["skill-source"] ?? null,
+    style: { file: given.style, source: given["style-source"], sha256: sha256(styleBytes), rules },
+    list: { file: given.craft, source: given["craft-source"], sha256: sha256(listBytes), list },
+    nearest: (values.nearest ?? []).map((dir) => readSkill(dir, "--nearest")),
+  };
+}
+
+/** The craft reader's input of `reads`, with `skill` in place of its skill when given. Throws a
+ *  refusal when the reader's input schema refuses it. */
+function craftReaderInput(reads: CraftReads, skill: ReadSkill = reads.skill): CraftInput {
+  const checked = READERS.craft.input.safeParse(
+    craftInput({
+      skill: skill.name,
+      files: skill.files,
+      style: reads.style.rules,
+      list: reads.list.list,
+      nearest: reads.nearest,
+    })
+  );
+  if (!checked.success) {
+    throw new Refused(`the craft reader's input is refused: ${schemaFaults(checked.error)}`);
+  }
+  return checked.data;
+}
+
+/** One fresh request of the craft reader on `input`, the input of `skill`: writes its exact user
+ *  message to `inputFile(out)` and the entry to `out`, whole. The entry names the skill (its
+ *  directory, source and each file with its SHA-256), the style text (file, source, SHA-256 and
+ *  how many rules), the craft list (file, source, SHA-256 and the reader properties sent), each
+ *  nearest skill, the reader's prompt and settings, the answer (null when every reply was
+ *  refused), the refusals and the spend. */
+async function craftRead(
+  reads: CraftReads,
+  skill: ReadSkill,
+  input: CraftInput,
+  out: string,
+  gateway: Gateway
+): Promise<{ answer: CraftAnswer; usd: number } | { answer: undefined; failed: ReaderFailed }> {
+  const message = inputFile(out);
+  writeWhole(message, READERS.craft.render(input));
+  const entry = {
+    entry: "craft",
+    skill: {
+      name: skill.name,
+      dir: skill.dir,
+      source: reads.skillSource,
+      files: fileDigests(skill),
+    },
+    style: {
+      file: reads.style.file,
+      source: reads.style.source,
+      sha256: reads.style.sha256,
+      rules: reads.style.rules.length,
+    },
+    craft: {
+      file: reads.list.file,
+      source: reads.list.source,
+      sha256: reads.list.sha256,
+      readerProperties: input.properties.map((property) => property.id),
+    },
+    nearest: reads.nearest.map((each) => ({
+      name: each.name,
+      dir: each.dir,
+      files: fileDigests(each),
+    })),
+    reader: { prompt: "craft", settings: loadPrompt("craft").settings },
+    input: message,
+  };
+  try {
+    const result = await runReader("craft", input, gateway);
+    // runReader parsed it with the craft reader's answer schema.
+    const answer = result.answer as CraftAnswer;
+    const usd = usdOf(result.spent);
+    writeWhole(
+      out,
+      json({ ...entry, answer, refusals: result.refusals, spent: result.spent, usd })
+    );
+    return { answer, usd };
+  } catch (error) {
+    if (!(error instanceof ReaderFailed)) throw error;
+    const { refusals, spent } = error;
+    writeWhole(out, json({ ...entry, answer: null, refusals, spent, usd: usdOf(spent) }));
+    return { answer: undefined, failed: error };
+  }
+}
+
+/** The gaps of `answer` in a few words: `no gap`, or their count and their rules. */
+function gapWords(answer: CraftAnswer): string {
+  if (answer.gaps.length === 0) return "no gap";
+  const rules = [...new Set(answer.gaps.map((gap) => gap.rule))];
+  return `${counted(answer.gaps.length, "gap")} (${rules.join(", ")})`;
+}
+
+/** `skill-cuts craft`. */
+async function craftCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const values = parse(argv, CRAFT_OPTIONS, CRAFT_USAGE);
+  const given = required(values, CRAFT_REQUIRED, CRAFT_USAGE);
+  const reads = craftReads(given, values);
+  const input = craftReaderInput(reads);
+  const gateway = openGateway({
+    config: configFrom(given.config),
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const logged = loggedGateway(
+    gateway,
+    values["request-log"] ?? `${given.out}.${REQUEST_LOG}`,
+    "reader:craft"
+  );
+  const read = await craftRead(reads, reads.skill, input, given.out, logged);
+  if (read.answer === undefined) {
+    io.err(`craft: ${read.failed.message}; written to ${given.out}`);
+    return EXIT.failed;
+  }
+  io.out(
+    `craft: ${reads.skill.name}: ${gapWords(read.answer)}, $${read.usd.toFixed(4)} at list price; written to ${given.out}\n`
+  );
+  return EXIT.ok;
+}
+
+const NEAREST_USAGE =
+  "usage: cli.ts nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]";
+
+/** The text of a SKILL.md less its frontmatter (the block readFrontmatter reads), with the blank
+ *  lines before it and the white space after it trimmed. */
+function skillBody(text: string): string {
+  const plain = text.replace(/\r\n?/g, "\n");
+  const end = plain.startsWith("---") ? plain.indexOf("\n---", 3) : -1;
+  const after = end === -1 ? -1 : plain.indexOf("\n", end + 4);
+  const body = end === -1 ? plain : after === -1 ? "" : plain.slice(after + 1);
+  return body.replace(/^\n+/, "").trimEnd();
+}
+
+/** `skill-cuts nearest`: one fresh request of the nearest reader, on one skill and every skill of
+ *  each `--candidates` root. */
+async function nearestCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const values = parse(
+    argv,
+    {
+      ...GATEWAY_OPTIONS,
+      skill: { type: "string" },
+      "skill-source": { type: "string" },
+      candidates: { type: "string", multiple: true },
+      out: { type: "string" },
+    },
+    NEAREST_USAGE
+  );
+  const given = required(values, ["config", "key-file", "skill", "out"], NEAREST_USAGE);
+  const roots = (values.candidates ?? []).map((flag) => {
+    const at = flag.indexOf("=");
+    const source = flag.slice(0, Math.max(at, 0)).trim();
+    const root = flag.slice(at + 1);
+    if (at < 0 || source === "" || root === "") {
+      throw new Refused(`--candidates ${flag} is not <source>=<root>`);
+    }
+    return { source, root, names: skillDirs(root) };
+  });
+  if (roots.length === 0) throw new Refused(`--candidates required. ${NEAREST_USAGE}`);
+  const skillMd = path.join(given.skill, "SKILL.md");
+  if (!isFile(skillMd)) throw new Refused(`--skill ${given.skill} has no SKILL.md`);
+  const text = readFileSync(skillMd, "utf8");
+  const frontmatter = readFrontmatter(text);
+  const skill = {
+    name: textOr(frontmatter.name, path.basename(given.skill)),
+    description: textOr(frontmatter.description, ""),
+    body: skillBody(text),
+  };
+  const candidates = roots.flatMap(({ source, root, names }) =>
+    names.map((name) => {
+      const read = readFrontmatter(readFileSync(path.join(root, name, "SKILL.md"), "utf8"));
+      return { name: textOr(read.name, name), source, description: textOr(read.description, "") };
+    })
+  );
+  const checked = READERS.nearest.input.safeParse({ skill, candidates });
+  if (!checked.success) {
+    throw new Refused(`the nearest reader's input is refused: ${schemaFaults(checked.error)}`);
+  }
+  const gateway = openGateway({
+    config: configFrom(given.config),
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const logged = loggedGateway(
+    gateway,
+    values["request-log"] ?? `${given.out}.${REQUEST_LOG}`,
+    "reader:nearest"
+  );
+  const message = inputFile(given.out);
+  writeWhole(message, READERS.nearest.render(checked.data));
+  const row = {
+    row: "nearest",
+    skill: {
+      name: skill.name,
+      description: skill.description,
+      source: values["skill-source"] ?? null,
+      dir: given.skill,
+    },
+    candidates: roots.map(({ source, root, names }) => ({ source, root, skills: names.length })),
+    reader: { prompt: "nearest", settings: loadPrompt("nearest").settings },
+    input: message,
+  };
+  try {
+    const result = await runReader("nearest", checked.data, logged);
+    // runReader parsed it with the nearest reader's answer schema.
+    const answer = result.answer as NearestAnswer;
+    const nearest = answer.nearest.map((entry) => ({
+      ...entry,
+      description:
+        candidates.find((each) => each.name === entry.name && each.source === entry.source)
+          ?.description ?? "",
+    }));
+    const usd = usdOf(result.spent);
+    writeWhole(
+      given.out,
+      json({ ...row, answer, nearest, refusals: result.refusals, spent: result.spent, usd })
+    );
+    const named = answer.nearest.map((entry) => `${entry.name} (${entry.source})`).join(", ");
+    io.out(
+      `nearest: ${skill.name}: ${answer.verdict}${named === "" ? "" : `: ${named}`}, $${usd.toFixed(4)} at list price; written to ${given.out}\n`
+    );
+    return EXIT.ok;
+  } catch (error) {
+    if (!(error instanceof ReaderFailed)) throw error;
+    const { refusals, spent } = error;
+    writeWhole(
+      given.out,
+      json({ ...row, answer: null, nearest: [], refusals, spent, usd: usdOf(spent) })
+    );
+    io.err(`nearest: ${error.message}; written to ${given.out}`);
+    return EXIT.failed;
+  }
+}
+
+const COVERAGE_USAGE =
+  "usage: cli.ts craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>";
+
+/** What craft-coverage reads of a craft entry (`craftRead`): its skill's directory and source, and
+ *  whether it has an answer, with its gaps. */
+const CoverageEntry = z.looseObject({
+  entry: z.literal("craft"),
+  skill: z.looseObject({ dir: z.string().min(1), source: z.string().nullable() }),
+  answer: z.looseObject({ gaps: z.array(z.unknown()) }).nullable(),
+});
+type CoverageEntry = z.infer<typeof CoverageEntry>;
+
+/** `skill-cuts craft-coverage`: each skill of a root beside its craft entry, or none. */
+function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
+  const values = parse(
+    argv,
+    {
+      root: { type: "string" },
+      source: { type: "string" },
+      skip: { type: "string", multiple: true },
+      entries: { type: "string" },
+    },
+    COVERAGE_USAGE
+  );
+  const given = required(values, ["root", "entries"], COVERAGE_USAGE);
+  const skip = new Set(values.skip ?? []);
+  const all = skillDirs(given.root);
+  const names = all.filter((name) => !skip.has(name));
+  const skipped = all.filter((name) => skip.has(name));
+  let text: string;
+  try {
+    text = readFileSync(given.entries, "utf8");
+  } catch (error) {
+    throw new Refused(`cannot read the entries ${given.entries}: ${messageFor(error)}`);
+  }
+  // Each skill's craft entries of the source, by its directory's name, in the file's order; the
+  // file's other entries (a proposal's) are passed over.
+  const entries = new Map<string, CoverageEntry[]>();
+  for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim() === "") continue;
+    const where = `line ${index + 1} of the entries ${given.entries}`;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Refused(`${where} is not JSON`);
+    }
+    if (field(value, "entry") !== "craft") continue;
+    const entry = CoverageEntry.safeParse(value);
+    if (!entry.success) {
+      throw new Refused(`${where} is no craft entry: ${schemaFaults(entry.error)}`);
+    }
+    if (values.source !== undefined && entry.data.skill.source !== values.source) continue;
+    const name = path.basename(entry.data.skill.dir);
+    entries.set(name, [...(entries.get(name) ?? []), entry.data]);
+  }
+  const missing = names.filter((name) => !entries.has(name));
+  const lines = names.map((name) => {
+    const found = entries.get(name) ?? [];
+    const last = found.at(-1);
+    if (last === undefined) return `${name}: none`;
+    const what =
+      last.answer === null
+        ? "every reply refused"
+        : last.answer.gaps.length === 0
+          ? "no gap"
+          : counted(last.answer.gaps.length, "gap");
+    return `${name}: entry: ${what}${found.length > 1 ? ` (the last of ${found.length} entries)` : ""}`;
+  });
+  const source = values.source === undefined ? "" : `, source ${values.source}`;
+  const skippedWords = skipped.length === 0 ? "" : ` (skipped: ${skipped.join(", ")})`;
+  io.out(
+    `${[
+      `craft-coverage: ${given.root}${source}: ${counted(names.length, "skill")}${skippedWords}, ${names.length - missing.length} with an entry`,
+      ...lines,
+    ].join("\n")}\n`
+  );
+  if (missing.length === 0) return EXIT.ok;
+  io.err(
+    `craft-coverage: ${counted(missing.length, "skill")} under ${given.root} ${missing.length === 1 ? "has" : "have"} no entry: ${missing.join(", ")}`
+  );
+  return EXIT.failed;
+}
+
+const CONTROL_CRAFT_USAGE = `usage: cli.ts control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] [--copy-kind <present|missing>]... [--copy-rule <id>]... [--copy-claim <text>] --original-line <a>[-<b>|all] [--original-kind <present|missing>]... [--original-rule <id>]... [--original-claim <text>] ${CRAFT_FLAGS} --out <dir> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]`;
+
+const HEADING_LINE = /^(#{1,6})\s/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const FENCE_LINE = /^\s*(?:```|~~~)/;
+
+/** `lines` as the text of a file, with a final newline where `text` had one. */
+function withLines(text: string, lines: readonly string[]): string {
+  return `${lines.join("\n")}${text.endsWith("\n") ? "\n" : ""}`;
+}
+
+/** `text`, a SKILL.md, with the section `heading` removed: the heading's line and every line up
+ *  to the next heading of its level or a higher one (a `#` line in a fenced block is no heading).
+ *  Throws a refusal when no line, or more than one, is that heading. */
+function removeSection(text: string, heading: string): string {
+  const lines = textLines(text);
+  const at = lines.flatMap((line, index) => (line.trim() === heading.trim() ? [index] : []));
+  if (at.length !== 1) {
+    throw new Refused(
+      at.length === 0
+        ? `no line of SKILL.md is the heading ${heading}`
+        : `lines ${at.map((index) => index + 1).join(", ")} of SKILL.md are each the heading ${heading}`
+    );
+  }
+  const start = at[0] ?? 0;
+  const level = HEADING_LINE.exec(lines[start] ?? "")?.[1]?.length;
+  if (level === undefined) throw new Refused(`--remove-section ${heading} is no markdown heading`);
+  let end = start + 1;
+  let fenced = false;
+  for (; end < lines.length; end++) {
+    const line = lines[end] ?? "";
+    if (FENCE_LINE.test(line)) fenced = !fenced;
+    const depth = fenced ? undefined : HEADING_LINE.exec(line)?.[1]?.length;
+    if (depth !== undefined && depth <= level) break;
+  }
+  return withLines(text, [...lines.slice(0, start), ...lines.slice(end)]);
+}
+
+/** `text`, a SKILL.md, with the list items of lines `from` to `to` joined into one paragraph at
+ *  line `from`, their list markers removed. Throws a refusal when a line of them is no list item
+ *  or the range runs past the file's end. */
+function joinLines(text: string, from: number, to: number): string {
+  const lines = textLines(text);
+  if (to > lines.length) {
+    throw new Refused(
+      `--join-lines ${from}-${to} runs past the last line, ${lines.length}, of SKILL.md`
+    );
+  }
+  for (let line = from; line <= to; line++) {
+    if (!LIST_ITEM.test(lines[line - 1] ?? ""))
+      throw new Refused(`line ${line} of SKILL.md is no list item`);
+  }
+  const joined = lines
+    .slice(from - 1, to)
+    .map((line) => line.replace(LIST_ITEM, "").trim())
+    .join(" ");
+  return withLines(text, [...lines.slice(0, from - 1), joined, ...lines.slice(to)]);
+}
+
+/** One side of a control craft, the copy or the unchanged skill, and its criteria: a gap is a
+ *  candidate when its line is in `lines` (of SKILL.md; `all`: any line of any file) and, where
+ *  given, its kind is one of `kinds` and its rule one of `rules`. With a `claim`, the claim reader
+ *  answers whether each candidate states it. */
+interface Side {
+  readonly name: "copy" | "original";
+  readonly words: string;
+  readonly lines: { readonly from: number; readonly to: number } | "all";
+  readonly kinds: readonly string[];
+  readonly rules: readonly string[];
+  readonly claim: string | undefined;
+}
+
+/** A candidate of a side: its gap, and the claim reader's answer (null where the side gives no
+ *  claim; `states` null where every reply was refused), with the file it is written to. */
+interface Candidate {
+  readonly gap: CraftGap;
+  readonly claim: { states: boolean | null; reason: string; file: string } | null;
+}
+
+/** The side `name` of a control craft, as `values` give it. Throws a refusal on a line range,
+ *  a kind or a rule it cannot read, and on a claim of more than one line. */
+function sideOf(
+  name: Side["name"],
+  values: Record<string, string | readonly string[] | boolean | undefined>,
+  reads: CraftReads,
+  input: CraftInput
+): Side {
+  const flag = `--${name}`;
+  const range = String(values[`${name}-line`]);
+  const parts = /^(\d+)(?:-(\d+))?$/.exec(range);
+  const from = Number(parts?.[1]);
+  const to = Number(parts?.[2] ?? parts?.[1]);
+  if (name === "copy" ? parts === null : parts === null && range !== "all") {
+    throw new Refused(`${flag}-line ${range} is not <a>[-<b>]${name === "copy" ? "" : " or all"}`);
+  }
+  if (parts !== null && (from < 1 || to < from)) {
+    throw new Refused(`${flag}-line ${range} is not a range of lines from 1`);
+  }
+  const list = (key: string) => (values[key] ?? []) as readonly string[];
+  for (const kind of list(`${name}-kind`)) {
+    if (kind !== "present" && kind !== "missing")
+      throw new Refused(`${flag}-kind ${kind} is not present or missing`);
+  }
+  const ids = new Set([...input.style, ...input.properties].map((rule) => rule.id));
+  for (const rule of list(`${name}-rule`)) {
+    if (!ids.has(rule) && !/^nearest:[^:]+:.+:\d+$/.test(rule)) {
+      throw new Refused(
+        `${flag}-rule ${rule} is no rule of the style text ${reads.style.file}, no reader property of the craft list and no nearest:<skill>:<path>:<line>`
+      );
+    }
+  }
+  const claim = values[`${name}-claim`];
+  if (typeof claim === "string" && (claim.trim() === "" || claim.includes("\n"))) {
+    throw new Refused(`${flag}-claim is not one line`);
+  }
+  return {
+    name,
+    words: name === "copy" ? "the copy" : "the unchanged skill",
+    lines: parts === null ? "all" : { from, to },
+    kinds: list(`${name}-kind`),
+    rules: list(`${name}-rule`),
+    claim: typeof claim === "string" ? claim : undefined,
+  };
+}
+
+/** `side`'s criteria in words. */
+function sideWords(side: Side): string {
+  const lines =
+    side.lines === "all"
+      ? "any line"
+      : side.lines.from === side.lines.to
+        ? `line ${side.lines.from}`
+        : `lines ${side.lines.from}-${side.lines.to}`;
+  const kinds = side.kinds.length === 0 ? "any kind" : side.kinds.join(" or ");
+  const rules = side.rules.length === 0 ? "any rule" : side.rules.join(" or ");
+  const claim = side.claim === undefined ? "no claim" : `claim: ${side.claim}`;
+  return `${lines}, ${kinds}, ${rules}, ${claim}`;
+}
+
+/** The candidates of `side` among the gaps of `answer` (the craft answer on `skill`), each with
+ *  the claim reader's answer where the side gives a claim (one fresh request a candidate, its
+ *  input and answer written under `<out>/claims/`); whether the side holds, and why. The copy
+ *  holds when a candidate states its claim (any candidate, with no claim); the unchanged skill
+ *  when none does (no candidate, with no claim), and a candidate whose every claim reply was
+ *  refused does not let it hold. */
+async function judgeSide(
+  side: Side,
+  answer: CraftAnswer,
+  skill: ReadSkill,
+  out: string,
+  gateway: Gateway
+): Promise<{ candidates: Candidate[]; holds: boolean; why: string }> {
+  const gaps = answer.gaps.filter(
+    (gap) =>
+      (side.lines === "all" ||
+        (gap.file === "SKILL.md" && gap.line >= side.lines.from && gap.line <= side.lines.to)) &&
+      (side.kinds.length === 0 || side.kinds.includes(gap.kind)) &&
+      (side.rules.length === 0 || side.rules.includes(gap.rule))
+  );
+  const claim = side.claim;
+  const candidates = await Promise.all(
+    gaps.map(async (gap, index): Promise<Candidate> => {
+      if (claim === undefined) return { gap, claim: null };
+      const file = path.join(out, "claims", `${side.name}-${index + 1}.json`);
+      const input = ClaimInput.parse({ claim, gap, files: skill.files });
+      writeWhole(inputFile(file), READERS.claim.render(input));
+      const record = { side: side.name, candidate: index + 1, input, prompt: "claim" };
+      const settings = loadPrompt("claim").settings;
+      try {
+        const result = await runReader("claim", input, gateway);
+        // runReader parsed it with the claim reader's answer schema.
+        const said = result.answer as ClaimAnswer;
+        const { refusals, spent } = result;
+        writeWhole(
+          file,
+          json({ ...record, settings, answer: said, refusals, spent, usd: usdOf(spent) })
+        );
+        return { gap, claim: { ...said, file } };
+      } catch (error) {
+        if (!(error instanceof ReaderFailed)) throw error;
+        const { refusals, spent } = error;
+        writeWhole(
+          file,
+          json({ ...record, settings, answer: null, refusals, spent, usd: usdOf(spent) })
+        );
+        return { gap, claim: { states: null, reason: error.message, file } };
+      }
+    })
+  );
+  const places = (some: readonly Candidate[]) =>
+    some.map((each) => `${each.gap.file}:${each.gap.line}`).join(", ");
+  if (candidates.length === 0) {
+    return { candidates, holds: side.name === "original", why: `${side.words} has no candidate` };
+  }
+  if (claim === undefined) {
+    return {
+      candidates,
+      holds: side.name === "copy",
+      why: `${side.words} has a candidate: ${places(candidates)}`,
+    };
+  }
+  const stating = candidates.filter((each) => each.claim?.states === true);
+  const unknown = candidates.filter((each) => each.claim?.states === null);
+  if (stating.length > 0) {
+    return {
+      candidates,
+      holds: side.name === "copy",
+      why: `a candidate of ${side.words} states the claim: ${places(stating)}`,
+    };
+  }
+  if (side.name === "original" && unknown.length > 0) {
+    return {
+      candidates,
+      holds: false,
+      why: `the claim reader's every reply was refused for ${places(unknown)} of ${side.words}`,
+    };
+  }
+  return {
+    candidates,
+    holds: side.name === "original",
+    why: `no candidate of ${side.words} states the claim (${counted(candidates.length, "candidate")})`,
+  };
+}
+
+/** A candidate as a line of the report: its place, kind, rule and why, and its claim answer. */
+function candidateLine(candidate: Candidate): string {
+  const { gap, claim } = candidate;
+  const said =
+    claim === null
+      ? ""
+      : claim.states === null
+        ? ` (${claim.reason})`
+        : ` (${claim.states ? "states" : "does not state"} the claim: ${claim.reason})`;
+  return `  ${gap.file}:${gap.line} ${gap.kind} ${gap.rule}: ${gap.why}${said}`;
+}
+
+/** `skill-cuts control craft`: the craft reader's control (README.md, "control craft"). */
+async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const values = parse(
+    argv,
+    {
+      ...CRAFT_OPTIONS,
+      "remove-section": { type: "string" },
+      "join-lines": { type: "string" },
+      "copy-line": { type: "string" },
+      "copy-kind": { type: "string", multiple: true },
+      "copy-rule": { type: "string", multiple: true },
+      "copy-claim": { type: "string" },
+      "original-line": { type: "string" },
+      "original-kind": { type: "string", multiple: true },
+      "original-rule": { type: "string", multiple: true },
+      "original-claim": { type: "string" },
+    },
+    CONTROL_CRAFT_USAGE
+  );
+  const given = required(
+    values,
+    [...CRAFT_REQUIRED, "copy-line", "original-line"],
+    CONTROL_CRAFT_USAGE
+  );
+  const removed = values["remove-section"];
+  const joined = values["join-lines"];
+  if ((removed === undefined) === (joined === undefined)) {
+    throw new Refused(`give one of --remove-section and --join-lines. ${CONTROL_CRAFT_USAGE}`);
+  }
+  const reads = craftReads(given, values);
+  const originalInput = craftReaderInput(reads);
+  const sides = (["copy", "original"] as const).map((name) =>
+    sideOf(name, values, reads, originalInput)
+  );
+  const [copySide, originalSide] = sides as [Side, Side];
+  const skillText = reads.skill.files[0]?.text ?? "";
+  let changed: string;
+  if (removed !== undefined) changed = removeSection(skillText, removed);
+  else {
+    const range = /^(\d+)-(\d+)$/.exec(joined ?? "");
+    const [from, to] = [Number(range?.[1]), Number(range?.[2])];
+    if (range === null || from < 1 || to <= from) {
+      throw new Refused(`--join-lines ${joined} is not <a>-<b>, two lines from 1 with a before b`);
+    }
+    changed = joinLines(skillText, from, to);
+  }
+  const copies = path.join(given.out, "copy");
+  if (existsSync(copies)) {
+    throw new Refused(`--out ${given.out} holds a copy already: give a fresh --out`);
+  }
+  const gateway = openGateway({
+    config: configFrom(given.config),
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
+  const copyDir = path.join(copies, path.basename(path.resolve(given.skill)));
+  cpSync(given.skill, copyDir, { recursive: true });
+  writeWhole(path.join(copyDir, "SKILL.md"), changed);
+  const copy = readSkill(copyDir, "the copy");
+  const craftGateway = loggedGateway(gateway, log, "reader:craft");
+  const files = {
+    copy: path.join(given.out, "copy.json"),
+    original: path.join(given.out, "original.json"),
+  };
+  const [copyRead, originalRead] = await Promise.all([
+    craftRead(reads, copy, craftReaderInput(reads, copy), files.copy, craftGateway),
+    craftRead(reads, reads.skill, originalInput, files.original, craftGateway),
+  ]);
+  const change = removed !== undefined ? { removeSection: removed } : { joinLines: joined ?? "" };
+  const record = (side: Side, skill: ReadSkill, entry: string) => ({
+    skill: skill.dir,
+    entry,
+    lines: side.lines === "all" ? "all" : `${side.lines.from}-${side.lines.to}`,
+    kinds: side.kinds,
+    rules: side.rules,
+    claim: side.claim ?? null,
+  });
+  const report = [
+    `control craft: ${reads.skill.name}: ${removed !== undefined ? `--remove-section ${removed}` : `--join-lines ${joined}`}; the copy is ${copyDir}`,
+  ];
+  let control: Record<string, unknown>;
+  let held: boolean;
+  let why: string;
+  if (copyRead.answer === undefined || originalRead.answer === undefined) {
+    held = false;
+    why = [
+      ...(copyRead.answer === undefined ? [`on the copy, ${copyRead.failed.message}`] : []),
+      ...(originalRead.answer === undefined
+        ? [`on the unchanged skill, ${originalRead.failed.message}`]
+        : []),
+    ].join("; ");
+    control = {
+      copy: record(copySide, copy, files.copy),
+      original: record(originalSide, reads.skill, files.original),
+    };
+  } else {
+    const claimGateway = loggedGateway(gateway, log, "reader:claim");
+    const [copyJudged, originalJudged] = await Promise.all([
+      judgeSide(copySide, copyRead.answer, copy, given.out, claimGateway),
+      judgeSide(originalSide, originalRead.answer, reads.skill, given.out, claimGateway),
+    ]);
+    held = copyJudged.holds && originalJudged.holds;
+    why = `${copyJudged.why}; ${originalJudged.why}`;
+    control = {
+      copy: { ...record(copySide, copy, files.copy), ...copyJudged },
+      original: { ...record(originalSide, reads.skill, files.original), ...originalJudged },
+    };
+    for (const [side, judged] of [
+      [copySide, copyJudged],
+      [originalSide, originalJudged],
+    ] as const) {
+      report.push(
+        `${side.name} (${sideWords(side)}): ${counted(judged.candidates.length, "candidate")}; ${judged.holds ? "holds" : "does not hold"}: ${judged.why}`,
+        ...judged.candidates.map(candidateLine)
+      );
+    }
+  }
+  const usd = gateway.spend().usd;
+  writeWhole(
+    path.join(given.out, "control.json"),
+    json({ control: "craft", skill: given.skill, change, ...control, held, why, usd })
+  );
+  io.out(`${report.join("\n")}\n`);
+  const line = `control craft: ${held ? "held" : "not held"}: ${why}; $${usd.toFixed(4)} at list price; written to ${given.out}`;
+  if (held) io.out(`${line}\n`);
+  else io.err(line);
+  return held ? EXIT.ok : EXIT.failed;
 }
 
 // `behaviour`: the results of a case.
@@ -2146,6 +3011,11 @@ const USAGE = [
   "  behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file> ...",
   "  read --prompt <name> --in <input.json> --out <answer.json> ...",
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
+  "  control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] ... --original-line <a>[-<b>|all] ... <craft's flags> --out <dir>",
+  "  craft-lines --list <craft-list.json>",
+  "  craft --config <skill-cuts.json> --key-file <file> --skill <dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> [--nearest <dir>]... [--skill-source <text>] --out <entry.json> ...",
+  "  nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> ...",
+  "  craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
@@ -2193,6 +3063,14 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           gh: spawnGh,
           now: () => performance.now(),
         });
+      case "craft-lines":
+        return await craftLinesMain(rest, { out: io.out, err: io.err, gh: spawnGh });
+      case "craft":
+        return await craftCommand(rest, io);
+      case "nearest":
+        return await nearestCommand(rest, io);
+      case "craft-coverage":
+        return craftCoverageCommand(rest, io);
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }

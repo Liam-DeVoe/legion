@@ -54,6 +54,20 @@
  *   task that does not say. In `control` mode each message is a need task of the positive control
  *   (a session whose first assistant message read the skill): the answer takes every message, once,
  *   as a need task, and says only whether the skill governs its first step.
+ * - `craft`: one skill's files, the style text's rules with their ids (style.ts), the craft list's
+ *   properties that a reader checks (never one a behaviour test checks: `craftInput`), and each
+ *   nearest skill of theirs with its files; each style rule and reader property judged once (met,
+ *   gap or not applicable), and each gap with its file, its line (for a missing element, the line
+ *   it belongs after, 0 before line 1), the rule it is against (`S<n>`, `C<n>`, or
+ *   `nearest:<skill>:<path>:<line>`, a line of a nearest skill), its kind (`present` or `missing`)
+ *   and why. A rule judged gap has a gap, and a gap of a style rule or property is of a rule
+ *   judged gap.
+ * - `nearest`: one skill's name, whole description and SKILL.md body, and candidate skills (name,
+ *   source and whole description of each); the nearest one or two candidates, each by its name and
+ *   source with a verdict (`equivalent` or `partial`), what it lacks of the skill's job and a
+ *   reason, and a verdict over them (`none` exactly when it names none, else the best entry's).
+ * - `claim`: a claim about a skill, one gap of a craft answer and the skill's files; whether the
+ *   gap states the claim, with a reason (`control craft`).
  *
  * The positive controls of the map, attack, same-job and sentence readers (`runControl`) each
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
@@ -64,8 +78,10 @@ import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { textLines } from "./cases";
+import { type CraftList, readerProperties } from "./craftlist";
 import type { Gateway, MessagesBody, ReplyMessage, Spent } from "./gateway";
 import { TaskLabel } from "./score";
+import type { StyleRule } from "./style";
 
 /** The directory of the prompt files. */
 export const PROMPTS_DIR = path.join(import.meta.dir, "prompts");
@@ -932,6 +948,294 @@ const tasksReader: Reader<TasksInput, TasksAnswer> = {
     ].join("\n\n"),
 };
 
+// The craft reader: one skill of ours against the style text, the craft list's reader properties
+// and its nearest skills of theirs.
+
+const StyleId = z.string().regex(/^S[1-9]\d*$/, "is not S<n>");
+const PropertyId = z.string().regex(/^C[1-9]\d*$/, "is not C<n>");
+/** What the craft reader's `<style>` calls each part of the style text. */
+const PART_NAMES = {
+  order: "the order table",
+  rules: "the rules",
+  check: "the check before you commit",
+} as const;
+/** A skill and its files: a nearest skill of theirs. */
+const NamedSkill = z.strictObject({
+  name: z.string().regex(/^[^:\s]+$/, "is not a skill name with no colon and no space"),
+  files: z.array(File).min(1),
+});
+
+export const CraftInput = z
+  .strictObject({
+    skill: z.string().min(1),
+    files: z.array(File).min(1),
+    /** The style text's rules (style.ts's `styleRules`). */
+    style: z
+      .array(
+        z.strictObject({
+          id: StyleId,
+          line: z.int().positive(),
+          part: z.enum(["order", "rules", "check"]),
+          text: z.string().min(1),
+        })
+      )
+      .min(1),
+    /** The craft list's properties that a reader checks, and only those (`craftInput`). */
+    properties: z.array(
+      z.strictObject({ id: PropertyId, property: OneLine, readerLooksFor: z.string().min(1) })
+    ),
+    nearest: z.array(NamedSkill),
+  })
+  .superRefine((input, ctx) => {
+    uniqueIds(input.style, ctx, "style");
+    uniqueIds(input.properties, ctx, "properties");
+    uniqueIds(
+      input.nearest.map((skill) => ({ id: skill.name })),
+      ctx,
+      "nearest"
+    );
+  });
+export type CraftInput = z.infer<typeof CraftInput>;
+const CraftVerdict = z.enum(["met", "gap", "not-applicable"]);
+/** A gap of a craft answer: where it is (for a missing element, the line it belongs after, 0
+ *  before line 1), the rule it is against, whether something is wrong or absent, and why. */
+export const CraftGap = z.strictObject({
+  file: z.string().min(1),
+  line: z.int().nonnegative(),
+  rule: z.string().min(1),
+  kind: z.enum(["present", "missing"]),
+  why: z.string().min(1),
+});
+export type CraftGap = z.infer<typeof CraftGap>;
+export const CraftAnswer = z.strictObject({
+  judged: z.array(z.strictObject({ rule: z.string().min(1), verdict: CraftVerdict })),
+  gaps: z.array(CraftGap),
+});
+export type CraftAnswer = z.infer<typeof CraftAnswer>;
+/** A gap's rule against a nearest skill: `nearest:<skill>:<path>:<line>`. */
+const NEAREST_RULE = /^nearest:([^:]+):(.+):(\d+)$/;
+
+/** The craft reader's input for the skill `skill` and its files: each rule of the style text, the
+ *  properties of `list` that a reader checks (never one a behaviour test checks), and each nearest
+ *  skill of theirs with its files. */
+export function craftInput(given: {
+  readonly skill: string;
+  readonly files: readonly File[];
+  readonly style: readonly StyleRule[];
+  readonly list: CraftList;
+  readonly nearest: readonly { readonly name: string; readonly files: readonly File[] }[];
+}): CraftInput {
+  return {
+    skill: given.skill,
+    files: [...given.files],
+    style: given.style.map(({ id, line, part, text }) => ({ id, line, part, text })),
+    properties: readerProperties(given.list).map(({ id, property, readerLooksFor }) => ({
+      id,
+      property,
+      readerLooksFor,
+    })),
+    nearest: given.nearest.map(({ name, files }) => ({ name, files: [...files] })),
+  };
+}
+
+const craftReader: Reader<CraftInput, CraftAnswer> = {
+  input: CraftInput,
+  answer: (input) =>
+    CraftAnswer.superRefine((answer, ctx) => {
+      const ids = new Set([...input.style, ...input.properties].map((rule) => rule.id));
+      const judged = new Map<string, z.infer<typeof CraftVerdict>>();
+      for (const [index, { rule, verdict }] of answer.judged.entries()) {
+        if (!ids.has(rule)) {
+          refuse(
+            ctx,
+            ["judged", index, "rule"],
+            "is no style rule or reader property of the input"
+          );
+        } else if (judged.has(rule)) refuse(ctx, ["judged", index, "rule"], `judges ${rule} twice`);
+        else judged.set(rule, verdict);
+      }
+      for (const id of ids) if (!judged.has(id)) refuse(ctx, ["judged"], `judges no ${id}`);
+      const counts = lineCounts(input.files);
+      const nearest = new Map(input.nearest.map((skill) => [skill.name, lineCounts(skill.files)]));
+      const gapped = new Set<string>();
+      for (const [index, gap] of answer.gaps.entries()) {
+        const at = ["gaps", index];
+        const count = counts.get(gap.file);
+        if (count === undefined) refuse(ctx, [...at, "file"], "is no file of the skill");
+        else if (gap.kind === "present" && gap.line === 0) {
+          refuse(ctx, [...at, "line"], "is 0, and a present gap names a line from 1");
+        } else if (gap.line > count) {
+          refuse(ctx, [...at, "line"], `is past the last line, ${count}, of ${gap.file}`);
+        }
+        if (ids.has(gap.rule)) {
+          gapped.add(gap.rule);
+          if (judged.has(gap.rule) && judged.get(gap.rule) !== "gap") {
+            refuse(ctx, [...at, "rule"], `is ${gap.rule}, which the answer does not judge gap`);
+          }
+          continue;
+        }
+        const [, skill = "", file = "", line = "0"] = NEAREST_RULE.exec(gap.rule) ?? [];
+        const files = nearest.get(skill);
+        const lines = files?.get(file);
+        if (skill === "") {
+          refuse(
+            ctx,
+            [...at, "rule"],
+            "is no style rule, reader property or nearest skill's line of the input: give S<n>, C<n> or nearest:<skill>:<path>:<line>"
+          );
+        } else if (files === undefined) {
+          refuse(ctx, [...at, "rule"], `names ${skill}, no nearest skill of the input`);
+        } else if (lines === undefined) {
+          refuse(ctx, [...at, "rule"], `names ${file}, no file of the nearest skill ${skill}`);
+        } else if (Number(line) < 1 || Number(line) > lines) {
+          refuse(
+            ctx,
+            [...at, "rule"],
+            `names line ${line}, past the last line, ${lines}, of ${file} of ${skill}`
+          );
+        }
+      }
+      for (const [index, { rule, verdict }] of answer.judged.entries()) {
+        if (verdict === "gap" && ids.has(rule) && !gapped.has(rule)) {
+          refuse(ctx, ["judged", index, "verdict"], `judges ${rule} gap, and no gap names it`);
+        }
+      }
+    }),
+  render: (input) =>
+    [
+      `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
+      `<style>\n${input.style
+        .map(
+          (rule) =>
+            `<rule id="${rule.id}" line="${rule.line}" part="${PART_NAMES[rule.part]}">\n${rule.text}\n</rule>`
+        )
+        .join("\n")}\n</style>`,
+      `<craft-properties>\n${
+        input.properties.length === 0
+          ? "None."
+          : input.properties
+              .map(
+                (each) =>
+                  `<property id="${each.id}">\n<states>${each.property}</states>\n<looks-for>${each.readerLooksFor}</looks-for>\n</property>`
+              )
+              .join("\n")
+      }\n</craft-properties>`,
+      `<nearest>\n${
+        input.nearest.length === 0
+          ? "None: no nearest skill of theirs was given."
+          : input.nearest
+              .map((skill) => `<skill name="${skill.name}">\n${fileBlocks(skill.files)}\n</skill>`)
+              .join("\n")
+      }\n</nearest>`,
+    ].join("\n\n"),
+};
+
+// The nearest reader.
+
+export const NearestInput = z
+  .strictObject({
+    /** The skill: its name, its whole description and its SKILL.md less the frontmatter. */
+    skill: z.strictObject({ name: z.string().min(1), description: z.string(), body: z.string() }),
+    /** Each candidate: its name, the source it comes from, and its whole description. */
+    candidates: z
+      .array(
+        z.strictObject({
+          name: z.string().min(1),
+          source: z.string().min(1),
+          description: z.string(),
+        })
+      )
+      .min(1),
+  })
+  .superRefine((input, ctx) =>
+    uniqueIds(
+      input.candidates.map((candidate) => ({ id: `${candidate.name} of ${candidate.source}` })),
+      ctx,
+      "candidates"
+    )
+  );
+export type NearestInput = z.infer<typeof NearestInput>;
+const NearestVerdict = z.enum(["equivalent", "partial"]);
+export const NearestAnswer = z.strictObject({
+  verdict: z.enum(["equivalent", "partial", "none"]),
+  nearest: z
+    .array(
+      z.strictObject({
+        name: z.string().min(1),
+        source: z.string().min(1),
+        verdict: NearestVerdict,
+        missing: z.string().min(1),
+        reason: z.string().min(1),
+      })
+    )
+    .max(2),
+  reason: z.string().min(1),
+});
+export type NearestAnswer = z.infer<typeof NearestAnswer>;
+
+const nearestReader: Reader<NearestInput, NearestAnswer> = {
+  input: NearestInput,
+  answer: (input) =>
+    NearestAnswer.superRefine((answer, ctx) => {
+      const candidates = new Set(input.candidates.map((each) => `${each.name} of ${each.source}`));
+      const named = new Set<string>();
+      for (const [index, entry] of answer.nearest.entries()) {
+        const candidate = `${entry.name} of ${entry.source}`;
+        if (!candidates.has(candidate))
+          refuse(ctx, ["nearest", index], `${candidate} is no candidate`);
+        else if (named.has(candidate)) refuse(ctx, ["nearest", index], `names ${candidate} twice`);
+        named.add(candidate);
+      }
+      const best = answer.nearest.some((entry) => entry.verdict === "equivalent")
+        ? "equivalent"
+        : "partial";
+      if (answer.nearest.length === 0) {
+        if (answer.verdict !== "none")
+          refuse(ctx, ["verdict"], "is not none, and the answer names no candidate");
+      } else if (answer.verdict === "none") {
+        refuse(ctx, ["verdict"], "is none, and the answer names a candidate");
+      } else if (answer.verdict !== best) {
+        refuse(ctx, ["verdict"], `is ${answer.verdict}, not the best entry's verdict, ${best}`);
+      }
+    }),
+  render: (input) =>
+    [
+      `<skill name="${input.skill.name}">\n<description>\n${input.skill.description}\n</description>\n<body>\n${input.skill.body}\n</body>\n</skill>`,
+      `<candidates>\n${input.candidates
+        .map(
+          (each) =>
+            `<candidate name="${each.name}" source="${each.source}">\n${each.description}\n</candidate>`
+        )
+        .join("\n")}\n</candidates>`,
+    ].join("\n\n"),
+};
+
+// The claim reader: whether one gap of a craft answer states a claim about the skill.
+
+export const ClaimInput = z
+  .strictObject({ claim: OneLine, gap: CraftGap, files: z.array(File).min(1) })
+  .superRefine((input, ctx) => {
+    if (!input.files.some((file) => file.path === input.gap.file))
+      refuse(ctx, ["gap", "file"], "is no file of the skill");
+  });
+export type ClaimInput = z.infer<typeof ClaimInput>;
+export const ClaimAnswer = z.strictObject({
+  states: z.boolean(),
+  reason: z.string().refine((text) => text.trim() !== "", "is blank"),
+});
+export type ClaimAnswer = z.infer<typeof ClaimAnswer>;
+
+const claimReader: Reader<ClaimInput, ClaimAnswer> = {
+  input: ClaimInput,
+  answer: () => ClaimAnswer,
+  render: (input) =>
+    [
+      `<claim>\n${input.claim}\n</claim>`,
+      `<gap file="${input.gap.file}" line="${input.gap.line}" rule="${input.gap.rule}" kind="${input.gap.kind}">\n${input.gap.why}\n</gap>`,
+      `<skill>\n${fileBlocks(input.files)}\n</skill>`,
+    ].join("\n\n"),
+};
+
 /** Every reader, by the name of its prompt file. */
 export const READERS = {
   case: caseReader,
@@ -943,6 +1247,9 @@ export const READERS = {
   sentence: sentenceReader,
   names: namesReader,
   tasks: tasksReader,
+  craft: craftReader,
+  nearest: nearestReader,
+  claim: claimReader,
 } as const;
 export type ReaderName = keyof typeof READERS;
 export const READER_NAMES = Object.keys(READERS) as ReaderName[];
@@ -1002,7 +1309,7 @@ export async function runReader(
 export const ATTACK_PLANTED_LINE = "Run the tests where needed.";
 
 /** The `.md` files of the skill directory `dir` (SKILL.md and its references), SKILL.md first and
- *  the rest by path, as the map, attack and case readers take them. */
+ *  the rest by path, as the map, attack, case and craft readers take them. */
 export function skillFiles(dir: string): File[] {
   return readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))

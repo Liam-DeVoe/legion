@@ -34,8 +34,8 @@ from its commit's tree and its blobs; where GitHub cuts that tree short (a repos
 entries), the directory alone is read, along its path from the root tree, one level at a time
 where GitHub cuts its own tree short too, never from the whole repository's tarball. So
 `behaviour` and `load` need no GitHub token only with `--repos`. `copies`, `set-count`,
-`build-cases` and `build-tasks --profiles-out` read GitHub through `gh`, and only read it: GET
-calls, and GraphQL queries that read file contents in batches.
+`craft-lines`, `build-cases` and `build-tasks --profiles-out` read GitHub through `gh`, and only
+read it: GET calls, and GraphQL queries that read file contents in batches.
 
 ## Commands
 
@@ -178,7 +178,7 @@ was made before this rule and is refused.
 
 ```
 bun scripts/skill-cuts/cli.ts read --config <skill-cuts.json> --key-file <file> \
-  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks> \
+  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks|craft|nearest|claim> \
   --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>] \
   [--concurrency <n>]
 ```
@@ -199,7 +199,8 @@ bun scripts/skill-cuts/cli.ts control <kind> --config <skill-cuts.json> --key-fi
 ```
 
 Plants a known finding in a copy of the reader's input, runs the reader once, and writes whether
-its answer names that finding. It exits 0 when the control held, 1 when it did not.
+its answer names that finding. It exits 0 when the control held, 1 when it did not. The craft
+reader's control, `control craft`, takes its own flags (below).
 
 ### `count-sql`
 
@@ -405,6 +406,182 @@ It exits 0 when the count is written, 1 when a GitHub read fails or a pin cannot
 above, and 2 when it refuses its arguments, a configuration without sets, a `--not-read` that is
 not `<name>=<reason>`, rows or a spans file it cannot read, an `--out` inside `--rows`, or rows
 with a gap.
+
+### The craft list
+
+A JSON file written by hand (`craftlist.ts`): the properties of a skill that the craft guides of
+both skill sets state. Its shape:
+
+```json
+{"schemaVersion": 1,
+ "sets": {"<set>": {"repo": "<owner/name>", "commit": "<40 hex>", "guide": ["<path>", "..."]}},
+ "properties": [{"id": "C1", "property": "<one line>", "checkedBy": "reader",
+   "readerLooksFor": "<text>",
+   "lines": [{"set": "<set>", "path": "<path>", "line": 95, "lineEnd": 98}, "..."],
+   "example": {"set": "<set>", "path": "<path>", "line": 3}}]}
+```
+
+- `sets`: each set by its name, with its repository, the commit its guide is read at, and the
+  guide's paths.
+- `id`: `C1`, `C2`, … once each.
+- `lines`: the line (or the lines `line` to `lineEnd`) of each set's guide that states the
+  property, at least one of each set of `sets`. A property that one set's guide states and the
+  other's does not is no property of the list.
+- `checkedBy`: `reader` (the craft reader checks it on a skill's text) or `behaviour` (only a
+  behaviour test can check it).
+- `example`: for a reader property, one line of a skill of a set that shows it. `record`: for a
+  behaviour property, one `https://` link to a record of the sets' testing.
+
+Every command that reads the list refuses one that breaks a rule above.
+
+### `craft-lines`
+
+```
+bun scripts/skill-cuts/cli.ts craft-lines --list <craft-list.json>
+```
+
+Prints each set with its repository and commit, then for each property each cited line (or
+range) and its example line, with the text of those lines in the set's repository at its commit,
+and its record link. It reads each file once from GitHub through `gh` (`sets.ts`, `SetReads.text`)
+and calls no model. It exits 1 naming each cited line or example past the end of its file and
+each path the commit does not hold, 2 when it refuses its arguments or the list, and 0 otherwise.
+
+### The style text's rule ids
+
+The craft reader judges each rule of a style text (`--style`), by its id (`style.ts`): `S1`, `S2`,
+… in the text's order:
+
+1. each body row of the text's first table, the parts of a SKILL.md in order (not its header row
+   or its separator row);
+2. each top-level list item (`-`, `*`, `+` or `1.`) under a line or a heading named Rules
+   (`**Rules:**`, `## Rules`);
+3. each top-level list item under `**Check before you commit:**`.
+
+A section runs to the next heading, or to the next line that is only a bold label that ends in a
+colon. An item's indented lines (its `- Example:` and `- Source:` sub-items) belong to its text and
+get no id; a paragraph of a section gets none. A style text with no rule is refused. So a style
+text of 5 table rows and 10 numbered rules gets 15 ids, and one of 7 table rows, 10 items under
+Rules and 3 under Check before you commit gets 20, its check item "No paragraph holds more than
+one rule" `S19`.
+
+### `craft`
+
+```
+bun scripts/skill-cuts/cli.ts craft --config <skill-cuts.json> --key-file <file> \
+  --skill <skill dir> [--skill-source <text>] \
+  --style <style text> --style-source <text> --craft <craft-list.json> --craft-source <text> \
+  [--nearest <skill dir of theirs>]... --out <entry.json> \
+  [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
+```
+
+One fresh request of the `craft` reader (`readers.ts`, `prompts/craft.md`), asked again while its
+answer is refused, 3 tries in all. It reads every `.md` file of `--skill` (SKILL.md first), the
+style text and its rules with their ids, the craft list's properties whose `checkedBy` is `reader`
+(never a behaviour property), and every `.md` file of each `--nearest` skill; nothing else. The
+`--*-source` flags are words written into the entry as given (for example an artifact and its
+version, or a repository at a commit).
+
+The reader judges each style rule and each reader property once, `met`, `gap` or
+`not-applicable`, and lists each gap: its file and line (for a missing element, the line after
+which it belongs, 0 before line 1), the rule it is against (`S<n>`, `C<n>`, or
+`nearest:<skill>:<path>:<line>`, the line of a nearest skill that shows what this skill lacks or
+contradicts), its kind (`present` or `missing`) and why. The prompt says that no gap rests on a
+word or line count alone: a length the style text gives is a hint to the writer, not a threshold.
+An answer is refused when a gap names no file of the skill, a line past its end, or a rule that is
+none of these; when it judges a rule twice or not at all; when a rule judged `gap` has no gap; or
+when a gap is against a rule not judged `gap`.
+
+It writes the entry to `--out`: `{entry: "craft", skill: {name, dir, source, files: [{path,
+sha256}]}, style: {file, source, sha256, rules}, craft: {file, source, sha256, readerProperties},
+nearest: [{name, dir, files}], reader: {prompt, settings}, input, answer, refusals, spent, usd}`,
+where `answer` is `{judged, gaps}`, or null when every reply was refused. It writes the exact user
+message beside it, `<out less .json>.input.md` (`input`). It exits 0 with an answer, 1 when every
+reply was refused, and 2 when it refuses its arguments, a style text with no rule, a craft list,
+or a skill directory with no SKILL.md.
+
+### `nearest`
+
+```
+bun scripts/skill-cuts/cli.ts nearest --config <skill-cuts.json> --key-file <file> \
+  --skill <skill dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> \
+  [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
+```
+
+One fresh request of the `nearest` reader (`prompts/nearest.md`). Its input is the skill's name,
+its whole description and its SKILL.md less the frontmatter, and every skill of each `--candidates`
+root (each `<root>/<name>/SKILL.md`), with its name, its whole description and the source the flag
+gives it; the frontmatter is read as `context.ts`'s `readFrontmatter` reads it. Two candidates of
+different sources may have one name, so the answer names each candidate by its name and source:
+`{verdict, nearest: [{name, source, verdict, missing, reason}], reason}`, with at most two entries,
+each `equivalent` (it does the skill's job, for the same trigger) or `partial` (it does a material
+part of it); the answer's `verdict` is `none` exactly when it names none, else the best entry's.
+It writes the row to `--out`: `{row: "nearest", skill: {name, description, source, dir},
+candidates: [{source, root, skills}], reader, input, answer, nearest, refusals, spent, usd}`, where
+`nearest` is each entry with the candidate's whole description, and the exact user message beside
+it (`<out less .json>.input.md`). It exits 0 with an answer, 1 when every reply was refused, and 2
+when it refuses its arguments, a `--candidates` that is not `<source>=<root>`, a root that holds no
+skill, or a skill with no SKILL.md.
+
+### `craft-coverage`
+
+```
+bun scripts/skill-cuts/cli.ts craft-coverage --root <dir> [--source <text>] [--skip <name>]... \
+  --entries <reader-findings.jsonl>
+```
+
+The inventory of the craft entries. It lists each `<name>/SKILL.md` directly under `--root`, less
+each `--skip` name, and prints each with its craft entry (the last one, with its gap count, or
+`every reply refused`) or `none`. An entry is a line of `--entries` whose `entry` is `craft` (the
+other lines, a proposal's entry among them, are passed over), and it matches a skill by its
+skill directory's name and, with `--source`, by its `skill.source`. It calls no model and reads
+nothing else. It exits 1 naming each skill with no entry, 2 when it refuses its arguments, a root
+it cannot read or that holds no skill, or an entries file it cannot read or a line of it that is
+no JSON or no craft entry, and 0 otherwise.
+
+### `control craft`
+
+```
+bun scripts/skill-cuts/cli.ts control craft \
+  (--remove-section <heading> | --join-lines <a>-<b>) \
+  --copy-line <a>[-<b>] [--copy-kind <present|missing>]... [--copy-rule <id>]... \
+  [--copy-claim <text>] \
+  --original-line <a>[-<b>|all] [--original-kind <present|missing>]... [--original-rule <id>]... \
+  [--original-claim <text>] \
+  <craft's flags: --config, --key-file, --skill, --style, --style-source, --craft, \
+   --craft-source, --nearest, --skill-source> --out <dir> \
+  [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
+```
+
+The craft reader's control. It writes a changed copy of `--skill` under `<out>/copy/<skill dir
+name>/`, with SKILL.md changed: `--remove-section` removes the heading's line and every line up to
+the next heading of the same or a higher level; `--join-lines a-b` joins the list items of lines a
+to b into one paragraph at line a, their list markers removed. Then it runs `craft` on the copy
+and on the unchanged skill, each with the same `--nearest` (`<out>/copy.json` and
+`<out>/original.json`, each with its `.input.md`).
+
+Each side has its own criteria. A gap is a candidate of a side when its line is in the side's
+range (a line of SKILL.md: the copy's line numbers for the copy, the unchanged skill's for the
+original; `all`: any line of any file), and, where given, its kind is one of the side's kinds and
+its rule one of the side's rules (no `--*-kind`: any kind; no `--*-rule`: any rule). A rule is an
+`S<n>` of the style text, a reader `C<n>` of the craft list, or `nearest:<skill>:<path>:<line>`.
+Where a side gives a claim, the `claim` reader (`prompts/claim.md`, one fresh request a candidate)
+answers whether the candidate's gap states the claim, with its reason; each claim request's input
+and answer go to `<out>/claims/<side>-<n>.json`, with its `.input.md`.
+
+The control holds only when the copy has a candidate that states its claim (any candidate, where
+it gives no claim) and the unchanged skill has no candidate that states its claim (no candidate,
+where it gives no claim); a candidate of the unchanged skill whose every claim reply was refused
+does not let it hold. It writes `<out>/control.json` (each side's criteria, candidates with their
+claim answers, whether it holds and why; whether the control held and why; the spend), prints each
+side and its candidates, and exits 0 when the control held, 1 when it did not (or a craft read's
+every reply was refused), and 2 when it refuses its arguments, a heading SKILL.md does not hold
+once, a line of `--join-lines` that is no list item, or an `--out` that holds a copy already.
+
+A control that a removed section's check is missing, for example: `--remove-section '## Step 4:
+Verify' --copy-line 31-43 --copy-claim <the claim> --original-line all --original-claim <the
+claim>`. A control of the paragraph rule: `--join-lines 37-39 --copy-line 37 --copy-kind present
+--copy-rule <the paragraph rule's id> --original-line 38 --original-claim 'line 38 holds more than
+one rule'`.
 
 ### `build-cases` and `build-tasks`
 
@@ -658,8 +835,9 @@ the last candidate, and writes no file. A bound is refused without `--model` or 
 
 ## The request log
 
-Each model request of `behaviour`, `read`, `control` and `load` adds one JSON line to the request
-log (`<out>/requests.jsonl` for `behaviour` and `load`, `<out file>.requests.jsonl` otherwise):
+Each model request of `behaviour`, `read`, `control`, `craft`, `nearest` and `load` adds one JSON
+line to the request log (`<out>/requests.jsonl` for `behaviour`, `load` and `control craft`,
+`<out file>.requests.jsonl` otherwise):
 what the call was for; when it was asked for (`at`), when it got its place and was sent
 (`sentAt`) and how many calls were in flight then, it among them (`inFlight`); the session id it
 went with (`userId`: its `metadata.user_id` or `prompt_cache_key`); the model, the thinking type
