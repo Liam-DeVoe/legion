@@ -294,13 +294,27 @@ func moveLock(candidates string) string {
 // itself; and the retraction of a delivered_to ends it. What else holds a person in the thread is
 // a participates_in of theirs appended under an event that delivered them nothing from the ask and
 // was no own move of theirs, or a mention of them in the thread (Record).
+//
+// held reads the candidates as one array, `a.id = any(array(candidates))`, and not as `a.id in
+// (candidates)`: an array subquery is an initplan, whose value the planner does not see, so it
+// estimates the asks held as many with the write's arguments as without them, and the plan it makes
+// for the arguments of one execution (a custom plan) costs what the plan for none (the generic plan)
+// costs, but for the initplan's own read of the candidates. pgx sends the statement as a prepared
+// statement of its connection, and from its sixth execution Postgres keeps the generic plan only
+// where that plan is estimated no dearer than the custom plans with their planning, which for this
+// statement takes 3 to 6 ms. Read as a semi-join, a change of an issue's assignee had the generic
+// plan estimate the open asks of an average issue - 19 where c-p99's corpus holds one issue of 201
+// open asks, a plan of cost 2,420 - against the one its own issue holds, a plan of cost 212. Where a
+// run's statistics left the generic plan that much dearer, Postgres planned the statement afresh on
+// every execution, and patchIssue's p50 in c-p99 went from 3.5 ms to 6.5 ms: two runs in eight
+// (2026-11-22).
 func moveHeld(candidates string) string {
 	return `
 		held as (
 			select a.id::text as ask, user_threads_login(` + asks.AskedOfPersonExpression + `) as waiting,
 			       ` + graphstore.PersonOfSQL(`a.author`) + ` as asker
 			from asks a` + asks.AskedOfPersonJoins + `
-			where a.id in (` + candidates + `) and a.state = '` + asks.StateOpen + `'
+			where a.id = any(array(` + candidates + `)) and a.state = '` + asks.StateOpen + `'
 			  and (a.issue_key is null or i.closed_at is null)
 		),
 		reached as (
