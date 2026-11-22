@@ -50,7 +50,7 @@
 -- carries a null seq, the empty artifact and a null version. A decision it keeps over a row this
 -- release kept (its upsert on issue and ref) is written beside that row's seq, artifact and
 -- version, the earlier review's, so a rollback clears the three columns before that release is
--- pinned (docs/kubernetes.md, the update of parked_decisions under daemon API contract 206).
+-- pinned (docs/kubernetes.md, the update of parked_decisions under daemon API contract 225).
 --
 -- issues.awaiting_answered_version is the version of the changes request that answered a root's
 -- wait (record.Awaiting.AnsweredVersion), written beside the detail by the same answer, so the

@@ -1083,15 +1083,18 @@ const legionAgentSecretsLoginView = z.object({
  * `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `present` or `open` from the
  * sessions' reports (`legionCapabilityReportView`), and carries no `configLine`; `live` is no
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
- * alone decides) or `boot` (what boot measured); absent on every other row (contract 25). A gap is
- * reported here, never refused (contract 16). */
+ * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
+ * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
+ * room (contract 213). A caller below 213 is served that row without `source`, since the enum it
+ * was built with names two words: a value follows the contract the caller states, else its pod's
+ * lowest recorded contract. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
   name: nonEmptyString.optional(),
   status: z.enum(["present", "unchecked", "withheld", "decided", "open"]).optional(),
   detail: nonEmptyString.optional(),
   decision: nonEmptyString.optional(),
   configLine: nonEmptyString.optional(),
-  source: z.enum(["configuration", "boot"]).optional(),
+  source: z.enum(["configuration", "boot", "caches"]).optional(),
 });
 
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
@@ -1520,7 +1523,7 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 206): a live role's
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 225): a live role's
  * session asking, at the end of its turn, what its claim owes now. It carries what
  * `claims/activity` carries — the claim, the session the claim records, and the registration's
  * secret — and no generation, since the question changes nothing. A token the daemon does not
@@ -2363,6 +2366,6 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
   // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
   // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
-  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206).
+  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 225).
   LegionOwedResponse: ["owes", "work", "architect"],
 };

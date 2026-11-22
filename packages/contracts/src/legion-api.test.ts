@@ -2250,8 +2250,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2296,18 +2298,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2696,7 +2714,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // above 199: the repositories block's, at 202, and the repository correction's
   // (dispatch://INFRA-3136), at the daemon's own contract, which serves each issue without its
   // `repoBefore`, `repoCorrectedAt`, `repoChangePending` and `repoChangeReason`. So the golden's
-  // issues are compared with those four keys taken off, and nothing else beside the block moves.
+  // issues are compared with those four keys taken off, and no other key beside the block moves.
+  // One value strip stands above 199 as well: `caches`, the source of the repository-cache-room
+  // row, arrived at contract 213, so that row is served here without its `source`, every other
+  // field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2725,7 +2746,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         : issue,
     ])
   );
-  expect(narrowedRest).toEqual({ ...rest, issues: withoutCorrection });
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  expect(narrowedRest).toEqual({
+    ...rest,
+    issues: withoutCorrection,
+    capabilities: withoutCachesSource,
+  });
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
