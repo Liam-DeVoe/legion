@@ -100,6 +100,9 @@ type durableNames struct {
 	pool    Pool
 	logger  *slog.Logger
 	connect func(ctx context.Context, name string) (*nats.Conn, error)
+	// own is JetStream on the daemon's own connection, whose grant holds the fixed names' info: a
+	// fixed name, which no generation's connection is granted, is read there (durableServer.Info).
+	own jetstream.JetStream
 
 	mu sync.Mutex
 	// generations is JetStream on each open connection, by the physical name the connection is
@@ -131,7 +134,7 @@ func daemonNaming(project string) (consumernames.Naming, error) {
 	return consumernames.FamilyNaming(family, dispatchConsumerName(project))
 }
 
-func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
+func newDurableNames(own jetstream.JetStream, pool Pool, spec ConsumerSpec) (*durableNames, error) {
 	store, err := daemonStore(pool, spec.Project)
 	if err != nil {
 		return nil, err
@@ -140,7 +143,7 @@ func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
+	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, own: own, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:             store,
 		Server:            durableServer{d},
@@ -470,16 +473,21 @@ func (d *durableNames) physicalConfig(config jetstream.ConsumerConfig, name stri
 	return config
 }
 
-// durableServer is the daemon's consumers as its own NATS grant reaches them, each on its own
-// connection (durableNames.on): info, and no delete.
+// durableServer is the daemon's consumers as its own NATS grant reaches them: a fresh name's on its
+// own connection (durableNames.on), a fixed name's on the daemon's own: info, and no delete.
 type durableServer struct{ d *durableNames }
 
-// Info reads consumer name on name's own connection, through a handle of its own, as the readers
-// of a fixed name do.
+// Info reads consumer name through a handle of its own, as the readers of a fixed name do: a fresh
+// name on its own connection, and a fixed name on the daemon's own connection, whose grant holds
+// the fixed names' info. A fixed name reaches here only as a convert's replace's predecessor, which
+// Step 0 reads before it closes the replace (consumernames' finishFixedDelete).
 func (s durableServer) Info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
-	js, err := s.d.on(ctx, name)
-	if err != nil {
-		return nil, err
+	js := s.d.own
+	if consumernames.LogicalOf(name) != name {
+		var err error
+		if js, err = s.d.on(ctx, name); err != nil {
+			return nil, err
+		}
 	}
 	consumer, err := js.Consumer(ctx, notificationStream, name)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {

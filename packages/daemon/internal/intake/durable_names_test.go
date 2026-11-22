@@ -421,7 +421,7 @@ func TestACreateRefusedAtTheCapLeavesNoConnectionOpen(t *testing.T) {
 		t.Fatalf("create a consumer to fill the cap: %v", err)
 	}
 	spec := freshSpec(t, &lockedBuffer{}, js)
-	d, err := newDurableNames(pool, spec)
+	d, err := newDurableNames(js, pool, spec)
 	if err != nil {
 		t.Fatalf("the daemon's creator: %v", err)
 	}
@@ -438,6 +438,69 @@ func TestACreateRefusedAtTheCapLeavesNoConnectionOpen(t *testing.T) {
 		if len(held) != 0 {
 			t.Fatalf("after %d refused tries the daemon holds %d connections, of %v; want none", try, len(held), held)
 		}
+	}
+}
+
+// A convert's replace left open, its candidate the current and its old the fixed name, is
+// settled by the fresh boot's Step 0: the daemon reads the fixed name on its own connection, whose
+// grant holds the fixed names' info, never on a generation's, which no fixed name has. A fixed name
+// the stream no longer holds closes the replace and the boot opens. One the stream still holds
+// stops the boot naming the delete the daemon cannot make, and the replace stays open for the
+// operator, who deletes the fixed name. The control is the code before this row, which read the
+// fixed name through a generation's connection and stopped every such boot, the fixed name gone or
+// not.
+func TestAFreshBootSettlesAConvertsReplaceOnItsOwnConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		held bool
+	}{
+		{name: "the fixed name gone"},
+		{name: "the fixed name still held", held: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			cutover(t, pool, consumernames.CutoverDone)
+			js, stream, _ := freshJetStream(t)
+			spec := freshSpec(t, &lockedBuffer{}, js)
+			dispatch := dispatchConsumerName(spec.Project)
+			d, err := newDurableNames(js, pool, spec)
+			if err != nil {
+				t.Fatalf("the daemon's creator: %v", err)
+			}
+			fresh := consumernames.FreshName(dispatch)
+			created := d.physicalConfig(jetstream.ConsumerConfig{Durable: dispatch, FilterSubjects: []string{"notifications.dispatch.issue.>"}, AckPolicy: jetstream.AckExplicitPolicy}, fresh)
+			if _, err := stream.CreateConsumer(context.Background(), created); err != nil {
+				t.Fatalf("create the convert's candidate %s: %v", fresh, err)
+			}
+			if tc.held {
+				if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: dispatch, AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+					t.Fatalf("create the fixed name %s: %v", dispatch, err)
+				}
+			}
+			putRecord(t, pool, dispatch, consumernames.Record{Current: fresh, Start: 1, Op: &consumernames.Op{Kind: consumernames.OpReplace, Owner: "the operator's convert", Old: dispatch, Candidate: fresh, ReservedAt: time.Now()}})
+
+			consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+			if !tc.held {
+				if err != nil {
+					t.Fatalf("the fresh boot over a convert's replace whose fixed name is gone = %v, want it open", err)
+				}
+				consumers.Close()
+				if op := selectionOf(t, pool, dispatch).Op; op != nil {
+					t.Fatalf("the replace is still open after the boot: %+v", op)
+				}
+				return
+			}
+			if err == nil {
+				consumers.Close()
+				t.Fatal("the fresh boot opened over a convert's replace whose fixed name the stream still holds")
+			}
+			if !strings.Contains(err.Error(), "no consumer delete") {
+				t.Fatalf("the fresh boot over a held fixed name = %v, want it to name the delete the daemon cannot make", err)
+			}
+			if op := selectionOf(t, pool, dispatch).Op; op == nil || op.Old != dispatch {
+				t.Fatalf("the replace is %+v after the refused boot, want it still open naming %s", op, dispatch)
+			}
+		})
 	}
 }
 

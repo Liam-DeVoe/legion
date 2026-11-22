@@ -51,7 +51,7 @@ func namingDiffers(creator, table consumernames.Naming, logical string, keys []s
 func TestTheDaemonCreatorNamesAsTheFamilyTable(t *testing.T) {
 	spec := consumerSpec(&lockedBuffer{})
 	family := familyOf(t, spec.Project)
-	d, err := newDurableNames(nil, spec)
+	d, err := newDurableNames(nil, nil, spec)
 	if err != nil {
 		t.Fatalf("the daemon's creator for %s: %v", spec.Project, err)
 	}
