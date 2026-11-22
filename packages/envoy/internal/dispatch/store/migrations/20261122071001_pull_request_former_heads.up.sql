@@ -22,6 +22,15 @@
 --                              stood at then, a head of the lifecycle that close ended, which
 --                              neither the row's next move nor its re-key makes a former head.
 --                              The row goes when that row moves on, closes or is deleted.
+--   pull_request_former_heads_reads
+--                              one row per pull request whose candidates a settle is reading
+--                              GitHub about now: its canonical name, lowercased, and its number,
+--                              which are the same under every issue it moves to and every name it
+--                              is stored under, and until when the claim holds. The settle that
+--                              holds it makes the one read; a settle of any other issue leaves
+--                              the candidates to it (api/check_states.go, verifyFormerHeads). The
+--                              settle deletes the row once it wrote the answer; one its process
+--                              left on stopping is taken over once its time has passed.
 --
 -- pull_request_former_heads_keep() keeps it from the writes of pull_request_heads, in each
 -- writer's own transaction, by an update trigger and a delete trigger. There is no insert trigger:
@@ -124,6 +133,13 @@ create table pull_request_heads_ended (
     repo text not null,
     number integer not null,
     head_sha text not null,
+    primary key (repo, number)
+);
+
+create table pull_request_former_heads_reads (
+    repo text not null,
+    number integer not null,
+    until timestamptz not null,
     primary key (repo, number)
 );
 

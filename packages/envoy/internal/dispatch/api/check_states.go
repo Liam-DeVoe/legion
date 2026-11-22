@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -242,7 +243,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
-		unverified, err := c.verifyFormerHeads(ctx, issue, heads)
+		unverified, pending, err := c.verifyFormerHeads(ctx, issue, heads)
 		if err != nil {
 			return false, err
 		}
@@ -259,7 +260,8 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 			return false, err
 		}
 		// A candidate a failed read of GitHub left unverified owes the issue another settle, as a
-		// state that reads read_failed does: publish keeps a mark due after the backoff.
+		// state that reads read_failed does: publish keeps a mark due after the backoff. A candidate
+		// another settle's read holds owes one too, with no failure of this settle to count.
 		readFailed = readFailed || unverified
 		if c.hooks.afterCompute != nil {
 			c.hooks.afterCompute(issue)
@@ -268,7 +270,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if held {
 			artifact = &answer.VerificationArtifactID
 		}
-		if published, err = c.publish(ctx, issue, marks, failures, artifact, computed, readFailed); err != nil {
+		if published, err = c.publish(ctx, issue, marks, failures, artifact, computed, readFailed, pending); err != nil {
 			return false, err
 		}
 		c.server.publish(ctx, published...)
@@ -355,6 +357,12 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 	return former, nil
 }
 
+// formerHeadsReadClaim is how long a settle holds a pull request's verification read
+// (pull_request_former_heads_reads) before another may take it over: several times the bound of
+// the read itself (ciReadDeadline), so it outlasts every read a live settle makes, and short, so a
+// read whose process stopped is made again soon after.
+const formerHeadsReadClaim = time.Minute
+
 // verifyFormerHeads confirms the candidates (pull_request_former_heads rows whose verified is
 // false, migration 20261122071001): the commits of results the settle of an open pull request's
 // issue reads, recorded on any issue against a check of its Verification document, which the
@@ -364,15 +372,26 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 // commits, once (delivery.PullRequestMembership: the pull request's list of commits, and where
 // GitHub's cap of 250 leaves that list short, a comparison of each commit it does not name with
 // the head and the base branch), marks each member verified and deletes each commit GitHub showed
-// is not one, by those lists, in one statement. So the read happens once per such pull request and
-// candidate set, in the first settle of its issue after the install or the result, which the mark
-// of either owes. Only an answer GitHub gave about a commit decides it: a commit no read answered
-// for, whether a deployment with no App key, a repository the App cannot read, a 404 that says
-// nothing alone, a 5xx or a bound that ended withheld the answer, stays as it is, unverified
-// answers true, and the settle keeps a mark that reads it again after the backoff, so the read
-// comes again once access or configuration returns. Until then a candidate is no former head.
-// Only a failed read of Dispatch's own database is an error.
-func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (unverified bool, err error) {
+// is not one, by those lists, in one statement. Only an answer GitHub gave about a commit decides
+// it: a commit no read answered for, whether a deployment with no App key, a repository the App
+// cannot read, a 404 that says nothing alone, a 5xx or a bound that ended withheld the answer,
+// stays as it is, unverified answers true, and the settle keeps a mark that reads it again after
+// the backoff, so the read comes again once access or configuration returns. Until then a
+// candidate is no former head. Only a failed read of Dispatch's own database is an error.
+//
+// The read is made once per pull request, whichever issue's settle makes it: an issue's lease
+// serializes the settles of one issue, and a pull request moves between issues. So a settle first
+// claims the pull request's read, keyed by its canonical name and number, which are the same
+// under every issue and every name (pull_request_former_heads_reads), and only then reads its
+// candidates again: a settle that held the claim before may have decided them since this settle
+// first read them. A claim another settle holds leaves the candidates to that settle: pending
+// answers true, and the settle keeps a mark due after the backoff with no failure counted, which
+// reads them again should that settle stop before it decides them. The statement that writes the
+// answer gives the claim back, and where the pull request now belongs to another issue than the
+// one settling and a candidate became a former head, marks that issue owed, so its settle
+// publishes there. A claim is taken over once formerHeadsReadClaim has passed, so a process that
+// stopped mid-read holds no pull request for long.
+func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (unverified, pending bool, err error) {
 	pool := c.server.deps.Store.Pool
 	var repos []string
 	var numbers []int
@@ -382,35 +401,60 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		}
 	}
 	if len(repos) == 0 {
-		return false, nil
+		return false, false, nil
 	}
 	rows, err := pool.Query(ctx, `
-		select former.repo, former.number, array_agg(former.head_sha order by former.head_sha)
+		select distinct former.repo, former.number
 		from pull_request_former_heads former
 		join unnest($1::text[], $2::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
 		where not former.verified
-		group by former.repo, former.number
 		order by former.repo, former.number`, repos, numbers)
 	if err != nil {
-		return false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
+		return false, false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
 	}
 	type pullRequest struct {
-		repo       string
-		number     int
-		candidates []string
+		repo   string
+		number int
 	}
 	pulls, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pullRequest, error) {
 		var held pullRequest
-		return held, row.Scan(&held.repo, &held.number, &held.candidates)
+		return held, row.Scan(&held.repo, &held.number)
 	})
 	if err != nil {
-		return false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
+		return false, false, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
 	}
 	for _, held := range pulls {
-		readCtx, cancel := ciReadBound(ctx)
-		membership, readErr := delivery.PullRequestMembership(readCtx, c.server.deps.GitHub, held.repo, held.number, held.candidates)
-		cancel()
-		var kept, dropped int
+		var claimed time.Time
+		switch err := pool.QueryRow(ctx, `
+			insert into pull_request_former_heads_reads (repo, number, until)
+			values (lower(pull_request_canonical_repo($1)), $2, now() + make_interval(secs => $3))
+			on conflict (repo, number) do update set until = excluded.until
+			where pull_request_former_heads_reads.until <= now()
+			returning until`, held.repo, held.number, formerHeadsReadClaim.Seconds()).Scan(&claimed); {
+		case errors.Is(err, pgx.ErrNoRows):
+			pending = true
+			slog.Info("dispatch: check states left the candidate former heads of a pull request to the settle reading them",
+				"issue", issue, "repo", held.repo, "number", held.number)
+			continue
+		case err != nil:
+			return false, false, fmt.Errorf("claim the read of %s#%d's commits: %w", held.repo, held.number, err)
+		}
+		var candidates []string
+		if err := pool.QueryRow(ctx, `
+			select coalesce(array_agg(head_sha order by head_sha), '{}') from pull_request_former_heads
+			where repo = $1 and number = $2 and not verified`, held.repo, held.number).Scan(&candidates); err != nil {
+			return false, false, fmt.Errorf("read the candidate former heads of %s#%d: %w", held.repo, held.number, err)
+		}
+		var membership delivery.CommitMembership
+		var readErr error
+		if len(candidates) > 0 {
+			readCtx, cancel := ciReadBound(ctx)
+			membership, readErr = delivery.PullRequestMembership(readCtx, c.server.deps.GitHub, held.repo, held.number, candidates)
+			cancel()
+		}
+		// The claim is given back by its own time, so a settle whose claim another took over after
+		// it expired leaves that settle's claim alone.
+		var kept, dropped, owedElsewhere int
 		if err := pool.QueryRow(ctx, `
 			with kept as (
 				update pull_request_former_heads set verified = true
@@ -420,22 +464,31 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 				delete from pull_request_former_heads
 				where repo = $1 and number = $2 and head_sha = any($4) and not verified
 				returning 1
+			), released as (
+				delete from pull_request_former_heads_reads
+				where repo = lower(pull_request_canonical_repo($1)) and number = $2 and until = $5
+			), owed as (
+				select check_states_owe(head.issue_key) from pull_request_heads head
+				where head.repo = $1 and head.number = $2 and head.state = 'open' and head.issue_key <> $6
+					and exists (select 1 from kept)
 			)
-			select (select count(*) from kept), (select count(*) from dropped)`,
-			held.repo, held.number, nonNilStrings(membership.Members), nonNilStrings(membership.Outside)).Scan(&kept, &dropped); err != nil {
-			return false, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
+			select (select count(*) from kept), (select count(*) from dropped), (select count(*) from owed)`,
+			held.repo, held.number, nonNilStrings(membership.Members), nonNilStrings(membership.Outside), claimed, issue).Scan(&kept, &dropped, &owedElsewhere); err != nil {
+			return false, false, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
 		}
 		attrs := []any{"issue", issue, "repo", held.repo, "number", held.number, "kept", kept, "dropped", dropped,
-			"unknown", len(membership.Unknown), "complete", membership.Complete, "pages", membership.Pages,
+			"unknown", len(membership.Unknown), "owed_elsewhere", owedElsewhere, "complete", membership.Complete, "pages", membership.Pages,
 			"pull_reads", membership.PullReads, "compares", membership.Compares, "commit_reads", membership.CommitReads}
 		if len(membership.Unknown) > 0 {
 			unverified = true
 			slog.Warn("dispatch: read which candidate former heads are a pull request's commits", append(attrs, "error", readErr)...)
 			continue
 		}
-		slog.Info("dispatch: check states verified the candidate former heads of a pull request", attrs...)
+		if len(candidates) > 0 {
+			slog.Info("dispatch: check states verified the candidate former heads of a pull request", attrs...)
+		}
 	}
-	return unverified, nil
+	return unverified, pending, nil
 }
 
 // formerHeadsApart is each of former, formerHeadsOf's, at a commit of a repository no open head of
@@ -645,11 +698,13 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // the mark goes then. A mark kept so carries the failure of a state that reads read_failed; with
 // no mark kept, such a state leaves one new mark, due later as retryAfter answers and with no
 // notification, which the fence does not wait for, since read_failed is what that state
-// publishes. Only the settler writes check_states, under the issue's lease, so the rows it reads
-// here are the newest published. It answers the events, which the caller publishes once the
-// transaction has committed.
+// publishes. pending, a candidate former head another settle's read holds (verifyFormerHeads),
+// leaves such a mark too, counting no failure, since this settle made no read that failed. Only
+// the settler writes check_states, under the issue's lease, so the rows it reads here are the
+// newest published. It answers the events, which the caller publishes once the transaction has
+// committed.
 func (c *checkStatesSettler) publish(
-	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
+	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed, pending bool,
 ) ([]model.Event, error) {
 	s := c.server
 	tx, err := s.begin(ctx)
@@ -791,7 +846,7 @@ func (c *checkStatesSettler) publish(
 			where id = any($1)`, unsettled, c.schedule.minGap.Seconds(), counted); err != nil {
 			return nil, fmt.Errorf("keep the marks of %s a head this settle did not read holds: %w", issue, err)
 		}
-	case readFailed:
+	case readFailed || pending:
 		if _, err := tx.Exec(ctx, `
 			insert into check_states_owed (issue_key, due_at, failures) values ($1, now() + make_interval(secs => $2), $3)`,
 			issue, c.retryAfter(failures).Seconds(), counted); err != nil {

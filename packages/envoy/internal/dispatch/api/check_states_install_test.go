@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // seedInstallCandidates writes what the install leaves for #70 of the rig's repository: each of
@@ -249,5 +250,47 @@ func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestL
 				t.Fatalf("the settle read #70's commits %d times, want once", reads)
 			}
 		})
+	}
+}
+
+// TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue: the install seeded H1 for #70
+// of ACME-1, and ACME-1's settle starts its read of #70's commits, which GitHub holds open. #70
+// then moves to another issue, whose settle runs while that read is open: it reads #70's commits
+// no second time. Once the first read answers, H1 is verified and the other issue owed, and its
+// settle publishes at H1 with no further read.
+func TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue(t *testing.T) {
+	rig := newCheckStatesRig(t, checkStatesTwoChecks)
+	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	settleOwed(t, rig)
+	other := rig.fileIssue(t, "Where the pull request moves")
+	rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
+	entered, release := rig.github.holdPullCommitsOnce(t, 70)
+	seedInstallCandidates(t, rig, eachHeadH1)
+
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		rig.settler.settle(store.WithTransactionTracking(context.Background()), rig.issue)
+	}()
+	ciAwait(t, "the first settle's read of #70's commits", entered)
+	upsertHead(t, rig, 70, eachHeadH2, other, "A change")
+	second := rig.newSettler(t, "check states of the other issue")
+	if ran, failed, _ := second.settle(store.WithTransactionTracking(t.Context()), other); !ran || failed {
+		t.Fatalf("the settle of %s answered ran=%v failed=%v, want a settle that ran", other, ran, failed)
+	}
+	if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
+		t.Fatalf("%s's settle read #70's commits while %s's read of them was open: %d reads, want one", other, rig.issue, reads)
+	}
+	release()
+	ciAwait(t, "the first settle to end", first)
+	settleOwed(t, rig)
+	if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
+		t.Fatalf("#70 holds the former heads %v once the read answered, want H1, verified", got)
+	}
+	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH1, ""); !held {
+		t.Fatalf("%s published nothing at H1 once the read of #70's commits confirmed it", other)
+	}
+	if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
+		t.Fatalf("#70's commits were read %d times in all, want once", reads)
 	}
 }
