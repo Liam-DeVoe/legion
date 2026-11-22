@@ -30,7 +30,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -278,10 +277,12 @@ func (d *durableReach) relaunching(o reachKeeperOptions, claims ...supervise.Cla
 }
 
 // relaunchedOnce has the first daemon's sweep mark worker out of reach and relaunch it, and
-// answers the claim as the database holds it once the relaunch's launch is written. put is that
-// daemon's write of the reach record; waits is whether the sweep's relaunch returns, which it
-// does not in a daemon that ends inside its write of the record.
-func (d *durableReach) relaunchedOnce(worker supervise.Claim, put func(context.Context, claim.Token, supervise.Reach) (bool, error), waits bool) supervise.Claim {
+// answers the claim as the database holds it once that daemon has done all it does: put is its
+// write of the reach record, and reached, where it is not nil, is closed when that daemon reaches
+// the write it ends inside, since its relaunch then never returns; otherwise the relaunch returns.
+// Either way the relaunch's launch, which writes the claim more than once, is over: a claim read
+// at its first write is written again under the next daemon.
+func (d *durableReach) relaunchedOnce(worker supervise.Claim, put func(context.Context, claim.Token, supervise.Reach) (bool, error), reached <-chan struct{}) supervise.Claim {
 	d.t.Helper()
 	d.put(worker)
 	generation := d.claim(worker.Token).Generation
@@ -289,10 +290,18 @@ func (d *durableReach) relaunchedOnce(worker supervise.Claim, put func(context.C
 	k := d.relaunching(d.options(false, put), worker)
 	d.at(21 * time.Minute)
 	k.sweep(context.Background(), d.stored())
-	if waits {
+	if reached == nil {
 		k.wait()
+	} else {
+		select {
+		case <-reached:
+		case <-time.After(time.Minute):
+			d.t.Fatal("the first daemon did not reach its write of the relaunch's reach record within a minute")
+		}
 	}
-	testwait.Eventually(d.t, "the relaunch's launch to be written", func() bool { return d.claim(worker.Token).Generation > generation })
+	if d.claim(worker.Token).Generation <= generation {
+		d.t.Fatalf("the first daemon's relaunch left the worker at generation %d, want its launch past %d", d.claim(worker.Token).Generation, generation)
+	}
 	if !d.claim(worker.Token).Reach.Unreachable() {
 		d.t.Fatal("the first daemon did not mark the worker out of reach")
 	}
@@ -336,7 +345,7 @@ func TestARelaunchIsRefusedForSixHoursAcrossARefusedReachWriteAndARestart(t *tes
 	d := newDurableReach(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
 	lift := d.refuseReachWrites("relaunchedAt")
-	relaunched := d.relaunchedOnce(worker, d.st.PutClaimReach, true)
+	relaunched := d.relaunchedOnce(worker, d.st.PutClaimReach, nil)
 	lift()
 	if !relaunched.Reach.RelaunchedAt.IsZero() || relaunched.Reach.Relaunched {
 		t.Fatalf("the keeper's record of the relaunch reached the store: %+v; want the store to have refused it", relaunched.Reach)
@@ -349,17 +358,19 @@ func TestARelaunchIsRefusedForSixHoursAcrossARefusedReachWriteAndARestart(t *tes
 func TestARelaunchIsRefusedForSixHoursAcrossADaemonThatEndsBeforeItsReachWrite(t *testing.T) {
 	d := newDurableReach(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
-	ended := make(chan struct{})
+	ended, reached := make(chan struct{}), make(chan struct{})
 	t.Cleanup(func() { close(ended) })
 	put := func(ctx context.Context, token claim.Token, reach supervise.Reach) (bool, error) {
 		if !reach.RelaunchedAt.IsZero() {
-			// The daemon ends here: this write is never made, and nothing after it runs.
+			// The daemon ends here: this write is never made, and nothing after it runs. Its
+			// relaunch has returned, so its launch has written the claim for the last time.
+			close(reached)
 			<-ended
 			return false, errors.New("the daemon ended before it made this write")
 		}
 		return d.st.PutClaimReach(ctx, token, reach)
 	}
-	relaunched := d.relaunchedOnce(worker, put, false)
+	relaunched := d.relaunchedOnce(worker, put, reached)
 	if !relaunched.Reach.RelaunchedAt.IsZero() || relaunched.Reach.Relaunched {
 		t.Fatalf("the keeper's record of the relaunch reached the store: %+v; want the daemon to have ended first", relaunched.Reach)
 	}
