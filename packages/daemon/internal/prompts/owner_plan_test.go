@@ -794,7 +794,8 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 // daemon does. In `accepting` no worker holds the phase (RoleFor gives the architect), though a
 // merge forward asks the implementer and the reviewer for work there. The architect's move back is
 // refused outside `accepting` (backwardRefusal), so it asks the role that works an ancestor's phase.
-// An architect's move back counts a conflict round where the head conflicts with its base. A
+// An architect's move back counts no review round, so no conflict round either: only a review's
+// request for changes or the fail of a step of the type review counts one (Engine.recordRound). A
 // tester's fail goes to the step its `return_to` names. Besides a pending report's `wake_at`, the
 // bound and the retry of an unreported look start a look (check.go). A turn's working copy can
 // hold another role's edits, a tester may build from a copy outside the workspace, a session is
@@ -805,7 +806,8 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
 	const resumed = "holds edits made before this turn, your own resumed ones or another role's"
 	const onlyYours = "holds only your own resumed edits"
-	conflict := "counting a review round, or a conflict round where the record holds the head conflicting with its base"
+	const conflict = "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one"
+	const oldConflict = "counting a review round, or a conflict round where the record holds the head conflicting with its base"
 	for _, tc := range []struct {
 		part       string
 		read       func(*testing.T) string
@@ -816,16 +818,17 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 			[]string{
 				"where no worker holds the phase and the acceptance is yours",
 				"ask the role that works the ancestor's phase, the implementer in `retro` or the merger in `merging`, to take the ancestor back with `request_backward_move`",
+				conflict,
 			},
-			[]string{"where no worker runs", "; take the ancestor back with `request_backward_move`"},
+			[]string{"where no worker runs", "; take the ancestor back with `request_backward_move`", "counts a review round, or a conflict round"},
 		},
 		{
 			"go/architect-root.md", func(t *testing.T) string { return goPart(t, "architect-root.md") },
-			[]string{conflict, "No worker holds that phase"}, []string{"No worker runs there"},
+			[]string{conflict, "No worker holds that phase"}, []string{"No worker runs there", oldConflict},
 		},
 		{
 			"go/architect.md", func(t *testing.T) string { return goPart(t, "architect.md") },
-			[]string{conflict, "No worker holds that phase"}, []string{"No worker runs there"},
+			[]string{conflict, "No worker holds that phase"}, []string{"No worker runs there", oldConflict},
 		},
 		{
 			"go/tester.md", func(t *testing.T) string { return goPart(t, "tester.md") },
