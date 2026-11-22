@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsversion"
 )
 
@@ -734,6 +736,36 @@ func TestARestoreRefusesAStoreReadLiveAtPrepareAndGoneNow(t *testing.T) {
 	require.NotNil(t, rig.consumer(logical), "F is on the stream")
 	require.Equal(t, selection.CutoverRolledBack, rig.marker(daemonFamily("rsa")).Cutover)
 	require.NoError(t, rig.release(rollback))
+}
+
+// restore's delete sends CONSUMER.DELETE only for a consumer whose info shows it is the logical
+// name's own (selection.OwnsFamily): a name whose info read answers not found is recorded as gone
+// in the run's account, with no delete sent, as deleteIfOwned does. Control: bc298f14f4's delete
+// (unchanged since 23d91824d7), which sends CONSUMER.DELETE for that name with no owner check.
+func TestRestoresDeleteSendsNoDeleteForANameItCannotSee(t *testing.T) {
+	ctx := context.Background()
+	config := "authorization {\n  users = [ { user: \"admin\", password: \"admin\" } ]\n}\nno_auth_user: \"admin\"\n"
+	_, url := testnats.StartConfig(t, "jetstream {}\n"+config, []string{"-js"}, true)
+	nc := testnats.Connect(t, url)
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: notifications, Subjects: []string{"notifications.>"}})
+	require.NoError(t, err)
+	watcher := testnats.Connect(t, url)
+	var deletes atomic.Int32
+	sub, err := watcher.Subscribe("$JS.API.CONSUMER.DELETE.>", func(*nats.Msg) { deletes.Add(1) })
+	require.NoError(t, err)
+	require.NoError(t, watcher.Flush())
+
+	const name = "session~NeverOnTheStreamAAAAA"
+	rr := &restoreRun{nc: nc, left: &restoreLeft{}}
+	require.NoError(t, rr.delete(ctx, restoreSetName{Family: familySession, Logical: "ses_unseen", Target: "s-ses_unseen"}, name))
+	require.NoError(t, nc.Flush())
+	require.NoError(t, watcher.Flush())
+	require.NoError(t, sub.Drain())
+	require.Eventually(t, func() bool { return !sub.IsValid() }, 30*time.Second, 10*time.Millisecond, "the watcher never finished draining")
+	require.Zero(t, deletes.Load(), "restore's delete sent CONSUMER.DELETE for a name its info read did not find")
+	require.Equal(t, []string{name}, rr.left.deleted, "the run's account records the name as gone")
 }
 
 // The operator's readers' record fence (checkRecordFence) passes a record restore --finish left,
