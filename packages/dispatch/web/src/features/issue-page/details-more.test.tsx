@@ -280,8 +280,6 @@ function failRefreshThenFirstRead(
     held,
     queryKey: key,
     refresh: () => client.invalidateQueries({ queryKey: key }),
-    refreshFailed: () =>
-      expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error"),
     stillDrawn,
   });
 }

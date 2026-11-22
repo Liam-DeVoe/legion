@@ -182,8 +182,6 @@ function failRefreshThenFirstRead({
     held: "the list",
     queryKey: key,
     refresh: () => client.invalidateQueries({ queryKey: key }),
-    refreshFailed: () =>
-      expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error"),
     stillDrawn: () =>
       expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull(),
   });

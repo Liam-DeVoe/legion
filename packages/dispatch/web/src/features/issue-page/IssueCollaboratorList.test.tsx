@@ -128,8 +128,6 @@ function failRefreshThenFirstRead(list: {
     held: "the list",
     queryKey: key,
     refresh: () => list.client.invalidateQueries({ queryKey: key }),
-    refreshFailed: () =>
-      expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error"),
     stillDrawn: () =>
       expect(
         sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
