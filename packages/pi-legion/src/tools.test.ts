@@ -2391,9 +2391,9 @@ test("set_status children", async () => {
     ["backlog", "include"],
     ["icebox", "unlink"],
   ] as const) {
-    await expect(
-      run({ op: "set_status", issue: "LEGION-208", status, children })
-    ).resolves.toEqual({ content: [{ type: "text", text: JSON.stringify(queued) }], details: queued });
+    await expect(run({ op: "set_status", issue: "LEGION-208", status, children })).resolves.toEqual(
+      { content: [{ type: "text", text: JSON.stringify(queued) }], details: queued }
+    );
     expect(calls.at(-1)).toEqual([
       "issueStatus",
       { grantId: "controller-grant-1", issue: "LEGION-208", status, children },
@@ -2433,7 +2433,10 @@ test("set_status parent", async () => {
 
   await expect(
     run({ op: "set_status", issue: "LEGION-209", status: "todo", parent: "include" })
-  ).resolves.toEqual({ content: [{ type: "text", text: JSON.stringify(queued) }], details: queued });
+  ).resolves.toEqual({
+    content: [{ type: "text", text: JSON.stringify(queued) }],
+    details: queued,
+  });
   expect(calls.at(-1)).toEqual([
     "issueStatus",
     { grantId: "controller-grant-1", issue: "LEGION-209", status: "todo", parent: "include" },
@@ -2481,17 +2484,23 @@ test("rerun_child parent", async () => {
   const run = (parameters: Record<string, unknown>) =>
     tool.execute("", parameters, undefined, undefined, context());
 
-  await expect(
-    run({ op: "rerun_child", issue: "LEGION-209", parent: "include" })
-  ).resolves.toEqual({ content: [{ type: "text", text: JSON.stringify(queued) }], details: queued });
+  await expect(run({ op: "rerun_child", issue: "LEGION-209", parent: "include" })).resolves.toEqual(
+    { content: [{ type: "text", text: JSON.stringify(queued) }], details: queued }
+  );
   expect(calls.slice(-2)).toEqual([
-    ["grant", { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" }],
+    [
+      "grant",
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
+    ],
     ["childRerun", { grantId: "grant-208", issue: "LEGION-209", parent: "include" }],
   ]);
 
   const before = calls.length;
   for (const [parameters, text] of [
-    [{ op: "rerun_child", issue: "LEGION-209", parent: "unlink" }, "rerun_child's parent must be include"],
+    [
+      { op: "rerun_child", issue: "LEGION-209", parent: "unlink" },
+      "rerun_child's parent must be include",
+    ],
     [
       { op: "rerun_child", issue: "LEGION-209", children: "include" },
       'rerun_child does not accept field "children"; it takes issue, parent',
