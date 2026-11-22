@@ -17,7 +17,7 @@ child's own architect asks the architect above it.
 | `carried-gate-opened` | The gate this root carried opened. Start and release nothing. |
 | `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). A reviewer's `APPROVED`: section 6. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
-| `checks-red` | The daemon asked the implementer to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, wait for the reviewer's approval of the new head ("A conflicting head" in acceptance.md). |
+| `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in acceptance.md). |
 | `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head (no `topic`): sort its `reason` as your role prompt says. |
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason. A phase worker makes the repository change. |
