@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -49,14 +50,15 @@ const (
 
 // The labels of the run's own tools that no spec of Dispatch states: find_tools; propose_plan,
 // which names how many changes its plan holds; the review of a plan; the test hooks; and a tool
-// no label names, which a model made up or call_tool names wrongly. search and read are
-// dispatch_search and dispatch_read, and their labels are those tools' own.
+// no label names, which a model made up or call_tool names wrongly: a slip (slipWords), which the
+// model mends itself. search and read are dispatch_search and dispatch_read, and their labels are
+// those tools' own.
 var (
 	findToolsLabel   = contracts.ToolLabel{Kind: kindLook, Verb: "look", Present: "Looking for a way to {need}", Past: "Looked for a way to {need}"}
 	proposePlanLabel = contracts.ToolLabel{Kind: kindPlan, Verb: "propose", Present: "Proposing a plan of {changes}", Past: "Proposed a plan of {changes}"}
 	reviewPlanLabel  = contracts.ToolLabel{Kind: kindReview, Verb: "review", Present: "Reviewing the plan", Past: "Reviewed the plan"}
 	hookLabel        = contracts.ToolLabel{Kind: kindRead, Verb: "run", Present: "Running a test hook", Past: "Ran a test hook"}
-	unknownToolLabel = contracts.ToolLabel{Kind: kindRead, Verb: "run", Present: "Running a tool Dispatch does not have", Past: "Ran a tool Dispatch does not have"}
+	unknownToolLabel = contracts.ToolLabel{Kind: kindRead, Verb: "try", Present: "Trying a step Dispatch does not have", Past: "Tried a step Dispatch does not have"}
 )
 
 // goingReadLabels are the labels of the reads the server makes by going's names (going.ReadSpecs),
@@ -568,9 +570,57 @@ func cutWords(words string, limit int) string {
 // call could not do what its present form says, in its base verb, and why (failedReason): "Could
 // not read DEMO-12: you have no access".
 func failedWords(label contracts.ToolLabel, arguments map[string]any, result string, answer SavedResult, answered bool) string {
+	return cutWords(fmt.Sprintf("Could not %s: %s", didWords(label, arguments), failedReason(result, answer, answered)), labelLimit)
+}
+
+// didWords is what a call does, as its label's present form says it, in its base verb: "read
+// DEMO-12".
+func didWords(label contracts.ToolLabel, arguments map[string]any) string {
 	_, object, _ := strings.Cut(fillLabel(label.Present, arguments), " ")
-	did := strings.TrimSpace(label.Verb + " " + object)
-	return cutWords(fmt.Sprintf("Could not %s: %s", did, failedReason(result, answer, answered)), labelLimit)
+	return strings.TrimSpace(label.Verb + " " + object)
+}
+
+// slipWords is the words of a model's call that failed by the model's own slip, which it mends
+// with its next call and its person cannot act on, and whether result says the call is one: a
+// tool no findable tool is named (noSuchTool), or that the server has not (UNKNOWN_TOOL), "Tried a
+// step Dispatch does not have"; a change call_tool does not run, which only a plan makes, "Tried
+// to update DEMO-7 outside a plan"; and arguments refused - by the tool's schema or translation
+// (CALL_REFUSED), by the block's spec (BLOCK_REFUSED), by the route as a bad request (400), or by
+// the agent's own tool, which takes other arguments - "Tried to read DEMO-12 the wrong way". A
+// call refused for anything else - no access, not found, the run stopped, the server failing - is
+// no slip: its failure sentence (failedWords) says why. Only the model's own calls are judged so:
+// a refused row of a plan the person approved is the person's to know of.
+func slipWords(label contracts.ToolLabel, arguments map[string]any, result string) (string, bool) {
+	answer, answered := parseResult(result)
+	switch {
+	case answered:
+		if answer.Status != http.StatusBadRequest {
+			return "", false
+		}
+	case strings.HasPrefix(result, noSuchTool), refusedCode(result) == agentwire.CodeUnknownTool:
+		return unknownToolLabel.Past, true
+	case strings.Contains(result, writeNotRunHere):
+		return cutWords("Tried to "+didWords(label, arguments)+" outside a plan", labelLimit), true
+	case strings.HasPrefix(result, callRefused):
+		if code := refusedCode(result); code != agentwire.CodeCallRefused && code != agentwire.CodeBlockRefused {
+			return "", false
+		}
+	case strings.HasPrefix(result, callCutOff), strings.HasPrefix(result, callNotMade), strings.HasPrefix(result, planUnread),
+		strings.Contains(result, toolPanicked), strings.Contains(result, fileNotText):
+		return "", false
+	}
+	return cutWords("Tried to "+didWords(label, arguments)+" the wrong way", labelLimit), true
+}
+
+// refusedCode is the code of the server's refusal result tells the model of (serverCall: "the
+// call was refused (CODE): ..."), "" where it tells none.
+func refusedCode(result string) string {
+	rest, refused := strings.CutPrefix(result, callRefused+" (")
+	if !refused {
+		return ""
+	}
+	code, _, _ := strings.Cut(rest, ")")
+	return code
 }
 
 // failedReason is why a call failed, in words: the status Dispatch answered it with, or what

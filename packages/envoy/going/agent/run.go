@@ -75,10 +75,14 @@ type callFrame struct {
 }
 
 // toolFrame is the data of a tool frame: the step, the tool, its one-line note for the model and
-// whether it was refused; and what the bar shows of it: its label, the past form of its tool's
-// label filled from its arguments, with the count of a list it answered, or one sentence that
-// says why it failed (ended); the kind of step it is; the count of the results of a list or a
-// search; and the items it named and answered, by key or reference.
+// whether it failed in a way its person can act on - no access, not found, the run stopped; and
+// what the bar shows of it: its label, the past form of its tool's label filled from its
+// arguments, with the count of a list it answered, or one sentence that says why it failed
+// (ended), or, for a slip, what the model tried (slipWords); the kind of step it is; the count of
+// the results of a list or a search; the items it named and answered, by key or reference; and
+// whether it is a slip: a call of the model's that failed by the model's own guess - a tool no one
+// has, arguments its tool refuses, a change outside a plan - which the model mends itself, and
+// which the bar shows as no failure. A slip is not an error.
 type toolFrame struct {
 	Step  int      `json:"step"`
 	Tool  string   `json:"tool"`
@@ -88,6 +92,7 @@ type toolFrame struct {
 	Kind  string   `json:"kind"`
 	Count int      `json:"count,omitempty"`
 	Items []string `json:"items"`
+	Slip  bool     `json:"slip"`
 }
 
 // replyFrame is the data of a reply frame: the step, the reply's prose, the tools it called, the
@@ -738,9 +743,10 @@ const toolPanicked = "it panicked"
 // toolRun is the agentloop Run of tool in the step whose model call is numbered base: it makes the
 // call do makes as the step numbered after base by the tool call's index, which it shows the bar
 // first as a running call (callStarted), and saves it as that step, with what the model is told of
-// its result and the words the bar shows of it (ended). A do that panics is saved as a refusal
-// naming the panic, and the panic goes on to agentloop's recover, so the run's next step, which
-// starts from the saved steps, tells the model the tool failed.
+// its result and the words the bar shows of it (ended), or, for a call that failed by the model's
+// own slip, what it tried (slipWords), as a slip and no error. A do that panics is saved as a
+// refusal naming the panic, and the panic goes on to agentloop's recover, so the run's next step,
+// which starts from the saved steps, tells the model the tool failed.
 func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, step int, input json.RawMessage) (string, bool)) func(context.Context, agentloop.ToolCall) (string, bool) {
 	return func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
 		step := base + call.Index
@@ -762,7 +768,14 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 			}
 			line := note(fmt.Sprintf("%s %s: %s", tool, input, result))
 			end := ended(label, arguments, result, refused)
-			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused, Label: end.label, Kind: kind, Count: end.count, Items: end.items})
+			slip := false
+			if refused {
+				var words string
+				if words, slip = slipWords(label, arguments, result); slip {
+					end.label = words
+				}
+			}
+			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused && !slip, Label: end.label, Kind: kind, Count: end.count, Items: end.items, Slip: slip})
 			frames := []agentwire.Frame{{Name: frameTool, Data: frame}}
 			if block, drew := w.drawn.LoadAndDelete(step); drew {
 				frames = append(frames, agentwire.Frame{Name: frameBlock, Data: block.(json.RawMessage)})

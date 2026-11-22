@@ -179,7 +179,7 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		},
 		{
 			Name:        toolFindTools,
-			Description: "Find the tools of Dispatch that fit a need, and the two reads outside it (GitHub and the web): each tool's name, the first sentence of what it does and its arguments. A need that is one tool's name alone, such as dispatch_doc_edit, answers that tool with all it does. Call it only for a tool whose name or arguments you do not know.",
+			Description: "Find the tools of Dispatch that fit a need, and the two reads outside it (GitHub and the web): each tool's name, the first sentence of what it does and its arguments. A need that is one tool's name alone, such as dispatch_doc_edit, answers that tool with all it does. Call it for any tool the system prompt does not name and no find_tools answer of this run gave you.",
 			Schema: schemaOf([]contracts.ToolField{
 				{Name: "need", Kind: contracts.ToolFieldString, Required: true, Description: "What you need a tool for, in a few words."},
 			}),
@@ -187,9 +187,9 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		},
 		{
 			Name:        toolCallTool,
-			Description: "Run one tool that reads, by its name, with its arguments, as the person: a read the system prompt names, one find_tools named, or draw_block. A tool that changes something is refused here: propose it in propose_plan.",
+			Description: "Run one tool that reads, by its exact name, with its arguments, as the person: a read the system prompt names, one a find_tools answer of this run named, or draw_block. Never guess a name: for any other tool, call find_tools first. A tool that changes something is refused here: propose it in propose_plan.",
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
-				`"tool":{"type":"string","description":"The tool's name, as the system prompt or find_tools names it."},` +
+				`"tool":{"type":"string","description":"The tool's exact name, as the system prompt or a find_tools answer gives it."},` +
 				`"arguments":{"type":"object","description":"The tool's arguments."}},` +
 				`"required":["tool","arguments"]}`),
 			Run: w.toolRun(base, toolCallTool, w.callTool),
@@ -352,9 +352,7 @@ func needWords(need string) []string {
 	return slices.Compact(words)
 }
 
-// findTools answers the specs that fit the model's need (findableTools), scored by how many of the
-// need's words (needWords) its name and description hold, the best foundTools of them; of two
-// that hold as many, the one with the shorter description, whose words are more of it, first.
+// findTools answers the specs that fit the model's need (fitting), the best foundTools of them.
 // Each is given with the first sentence of its description (firstSentence) and its arguments'
 // schema whole, what a call of it needs: a spec's whole description runs to 7 KiB, and every model
 // call of the run's next eight turns is given the answer again. A need that is a tool's name alone
@@ -367,16 +365,32 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 		return "find_tools takes need, what you need a tool for", true
 	}
 	need := strings.TrimSpace(arguments.Need)
+	if named := namedTools(need); len(named) > 0 {
+		return foundAnswer(named, false), false
+	}
+	found := fitting(needWords(need))
+	if len(found) == 0 {
+		return "no tool fits that need; say it in other words", false
+	}
+	return foundAnswer(found[:min(len(found), foundTools)], true), false
+}
+
+// namedTools is each findable tool named name (findableTools): dispatch_read is findable twice, as
+// its own spec and as the form that lists an issue's comments.
+func namedTools(name string) []findable {
 	var named []findable
 	for _, tool := range findableTools() {
-		if tool.name == need {
+		if tool.name == name {
 			named = append(named, tool)
 		}
 	}
-	if len(named) > 0 {
-		return foundAnswer(named, false), false
-	}
-	words := needWords(need)
+	return named
+}
+
+// fitting is each findable tool that holds one of words or more in its name or description, by
+// how many it holds; of two that hold as many, the one with the shorter description, whose words
+// are more of it, first.
+func fitting(words []string) []findable {
 	type scored struct {
 		tool  findable
 		score int
@@ -399,17 +413,52 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 		}
 		return len(a.tool.description) - len(b.tool.description)
 	})
-	if len(found) > foundTools {
-		found = found[:foundTools]
-	}
-	if len(found) == 0 {
-		return "no tool fits that need; say it in other words", false
-	}
 	tools := make([]findable, 0, len(found))
 	for _, f := range found {
 		tools = append(tools, f.tool)
 	}
-	return foundAnswer(tools, true), false
+	return tools
+}
+
+// nearestNames is the most names call_tool's refusal of a name no tool has offers
+// (noSuchToolTold).
+const nearestNames = 5
+
+// noSuchTool starts what call_tool tells the model of a tool name no findable tool has
+// (noSuchToolTold), which a step's words read back as a slip (slipWords).
+const noSuchTool = "no tool of Dispatch is named"
+
+// noSuchToolTold is what call_tool tells the model of name, which no findable tool has: the model
+// guessed it. It names the findable tools nearest to it: those find_tools fits the words of the
+// name to (fitting), less "dispatch", which every tool of Dispatch holds, the ones whose own names
+// hold more of the words first; and find_tools for any other.
+func noSuchToolTold(name string) string {
+	words := slices.DeleteFunc(needWords(strings.ReplaceAll(name, "_", " ")), func(word string) bool { return word == "dispatch" })
+	inName := func(tool findable) int {
+		held := 0
+		for _, word := range words {
+			if strings.Contains(tool.name, word) {
+				held++
+			}
+		}
+		return held
+	}
+	found := fitting(words)
+	slices.SortStableFunc(found, func(a, b findable) int { return inName(b) - inName(a) })
+	var nearest []string
+	for _, tool := range found {
+		if len(nearest) == nearestNames {
+			break
+		}
+		if !slices.Contains(nearest, tool.name) {
+			nearest = append(nearest, tool.name)
+		}
+	}
+	if len(nearest) == 0 {
+		return fmt.Sprintf("%s %q: call find_tools with what you need, and call_tool with a name it gives.", noSuchTool, name)
+	}
+	return fmt.Sprintf("%s %q. The nearest names: %s. Call one of them only where it is the read you need; find_tools with a tool's name alone says what it does and takes, and find_tools with what you need names the tools that fit.",
+		noSuchTool, name, strings.Join(nearest, ", "))
 }
 
 // foundNoteRoom is the bytes of a find_tools answer kept for the note that names the specs it
@@ -461,7 +510,8 @@ func firstSentence(description string) string {
 
 // callTool runs one read by a tool's name, as the person: a tool of Dispatch through the
 // server's route table, or a GitHub or web read the server makes; or draws a block (drawBlock).
-// The server refuses a tool that changes something.
+// A name no findable tool has is refused before any call, with the names nearest to it
+// (noSuchToolTold). The server refuses a tool that changes something.
 func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Tool      string          `json:"tool"`
@@ -469,6 +519,9 @@ func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) 
 	}
 	if err := json.Unmarshal(input, &arguments); err != nil || arguments.Tool == "" {
 		return "call_tool takes tool, a tool's name, and arguments, the tool's arguments", true
+	}
+	if len(namedTools(arguments.Tool)) == 0 {
+		return noSuchToolTold(arguments.Tool), true
 	}
 	if len(arguments.Arguments) == 0 || string(arguments.Arguments) == "null" {
 		arguments.Arguments = json.RawMessage(`{}`)
@@ -643,7 +696,7 @@ func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessag
 	}
 	var made agentwire.PlanAnswer
 	if err := json.Unmarshal(answer.Body, &made); err != nil {
-		return fmt.Sprintf("the server's answer to the plan does not read as a plan: %v", err), true
+		return fmt.Sprintf("%s: %v", planUnread, err), true
 	}
 	w.plan.Store(&made)
 	w.proposed.Store(true)
@@ -699,6 +752,10 @@ const (
 	callRefused     = "the call was refused"
 	writeNotRunHere = "changes something, which call_tool does not run"
 )
+
+// planUnread is what propose_plan tells the model of a plan call whose answer does not read as a
+// plan: the server's fault, not the model's (slipWords).
+const planUnread = "the server's answer to the plan does not read as a plan"
 
 // serverCall makes call of the run at the server and answers its answer, or, where it has none,
 // what the model is told instead and that it was refused. A membership the sign-in issuer could

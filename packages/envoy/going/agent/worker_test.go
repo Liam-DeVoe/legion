@@ -26,9 +26,11 @@ import (
 
 // fakeServer is the server's side of agent/v1 for one worker: it saves each step a run saves,
 // appends the frames of each step and each frames call to the run's events, answers each call the
-// run makes with what call answers, and keeps each end.
+// run makes with what call answers, or refuses it with what refuse answers where it is set and
+// answers a refusal, and keeps each end.
 type fakeServer struct {
-	call func(agentwire.CallRequest) agentwire.CallAnswer
+	call   func(agentwire.CallRequest) agentwire.CallAnswer
+	refuse func(agentwire.CallRequest) *agentwire.Error
 
 	mu    sync.Mutex
 	steps []agentwire.StepRequest
@@ -74,6 +76,7 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 		return
 	}
 	var answer any
+	var refusal *agentwire.Error
 	s.mu.Lock()
 	switch request.Call {
 	case agentwire.CallStep:
@@ -92,6 +95,9 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 		_ = json.Unmarshal(request.Body, &call)
 		s.calls = append(s.calls, call)
 		s.mu.Unlock()
+		if s.refuse != nil {
+			refusal = s.refuse(call)
+		}
 		answer = s.call(call)
 		s.mu.Lock()
 	case agentwire.CallEnd:
@@ -105,6 +111,9 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 	s.mu.Unlock()
 	body, _ := json.Marshal(answer)
 	reply, _ := json.Marshal(agentwire.Answer{Body: body})
+	if refusal != nil {
+		reply, _ = json.Marshal(agentwire.Answer{Error: refusal})
+	}
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(reply)))
 	_, _ = conn.Write(append(header, reply...))
@@ -902,15 +911,17 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 
 	tools := w.tools(0)
 	at := slices.IndexFunc(tools, func(tool agentloop.Tool) bool { return tool.Name == toolCallTool })
-	if text := tools[at].Description + string(tools[at].Schema); !strings.Contains(text, "by its name") || !strings.Contains(text, "a read the system prompt names") {
-		t.Errorf("call_tool says %q, which does not say it runs a read the system prompt names", text)
+	if text := tools[at].Description + string(tools[at].Schema); !strings.Contains(text, "by its exact name") || !strings.Contains(text, "a read the system prompt names") ||
+		!strings.Contains(text, "Never guess a name: for any other tool, call find_tools first") {
+		t.Errorf("call_tool says %q, which does not say it runs a read the system prompt names, by its exact name, and never a guessed one", text)
 	}
 	for _, said := range []string{
 		`read with ref dispatch://KEY/comments`,
 		`dispatch_list_issue_messages with {"issue": KEY}`,
 		`dispatch_handoff_read with {"issue": KEY, "phase": PHASE}`,
 		`{"issue": KEY} reads the spec's text`,
-		`Call it only for a tool whose name or arguments you do not know`,
+		`Call it for any tool these rules do not name and no find_tools answer of this run gave you`,
+		`Never guess a tool's name: a name no tool has is refused`,
 		`Make in one reply every read whose arguments you already know`,
 		`The page's issue, where the page names one, was read for you`,
 	} {
@@ -921,20 +932,22 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 }
 
 // TestTheAnswerReadsAsTheIssuePageShowsIt: the preview's answers gave each item's title beside its
-// link, which the bar draws with its title already, ran past 250 words, printed a correction of
-// themselves, and wrote raw times, "priority 1" and session ids in code. The system prompt says
-// how an answer reads (state 4 of the bar's design), and each model call is told the time now, from
-// which a time is written as the issue page writes it.
+// link, which the bar draws with its title already, and its status after the chip that shows it,
+// ran past 250 words, printed a correction of themselves, and wrote raw times, "priority 1", raw
+// values such as "(medium)" and session ids in code. The system prompt says how an answer reads
+// (state 4 of the bar's design), and each model call is told the time now, from which a time is
+// written as the issue page writes it.
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
 		"the direct answer in one or two sentences, then at most a short list",
 		"under 120 words unless the person asks for more",
 		"Name each item once, by its link alone",
-		"never write an item's title beside its link",
+		"beside a link write only what the chip does not show, such as its priority or who works on it: never its title, and never its status",
 		"never a correction of yourself or your working",
 		"without saying what you read or how",
 		"a priority as P0, P1, P2 or P3",
-		`"In progress" for in_progress`,
+		`a status, where no chip shows it, by its words, such as "In progress" for in_progress`,
+		`never as the result's raw value, and never in parentheses: "an ask of medium urgency", not "(medium)"`,
 		`"2 days ago"`,
 		"never as a result writes it, such as 2026-11-12T09:00:00Z",
 		"Name an agent session by its title or its role",
@@ -1089,4 +1102,114 @@ func TestARefusedStructuredReplyIsMadeAgainInProse(t *testing.T) {
 			t.Errorf("the run's calls sent the response formats %v, want the first alone, and the later one to ask for prose", []any{requests[0].Field("response_format"), requests[1].Field("response_format")})
 		}
 	})
+}
+
+// TestACallOfANameNoToolHasNamesTheNearest: the preview, asked on DEMO-7 who works on it and what
+// it waits on, made a call_tool of a name no tool has, which the server refused. call_tool now
+// refuses a name no findable tool has before any call, and tells the model the nearest names - the
+// tools whose names hold the words of the one it guessed first - and find_tools for any other.
+func TestACallOfANameNoToolHasNamesTheNearest(t *testing.T) {
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`[]`)}
+	})
+	a := &agent{client: client, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	w := newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Level: "standard", LeaseToken: "lease-1"}, func() {})
+	told, refused := w.callTool(t.Context(), 3, json.RawMessage(`{"tool":"dispatch_issue_messages","arguments":{"issue":"DEMO-7"}}`))
+	nearest, _, _ := strings.Cut(strings.TrimPrefix(told, noSuchTool+` "dispatch_issue_messages". The nearest names: `), ". ")
+	if names := strings.Split(nearest, ", "); !refused || len(names) == 0 || len(names) > nearestNames || names[0] != "dispatch_list_issue_messages" ||
+		!strings.Contains(told, "find_tools") {
+		t.Errorf("call_tool of dispatch_issue_messages told %q (refused %t), want it refused with at most %d nearest names, dispatch_list_issue_messages first, and find_tools",
+			told, refused, nearestNames)
+	}
+	if told, refused := w.callTool(t.Context(), 4, json.RawMessage(`{"tool":"zzqx","arguments":{}}`)); !refused || !strings.HasPrefix(told, noSuchTool) || !strings.Contains(told, "call find_tools with what you need") {
+		t.Errorf("call_tool of a name like no tool's told %q (refused %t), want it refused and sent to find_tools", told, refused)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.calls) != 0 {
+		t.Errorf("call_tool of names no tool has made the calls %+v, want none", server.calls)
+	}
+}
+
+// TestASlipIsNoFailureOfThePersons: the preview's bar showed a guessed tool name in red, "Could not
+// run a tool Dispatch does not have: Dispatch refused it", and counted it a failed step, though
+// the model went on without it. A call of the model's that fails by its own slip - a name no tool
+// has, a change call_tool does not run, arguments the tool's schema or the route refuses - has a
+// tool frame that is a slip and no error, which says what the model tried in plain words; the
+// model is still told the refusal, as an error. A call its person can act on - no access - keeps
+// its failure sentence and its error. A refusal for any other cause is no slip.
+func TestASlipIsNoFailureOfThePersons(t *testing.T) {
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if len(request.ToolResults()) > 0 {
+			return agenttest.Reply{Text: `{"answer":"[DEMO-7](dispatch://DEMO-7) waits on its review.","waits_for_person":false}`}
+		}
+		return agenttest.Reply{Calls: []agenttest.Call{
+			{Name: toolCallTool, Arguments: map[string]any{"tool": "dispatch_issue_messages", "arguments": map[string]any{"issue": "DEMO-7"}}},
+			{Name: toolCallTool, Arguments: map[string]any{"tool": "dispatch_comment", "arguments": map[string]any{"issue": "DEMO-7", "body": "Status?"}}},
+			{Name: toolCallTool, Arguments: map[string]any{"tool": "dispatch_issues", "arguments": map[string]any{"project": "demo"}}},
+			{Name: toolSearch, Arguments: map[string]any{"query": "x"}},
+			{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-12"}},
+		}}
+	})
+	server, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
+		switch call.Tool {
+		case dispatchSearch:
+			return agentwire.CallAnswer{Status: http.StatusBadRequest, Body: []byte(`{"code":"INVALID_QUERY","error":"query is 2 to 1000 characters"}`)}
+		case dispatchRead:
+			return agentwire.CallAnswer{Status: http.StatusForbidden, Body: []byte(`{"code":"FORBIDDEN","error":"no"}`)}
+		}
+		return agentwire.CallAnswer{}
+	})
+	server.refuse = func(call agentwire.CallRequest) *agentwire.Error {
+		switch call.Tool {
+		case "dispatch_comment":
+			return &agentwire.Error{Code: agentwire.CodeWriteNotApproved, Message: "no approved row"}
+		case "dispatch_issues":
+			return &agentwire.Error{Code: agentwire.CodeCallRefused, Message: "project is not a project key"}
+		}
+		return nil
+	}
+	workRun(t, fake.Model(), client, "who is working on this and what is it waiting on?")
+	if end, _ := server.end(t); end.State != agentwire.StateDone {
+		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	frames := map[int]toolFrame{}
+	told := map[int]toolBody{}
+	for _, step := range server.steps {
+		for _, frame := range step.Frames {
+			if frame.Name == frameTool {
+				var tool toolFrame
+				_ = json.Unmarshal(frame.Data, &tool)
+				frames[tool.Step] = tool
+				var body toolBody
+				_ = json.Unmarshal(step.Body, &body)
+				told[tool.Step] = body
+			}
+		}
+	}
+	for step, want := range map[int]toolFrame{
+		2: {Label: "Tried a step Dispatch does not have", Slip: true},
+		3: {Label: "Tried to comment on DEMO-7 outside a plan", Slip: true},
+		4: {Label: "Tried to list the issues of demo the wrong way", Slip: true},
+		5: {Label: `Tried to search Dispatch for "x" the wrong way`, Slip: true},
+		6: {Label: "Could not read DEMO-12: you have no access", Error: true},
+	} {
+		got := frames[step]
+		if got.Label != want.Label || got.Slip != want.Slip || got.Error != want.Error {
+			t.Errorf("the tool frame of step %d is %q, slip %t, error %t; want %q, slip %t, error %t", step, got.Label, got.Slip, got.Error, want.Label, want.Slip, want.Error)
+		}
+		if !told[step].Error {
+			t.Errorf("step %d's saved result %q is not told the model as an error", step, told[step].Result)
+		}
+	}
+	for _, result := range []string{callRefused + ": the person signed out", callRefused + " (" + agentwire.CodeWebFailed + "): the page answered 500", callCutOff} {
+		if words, slip := slipWords(namedLabel(toolWebRead), map[string]any{"url": "https://example.com"}, result); slip {
+			t.Errorf("the refusal %q reads as the slip %q, want no slip", result, words)
+		}
+	}
+	if words, slip := slipWords(unknownToolLabel, nil, callRefused+" ("+agentwire.CodeUnknownTool+`): "dispatch_x" is no tool of this server`); !slip || words != unknownToolLabel.Past {
+		t.Errorf("the server's refusal of a tool it does not have reads as %q (slip %t), want the slip %q", words, slip, unknownToolLabel.Past)
+	}
 }

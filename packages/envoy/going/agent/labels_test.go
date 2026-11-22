@@ -83,13 +83,13 @@ var labelCases = []struct {
 	{toolCallTool, `{"tool":"web_read","arguments":{"url":"https://example.com/docs/page?token=x#top"}}`, "Reading example.com/docs/page", "Read example.com/docs/page"},
 	{toolCallTool, `{"tool":"draw_block","arguments":{"kind":"chart","title":"Issues by status"}}`, "Drawing a chart of Issues by status", "Drew a chart of Issues by status"},
 	{toolCallTool, `{"tool":"draw_block","arguments":{"kind":"table","title":"Open asks"}}`, "Drawing a table of Open asks", "Drew a table of Open asks"},
-	{toolCallTool, `{"tool":"dispatch_frobnicate","arguments":{}}`, "Running a tool Dispatch does not have", "Ran a tool Dispatch does not have"},
-	{toolCallTool, `{}`, "Running a tool Dispatch does not have", "Ran a tool Dispatch does not have"},
+	{toolCallTool, `{"tool":"dispatch_frobnicate","arguments":{}}`, "Trying a step Dispatch does not have", "Tried a step Dispatch does not have"},
+	{toolCallTool, `{}`, "Trying a step Dispatch does not have", "Tried a step Dispatch does not have"},
 	// propose_plan names how many changes its plan holds; a test hook; a tool the model made up.
 	{toolProposePlan, `{"summary":"Close it","changes":[{"tool":"dispatch_issue_update","arguments":{"issue":"DEMO-3","status":"done"}}]}`, "Proposing a plan of 1 change", "Proposed a plan of 1 change"},
 	{toolProposePlan, `{"summary":"Split it","changes":[{"tool":"dispatch_issue"},{"tool":"dispatch_issue"},{"tool":"dispatch_issue"}]}`, "Proposing a plan of 3 changes", "Proposed a plan of 3 changes"},
 	{hookHang, `{}`, "Running a test hook", "Ran a test hook"},
-	{"made_up_tool", `{"x":1}`, "Running a tool Dispatch does not have", "Ran a tool Dispatch does not have"},
+	{"made_up_tool", `{"x":1}`, "Trying a step Dispatch does not have", "Tried a step Dispatch does not have"},
 	// The changes a plan's rows make.
 	{"dispatch_comment", `{"issue":"DEMO-7","body":"Done."}`, "Commenting on DEMO-7", "Commented on DEMO-7"},
 	{"dispatch_comment", `{"ref":"dispatch://DEMO-7/spec","quote":"x","body":"Why?"}`, "Commenting on the spec of DEMO-7", "Commented on the spec of DEMO-7"},
