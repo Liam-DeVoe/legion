@@ -636,14 +636,16 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     })),
   });
   const everyRun = pulls.flatMap(wfruns);
-  /** A lookahead's body that finds one of `flags` as a word of its own in any place after the
-   * command, the first included: the route's match has already taken the space after the command
-   * (`^gh api `), so the flag either stands where the lookahead starts or follows a later space. */
+  /** A lookahead's body that finds one of `flags` in any place after the command, the first
+   * included: it starts a word, and a space or the end follows it. The route's match has already
+   * taken the space after the command (`^gh api `, `^gh pr checks `), so the flag either stands
+   * where the lookahead starts or follows a later space. */
   const flagIn = (flags: string) => `(.* )?(${flags})( |$)`;
   /** A call that sends: it names POST, or it hands GitHub a body (`--input`, `-f`, `-F` or their
    * long names), which gh sends as a POST when no method is named. */
   const writes = `(?=${flagIn("(-X|--method)[ =]?POST|--input|-f|-F|--field|--raw-field")})`;
-  /** A call that names GET, which reads whatever fields it sends: gh puts them in the query. */
+  /** Not a call that names GET: such a call reads, whatever fields it sends, as gh puts them in the
+   * query. */
   const notGet = `(?!${flagIn("(-X|--method)[ =]?GET")})`;
   const dots = "(\\.\\.\\.|%2E%2E%2E)";
   const notFound = (match: string, documentation: string): Route => ({
@@ -659,7 +661,8 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
       "https://docs.github.com/rest/repos/repos#get-a-repository"
     ),
     // The writes the run keeps, each answered as GitHub answers it and listed by the reads after it:
-    // a call to a pull request's reviews or an issue's comments that sends and does not name GET.
+    // a `gh api` call to a pull request's reviews or an issue's comments that sends and does not
+    // name GET, `gh pr review` and `gh pr comment`.
     { match: `^gh api (?=.*pulls/[0-9]+/reviews)${notGet}${writes}`, keep: "review" },
     { match: `^gh api (?=.*issues/[0-9]+/comments)${notGet}${writes}`, keep: "comment" },
     { match: "^gh pr review", keep: "review" },

@@ -410,7 +410,8 @@ test("reviews and comments: the writes kept, the lists, a review by its id, and 
 // space before the flag and the command's own space had been taken already: `-X GET` first kept a
 // read of the reviews or comments as one written, a body (`--input`, `-f`) or `-X POST` first and
 // alone left a review or comment unkept and answered it as the list, and `--required` first
-// answered for the first pull request. Each row asserts the route's answer and what it keeps.
+// answered for the first pull request. Each row asserts the route that answers the call, and what
+// it keeps or lists.
 for (const [call, expected] of [
   [
     "gh api -X GET repos/example/widgets/pulls/702/reviews -f per_page=100",
