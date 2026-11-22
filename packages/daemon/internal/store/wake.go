@@ -548,9 +548,10 @@ func (p *PodRecords) RecordListenerReady(ctx context.Context, tx pgx.Tx, at time
 }
 
 // ReleasedClaimByToken is the released claim whose token is token, and whether this daemon's
-// project holds one. The listener reports a role token it saw a message published to and knows
-// nothing of which daemon owns it, so every daemon reads its own claims and the one that holds a
-// released claim of that token is the one that acts.
+// project holds one. The listener reports the token of a role topic it saw a message published
+// to, a claim token, which names the claim's agent, and knows nothing of which daemon owns it, so
+// every daemon reads its own claims and the one that holds a released claim of that token is the
+// one that acts.
 func (p *PodRecords) ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error) {
 	return oneReleasedClaim(ctx, tx, `and token = $4`, p.project, token, "role token")
 }
