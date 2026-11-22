@@ -20,6 +20,7 @@ import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
+import { propertyControlSelector } from "../issue/property-control";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
@@ -58,7 +59,7 @@ import {
   STATUS_ROW_SHAPE,
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { blockedByControlName, referencedByControlName } from "./details-names";
+import { referencedByControlName } from "./details-names";
 import { detailsEditor, detailsOpener } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
@@ -371,8 +372,9 @@ export function IssueMarginPanel({
   // is cached, even where that read failed before it answered. A line that goes with no press of
   // its Retry - a read answering on an event or a window focus - or before that answer - the set
   // changed or emptied in another session while the read is out - leaves the focus on the page's
-  // body. In Blocked by the focus goes to the row's control, found by its name
-  // (`blockedByControlName`), and where the row draws none - on a closed issue, or while its
+  // body. In Blocked by the focus goes to the row's control, found by its mark
+  // (`propertyControlSelector`) - the row's one control carries it whether it says Add, the issue
+  // waiting on none, or Edit - and where the row draws none - on a closed issue, or while its
   // editor is open - to the first issue the row waits on, each passing over a control that
   // takes no press (`usableControl`). The row draws that issue whenever the read has answered,
   // since the titles are read only for a set that holds one. In Blocks, which has no control, the
@@ -383,7 +385,7 @@ export function IssueMarginPanel({
   const titlesRetry = useTitlesRetry(blockerTitles, blockerRead.queryKey, () =>
     firstUsable(
       blockedByValue.current?.querySelector<HTMLElement>(
-        `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
+        propertyControlSelector("blocked_by", issue.key)
       ),
       blockedByValue.current?.querySelector<HTMLElement>("a[href]")
     )

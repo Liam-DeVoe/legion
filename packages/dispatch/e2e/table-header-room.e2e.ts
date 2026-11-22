@@ -6,9 +6,10 @@
  *  is over the cell or the focus is on it, and is transparent otherwise. Drawn in the flow, it
  *  pushed Parent agent's filter under the Author header at 1100 px, where every button is 44 px
  *  wide, and took the whole of Rework's sort button, the column's name and its drag handle, at
- *  1440 px. It hangs from the cell's left end, so it never starts left of its own cell (review
- *  6008434007): hung from the right end, the colour dot's 20 px column drew "Move color" left of
- *  the table, where the table's scroll box clipped it and could not scroll to it. */
+ *  1440 px. It hangs from the cell's right end, and from its left end in a column too narrow for
+ *  it there, so it never starts left of its own cell (review 6008434007): hung from the right end,
+ *  the colour dot's 20 px column drew "Move color" left of the table, where the table's scroll box
+ *  clipped it and could not scroll to it. */
 import { seedDeliveryFixture, TIMELINE_FIXTURE_QUERY } from "./delivery-seed";
 import { expect, type Locator, type Page, test } from "./test";
 
@@ -56,17 +57,22 @@ function apart(a: Box | null, b: Box | null): boolean {
   );
 }
 
-/** Whether `inner` lies across `outer`'s width: its left edge at or right of `outer`'s, and its
- *  right edge at or left of `outer`'s, to the half px a layout rounds to. A box that is not
- *  drawn is no answer, so it reads as outside. */
-function across(inner: Box | null, outer: Box | null): boolean {
+/** Whether `inner` lies inside `outer`: its left and top edges at or past `outer`'s, and its
+ *  right and bottom edges at or short of `outer`'s, to the half px a layout rounds to. A box that
+ *  is not drawn is no answer, so it reads as outside. */
+function inside(inner: Box | null, outer: Box | null): boolean {
   if (inner === null || outer === null) return false;
-  return inner.x + 0.5 >= outer.x && inner.x + inner.width <= outer.x + outer.width + 0.5;
+  return (
+    inner.x + 0.5 >= outer.x &&
+    inner.x + inner.width <= outer.x + outer.width + 0.5 &&
+    inner.y + 0.5 >= outer.y &&
+    inner.y + inner.height <= outer.y + outer.height + 0.5
+  );
 }
 
 /** Reaches the Delivery list's "Move color" by the keyboard - Shift+Tab from the colour dot's
  *  grip, its header drawing no sort and no filter - and reads that the control is drawn at least
- *  as wide as its icon, and that it and its icon both lie across the table's scroll box (`at`
+ *  as wide as its icon, and that it and its icon both lie inside the table's scroll box (`at`
  *  names the window). */
 async function expectMoveColorInBox(page: Page, table: Locator, at: string): Promise<void> {
   const move = table.getByRole("button", { exact: true, name: "Move color" });
@@ -87,8 +93,8 @@ async function expectMoveColorInBox(page: Page, table: Locator, at: string): Pro
     moveBox?.width ?? 0,
     `${at}: Move color is drawn at least as wide as its icon`
   ).toBeGreaterThanOrEqual(iconBox?.width ?? 0);
-  expect(across(moveBox, box), `${at}: Move color lies inside the table's scroll box`).toBe(true);
-  expect(across(iconBox, box), `${at}: Move color's icon lies inside the table's scroll box`).toBe(
+  expect(inside(moveBox, box), `${at}: Move color lies inside the table's scroll box`).toBe(true);
+  expect(inside(iconBox, box), `${at}: Move color's icon lies inside the table's scroll box`).toBe(
     true
   );
 }

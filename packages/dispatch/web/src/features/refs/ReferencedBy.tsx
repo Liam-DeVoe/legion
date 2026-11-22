@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
+import type { Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -263,8 +263,8 @@ export function ReferencedBy({
    *  stays while the read Retry sent is out, and Retry keeps its focus then, and a press while
    *  the read is out joins it (`cancelRefetch: false`) and sends nothing new. The new issue
    *  page's Details passes it. Elsewhere the line stands while the last read failed, and a press
-   *  while the read is out does nothing. On every page Retry is held while its read is out
-   *  (`heldPress`): `aria-disabled`, never `disabled`. */
+   *  while the read is out does nothing. On every page Retry is held while its read is out, as
+   *  `heldPress` holds a control: `aria-disabled`, never `disabled`. */
   retried?: RefObject<boolean>;
   /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
   retryRef?: Ref<HTMLButtonElement>;
@@ -285,12 +285,18 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
-  // Retry's press where the host notes it (`retried`), spread over the one it has on every page:
-  // it joins the read that is out (`cancelRefetch: false`). `heldPress` holds Retry there too.
-  const retryInDetails: Pick<ButtonHTMLAttributes<HTMLButtonElement>, "onClick"> | undefined =
+  // Retry's attributes, one object for each host, spread whole. Every page holds Retry while its
+  // read is out (`aria-disabled`), as `heldPress` does, and outside Details a held Retry's press
+  // does nothing. Details' held Retry still takes a press, which joins the read that is out
+  // (`cancelRefetch: false`), so it sends nothing new, and notes the press for the host's hand-off
+  // (`retried`): Details keeps the failure line, and Retry its focus, while Retry's read is out
+  // (below), so the reader can press Retry again then, and the hand-off reads that press once the
+  // read has ended.
+  const retryPress =
     retried === undefined
-      ? undefined
+      ? heldPress(query.isFetching, () => void query.refetch())
       : {
+          "aria-disabled": query.isFetching || undefined,
           onClick: () => {
             retried.current = true;
             void query.refetch({ cancelRefetch: false }).then((answer) => {
@@ -322,8 +328,7 @@ export function ReferencedBy({
           <span>Referenced by unavailable.</span>
           <button
             className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
-            {...heldPress(query.isFetching, () => void query.refetch())}
-            {...retryInDetails}
+            {...retryPress}
             ref={retryRef}
             type="button"
           >

@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { focusOnDocument, stepIndex } from "../features/shell/roving";
+import { stepIndex } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -468,15 +468,20 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
   // ends a commit that took the focus away, it focuses again the element that held it before,
   // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
-  // takes off the page loses the focus to the body, as in Details a label only the open draft
-  // holds does as the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's
-  // and the project's, so that label is listed only while the draft holds it. So a press of a row
-  // that holds the focus only notes it, and the commit that answers the press gives the search box
-  // the focus only where that commit took the row off the page. A pointer press focuses none of
-  // them (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the
-  // options take away holds no press, and its focus stays on the page's body, as for every change
-  // the reader did not make. A popover that closes takes the search box along, and the close above
-  // gives the focus back to the trigger instead.
+  // takes off the page loses the focus, as in Details a label only the open draft holds does as
+  // the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's and the
+  // project's, so that label is listed only while the draft holds it. So a press of a row that
+  // holds the focus only notes it, and the commit that answers the press gives the search box the
+  // focus only where that commit left the focus lost (`focusLost`, the close's check above): on
+  // the body, or still on the row it took away. Chromium moves the focus to the body as the row
+  // leaves, but WebKit and Firefox move it off a removed element only at their next rendering
+  // update, after the effect below runs, so there the document still names the row, and a check
+  // for the body alone would let the focus fall to the body at that update, for the page's rescue
+  // to hand to the control now at the lost row's place (`handOn`), the next row where one
+  // follows. A pointer press focuses none of them (`onMouseDown` below), and leaves the focus
+  // where it is. A row or a Create row the options take away holds no press, and its focus stays
+  // on the page's body, as for every change the reader did not make. A popover that closes takes
+  // the search box along, and the close above gives the focus back to the trigger instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };
@@ -492,7 +497,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   useEffect(() => {
     const pressed = focusedRowPressed.current;
     focusedRowPressed.current = false;
-    if (pressed && focusOnDocument()) inputRef.current?.focus();
+    if (pressed && focusLost()) inputRef.current?.focus();
   });
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {

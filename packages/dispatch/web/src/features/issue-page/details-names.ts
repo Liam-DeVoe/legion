@@ -12,8 +12,9 @@ import { CONTROL_LABELS } from "./page-words";
  * The name the blocked-by control answers to: the word it shows and what it opens, in the words
  * the box it opens is named by ("Issues CORE-1 waits on"), so a voice user saying what they read
  * presses it (WCAG 2.5.3) and every reader hears one sentence: "Add issues CORE-1 waits on".
- * Details hands the focus back to the control by this name (`IssueMargin.tsx`); the add menu
- * reaches it by its mark instead (`propertyControl`, `IssueAddMenu.tsx`).
+ * The page reaches the control by its mark instead (`propertyControl`): the add menu
+ * (`IssueAddMenu.tsx`), and Details' hand-off of the focus from Blocked by's Retry
+ * (`IssueMargin.tsx`).
  */
 export function blockedByControlName(issueKey: string, blockerCount: number): string {
   const verb = blockerCount === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit;

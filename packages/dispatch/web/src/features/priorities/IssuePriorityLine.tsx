@@ -448,7 +448,8 @@ export function IssuePriorityLine({
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"
           // The new issue page's add menu reaches the control by this mark while the issue
-          // advances none, rather than drawing a second one (`IssueAddMenu.tsx`).
+          // advances none, rather than drawing a second one, and Details' priority hand-offs find
+          // it by the same mark (`property-control.ts`).
           {...propertyControl("advances", issue.key)}
           {...page?.pageChrome}
         >

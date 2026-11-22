@@ -1914,3 +1914,59 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     ).toBeFocused();
   });
 });
+
+/** A label TWO's open draft holds and no issue of the seed does: the labels list's Create row
+ *  makes it in the draft alone. */
+const DRAFT_ONLY_LABEL = "label-draft-only";
+
+// Details lists a label only the open draft holds only while the draft holds it (`IssueLabels`),
+// so Enter on that label's focused row unpicks it and takes the row away with the focus in it.
+// The list gives its text box that focus as the commit lands (`MultiSelect`'s row press), rather
+// than leave it to fall to the body, where Escape no longer reaches the list. A label row stands
+// right after the one that goes, so the page's focus rescue, which would answer a focus left to
+// fall with the control now at the lost one's place (`handOn`), would put it on that row: the
+// text box holding the focus is the list's own hand-off.
+// @webkit @firefox: the focus left on a removed element until the next rendering update (the HTML
+// spec's focus fixup), so as the list's effect runs the document still names the row it took
+// away rather than the body.
+test("Details' labels list gives its text box the focus when Enter on the focused row of a label only the draft holds takes that row away @firefox @webkit", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    await gotoIssue(page, `/issues/${two}`);
+    await openDetails(page);
+    await detailsRow(page, PROPERTY_LABELS.labels)
+      .getByRole("button", {
+        name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
+      })
+      .click();
+    const search = page.getByRole("combobox", { name: "Search or create label" });
+    await expect(search).toBeFocused();
+    await search.fill(DRAFT_ONLY_LABEL);
+    await expect(page.getByRole("option", { name: `Create "${DRAFT_ONLY_LABEL}"` })).toBeVisible();
+    await search.press("Enter");
+    // The draft's one label first, and ONE's labels, which TWO's project lists, after it.
+    const rows = page.getByRole("listbox", { name: "Labels options" }).getByRole("option");
+    const draftOnly = rows.first();
+    await expect(draftOnly).toHaveAccessibleName(DRAFT_ONLY_LABEL);
+    await expect(
+      rows.nth(1),
+      "no label row stands after the draft's, so the page's rescue could land on the text box"
+    ).toHaveAccessibleName(TWENTY_LABELS[0] ?? "");
+    await draftOnly.focus();
+    await expect(draftOnly).toBeFocused();
+    await page.keyboard.press("Enter");
+    await nextFrames(page);
+    // One read: the commit that took the row away and its effects are done within the frames.
+    expect(
+      await search.evaluate((box) => box === document.activeElement),
+      "the focus is not on the list's text box once Enter took the focused label's row away"
+    ).toBe(true);
+    await expect(
+      page.getByRole("option", { exact: true, name: DRAFT_ONLY_LABEL }),
+      "Enter left the label the draft no longer holds listed"
+    ).toHaveCount(0);
+  });
+});

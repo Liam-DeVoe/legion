@@ -135,7 +135,7 @@ export function BlockedByControl({
           <button
             aria-label={blockedByControlName(issue.key, blockers.length)}
             // The add menu reaches this control by this mark rather than drawing a second copy of
-            // it (`IssueAddMenu.tsx`).
+            // it, and Details' Retry hands the focus back to it by the same mark (`property-control.ts`).
             {...propertyControl("blocked_by", issue.key)}
             className={pageHeaderControl}
             onClick={open}

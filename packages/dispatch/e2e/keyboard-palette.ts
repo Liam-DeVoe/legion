@@ -28,5 +28,6 @@ export const searchPath = (url: URL): boolean =>
  *  Playwright's `ControlOrMeta` cannot stand in for it: that picks by the machine the browser runs
  *  on, not by the user agent the page reads. */
 export async function modKey(page: Page): Promise<"Control" | "Meta"> {
+  // One read is the answer: a context's user agent is set before the page loads and never changes.
   return (await page.evaluate(() => navigator.userAgent.includes("Mac"))) ? "Meta" : "Control";
 }

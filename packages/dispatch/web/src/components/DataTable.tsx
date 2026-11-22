@@ -415,6 +415,12 @@ export const GRIP_STEP = { plain: 10, shift: 50 } as const;
 /** The mark on a column's move menu, by which its header cell finds it again after a move. */
 const MOVE_MENU_ATTRIBUTE = "data-column-move";
 
+/** The narrowest column whose move menu's trigger hangs from the cell's right edge (`right-2`):
+ *  the widest the trigger is drawn - 44 px below 1280 px, the page's floor for every button
+ *  (`styles.css`) - and the 8 px it stands in from that edge. Hung there in a narrower column,
+ *  the trigger would start left of its own cell. */
+const RIGHT_HUNG_MOVE_MIN_WIDTH = 44 + 8;
+
 /** The two arrows a column's move menu shows: the column goes left or right. */
 function MoveIcon(): ReactNode {
   return (
@@ -459,7 +465,8 @@ function MoveIcon(): ReactNode {
  * gives the trigger the focus again once the move is drawn.
  *
  * The menu's trigger takes no room in the header: it is drawn out of the header's flow, hanging
- * from the cell's bottom edge at its left end, over the cell's bottom padding and the row
+ * from the cell's bottom edge at its right end - at its left end in a column too narrow for it
+ * there (`RIGHT_HUNG_MOVE_MIN_WIDTH`) - over the cell's bottom padding and the row
  * under it. It shows, and takes a pointer's press, while the pointer is over the header cell,
  * while it holds the focus and while its menu is open; otherwise it is transparent and a press
  * goes through it to the row. It stays in the Tab order between the sort control and the
@@ -536,16 +543,16 @@ function TableHeaderCell<TData>({
   // The cell's level among the sticky cells. A pinned header cell is z-30, so a column scrolled
   // under it passes beneath it; an unpinned one z-20; a pinned body cell z-10 (`DataTableCells`).
   // The cell is a stacking context (sticky, with a z-index), so its Move trigger is drawn at the
-  // cell's level whatever its own: a trigger wider than its cell runs right into the next header
-  // cell, a later one at the same z-20, which would draw over the trigger's top 8 px. So while
-  // the trigger shows - under the pointer, with the focus, with its menu open - the cell is
-  // z-25: above every unpinned header cell, the trailing one included, and still below the
-  // pinned ones. Only those states raise it, so a cell whose trigger is hidden is drawn as it
-  // was. A pinned body cell is below every header cell, and so below a trigger hanging over
-  // the rows, before this as after it: a trigger drawn under it would need its header cell under
-  // z-10, which would put the sticky header under the pinned cells of the rows scrolling up
-  // beneath it. The attribute is `MOVE_MENU_ATTRIBUTE`, written out because Tailwind reads the
-  // class from the source.
+  // cell's level whatever its own: a trigger wider than its cell, which hangs from the cell's left
+  // edge (below), runs right into the next header cell, a later one at the same z-20, which would
+  // draw over the trigger's top 8 px. So while the trigger shows - under the pointer, with the
+  // focus, with its menu open - the cell is z-25: above every unpinned header cell, the trailing
+  // one included, and still below the pinned ones. Only those states raise it, so a cell whose
+  // trigger is hidden is drawn as it was. A pinned body cell is below every header cell, and so
+  // below a trigger hanging over the rows, before this as after it: a trigger drawn under it
+  // would need its header cell under z-10, which would put the sticky header under the pinned
+  // cells of the rows scrolling up beneath it. The attribute is `MOVE_MENU_ATTRIBUTE`, written
+  // out because Tailwind reads the class from the source.
   const level = pinned
     ? "z-30"
     : moves.length === 0
@@ -618,16 +625,22 @@ function TableHeaderCell<TData>({
             }}
             // Out of the flow, over the cell's 8 px bottom padding (`py-2`) and the row under it,
             // so it covers neither the sort control nor the filter (see the comment above). Hung
-            // from the cell's left edge (`left-1`) in every column, so it never starts left of its
-            // own cell: the scroll box clips what stands left of its content and scrolls to none
-            // of it, and pinned cells cover what stands left of the first column after them. A
-            // trigger wider than its cell runs to the right instead, where the box does scroll:
-            // hung from the right edge, the Delivery list's 20 px colour dot drew "Move color"
-            // from 32 px left of the table below 1280 px, where the trigger is 44 px wide
-            // (`styles.css`). Every column rather than the narrow ones alone, because that width
-            // is the page's floor below 1280 px and the trigger's own above it, and a test of the
-            // column's width here would have to follow both.
-            triggerClassName={`pointer-events-none absolute top-[calc(100%-0.5rem)] left-1 inline-flex min-h-11 min-w-8 items-center justify-center rounded border p-1 opacity-0 shadow-sm group-hover/header:pointer-events-auto group-hover/header:opacity-100 focus:pointer-events-auto focus:opacity-100 aria-expanded:pointer-events-auto aria-expanded:opacity-100 md:min-h-8 md:min-w-6 ${borderDefault} ${surfaceBg} ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
+            // from the cell's right edge (`right-2`) in a column at least as wide as the trigger at
+            // its widest and those 8 px (`RIGHT_HUNG_MOVE_MIN_WIDTH`), so it starts inside its own
+            // cell and goes with the cell's right end. The project List and the Priorities table
+            // pin columns at every width, and every column they scroll is wider than that, so a
+            // column scrolled under the pinned ones takes its trigger under them only once all but
+            // that end has gone: hung from the left edge (`left-1`), the trigger started under them
+            // as the column passed 4 px under, its top beneath the pinned header cell and the rest
+            // over the pinned body cells, and while it showed it took the presses meant for the
+            // first row's pinned cell. In a narrower column it hangs from the left edge, so it
+            // never starts left of its own cell and runs to the right, where the scroll box does
+            // scroll: the box clips what stands left of its content and scrolls to none of it, and
+            // hung from the right edge, the Delivery list's 20 px colour dot drew "Move color" from
+            // 32 px left of the table below 1280 px. The width tested is the trigger's below
+            // 1280 px, the page's floor for every button there (`styles.css`), since it is
+            // narrower above, where the right edge holds it inside such a column too.
+            triggerClassName={`pointer-events-none absolute top-[calc(100%-0.5rem)] ${header.getSize() < RIGHT_HUNG_MOVE_MIN_WIDTH ? "left-1" : "right-2"} inline-flex min-h-11 min-w-8 items-center justify-center rounded border p-1 opacity-0 shadow-sm group-hover/header:pointer-events-auto group-hover/header:opacity-100 focus:pointer-events-auto focus:opacity-100 aria-expanded:pointer-events-auto aria-expanded:opacity-100 md:min-h-8 md:min-w-6 ${borderDefault} ${surfaceBg} ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
           >
             <MoveIcon />
           </ChoiceMenu>

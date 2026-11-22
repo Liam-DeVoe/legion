@@ -3,7 +3,7 @@ import { type RefCallback, type RefObject, useRef } from "react";
 
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
 import { useFocusHandOff } from "../../hooks/useFocusHandOff";
-import { addPriorityControlName } from "../priorities/IssuePriorityLine";
+import { propertyControlSelector } from "../issue/property-control";
 import type { KeyedPress } from "../writes/useKeyedWrite";
 import { firstUsable } from "./usable-control";
 
@@ -77,12 +77,10 @@ export function usePriorityHandOffs(
   const queryClient = useQueryClient();
   const advancesValue = useRef<HTMLDivElement>(null);
   const addRow = useRef<HTMLDivElement>(null);
-  // The line's add control in `box`, found by its name. Only a hand-off reads it, so the name is
-  // escaped then rather than in every render.
+  // The line's add control in `box`, found by its mark, which the add control carries in either
+  // place the line is drawn (`IssuePriorityLine`).
   const addControlIn = (box: HTMLDivElement | null) =>
-    box?.querySelector<HTMLElement>(
-      `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`
-    );
+    box?.querySelector<HTMLElement>(propertyControlSelector("advances", issue.key));
   const movedByOwnWrite = (): boolean => {
     const newest = queryClient
       .getMutationCache()
