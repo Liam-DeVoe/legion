@@ -31152,10 +31152,16 @@
           "artifact_id": {
             "type": "string"
           },
+          "ask": {
+            "type": "string"
+          },
           "digest": {
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "review": {
             "type": "string"
           },
           "version": {

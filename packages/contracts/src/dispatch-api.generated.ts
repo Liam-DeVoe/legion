@@ -7411,8 +7411,10 @@ export interface components {
     };
     SpecDocumentRead: {
       artifact_id: string;
+      ask?: string;
       digest: string;
       name?: string;
+      review?: string;
       version: number;
     };
     SpecFormError: {
