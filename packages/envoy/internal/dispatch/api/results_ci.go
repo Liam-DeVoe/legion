@@ -147,9 +147,15 @@ type ciRun struct {
 // head whose read started in this one. So a former head with k heads before it in that order is
 // read within ceil((k+1)/ciHeadReadConcurrency) settles, however long GitHub takes to answer for the
 // heads before it, while no more than ciHeadReadConcurrency reads run at one time.
+//
+// A result a former head's run derived is no result of the check: it is answered apart, in alone,
+// by block id and then by that head's repository and commit, and counts at that head alone
+// (comparison.alone, eachSubjectStands). So the check's results, which every open head's subject is
+// computed from, are the results the results route computes the same heads from, and a former
+// head's run never changes the state of an open head, whatever commit the two share.
 func (s *server) deriveCIResults(
 	ctx context.Context, issueKey string, checks []model.CheckBlock, former []delivery.AttributedHead,
-) (map[string]map[ciHeadKey]*model.CheckCI, error) {
+) (answers map[string]map[ciHeadKey]*model.CheckCI, alone map[string]map[ciHeadKey]model.CheckResult, err error) {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -161,29 +167,30 @@ func (s *server) deriveCIResults(
 		}
 	}
 	if len(proved) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Every case below writes a line, and every line names the run, so the rule its words are kept
 	// by is read before any of them; an issue holding no check CI proves still reads nothing.
 	words, err := s.readLineWords(ctx, s.deps.Store.Pool)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	heads, err := s.ciHeadsOf(ctx, issueKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(heads) == 0 {
 		for _, p := range proved {
 			p.check.CI = ciUnconcluded(*p.check, p.name, nil, model.CIStateNoResult, ciCaseNoHead,
 				fmt.Sprintf("Dispatch holds no open or merged pull request head of %s.", issueKey), words)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	reads := s.readCIHeads(ctx, heads, names)
 	formerHeads := ciFormerHeadsOf(heads, former)
 	formerReads := s.readCIHeads(ctx, formerHeads, names)
-	answers := make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
+	answers = make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
+	alone = make(map[string]map[ciHeadKey]model.CheckResult, len(proved))
 	for _, p := range proved {
 		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads)+len(formerHeads))
 		for index, head := range heads {
@@ -193,6 +200,7 @@ func (s *server) deriveCIResults(
 				p.check.Results = append(p.check.Results, *result)
 			}
 		}
+		aloneAt := map[ciHeadKey]model.CheckResult{}
 		for index, head := range formerHeads {
 			if !formerReads[index].started {
 				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseNotStarted,
@@ -202,14 +210,15 @@ func (s *server) deriveCIResults(
 			answer, result := ciAnswerOfRead(*p.check, p.name, head, formerReads[index], words)
 			atHead[ciHeadKeyOf(head)] = answer
 			if result != nil {
-				p.check.Results = append(p.check.Results, *result)
+				aloneAt[ciHeadKeyOf(head)] = *result
 			}
 		}
 		p.check.Results = newestResultsFirst(p.check.Results)
 		p.check.CI = atHead[ciHeadKeyOf(heads[0])]
 		answers[p.check.BlockID] = atHead
+		alone[p.check.BlockID] = aloneAt
 	}
-	return answers, nil
+	return answers, alone, nil
 }
 
 // ciAnswerOfRead decides one check CI proves at head from read, GitHub's answer for head's check

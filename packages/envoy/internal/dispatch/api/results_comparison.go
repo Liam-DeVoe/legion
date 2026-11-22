@@ -137,6 +137,10 @@ type comparisonReader struct {
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
 	headCI map[string]map[ciHeadKey]*model.CheckCI
+	// headAlone is, by the check's block id and then by the head's repository and commit, the
+	// result the read of a check CI proves derived at each former head the check states settler
+	// computes (deriveCIResults), which answer gives the subject of that head alone.
+	headAlone map[string]map[ciHeadKey]model.CheckResult
 	// former is, by issue, the former heads of its open pull requests the check states settler
 	// computes beside its open heads (formerHeadsOf), which headBases adds to the heads of that
 	// issue; empty for every read of the route.
@@ -161,13 +165,16 @@ const noCommitNamed = ""
 //
 // ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
 // the head's repository and commit, which the subject of that repository at that commit carries
-// (subjectState).
+// (subjectState). alone is set beside it: the result a former head's own run derived, by that
+// head's repository and commit, which counts at the subject of that head and at no other
+// (eachSubjectStands).
 type comparison struct {
 	bases    []model.CheckBasis
 	reason   string
 	unread   string
 	subjects []headSubject
 	ci       map[ciHeadKey]*model.CheckCI
+	alone    map[ciHeadKey]model.CheckResult
 }
 
 // headSubject is one subject of a check compared with heads (comparison.subjects): its basis, as
@@ -272,7 +279,7 @@ const noDefaultBranchNamed = ""
 // which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
-	compared.ci = c.headCI[check.BlockID]
+	compared.ci, compared.alone = c.headCI[check.BlockID], c.headAlone[check.BlockID]
 	check.ComparedWith = compared.bases
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
