@@ -9,8 +9,9 @@
 # sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
 # DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh write
 # the corpus through that server's API (seed_decisions, then seed_decisions_further_kinds, which
-# adds to issue A one section of each of R9's four further kinds, and writes issue E, whose
-# decisions.md holds one section citing the answered ask its person removed from the spec), with
+# adds to issue A one section of each of R9's four further kinds and a section under `## Replaced`
+# citing two answered asks, and writes issue E, whose decisions.md holds two sections citing the
+# answered ask its person removed from the spec, one of them under `## Replaced`), with
 # one more ask the base writes on a project document, so the asks rows it wrote name an anchor, an
 # owner and a follower. Before this head boots it captures the document answer, the base's
 # GET /api/v1/issues/{key}/decisions of each issue that holds a decisions.md - A, B and E - with
@@ -69,19 +70,20 @@
 #
 # It reads each rule of R9 on the section that carries it, in A, B and E, and fails where the
 # capture holds no section with an `Unsure:` paragraph, none under `## Replaced`, none with a
-# standing Keep or none citing an answered ask a person removed, each of which the fixture seeds; a
-# reading's part_of is read from the store against the ask the capture names. E's section, which
-# the fixture records as the one citing the answered ask its person removed (deleted_by), is read by
-# R9's deleting rule: its heading takes one moved_to, to_kind ask and to_id that ask; no reading
-# hangs under that ask; no decision keeps its heading id, as a node or a document's block; and the
+# standing Keep, none citing an answered ask a person removed or none such under `## Replaced`, each
+# of which the fixture seeds; a reading's part_of is read from the store against the ask the capture
+# names. E's two sections, which the fixture records as the ones citing the answered ask its person
+# removed (deleted_by), are read by R9's deleting rule: each heading takes one moved_to, to_kind ask
+# and to_id that ask; no reading hangs under that ask; no decision keeps its heading id, as a node
+# or a document's block; and the
 # ask's node still answers the person's answer, character for character the answer the base's
 # capture holds for that ask. It reads the approved specs still approved at their newest version,
 # whose only change over the restore's version is the decision blocks, the readings inside answered
 # asks and the shaped pointers; it pairs each captured section of A, B and E with the ask node the
 # capture names for it or with the decision node that keeps its heading block id, which entries and
 # the old `decisions` member must each answer once under the address entries give it, and prints
-# missing, extra and unpaired with every reference, a `deleted:` line for E's section, which it
-# pairs with the removed ask's node and counts as one a rule of R9 deleted rather than one in no
+# missing, extra and unpaired with every reference, a `deleted:` line for each of E's sections,
+# which it pairs with the removed ask's node and counts as one a rule of R9 deleted rather than one in no
 # spec, and the issues holding a section no rule dropped and no spec holds; and it sets the old
 # `decisions` member beside `entries` for each decision, by its address, and finds the same
 # decisions, each under the same block id, in both, an answered ask no document holds read under
@@ -92,7 +94,12 @@
 # decision; and the sections citing two answered asks, an issue-level answered ask, and one answered
 # ask with a body no reading holds, each a decision that keeps its heading id, takes its links as
 # shaped and no from_ask, cites its asks and waits for a person's review with uncertainty high; and
-# the decisions.md retired.
+# the decisions.md retired. Then the two cases planSection takes before the replaced rule, each a
+# section under `## Replaced` the capture holds as such: A's, which cites two answered asks, stays
+# one decision (one live decision node and one decision block keep its heading id, and its heading
+# moves to it), marked replaced, with uncertainty high, a citation of both asks in the spec and no
+# from_ask; E's, which cites the answered ask its person removed, is deleted by that ask's rule: its
+# heading moves to the ask's node and no decision keeps its id.
 #
 # Last it stops this head, boots the base alone and has it write a decisions.md on issue C, whose
 # document answer it captures through the base as it captured A's, B's and E's; boots this head
@@ -545,9 +552,11 @@ declare -A further_kinds=(
   ["${seed_ids[section_issue_level]}"]=issue_level
   ["${seed_ids[section_body]}"]=body
 )
-# The section R9 deletes, by its heading block id, and the answered ask its person removed, which
-# the section cites.
-declare -A deleted_by=(["${seed_ids[section_removed]}"]="${seed_ids[ask_e_removed]}")
+# The sections R9 deletes, by their heading block ids, and the answered ask its person removed,
+# which each cites: issue E's `##` section, and its `###` section under `## Replaced`, which
+# planSection takes by the removed ask's rule before the replaced rule.
+declare -A deleted_by=(["${seed_ids[section_removed]}"]="${seed_ids[ask_e_removed]}"
+  ["${seed_ids[section_replaced_removed]}"]="${seed_ids[ask_e_removed]}")
 
 # capture ISSUE DECISIONS: the document answer of ISSUE, whose decisions.md is DECISIONS, through the
 # base release at $server: its Decisions read in $work/capture/decisions.ISSUE.json, its asks in
@@ -894,6 +903,7 @@ unsure_read=0
 replaced_read=0
 kept_read=0
 deleted_read=0
+replaced_deleted_read=0
 # read_rules ISSUE…: reads each rule of R9 on each captured section of each ISSUE that carries it,
 # but the sections of R9's four further kinds, which the checks of `kinds` below read.
 read_rules() {
@@ -944,6 +954,10 @@ read_rules() {
           fail rules "the node ask:$removed still answers the person's answer, character for character as the base answered it" \
             "the node answers $answer, the base answered $captured_answer"
         deleted_read=$((deleted_read + 1))
+        if [[ "$(jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .replaced' "$work/capture/decisions.$issue.json")" == true ]]; then
+          replaced_deleted_read=$((replaced_deleted_read + 1))
+          pass rules "the section $heading of $issue, under ## Replaced, cites ask $removed, which its person removed from the spec: the removed ask's rule, which comes before the replaced rule, deletes it and writes no decision for it"
+        fi
         pass rules "the section $heading of $issue cites ask $removed, which its person removed from the spec, and R9 deletes it: one moved_to from its heading to ask:$removed, no reading under that ask, no decision keeping its heading id, and the ask's node still answers $captured_answer, character for character as the base did"
         continue
       fi
@@ -1037,7 +1051,9 @@ printf 'sections read by the conditional rules: Unsure=%s Replaced=%s kept=%s\n'
 pass rules "the conditional rules each read a section: $unsure_read with Unsure:, $replaced_read under ## Replaced, $kept_read kept"
 [[ "$deleted_read" -gt 0 ]] ||
   fail rules "the capture holds a section citing an answered ask its person removed, which the fixture seeds in $issue_e" "the deleting rule read none"
-pass rules "the rule that deletes a section citing an answered ask its person removed read $deleted_read section"
+[[ "$replaced_deleted_read" -gt 0 ]] ||
+  fail rules "the capture holds a section under ## Replaced citing an answered ask its person removed, which the fixture seeds in $issue_e" "the deleting rule read none under ## Replaced"
+pass rules "the rule that deletes a section citing an answered ask its person removed read $deleted_read sections, $replaced_deleted_read of them under ## Replaced"
 
 # ---------------------------------------------------------------------------------------------
 # R9's four further kinds, each on the section that carries it.
@@ -1124,6 +1140,67 @@ query kinds "read whether the decisions document of $issue_a is retired" \
   "select (retired_at is not null)::text from artifacts where id = '$decisions_a'"
 [[ "$answer" == true ]] || fail kinds "the decisions.md of $issue_a, holding a section of each further kind, retires" "retired: $answer"
 pass kinds "the decisions.md of $issue_a, which held a section of each of R9's four further kinds, is retired"
+
+# ---------------------------------------------------------------------------------------------
+# The cases planSection takes before the replaced rule, each under `## Replaced`.
+# ---------------------------------------------------------------------------------------------
+# A section under `## Replaced` that cites two answered asks stays one decision: marked replaced,
+# with uncertainty high, citing both asks and taking no from_ask. The capture holds it under
+# `## Replaced`, citing both asks, so the fixture is the case the words name.
+replaced_two="${seed_ids[section_replaced_two_asks]}"
+jq -e --arg h "$replaced_two" --arg s "${seed_ids[ask_first_store]}" --arg f "${seed_ids[ask_first_format]}" \
+  '[.decisions[] | select(.block_id == $h)] | length == 1 and .[0].replaced == true and (.[0].asks | sort) == ([$s, $f] | sort)' \
+  "$work/capture/decisions.$issue_a.json" >/dev/null ||
+  fail replaced "the capture holds the section $replaced_two under ## Replaced, citing ask_first_store and ask_first_format" \
+    "$(jq -c --arg h "$replaced_two" '[.decisions[] | select(.block_id == $h) | {block_id, replaced, asks}]' "$work/capture/decisions.$issue_a.json")"
+replaced_decision="$issue_a/spec#$replaced_two"
+rows "select to_id from graph_tuples where kind = 'moved_to' and from_kind = 'block' and from_id = '$issue_a/decisions-md#$replaced_two' and asserted"
+[[ "$(<"$work/rows")" == "$replaced_decision" ]] ||
+  fail replaced "the heading of the section $replaced_two, under ## Replaced and citing two answered asks, takes one moved_to, to the decision that keeps its id" \
+    "it takes $(tr '\n' ' ' <"$work/rows")"
+query replaced "count the decisions that keep the heading id $replaced_two" "
+  select (select count(*) from graph_nodes
+          where kind = 'block' and supertag = 'decision' and state = 'live' and split_part(id, '#', 2) = '$replaced_two')
+       || ' ' || (select count(*) from document_blocks where type = 'decision' and block_id = '$replaced_two')"
+[[ "$answer" == "1 1" ]] ||
+  fail replaced "the section $replaced_two, citing two answered asks, stays one decision" "live decision nodes and blocks keeping its id: $answer"
+entry "$issue_a" block "$replaced_decision"
+[[ -s "$work/entry" ]] || fail replaced "the section $replaced_two is a decision node of the spec" "no entry for $replaced_decision"
+expect replaced "the section $replaced_two is an agent's decision" '"agent"' '.kind'
+expect replaced "the decision of section $replaced_two is marked replaced" true '.replaced'
+value_of block "$replaced_decision" replaced
+[[ "$answer" == true ]] || fail replaced "the decision of section $replaced_two holds the value replaced true" "it holds '$answer'"
+expect replaced "the decision of section $replaced_two holds uncertainty high" '"high"' '.uncertainty'
+current_of block "$replaced_decision" from_ask
+[[ ! -s "$work/rows" ]] || fail replaced "the decision of section $replaced_two takes no from_ask" "$(tr '\n' ' ' <"$work/rows")"
+for cited in "${seed_ids[ask_first_store]}" "${seed_ids[ask_first_format]}"; do
+  # Only this section cites the two asks, so a mention of either in the spec is its decision's.
+  query replaced "read the spec's mentions of ask $cited" \
+    "select count(*) from block_refs where artifact_id = '$spec_a' and to_kind = 'ask' and kind = 'mentions' and to_id = '$cited'"
+  [[ "$answer" -gt 0 ]] ||
+    fail replaced "the decision of section $replaced_two cites ask $cited, which the block index records" "no mention of it in $spec_a"
+done
+pass replaced "the section $replaced_two under ## Replaced cites two answered asks and stays one decision, $replaced_decision: replaced, uncertainty high, citing ${seed_ids[ask_first_store]} and ${seed_ids[ask_first_format]}, and no from_ask"
+# A section under `## Replaced` that cites an answered ask a person removed from the spec is deleted
+# by R9's rule for that ask: its heading moves to the ask, and no decision keeps its id. The rules
+# above read it as R9 deletes it (deleted_by); this reads that the capture holds it under
+# `## Replaced`, so the removed ask's rule, and not the replaced rule, is what took it.
+replaced_removed="${seed_ids[section_replaced_removed]}"
+jq -e --arg h "$replaced_removed" --arg k "$removed_ask" \
+  '[.decisions[] | select(.block_id == $h)] | length == 1 and .[0].replaced == true and .[0].asks == [$k]' \
+  "$work/capture/decisions.$issue_e.json" >/dev/null ||
+  fail replaced "the capture holds the section $replaced_removed under ## Replaced, citing ask $removed_ask alone" \
+    "$(jq -c --arg h "$replaced_removed" '[.decisions[] | select(.block_id == $h) | {block_id, replaced, asks}]' "$work/capture/decisions.$issue_e.json")"
+current_of block "$issue_e/decisions-md#$replaced_removed" moved_to
+[[ "$(<"$work/rows")" == "ask:$removed_ask" ]] ||
+  fail replaced "the heading of the section $replaced_removed, under ## Replaced and citing ask $removed_ask, which its person removed, moves to that ask" \
+    "it moves to $(tr '\n' ' ' <"$work/rows")"
+query replaced "count the decisions that keep the heading id $replaced_removed" "
+  select (select count(*) from graph_nodes where kind = 'block' and supertag = 'decision' and split_part(id, '#', 2) = '$replaced_removed')
+       + (select count(*) from document_blocks where type = 'decision' and block_id = '$replaced_removed')"
+[[ "$answer" == 0 ]] ||
+  fail replaced "the converter writes no decision for the section $replaced_removed under ## Replaced, which cites ask $removed_ask, which its person removed" "$answer nodes and blocks keep its id"
+pass replaced "the section $replaced_removed under ## Replaced cites ask $removed_ask, which its person removed from the spec, and is deleted by R9's rule for that ask: its heading moves to ask:$removed_ask, and no decision keeps its id"
 
 # The approved specs still read approved, at a version whose only change is the conversion's.
 # conversion_only FILE: FILE without decision blocks, reading blocks, the shaped pointers of ask

@@ -3585,15 +3585,15 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one member of an issue's reference closure (refs.Closure): Artifact is the
-// document a citation reaches, at Depth through Via, and Kind and Address are the member's own
-// kind and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
-// address where the citation names a document whose address moved to a lens, as the pre-mortem
+// ReferenceMember is one member of an issue's references read, always at depth 1: Artifact is a
+// document its own content links to, through Via, and Kind and Address are the member's own kind
+// and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
+// address where the link names the address of a document that moved to a lens, as the pre-mortem
 // conversion moves the address of the document it retires to the lens it writes in its place.
-// Artifact is then that retired document, whose versions stay readable. A server of the release
-// before answers neither Kind nor Address during a roll, so the OpenAPI document marks them
-// optional (`required:"false"`) and a reader takes a member that carries neither as the document
-// Artifact names.
+// Artifact is then that retired document, whose versions stay readable. It stays for the clients
+// that read members, beside Links. A server of the release before answers neither Kind nor
+// Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and a
+// reader takes a member that carries neither as the document Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
@@ -3602,10 +3602,29 @@ type ReferenceMember struct {
 	Via      ReferenceVia `json:"via"`
 }
 
-// IssueReferences is an issue's artifact reference closure.
+// IssueReferences is an issue's references read, one hop in each direction: Links and LinkedFrom,
+// with Members, the documents of Links, and Truncated, always false, kept for the clients that
+// read them.
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`
+	// Links is every node the issue's own content links to, one hop out. This build writes []
+	// when there is none, never null.
+	Links []ReferenceLink `json:"links"`
+	// LinkedFrom is every node that links to the issue or to its own content, one hop in. This
+	// build writes [] when there is none, never null.
+	LinkedFrom []ReferenceLink `json:"linked_from"`
+}
+
+// ReferenceLink is one node at the other end of a link of an issue's references read: the node as
+// the graph read names it; its name, the words the graph read shows for it (a document's name, an
+// issue's title, the head of an item's text); the distinct kinds of its links, in order; and its
+// via, the lowest of the issue's nodes at the near end of those links.
+type ReferenceLink struct {
+	Node  GraphNode    `json:"node"`
+	Name  string       `json:"name"`
+	Kinds []string     `json:"kinds"`
+	Via   ReferenceVia `json:"via"`
 }
 
 // OutgoingReference is a target edge from an artifact.
