@@ -696,13 +696,14 @@ test("a bounded export reached through import() or require is read as an importe
   }
 });
 
-// A function of the file's own handed by name to a call is called there, so the scan reads the
-// reference as a call of it, as `web/src/__tests__/real-clock-waits.test.ts` finds a wait handed
-// on: `runStandIns` of `outside-agent-acceptance.test.ts` hands `runStandIn` to `map`. This plants
-// a helper whose child runs under the `listing` bound, handed to `map` inside another helper and
-// to `then` in a row's body. The two rows under `rowLimit("short")` fall short of that bound and
-// are refused, and the row under `rowLimit("listing")` passes. Read as no wait, the reference
-// left both short rows waiting for nothing, and nothing was refused.
+// A function of the file's own handed by name to a call or a `new` is called there, so the scan
+// reads the reference as a call of it, as `web/src/__tests__/real-clock-waits.test.ts` finds a
+// wait handed on: `runStandIns` of `outside-agent-acceptance.test.ts` hands `runStandIn` to `map`.
+// This plants a helper whose child runs under the `listing` bound, handed to `map` inside another
+// helper, to `then` in a row's body, and, through a third helper, to `new Promise` as its
+// executor. The three rows under `rowLimit("short")` fall short of that bound and are refused,
+// and the row under `rowLimit("listing")` passes. Read as no wait, the reference left the short
+// rows waiting for nothing, and nothing was refused.
 test("a function of the file's own handed on by name is read as a call of it", () => {
   const root = mkdtempSync(join(tmpdir(), "row-limits-handed-"));
   try {
@@ -715,22 +716,25 @@ test("a function of the file's own handed on by name is read as a call of it", (
         'import { rowLimit, runBounded } from "./bounded-subprocess";',
         'const leg = (argv: string[]) => runBounded({ argv, bound: "listing", from: "" });',
         "const legs = (argvs: string[][]) => Promise.all(argvs.map(leg));",
+        'const started = (resolve: (value: unknown) => void) => resolve(leg(["true"]));',
         'test("mapped", () => legs([["true"]]), rowLimit("short"));',
         'test("then", () => Promise.resolve(["true"]).then(leg), rowLimit("short"));',
+        'test("new", () => new Promise(started), rowLimit("short"));',
         'test("covered", () => legs([["true"]]), rowLimit("listing"));',
         "",
       ].join("\n")
     );
     const limits = limitsOfFiles(root, [file]);
     expect(limits.map((limit) => [limit.line, limit.waitsFor, limit.bound])).toEqual([
-      [5, ["`legs` (which waits for `runBounded`)"], "listing"],
-      [6, ["`leg` (which waits for `runBounded`)"], "listing"],
-      [7, ["`legs` (which waits for `runBounded`)"], "listing"],
+      [6, ["`legs` (which waits for `runBounded`)"], "listing"],
+      [7, ["`leg` (which waits for `runBounded`)"], "listing"],
+      [8, ["`started` (which waits for `runBounded`)"], "listing"],
+      [9, ["`legs` (which waits for `runBounded`)"], "listing"],
     ]);
     const refused = refusedLimits(limits);
-    expect(refused.map((refusal) => refusal.limit.line)).toEqual([5, 6]);
+    expect(refused.map((refusal) => refusal.limit.line)).toEqual([6, 7, 8]);
     expect(refused[0].why).toStartWith(
-      `${file}:5 the row "mapped" stops at rowLimit("short"), 90000 ms, and waits for \`legs\` ` +
+      `${file}:6 the row "mapped" stops at rowLimit("short"), 90000 ms, and waits for \`legs\` ` +
         "(which waits for `runBounded`), under the `listing` bound of 360000 ms: the row needs " +
         '`rowLimit("listing")`, 390000 ms, at the least.'
     );

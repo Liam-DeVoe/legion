@@ -156,7 +156,7 @@
  *   an `import()`; and a call of a member of a name bound to an `import()` of their module, or of
  *   a name destructured off a `require` of it under another name ("a bounded export reached
  *   through import() or require is read as an imported one"). Only a call waits, and a function
- *   of the file's own handed on, below: a row that names `runBounded` as a value and calls
+ *   of the file's own handed on by name (below): a row that names `runBounded` as a value and calls
  *   nothing is recorded nowhere (fixture:140).
  * - A wait through a function declaration of the file's own whose body makes such a call: a
  *   call of it in a row's body (fixture:89), or its name as the row's body (fixture:97,

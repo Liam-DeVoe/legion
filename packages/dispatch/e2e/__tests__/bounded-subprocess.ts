@@ -92,7 +92,7 @@
  *   alone 10 times under those loops read at most 36.99 s among its 60 public legs and 20.53 s
  *   among its 560 tailnet legs (Jobs infra983-outside-leg-r23b-7pdm8 and
  *   infra983-outside-leg-r23-chnw2). For each of those readings the Job's checkout named
- *   `twoStackBuild` where the two files name `short`, so no leg or script was cut at 60 s. Under
+ *   `twoStackBuild` where the two files named `short`, so no leg or script was cut at 60 s. Under
  *   `short`, a `bun run test` in that shape at 36c6064e (Job infra983-k5-head27-tzq2p) killed a
  *   tailnet leg of a row that starts five at once after 63.49 s, beside one of 52.29 s in the
  *   same row. On GitHub's runners the harness legs of the unit-repeat runs 45050430792,
