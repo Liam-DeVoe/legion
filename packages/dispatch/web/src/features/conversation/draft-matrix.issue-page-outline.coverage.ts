@@ -20,11 +20,12 @@ const REASONS = {
   7: "7. At 760 px and below the box's lines say their shorter placeholder words (`place.phone`), and that is all a width changes: the composer stays mounted at its address, with its draft and its send, so no width moves a draft.",
   8: "8. The box is drawn whenever the writer edits a comment (`useComposerShown`), so this section never hides a mounted edit line: it hides the box only once the edit has ended, which takes the edit line off the page, the edit rows.",
   9: "9. `place` tells the edit line where to put the reader once the edit ends, and its placeholder's words; neither moves the edit's address, which its comment names (`edit`), nor its draft.",
+  10: "10. A refused or stopped send holds the box on its own target (the writer's `redirectedReplyTarget` and `keptOnTarget`), so the box keeps nothing away for that target and has no kept line whose way back can go; only a typed draft is kept for a target the box moved away from, the typed cells of the gone rows.",
 } as const;
 
 /** The census's text of the write line's look, as `WriteLine` hands it to the composer. */
 const WRITE_LOOK =
-  "outline={{ anchor, cancelReply: CONTROL_LABELS.write_on_issue, end, kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement }, kinds: writesKinds ? KINDS : [], placeholder: aimed ? place.phone ? CONTROL_LABELS.reply_placeholder_phone : CONTROL_LABELS.reply_placeholder : place.phone ? CONTROL_LABELS.issue_placeholder_phone : CONTROL_LABELS.issue_placeholder, retry: CONTROL_LABELS.retry, send: CONTROL_LABELS.send, sending: ANSWER_LINES.sending, statementTwice: ANSWER_LINES.statement_twice, target: reply !== null ? ( <ReplyTargetLine issueKey={issueKey} reply={reply} /> ) : statement === undefined ? undefined : ( <> <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{\" \"} {/* A statement a Reply aimed the line at is named by its row's words; a row's text is the coverage read's words, which leave every reference out, so its tree's references are named whole. One taken up from a held send is its quote alone, named in plain words as a row's statement is. */} <TargetWords markdown={statement.item?.text ?? statement.quote} namesAll={statement.item !== undefined} source={statement.item?.source} tree={statement.item?.tree} /> </> ), uploadedUnanswered: ANSWER_LINES.uploaded_unanswered, uploading: ANSWER_LINES.uploading, }}";
+  "outline={{ anchor, cancelReply: CONTROL_LABELS.write_on_issue, end, kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement }, kinds: writesKinds ? KINDS : [], placeholder: aimed ? place.phone ? CONTROL_LABELS.reply_placeholder_phone : CONTROL_LABELS.reply_placeholder : place.phone ? CONTROL_LABELS.issue_placeholder_phone : CONTROL_LABELS.issue_placeholder, retry: CONTROL_LABELS.retry, send: CONTROL_LABELS.send, sending: ANSWER_LINES.sending, statementTwice: ANSWER_LINES.statement_twice, target: reply !== null ? ( <ReplyTargetLine issueKey={issueKey} reply={reply} /> ) : statement === undefined ? undefined : ( <> <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{\" \"} {/* A statement a Reply aimed the line at is named by its row's words; a row's text is the coverage read's words, which leave every reference out, so its tree's references are named whole. One taken up from a held send is its quote alone, named in plain words as a row's statement is. */} <TargetWords markdown={statement.item?.text ?? statement.quote} namesAll={statement.item !== undefined} source={statement.item?.source} tree={statement.item?.tree} /> </> ), statements: drawn === undefined ? undefined : { drawn: (shown) => drawn.statements.get(shown.artifact)?.has(shown.quote) === true, gone: ANSWER_LINES.kept_statement_gone, goneWaits: ANSWER_LINES.kept_statement_gone_waits, }, uploadedUnanswered: ANSWER_LINES.uploaded_unanswered, uploading: ANSWER_LINES.uploading, }}";
 
 /** The census's text of the edit line's look, as `EditLine` hands it to the composer. */
 const EDIT_LOOK =
@@ -32,6 +33,12 @@ const EDIT_LOOK =
 
 const WRITE_MOUNT = "WriteLine <MentionComposer mutationKey={writer.sendKey}>";
 const EDIT_MOUNT = "EditLine <MentionComposer mutationKey={mutationKey}>";
+
+/** The two rows whose typed cell takes away the target a draft is kept for. */
+const GONE_ROWS = [
+  ...cells(`${HOST} · a reply kept for a row, then a read drops that row`, ["typed"]),
+  ...cells(`${HOST} · a statement's comment kept, then a new version rewrites it`, ["typed"]),
+];
 
 export const coverage: readonly CoverageEntry[] = [
   // The write line's composer.
@@ -50,7 +57,8 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · a comment on a statement, Reply on another row, then back`),
     cells(`${HOST} · Write on the issue instead`),
     cells(`${HOST} · Escape over a reply`),
-    cells(`${HOST} · Write on the issue instead, the issue keeping a comment of its own`)
+    cells(`${HOST} · Write on the issue instead, the issue keeping a comment of its own`),
+    GONE_ROWS
   ),
   ...answers(
     `WriteLine | ${WRITE_MOUNT} | address prop | owner={owner}`,
@@ -130,6 +138,9 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Reply on another row, then back`),
     cells(`${HOST} · an answer opened, then ended`)
   ),
+  ...answers("IssueComposer | WriteLine | address prop | tree={tree}", GONE_ROWS, {
+    reason: REASONS[10],
+  }),
   ...answers("IssueComposer | WriteLine | form | place={place}", { reason: REASONS[7] }),
 
   // The box, above the edit line.
@@ -181,6 +192,11 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "FootSlot | IssueComposer | address prop | viewOn={place.viewOn}",
     cells(`${HOST} · a view, then back`)
+  ),
+  ...answers(
+    "FootSlot | IssueComposer | address prop | tree={readsHeld && namesHeld ? root : undefined}",
+    GONE_ROWS,
+    { reason: REASONS[10] }
   ),
   ...answers(
     "IssueOutline | FootSlot | address prop | <FootSlot {...props}>",

@@ -198,6 +198,37 @@ export function outline(): TreeNode {
   });
 }
 
+/** The row of message `id` by `author` in the outline. */
+export function messageNode(id: string, author: Actor, text: string): TreeNode {
+  return node({
+    author,
+    id,
+    reference: `dispatch://${KEY}/message/${id}`,
+    text,
+    type: "message",
+  });
+}
+
+/** `drawn` as a read that no longer holds the entry of the row `nodeId` draws it: that comment,
+ *  message or question deleted. */
+export function outlineWithout(nodeId: string, drawn: TreeNode = outline()): TreeNode {
+  return { ...drawn, children: drawn.children.filter((child) => child.id !== nodeId) };
+}
+
+/** `drawn` as the reads draw it once a new version of the spec wrote its statement as `words`:
+ *  the same row, whose whole words (`wordsOf`) are others, so a Reply on it aims the box at
+ *  those. */
+export function outlineRewritten(words: string, drawn: TreeNode = outline()): TreeNode {
+  const tree = displayTree(words);
+  if (tree === undefined) throw new Error("the engine read no statement");
+  return {
+    ...drawn,
+    children: drawn.children.map((child) =>
+      child.id === "spec#b-r1" ? { ...child, text: words, tree } : child
+    ),
+  };
+}
+
 /** bob's comment as a row's Reply hands it to the writer. */
 export const BOBS_COMMENT: ReplyItem = {
   author: BOB,
@@ -272,10 +303,13 @@ function Page({
           rootRow
         />
       )}
+      {/* The box reads off the outline's tree which entries and statements a draft it keeps can
+          go back to, as the foot slot hands it the tree the outline draws. */}
       <IssueComposer
         documentOpen={place.documentOpen === true}
         isClosed={place.closed === true}
         issueKey={KEY}
+        tree={root}
         viewOn={place.viewOn === true}
       />
     </div>
@@ -397,12 +431,31 @@ export function targetWords(): string | null {
 }
 
 /** The lines the box draws of the drafts it keeps for other targets than the one it shows, in
- *  their order. */
+ *  their order. A draft drawn whole beside the line, its target gone (`goneDrafts`), is no line. */
 export function keptLines(): string[] {
   return within(composerBox())
     .queryAllByRole("status")
+    .filter((line) => line.querySelector("blockquote") === null)
     .map((line) => line.textContent ?? "")
     .filter((text) => text.includes(" is kept"));
+}
+
+/** The drafts the box draws whole beside its line, each kept for a target the outline no longer
+ *  draws, in their order: the words that lead it, its text, and the presses it offers. */
+export function goneDrafts(): { draft: string; lead: string; presses: string[] }[] {
+  return within(composerBox())
+    .queryAllByRole("button", { name: "Discard my draft" })
+    .map((discard) => {
+      // An offer draws its words above its presses (`DraftOffer`).
+      const offer = discard.parentElement?.parentElement;
+      return {
+        draft: offer?.querySelector("blockquote")?.textContent ?? "",
+        lead: offer?.querySelector("p")?.textContent ?? "",
+        presses: [...(offer?.querySelectorAll("button") ?? [])].map(
+          (press) => press.textContent ?? ""
+        ),
+      };
+    });
 }
 
 /** What the box says of what the reader wrote on the issue, and on a statement, that it keeps

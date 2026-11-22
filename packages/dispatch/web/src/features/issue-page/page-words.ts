@@ -710,6 +710,14 @@ export const ANSWER_LINES = freeze({
    *  in the composer's own words, which name the author of what it answers. */
   kept_on_issue: `What you wrote on the issue is kept: press ${WRITE_ON_ISSUE_WORDS} to go on with it.`,
   kept_on_statement: `What you wrote on a statement is kept: press ${REPLY_WORD} on that statement to go on with it.`,
+  /** What the box says of what the reader wrote on a statement the outline no longer draws - a
+   *  new version took it out or changed its words, so its Reply aims the box at other words - with
+   *  the draft drawn after it, Use it here and Discard my draft; and, while the box holds words of
+   *  its own, that Use it here waits for it to be empty. */
+  kept_statement_gone:
+    "The statement you wrote on has changed or is gone, so what you wrote is kept here:",
+  kept_statement_gone_waits:
+    "The statement you wrote on has changed or is gone, so what you wrote is kept here to use in this field once it is empty:",
 } as const);
 
 /**

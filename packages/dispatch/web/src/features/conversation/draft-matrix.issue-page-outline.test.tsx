@@ -28,6 +28,8 @@
  * | box · Reply on another row, then back (on)                        | cell   | cell    | cell    |
  * | box · host moves it over a refusal (elsewhere), then back (on)    | no (1) | cell    | cell    |
  * | box · a comment on a statement, Reply on another row, then back   | cell   | cell    | cell    |
+ * | box · a reply kept for a row, then a read drops that row          | cell   | no (10) | no (10) |
+ * | box · a statement's comment kept, then a new version rewrites it  | cell   | no (10) | no (10) |
  * | box · Write on the issue instead                                  | cell   | cell    | cell    |
  * | box · Escape over a reply                                         | cell   | cell    | cell    |
  * | box · Write on the issue instead, the issue keeping a comment ... | cell   | cell    | cell    |
@@ -64,12 +66,16 @@
  * the cells make by drawing the page again over the same tab's query client, and a reload ends
  * the whole page, as any reload does (`endAsAReload`), and draws it again over a new query client
  * and the same tab. The edit line is drawn only while the writer edits, so every edit row ends
- * the edit and comes back by its Edit. The own-move rows - the target line's control and Escape,
- * the box's Cancel reply - carry the draft and its refusal to the issue (`HeldSends.carry`); a
- * stopped reply says there that it may have been delivered as the reply, and its Retry goes under
- * a key of its own. Where the issue keeps a comment of the reader's, that own move carries
- * nothing: the comment comes back in the field, and the reply stays with its comment, typed and
- * kept with its line, or refused or stopped with Send saying where it was written for.
+ * the edit and comes back by its Edit. The gone rows take away the target a typed draft is kept
+ * for - a read that no longer holds the row, a new version that rewrites the statement's words -
+ * so the way back its line names is gone: the box draws the draft whole beside the line, and its
+ * Use it here, at rest on the issue, brings it back into the field. The own-move rows - the
+ * target line's control and Escape, the box's Cancel reply - carry the draft and its refusal to
+ * the issue (`HeldSends.carry`); a stopped reply says there that it may have been delivered as
+ * the reply, and its Retry goes under a key of its own. Where the issue keeps a comment of the
+ * reader's, that own move carries nothing: the comment comes back in the field, and the reply
+ * stays with its comment, typed and kept with its line, or refused or stopped with Send saying
+ * where it was written for.
  *
  * The numbered reasons - the moves this host cannot make, and the moves and forms the composer
  * census found that the rows above do not make - are `REASONS` in
@@ -111,11 +117,14 @@ import {
   KEY,
   keptLines,
   keptReplyLine,
+  outlineRewritten,
+  outlineWithout,
   type Place,
   READER,
   STATEMENT_QUOTE,
   writeField,
 } from "../issue-page/composer-fixture";
+import type { TreeNode } from "../issue-page/issue-tree";
 import type { OutlineWriter } from "../issue-page/outline-writer";
 import { CONTROL_LABELS } from "../issue-page/page-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -218,6 +227,9 @@ interface Box {
   /** Draws the box in another place on the same mount: a view on, a document open, the issue
    *  closed. */
   readonly redraw: (at: Place) => void;
+  /** Draws the outline from another tree on the same mount, as a read that changed what it
+   *  holds does. */
+  readonly redrawOutline: (drawn: TreeNode) => void;
   readonly user: UserEvent;
   readonly writer: () => OutlineWriter;
 }
@@ -280,6 +292,7 @@ async function openBox(
       await writerFocused();
     },
     redraw: (at) => page.redraw(at),
+    redrawOutline: (drawn) => page.redrawOutline(drawn),
     reload: () => {
       endAsAReload(() => page.view.unmount());
       client = signedInAsReader(newQueryClient());
@@ -463,6 +476,52 @@ for (const held of HELD) {
     });
   });
 }
+
+// A read that no longer holds bob's comment takes its Reply away, so a reply typed for it and
+// kept there by the issue's own Reply, the page's move, loses the way back its line names: the
+// box draws it whole beside the line, and at rest on the issue its Use it here puts it back in
+// the field. A refused or stopped reply holds the box on bob's comment, so nothing is kept away
+// for its row to go from under (10).
+test(`${HOST} · a reply kept for a row, then a read drops that row · typed`, async () => {
+  const box = await openBox();
+  await holdAimedAt(box, "comment-1", "typed");
+  await act(async () => box.writer().writeOnIssue());
+  await writerFocused();
+  await waitFor(() => expect(aimedAt(box)).toBeNull());
+  const away = { kept: keptLines(), ...writeHeld() };
+  box.redrawOutline(outlineWithout("comment-1"));
+  const take = await within(composerBox()).findByRole("button", { name: "Use it here" });
+  await box.user.click(take);
+  await waitFor(() => expect(writeField().value).toBe(BODY));
+  expect({ away, back: { kept: keptLines(), ...writeHeld() } }).toEqual({
+    away: { kept: [KEPT_FOR_BOB], note: "none", text: "" },
+    back: { kept: [], ...expectedBack("typed") },
+  });
+});
+
+/** The statement's words as a new version of the spec writes them. */
+const REWRITTEN = "The page draws **one** box, at the foot.";
+
+// A new version that rewrites the statement's words makes its Reply aim the box at the new words,
+// so a comment typed on the old words and kept there loses the way back its line names: the box
+// draws it whole beside the line, and at rest on the issue its Use it here puts it back in the
+// field. A refused or stopped comment holds the box on its statement (10).
+test(`${HOST} · a statement's comment kept, then a new version rewrites it · typed`, async () => {
+  const box = await openBox();
+  await holdAimedAt(box, STATEMENT_ROW, "typed");
+  await act(async () => box.writer().writeOnIssue());
+  await writerFocused();
+  await waitFor(() => expect(aimedAt(box)).toBeNull());
+  const away = { kept: keptLines(), ...writeHeld() };
+  box.redrawOutline(outlineRewritten(REWRITTEN));
+  const take = await within(composerBox()).findByRole("button", { name: "Use it here" });
+  await box.user.click(take);
+  await waitFor(() => expect(writeField().value).toBe(BODY));
+  expect({ away, back: { kept: keptLines(), ...writeHeld() } }).toEqual({
+    away: { kept: [KEPT_FOR_STATEMENT], note: "none", text: "" },
+    back: { kept: [], ...expectedBack("typed") },
+  });
+});
 
 /** The box's own ends of its target: the target line's control, and Escape in the line. */
 const OWN_ENDS = [

@@ -230,12 +230,7 @@ export function OutlineWriterProvider({
       // A statement is no entry of the conversation: the line writes a comment on the issue
       // anchored to the statement's whole words, and holds no reply beside it.
       if (item.kind === "statement") {
-        const target: StatementTarget = {
-          artifact: item.artifact,
-          item,
-          quote: item.tree === undefined ? item.text : wordsOf(item.tree),
-          row: item.id,
-        };
+        const target = statementTargetOf(item);
         // A reply Dispatch refused is never sent as a comment on the statement instead.
         if (keptOnTarget(store.get(sendKey)?.request, line, target)) return;
         setReply(null);
@@ -533,6 +528,19 @@ export interface StatementTarget extends StatementAnchor {
   /** The statement's whole words as the server matches a quote against them: `wordsOf` its
    *  reading (`refs/tree-fragment.ts`), else its stored text where its read sent no reading. */
   readonly quote: string;
+}
+
+/** The statement the line comments on once a Reply on `item`'s row aims it there: the row's
+ *  document, its whole words as the server matches a quote against them (`StatementTarget.quote`)
+ *  and the row itself. The box reads the same rule off every statement row of the outline, so a
+ *  draft it keeps for a statement is gone once no row reads as that statement any more. */
+export function statementTargetOf(item: StatementItem): StatementTarget {
+  return {
+    artifact: item.artifact,
+    item,
+    quote: item.tree === undefined ? item.text : wordsOf(item.tree),
+    row: item.id,
+  };
 }
 
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a

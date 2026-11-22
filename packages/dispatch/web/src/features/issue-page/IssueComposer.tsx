@@ -48,12 +48,14 @@ import { PlainText } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
-import { firstLineOf } from "./issue-tree";
+import { firstLineOf, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import {
   type AnswerTarget,
   type Landing,
   type OutlineWriter,
+  replyItemOf,
+  statementTargetOf,
   useOutlineWriter,
 } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
@@ -154,10 +156,15 @@ export function IssueComposer({
   documentOpen,
   isClosed,
   issueKey,
+  tree,
   viewOn,
 }: BoxPlace & {
   readonly isClosed: boolean;
   readonly issueKey: string;
+  /** The outline's whole tree once every read it is built from and its names are held
+   *  (`slots/foot.tsx`), which says which entries and statements a draft the write line keeps
+   *  can go back to; none until then. */
+  readonly tree: TreeNode | undefined;
 }): ReactNode {
   const writer = useOutlineWriter();
   const shown = useComposerShown({ documentOpen, viewOn });
@@ -264,7 +271,13 @@ export function IssueComposer({
       {/* Last, so the line that is drawn is the first field of the section, and hidden rather
           than unmounted while the line answers or edits: its draft is the reader's. */}
       <div data-composer-write="" hidden={!writing}>
-        <WriteLine isClosed={isClosed} issueKey={issueKey} place={place} writer={writer} />
+        <WriteLine
+          isClosed={isClosed}
+          issueKey={issueKey}
+          place={place}
+          tree={tree}
+          writer={writer}
+        />
       </div>
     </section>
   );
@@ -306,11 +319,13 @@ function WriteLine({
   isClosed,
   issueKey,
   place,
+  tree,
   writer,
 }: {
   isClosed: boolean;
   issueKey: string;
   place: LinePlace;
+  tree: TreeNode | undefined;
   writer: OutlineWriter;
 }): ReactNode {
   const { reply, statement } = writer;
@@ -359,11 +374,18 @@ function WriteLine({
     }
     finish(writer, place, { to: "self", under });
   };
+  // What the outline draws (`drawnTargets`), so a draft the line keeps for an entry or a statement
+  // it no longer draws - a comment, a message or a question deleted, a statement a new version
+  // took out or rewrote - is drawn beside the line with Discard my draft and Use it here, rather
+  // than named with a way back that is gone. None until the foot hands the line a tree whose
+  // reads have all answered, so no draft is drawn as gone while a read is out.
+  const drawn = useMemo(() => (tree === undefined ? undefined : drawnTargets(tree)), [tree]);
   return (
     <MentionComposer
       box="issue-page-composer"
       closed={isClosed}
       kind={writesKinds ? writer.kind : "comment"}
+      listed={drawn?.entries}
       mutationKey={writer.sendKey}
       onClose={place.giveBack}
       onKindChange={(next) => {
@@ -409,6 +431,14 @@ function WriteLine({
               />
             </>
           ),
+        statements:
+          drawn === undefined
+            ? undefined
+            : {
+                drawn: (shown) => drawn.statements.get(shown.artifact)?.has(shown.quote) === true,
+                gone: ANSWER_LINES.kept_statement_gone,
+                goneWaits: ANSWER_LINES.kept_statement_gone_waits,
+              },
         uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
         uploading: ANSWER_LINES.uploading,
       }}
@@ -416,6 +446,33 @@ function WriteLine({
       replyTo={reply}
     />
   );
+}
+
+/** What the outline's tree draws that a draft the write line keeps can go back to: the id of each
+ *  entry a row's Reply answers (`replyItemOf`) - a comment, a message, a question - and each
+ *  statement's whole words as a Reply on its row aims the line (`statementTargetOf`), by its
+ *  document: the two are what make two statements the same (`sameStatement`), and not the row. A
+ *  row the tree draws under two parents counts once. */
+function drawnTargets(root: TreeNode): {
+  readonly entries: ReadonlySet<string>;
+  readonly statements: ReadonlyMap<string, ReadonlySet<string>>;
+} {
+  const entries = new Set<string>();
+  const statements = new Map<string, Set<string>>();
+  const walk = (node: TreeNode): void => {
+    const item = replyItemOf(node);
+    if (item?.kind === "statement") {
+      const { artifact, quote } = statementTargetOf(item);
+      const words = statements.get(artifact) ?? new Set<string>();
+      words.add(quote);
+      statements.set(artifact, words);
+    } else if (item !== undefined) {
+      entries.add(item.id);
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return { entries, statements };
 }
 
 /** A reply's target line (R3): "Replying to:", the entry's author, and the entry's first line,
