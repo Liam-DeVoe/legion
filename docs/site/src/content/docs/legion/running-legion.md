@@ -1472,8 +1472,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read
-  `assignments` for a measurement: a declared experiment that is not `memory` appears nowhere
-  else.
+  `assignments` for a measurement: no other field of an issue in the state names its answer for
+  a declared experiment that is not `memory`.
+  Dispatch holds that answer too where the draw put the issue in the experiment's group, by an arm
+  that sets `plan`: each step record of the issue names the experiment and the variant, so
+  `dispatch steps --issue <KEY>` prints `Experiment <experiment>: variant <variant>.` above its
+  runs, the issue's **Steps** tab shows that line, and `dispatch plans --project <KEY>` ends the
+  issue's line with `variant <experiment>/<variant>`.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
