@@ -20,13 +20,15 @@ import (
 // pubScope is one daemon's scope: project PUB and the account that names its reply prefix.
 var pubScope = natsgrant.Scope{Projects: []string{"PUB"}, Identity: "legion-daemon-PUB"}
 
-// Every reply prefix the auth service grants a service is under one root, "_INBOX_envoy.": the
-// root, then the identity with every byte outside [A-Za-z0-9-] escaped as _hh, underscores
-// included, as one subject token, so distinct identities stay distinct. The grant held to an
-// identity's projects subscribes that prefix. An identity spelled like a name the broker's own
-// clients take under the root (_operator, _measure) does not get that name, since its '_' is
-// escaped.
-func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
+// Every reply prefix InboxPrefix makes, which the auth service grants a daemon held or whole, is
+// under one root, "_INBOX_envoy.": the root, then the identity with every byte outside
+// [A-Za-z0-9-] escaped as _hh, underscores included, as one subject token, so distinct identities
+// stay distinct. The grant held to an identity's projects subscribes that prefix. An identity
+// spelled like a name the broker may later give one of its own clients under the root (_operator,
+// _measure) does not get that name, since its '_' is escaped. The other kinds' reply subjects are
+// not InboxPrefix's: Dispatch, a listener and a whole daemon keep _INBOX.>, and the measurement
+// job's grant is Measure()'s own.
+func TestEveryInboxPrefixIsUnderTheReplyRoot(t *testing.T) {
 	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
 	for identity, want := range map[string]string{
 		"legion-daemon-PUB": "_INBOX_envoy.legion-daemon-PUB",
@@ -53,7 +55,7 @@ func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 		require.True(t, under, "InboxPrefix(%q) = %q is under the reply root", identity, got)
 		require.True(t, natsgrant.SessionToken(rest), "InboxPrefix(%q) = %q is the root and one subject token", identity, got)
 		require.NotContains(t, []string{natsgrant.ReplyRoot + "._operator", natsgrant.ReplyRoot + "._measure"}, got,
-			"InboxPrefix(%q) is a name the broker's own clients take under the root", identity)
+			"InboxPrefix(%q) is a name the broker may give one of its own clients under the root", identity)
 		options := natsgo.GetDefaultOptions()
 		require.NoError(t, natsgo.CustomInboxPrefix(got)(&options), "nats.go accepts InboxPrefix(%q)", identity)
 		grant, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})
