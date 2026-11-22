@@ -104,8 +104,10 @@ func (e *socketEnd) framesWrittenBeforeEnd() (int, bool) {
 	return e.framesBeforeEnd, e.ended
 }
 
-// refusesMessage answers whether a message the page begins sending now is to reach ygo as nothing:
-// it is once the socket has ended. A nil end refuses nothing (a connection no ServeHTTP made).
+// refusesMessage answers whether a message the page begins, or completes, from now on is to reach
+// ygo as nothing: it is once the socket has ended. The awareness filter asks it as each message
+// begins (readFrame) and as each completes (Read). A nil end refuses nothing (a connection no
+// ServeHTTP made).
 func (e *socketEnd) refusesMessage() bool {
 	if e == nil {
 		return false

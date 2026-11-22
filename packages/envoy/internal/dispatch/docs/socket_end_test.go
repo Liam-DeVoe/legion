@@ -250,10 +250,12 @@ func gorillaMessages(t *testing.T, stream []byte) [][]byte {
 // began. A page can hold a message open before the end and complete it after: its edit, typed
 // after the end, is in the final frame. Each sequence holds part of one 164-byte document message
 // open before the end - its first byte, which leaves the filter deciding what the message is, or
-// its 38-byte Hocuspocus header, which the filter has already passed on to gorilla - and after the
-// end sends a ping and the final frame carrying the edit. gorilla must complete no message from
+// its 38-byte Hocuspocus header, which the filter has already passed on to gorilla, or all of it,
+// so that the final frame after the end carries no byte at all - and after the end sends a ping and
+// the final frame. The same holds of a text message, which the filter passes to gorilla unread,
+// and of an awareness message, which it holds until its end. gorilla must complete no message from
 // what the filter hands it. The same sequences with no end are the controls: there gorilla reads
-// the whole message. An awareness message held open before the end is decided the same way.
+// the whole message.
 func TestAnEndedSocketsFilterCompletesNoMessageAfterTheEnd(t *testing.T) {
 	edit := documentMessage(limitRoom, 0, []byte(strings.Repeat("EDIT-TYPED-AFTER-THE-END ", 5)+"!"))
 	if len(edit) != 164 {
@@ -261,18 +263,21 @@ func TestAnEndedSocketsFilterCompletesNoMessageAfterTheEnd(t *testing.T) {
 	}
 	awareness := awarenessMessageOf(limitRoom, noAwarenessChange)
 	ping := clientFrame(gws.PingMessage, true, nil)
-	held := func(message []byte, at int) (before, after [][]byte) {
-		return [][]byte{clientFrame(gws.BinaryMessage, false, message[:at])},
+	held := func(opcode byte, message []byte, at int) (before, after [][]byte) {
+		return [][]byte{clientFrame(opcode, false, message[:at])},
 			[][]byte{ping, clientFrame(continuationFrame, true, message[at:])}
 	}
 	for _, c := range []struct {
 		name    string
+		opcode  byte
 		message []byte
 		at      int
 	}{
-		{"one byte held open (the filter deciding)", edit, 1},
-		{"the 38-byte header held open (already passed to gorilla)", edit, 38},
-		{"an awareness message held open", awareness, len(awareness) - 1},
+		{"one byte held open (the filter deciding)", gws.BinaryMessage, edit, 1},
+		{"the 38-byte header held open (already passed to gorilla)", gws.BinaryMessage, edit, 38},
+		{"the whole message held open, its final frame empty", gws.BinaryMessage, edit, len(edit)},
+		{"one byte of a text message held open (passed to gorilla unread)", gws.TextMessage, edit, 1},
+		{"an awareness message held open", gws.BinaryMessage, awareness, len(awareness) - 1},
 	} {
 		for _, ends := range []bool{true, false} {
 			name := c.name + ", no end (control)"
@@ -282,7 +287,7 @@ func TestAnEndedSocketsFilterCompletesNoMessageAfterTheEnd(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				own, endOwn := context.WithCancelCause(context.Background())
 				defer endOwn(nil)
-				before, after := held(c.message, c.at)
+				before, after := held(c.opcode, c.message, c.at)
 				source := &endBetween{
 					before: bytes.NewReader(bytes.Join(before, nil)),
 					after:  bytes.NewReader(bytes.Join(after, nil)),
