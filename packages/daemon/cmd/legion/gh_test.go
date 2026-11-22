@@ -390,7 +390,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"repo", "view"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"api", "repos/{owner}/{repo}"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/octocat/hello"}), owner: "octocat"},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git)) and sjawhar (the working directory's remote "upstream" (ssh://[a URL with credentials]/sjawhar/legion.git))`},
+		// An ssh remote's user name alone is an SSH login, not a credential: it prints with its host.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git)) and sjawhar (the working directory's remote "upstream" (ssh://git@github.com/sjawhar/legion.git))`},
 		// A remote URL a CI checkout writes with its token as the user info prints the mark in its
 		// place, whether the remote names no OWNER/REPO (refused) or one beside another owner's;
 		// its host is masked with it and its path, the repository, still prints.
@@ -400,7 +401,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 			err: `sjawhar (the working directory's remote "upstream" (https://[a URL with credentials]/sjawhar/legion.git))`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: `remote "work" (ssh://git@gh-work/sjawhar/legion.git) is an ssh remote whose host gh may read as github.com`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, ghRemote{name: "local", url: "/srv/legion"}), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_CONFIG_DIR": "/owners", "LEGION_GH_OWNERS_DIR": "/owners"}, remotes: remotes(acmeClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: func() ([]ghRemote, error) { return nil, fmt.Errorf("bad config line 3") }, err: "cannot be read (bad config line 3)"},
@@ -1229,9 +1230,11 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 
 // git prints a remote's URL and partial clone filter as they are configured, so whitespace in
 // either lets gh's greedy reading of the line take another URL than the one before its first
-// ` (`: readGitRemotes refuses such a line, naming it, rather than count an owner gh may not act
-// on. The three shapes the gates probed, each gh acting on evilown's repository: a filter holding a
-// second `<url> (fetch)`, the same after a GitHub URL, and a URL holding a second URL.
+// ` (`: readGitRemotes refuses such a line, naming its remote, rather than count an owner gh may
+// not act on. The line itself is not printed: a URL holding whitespace runs past where the URL
+// rule ends one, so its credential would print. The three shapes the gates probed, each gh acting
+// on evilown's repository: a filter holding a second `<url> (fetch)`, the same after a GitHub URL,
+// and a URL holding a second URL.
 func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
@@ -1257,8 +1260,8 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 				// environment is its own too, for the reason the test above gives.
 				fixture.Run(repository, append([]string{"git"}, args...)...)
 			}
-			if remotes, err := readGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
-				t.Errorf("readGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)
+			if remotes, err := readGitRemotes(); err == nil || !strings.Contains(err.Error(), `git remote -v printed a line for the remote "origin"`) || strings.Contains(err.Error(), "evilown") {
+				t.Errorf("readGitRemotes = %+v, %v; want the line refused by its remote's name alone", remotes, err)
 			}
 		})
 	}

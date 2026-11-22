@@ -158,23 +158,23 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return answerVisibilityRead(beforeGh, read, stdout, stderr)
 	}
 	if real := env[leakguard.RunByRealGhVar]; real != "" {
-		fmt.Fprintf(stderr, "legion gh: the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path\n", real)
+		printGhRefusal(stderr, fmt.Errorf("the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path", real))
 		return 2
 	}
 	gh := env["LEGION_GH_PATH"]
 	wrapper, err := ghWrapperPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	if err := refuseLegionGhAsRealGh(gh); err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	// gh reads the directory GH_CONFIG_DIR names for every help this reads, so it is judged before
 	// the first; the directory the command routes to is judged again before gh runs.
 	if err := ghConfigShape(env["GH_CONFIG_DIR"]); err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	helpEnv := ghChildEnviron(os.Environ(), map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"]})
@@ -186,7 +186,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// all, so they read none: each stays the one gh process the guard counts on.
 	if !rateLimitRead && !isVisibilityRead {
 		if err := ghRepoGitConfigRefusal(helpEnv); err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
+			printGhRefusal(stderr, err)
 			return 2
 		}
 	}
@@ -237,13 +237,13 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	// The directory gh will run with must not send its requests anywhere but github.com: a pane
 	// can write its own gh files between two of the daemon's refreshes (ghConfigShape).
 	if err := ghConfigShape(ghCallDir(env, target)); err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	commandPath = target.command
@@ -316,7 +316,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			return status
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
+			printGhRefusal(stderr, err)
 			return 2
 		}
 		buffered, checkedOnly = answer.Stdin, answer.CheckedOnly
@@ -333,7 +333,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		dir = target.dir
 	}
 	if err := ghConfigShape(dir); err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, leakguard.RunByRealGhVar: gh}
@@ -350,7 +350,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	}
 	childEnv, err := withGitHubUseHTTPPath(ghChildEnviron(os.Environ(), set))
 	if err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 2
 	}
 	// runGhChild arms a forwarding of its own, so the SIGHUP watch ends here, and a SIGHUP it took
@@ -601,12 +601,12 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 		}
 		// A cancellation this command cannot name a signal for is no death a shell reads as a
 		// status: it is gh not started, and that is what it answers with.
-		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, cause)
+		printGhRefusal(stderr, fmt.Errorf("run %s: %w", gh, cause))
 		return 1
 	}
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
-		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
+		printGhRefusal(stderr, fmt.Errorf("run %s: %w", gh, err))
 		return 1
 	}
 	defer forwardTo(child.Process, signals)()
@@ -616,7 +616,7 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	}
 	var exited *exec.ExitError
 	if !errors.As(err, &exited) {
-		fmt.Fprintf(stderr, "legion gh: run %s: %v\n", gh, err)
+		printGhRefusal(stderr, fmt.Errorf("run %s: %w", gh, err))
 		return 1
 	}
 	if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
