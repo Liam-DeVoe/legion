@@ -609,10 +609,13 @@ jobs:
       # two CPUs the whole directory ran on (2026-11-20, main d36289cb84), the slowest row that passed
       # took 98.5 s and 58 rows took more than 5 s; 200 s is about twice the slowest. The rows whose
       # shells wait set their own bound in their file and give up 20 s inside it, so a wait that gives
-      # up still names what it waited for. --parallel runs the files in one worker process per CPU
-      # rather than one after another: most rows wait on a child, a socket or a bound rather than
-      # compute, so one file's waits no longer hold every other file's rows. Run alone, as it ran
-      # before, the step took a median 178 s over 412 pull-request runs of 2026-11-22.
+      # up still names what it waited for. --parallel=8 runs the files in eight worker processes
+      # rather than one after another. Most rows wait on a child process, a socket or a bound rather
+      # than compute, so eight workers on this runner's four CPUs finish sooner than four: the step
+      # took 50.4 s with one worker per CPU (job 137329421934) and 34.2 s with eight (job
+      # 137338546977), against a median 178 s run alone over 412 pull-request runs of 2026-11-22.
+      # app-logins.test.ts's rows, 32.5 s in that run, are one file in one worker, the floor of the
+      # step at any worker count.
         run: bun run test:e2e-lib
 
       # After setup-go: its fixtures run go list over a scratch module.
