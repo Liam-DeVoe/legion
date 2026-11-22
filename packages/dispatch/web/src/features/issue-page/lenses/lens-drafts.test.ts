@@ -527,7 +527,7 @@ test("a statement's and a verdict's words read a risk they cite by its heading, 
 });
 
 // A statement's words that cite a constraint of the issue read it by its words, linked to its
-// row; a risk's early warning, a fact line drawn as text, reads it by its words with no link.
+// row; a risk's early warning reads it by its words too.
 test("a statement's and an early warning's words read a constraint they cite by its words", () => {
   const constraint = "e5000000-0000-4000-8000-000000000005";
   const cited = `dispatch://constraint/${constraint}`;
@@ -559,6 +559,59 @@ test("a statement's and an early warning's words read a constraint they cite by 
   expect(linksIn(statement.tree)).toEqual([
     ["RFC 9110", { href: cited, title: rowPath(constraint) }],
   ]);
+});
+
+// A risk's fact lines that name a node the answer holds carry their parts beside their words: the
+// text, and a chip for each name, which holds the node's address, the words the line names it by
+// and its read id, so the line links its row. An early warning's bare address of a constraint is
+// named by the constraint's words, and a prevention's author's link to a lens keeps the author's
+// words. Joined, the parts are the line's words, which stay as they were. A line that cites a node
+// the answer does not hold names it by its kind's word and carries no parts.
+test("a risk's fact lines that name a node the answer holds carry a chip of that node", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const toConstraint = `dispatch://constraint/${constraint}`;
+  const toLens = `dispatch://lens/${FIRST}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1"),
+        bare("risk-1", "risk", FIRST, {
+          attributes: {
+            early_warning: `A reply breaks ${toConstraint} first.`,
+            heading: "It breaks.",
+            prevention: `Run [this lens](${toLens}) again.`,
+          },
+        }),
+        bare("risk-2", "risk", FIRST, {
+          attributes: {
+            early_warning: "Watch dispatch://risk/f9000000-0000-4000-8000-000000000009 closely.",
+            heading: "It drifts.",
+          },
+        }),
+        bare(constraint, "constraint", KEY, { attributes: { standard: "RFC **9110**" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const named = factsOf(rowOf(root, "risk-1"));
+  const unheld = factsOf(rowOf(root, "risk-2"));
+
+  expect([named.earlyWarning, named.prevention, unheld.earlyWarning]).toEqual([
+    "A reply breaks RFC 9110 first.",
+    "Run this lens again.",
+    "Watch risk closely.",
+  ]);
+  expect(named.factParts).toEqual({
+    earlyWarning: [
+      "A reply breaks ",
+      { address: toConstraint, id: constraint, words: "RFC 9110" },
+      " first.",
+    ],
+    prevention: ["Run ", { address: toLens, id: FIRST, words: "this lens" }, " again."],
+  });
+  expect(unheld.factParts).toBeUndefined();
 });
 
 // A risk the answer does not hold has no row to link and no words to read: its address reads as

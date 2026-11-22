@@ -20,7 +20,9 @@ import {
   addressOf,
   constraintRuns,
   constraintWords,
+  type FactParts,
   kindOf,
+  type LensChip,
   type LensType,
   lensChipWords,
   lensTypeOf,
@@ -52,6 +54,9 @@ interface StoreNode {
   /** The address of its row (`outlineRowPath`), as a lens chip links it: the `title` of the link
    *  mark a row's words name it in (`namedRuns`). */
   readonly path: string;
+  /** Its id in the tree read, which that path names (`?node=`): the id of a fact line's chip of
+   *  it (`factWords`). */
+  readonly id: string;
 }
 
 /** Every node a row's words can name by its store address, by that address as
@@ -75,7 +80,7 @@ const NO_MARKS: readonly DisplayTree[] = [];
  * - A lens's, a risk's and a constraint's own draft, whose words `lensDrafts` read from their
  *   attributes (`storedRowWords`, `constraintRuns`, `storedFacts`): each attribute that holds a
  *   store address read again with its names (`nameStored`), an author's link to a node among
- *   them.
+ *   them, and each fact line that names a node with its parts, which link the node's row.
  *
  * A child issue's title is no markdown and its row draws it as written, so it is left as it is;
  * its line reads a store address as its kind's word, as every line does.
@@ -112,10 +117,10 @@ export function storeWords(
 const storeIndexes = new WeakMap<TreeDraftContext, StoreIndex>();
 
 /** Every node of the answer that `lensDrafts` drafts as a lens, a risk, a constraint or a finding
- *  and that has a row, by its store address (`addressOf`): its name (`nameOf`) and the path of its
- *  row. It is made at the first store address of such a node a run's words name (`namedRuns`), so
- *  a build whose words name none makes none; no draft's words are named before then, so a name is
- *  read from the words as drafted. */
+ *  and that has a row, by its store address (`addressOf`): its name (`nameOf`), the path of its
+ *  row and its read id. It is made at the first store address of such a node a run's words name
+ *  (`namedRuns`), so a build whose words name none makes none; no draft's words are named before
+ *  then, so a name is read from the words as drafted. */
 function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
   const held = storeIndexes.get(context);
   if (held !== undefined) return held;
@@ -126,6 +131,7 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
     const address = storeAddressReference(addressOf(node, context) ?? "");
     if (address === undefined || index.has(address)) continue;
     index.set(address, {
+      id: node.id,
       name: nameOf(node, type, context),
       path: outlineRowPath(context.key, node.id),
     });
@@ -260,9 +266,9 @@ function nameLine(draft: Draft, named: DisplayTree | undefined): void {
  * heading (`storedRowWords`) with their named reading (`nameLine`), so the row links the names,
  * and a constraint's words (`constraintRuns`) so too, one paragraph of each stored string's runs,
  * those of a string that names nothing its plain words (`plainRuns`), each only where it names
- * one; and each fact line as that reading's words, by the rule `lensDrafts` reads them by
- * (`storedFacts`), which for a line that names nothing are the plain words `lensDrafts` wrote.
- * The fact lines draw as text (`LensLines.tsx`'s `Words`), so they gain the name and no link.
+ * one; and each fact line by the rule `lensDrafts` reads them by (`storedFacts`), as `factWords`
+ * reads it: its words, which for a line that names nothing are the plain words `lensDrafts`
+ * wrote, and its parts where it names a node the index holds, so the line links the names.
  */
 function nameStored(
   draft: Draft,
@@ -270,10 +276,6 @@ function nameStored(
   type: "constraint" | "lens" | "risk",
   index: () => StoreIndex
 ): void {
-  const words = (raw: string): string => {
-    const named = namedLine(raw, index, addressesAsShortForms);
-    return named === undefined ? plainWords(raw) : wordsOf(named);
-  };
   if (type === "constraint") {
     let named = false;
     const runs = constraintRuns(node, (raw) => {
@@ -286,7 +288,31 @@ function nameStored(
   } else {
     nameLine(draft, namedLine(storedRowWords(node, type), index, addressesAsShortForms));
   }
-  if (draft.lens !== undefined) draft.lens = { ...draft.lens, ...storedFacts(node, type, words) };
+  if (draft.lens !== undefined) {
+    draft.lens = { ...draft.lens, ...storedFacts(node, type, (raw) => factWords(raw, index)) };
+  }
+}
+
+/**
+ * A fact line's words read from the stored string `raw` with each store address in them named:
+ * its plain words (`plainWords`) where it names nothing, and else its named reading's words
+ * (`lineRuns`). Where that reading names a node the index holds, the line is answered as its
+ * runs instead: each run with a name's link a chip of the node - its store address, the run's
+ * words and its read id, so the chip links its row - and every other run its text.
+ */
+function factWords(raw: string, index: () => StoreIndex): string | FactParts {
+  const runs = lineRuns(raw, index, addressesAsShortForms);
+  if (runs === undefined) return plainWords(raw);
+  const parts = runs.map((run): string | LensChip => {
+    const text = run.text as string;
+    const link = Array.isArray(run.marks) ? (run.marks as DisplayTree[])[0] : undefined;
+    const address = link === undefined ? undefined : linkedAddress(link);
+    const named = address === undefined ? undefined : index().get(address);
+    return address === undefined || named === undefined
+      ? text
+      : { address, id: named.id, words: text };
+  });
+  return parts.some((part) => typeof part !== "string") ? parts : wordsOf(lineOf(runs));
 }
 
 /**

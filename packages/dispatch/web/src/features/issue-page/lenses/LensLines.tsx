@@ -4,7 +4,7 @@ import { pageQuietText } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_WORDS } from "../page-words";
-import { filled, kindWords, type LensChip } from "./lens-drafts";
+import { type FactParts, filled, kindWords, type LensChip } from "./lens-drafts";
 import { NodeLink } from "./NodeLink";
 
 /** What a line is marked with (`data-lens-line`): the `LENS_WORDS` key of its label, and for a
@@ -21,8 +21,10 @@ export type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
  * - a constraint: a standard's reference, or where a measurement was taken.
  *
  * With `body` the row also draws a lens's kind's words whole, which its tag cuts, and a risk's
- * prevention. Each label is the page's, from `LENS_WORDS`; each stored string is the author's.
- * The lines are small and quiet, as the row's parent line is, and the words in them wrap.
+ * prevention. Each label is the page's, from `LENS_WORDS`; each stored string is the author's. A
+ * fact line that names a lens, a risk, a constraint or a finding the tree read holds draws that
+ * name as a link to the node's row, as a chip is drawn (`LensFacts.factParts`). The lines are
+ * small and quiet, as the row's parent line is, and the words in them wrap.
  */
 export function LensLines({
   body,
@@ -40,7 +42,7 @@ export function LensLines({
     if (body && filled(lens.kind)) {
       lines.push(
         <Line key="kind" line="kind">
-          <Words text={kindWords(lens.kind)} />
+          <Words>{kindWords(lens.kind)}</Words>
         </Line>
       );
     }
@@ -63,14 +65,22 @@ export function LensLines({
     if (filled(lens.earlyWarning)) {
       lines.push(
         <Line key="early_warning" line="early_warning">
-          <Words text={lens.earlyWarning} />
+          <FactWords
+            parts={lens.factParts?.earlyWarning}
+            tabStops={tabStops}
+            text={lens.earlyWarning}
+          />
         </Line>
       );
     }
     if (body && filled(lens.prevention)) {
       lines.push(
         <Line key="prevention" line="prevention">
-          <Words text={lens.prevention} />
+          <FactWords
+            parts={lens.factParts?.prevention}
+            tabStops={tabStops}
+            text={lens.prevention}
+          />
         </Line>
       );
     }
@@ -96,13 +106,17 @@ export function LensLines({
     if (filled(lens.reference)) {
       lines.push(
         <Line key="reference" line="reference">
-          <Words text={lens.reference} />
+          <FactWords parts={lens.factParts?.reference} tabStops={tabStops} text={lens.reference} />
         </Line>
       );
     } else if (filled(lens.takenWhere)) {
       lines.push(
         <Line key="taken_at" line="taken_at">
-          <Words text={lens.takenWhere} />
+          <FactWords
+            parts={lens.factParts?.takenWhere}
+            tabStops={tabStops}
+            text={lens.takenWhere}
+          />
         </Line>
       );
     }
@@ -130,11 +144,39 @@ function Line({ children, line }: { children?: ReactNode; line: LineName }): Rea
 }
 
 /** A stored string, which wraps inside its line. */
-function Words({ text }: { text: string }): ReactNode {
+function Words({ children }: { children: ReactNode }): ReactNode {
   return (
     <span className="min-w-0 break-words" {...authorText}>
-      {text}
+      {children}
     </span>
+  );
+}
+
+/** A fact line's stored string `text`, drawn as `Words`; where the line names a node the tree
+ *  read holds, as its parts (`LensFacts.factParts`), which are the same words: each string as
+ *  text, and each chip as a link to that node's row (`NodeLink`), as a line's chips are. */
+function FactWords({
+  parts,
+  tabStops,
+  text,
+}: {
+  parts: FactParts | undefined;
+  tabStops: boolean;
+  text: string;
+}): ReactNode {
+  return (
+    <Words>
+      {parts === undefined
+        ? text
+        : parts.map((part, at) =>
+            typeof part === "string" ? (
+              part
+            ) : (
+              // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
+              <NodeLink chip={part} key={at} tabStops={tabStops} />
+            )
+          )}
+    </Words>
   );
 }
 

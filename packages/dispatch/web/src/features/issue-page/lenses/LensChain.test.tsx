@@ -802,3 +802,51 @@ test("a lens row draws its verdict's author's link to a risk as a link to the ri
     view.unmount();
   }
 });
+
+// A risk's early warning that cites a constraint the tree read holds by its bare address,
+// `dispatch://constraint/<uuid>`, draws the constraint's words in its line as a link that opens
+// the constraint's row (`?node=`), as the risk's row draws its lines from the tree read
+// (`buildIssueTree`).
+test("a risk row draws its early warning's address of a constraint as a link to the constraint's row", async () => {
+  await warmMarkdownRenderer();
+  const lens = "c3000000-0000-4000-8000-000000000003";
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY),
+        treeNode(risk, "risk", lens, {
+          attributes: {
+            early_warning: `A reply breaks dispatch://constraint/${constraint} first.`,
+            heading: "Replies break the HTTP rule",
+          },
+        }),
+        treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children
+    .find((row) => row.id === lens)
+    ?.children.find((row) => row.id === risk);
+  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    await waitFor(() => {
+      const line = view.container.querySelector('[data-lens-line="early_warning"]');
+      expect(line?.querySelector("[data-author-text]")?.textContent).toBe(
+        "A reply breaks RFC 9110 first."
+      );
+      const links = [...(line?.querySelectorAll("a") ?? [])];
+      expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+        ["RFC 9110", `/issues/${KEY}?node=${constraint}`],
+      ]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
