@@ -48,10 +48,11 @@ jobs:
     # box), so 40; the second, over the hooks' own tests and consumernames alone, under
     # forced-order.sh's 10 minutes, 15 as before, so 91. The script's own test compiles one more
     # hooked build, of a fixture with one test that skips, up to 5 minutes, and runs it at once, so
-    # 96. Delivery's held-write row adds a step on each nats-server: on a dev box at a load of
-    # about 1,000, with an empty build cache as CI's is, they took 202 s on the linked v2.15.1 and
-    # 274 s on v2.10.29, compile included (2026-11-21), 476 s together, so 12 minutes with half
-    # again for margin, and 108 in all, 117 with the job's 9 minutes of margin.
+    # 96. Delivery's held-write test adds a step on each nats-server, on one copy, an R1 cluster
+    # and R3: on a dev box at a load of 900 to 1,250, each step with an empty build cache as CI's
+    # is, they took 371 s on the linked v2.15.1 and 120 s on v2.10.29, compile included
+    # (2026-11-22), 491 s together, so 12 minutes with about half again for margin, and 108 in
+    # all, 117 with the job's 9 minutes of margin.
     timeout-minutes: 117
     services:
       postgres:
