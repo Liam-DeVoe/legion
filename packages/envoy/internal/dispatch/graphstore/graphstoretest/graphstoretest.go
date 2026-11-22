@@ -22,16 +22,14 @@ func BaseAttributes() []string { return []string{"visibility", "state"} }
 // graph_tuples from outside that package goes through, a fresh slice for each caller: Write and
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
 // queued on a write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's
-// statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
-// writers that record an author, a reached session and a session an ask names; and EraseNode, the
-// erase's delete of a node and its tuples. Each is a function of the package, never a method, so a
-// call of one is named by the package wherever it is made. It is the one list the source scans
-// that hold the store's writers read: graphstore's register of their call sites
-// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
-// (TestNoProjectionRowIsWrittenWithoutTheStore).
+// statement; and QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for
+// the writers that record an author, a reached session and a session an ask names. Each is a
+// function of the package, never a method, so a call of one is named by the package wherever it
+// is made. It is the one list the source scans that hold the store's writers read: graphstore's
+// register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers
+// of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
-		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
-		"EraseNode"}
+		"QueueAuthored", "QueueReached", "QueueSessionRecorded"}
 }

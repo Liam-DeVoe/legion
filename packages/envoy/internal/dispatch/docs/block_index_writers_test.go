@@ -571,24 +571,9 @@ var indexPasses = map[string]string{
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill_sessions.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
-	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
-	// the operator named and what the store itself holds about it, which is neither side of a
-	// projection read to mend the other: it deletes both sides together, the store's through
-	// graphstore.EraseNode, rather than bringing one into line with the other, so it is no repair.
-	"grapherase/erase.go#apply": "the node the operator named",
-	// The same erase's rewrite of the rows it may take no row out of, which is the other half
-	// of that one input: the text of the node the operator named, read before any delete
-	// (readTexts). It writes back the block text and the excerpt cut from it as one read
-	// computed both (readAncestors), so it never reads either to decide what the other should
-	// say.
-	"grapherase/redaction.go#redactBlocks": "the text of the node the operator named",
-	"graphstore/arms.go#nodeArm":           "the nodes its caller states",
-	"graphstore/arms.go#claimArms":         "the claims its caller states",
-	"graphstore/arms.go#tupleInsert":       "the tuples its caller states",
-	// EraseNode is the erase's delete of a node and the tuples its caller listed: it reads the
-	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
-	// caller names.
-	"graphstore/erase.go#EraseNode": "the node its caller names",
+	"graphstore/arms.go#nodeArm":                         "the nodes its caller states",
+	"graphstore/arms.go#claimArms":                       "the claims its caller states",
+	"graphstore/arms.go#tupleInsert":                     "the tuples its caller states",
 	// A node write (queueNodes): the insert of the nodes the store lacks, which locks the ones it
 	// holds, and the move of the ones it holds. The move reads each row it moves, in the snapshot
 	// taken once the insert holds them all, to say which base attributes the write moved: it reads
@@ -633,7 +618,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // or builds the statement that does, the list that test holds as storeWriteFunctions:
 // QueueSessionRecorded writes a session's node through arms of its own, and a pass that wrote the
 // store through it alone would otherwise be read as no writer at all.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|Caused|QueueWrite|QueueNodes|QueueCaused|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused|EraseNode)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|Caused|QueueWrite|QueueNodes|QueueCaused|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

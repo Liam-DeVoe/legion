@@ -29,9 +29,10 @@ package censustest
 // TestEveryColumnTheCensusComparesIsOneTheProjectionScanHolds), so a column the census compares
 // cannot be left out of this list.
 //
-// Its tables are the tables graphstore.ProjectedTables lists, the production list the erase walks,
-// each with its columns here: graphcensus's TestTheProjectedColumnsListEveryTableTheStoreProjects
-// fails on a table one of the two names and the other does not.
+// Its tables are the tables graphstore.ProjectedTables lists, the production list of the tables
+// that project the store, each with its columns here: graphcensus's
+// TestTheProjectedColumnsListEveryTableTheStoreProjects fails on a table one of the two names and
+// the other does not.
 var ProjectedColumns = map[string]map[string]string{
 	"comments": {
 		// A comment's node is addressed by the row's own id (graphstore.KindComment), and every

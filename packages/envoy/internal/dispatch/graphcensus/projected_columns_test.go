@@ -94,12 +94,11 @@ func TestEveryColumnTheCensusComparesIsOneTheProjectionScanHolds(t *testing.T) {
 }
 
 // TestTheProjectedColumnsListEveryTableTheStoreProjects holds censustest.ProjectedColumns to
-// graphstore.ProjectedTables, the production list of the tables that project the store, which the
-// erase walks to read, lock and delete a node's rows of them. The two name the same tables. A
-// table the production list names and the column list does not is one whose writers api's scan
-// (TestNoProjectionRowIsWrittenWithoutTheStore) and whose columns the census test above never
-// read; a table the column list names and the production list does not is one whose rows the
-// erase never takes with their node. It reads no database.
+// graphstore.ProjectedTables, the production list of the tables that project the store. The two
+// name the same tables. A table the production list names and the column list does not is one
+// whose writers api's scan (TestNoProjectionRowIsWrittenWithoutTheStore) and whose columns the
+// census test above never read; a table the column list names and the production list does not
+// is one the production list leaves out. It reads no database.
 func TestTheProjectedColumnsListEveryTableTheStoreProjects(t *testing.T) {
 	stored := make([]string, len(graphstore.ProjectedTables))
 	for index, held := range graphstore.ProjectedTables {
@@ -116,7 +115,7 @@ func TestTheProjectedColumnsListEveryTableTheStoreProjects(t *testing.T) {
 	}
 	for _, table := range projectedTables {
 		if !slices.Contains(stored, table) {
-			t.Errorf("censustest.ProjectedColumns lists %s, which graphstore.ProjectedTables does not: add it there, with its key and the column naming its owning issue, so the erase takes a node's rows of it",
+			t.Errorf("censustest.ProjectedColumns lists %s, which graphstore.ProjectedTables does not: add it there, with its key and the column naming its owning issue",
 				table)
 		}
 	}

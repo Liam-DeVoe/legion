@@ -155,11 +155,6 @@ var itemRowWriters = map[string]map[string]string{
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
-	"internal/dispatch/grapherase/erase.go": {
-		"apply": "the owner lock of every owner the erase writes under, which its transaction takes " +
-			"before the node's row (lockInStoreOrder, events.LockOwnerRows); it writes a table this " +
-			"scan cannot read, which may be a comments row the erase deletes",
-	},
 	"internal/dispatch/refs/comment_nodes.go": {
 		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
 			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
@@ -370,7 +365,6 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueAskResolution": itemRowCallersTransaction,
 		"WriteRestoredAsks":  itemRowCallersTransaction,
 	},
-	"internal/dispatch/grapherase/erase.go":   {"apply": itemRowCallersTransaction},
 	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
