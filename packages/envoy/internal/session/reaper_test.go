@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // counterValue reads name's unlabelled sample from met's own scrape, the only way a counter's
@@ -36,6 +37,18 @@ func counterValue(t *testing.T, met *metrics.Registry, name string) int64 {
 		return value
 	}
 	return 0
+}
+
+// reapPass runs one pass of the reaper (ReapSessions) under the test's context on a goroutine of
+// its own and returns how many records it deleted. A pass that reads the stream asks for its state
+// under that context (streamState), which nats.go bounds by nothing else, so the pass's answer is
+// taken with the test binary's deadline as its one bound (testwait.Receive): a server that never
+// answers fails the row by name rather than at the binary's alarm.
+func reapPass(t *testing.T, r *SessionRegistry, reaper SessionReaper) int {
+	t.Helper()
+	reaped := make(chan int, 1)
+	go func() { reaped <- r.ReapSessions(t.Context(), reaper) }()
+	return testwait.Receive(t, "the reaper's pass to end", reaped)
 }
 
 // reapingRegistry opens a registry whose records outlive the horizon in the bucket - the maximum
@@ -282,8 +295,7 @@ func TestAReapedSessionsStoredCountStartsAtItsLastRegistration(t *testing.T) {
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx := t.Context()
-	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
+	if reaped := reapPass(t, r, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}
 	if got := counterValue(t, met, "stored"); got != 3 {
@@ -388,8 +400,7 @@ func TestAReapedSessionsStoredCountIsReachedPastMoreOldMessagesThanTheCap(t *tes
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx := t.Context()
-	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
+	if reaped := reapPass(t, r, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}
 	if got := counterValue(t, met, "stored"); got != 2 {

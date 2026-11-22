@@ -37,7 +37,12 @@ func openWatchedRegistry(t *testing.T, conn *natsgo.Conn) *SessionRegistry {
 //
 // That the lock was held throughout is shown by a read of the connection's status begun before
 // StopWatch and still unanswered once StopWatch has returned: a read that answered says the lock
-// was free at some point, and the row is then no evidence either way.
+// was free at some point, and the row is then no evidence either way. That guard can fail a
+// correct StopWatch on a heavily loaded runner: HoldWriteLock decides the lock is held when a read
+// of the status takes longer than its 200 ms probe, which a free lock can on such a runner, and the
+// row's own read then finds the lock still free and answers. A read that has not answered is
+// waiting for the lock, with one exception the row cannot see: a read whose goroutine has signalled
+// but not yet asked for the status when StopWatch returns.
 func TestStopWatchMakesNoRequestOfTheServer(t *testing.T) {
 	_, uri := testnats.Start(t)
 	hold := testnats.StartHandshakeHold(t, uri)

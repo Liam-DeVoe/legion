@@ -243,10 +243,12 @@ func knownBucketGrant() []string {
 // none of the bucket's subjects, so the request is dropped as a denied JetStream request is in
 // production, and the attempt costs the whole wait rather than ending on a refusal.
 //
-// "Within one attempt's wait" is counted, not timed: the open sends the bucket's lookup once and
-// returns when that request's wait ends, rather than sending it again until its context ends
-// (bus.EnsureKeyValue's resends). The wait itself is the open's JetStream context's
-// (knownJetStream), however long a loaded machine takes around it.
+// "Within one attempt's wait" is checked without a clock of the row's own. The open sends the
+// bucket's lookup once, rather than again until its context ends (bus.EnsureKeyValue's resends),
+// which the row counts. And that one attempt ends within twice its wait (knownBucketOpenWait),
+// the bound the listener's start pays for a bucket it may not open: a request of the row's own,
+// whose deadline is set before the open begins at twice that wait, is still waiting when the open
+// returns.
 func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
@@ -259,10 +261,28 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(counting.Close)
+	// The bounding request goes to a subject the user may not publish to: the server drops it as
+	// it drops the open's lookup, so nothing answers it and it waits until its deadline, where a
+	// request to a subject nobody serves is answered at once (no responders). It is in flight before
+	// the open begins: the row waits for the server's refusal of it.
+	bound, endBound := context.WithTimeout(context.Background(), 2*knownBucketOpenWait)
+	defer endBound()
+	bounding := make(chan error, 1)
+	go func() {
+		_, err := counting.RequestWithContext(bound, refusalBound, nil)
+		bounding <- err
+	}()
+	waitFor(t, "the server to refuse the bounding request", refused.refusedBound)
 	counted, err := OpenKnownSessions(t.Context(), counting,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
 		withKnownSessionRetry(time.Hour, time.Hour))
+	select {
+	case err := <-bounding:
+		t.Fatalf("the open returned after a request whose deadline, set before the open began, was twice the open's %s wait had ended (%v): the listener's start waits on this open before it opens /v1",
+			knownBucketOpenWait, err)
+	default:
+	}
 	if err != nil {
 		t.Fatalf("open the counted store over a bucket its user may not open: %v", err)
 	}
@@ -351,6 +371,9 @@ const knownLookupSubject = `"$JS.API.STREAM.INFO.KV_` + bus.KnownSessionBucket +
 // names, so the server refuses it after every publish the connection sent before it.
 const refusalMark = "session.test.refusal-mark"
 
+// refusalBound is the subject of the request that bounds the open, which the server refuses too.
+const refusalBound = "session.test.open-bound"
+
 // refusals counts the publishes the server refused a connection, from the permissions violations
 // it reports to the connection's error handler (nats.ErrorHandler). The server refuses a
 // connection's publishes in the order the connection sent them, and nats.go hands the reports to
@@ -359,6 +382,7 @@ type refusals struct {
 	mu      sync.Mutex
 	lookups int
 	marked  bool
+	bounded bool
 }
 
 func (r *refusals) handle(_ *nats.Conn, _ *nats.Subscription, err error) {
@@ -372,7 +396,16 @@ func (r *refusals) handle(_ *nats.Conn, _ *nats.Subscription, err error) {
 		r.lookups++
 	case strings.Contains(err.Error(), `"`+refusalMark+`"`):
 		r.marked = true
+	case strings.Contains(err.Error(), `"`+refusalBound+`"`):
+		r.bounded = true
 	}
+}
+
+// refusedBound reports whether the server has refused the request that bounds the open.
+func (r *refusals) refusedBound() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bounded
 }
 
 // after is how many lookups of the bucket the server refused conn before it refused a publish to

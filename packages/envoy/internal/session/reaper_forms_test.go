@@ -47,8 +47,7 @@ func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx := t.Context()
-	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
+	if reaped := reapPass(t, r, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}
 	if got := counterValue(t, met, "stored"); got != 3 {

@@ -396,7 +396,7 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 			waitFor(t, "the watcher to follow the recreated bucket", func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
 
 			held.open()
-			if err := <-done; err != nil {
+			if err := testwait.Receive(t, "the delayed call to answer once its gate opened", done); err != nil {
 				t.Fatalf("the delayed call: %v", err)
 			}
 			if got := titleOf(t, r, "ses_a"); got != "new" {
@@ -491,7 +491,7 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 	}
 
 	get.open()
-	got := <-done
+	got := testwait.Receive(t, "the overtaken Refresh to answer once its gate opened", done)
 	if got.err != nil || got.entry.Title != "live" {
 		t.Fatalf("Refresh(ses_a) overtaken by the watch = %+v, %v; want the live entry the bucket returned", got.entry, got.err)
 	}
