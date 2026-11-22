@@ -735,8 +735,10 @@ func TestAHeldRepliesAnswerStatesWhereItsPostWritesIt(t *testing.T) {
 // of the posted issue answers it: the repository it names, the priorities it advances and the
 // components it chose. An issue stating its own, and one under a parent whose repository, priority
 // and components it inherits, which its dry run read back, answer as they post, field for field. A
-// child of a held issue, which runs no dry run, answers its own: no repository, the priority it
-// names and the components it chose, which is what the posted child holds of its own.
+// child of a held issue runs its dry run with no parent, so the issue that dry run files inherits
+// nothing of the held issue, and its answer keeps none of it (issueCreate.beside): it answers its
+// own, no repository, the priority it names and the components it chose, which is what the posted
+// child holds of its own.
 func TestAHeldIssuesAnswerStatesTheRepoAdvancesAndComponentsItPosts(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
 	for _, id := range []string{"ship-the-daemon", "cut-the-queue"} {

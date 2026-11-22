@@ -1137,10 +1137,12 @@ func heldAnchor(wrote *model.Anchor) *model.Anchor {
 // with the external links a read answers, none, since a held create is never an import
 // (issueCreate's reviewedWrite). Where a dry run filed the issue (filed), each is the one it read
 // back, resolved as a read of the posted issue resolves it: the repository it targets, and the
-// priorities and the components it inherits from its parent. Where none ran, beside a held parent
-// that no issues row holds yet, each is the create's own: the repository it names, the priorities
-// it states and the components it chose, which is the inheriting issue's attachment where it
-// chose none.
+// priorities and the components it inherits from its parent. Beside a held parent that no issues
+// row holds yet, each is the create's own: the repository it names, the priorities it states and
+// the components it chose, which is the inheriting issue's attachment where it chose none. A dry
+// run ran there too, but with no parent (heldIssueCreateError), so the issue it filed inherits
+// nothing of the parent the post files it under, and issueCreate.beside keeps none of that issue
+// (filed is nil), only its spec as its seed renders it and the blocks its advice reads off it.
 func heldIssueWrites(issue *model.Issue, create issueCreate, filed *model.Issue) {
 	if filed != nil {
 		issue.Repo, issue.ResolvedRepo = filed.Repo, filed.ResolvedRepo
@@ -1206,7 +1208,8 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 // askWaitingOn, whom the open ask of its thread waits on once it posts, "" for a comment in no open
 // ask's thread (the answer's ask_waiting_on). A new issue comes with assignee, the person its post
 // files it under: the one its dry run filed it under, or, beside a held parent, where heldBeside
-// reads what its post writes and no issue was filed, heldIssueAssignee's.
+// reads what its post writes and keeps no issue of its dry run, which filed it with no parent,
+// heldIssueAssignee's.
 type heldDryRun struct {
 	answered     *replayAnswer
 	advice       *writeAdvice

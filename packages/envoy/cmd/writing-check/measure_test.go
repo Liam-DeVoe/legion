@@ -348,6 +348,34 @@ func TestAScoreRunWithAFailedCallExitsOne(t *testing.T) {
 	}
 }
 
+// A final test in which a reader call failed has spent its set: claimFinalTest logged it before
+// the first write was read and refuses a second final-test run of it. So its failure ends telling
+// the person to draw a new final-test set, never to run it again; an ordinary run with a failed
+// call still ends telling them to run it again.
+func TestAFinalTestWithAFailedCallSaysToDrawANewSet(t *testing.T) {
+	dir := t.TempDir()
+	labels, manifest := fixtureLabels(t, dir)
+	vacuous := containsAny("names the", "shows the", "frames", "lists the steps", "carries")
+	score := func(out string, extra ...string) string {
+		t.Helper()
+		stub := newStubModel(t, vacuous, containsAny("pays off"))
+		args := append([]string{"score", "--labels", labels, "--planted", manifest, "--stratum", stratumReal, "--out", filepath.Join(dir, out), "--root", "../.."}, stub.args(t, dir)...)
+		code, _, stderr := runCmd(t, append(args, extra...)...)
+		if code != 1 || !strings.Contains(stderr, "1 of 4 reader calls failed") {
+			t.Fatalf("a score run with a failed call = %d:\n%s", code, stderr)
+		}
+		return stderr
+	}
+	log, set := filepath.Join(dir, "exposure.jsonl"), strings.Repeat("ab", 32)
+	final := score("final", "--final-test", "--set-digest", set, "--seed", "42", "--exposure-log", log)
+	if want := "; the exposure log " + log + " holds this final-test run of set " + set + ", and a final test is read once: draw a new final-test set and run that\n"; !strings.HasSuffix(final, want) || strings.Contains(final, "run it again") {
+		t.Errorf("a final test with a failed call ends:\n%s\nwant it to end %q and never say \"run it again\"", final, want)
+	}
+	if ordinary, want := score("ordinary"), "so the run is not complete; run it again\n"; !strings.HasSuffix(ordinary, want) {
+		t.Errorf("an ordinary run with a failed call ends:\n%s\nwant it to end %q", ordinary, want)
+	}
+}
+
 func TestScorePlantedStratumReadsThePlantedFaults(t *testing.T) {
 	out, _ := scoreFixture(t, t.TempDir(), stratumPlanted)
 	g := readFigures(t, filepath.Join(out, "figures.json")).Figures

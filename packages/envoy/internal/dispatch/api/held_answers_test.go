@@ -267,12 +267,20 @@ func TestAHeldMessageRepliesWholeAnswerIsItsPostsAnswer(t *testing.T) {
 	requireHeldAnswerAsPosted(t, "the follow-up", heldFollowUp, postedFollowUp, heldIDs, postedIDs)
 }
 
-// A held write beside a held parent runs no dry run before that parent posts, and its answer is
-// still its post's answer, whole, as each test below holds it: the parent is held, the write is
-// held beside it, the parent posts and the write waits on its writer, and the writer's typed copy
-// of the write, which posts at once once the parent is posted, gets the answer the held one must
-// equal. Whom it waits on, its thread, the block it names in a held text and its advice are read
-// off the held texts it waits on, as its post will find them once they have posted (heldBeside).
+// A held ask, comment, message or reply beside a held parent runs no dry run before that parent
+// posts, and a held issue under one runs its dry run with no parent and none of the held issues it
+// waits on among its blockers, of which it keeps only its spec as its seed renders it and the
+// blocks its advice reads off that spec (heldIssueCreateError, issueCreate.beside). Its answer is
+// still its post's answer, whole, as each test below but one holds it: the parent is held, the
+// write is held beside it, the parent posts and the write waits on its writer, and the writer's
+// typed copy of the write, which posts at once once the parent is posted, gets the answer the held
+// one must equal (TestAHeldIssueUnderAHeldIssueReadsItsSpecAsItsSeedRendersIt leaves out its
+// related items). TestAHeldIssueUnderAHeldIssueAnswersItsPostsAdvice posts nothing and compares
+// no typed copy: it checks the held child's answer alone, its parent and the advice of a new issue
+// in triage that Legion owns, against what it wants. Whom it waits on, its thread, the block it
+// names in a held text, an issue's assignee and its advice, but for the blocks of an issue's spec,
+// are read off the held texts it waits on, as its post will find them once they have posted
+// (heldBeside).
 
 // A held ask on a held issue answers as its post's answer does: whom it waits on, the assignee
 // the issue's post writes, and the advice of the issue the issue's post files, in triage.

@@ -434,6 +434,9 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprint(stdout, md)
 	// A write whose reader call failed has the verdict error (scanVerdict): the figures count it as
 	// a missed failure, as the method does, and the run is not complete. A stopped run ended above.
+	// An ordinary run can be run again; a final test cannot, as claimFinalTest logged its set before
+	// the first write was read and refuses a second final-test run of it, so the person draws a new
+	// final-test set and runs that.
 	asked, failed := 0, 0
 	for _, o := range outputs {
 		if o.Outcome != outcomeNotCalled {
@@ -444,7 +447,11 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	if failed > 0 {
-		fmt.Fprintf(stderr, "writing-check score: %d of %d reader calls failed (their outcomes and errors are in outputs.jsonl), so the run is not complete; run it again\n", failed, asked)
+		next := "run it again"
+		if *finalTest {
+			next = fmt.Sprintf("the exposure log %s holds this final-test run of set %s, and a final test is read once: draw a new final-test set and run that", *exposureLog, *setDigest)
+		}
+		fmt.Fprintf(stderr, "writing-check score: %d of %d reader calls failed (their outcomes and errors are in outputs.jsonl), so the run is not complete; %s\n", failed, asked, next)
 		return 1
 	}
 	return 0
