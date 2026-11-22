@@ -7,6 +7,8 @@
 //
 //	DATABASE_URL=<url> go run ./cmd/dispatch-corpus seed [--project CORE] [--fixtures <dir>] [--test-copy] [--prevented-by-out <file>]
 //	DATABASE_URL=<url> go run ./cmd/dispatch-corpus check [--project CORE] [--fixtures <dir>]
+//	DATABASE_URL=<url> go run ./cmd/dispatch-corpus end-claim --role <role>
+//	DATABASE_URL=<url> go run ./cmd/dispatch-corpus restore-claim --role <role> --session <session>
 //
 // seed migrates the database, writes the corpus, prints each name the drivers read as one
 // `key=value` line, and then runs the self-check over what it wrote. It refuses a database that
@@ -18,6 +20,14 @@
 // the self-check alone, over a database a seed wrote. Each prints the self-check's lines
 // (seedcorpus.Check) and exits 1 when a seed is refused or one bullet or row is missing or holds a
 // count other than the one written, and 2 on a refused argument.
+//
+// end-claim ends the claim the store holds on a role, and restore-claim puts a session's claim on
+// it back, each through the store's writer (seedcorpus.EndClaim, seedcorpus.RestoreClaim), printing
+// one line for each held_by it retracted or asserted: the outbox states a role's claim in a
+// deployment, and `bun run dispatch:local` runs no bus and so no outbox, so agent-page.sh ends the
+// seeded role's claim and puts it back with these, and writes the store no other way. Each exits 1
+// on a refused write and 2 on a refused argument. The claim commands take --project and --fixtures
+// too, which they read nothing of, so a driver runs every command with the same flags.
 package main
 
 import (
@@ -29,6 +39,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +48,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/seedcorpus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// commands are the subcommands dispatch-corpus takes.
+var commands = []string{"seed", "check", "end-claim", "restore-claim"}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -50,8 +64,8 @@ func main() {
 // run parses the subcommand and its flags, opens the database and runs it. Every refusal is
 // written to stderr with a non-zero status, so a driver reads the status and a person the reason.
 func run(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || (args[0] != "seed" && args[0] != "check") {
-		fmt.Fprintln(stderr, "dispatch-corpus: the first argument is seed or check")
+	if len(args) == 0 || !slices.Contains(commands, args[0]) {
+		fmt.Fprintln(stderr, "dispatch-corpus: the first argument is seed, check, end-claim or restore-claim")
 		return 2
 	}
 	command := args[0]
@@ -61,15 +75,30 @@ func run(ctx context.Context, args []string, databaseURL string, stdout, stderr 
 	fixtures := flags.String("fixtures", "", "the directory holding the three captured fixtures; empty finds packages/dispatch/e2e/fixtures in the working directory or above it")
 	testCopy := false
 	preventedByOut := ""
-	if command == "seed" {
+	role, session := "", ""
+	switch command {
+	case "seed":
 		flags.BoolVar(&testCopy, "test-copy", false, "the database is a test copy: seed it though it holds events the loader did not write")
 		flags.StringVar(&preventedByOut, "prevented-by-out", "", "a file to write the map of a second pre-mortem conversion to, from the names the seed wrote")
+	case "end-claim":
+		flags.StringVar(&role, "role", "", "the role whose claim is ended")
+	case "restore-claim":
+		flags.StringVar(&role, "role", "", "the role whose claim is put back")
+		flags.StringVar(&session, "session", "", "the session whose claim on the role is put back")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
 		fmt.Fprintf(stderr, "dispatch-corpus: unexpected argument %q\n", flags.Arg(0))
+		return 2
+	}
+	if (command == "end-claim" || command == "restore-claim") && role == "" {
+		fmt.Fprintf(stderr, "dispatch-corpus %s: --role is required\n", command)
+		return 2
+	}
+	if command == "restore-claim" && session == "" {
+		fmt.Fprintln(stderr, "dispatch-corpus restore-claim: --session is required")
 		return 2
 	}
 	if strings.TrimSpace(databaseURL) == "" {
@@ -82,6 +111,25 @@ func run(ctx context.Context, args []string, databaseURL string, stdout, stderr 
 		return 1
 	}
 	defer database.Pool.Close()
+	switch command {
+	case "end-claim":
+		ended, err := seedcorpus.EndClaim(ctx, database.Pool, role)
+		if err != nil {
+			fmt.Fprintf(stderr, "dispatch-corpus end-claim: %v\n", err)
+			return 1
+		}
+		for _, holder := range ended {
+			fmt.Fprintf(stdout, "end-claim: retracted held_by role:%s -> session:%s\n", role, holder)
+		}
+		return 0
+	case "restore-claim":
+		if err := seedcorpus.RestoreClaim(ctx, database.Pool, role, session); err != nil {
+			fmt.Fprintf(stderr, "dispatch-corpus restore-claim: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "restore-claim: asserted held_by role:%s -> session:%s\n", role, session)
+		return 0
+	}
 	if command == "seed" {
 		if err := database.Migrate(ctx); err != nil {
 			fmt.Fprintf(stderr, "dispatch-corpus: migrate the database: %v\n", err)

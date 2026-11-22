@@ -83,6 +83,29 @@ func TestTheCorpusIsSeededAndReadBack(t *testing.T) {
 			len(risks), risks["8"], risks["3"], premortemRisks, verificationRef(key, "k-pass"), preventedBy)
 	}
 
+	// The seeded role's claim ended through the store's writer and put back (EndClaim,
+	// RestoreClaim), as agent-page.sh ends and restores it: with the claim ended the self-check
+	// fails bullet 16 alone, on the read of the role's holder, and once it is back passes whole.
+	ended, err := EndClaim(ctx, database.Pool, agentRole)
+	if err != nil || len(ended) != 1 || ended[0] != agentSession {
+		t.Fatalf("end the claim of %s: ended %v (%v), want %s", agentRole, ended, err, agentSession)
+	}
+	unclaimed, err := Check(ctx, database.Pool, options)
+	var endedFailed *CheckFailed
+	if !errors.As(err, &endedFailed) || len(endedFailed.Failed) != 1 ||
+		!strings.HasPrefix(endedFailed.Failed[0], "bullet 16, an agent with one session") ||
+		!strings.Contains(endedFailed.Failed[0], "read 0 held_by tuples from the role to the session") {
+		var lines strings.Builder
+		unclaimed.Print(&lines)
+		t.Fatalf("the self-check with %s's claim ended answered %v, want one failure naming bullet 16's holder:\n%s", agentRole, err, lines.String())
+	}
+	if err := RestoreClaim(ctx, database.Pool, agentRole, agentSession); err != nil {
+		t.Fatalf("put back the claim of %s: %v", agentRole, err)
+	}
+	if _, err := Check(ctx, database.Pool, options); err != nil {
+		t.Fatalf("the self-check with %s's claim put back: %v", agentRole, err)
+	}
+
 	// A second seed finds the first one's events, and as a test copy finds its corpus.
 	if _, err := Seed(ctx, database, Options{Fixtures: fixtures}); !errors.Is(err, ErrForeignEvents) {
 		t.Errorf("a second seed of the database answered %v, want ErrForeignEvents", err)
