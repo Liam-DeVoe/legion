@@ -288,10 +288,10 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 			step int
 			role string
 		}
-		newest := map[stepOf]workflowstore.StepRead{}
+		newest := map[stepOf]string{}
 		for _, step := range steps {
 			if step.Generation == plan.Generation && step.Kind == workflowstore.StepKindStep {
-				newest[stepOf{step.Task, step.Place, step.Role}] = step
+				newest[stepOf{step.Task, step.Place, step.Role}] = step.Result
 			}
 		}
 		for _, task := range plan.Tasks {
@@ -300,8 +300,8 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 			for index, name := range task.Steps {
 				role, _, _ := strings.Cut(name, ":")
 				state := "not started"
-				if run, ran := newest[stepOf{task.ID, index + 1, role}]; ran {
-					state = cmp.Or(run.Result, "running")
+				if result, ran := newest[stepOf{task.ID, index + 1, role}]; ran {
+					state = cmp.Or(result, "running")
 				}
 				planned.Planned[index] = model.PlannedStep{Step: index + 1, Name: name, State: state}
 			}
