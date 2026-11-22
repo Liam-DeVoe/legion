@@ -147,7 +147,7 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 for found in 'gh api repos/o/a' 'gh api repos/o/b' 'gh api repos/o/c' 'gh api repos/o/d' 'gh api repos/o/f'; do
   check "names the uncaptured stderr guard of \`$found\`" \
-    "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr $found[^\`]*.: ci_log_guard_stderr blocks only stderr")"
+    "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr ${found}[^\`]*.: ci_log_guard_stderr blocks only stderr")"
 done
 check "reads the captured call of its line as captured" \
   "$(is "$(grep -c 'ci_log_guard_stderr blocks only stderr' <<<"$out")" 5)"
