@@ -1354,12 +1354,21 @@ test("a preview layer that arrives while a button is held on a link opens no car
 // layer's own boundary is what keeps the throw from the app's top boundary (`web/src/main.tsx`),
 // which would replace the page and unmount the sign-in with it. React reports a throw a boundary
 // caught in the commit that draws that boundary's fallback, so its report is the moment the page
-// is read.
-test("a preview layer whose chunk fails online with the tab's reloads spent leaves the page drawn and signed in", async ({
+// is read. The layer stays mounted, so once its chunk can come down the reader's next move to
+// another address draws it afresh (`ChunkBoundary`'s `reset`), which asks for the chunk again,
+// and a hover there opens a card: the failure does not take the cards away for the life of the
+// page.
+// SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
+test("a preview layer whose chunk fails online with the tab's reloads spent leaves the page drawn and signed in, and the next address asks for it again", async ({
   browser,
 }) => {
   await createProject({ key: "NOCARD", name: "No card" });
-  const target = await createIssue({ project: "NOCARD", title: "Card target" });
+  const other = await createIssue({ project: "NOCARD", title: "Card after the move" });
+  const target = await createIssue({
+    project: "NOCARD",
+    spec: `See [the other link](dispatch://${other.key}) for context.`,
+    title: "Card target",
+  });
   const source = await createIssue({
     project: "NOCARD",
     spec: `See [the card link](dispatch://${target.key}) for context.`,
@@ -1395,6 +1404,17 @@ test("a preview layer whose chunk fails online with the tab's reloads spent leav
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     expect(counts.documents, "the failure reloaded nothing").toBe(2);
     expect(await tabReloads(page)).toEqual(spent);
+
+    await page.unroute(/\/assets\/RefPreview-[^/]+\.js$/u);
+    await navigateInApp(page, `/issues/${target.key}/spec`);
+    const otherLink = documentEditor(page).getByRole("link", { name: "the other link" });
+    await expect(otherLink).toBeVisible();
+    await otherLink.hover();
+    await expect(
+      page.getByRole("tooltip"),
+      "a hover after a move to another address opened no card"
+    ).toContainText("Card after the move");
+    expect(counts.documents, "asking again reloaded the page").toBe(2);
   });
 });
 

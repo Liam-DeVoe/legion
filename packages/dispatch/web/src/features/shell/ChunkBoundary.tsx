@@ -10,6 +10,14 @@ interface ChunkBoundaryProps {
    *  closed, so the reader's next open draws it afresh rather than meeting a boundary that stays
    *  failed for the life of the page. */
   readonly onError?: () => void;
+  /** For a host whose part draws with no reader action and stays mounted (the two lists of
+   *  writes, the reference-preview layer): a value that changes when the reader does something
+   *  that wants the part again - a new write, a move to another address. A boundary that has
+   *  caught a throw draws `children` again once it changes, so the part mounts afresh and asks
+   *  for its chunk again (`chunkComponent` keeps no failed download), rather than drawing nothing
+   *  for the life of the page: the reader can stay on a page that has spent its reloads, or at
+   *  the leave prompt a write out raises, for as long as they like. */
+  readonly reset?: unknown;
 }
 
 /**
@@ -53,6 +61,12 @@ export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: boole
     // React draws them in one render: the children come back with their part closed.
     onError();
     this.setState({ failed: false });
+  }
+
+  componentDidUpdate({ reset }: ChunkBoundaryProps): void {
+    // A boundary that has not failed draws `children` already: drawing them again is a render
+    // that changes nothing.
+    if (reset !== this.props.reset) this.setState({ failed: false });
   }
 
   render(): ReactNode {

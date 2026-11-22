@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the text the box holds is set with one change event, since `user.keyboard` into that uncontrolled box makes React print its unawaited-act message in this environment; the keys a browser types into it are `e2e/keyboard-issue.e2e.ts`'s
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { type AskedSurfaceProps, askedSurface } from "./asked-surface";
 import { type Chunk, chunk } from "./chunk-component";
+import { chunkLoadsOut, onlyPrefetchesOut } from "./chunk-loads";
 
 /** A surface as the bar and the peek are: mounted while closed, drawing nothing then. */
 function Surface({ open, typed = "" }: AskedSurfaceProps): ReactNode {
@@ -178,6 +179,34 @@ test("a surface whose render throws closes, and the next open draws it again", a
     expect(screen.getByText("Fragile drawn")).toBeDefined();
   } finally {
     logged.mockRestore();
+    view.unmount();
+  }
+});
+
+// An open the reader called off leaves its download to finish as a prefetch: nobody waits on it
+// any more, so its failure - once the network is back after an outage the reader called the open
+// off in, say - is no failure a reader is in front of, and the chunk-failure recovery reads it as
+// a prefetch's and reloads nothing (`onlyPrefetchesOut`, `DeploymentResilience.tsx`). Counted as
+// a render until it ended, it would spend one of the tab's reloads under a reader who had gone
+// on.
+test("an open called off while its chunk is out leaves the download to finish as a prefetch", async () => {
+  const user = userEvent.setup();
+  // From a page with no download out: the counts are the module's, for the page, and a download
+  // an earlier row of any file started and did not wait for would decide this one.
+  await waitFor(() => expect(chunkLoadsOut()).toBe(0), { timeout: 30_000 });
+  const { promise, reject } = Promise.withResolvers<typeof Surface>();
+  const view = render(<Shell source={chunk(() => promise)} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(onlyPrefetchesOut(), "the open's download was not counted as a render").toBe(false);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox", { name: "Loading" })).not.toBeInTheDocument();
+    expect(chunkLoadsOut(), "the called-off download was not left to finish").toBe(1);
+    expect(onlyPrefetchesOut(), "the called-off download still counts as a render").toBe(true);
+    await act(async () => reject(new TypeError("Failed to fetch dynamically imported module")));
+    expect(chunkLoadsOut()).toBe(0);
+  } finally {
+    reject(new TypeError("Failed to fetch dynamically imported module"));
     view.unmount();
   }
 });

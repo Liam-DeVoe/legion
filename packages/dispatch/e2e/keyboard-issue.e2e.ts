@@ -1,11 +1,10 @@
-import { setTimeout as sleep } from "node:timers/promises";
-
 import { baseUrl, createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
 import { focusThePage } from "./issue-page-g";
 import { onBody, openIssue } from "./keyboard-issue";
+import { keptWrites } from "./keyed-writes";
 import { navigateInApp } from "./sends";
-import { holdAsset, pageAssetPath } from "./shell";
+import { fetchedChunk, holdAsset, pageAssetPath } from "./shell";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -434,7 +433,9 @@ async function patchesOf(page: Page, key: string): Promise<() => number> {
 }
 
 /** A round trip of the page's own. A write a key let through leaves in the task of that key, so
- *  it is out before this answer can come back. */
+ *  it is out before this answer can come back - unless the store holds it for the take-up of
+ *  what a reload kept (`Writes.run`), which keeps it in the tab from its press: the rows read the
+ *  tab's kept writes beside the requests (`keptWrites`). */
 async function afterAnyWrite(page: Page): Promise<void> {
   await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
 }
@@ -447,8 +448,13 @@ function chunkFile(name: string): RegExp {
 /** Brings the chunk named `name` into the page's module map, as a page that has fetched and run
  *  it holds it, whatever the code under test starts of its own accord. The entry chunk names the
  *  path of every chunk the shell draws a surface from, and an import of that path runs it; it
- *  settles once the module has run, by which time every import of it the page made has settled
- *  too. */
+ *  settles once the module has run. It does not run the surface's own load (`chunk`,
+ *  `web/src/features/shell/chunk-component.tsx`), whose answer is what tells the surface its
+ *  chunk is in, so a press soon after it can still draw the box that holds the keys for a moment
+ *  (`web/src/features/shell/asked-surface.tsx`): a row that brings its chunk in this way holds
+ *  whichever way the press goes, and the row that holds the press to the surface's own commit
+ *  brings nothing in.
+ */
 async function chunkIn(page: Page, name: string): Promise<void> {
   const entry = await pageAssetPath(
     /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
@@ -479,16 +485,35 @@ const SUSPENSE_REVEAL_HOLD_MS = 300;
 
 /** The window a surface whose chunk has landed would still open in, and then two frames of the
  *  page: React wakes with a render it schedules as a task of its own, which runs inside the frame
- *  it was scheduled in, so a surface the landing would draw is on the page by the end. */
+ *  it was scheduled in, so a surface the landing would draw is on the page by the end. React's
+ *  hold is a timer of the page's, so the page's clock spends it (the row installs the clock before
+ *  its first load), and no real time is waited for it. */
 async function lateOpenWindow(page: Page): Promise<void> {
-  // An absence window: these rows claim nothing opens, and a surface behind `lazy` opens within
-  // React's hold after the fallback its press showed, which began before this wait.
-  await sleep(SUSPENSE_REVEAL_HOLD_MS);
+  await page.clock.runFor(SUSPENSE_REVEAL_HOLD_MS);
   await page.evaluate(() => {
     const frame = Promise.withResolvers<void>();
     requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
     return frame.promise;
   });
+}
+
+/** Waits until the page itself has fetched the chunk at `pattern` and run it: its resource timing
+ *  names the fetch (`fetchedChunk`), and an import of that same address settles once the module
+ *  has run - with no request of its own, since the page holds the module - by which time the
+ *  page's own import of it, out since before that fetch, has settled too. */
+async function ranTheChunk(page: Page, pattern: RegExp): Promise<void> {
+  await fetchedChunk(page, pattern);
+  await page.evaluate(
+    async ({ flags, source }) => {
+      const chunk = new RegExp(source, flags);
+      const fetched = performance
+        .getEntriesByType("resource")
+        .find((entry) => chunk.test(new URL(entry.name).pathname));
+      if (fetched === undefined) throw new Error(`the page fetched no ${source}`);
+      await import(fetched.name);
+    },
+    { flags: pattern.flags, source: pattern.source }
+  );
 }
 
 // The surfaces a key opens over this page - the Create issue dialog, the shortcut sheet, the search
@@ -503,8 +528,8 @@ async function lateOpenWindow(page: Page): Promise<void> {
 // SLOW(>=2s): each row lands cold on an issue page, then brings in, or holds and releases, a
 // chunk the page downloads on the wire before it reads the issue back from the server.
 test.describe("keys typed straight after a key that opens a surface", () => {
-  // The row brings the dialog's chunk in itself, so its claim is the dialog's own render and does
-  // not turn on when the page started the download.
+  // The row brings the dialog's chunk in itself (`chunkIn`), so its claim - the keys reach the
+  // dialog and not the page - holds whether the press draws the dialog or the box before it.
   test("c then 1e at once opens the create dialog with 1e in its title and writes nothing to the issue", async ({
     browser,
   }) => {
@@ -527,6 +552,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await expect(title).toBeFocused();
       await afterAnyWrite(page);
       expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
       await expect
         .poll(() => getIssue(issue.key))
         .toMatchObject({ priority: null, title: "Keys after c" });
@@ -556,6 +582,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await expect(filter).toHaveValue("1");
       await afterAnyWrite(page);
       expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
     } finally {
       await context.close();
@@ -563,7 +590,8 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   });
 
   // The bar's chunk is fetched after the page's first paint (`web/src/features/search/
-  // SearchPaletteHost.tsx`), and the row brings it in itself, as the first row does the dialog's.
+  // SearchPaletteHost.tsx`), and the row brings it in itself, as the first row does the dialog's,
+  // so its claim holds whether the press draws the bar or the box before it.
   test("$mod+k then 1 at once opens the search bar with 1 in its box and writes no priority", async ({
     browser,
   }) => {
@@ -586,7 +614,60 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await expect(box).toBeFocused();
       await afterAnyWrite(page);
       expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+    } finally {
+      await context.close();
+    }
+  });
+
+  // The Create issue dialog's chunk and the shortcut sheet's are started by the page itself once
+  // it has drawn (`web/src/features/issue/CreateIssueDialogHost.tsx`,
+  // `web/src/features/shell/ShortcutHelpHost.tsx`), so a press of `c` or `?` after that meets the
+  // surface in the commit of the press, with no box standing in for it
+  // (`web/src/features/shell/asked-surface.tsx`). The rows above bring each chunk in themselves
+  // (`chunkIn`), which leaves the surface's own load unrun, so they hold whichever way the press
+  // goes; this one brings nothing in. It waits for the page's own download of each chunk and for
+  // that module to have run, then keeps every box the page adds from the press on: a press that
+  // draws its surface in its own commit adds none, and one that draws the box adds it there.
+  test("c and ? after the page's own download of their chunks open each surface in the commit of the press, with no box", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Prefetched surfaces" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openIssue(page, issue.key, "Prefetched surfaces");
+      await ranTheChunk(page, chunkFile("CreateIssueDialog"));
+      await ranTheChunk(page, chunkFile("ShortcutHelp"));
+      await page.evaluate(() => {
+        const boxes: string[] = [];
+        Reflect.set(window, "__loadingBoxes", boxes);
+        const box = 'input[aria-label="Loading"]';
+        new MutationObserver((records) => {
+          for (const record of records) {
+            for (const node of record.addedNodes) {
+              if (node instanceof Element && (node.matches(box) || node.querySelector(box))) {
+                boxes.push(document.activeElement?.tagName ?? "");
+              }
+            }
+          }
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+
+      await page.keyboard.press("c");
+      const dialog = page.getByRole("dialog", { name: "Create issue" });
+      await expect(dialog).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await page.keyboard.press("?");
+      await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
+      expect(
+        await page.evaluate(() => Reflect.get(window, "__loadingBoxes")),
+        "a press drew the box that holds the keys, so its surface's chunk was not in"
+      ).toEqual([]);
     } finally {
       await context.close();
     }
@@ -611,6 +692,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await page.keyboard.press("1");
       await afterAnyWrite(page);
       expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
       const box = page.getByRole("textbox", { name: "Loading" });
       await expect(box).toBeFocused();
@@ -641,6 +723,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await page.keyboard.type("1e");
       await afterAnyWrite(page);
       expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
       release();
       const title = page
         .getByRole("dialog", { name: "Create issue" })
@@ -669,6 +752,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     try {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
+      await page.clock.install();
       const release = await holdChunk(page, "CreateIssueDialog");
       await page.goto("/");
       await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
@@ -700,6 +784,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     try {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
+      await page.clock.install();
       const release = await holdChunk(page, "CreateIssueDialog");
       await openIssue(page, issue.key, "Called off");
 

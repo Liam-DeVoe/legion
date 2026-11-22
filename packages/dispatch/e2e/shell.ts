@@ -277,14 +277,13 @@ export async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
     .toBe(true);
 }
 
-/** One node of a tree React commits, as far as `lazyComponentsRendered` reads it. */
+/** One node of a tree React commits, as far as `chunkComponentsRendered` reads it. */
 interface Fiber {
   readonly child: Fiber | null;
   readonly sibling: Fiber | null;
-  /** What the element named: for a component behind `lazy`, the lazy object itself, whose
-   *  `$$typeof` is `Symbol.for("react.lazy")`, still there once it has resolved. */
-  readonly elementType: unknown;
-  /** The component React rendered: for a lazy one, the component its chunk resolved to. */
+  /** The component React rendered: for one behind `lazy`, the component its chunk resolved to,
+   *  and for one drawn through `chunkComponent` (`web/src/features/shell/chunk-component.tsx`),
+   *  the component its chunk carries, which that component draws once the chunk is in. */
   readonly type: unknown;
 }
 
@@ -295,9 +294,10 @@ declare global {
   }
 }
 
-/** Whether, for each chunk at `urls`, the component it carries behind `lazy` is in a tree React
- *  has committed: the component rendered, so the import that loaded it settled. */
-function lazyComponentsRendered(page: Page, urls: readonly string[]): Promise<boolean> {
+/** Whether, for each chunk at `urls`, a component it carries is in a tree React has committed -
+ *  the margin's behind `lazy`, the reference-preview layer's through `chunkComponent` - so the
+ *  import that loaded it settled. */
+function chunkComponentsRendered(page: Page, urls: readonly string[]): Promise<boolean> {
   return page.evaluate(async (chunks) => {
     const roots = window.__shellReactRoots;
     // Two things leave no root here: a hook that no longer works, and a poll whose evaluate lands
@@ -315,18 +315,11 @@ function lazyComponentsRendered(page: Page, urls: readonly string[]): Promise<bo
     if (roots === undefined || roots.size === 0) {
       throw new Error("React committed no root to the DevTools hook `shellLoads` installs");
     }
-    const lazy = Symbol.for("react.lazy");
     const rendered = new Set<unknown>();
     for (const root of roots) {
       const stack = [root.current];
       for (let fiber = stack.pop(); fiber !== undefined; fiber = stack.pop()) {
-        const element = fiber.elementType;
-        const isLazy =
-          typeof element === "object" &&
-          element !== null &&
-          "$$typeof" in element &&
-          element.$$typeof === lazy;
-        if (isLazy) rendered.add(fiber.type);
+        rendered.add(fiber.type);
         if (fiber.child !== null) stack.push(fiber.child);
         if (fiber.sibling !== null) stack.push(fiber.sibling);
       }
@@ -364,20 +357,22 @@ function shellLoad(page: Page) {
     const chunks = await Promise.all([margin.promise, preview.promise]);
     // A chunk's response is in before the import it answers has settled - the margin's chunk
     // imports chunks of its own - and before `renderChunk`'s count of it has dropped. React
-    // renders a lazy component only once its import has settled. The count drops in a `.finally`
-    // chained after a `.catch` of that import (`web/src/features/shell/chunk-loads.ts:61-65`),
-    // which runs after React's own `then` on it; but that `then` renders nothing. A settled import
-    // wakes its boundary through `pingSuspendedRoot` or `retryTimedOutBoundary`, and each ends in
-    // `ensureRootIsScheduled`, which schedules the render - as a task of React's own scheduler, or
-    // at the earliest in a microtask queued there, behind the `.finally` the `.catch` queued
-    // before it (`react-dom-client.production.js`, `ensureRootIsScheduled` and
-    // `scheduleImmediateRootScheduleTask`). So by the time a lazy component is in a committed
-    // tree the count has dropped. Neither draws anything on most of the pages these rows open -
-    // the margin is null on a route that has none (the issue page `keyed-writes.e2e.ts` opens has
-    // one), and the layer is null until a card opens - so the tree React committed is where they
-    // are read.
+    // renders the margin, behind `lazy`, only once its import has settled, and the preview
+    // layer, drawn through `chunkComponent`, only once that component's own `then` on the import
+    // has set its state. The count drops in a `.finally` chained after a `.catch` of that import
+    // (`web/src/features/shell/chunk-loads.ts:66-70`), which runs after React's own `then` on it,
+    // or `chunkComponent`'s; but neither `then` renders anything. A settled import wakes its
+    // boundary through `pingSuspendedRoot` or `retryTimedOutBoundary`, a state set outside React
+    // schedules its update, and each ends in `ensureRootIsScheduled`, which schedules the render
+    // - as a task of React's own scheduler, or at the earliest in a microtask queued there, behind
+    // the `.finally` the `.catch` queued before it (`react-dom-client.production.js`,
+    // `ensureRootIsScheduled` and `scheduleImmediateRootScheduleTask`). So by the time either
+    // component is in a committed tree the count has dropped. Neither draws anything on most of
+    // the pages these rows open - the margin is null on a route that has none (the issue page
+    // `keyed-writes.e2e.ts` opens has one), and the layer is null until a card opens - so the
+    // tree React committed is where they are read.
     await expect
-      .poll(() => lazyComponentsRendered(page, chunks), {
+      .poll(() => chunkComponentsRendered(page, chunks), {
         ...PROBE,
         message: "the margin and the reference-preview layer rendered",
       })

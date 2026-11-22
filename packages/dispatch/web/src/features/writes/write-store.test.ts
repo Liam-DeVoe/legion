@@ -904,6 +904,96 @@ test("another tab's sign-out that lands while the take-up waits drops the write 
   );
 });
 
+// Before the take-up begins - while the sign-in check the page loaded with is still out, so the
+// app has not called `resume` - the writes the reload kept are in the tab's storage alone.
+// Another tab's sign-out of their person asks this tab what it would discard (`unsent`), and its
+// landing here (`dropLogin`) discards them: the person's next sign-in takes none of them up.
+test("another tab's sign-out before the take-up begins names the write the reload kept, and its landing drops it unsent", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kept = keyMinted(Date.now());
+    keepWrite(tab, kept, { target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+      expect(writes.unsent("alice"), "the sign-out was not told of the kept write").toEqual([
+        { key: kept, label: "CORE-1 set to done" },
+      ]);
+      writes.dropLogin("alice");
+      expect(tab.kept(kept), "the sign-out's landing left the kept write in the tab").toBe(
+        undefined
+      );
+      expect(writes.unsent("alice")).toEqual([]);
+
+      writes.signedIn("alice");
+      writes.resume("alice");
+      await tick(60_000);
+      expect(send, "the next sign-in sent the write the sign-out discarded").not.toHaveBeenCalled();
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The take-up reads an upload's file before it takes the upload up (`#takeUp`), and a drop of
+// the person's writes can land while that read is out: another person's sign-in, or the person's
+// sign-out landing in another tab or in this page. The upload goes with the rest, unsent, its
+// record and its file with it, rather than being taken up once the read answers and sent for a
+// person who discarded it. The read here has its file in hand before the drop and answers after
+// it, as a browser's read of its kept files can.
+test("a sign-in or a sign-out that lands while the take-up reads an upload's file drops the upload unsent", async () => {
+  await onFakeClock(async () => {
+    const drops: Readonly<Record<string, (writes: Writes) => void>> = {
+      "bob signs in": (writes) => writes.signedIn("bob"),
+      "alice's sign-out lands in another tab": (writes) => writes.dropLogin("alice"),
+      "alice's sign-out lands here": (writes) => writes.signedOut("alice"),
+    };
+    for (const [name, drop] of Object.entries(drops)) {
+      const tab = keptTab();
+      const files = memoryFiles();
+      const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
+      const answer = Promise.withResolvers<void>();
+      const reading = Promise.withResolvers<void>();
+      try {
+        const before = new Writes(signedIn(), tab.page(), files);
+        void uploadWrite(before, spec, () => Promise.withResolvers<never>().promise).catch(
+          () => {}
+        );
+        await settle();
+        const key = row(before)?.key ?? "";
+        expect(files.rows.get(key)).toBe(spec);
+
+        const after = new Writes(signedIn(), tab.page(), {
+          ...files,
+          get: async (of) => {
+            const file = await files.get(of);
+            reading.resolve();
+            await answer.promise;
+            return file;
+          },
+        });
+        after.signedIn("alice");
+        after.resume("alice", async () => undefined);
+        await reading.promise;
+        drop(after);
+        answer.resolve();
+        await settle();
+        expect([name, send.mock.calls.length]).toEqual([name, 0]);
+        expect([name, after.rows()]).toEqual([name, []]);
+        expect([name, tab.kept(key)]).toEqual([name, undefined]);
+        expect([name, files.rows.has(key)]).toEqual([name, false]);
+      } finally {
+        answer.resolve();
+        await settle();
+        send.mockRestore();
+        tab.close();
+      }
+    }
+  });
+});
+
 // A quiet write is let go once five minutes pass from its press without Dispatch confirming it,
 // as a reload lets one that old go unmade: so is one pressed while the take-up waits, which is
 // never sent once the take-up ends past that.

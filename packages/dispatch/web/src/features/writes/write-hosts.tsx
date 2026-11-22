@@ -21,8 +21,8 @@ import { useWriteSelection } from "./write-store";
  * Each list draws nothing while it holds no write, which is how almost every page load finds
  * it, and the two carried 3,516 bytes of the entry chunk (2,588 and 928) that every page parsed
  * before it drew anything. So each is a chunk of its own, and its host here reads the same
- * selection of the one write store the list reads (`shown-writes.ts`): no row, no list and no
- * download; a row, the list's chunk.
+ * selection of the one write store the list reads (`shown-writes.ts`): no list before the first
+ * row, and from then on the list, which draws nothing once none is left.
  *
  * The lists are drawn through `chunkComponent` (`features/shell/chunk-component.tsx`), the path
  * every chunk of this dashboard a reader is in front of takes: a chunk that is in draws in the
@@ -31,8 +31,13 @@ import { useWriteSelection } from "./write-store";
  * (`DeploymentResilience.tsx`). Both hosts sit outside the page's error boundary - the status
  * corner, and the sign-in page - so each list has a boundary of its own (`ChunkBoundary`): one
  * that fails online draws nothing, as it would with no write to show, and the rest of the page
- * stays drawn and signed in. Both chunks are started once the page has drawn, so a reader who
- * presses a write, or whose session lapses, usually finds its list in already.
+ * stays drawn and signed in. A change in how many writes the list shows - a write pressed, or one
+ * gone - draws the list afresh (`reset`), which asks for its chunk again: the host stays
+ * mounted, so a boundary that never reset would leave a reader who stays on the page - at the
+ * leave prompt a write out raises, or in a tab whose recovery reloads are spent - with no
+ * Retry, Discard or Stop trying for the life of the page. Both chunks are started once the page
+ * has drawn, so a reader who presses a write, or whose session lapses, usually finds its list in
+ * already.
  */
 const pendingWritesChunk = chunk<object>(() =>
   import("./PendingWritesIndicator").then((module) => module.PendingWritesIndicator)
@@ -96,7 +101,7 @@ export function PendingWritesHost(): ReactNode {
     prefetchChunk(writeKinds);
   }, [drawn]);
   return rows.length > 0 || shown ? (
-    <ChunkBoundary>
+    <ChunkBoundary reset={rows.length}>
       <PendingWritesIndicator />
     </ChunkBoundary>
   ) : null;
@@ -105,8 +110,16 @@ export function PendingWritesHost(): ReactNode {
 /** What a lapsed session keeps, for the sign-in page. */
 export function KeptWritesHost(): ReactNode {
   const rows = useWriteSelection("kept-while-signed-out", keptWrites);
+  // The kinds of write, for a take-up of what a reload kept that still waits for them as the
+  // session lapses (`Writes.resume`): it takes them up all the same, for the sign-in that follows,
+  // and only then are they rows of the store this list shows. The shell that asked for them is
+  // gone, so if its download failed with no reload to follow, nothing else on this page would ask
+  // again and the list would never show those writes. Nobody waits on them here, which is what
+  // `prefetchChunk` tells the chunk-failure recovery; once they are in, a later load is answered
+  // from what is in (`keptUntilRejected`).
+  useEffect(() => prefetchChunk(writeKinds), []);
   return rows.length === 0 ? null : (
-    <ChunkBoundary>
+    <ChunkBoundary reset={rows.length}>
       <KeptWrites />
     </ChunkBoundary>
   );

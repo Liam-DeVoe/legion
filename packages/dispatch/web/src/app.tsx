@@ -1247,20 +1247,23 @@ function AppShell({
  * A DOWNLOAD THAT FAILS while the browser is online goes to the chunk-failure recovery, as every
  * chunk a reader waits on does (`renderChunk`), and the reload that asks for does not always
  * follow: the reader can stay at the leave prompt of a write out, a page asks for one reload
- * only, and the tab's budget of reloads can be spent. The shell is then today's, for the life of
- * this shell, which needs nothing of that chunk: the reader stays signed in, with the navigation,
- * the writes and the page, and an issue's address draws the new page with no frame around it.
- * Nothing is thrown into the render for it: outside the page's error boundary a throw would
- * reach the app's top one (`main.tsx`), which replaces the whole app, `AuthGate` with it
- * (`features/shell/ChunkBoundary.tsx` says what that costs). Offline it waits for the network
- * (`importWhenOnline`).
+ * only, and the tab's budget of reloads can be spent. The shell is then today's, which needs
+ * nothing of that chunk: the reader stays signed in, with the navigation, the writes and the
+ * page, and an issue's address draws the new page with no frame around it. Turning the new page
+ * off forgets the failure, so turning it on again asks for the frame again rather than drawing
+ * today's shell for the life of this one. Nothing is thrown into the render for it: outside the
+ * page's error boundary a throw would reach the app's top one (`main.tsx`), which replaces the
+ * whole app, `AuthGate` with it (`features/shell/ChunkBoundary.tsx` says what that costs).
+ * Offline it waits for the network (`importWhenOnline`).
  */
 function ChosenShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const outline = useStoredIssuePageChoice(user.login) === "outline";
-  // The frame's code once its chunk is in, and `null` once its download has failed. A load that
-  // lands after the choice went back to today's page sets what nothing reads until the choice
-  // comes back, and React drops a set on a shell that has gone.
+  // The frame's code once its chunk is in, and `null` once its download has failed, until the
+  // choice goes back to today's page. A load that lands after the choice went back to today's
+  // page sets what nothing reads until the choice comes back, and React drops a set on a shell
+  // that has gone.
   const [frameOf, setFrameOf] = useState<FrameOf | null | undefined>(frameIfLoaded);
+  if (!outline && frameOf === null) setFrameOf(undefined);
   useEffect(() => {
     if (!outline || frameOf !== undefined) return;
     void renderChunk(() => importWhenOnline(loadFrame)).then(

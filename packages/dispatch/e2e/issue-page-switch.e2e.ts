@@ -1,7 +1,7 @@
 import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
-import { openRail } from "./rail";
+import { closeRail, openRail } from "./rail";
 import { FRAME_SHELL_CHUNK, fetchedChunk, recordTabReloads, tabReloads } from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
@@ -504,10 +504,12 @@ test("Settings asks for the new issue page's frame before the reader turns it on
 // the one every reader who has not turned the new page on is drawn, which needs nothing of that
 // chunk (`web/src/app.tsx`): the reader stays signed in, with today's navigation, and the issue's
 // address draws the new page without its frame. A failure thrown into the render would reach the
-// app's top boundary (`web/src/main.tsx`), which replaces the whole app.
+// app's top boundary (`web/src/main.tsx`), which replaces the whole app. The failure is not kept
+// for the life of the page: once the chunk can come down, turning the new page off and on again
+// in Settings asks for the frame again, and the issue's address draws the new page in it.
 // SLOW(>=2s): two loads of the issue, the first only to spend the tab's reloads in its own
-// storage.
-test("with the new issue page's frame failing to download online and no reload to follow, the reader gets today's shell, signed in @phone", async ({
+// storage, and a walk to Settings and back by links.
+test("with the new issue page's frame failing to download online and no reload to follow, the reader gets today's shell, signed in, and turning the page off and on asks again @phone", async ({
   context,
   page,
 }, testInfo) => {
@@ -533,4 +535,24 @@ test("with the new issue page's frame failing to download online and no reload t
   await openRail(page);
   await expect(page.getByText("Signed in as alice")).toBeVisible();
   expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
+
+  await page.unroute(FRAME_SHELL_CHUNK);
+  await closeRail(page);
+  await setMarker(page);
+  await openSettings(page);
+  const checkbox = issuePageCheckbox(page);
+  await expect(checkbox).toBeChecked();
+  await checkbox.uncheck();
+  await checkbox.check();
+  await openIssue(page, issue.key);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
+  // The frame marks its `main` as no place for reference cards (`frame-shell.tsx`), at every
+  // width; today's shell does not.
+  await expect(
+    page.locator("main[data-no-hover-preview]"),
+    "turning the new page off and on again drew it without its frame"
+  ).toHaveCount(1);
+  await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+  expect(await marked(page), "the walk reloaded the page").toBe(true);
+  if (isPhone) await assertPageFits(page);
 });

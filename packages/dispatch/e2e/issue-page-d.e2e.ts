@@ -506,6 +506,36 @@ test("the frame's stage drawn before the margin keeps its width when the margin 
   });
 });
 
+// Shift+M pressed while the margin's chunk is still on the wire opens Details only once that
+// chunk lands (`web/src/features/margin/Margin.tsx`), which can be long after the press, and the
+// reader may have gone on meanwhile. The drawer that lands then takes no focus from where they
+// are: it takes the focus only from where the press found it, or from nowhere. The row holds the
+// margin's chunk, presses Shift+M from the page, moves the focus to a control of the page - the
+// new page draws no text field at rest - and releases the chunk.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Details opened by Shift+M before the margin's chunk is in takes no focus from where the reader went", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await page.keyboard.press("Shift+M");
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toBeHidden();
+    const went = presetToggle(page, "conversation");
+    await went.focus();
+
+    releaseMargin();
+    await expect(
+      marginShell(page),
+      "Shift+M did not open Details once the margin was in"
+    ).toBeVisible();
+    await expect(went, "Details took the focus from where the reader went").toBeFocused();
+  });
+});
+
 /** The address `view` has on `key`, at the end of the page's URL. */
 function addressOf(key: string, view: Preset): RegExp {
   return new RegExp(`${presetPath(key, view)}$`);

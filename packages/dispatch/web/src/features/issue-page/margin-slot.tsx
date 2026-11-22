@@ -32,6 +32,12 @@ export interface MarginDrawer {
   /** The new page's words and its address rule, where its root has set them (`setPage`):
    *  undefined until then, and on every page that is not the new one. */
   readonly page?: MarginDrawerPage;
+  /** What held the focus as the drawer was last opened (`setOpen(true)`), for the drawer to read
+   *  as it draws open (`features/margin/Margin.tsx`): one the reader opened before the margin's
+   *  chunk was in draws only once that chunk lands, and takes the focus only if the reader has
+   *  not gone elsewhere meanwhile. Undefined where nothing records it, and the drawer then takes
+   *  the focus as it opens. */
+  readonly openedFrom?: Element | null;
   readonly setOpen: (open: boolean) => void;
   /** Sets `page`, and with `undefined` takes it away again when the new page goes. */
   readonly setPage: (page: MarginDrawerPage | undefined) => void;

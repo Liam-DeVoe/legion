@@ -1,7 +1,8 @@
-import { type ReactNode, Suspense, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ChunkBoundary } from "../shell/ChunkBoundary";
-import { lazyChunk } from "../shell/chunk-loads";
+import { chunk, chunkComponent } from "../shell/chunk-component";
 import { useContentDrawn } from "../shell/content-drawn";
 
 /**
@@ -24,17 +25,21 @@ import { useContentDrawn } from "../shell/content-drawn";
  * to close a card when a drag starts (`features/project/IssueBoard.tsx`), so the board's chunk
  * carries the card's module with it.
  */
-// Through `lazyChunk`, like every chunk a `Suspense` waits on: this layer is what draws the card
-// a reader is pointing at, so a download that fails must spend one of the tab's recovery reloads
-// rather than be read as a prefetch's (`features/shell/DeploymentResilience.tsx`). The shell
-// draws the layer outside the page's error boundary (`app.tsx`), and it mounts with no reader
-// action at all, so its own `ChunkBoundary` is what stops a failure of its chunk, or of a chunk a
-// card draws from (a decision card in a previewed body, `features/doc/TextAskCardHost.tsx`), from
-// reaching the app's top boundary (`main.tsx`), which would take the page and its sign-in with
-// it. A layer that cannot load draws no card for the rest of the page; the recovery's reload is
-// asked for all the same.
-const RefPreviewHost = lazyChunk(() =>
-  import("./RefPreview").then((module) => ({ default: module.RefPreviewHost }))
+// Through `chunkComponent` (`features/shell/chunk-component.tsx`): this layer is what draws the
+// card a reader is pointing at, so a download that fails must spend one of the tab's recovery
+// reloads rather than be read as a prefetch's (`features/shell/DeploymentResilience.tsx`). The
+// shell draws the layer outside the page's error boundary (`app.tsx`), and it mounts with no
+// reader action at all, so its own `ChunkBoundary` is what stops a failure of its chunk, or of a
+// chunk a card draws from (a decision card in a previewed body,
+// `features/doc/TextAskCardHost.tsx`), from reaching the app's top boundary (`main.tsx`), which
+// would take the page and its sign-in with it. The recovery's reload is asked for all the same,
+// and if none follows, the reader's next move to another address draws the layer afresh
+// (`reset`), which asks for the chunk again. Not `lazy`: React's `lazy` keeps the rejection of
+// its one import for the life of the page, so a layer drawn again behind it would only throw the
+// same failure again, where `chunk` keeps no failed download.
+const RefPreviewHost = chunkComponent(
+  chunk<object>(() => import("./RefPreview").then((module) => module.RefPreviewHost)),
+  null
 );
 
 export function RefPreviewLayer(): ReactNode {
@@ -44,6 +49,7 @@ export function RefPreviewLayer(): ReactNode {
   // page draws a live document, the page is on the screen only once the document's first block
   // is, which is long after the shell's first paint (`features/shell/content-drawn.ts`).
   const drawn = useContentDrawn();
+  const { pathname } = useLocation();
   const [wanted, setWanted] = useState(false);
   useEffect(() => {
     if (drawn) setWanted(true);
@@ -52,10 +58,8 @@ export function RefPreviewLayer(): ReactNode {
     return null;
   }
   return (
-    <ChunkBoundary>
-      <Suspense fallback={null}>
-        <RefPreviewHost />
-      </Suspense>
+    <ChunkBoundary reset={pathname}>
+      <RefPreviewHost />
     </ChunkBoundary>
   );
 }

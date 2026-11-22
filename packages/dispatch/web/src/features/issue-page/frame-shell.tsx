@@ -131,6 +131,11 @@ interface HandedDrawer {
  */
 const handedDrawers = new WeakMap<FrameInput["setDetailsFor"], HandedDrawer>();
 
+/** What held the focus as Details was last opened, on every drawer handed after that open
+ *  (`MarginDrawer.openedFrom`). The drawer handed for the open is made in the render the open's
+ *  update brings, after the press that recorded it. */
+let openedFrom: Element | null = null;
+
 function drawerOf(
   issue: string | undefined,
   { detailsFor, drawerPage, setDetailsFor, setDrawerPage }: FrameInput
@@ -146,8 +151,12 @@ function drawerOf(
   }
   const drawer: MarginDrawer = {
     open: detailsFor !== undefined && detailsFor === issue,
+    openedFrom,
     page: drawerPage,
-    setOpen: (open: boolean) => setDetailsFor(open ? issue : undefined),
+    setOpen: (open: boolean) => {
+      if (open) openedFrom = document.activeElement;
+      setDetailsFor(open ? issue : undefined);
+    },
     setPage: setDrawerPage,
   };
   handedDrawers.set(setDetailsFor, { detailsFor, drawer, drawerPage, issue });

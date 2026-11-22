@@ -258,12 +258,14 @@ function DetailsDrawer({
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
-  const { open, page, setOpen } = drawer;
+  const { open, openedFrom, page, setOpen } = drawer;
   // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
   // the effects below read the latest through this ref and run on `open` alone: a drawer that
   // stays open neither moves the focus nor records a new opener.
   const setOpenNow = useRef(setOpen);
   setOpenNow.current = setOpen;
+  const openedFromNow = useRef(openedFrom);
+  openedFromNow.current = openedFrom;
   // The phone's sheet covers the page, so it is a dialog: the focus stays inside it, the page
   // under it does not scroll, and Escape closes it and gives the focus back (`useDialog`).
   const sheet = useDialog<HTMLElement>({
@@ -293,7 +295,11 @@ function DetailsDrawer({
   // holds no focus of its own: opening it puts the focus on its Close, and closing it - by Close,
   // by Escape, or by the page's own control - gives the focus back to where it was taken from
   // when that focus is still in the drawer or nowhere. Both happen in the commit that opens or
-  // closes it, so a focus the reader moves the moment it has closed is never taken back.
+  // closes it, so a focus the reader moves the moment it has closed is never taken back. A drawer
+  // opened before the margin's chunk was in opens only once that chunk lands, which can be long
+  // after the press, and the reader may have gone on meanwhile - into a field, onto another
+  // control: it takes the focus only from where the press found it (`openedFrom`) or from
+  // nowhere, and never from where the reader is now.
   const opener = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
     if (!open || isPhoneViewport) return;
@@ -305,7 +311,10 @@ function DetailsDrawer({
       active instanceof HTMLElement && active !== document.body && !drawerBox?.contains(active)
         ? active
         : null;
-    closeButton.current?.focus({ preventScroll: true });
+    const from = openedFromNow.current;
+    if (from === undefined || active === from || opener.current === null) {
+      closeButton.current?.focus({ preventScroll: true });
+    }
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
     // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
     // inside the drawer or beside it. So does a layer over the drawer or inside it: an open

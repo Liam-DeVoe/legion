@@ -11,7 +11,7 @@ import { flushSync } from "react-dom";
 import { inputClasses } from "../../theme/classes";
 import { ChunkBoundary } from "./ChunkBoundary";
 import type { Chunk } from "./chunk-component";
-import { importWhenOnline, renderChunk } from "./chunk-loads";
+import { importWhenOnline, prefetchChunk, renderChunk } from "./chunk-loads";
 import { DIALOG_SCOPE, useKeymapScope } from "./keymap";
 import { useCloseOnNavigation } from "./useDialog";
 
@@ -28,7 +28,10 @@ export interface AskedSurfaceProps {
   readonly open?: boolean;
   /** What the reader typed into the placeholder while the surface's chunk was on its way, which
    *  the surface puts in its own text box as it mounts, so those keys arrive late rather than
-   *  being lost. Empty when the chunk was in at the press. */
+   *  being lost. Empty when the chunk was in at the press. A surface whose keys after the open
+   *  are shortcuts rather than words for a box - the Inbox peek, whose focus lands on its Close
+   *  and whose letters walk and act on its rows - takes no `typed`, and the keys are dropped:
+   *  replayed late, they would act on rows the reader has not seen. */
   readonly typed?: string;
 }
 
@@ -51,21 +54,24 @@ export interface AskedSurfaceProps {
  * WHILE THE CHUNK IS NOT IN, A PLACEHOLDER HOLDS THE KEYS. The press draws a small box in the
  * entry's code, which takes the focus in the commit of the press and pushes the `dialog` scope,
  * so no key reaches the page's shortcuts or a field of the page. What the reader types into it
- * is handed to the surface as `typed` when the chunk lands, and the surface then takes the box's
- * place and the focus. The reader can call the open off: Escape in the box, a press or a Tab that
- * takes the focus out of it, or a move to another address each close it, and a chunk that lands
- * after that opens nothing and takes no focus - a dialog must not open on its own against a page
- * the reader has left or a field they went on to, which a download held by an outage would
- * otherwise do minutes later (`importWhenOnline`). A window that loses the focus to another
- * application cancels nothing: the box gets the focus back with the window.
+ * is handed to the surface as `typed` when the chunk lands - into its text box, or nowhere for
+ * the Inbox peek, whose keys are shortcuts (`typed` says why) - and the surface then takes the
+ * box's place and the focus. The reader can call the open off: Escape in the box, a press or a
+ * Tab that takes the focus out of it, or a move to another address each close it, and a chunk
+ * that lands after that opens nothing and takes no focus - a dialog must not open on its own
+ * against a page the reader has left or a field they went on to, which a download held by an
+ * outage would otherwise do minutes later (`importWhenOnline`). A window that loses the focus to
+ * another application cancels nothing: the box gets the focus back with the window.
  *
  * WHEN THE CHUNK IS ASKED FOR. On every open while it is not in, under `renderChunk` and
  * `importWhenOnline`: the reader is waiting on it, so a download that fails online spends one of
  * the tab's recovery reloads (`DeploymentResilience.tsx`), and one that fails offline is asked
  * for again once the network is back. A download that fails online closes the open, so the next
  * press asks again (`keptUntilRejected` keeps no failure) rather than finding the surface open
- * and drawing nothing for good. A host that wants its chunk in before the press, as most of these
- * do, starts it itself with `prefetchChunk`.
+ * and drawing nothing for good. An open the reader called off leaves its download to finish as a
+ * prefetch (`prefetchChunk`): nobody waits on it any more, so its failure - after an outage the
+ * reader called the open off in, say - reloads nothing under them. A host that wants its chunk in
+ * before the press, as most of these do, starts it itself with `prefetchChunk`.
  *
  * Each surface draws under a `ChunkBoundary`, since every one of these hosts sits outside the
  * page's error boundary (`app.tsx`): a render that throws under it - a chunk the surface draws
@@ -90,7 +96,12 @@ export function askedSurface<P extends AskedSurfaceProps>(source: Chunk<P>): Com
         return;
       }
       let live = true;
-      void renderChunk(() => importWhenOnline(source.load)).then(
+      // The download, counted as a prefetch for as long as it is out, and as a render only
+      // until it lands or the reader calls the open off (`off`), whichever comes first.
+      const off = Promise.withResolvers<void>();
+      const loading = importWhenOnline(source.load);
+      prefetchChunk(() => loading);
+      void renderChunk(() => Promise.race([loading, off.promise])).then(
         () => {
           if (!live) return;
           // The page as the press found it, and then the surface, in one step: the focus goes
@@ -114,6 +125,7 @@ export function askedSurface<P extends AskedSurfaceProps>(source: Chunk<P>): Com
       );
       return () => {
         live = false;
+        off.resolve();
       };
     }, [open, Component]);
     return (
