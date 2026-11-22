@@ -1134,6 +1134,16 @@ func TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough(t *testing.T
 	requireCensusAdmitsConcurrentIndexes(t, 20261119020600)
 }
 
+// TestCensusAdmitsTheBackfillEventIndexes holds the census to admitting the two indexes
+// envoy-dispatch backfill-graph-store reads events through for each batch (20261119020700 on the
+// document and the version an artifact.version event names, 20261119020800 on the comment a
+// comment.created event names), over production before this release
+// (requireCensusAdmitsConcurrentIndexes): production's events is above the table limit, so only a
+// concurrent build's exemption admits an index on it.
+func TestCensusAdmitsTheBackfillEventIndexes(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020700, 20261119020800)
+}
+
 // productionBeforeThisRelease is the version that stands for production before this release:
 // the DO blocks of earlier releases (20261111210103 among them) are applied there, and every later
 // migration is pending in this release's deploy census.
@@ -1423,11 +1433,11 @@ func TestCensusExemptsTheLaterClockMigrationAtAnyTableSize(t *testing.T) {
 // 20261119021826 sets the two clock guards' search_path in a DO block, built from current_schema()
 // as it runs. The census cannot read what a DO block runs, so it exempts none: it answers the
 // migration with no exemption, but the DO block names no table, so the census measures and refuses
-// nothing, even at a limit of one byte. The base is 20261119020600, the version before it (the last
-// of the seven concurrent indexes that sort before it, requireCensusAdmitsConcurrentIndexes).
+// nothing, even at a limit of one byte. The base is 20261119020800, the version before it (the last
+// of the nine concurrent indexes that sort before it, requireCensusAdmitsConcurrentIndexes).
 func TestCensusAnswersTheClockGuardsSearchPathMigration(t *testing.T) {
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261119020600)
+	migrateThrough(t, store, 20261119020800)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261119021826), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
