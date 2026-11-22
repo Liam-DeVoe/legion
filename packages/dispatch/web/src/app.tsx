@@ -919,12 +919,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         </a>
         {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
             cannot keep for a reload above the connection pill. Above the highest control fixed
-            at the foot of the screen - a docked composer, the issues table's selection bar from
-            `sm` up, or the update banner (`--foot-composer-inset`, `useFootInset`) - so none
-            sits over its controls; otherwise just above the phone's bottom bar. Only what it
-            shows takes the pointer. A socket Dispatch refuses carries no status the page can
-            read, so nothing in the pill is terminal: once reconnecting has gone on for two
-            minutes it offers a reload, and the page keeps trying underneath. */}
+            at the foot of the screen (`--foot-composer-inset`, whose doc in
+            `hooks/useFootInset.ts` lists them), so none sits over its controls; otherwise just
+            above the phone's bottom bar. Only what it shows takes the pointer. A socket Dispatch
+            refuses carries no status the page can read, so nothing in the pill is terminal: once
+            reconnecting has gone on for two minutes it offers a reload, and the page keeps trying
+            underneath. */}
         <div
           className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
           ref={statusCornerRef}

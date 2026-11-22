@@ -293,8 +293,7 @@ export function DeploymentResilience(): ReactNode {
   const lastVersionCheckAt = useRef(0);
   // The banner sits at the foot of the screen, in the band the shell's status corner shares, so
   // it publishes how far up it reaches (`useFootInset`) and the corner rides above it: Pending
-  // changes then lies over none of its buttons. The hook runs before the early return below, so
-  // it runs on every render.
+  // changes then lies over none of its buttons.
   const bannerRef = useRef<HTMLElement>(null);
   useFootInset(bannerRef, updateAvailable);
 

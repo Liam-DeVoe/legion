@@ -10,7 +10,8 @@ export const FOOT_COMPOSER_INSET_PROPERTY = "--foot-composer-inset";
 /** How far up from the screen's bottom edge the shell's status corner - the pending-writes
  *  indicator and the connection pill (`app.tsx`) - reaches, on the document element, so a control
  *  floating at the foot of a page rides above the whole corner rather than under it. Unset while
- *  the corner shows nothing, which leaves a reader of this property the composer's alone. */
+ *  the corner shows nothing, which leaves a reader of this property `--foot-composer-inset`
+ *  alone. */
 export const FOOT_STATUS_INSET_PROPERTY = "--foot-status-inset";
 
 /** A property this hook publishes into. */
@@ -68,8 +69,9 @@ function publish(property: FootInsetProperty): void {
  * While `active`, measures `ref`'s element whenever it or the screen changes size - a refusal's
  * row grows a composer upward, a widening moves it into the page - or whenever a published inset
  * moves it, and adds how far up from the screen's bottom edge it reaches to `property`, which
- * holds the largest of the elements published into it; a composer's by default. It counts only
- * while the element is fixed (`position: fixed`) and has a box.
+ * holds the largest of the elements published into it; the foot controls' property
+ * (`FOOT_COMPOSER_INSET_PROPERTY`) by default. It counts only while the element is fixed
+ * (`position: fixed`) and has a box.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,

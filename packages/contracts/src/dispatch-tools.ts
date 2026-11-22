@@ -390,7 +390,7 @@ export function issueStatusOptionsOf(
 
 /** The fields of dispatch_issue_update the status change route does not take, so no option goes
  *  with one of them. */
-const ISSUE_UPDATE_PATCH_FIELDS = [
+export const ISSUE_UPDATE_PATCH_FIELDS = [
   "title",
   "labels",
   "priority",

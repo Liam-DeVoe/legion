@@ -13,7 +13,7 @@ import {
 } from "./api";
 import { filterPicker } from "./filters";
 import { nextFrames } from "./frames";
-import { dropFirstAnswer, watchWrites } from "./keyed-writes";
+import { dropFirstAnswer, pendingWrites, watchWrites } from "./keyed-writes";
 import {
   expectReadWhileHeld,
   holdIssuePatches,
@@ -399,7 +399,7 @@ test("with a refused change pending, every control of the selection bar and of P
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
     const bar = page.getByRole("toolbar");
-    const pending = page.getByRole("region", { name: "Pending changes" });
+    const pending = pendingWrites(page);
     await select(refused.key).check();
     await bar.getByRole("button", { name: "Take out of epic" }).click();
     await expect(pending).toContainText(refused.key);

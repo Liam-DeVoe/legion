@@ -1,4 +1,5 @@
-import { ISSUE_STATUS_OPTIONS } from "@legion/contracts";
+import { ISSUE_UPDATE_PATCH_FIELDS } from "@legion/contracts";
+import { commandLine } from "../dispatch-command";
 import { DispatchGatewayError, DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { optionalString } from "./context";
@@ -89,14 +90,6 @@ export function parentStatusConflictLines(
   ];
 }
 
-/** The fields of `dispatch issue-update` a status change takes: the status, the reason of a close,
- *  and the options of the status change route, which go with no other field. */
-const STATUS_CHANGE_FIELDS: ReadonlySet<string> = new Set([
-  "status",
-  "reason",
-  ...ISSUE_STATUS_OPTIONS,
-]);
-
 const CHILD_FLAGS =
   "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.";
 
@@ -118,19 +111,20 @@ function nextSteps(
         `dispatch issue takes no flag that moves a done parent. Reopen ${key} first, with dispatch issue-update --issue ${key} --status <a status in work, such as in_progress>, then run dispatch issue again; or run it with --parent naming an open issue, or with no --parent.`
     );
   }
-  const update = tool === "dispatch_issue_update";
-  // The fields the call wrote, the issue it names aside; only issue-update's are read here.
-  const fields = update
-    ? Object.keys(args).filter((field) => field !== "issue" && args[field] !== undefined)
-    : [];
-  const status = update ? optionalString(args, "status") : undefined;
-  const parent = update ? optionalString(args, "parent") : undefined;
+  // Only dispatch issue-update's arguments are read here.
+  const written: Readonly<Record<string, unknown>> = tool === "dispatch_issue_update" ? args : {};
+  // The fields the call wrote, the issue it names aside.
+  const fields = Object.keys(written).filter(
+    (field) => field !== "issue" && written[field] !== undefined
+  );
+  const status = optionalString(written, "status");
+  const parent = optionalString(written, "parent");
   const alone = `--status${status === "done" ? " and --reason" : ""} alone`;
   if (parent !== undefined && parent !== "") {
     // A child holds the rule only against the status the reparent also wrote. The flags that
     // move it go with the status alone, so the status change (with the reason of a close) goes
     // first, in a call of its own, and the reparent runs again without them.
-    const issue = optionalString(args, "issue");
+    const issue = optionalString(written, "issue");
     const issueFlag = issue === undefined ? "" : ` --issue ${issue}`;
     const statusFlag = status === undefined || children ? "" : ` --status ${status}`;
     const kept = fields.filter(
@@ -147,14 +141,14 @@ function nextSteps(
         : []),
       ...parents.map(
         (key) =>
-          `dispatch issue-update takes no flag that moves the parent a reparent names. Move ${key} into work first, with dispatch issue-update --issue ${key} --status in_progress --include-parent, which also moves each issue above ${key} that is not in work; then${afterStatus} run the reparent again: ${reparent}.`
+          `dispatch issue-update takes no flag that moves the parent a reparent names. Move ${key} into work first, with ${commandLine("dispatch_issue_update", { issue: key, status: "in_progress", include_parent: true })}, which also moves each issue above ${key} that is not in work; then${afterStatus} run the reparent again: ${reparent}.`
       ),
     ];
   }
-  const others = fields.some((field) => !STATUS_CHANGE_FIELDS.has(field));
-  const apart = (flags: string): string =>
+  const others = ISSUE_UPDATE_PATCH_FIELDS.some((field) => written[field] !== undefined);
+  const apart = (subject: string): string =>
     others
-      ? ` ${flags} with ${alone}, so send the call's other changes in a call of their own.`
+      ? ` ${subject} with ${alone}, so send the call's other changes in a call of their own.`
       : "";
   return [
     ...(children ? [`${CHILD_FLAGS}${apart("Each goes")}`] : []),
