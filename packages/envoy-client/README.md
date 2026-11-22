@@ -1189,8 +1189,9 @@ round trip answer Dispatch marks as its refusal of the text (the `Dispatch-Text-
 `TEXT_REFUSAL_HEADER`, which the client reads for its presence alone), at any status, is refused
 with Dispatch's own refusal (`<CODE>: <message>`) and exit 1, as the call refuses it. The route
 makes, in the order, status, code and words of an upload, every check that upload makes of the
-text alone, and marks each refusal. Every upload makes some of them, a replacement included: a
-NUL character (`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the
+text alone, and marks each refusal. Every upload makes some of them, a replacement included (a
+JSON upload of blank content over a held document is refused as blank before its text is parsed):
+a NUL character (`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the
 parse's own refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads
 back otherwise (`INVALID_MARKDOWN`), and an ask that breaks its content rule in markdown whose
 rendering does not read back, which that refusal names instead (`INVALID_ASK_BLOCK`). Only a new
@@ -1198,8 +1199,8 @@ document's seed makes the rest, which a replacement relaxes: a block id written 
 element this build cannot create yet (`INVALID_MARKDOWN`), an ask block that breaks its content
 rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the elements (`CAP_EXCEEDED`), and a
 check proved by CI that breaks the rules its attributes keep (`INVALID_CI_CHECK`). The route
-makes those only for a request that asks for them
-(`new_document: true`). It answers any other as the most permissive replacement takes the text,
+makes those only for a request that asks for them (`new_document: true`). It answers any other
+as the most permissive replacement takes the text,
 one over a document already holding what the text holds: with the rendering that replacement
 stores, or with a refusal every replacement makes, the parse's own, the ask refusal it names
 instead and a render that fails. The check asks for them where the call makes a new document,
@@ -1208,8 +1209,8 @@ rules, so the check asks for none of them and compares the rendering Dispatch an
 text, and every marked refusal it gets is the call's. Under a name the owner does not hold,
 `--force` uploads a new document, so its dry run passes, with no warning, a text that upload then
 refuses for one of a new document's checks. A check Dispatch adds to the upload reaches the dry
-run with no change here. An unmarked answer says
-nothing of the text, whatever its status. A `--path` file Dispatch stores as a Markdown document
+run with no change here. An unmarked answer says nothing of the text, whatever its status. A
+`--path` file Dispatch stores as a Markdown document
 (a path ending in .md or .markdown, which the upload carries as `text/markdown`) is held to the
 same size: it is read once, as the call reads it (`documentFileBytes`), which refuses a file past
 1 MiB by its size before it reads it, or, where AskGate's check read it, by the bytes it holds,
@@ -1223,8 +1224,8 @@ in time, a failure, or a Dispatch without the route, which answers 404 or 405), 
 the file, and its upload makes its own refusal. Since the file goes up whatever the round trip
 failed with, the call asks it with the dry run's own client options (`askOnceWithinDryRun`):
 once, within the same 5 s, with no wait before asking a route again. A file Dispatch stores as
-its bytes is asked nothing, by the call as by
-the dry run. What only the call checks, since it needs more than the
+its bytes is asked nothing, by the call as by the dry run. What only the call checks, since it
+needs more than the
 text, stays the call's: whether the owner holds the name, the token of a replacement, a
 replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
 result, and the issue's state. The call checks the text, inline or a file's, before it reads

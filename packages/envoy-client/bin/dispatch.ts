@@ -18,7 +18,7 @@ const writeTo =
 const code = await runDispatchCli(Bun.argv.slice(2), process.env, {
   stdout: writeTo(process.stdout),
   stderr: writeTo(process.stderr),
-  readText: (path) => readFileText(path),
+  readText: readFileText,
   cwd: process.cwd(),
 });
 await Promise.all(pending);

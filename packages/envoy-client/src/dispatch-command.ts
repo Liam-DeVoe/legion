@@ -434,6 +434,9 @@ export function parseCommand(
       return io.readText(path);
     } catch (error) {
       if (error instanceof NotUtf8Error) {
+        // The field is claimed, as a field read whole is, so a field given twice is still refused
+        // for that, with exit 2, before this refusal.
+        claim(field, flag, false);
         unstorable ??= notUtf8Refusal(field, error);
         return undefined;
       }

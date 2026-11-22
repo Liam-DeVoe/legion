@@ -3,7 +3,8 @@ custom:
   Issue: pr4369
 body: |-
   `POST /api/v1/markdown/round-trip` refuses every text that every upload of a markdown document
-  refuses for the text alone, a replacement included, with that upload's own status, code and
+  refuses for the text alone, a replacement included (a JSON upload of blank content over a held
+  document is refused as blank before its text is parsed), with that upload's own status, code and
   words: a text past the 1 MiB one document holds or making more than 65,536 elements
   (`413 CAP_EXCEEDED`), markdown the parser refuses or whose rendering no reader reads back
   (`400 INVALID_MARKDOWN`), an ask that breaks its content rule in markdown whose rendering no

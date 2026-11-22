@@ -63,9 +63,9 @@ export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MAR
  * The response header that the markdown round trips (`POST /api/v1/markdown/round-trip`, `POST
  * /api/v1/markdown/file-round-trip`) put on their refusal of a text for the text alone, whatever
  * the refusal's status: a mark, with one value, that says the answer is Dispatch's refusal of the
- * text, so a client reads only that the header is there. The routes make those checks in the
- * order, status, code and words of the upload that makes them, and make a new document's only for
- * a request that asks for them (`new_document`). Generated into Go as
+ * text, so a client reads only that the header is there. The routes make the checks an upload
+ * makes of the text alone, in the order, status, code and words of that upload, and make a new
+ * document's only for a request that asks for them (`new_document`). Generated into Go as
  * `contracts.TextRefusalHeader`. `dispatch artifact` asks for a new document's refusals only where
  * the call makes a new document, so it reads an answer carrying the header as the call's own
  * refusal, and any other failure of the round trip as no answer at all, so a check of the text

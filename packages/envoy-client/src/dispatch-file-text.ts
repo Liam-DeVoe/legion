@@ -75,7 +75,7 @@ function firstNotUtf8(bytes: Uint8Array): number {
 
 /** `bytes` decoded as UTF-8, a byte order mark kept as U+FEFF; `NotUtf8Error` for bytes that are
  *  not UTF-8, naming the first such byte and where it stands. */
-export function utf8Text(bytes: Uint8Array): string {
+function utf8Text(bytes: Uint8Array): string {
   try {
     return decoder.decode(bytes);
   } catch (error) {
@@ -99,7 +99,5 @@ export function readFileText(
  *  such a byte in a form field with (`unstorableText`'s INVALID_UTF8), which `messageFor` prints
  *  as it prints that refusal from Dispatch. */
 export function notUtf8Refusal(field: string, error: NotUtf8Error): Error {
-  return new Error(
-    `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (${byteText(error.byte)}) at character ${error.character}, which Dispatch cannot store`
-  );
+  return new Error(`INVALID_UTF8: ${field} holds ${error.message}, which Dispatch cannot store`);
 }

@@ -192,17 +192,30 @@ function documentTooLarge(measured: string | Uint8Array | number): Error | undef
 }
 
 /**
+ * The file `dispatch artifact --path` sends for the file at `local`, under the type its upload
+ * declares, which Dispatch stores it by: an upload whose file part is declared `text/markdown`,
+ * its parameters and its case aside, is a document, and any other is a picture or a file
+ * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). It declares the type Bun
+ * reads from the path's extension, `text/markdown` for .md and .markdown (PATH_KEEPS_BYTES). The
+ * call uploads this file, or the bytes it read of it under its type, and the call and its dry run
+ * read from it whether the file is Markdown before they check it (`documentFileBytes`), so the
+ * upload and its check take one rule of which files are Markdown.
+ */
+export function uploadedFile(local: string): BunFile {
+  return Bun.file(local);
+}
+
+/**
  * The bytes of an upload's `--path` file that Dispatch stores as a Markdown document, or undefined
- * for a file it stores as its bytes, which is not read here. The call sends `file` under the type
- * Bun gives its path (`file.type`), `text/markdown` for a path ending in .md or .markdown
- * (PATH_KEEPS_BYTES), and Dispatch stores an upload as a document exactly when its file part's
- * media type is `text/markdown`, its parameters and its case aside (`artifactKind`,
- * packages/envoy/internal/dispatch/api/artifacts.go). The bytes are the ones the call checks and
- * sends: `held`, those the CLI read for AskGate's check where it read them, or else the file's own,
- * read once. They are checked against the bytes one document holds before they are answered, with
- * `documentTooLarge`'s refusal, which this throws, so no caller checks them again: a file whose
- * size is past that is refused before it is read, and bytes read past it, from a file whose size
- * could not be read or that grew since, once they are read.
+ * for a file it stores as its bytes, which is not read here. `file` is the file the call sends
+ * (`uploadedFile`), under the type its upload declares, and Dispatch stores an upload as a
+ * document exactly when that type is `text/markdown`, its parameters and its case aside. The bytes
+ * are the ones the call checks and sends: `held`, those the CLI read for AskGate's check where it
+ * read them, or else the file's own, read once. They are checked against the bytes one document
+ * holds before they are answered, with `documentTooLarge`'s refusal, which this throws, so no
+ * caller checks them again: a file whose size is past that is refused before it is read, and
+ * bytes read past it, from a file whose size could not be read or that grew since, once they are
+ * read.
  */
 export async function documentFileBytes(
   file: BunFile,

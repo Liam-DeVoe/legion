@@ -59,6 +59,7 @@ import {
   documentFileBytes,
   type StoredTextCheck,
   storedTextCheckFailed,
+  uploadedFile,
 } from "./stored-text";
 import { artifactNameExistsProblem, artifactUnderName } from "./upload-checks";
 
@@ -715,14 +716,14 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // says which two characters the two sets differ on. The held-name check reads this predicate;
   // what the stored-text check makes of blank text is that check's own (storedTextCheck).
   const blank = content === undefined || goBlankPattern.test(content);
-  // The file a path names, typed as Bun types the path: the type its upload carries, which is
-  // what Dispatch reads for whether it stores the file as a Markdown document. Such a file is read
-  // once, here (documentFileBytes), and refused there, before anything is asked, past the bytes
-  // one document may hold, so the bytes the file round trip is asked about below are the bytes
-  // sent; any other file is not read here. The bytes AskGate's check read, where it read them, are
-  // the bytes the call checks and sends, copied once into a plain buffer of their own, which a Blob
-  // takes.
-  const file = path === undefined ? undefined : Bun.file(resolvePath(input.cwd, path));
+  // The file a path names, as its upload sends it (uploadedFile), under the type that upload
+  // declares, which is what Dispatch reads for whether it stores the file as a Markdown document.
+  // Such a file is read once, here (documentFileBytes), and refused there, before anything is
+  // asked, past the bytes one document may hold, so the bytes the file round trip is asked about
+  // below are the bytes sent; any other file is not read here. The bytes AskGate's check read,
+  // where it read them, are the bytes the call checks and sends, copied once into a plain buffer
+  // of their own, which a Blob takes.
+  const file = path === undefined ? undefined : uploadedFile(resolvePath(input.cwd, path));
   const heldBytes = input.uploadBytes === undefined ? undefined : new Uint8Array(input.uploadBytes);
   const documentBytes = file === undefined ? undefined : await documentFileBytes(file, heldBytes);
   // The check of the text alone, the one the dry run makes (artifactTextCheck chooses it for both),
@@ -795,7 +796,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // A call with a path uploads that file, one with content stores that text, and one with
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit. The
   // file's bytes, where the call holds them - a document's, read above, or those AskGate's check
-  // read - are sent as they were read, typed as Bun types the path.
+  // read - are sent as they were read, under the file's own type.
   const fileBytes = documentBytes ?? heldBytes;
   const artifactInput =
     file !== undefined
@@ -880,7 +881,7 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
   let bytes: Uint8Array | undefined;
   if (content === undefined && path !== undefined) {
     try {
-      bytes = await documentFileBytes(Bun.file(resolvePath(cwd, path)));
+      bytes = await documentFileBytes(uploadedFile(resolvePath(cwd, path)));
     } catch (error) {
       // The call reads the file the same way before it asks anything, and throws this.
       return {

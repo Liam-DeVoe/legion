@@ -25,7 +25,9 @@ import (
 // absence, is refused no replacement the store takes, and compares the spelling that replacement
 // stores. For a text main's parse takes, that rendering is main's answer, storedMarkdown's; for one
 // it refused, a block id named twice or an element this build cannot create yet, main answered
-// the text itself, and this answers the rendering.
+// the text itself, and this answers the rendering. A JSON upload of blank content over a held
+// document is refused as blank before its text is parsed (blankWriteToADocumentThatExists), which
+// reads more than the text, so blank text is answered as that replacement would parse it.
 //
 // Text `strings.TrimSpace` empties is answered "", as the near-copy gate's storedMarkdown answers
 // it, once nothing has refused it. That answer is not always what the upload stores: the seed
@@ -136,16 +138,18 @@ type markdownRoundTripResponse struct {
 // body with new_document true, and otherwise the most permissive replacement. A caller compares
 // the two and refuses its own call where they differ.
 //
-// Text every upload of a markdown document refuses for the text alone is refused here with that
-// upload's own status, code and words: inline text holding U+0000, a file holding U+0000 or a byte
-// that is not UTF-8, text past maxDocumentMarkdownBytes, markdown the parse refuses (its element
-// budget, its schema, a rendering no reader reads back, and an ask that breaks its content rule in
-// a text whose rendering no reader reads back, which that refusal names instead) and a render that
-// fails. For a body with new_document true, so is text only an upload of a new markdown document
-// refuses for the text alone: a block id named on two blocks, an element this build cannot create
-// yet, an ask that breaks its content rule, a rendering past the bytes or the elements one
-// document holds, and a check CI proves that breaks one of the rules its attributes keep. Both are
-// made in the seed's order, so such a body is refused a text that breaks two rules with the first.
+// Text every upload of a markdown document refuses for the text alone (a JSON upload of blank
+// content over a held document is refused as blank before its text is parsed) is refused here
+// with that upload's own status, code and words: inline text holding U+0000, a file holding
+// U+0000 or a byte that is not UTF-8, text past maxDocumentMarkdownBytes, markdown the parse
+// refuses (its element budget, its schema, a rendering no reader reads back, and an ask that
+// breaks its content rule in a text whose rendering no reader reads back, which that refusal
+// names instead) and a render that fails. For a body with new_document true, so is text only an
+// upload of a new markdown document refuses for the text alone: a block id named on two blocks,
+// an element this build cannot create yet, an ask that breaks its content rule, a rendering past
+// the bytes or the elements one document holds, and a check CI proves that breaks one of the
+// rules its attributes keep. Both are made in the seed's order, so such a body is refused a text
+// that breaks two rules with the first.
 // A body without it is answered with the rendering the most permissive replacement stores, or
 // with the first refusal every upload makes of the text. Each refusal, whatever its status,
 // carries contracts.TextRefusalHeader, valued textRefusalMark. No other answer of either route

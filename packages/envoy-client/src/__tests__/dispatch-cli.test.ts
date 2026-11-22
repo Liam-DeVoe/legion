@@ -592,8 +592,9 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  seams: Pick<DispatchCliIo, "fetchImpl" | "nearestAncestorNamed" | "dryRunDeadlineMs"> &
-    Partial<Pick<DispatchCliIo, "readText">> = {}
+  seams: Partial<
+    Pick<DispatchCliIo, "fetchImpl" | "nearestAncestorNamed" | "dryRunDeadlineMs" | "readText">
+  > = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -1481,7 +1482,7 @@ describe("the dispatch CLI", () => {
     });
   }
 
-  // INFRA-4224 (spec v27 R3): the command reads every file and stdin a flag names as bytes
+  // INFRA-4224 R3 (spec v27): the command reads every file and stdin a flag names as bytes
   // (`readFileText`, the `dispatch` entry's reader, run here with stdin's bytes handed to it), and
   // refuses bytes that are not UTF-8, which a lenient read stored as U+FFFD, with Dispatch's own
   // refusal of such a byte (`unstorableText`'s INVALID_UTF8): the field the flag sets, the first
@@ -2072,8 +2073,10 @@ describe("the dispatch CLI", () => {
 
   test("artifact's help says its dry run asks Dispatch how it would store the text, and another command's that it sends nothing", async () => {
     const artifact = await run(["artifact", "--help"], omp);
-    expect(artifact.stdout).toContain(
-      "  --dry-run\n      Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip)"
+    const dryRun = artifact.stdout.slice(artifact.stdout.indexOf("  --dry-run\n")).split("\n");
+    expect(dryRun[0]).toBe("  --dry-run");
+    expect(dryRun[1]).toContain(
+      "it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip)"
     );
     const message = await run(["message", "--help"], omp);
     expect(message.stdout).toContain(

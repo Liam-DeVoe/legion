@@ -665,13 +665,14 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 // requireReplacementAnswer fails t unless unasked, the round trip of test's text sent as kind
 // without new_document, is the most permissive replacement's answer (markdownRoundTrip), where
 // asked is the round trip with new_document. A text whose scope is upload, which every upload
-// refuses alike, a replacement included - its encoding, its bytes, the parse's refusals - is
-// refused alike with the member and without it, with the same status, code, words and mark. A
-// text whose scope is new-document is answered as test.replaced says: refused, marked, for a
-// refusal that replacement makes, which the new document's refusal came before; or else answered
-// 200, with no mark, with the rendering that replacement stores - for a text main's parse takes,
-// storedMarkdown's answer, main's, and for one it refused, a block id named twice, the rendering
-// with the second block's id minted, where main answered the text itself.
+// refuses alike, a replacement included - its encoding, its bytes, the parse's refusals of a text
+// that is not blank - is refused alike with the member and without it, with the same status,
+// code, words and mark. A text whose scope is new-document is answered as test.replaced says:
+// refused, marked, for a refusal that replacement makes (the new document's own, or one it came
+// before); or else answered 200, with no mark, with the rendering that replacement stores - for a
+// text main's parse takes, storedMarkdown's answer, main's, and for one it refused, a block id
+// named twice, the rendering with the second block's id minted, where main answered the text
+// itself.
 func requireReplacementAnswer(t *testing.T, kind string, test roundTripRefusal, asked, unasked *httptest.ResponseRecorder) {
 	t.Helper()
 	mark := unasked.Header().Get(contracts.TextRefusalHeader)

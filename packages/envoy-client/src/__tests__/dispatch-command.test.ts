@@ -10,6 +10,7 @@ import {
   parseCommand,
   toolForCommand,
 } from "../dispatch-command";
+import { NotUtf8Error } from "../dispatch-file-text";
 
 const noFiles = {
   readText: (path: string): string => {
@@ -567,6 +568,42 @@ describe("a bare - given to a text flag", () => {
       kind: "refused",
       tool: "dispatch_result",
       problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});
+
+describe("a file flag whose bytes are not UTF-8", () => {
+  const notUtf8 = {
+    readText: (path: string): string => {
+      if (path === "bad") throw new NotUtf8Error(0xff, 1);
+      throw new Error(`unexpected read ${path}`);
+    },
+  };
+
+  test("is Dispatch's refusal of the text, unless the argv is refused for a field given twice, in either order", () => {
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad"], notUtf8)
+    ).toMatchObject({
+      kind: "unstorable",
+      tool: "dispatch_comment",
+      refusal: {
+        message:
+          "INVALID_UTF8: body holds a byte that is not UTF-8 (0xFF) at character 1, which Dispatch cannot store",
+      },
+    });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad", "--body", "x"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body-file and --body both set body"],
+    });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body", "x", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body and --body-file both set body"],
     });
   });
 });

@@ -30,13 +30,13 @@ body: |-
   asks it, with the dry run's own client options - once, within 5 s, with no wait before asking a
   route again - about the bytes it then uploads, and refuses what it refuses before it uploads,
   with the dry run's refusal and exit code; on any other answer, or none (no answer in time, a
-  failure, or a Dispatch without the
-  route), it uploads the file as before, and the dry run's warning for such a file says that the
+  failure, or a Dispatch without the route), it uploads the file as before, and the dry run's
+  warning for such a file says that the
   call asks once more and uploads the file unchecked if it gets no answer either. The call checks
   the text, inline or a file's, before it reads whether the owner holds the name, so a text
   refused for the text alone under a name the owner holds gets that refusal, as from its dry run,
-  not the refusal of the held name. The dry run refuses a text past the
-  document limit without asking Dispatch, so with no Dispatch configured too. For any other text,
+  not the refusal of the held name. The dry run refuses a text past the document limit without
+  asking Dispatch, so with no Dispatch configured too. For any other text,
   when Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry
   run passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry
   run sends no second attempt after a failed one, and names the failure Dispatch answers, such as
