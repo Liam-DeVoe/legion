@@ -16,10 +16,11 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
-  and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
-  worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
-  work through the same `legion` tool and keeps its conversation the same way.
+  runtime each issue runs in one pod of its own, from one published worker image: every agent of
+  the issue runs in that pod, each in Linux namespaces of its own, and talks to the daemon over a
+  connection the pod dials back. A phase worker's role may run on Claude Code instead, under either
+  runtime (`worker_backends` in `legion.yaml`); it does the same work through the same `legion`
+  tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
@@ -176,10 +177,11 @@ A failed test or a review that requests changes sends the issue back to `impleme
 testing or review, and the change goes through the issue's steps after the implementer again: in
 the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
 base moves no phase (below). Red CI sends nothing
-back from anywhere: the review round and CI are two rules, each read on its own, and the
-reviewer's approval of the head ends the round whatever CI says at that commit, since the
-reviewer reads the code commit's checks on GitHub before it approves
-([review signalling](#review-signalling)). What a red check does is reach the architect that owns
+back from anywhere: the review round and CI are two rules, each read on its own.
+The round reads no check's conclusion, since the reviewer reads the code commit's checks on GitHub
+before it approves ([review signalling](#review-signalling)), but an approved head that GitHub
+holds blocked, on a check or a review the base branch requires, keeps the issue in `reviewing`
+until that merge state comes clean. What a red check does is reach the architect that owns
 the issue, the worker of the issue's current phase and the implementer, as one message naming each
 check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
 checks.

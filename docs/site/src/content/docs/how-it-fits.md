@@ -73,10 +73,10 @@ problem that needs a decision goes to a person in a Dispatch ask.
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
 large work into child issues, and runs each change through the phase workers its plan names, in the
 order it names them — in the default steps a **planner**, an **implementer**, a **tester** and a
-**reviewer** — then a **merger**. Every agent works in a
-workspace of its own, and every phase records a structured handoff on the issue in Dispatch, which
-the next role reads and a restarted agent recovers from. The coordinator writes the issue's status
-back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
+**reviewer** — then a **merger**. The phase workers of an issue share its one workspace, and the
+planner, the implementer, the tester and the reviewer each record a structured handoff on the issue
+in Dispatch, which the next role reads and a restarted agent recovers from. The coordinator writes
+the issue's status back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
 
 Two decisions stay with people:
 

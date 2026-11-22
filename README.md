@@ -21,9 +21,11 @@ it for you, and an agent that finds a problem outside its issue asks you before 
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
 only you can answer. Once you approve the spec, the daemon runs the phase workers of the steps the
 architect's plan names, in the order it names them (planner, implementer, tester and reviewer in
-the default steps), and then the merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
-pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
+the default steps), and then the merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, or a
+Claude Code one for a phase worker the deployment puts there, in a tmux pane on one host or, on
+Kubernetes, in the one [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod of
+its issue, and the planner, the implementer, the tester and the reviewer each record a handoff on
+the issue in Dispatch for the next role,
 and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
 from Todo through the statuses of the steps it runs (In Progress, Testing, Needs Review and Retro
 in the default steps) to Done. The architect accepts the change where its plan has that step, the
