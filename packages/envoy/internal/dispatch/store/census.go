@@ -14,8 +14,8 @@ import (
 const censusApplicationName = "envoy-dispatch census"
 
 // Census takes the pre-deploy census (pgmigrate.Census) of the database databaseURL names against
-// the migrations this binary embeds, on one connection of its own: a deployment runs it before it
-// rolls the service, so it uses no pool and migrates nothing.
+// the migrations this binary embeds, on one connection of its own (ConnConfig): a deployment runs
+// it before it rolls the service, so it uses no pool and migrates nothing.
 func Census(ctx context.Context, databaseURL string) (*pgmigrate.Report, error) {
 	return census(ctx, databaseURL, migrationFiles, pgmigrate.CensusOptions{})
 }
@@ -25,9 +25,9 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := ConnConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, err
 	}
 	config.RuntimeParams["application_name"] = censusApplicationName
 	// The census's one author-written statement is pinned to the extended protocol on its own
@@ -44,14 +44,18 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 
 // CheckVersions reads what schema_migrations, on the database databaseURL names, records of each
 // version against the migrations this binary embeds, and what the runner's next boot would do
-// with each row (pgmigrate.CheckVersions). It holds one connection of its own, in a read-only
-// transaction, and writes nothing.
+// with each row (pgmigrate.CheckVersions). It holds one connection of its own (ConnConfig), in a
+// read-only transaction, and writes nothing.
 func CheckVersions(ctx context.Context, databaseURL string) (*pgmigrate.VersionCheck, error) {
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}
-	conn, err := pgx.Connect(ctx, databaseURL)
+	config, err := ConnConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}

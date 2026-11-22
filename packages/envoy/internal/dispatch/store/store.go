@@ -44,7 +44,8 @@ const poolSizeParam = "pool_max_conns"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC) and carries sessionSettings, as do the pools Pool.separate copies from its
+// configuration and every connection opened from Pool.Config.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -61,6 +62,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	applySessionSettings(config.ConnConfig)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
@@ -70,6 +72,49 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		return nil, fmt.Errorf("ping Postgres: %w", err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
+}
+
+// sessionSettings are the server settings every connection Dispatch opens on its database sends in
+// its startup message (applySessionSettings): Open's shared pool, and so every pool Pool.separate
+// copies from its configuration and every connection opened from Pool.Config (the server process
+// registry's pool, the migration runner's lock watch, the test helpers' pools), and every
+// connection opened from ConnConfig (Census, CheckVersions, the measurements of benchtime, the
+// reads of horizontest.Dialed). Sent at startup, a setting is the session's default rather than a
+// SET: `discard all` (pgmigrate.ResetSession) and `reset all` keep it, and it replaces whatever the
+// connection string sets for the same name.
+//
+// jit = off. A server built with LLVM JIT (pg_jit_available(); the official postgres image and the
+// pgdg packages are) compiles a statement, again at each execution, when the planner's estimate of
+// its cost passes jit_above_cost (100,000 by default), and inlines and optimizes the code as well
+// past jit_inline_above_cost and jit_optimize_above_cost (500,000). That pays off for a long
+// analytic scan. Dispatch's statements read a few rows through indexes, but the planner prices
+// some of them far above what they read: a recursive walk is estimated at many times its rows, and
+// each arm of a union adds its estimate. Such a statement passes the thresholds and spends every
+// execution compiling a plan that then runs in milliseconds. On a test server with JIT, the pull
+// request attribution pass's statement (delivery's attribution.go) compiled about 380 functions at
+// each execution and took 0.13 to 0.28 s with its expressions compiled, 2.8 to 5 s inlined and
+// optimized as well; the thread read in api/messages.go spent 780 ms compiling and 3 ms running on
+// production's own data. A statement that does read widely sets its own plan settings in its
+// transaction (embedqueue's coverageSettings).
+var sessionSettings = map[string]string{"jit": "off"}
+
+// applySessionSettings sets sessionSettings on config, over any value its connection string gave.
+func applySessionSettings(config *pgx.ConnConfig) {
+	for name, value := range sessionSettings {
+		config.RuntimeParams[name] = value
+	}
+}
+
+// ConnConfig is the configuration of one connection of its own on the Dispatch database
+// databaseURL names, carrying sessionSettings as every connection of Open's pool does: for a
+// connection that is not opened from a Store's Pool.Config, as Census's and CheckVersions' are.
+func ConnConfig(databaseURL string) (*pgx.ConnConfig, error) {
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+	}
+	applySessionSettings(config)
+	return config, nil
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

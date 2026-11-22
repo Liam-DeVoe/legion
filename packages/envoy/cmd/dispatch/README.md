@@ -26,6 +26,7 @@ Each item below names a variable, then its purpose.
   Postgres connection string.
   Dispatch applies embedded migrations before serving.
   The pool size is fixed in code (`store.sharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
+  Every connection runs with `jit = off`, sent at startup and fixed in code (`store.sessionSettings` says why), so a `jit` the connection string sets is overwritten.
 
 - `DISPATCH_AGENT_TOKEN`
 
