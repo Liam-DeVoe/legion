@@ -238,7 +238,7 @@ let placedFloats: readonly PlacedFloat[] = [];
 const marks = new Map<HTMLElement, Mark>();
 
 /** The attribute that marks a scroller, valued by the way it takes its end room. */
-const MARK_ATTRIBUTE = "data-foot-clearance";
+export const MARK_ATTRIBUTE = "data-foot-clearance";
 
 /** The custom property that holds a scroller's end room, on its own inline style. */
 const CLEARANCE_PROPERTY = "--foot-clearance";
@@ -417,22 +417,21 @@ function unmark(scroller: HTMLElement): void {
  * pixel, which the inline style keeps as written, and only a value that changes is written.
  */
 function mark(scroller: HTMLElement, clearance: number, byDocument: boolean): void {
-  const computed = getComputedStyle(scroller);
-  const own = Number.parseFloat(computed.paddingBottom) || 0;
   let held = marks.get(scroller);
   if (held === undefined) {
+    const computed = getComputedStyle(scroller);
     const after = getComputedStyle(scroller, "::after").content;
     const box = SPACER_BOXES[computed.display];
     const spacer =
       !byDocument &&
       (after === "none" || after === "normal") &&
       (box === "block" || (box === "flexbox" && computed.flexDirection === "column"));
-    held = spacer ? { room: 0, way: "after" } : { own, room: 0, way: "padding" };
-  }
-  if (scroller.getAttribute(MARK_ATTRIBUTE) !== held.way) {
-    scroller.setAttribute(MARK_ATTRIBUTE, held.way);
+    held = spacer
+      ? { room: 0, way: "after" }
+      : { own: Number.parseFloat(computed.paddingBottom) || 0, room: 0, way: "padding" };
   }
   if (held.way === "after") {
+    const own = Number.parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
     const room = Math.max(0, Math.ceil(clearance - own));
     writePixels(scroller.style, CLEARANCE_PROPERTY, room);
     marks.set(scroller, { room, way: "after" });
@@ -440,6 +439,9 @@ function mark(scroller: HTMLElement, clearance: number, byDocument: boolean): vo
     const padding = Math.max(held.own, Math.ceil(clearance));
     writePixels(scroller.style, "padding-bottom", padding);
     marks.set(scroller, { own: held.own, room: padding - held.own, way: "padding" });
+  }
+  if (scroller.getAttribute(MARK_ATTRIBUTE) !== held.way) {
+    scroller.setAttribute(MARK_ATTRIBUTE, held.way);
   }
 }
 
