@@ -113,7 +113,7 @@ func buildBaseline(t *testing.T, worktree string) (binary, commit string) {
 // printed: it carries the test server's credential.
 func baselineDatabaseURL(t *testing.T, variable, database string) string {
 	t.Helper()
-	recreate := fmt.Sprintf("psql \"$LEGION_TEST_PG_DSN\" -c 'drop database if exists %s' -c 'create database %s'", database, database)
+	recreate := fmt.Sprintf("psql \"$LEGION_TEST_PG_DSN\" -c 'drop database if exists %s' -c 'create database %s strategy file_copy'", database, database)
 	databaseURL := strings.TrimSpace(os.Getenv(variable))
 	if databaseURL == "" {
 		t.Fatalf("%s is unset: this check boots the base build over a database of its own, which the Verification preamble makes with\n"+
