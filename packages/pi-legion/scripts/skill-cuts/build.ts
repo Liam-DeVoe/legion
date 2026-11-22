@@ -277,7 +277,9 @@
  *   package.json, an `ensure_vendor` clone) at the last commit of the ref that installer names at
  *   the session's start, as the session's machine held it; for a Legion pod, the units of its
  *   worker image's repository at the commit the image was built from, which the deployment's
- *   Pulumi config and GitHub's build provenance of the image name (LEGION_IMAGE_RULE). A
+ *   project file (else its Pulumi config) and GitHub's build provenance of the image name
+ *   (LEGION_IMAGE_RULE); and the commit its daemon image was built from, at which a capture
+ *   composes the role prompt, is an evidence item of its own (LEGION_DAEMON_RULE). A
  *   repository GitHub gives no commit of
  *   at or before that time (`NoCommitThen`), such as one the dev box's installers install only by
  *   the copies output's later read, did not exist then, so nothing of it was installed then: it is
@@ -289,7 +291,13 @@
  *   share (common.ts's `GhRetries`: after 5, 15, 45 and 135 s, each retry said on standard error;
  *   a batch of more than one blob that GitHub answers as a batch too large is not sent again, and
  *   its blobs are read alone), and a read that failed so on every try is not kept, so the next
- *   case reads it again. The npm registry's tarball read (`GithubReads.tarball`, one fetch) gives
+ *   case reads it again. A read GitHub refuses for its rate limit is sent again after a wait
+ *   (`GithubReads.send` with common.ts's `rateLimitWait`: a primary limit waited out to
+ *   the reset `gh api rate_limit` gives, at most 15 minutes; a secondary one SECONDARY_WAIT_MS,
+ *   doubled at each refusal), at most MAX_RATE_RETRIES times; one still refused after them is a
+ *   transient failure (`ghAnswer`), so it fails the profile as a read that fails so on every try
+ *   does, and no SKILL.md it held is left out of the profile as a fault. The npm registry's
+ *   tarball read (`GithubReads.tarball`, one fetch) gives
  *   up a try after 60 s (NPM_TIMEOUT_MS), its body included, and a try that failed for a
  *   transient reason (that limit, a connection refused or reset, a name not resolved, an HTTP 429
  *   or 5xx) is sent again by the same rule, counted with the GitHub reads' (`githubRetries`); a
@@ -535,7 +543,9 @@ import {
   GhRetries,
   json,
   parse,
+  RATE_LIMITED,
   Refused,
+  rateLimitWait,
   required,
   STORE_QUIET_MS,
   schemaFaults,
@@ -545,6 +555,7 @@ import {
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
+import { composedAt, DAEMON_IMAGE_ITEM, PROMPTS_GO } from "./context";
 import {
   BLOB_BATCH,
   BLOB_BATCH_BYTES,
@@ -2355,11 +2366,17 @@ function transientFailure(error: unknown): boolean {
 class NoCommitThen extends Error {}
 
 /** The standard output of `result`, gh's answer to `args`; throws a GhFailed naming `args` and
- *  gh's first error line (each try's, when the read was sent more than once) when it failed. */
+ *  gh's first error line (each try's, when the read was sent more than once) when it failed. A
+ *  read GitHub still refused for its rate limit after every wait (`GithubReads.send`) is a
+ *  transient failure: its caller fails rather than taking the read as done (a skill left out of a
+ *  profile because the limit was spent would change the case in silence). */
 function ghAnswer(args: readonly string[], result: GhResult): string {
   if (result.code !== 0) {
     const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
-    throw new GhFailed(`gh ${args.join(" ")} failed: ${line}`, transientReason(result.stderr));
+    const transient =
+      transientReason(result.stderr) ??
+      (RATE_LIMITED.test(result.stderr) ? "rate limit" : undefined);
+    throw new GhFailed(`gh ${args.join(" ")} failed: ${line}`, transient);
   }
   return result.stdout;
 }
@@ -2511,15 +2528,46 @@ export class GithubReads {
     const key = args.join("\0");
     const held = this.made.get(key);
     if (held !== undefined) return held;
-    const made = this.retries.send(() => this.gh(args));
+    const made = this.send(args, "core");
     this.made.set(key, made);
     const drop = () => {
       if (this.made.get(key) === made) this.made.delete(key);
     };
     made.then((result) => {
-      if (result.code !== 0 && transientReason(result.stderr) !== undefined) drop();
+      if (
+        result.code !== 0 &&
+        (transientReason(result.stderr) !== undefined || RATE_LIMITED.test(result.stderr))
+      ) {
+        drop();
+      }
     }, drop);
     return made;
+  }
+
+  /** gh's answer to `args`, a read of the REST (`core`) or the GraphQL `resource`, sent again as
+   *  `retries` says: after a transient failure, and, while GitHub refuses it for its rate limit,
+   *  after the wait common.ts's `rateLimitWait` gives (a primary limit waited out to `resource`'s
+   *  reset, `untilReset`), as copies.ts's and context.ts's reads are. */
+  private send(args: readonly string[], resource: "core" | "graphql", splits = false) {
+    return this.retries.send(() => this.gh(args), {
+      splits,
+      rateWait: (stderr, refused) =>
+        rateLimitWait(stderr, refused, () => this.untilReset(resource)),
+    });
+  }
+
+  /** The milliseconds to the reset `gh api rate_limit` gives for `resource`, at most 15 minutes
+   *  (context.ts's GH_MAX_RATE_WAIT_MS); a minute when it gives none or one already past. */
+  private async untilReset(resource: "core" | "graphql"): Promise<number> {
+    const ran = await this.gh(["api", "--method", "GET", "rate_limit"]);
+    let reset: unknown;
+    try {
+      reset = ran.code === 0 ? JSON.parse(ran.stdout)?.resources?.[resource]?.reset : undefined;
+    } catch {
+      reset = undefined;
+    }
+    const until = typeof reset === "number" ? reset * 1000 + 1_000 - Date.now() : 0;
+    return until > 0 ? Math.min(until, 15 * 60_000) : 60_000;
   }
 
   private async ok(args: readonly string[]): Promise<string> {
@@ -2611,7 +2659,7 @@ export class GithubReads {
     recursive: boolean
   ): Promise<{ entries: TreeEntry[]; truncated: boolean }> {
     const args = ["api", `repos/${repo}/git/trees/${sha}${recursive ? "?recursive=1" : ""}`];
-    const stdout = ghAnswer(args, await this.retries.send(() => this.gh(args)));
+    const stdout = ghAnswer(args, await this.send(args, "core"));
     const tree = GitTree.safeParse(parseJson(stdout));
     if (!tree.success) throw new Error(`gh ${args.join(" ")} gave no git tree`);
     return { entries: tree.data.tree, truncated: tree.data.truncated === true };
@@ -2670,9 +2718,11 @@ export class GithubReads {
       }
     }
     for (const batch of blobBatches([...wanted.values()], BLOB_BATCH, BLOB_BATCH_BYTES)) {
-      const result = await this.retries.send(() => this.gh(graphqlArgs(repo, blobQuery(batch))), {
-        splits: batch.length > 1,
-      });
+      const result = await this.send(
+        graphqlArgs(repo, blobQuery(batch)),
+        "graphql",
+        batch.length > 1
+      );
       const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) continue;
       for (const [index, entry] of batch.entries()) {
@@ -3052,23 +3102,33 @@ function legionCatalog(
 }
 
 /** Which commit of its repository a Legion pod's worker image carries. */
-const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that its project's entry in the deployment's Pulumi config names at the deployment's commit of the session's start (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>, its image: line), and that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the repository is read at its default branch's commit at the session's start, as any other`;
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the repository is read at its default branch's commit at the session's start, as any other`;
 
-/** The `image:` value of the entry `- key: <project>` of the Pulumi config text `text`, and the
+/** At which commit of the worker image's repository a Legion pod's daemon composed its role
+ *  prompt (context.ts reads the item DAEMON_IMAGE_ITEM that names it). */
+const LEGION_DAEMON_RULE = `the Legion daemon of a pod composes its role prompt from ${PROMPTS_GO} and the parts it embeds as they were at the commit its daemon image was built from; the deployment names that image for the project as it names the worker image, in a daemonImage: line (the project file's top-level one, else the one of the project's entry in the Pulumi config), and the image is built from the worker image's repository; its commit is decided by the worker image's rule (the build provenance of its digest, else the first word of the comment lines right above its daemonImage: line that names a commit); where neither gives a commit, the role prompt is composed at the commit the profile reads that repository's plugins at`;
+
+/** A line of a project's values that names an image: its worker image (`image`) or its daemon
+ *  image (`daemonImage`). */
+type ImageKey = "image" | "daemonImage";
+
+/** The `key:` value of the entry `- key: <project>` of the Pulumi config text `text`, and the
  *  comment lines right above that line, each less its `#`; undefined when the text holds no such
- *  entry with an `image:` line. The entry's lines are those after its `- key:` line that are
- *  indented past its dash, or are comments; its `image:` is one of its own fields (indented two
+ *  entry with a `key:` line. The entry's lines are those after its `- key:` line that are
+ *  indented past its dash, or are comments; its `key:` is one of its own fields (indented two
  *  past the dash), so neither a nested map's `image:` nor another key such as `daemonImage:` is
- *  it. */
+ *  its `image:`. */
 function projectImage(
   text: string,
-  project: string
+  project: string,
+  key: ImageKey
 ): { readonly image: string; readonly comment: readonly string[] } | undefined {
   const unquoted = (value: string) => value.replace(/^["']|["']$/g, "");
+  const field = new RegExp(`^\\s*${key}:\\s*(\\S+)\\s*(?:#.*)?$`);
   const lines = text.split("\n");
   const head = lines.findIndex((line) => {
-    const key = /^\s*- key:\s*(\S+)\s*$/.exec(line)?.[1];
-    return key !== undefined && unquoted(key) === project;
+    const name = /^\s*- key:\s*(\S+)\s*$/.exec(line)?.[1];
+    return name !== undefined && unquoted(name) === project;
   });
   if (head < 0) return undefined;
   const dash = (lines[head] ?? "").indexOf("-");
@@ -3077,7 +3137,7 @@ function projectImage(
     if (line.trim() === "" || /^\s*#/.test(line)) continue;
     const indent = line.length - line.trimStart().length;
     if (indent <= dash) return undefined;
-    const value = /^\s*image:\s*(\S+)\s*(?:#.*)?$/.exec(line)?.[1];
+    const value = field.exec(line)?.[1];
     if (value === undefined || indent !== dash + 2) continue;
     const comment: string[] = [];
     for (let above = at - 1; above > head && /^\s*#/.test(lines[above] ?? ""); above--) {
@@ -3088,13 +3148,36 @@ function projectImage(
   return undefined;
 }
 
-/** The commit of `imageRepo` that the worker image of the project `project` carries, read from
- *  the Pulumi config of `deployment` at `sha` (LEGION_IMAGE_RULE), with the evidence item that
- *  says which rule gave it; no `sha`, and the evidence of why, when none did. Throws when a
- *  GitHub read fails other than with a 404 of the config file or of a provenance. */
-async function legionImageCommit(
+/** The top-level `key:` value of a project file's text `text` (a deployment's
+ *  `legion/projects/<n>-<project>.yaml`, where a project's own values moved from the Pulumi
+ *  config's `- key: <project>` entry), and the comment lines right above that line, each less its
+ *  `#`; undefined when the file has no top-level `key:` line. A nested map's `image:` and another
+ *  key such as `daemonImage:` are not its `image:`. */
+function projectFileImage(
+  text: string,
+  key: ImageKey
+): { readonly image: string; readonly comment: readonly string[] } | undefined {
+  const field = new RegExp(`^${key}:\\s*(\\S+)\\s*(?:#.*)?$`);
+  const lines = text.split("\n");
+  const at = lines.findIndex((line) => field.test(line));
+  if (at < 0) return undefined;
+  const value = field.exec(lines[at] ?? "")?.[1] ?? "";
+  const comment: string[] = [];
+  for (let above = at - 1; above >= 0 && /^\s*#/.test(lines[above] ?? ""); above--) {
+    comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
+  }
+  return { image: value.replace(/^["']|["']$/g, ""), comment };
+}
+
+/** The commit of `imageRepo` that the image the `key:` line names for the project `project` was
+ *  built from, read from `deployment` at `sha` by LEGION_IMAGE_RULE: the project file's top-level
+ *  `key:` line, else the one of the project's entry in the Pulumi config; `how` gives the reads
+ *  that decided it, or, with no `sha`, why no rule gave one. Throws when a GitHub read fails other
+ *  than with a 404 of the project file, of the config file or of a provenance. */
+async function imageCommit(
   github: GithubReads,
   read: {
+    readonly key: ImageKey;
     readonly deployment: string;
     readonly sha: string;
     readonly projectPath: string;
@@ -3102,53 +3185,51 @@ async function legionImageCommit(
     readonly imageRepo: string;
     readonly when: { readonly at: string; readonly words: string };
   }
-): Promise<{ readonly sha?: string; readonly line: Evidence }> {
-  const { deployment, sha, project, imageRepo, when } = read;
+): Promise<{ readonly sha?: string; readonly how: string }> {
+  const { key, deployment, sha, project, imageRepo, when } = read;
   const file = path.posix.join(
     path.posix.dirname(path.posix.dirname(read.projectPath)),
     "Pulumi.prod.yaml"
   );
-  const item = `the worker image's commit of ${imageRepo}`;
-  const decided = (commit: string, how: string) => ({
-    sha: commit,
-    line: {
-      item,
-      source: `${how}, so the image's units of ${imageRepo} are read at ${commit}: ${LEGION_IMAGE_RULE}`,
-    },
-  });
-  const undecided = (why: string) => ({
-    line: {
-      item,
-      source: `${why}, so ${imageRepo} is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
-    },
-  });
+  const line = `${key}: line`;
+  // The project file's own top-level line first (where the deployment keeps a project's values
+  // since they moved out of the Pulumi config), else the Pulumi config's - key: <project> entry.
+  const own = `${deployment}:${read.projectPath} at ${sha}`;
+  const ownText = await github.text(deployment, sha, read.projectPath);
+  let entry = ownText === undefined ? undefined : projectFileImage(ownText, key);
   const config = `${deployment}:${file} at ${sha}`;
-  const text = await github.text(deployment, sha, file);
-  if (text === undefined) {
-    return undecided(
-      `${config} does not exist (gh api repos/${deployment}/contents/${file}?ref=${sha})`
-    );
-  }
-  const entry = projectImage(text, project);
+  let named = `${own} gives the project ${project} the ${key} ${entry?.image}`;
   if (entry === undefined) {
-    return undecided(`${config} holds no entry - key: ${project} with an image: line`);
+    const none = `${own} has no top-level ${line}`;
+    const text = await github.text(deployment, sha, file);
+    if (text === undefined) {
+      return {
+        how: `${none}, and ${config} does not exist (gh api repos/${deployment}/contents/${file}?ref=${sha})`,
+      };
+    }
+    entry = projectImage(text, project, key);
+    if (entry === undefined) {
+      return {
+        how: `${none}, and ${config} holds no entry - key: ${project} with ${key === "image" ? "an" : "a"} ${line}`,
+      };
+    }
+    named = `${config} gives the project ${project} the ${key} ${entry.image}`;
   }
-  const named = `${config} gives the project ${project} the image ${entry.image}`;
   const digest = /@sha256:([0-9a-f]{64})\b/.exec(entry.image)?.[1];
   let without = ", which names no digest";
   if (digest !== undefined) {
     const found = await github.attestedCommit(imageRepo, digest);
     const asked = `gh api repos/${imageRepo}/attestations/sha256:${digest}`;
     if (found !== undefined) {
-      return decided(found.commit, `${named}; ${asked} names ${found.uri} at ${found.commit}`);
+      return { sha: found.commit, how: `${named}; ${asked} names ${found.uri} at ${found.commit}` };
     }
     without = `, whose digest has no build provenance that names a commit (${asked})`;
   }
   if (entry.comment.length === 0) {
-    return undecided(`${named}${without}, and no comment line is right above its image: line`);
+    return { how: `${named}${without}, and no comment line is right above its ${line}` };
   }
   const comment = entry.comment.join(" ");
-  const above = `${named}${without}; the comment right above its image: line`;
+  const above = `${named}${without}; the comment right above its ${line}`;
   // The comment's words in their order: an image digest, a tag (`<name>-v<version>`, `v<version>`)
   // or a commit (7 to 40 hex digits, letters and digits both: neither a run number nor a word).
   const words = comment.matchAll(
@@ -3161,10 +3242,10 @@ async function legionImageCommit(
     if (base !== undefined) {
       const found = await github.attestedCommit(imageRepo, base);
       if (found !== undefined) {
-        return decided(
-          found.commit,
-          `${above} names the image digest sha256:${base}, whose build provenance (gh api repos/${imageRepo}/attestations/sha256:${base}) names ${found.uri} at ${found.commit}`
-        );
+        return {
+          sha: found.commit,
+          how: `${above} names the image digest sha256:${base}, whose build provenance (gh api repos/${imageRepo}/attestations/sha256:${base}) names ${found.uri} at ${found.commit}`,
+        };
       }
       continue;
     }
@@ -3180,22 +3261,22 @@ async function legionImageCommit(
       continue;
     }
     if (tag !== undefined) {
-      return decided(
-        commit,
-        `${above} names ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`
-      );
+      return {
+        sha: commit,
+        how: `${above} names ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`,
+      };
     }
     if (commit.startsWith(ref)) {
-      const read = `gh api repos/${imageRepo}/commits?sha=${ref}&until=${when.at}`;
-      return decided(
-        commit,
-        `${above} names ${ref}, the commit ${commit} of ${imageRepo} (${read})`
-      );
+      const asked = `gh api repos/${imageRepo}/commits?sha=${ref}&until=${when.at}`;
+      return {
+        sha: commit,
+        how: `${above} names ${ref}, the commit ${commit} of ${imageRepo} (${asked})`,
+      };
     }
   }
-  return undecided(
-    `${above} names no image digest whose build provenance names a commit, no commit and no tag of ${imageRepo}`
-  );
+  return {
+    how: `${above} names no image digest whose build provenance names a commit, no commit and no tag of ${imageRepo}`,
+  };
 }
 
 /** The item of the evidence of a case or a load task that says how far the listing its rebuilt
@@ -4575,36 +4656,69 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // session's start: the units of that repository are resolved from its tree at that commit
   // (`unitTree`), and their copies name it. The repository stays read at the session's start for
   // anything else of it (a session repository's project skills and context files, a copy a read
-  // in its checkout is placed at).
+  // in its checkout is placed at). Its daemon image, which composes the role prompt, may be
+  // another build: its commit is the evidence item DAEMON_IMAGE_ITEM, which context.ts reads
+  // (LEGION_DAEMON_RULE).
   const [imageRepo, ...moreImageRepos] = [...imageRepositories].sort();
   let image: { readonly repo: string; readonly sha: string; readonly at: RepositoryAt } | undefined;
   if (deployment !== undefined && imageRepo !== undefined) {
     const depSha = commits.get(deployment);
-    const found =
-      moreImageRepos.length > 0 || depSha === undefined
-        ? {
-            line: {
-              item: `the worker image's commit of ${[...imageRepositories].sort().join(", ")}`,
-              source: `${moreImageRepos.length > 0 ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known` : `${deployment} has no commit at the session's start`}, so each is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
-            },
-          }
-        : await legionImageCommit(github, {
-            deployment,
-            sha: depSha,
-            projectPath: projectFile?.path ?? "",
-            project: input.project ?? "",
-            imageRepo,
-            when: whenOf(deployment),
-          });
-    evidence.push(found.line);
-    if (found.sha !== undefined && found.sha !== commits.get(imageRepo) && held.has(imageRepo)) {
-      const at = await github.at(imageRepo, found.sha, run.config.excludePaths);
-      image = { repo: imageRepo, sha: found.sha, at };
-      trees.set(`${imageRepo}@${found.sha}`, at);
-      evidence.push({
-        item: `the skills and manifests of ${imageRepo} at ${found.sha}`,
-        source: `gh api repos/${imageRepo}/git/trees/${found.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at the worker image's commit and resolved by copies.ts's rules (resolveInstallers), give what each unit of ${imageRepo} ships in the image`,
-      });
+    if (moreImageRepos.length > 0 || depSha === undefined) {
+      const why =
+        moreImageRepos.length > 0
+          ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known`
+          : `${deployment} has no commit at the session's start`;
+      const repos = [...imageRepositories].sort().join(", ");
+      evidence.push(
+        {
+          item: `the worker image's commit of ${repos}`,
+          source: `${why}, so each is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
+        },
+        {
+          item: `${DAEMON_IMAGE_ITEM}${repos}`,
+          source: `${why}, so the role prompt is composed at the commit the profile reads each repository's plugins at: ${LEGION_DAEMON_RULE}`,
+        }
+      );
+    } else {
+      const read = {
+        deployment,
+        sha: depSha,
+        projectPath: projectFile?.path ?? "",
+        project: input.project ?? "",
+        imageRepo,
+        when: whenOf(deployment),
+      };
+      const worker = await imageCommit(github, { ...read, key: "image" });
+      const daemon = await imageCommit(github, { ...read, key: "daemonImage" });
+      evidence.push(
+        {
+          item: `the worker image's commit of ${imageRepo}`,
+          source:
+            worker.sha === undefined
+              ? `${worker.how}, so ${imageRepo} is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`
+              : `${worker.how}, so the image's units of ${imageRepo} are read at ${worker.sha}: ${LEGION_IMAGE_RULE}`,
+        },
+        {
+          item: `${DAEMON_IMAGE_ITEM}${imageRepo}`,
+          source:
+            daemon.sha === undefined
+              ? `${daemon.how}, so the role prompt is composed at the commit the profile reads the plugins of ${imageRepo} at: ${LEGION_DAEMON_RULE}`
+              : `${daemon.how}, ${composedAt(imageRepo, daemon.sha)}: ${LEGION_DAEMON_RULE}`,
+        }
+      );
+      if (
+        worker.sha !== undefined &&
+        worker.sha !== commits.get(imageRepo) &&
+        held.has(imageRepo)
+      ) {
+        const at = await github.at(imageRepo, worker.sha, run.config.excludePaths);
+        image = { repo: imageRepo, sha: worker.sha, at };
+        trees.set(`${imageRepo}@${worker.sha}`, at);
+        evidence.push({
+          item: `the skills and manifests of ${imageRepo} at ${worker.sha}`,
+          source: `gh api repos/${imageRepo}/git/trees/${worker.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at the worker image's commit and resolved by copies.ts's rules (resolveInstallers), give what each unit of ${imageRepo} ships in the image`,
+        });
+      }
     }
   }
   /** The tree a unit of `repo` ships from: the worker image's at its commit for the image's

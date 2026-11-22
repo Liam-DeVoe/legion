@@ -32,7 +32,14 @@
  * For each task the host's first request is captured once, in the rebuilt context of the task's
  * own profile (its skills, its plugins with capture.ts's stand-ins, its context files, its
  * appended prompt and its context), against the recorder (recorder.ts), so no host process
- * reaches the gateway or runs a tool:
+ * reaches the gateway or runs a tool. A Legion task's role prompt is composed as a behaviour
+ * case's is, at the commit its daemon image was built from where the task's evidence in the tasks
+ * file's build-tasks summary names one (the item `the daemon image's commit of <repo>`, build.ts),
+ * else at the profile's commit of its plugin repository; that item is the only one of the
+ * evidence the capture is given. A saved capture whose record says its role prompt was composed
+ * at another commit than the task's evidence names now (`rolePromptFault`; a record with no
+ * `commitOf` was composed at the plugin's commit) is refused before any run, as one made under a
+ * profile of other bytes is:
  *
  * - Oh My Pi: capture.ts's `captureBody`, with the task's text as a history of one user message.
  *   Oh My Pi lists each skill under a hint that it has a model write from the name and the
@@ -87,19 +94,49 @@
  *
  * In any other profile such a skill is listed like any other and tested as one.
  *
- * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
- * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
- * to the Messages route, and an `openai/<id>` model's (Oh My Pi only; its hints still come from an
- * Anthropic `--hint-model`) to the Responses route. A run loads the skill when the first assistant
- * message reads it (`firstMessageLoad`, over the message's tool calls in either API: `tool_use`
- * blocks, or `function_call` items with their arguments parsed): for Oh My Pi, a `read` of
- * `skill://<name>`, `skill://<name>/SKILL.md` or a path ending `/<name>/SKILL.md`; for Claude
+ * Then that one body is sent to the gateway (gateway.ts) through replay.ts's `replayOnce`, with the
+ * `anthropic-*` headers the host sent beside it, on the route of its API: an `anthropic/<id>`
+ * model's body goes to the Messages route, and an `openai/<id>` model's (Oh My Pi only; its hints
+ * still come from an Anthropic `--hint-model`) to the Responses route. A reply loads the skill when
+ * one of its tool calls reads it (`firstMessageLoad`, over the reply's tool calls in either API:
+ * `tool_use` blocks, or `function_call` items with their arguments parsed): for Oh My Pi, a `read`
+ * of `skill://<name>`, `skill://<name>/SKILL.md` or a path ending `/<name>/SKILL.md`; for Claude
  * Code, a `Skill` call naming `<name>` or `<plugin>:<name>`, or a `Read` of a path ending
  * `/<name>/SKILL.md`. These are the reads count.sql counts: a read selector after the last `/`
  * (`:raw`, `:1-40`) is taken off first, and a read of a reference is no load. One tool call of
- * the message that reads the skill is enough, whatever comes before it. A run never goes past that
- * first message: no tool call is answered, so a skill that another skill sends the agent to is
- * never counted as loaded by its own description.
+ * the reply that reads the skill is enough, whatever comes before it.
+ *
+ * Skill reads follow the behaviour replay's rule (the architect, 2026-11-22T18:58Z and
+ * 18:59:51Z). On Oh My Pi, a reply whose every tool call reads a skill file is answered as
+ * replay.ts answers one: a read of another skill the profile installs from that skill's installed
+ * copy (context.ts's `installedCopies` of the capture's record), a read of a skill it does not
+ * install with Oh My Pi's unknown-skill result, a read of another file of the tested skill from
+ * its directory. Then the body goes again with the reply and the answers, at most MAX_SKILL_ROUNDS
+ * times. A run comes to one of four outcomes (RunOutcome):
+ *
+ * - `loaded`: a reply reads the skill, the first one or one after answered rounds, before any
+ *   reply does more than read skill files. The run ends at that reply.
+ * - `sent by`: the answer to a read of another skill holds a text that names the skill
+ *   (`namesSkill`). What the agent does next comes from that text, not from the skill's listing,
+ *   so the run ends once that answer is made, before it is sent, and names that skill (`sentBy`).
+ * - `reads past last round`: the reply after the last answered round still only reads skill files
+ *   (replay.ts's ReadsPastLastRound).
+ * - `not loaded`: a run that ends at a reply that does more than read skill files, or makes no
+ *   tool call, with no load and no answer that names the skill before it.
+ *
+ * Claude Code's runs end at their first message (`skillReads: "first message"` in their record):
+ * the runner does not rebuild Claude Code's result of a `Skill` or `Read` call, so it answers no
+ * read there, and the first message is `loaded` or `not loaded`.
+ *
+ * `loaded` and `not loaded` runs are judged; for each run of the other two the task runs again,
+ * up to MAX_EXTRA_RUNS (score.ts's) runs beyond `--runs`, until it has `--runs` judged runs
+ * (`taskOutcome`). A task still short of them after its extra runs gives no description evidence:
+ * the skill's verdict leaves it out, and its line and the summary say why, with how many of its
+ * runs each skill sent and how many read past the last round. Each run's record holds each reply
+ * (ReplyRecord): its tool calls with their names and targets (a read's path, a `Skill` call's
+ * skill), the answers the runner made to its reads with where each came from (replay.ts's
+ * AnsweredRead: the tested skill's directory, an installed copy, or no copy), and what it used.
+ * Every reply but the last went back with its answers.
  *
  * A capture shows its task's session, not the run that captured it (capture.ts, "The harness
  * strings"): a task from a session stands for that session, and a written task for the session
@@ -111,38 +148,48 @@
  * `--context-session` names no session: its values are neutral, its date the capture's own.
  *
  * The runs of a profile's tasks are sent together, once each task of it has its capture, in one
- * seeded order (`sendRuns`): no task's runs go as a batch of their own. Each run goes with a
- * session id of its own (gateway.ts's `freshIdentity`), its body otherwise its capture's, since a
- * captured body holds the one id of the host run that made it, and a gateway that routes or
- * caches by that id makes it a factor of every run that sends it.
+ * seeded order (`sendRuns`): no task's runs go as a batch of their own; the extra runs its tasks
+ * then need go in a seeded order of their own, and so on until none is needed. Each run goes with
+ * a session id of its own (gateway.ts's `freshIdentity`), which each of its requests keeps, since
+ * a captured body holds the one id of the host run that made it, and a gateway that routes or
+ * caches by that id makes it a factor of every run that sends it. Its body is otherwise its
+ * capture's, but for a cache breakpoint on its last message (replay.ts's `withCacheBreakpoint`),
+ * so that a task's later runs read the whole body from the cache.
  *
  * Under `--out`: `summary.json` (the test's settings, what the host lists for the skill, each
- * task's profile file with the SHA-256 of its bytes, its loads and verdict and why it was dropped
- * (null when it was not), the skill's verdict, the spend), `runs/<task id>.jsonl` (one JSON line
- * per run, LoadRun, which names its task's profile file and that SHA-256 too, its session id and
- * its place in its send order), `captures/` (each task's body, the body as the host sent it, and
- * its record) and `sessions/`.
+ * task's profile file with the SHA-256 of its bytes, its counts (TaskOutcome: judged runs, loads,
+ * runs sent by each skill, runs that read past the last round, extra runs used) and verdict, why
+ * it gives no description evidence (null when it gives some), why it was dropped (null when it
+ * was not), its spend (TaskSpend), the skill's verdict, the test's spend), `runs/<task id>.jsonl`
+ * (one JSON line per run, LoadRun, which names its task's profile file and that SHA-256 too, its
+ * session id and its place in its send order), `runs/<task id>.failed.jsonl` (one JSON line per
+ * run that failed after one or more of its requests had their replies, FailedRun: the error and
+ * what those replies used), `captures/` (each task's body, the body as the host sent it, and its
+ * record) and `sessions/`. A failed run comes to no outcome and is made again by the next command;
+ * what its replies used counts in its task's spend, its task's line and the test's spend, in this
+ * command and every later one.
  * The refusals above for a skill a plugin or an agent definition puts into the session are made
  * before any model call, each naming the profile.
- * A task whose run file holds its runs is skipped, so a command started again goes on from what
- * was saved. A task whose context needs a directory no read can give (context.ts's
- * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree short
- * even read alone) is dropped: its line says so, `summary.json` gives its reason as the task's
- * `dropped` (`unreadable-directory: ` and the error, which names the repository, the commit and
- * the path), a command started again skips it while its profile file keeps the same bytes, and
- * the verdict rule sees it as a task with no runs. A capture that fails for another reason, a
- * read after its retries among them, is a failure (exit 1), tried again by the next command.
+ * A task whose run file holds its judged runs, or has used its extra runs, is skipped, so a
+ * command started again goes on from what was saved. A task whose context needs a directory no
+ * read can give (context.ts's UnreadableDirectory: the commit holds no such directory, or GitHub
+ * cuts a level of its tree short even read alone) is dropped: its line says so, `summary.json`
+ * gives its reason as the task's `dropped` (`unreadable-directory: ` and the error, which names
+ * the repository, the commit and the path), a command started again skips it while its profile
+ * file keeps the same bytes, and the verdict rule sees it as a task with no runs. A capture that
+ * fails for another reason, a read after its retries among them, is a failure (exit 1), tried
+ * again by the next command.
  * An `--out` written by a test of other settings (another skill text, name, host,
  * model, thinking level, run count, hint model, or one whose runs were sent before each had its
- * own session id), or holding a capture or runs of a task of the same id with another text,
- * under a profile of other bytes, or that its summary does not list (so the text they were made
- * for is not known), is refused. So is an `openai/<id>` model on Oh My Pi with no `--hint-model`
- * when no task's capture is saved: the hint model would be that model, and hints are written on
- * the Messages route only. The verdicts are score.ts's: a task's is `taskFault` and the skill's
- * `descriptionFault`, given only once every task has its runs and they are LOAD_RUNS. Each
- * task's line ends with the seconds of its phases: its capture (its context build, and the
- * GitHub reads in it with their count), the runs of its profile's tasks, its writes, the rest,
- * and the total.
+ * own session id or before the skill reads rule), or holding a capture or runs of a task of the
+ * same id with another text, under a profile of other bytes, or that its summary does not list
+ * (so the text they were made for is not known), is refused. So is an `openai/<id>` model on Oh
+ * My Pi with no `--hint-model` when no task's capture is saved: the hint model would be that
+ * model, and hints are written on the Messages route only. The verdicts are score.ts's: a task's
+ * is `taskFault` and the skill's `descriptionFault`, given only once every task has its judged
+ * runs or has used its extra runs, and those are LOAD_RUNS. Each task's line ends with the
+ * seconds of its phases: its capture (its context build, and the GitHub reads in it with their
+ * count), the runs of its profile's tasks, its writes, the rest, and the total.
  *
  * The listing rule (the architect, 2026-11-22T03:04Z), so that no one applies it by hand: each
  * task's listing measure is read from the tasks file's build-tasks summary
@@ -175,7 +222,15 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { type Arm, dispatchOf, type Injection, PLUGIN_INJECTED, withPluginBlock } from "./arms";
+import { stripSkillHeader } from "../skill-scenarios/transcript";
+import {
+  type Arm,
+  dispatchOf,
+  type Injection,
+  PLUGIN_INJECTED,
+  type SkillCopy,
+  withPluginBlock,
+} from "./arms";
 import {
   anthropicHeaders,
   type CaptureCase,
@@ -206,6 +261,9 @@ import {
   buildContext,
   type ContextRecord,
   cacheKey,
+  DAEMON_IMAGE_ITEM,
+  daemonCommit,
+  installedCopies,
   LOCAL_SKILL_REPO,
   type RepoSource,
   readFrontmatter,
@@ -217,25 +275,33 @@ import {
 import {
   BudgetSpent,
   type ContentBlock,
-  freshIdentity,
   type Gateway,
   type MessagesBody,
   PRICES,
-  type Reply,
   type RequestBody,
+  type Spent,
   SpentRecord,
   type ToolCall,
   toolCalls,
+  usdOf,
 } from "./gateway";
 import { newSeed } from "./judge";
 import { type RecordedRequest, startRecorder } from "./recorder";
-import { sendOrder } from "./replay";
+import {
+  MAX_SKILL_ROUNDS,
+  ReadsPastLastRound,
+  type Replayed,
+  replayOnce,
+  type SkillRead,
+  sendOrder,
+} from "./replay";
 import {
   descriptionFault,
   LISTING_MEASURE_ITEM,
   type ListingStanding,
   LOAD_RUNS,
   listingStanding,
+  MAX_EXTRA_RUNS,
   MAX_LISTING_MISSING_PERCENT,
   NEAR_MISS_MAX_LOADS,
   NEED_MIN_LOADS,
@@ -367,13 +433,50 @@ type ClaudePlacement =
   | { readonly skill: string; readonly as: "checkout"; readonly path: string }
   | { readonly skill: string; readonly as: "left out"; readonly reason: string };
 
-/** One run of one task: whether the first assistant message the gateway gave for the task's body
- *  loaded the skill and by which call, the names of its tool calls in order, its stop reason, the
- *  request id, what it used, what the host lists for the skill (Oh My Pi's hint, or Claude Code's
- *  listed description), the profile file of its task's context with the SHA-256 of its bytes,
- *  the session id it went with (its own: `metadata.user_id`, or a Responses body's
- *  `prompt_cache_key`), and the seed of the send order of its profile's tasks and its place in
- *  that order (from 0). */
+/** One tool call of a reply: its name, and its target (an Oh My Pi `read`'s path, a Claude Code
+ *  `Skill` call's skill, a `Read`'s path), or null for any other call. */
+const ReplyCall = z.strictObject({ name: z.string(), target: z.string().nullable() });
+
+/** One reply of a run (see the file's header): its tool calls in order; the answers the runner
+ *  made to its reads (replay.ts's AnsweredRead: the skill, the file inside its directory, `skill`
+ *  for a `skill://` read or `path` for a read by path, where the answer came from, and whether it
+ *  is an error), null when it holds no tool call or one that reads no skill file; and what it
+ *  used. Every reply but a run's last went back with its answers. */
+const ReplyRecord = z.strictObject({
+  calls: z.array(ReplyCall),
+  answers: z
+    .array(
+      z.strictObject({
+        skill: z.string(),
+        file: z.string(),
+        by: z.enum(["skill", "path"]),
+        from: z.enum(["arm", "copy", "absent"]),
+        isError: z.boolean(),
+      })
+    )
+    .nullable(),
+  usage: SpentRecord,
+});
+type ReplyRecord = z.infer<typeof ReplyRecord>;
+
+/** What a run came to (see the file's header): `loaded` and `not loaded` runs are judged; for a
+ *  run `sent by` another skill or one whose replies read past the last round, the task runs
+ *  again. */
+export const RunOutcome = z.enum(["loaded", "not loaded", "sent by", "reads past last round"]);
+export type RunOutcome = z.infer<typeof RunOutcome>;
+
+/** What a run does with a reply whose every tool call reads a skill file: on Oh My Pi it answers
+ *  it (`answered`), at most MAX_SKILL_ROUNDS times; on Claude Code it ends at its first message
+ *  (`first message`), since the runner does not rebuild Claude Code's result of a read. */
+const SkillReads = z.enum(["answered", "first message"]);
+
+/** One run of one task: what it came to, the call that loaded the skill (null unless it loaded
+ *  it), the skill whose answered text named the tested one (null unless it was sent by one), how
+ *  it took skill reads, each reply (ReplyRecord), the last reply's stop reason and request id,
+ *  what the host lists for the skill (Oh My Pi's hint, or Claude Code's listed description), the
+ *  profile file of its task's context with the SHA-256 of its bytes, the session id each of its
+ *  requests went with (its own: `metadata.user_id`, or a Responses body's `prompt_cache_key`),
+ *  and the seed of the send order it went in and its place in that order (from 0). */
 export const LoadRun = z.strictObject({
   task: z.string().min(1),
   run: z.int().positive(),
@@ -381,12 +484,13 @@ export const LoadRun = z.strictObject({
   source: TaskSource,
   host: Host,
   name: z.string().min(1),
-  loaded: z.boolean(),
+  outcome: RunOutcome,
   loadedBy: z.string().nullable(),
-  toolCalls: z.array(z.string()),
+  sentBy: z.string().nullable(),
+  skillReads: SkillReads,
+  replies: z.array(ReplyRecord).min(1),
   stopReason: z.string().nullable(),
   requestId: z.string().nullable(),
-  usage: SpentRecord,
   listed: z.string(),
   profile: z.string().min(1),
   profileDigest: Sha256,
@@ -396,29 +500,84 @@ export const LoadRun = z.strictObject({
 });
 export type LoadRun = z.infer<typeof LoadRun>;
 
+/** What one run came to, as `loadRun` gives it: the fields of its LoadRun that its replies
+ *  give. */
+type RunDone = Pick<
+  LoadRun,
+  | "outcome"
+  | "loadedBy"
+  | "sentBy"
+  | "skillReads"
+  | "replies"
+  | "stopReason"
+  | "requestId"
+  | "userId"
+>;
+
+/** A run of task `task` that failed after one or more of its requests had their replies: why it
+ *  failed, and what each of those replies used. Its run file keeps no line of it, since it came to
+ *  no outcome and is made again; `runs/<task id>.failed.jsonl` does (`loadFailedRunFile`), so
+ *  that the task's and the test's spend count what it used. */
+export const FailedRun = z.strictObject({
+  task: z.string().min(1),
+  error: z.string(),
+  usage: z.array(SpentRecord).min(1),
+});
+export type FailedRun = z.infer<typeof FailedRun>;
+
+/** What `loadRun` rejects with when a send of its run fails: the send's error (`cause`), and what
+ *  the run's replies before it used, as replay.ts's ReadsPastLastRound keeps a run's spend. */
+class RunFailed extends Error {
+  constructor(
+    cause: unknown,
+    readonly usage: readonly Spent[]
+  ) {
+    super(messageFor(cause), { cause });
+  }
+}
+
 /** The skill a load test looks for in a reply: its name, and for Claude Code its plugin. */
 export interface TestedSkill {
   readonly name: string;
   readonly plugin?: string;
 }
 
-/** What the first assistant message of a run did: whether it loaded the skill, the call that did
- *  (`read skill://…`, `Skill <plugin>:<name>`, `Read <path>`), and its tool calls' names. */
-interface FirstMessage {
+/** What an assistant message did: whether it loaded the skill, the call that did (`read
+ *  skill://…`, `Skill <plugin>:<name>`, `Read <path>`), and its tool calls' names. */
+interface MessageLoad {
   readonly loaded: boolean;
   readonly loadedBy: string | null;
   readonly toolCalls: readonly string[];
 }
 
-/** One task's runs so far: how many were made, how many loaded the skill and which, whether it
- *  has the runs the test asks for, and its verdict (score.ts's `taskFault`), null until it has
- *  them or when they are not LOAD_RUNS. */
+/** One task's runs so far: how many were made and judged, how many loaded the skill and which,
+ *  how many each skill sent and how many read past the last round, how many were made beyond
+ *  the runs the test asks for, how many to start now, whether it has its judged runs, why it
+ *  gives no description evidence (null unless it lacks its judged runs after its extra runs), and
+ *  its verdict (score.ts's `taskFault`), null until it has them or when they are not LOAD_RUNS. */
 interface TaskOutcome {
   readonly made: number;
+  readonly judged: number;
   readonly loads: number;
   readonly loadedRuns: readonly number[];
+  readonly sentBy: Readonly<Record<string, number>>;
+  readonly readsPastLastRound: number;
+  readonly extraRuns: number;
+  readonly toStart: number;
   readonly complete: boolean;
+  readonly noEvidence: string | null;
   readonly fault: boolean | null;
+}
+
+/** One task's dollars so far at list price: its runs', how many runs failed after some of their
+ *  requests had replies (FailedRun) and what those replies used, its capture's hints', and all of
+ *  them. */
+interface TaskSpend {
+  readonly runsUsd: number;
+  readonly failedRuns: number;
+  readonly failedRunsUsd: number;
+  readonly hintsUsd: number;
+  readonly usd: number;
 }
 
 /** The skill's verdict: a description fault (score.ts's `descriptionFault`), none, or no verdict
@@ -503,21 +662,15 @@ function tookFromRecorded(evidence: readonly z.infer<typeof EvidenceItem>[] | un
   return (TakenRead.safeParse(raw).data?.fromRecorded?.length ?? 0) > 0;
 }
 
-/** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`), as
- *  the tasks file's summary gives it: a session task's own profile's, a written task's context
- *  session's; and the tasks whose measure marks names their profile took from the recorded
- *  listing (`tookFromRecorded`). With no summary beside the tasks file, each task is not
- *  measurable. Throws a refusal when the summary is not JSON or no build-tasks summary. */
-function taskListings(
+/** Each task's profile evidence, as the tasks file's summary gives it: a session task's own
+ *  profile's, a written task's context session's; undefined with no summary beside the tasks file.
+ *  Throws a refusal when the summary is not JSON or no build-tasks summary. */
+function summaryEvidence(
   tasksFile: string,
   tasks: readonly Task[]
-): { readonly standings: Map<string, ListingStanding>; readonly taken: Set<string> } {
+): Map<string, readonly z.infer<typeof EvidenceItem>[] | undefined> | undefined {
   const file = `${tasksFile}.summary.json`;
-  if (!existsSync(file)) {
-    const why = `the tasks file has no build-tasks summary (${file}) to give its listing measure`;
-    const standing: ListingStanding = { state: "not measurable", why };
-    return { standings: new Map(tasks.map((task) => [task.id, standing])), taken: new Set() };
-  }
+  if (!existsSync(file)) return undefined;
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
@@ -530,11 +683,33 @@ function taskListings(
   }
   const profiles = summary.data.profiles;
   const noted = new Map((profiles?.tasks ?? []).map((note) => [note.task, note.evidence]));
-  const evidenceOf = (task: Task) =>
-    task.source === "written" ? profiles?.contextSession?.evidence : noted.get(task.id);
+  return new Map(
+    tasks.map((task) => [
+      task.id,
+      task.source === "written" ? profiles?.contextSession?.evidence : noted.get(task.id),
+    ])
+  );
+}
+
+/** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`) in
+ *  `evidence`, the tasks file's summary's (`summaryEvidence`), and the tasks whose measure marks
+ *  names their profile took from the recorded listing (`tookFromRecorded`). With no summary
+ *  beside the tasks file, each task is not measurable. */
+function taskListings(
+  tasksFile: string,
+  tasks: readonly Task[],
+  evidence: ReadonlyMap<string, readonly z.infer<typeof EvidenceItem>[] | undefined> | undefined
+): { readonly standings: Map<string, ListingStanding>; readonly taken: Set<string> } {
+  if (evidence === undefined) {
+    const why = `the tasks file has no build-tasks summary (${tasksFile}.summary.json) to give its listing measure`;
+    const standing: ListingStanding = { state: "not measurable", why };
+    return { standings: new Map(tasks.map((task) => [task.id, standing])), taken: new Set() };
+  }
   return {
-    standings: new Map(tasks.map((task) => [task.id, listingStanding(evidenceOf(task))])),
-    taken: new Set(tasks.flatMap((task) => (tookFromRecorded(evidenceOf(task)) ? [task.id] : []))),
+    standings: new Map(tasks.map((task) => [task.id, listingStanding(evidence.get(task.id))])),
+    taken: new Set(
+      tasks.flatMap((task) => (tookFromRecorded(evidence.get(task.id)) ? [task.id] : []))
+    ),
   };
 }
 
@@ -778,39 +953,42 @@ function readsSkillFile(target: string, name: string): boolean {
   );
 }
 
+/** The string `key` of the tool call `call`'s input, or undefined. */
+function inputField(call: ToolCall, key: string): string | undefined {
+  const { input } = call;
+  const value = typeof input === "object" && input !== null ? Reflect.get(input, key) : null;
+  return typeof value === "string" ? value : undefined;
+}
+
+/** What the tool call `call` of a reply in `host` reads or names (ReplyCall's target): an Oh My
+ *  Pi `read`'s path, a Claude Code `Skill` call's skill, a `Read`'s path; undefined for any other
+ *  call. */
+function callTarget(host: Host, call: ToolCall): string | undefined {
+  if (host === "omp") return call.name === "read" ? inputField(call, "path") : undefined;
+  if (call.name === "Skill") return inputField(call, "skill") ?? inputField(call, "command");
+  return call.name === "Read" ? inputField(call, "file_path") : undefined;
+}
+
 /** How the tool call `call` of a reply loads `skill` in `host` (`read <path>`, `Skill <name>`,
  *  `Read <path>`), or undefined when it does not. */
 function loadingCall(host: Host, call: ToolCall, skill: TestedSkill): string | undefined {
-  const { input } = call;
-  const field = (key: string): string | undefined => {
-    const value = typeof input === "object" && input !== null ? Reflect.get(input, key) : null;
-    return typeof value === "string" ? value : undefined;
-  };
-  if (host === "omp") {
-    const target = call.name === "read" ? field("path") : undefined;
-    return target !== undefined && readsSkillFile(target, skill.name)
-      ? `read ${target}`
-      : undefined;
-  }
-  if (call.name === "Skill") {
-    const named = field("skill") ?? field("command");
+  const target = callTarget(host, call);
+  if (target === undefined) return undefined;
+  if (host === "claude" && call.name === "Skill") {
     const names = [skill.name];
     if (skill.plugin !== undefined) names.push(`${skill.plugin}:${skill.name}`);
-    return named !== undefined && names.includes(named.replace(/^\/+/, ""))
-      ? `Skill ${named}`
-      : undefined;
+    return names.includes(target.replace(/^\/+/, "")) ? `Skill ${target}` : undefined;
   }
-  const file = call.name === "Read" ? field("file_path") : undefined;
-  return file !== undefined && readsSkillFile(file, skill.name) ? `Read ${file}` : undefined;
+  return readsSkillFile(target, skill.name) ? `${call.name} ${target}` : undefined;
 }
 
-/** What the first assistant message of a run, the reply's `content` in either API, did with
- *  `skill` in `host` (see the file's header). */
+/** What an assistant message, a reply's `content` in either API, did with `skill` in `host` (see
+ *  the file's header): a session's first one for build.ts's control, each reply of a run here. */
 export function firstMessageLoad(
   host: Host,
   content: readonly ContentBlock[],
   skill: TestedSkill
-): FirstMessage {
+): MessageLoad {
   const calls = toolCalls(content);
   const loadedBy = calls.map((call) => loadingCall(host, call, skill)).find((how) => how) ?? null;
   return {
@@ -820,24 +998,72 @@ export function firstMessageLoad(
   };
 }
 
-/** The outcome of a task labelled `label` from its `runs`, of the `wanted` the test asks for. */
+/** Whether `text` names the skill `name` (the architect, 2026-11-22T18:59:51Z): it holds
+ *  `skill://<name>` or `/skill:<name>`, the name in backticks, or the name beside the word
+ *  "skill" ("the x skill", "skill x"). The name alone as a word does not, so that a name such as
+ *  `analyze` or `sdd` does not match ordinary prose. */
+export function namesSkill(text: string, name: string): boolean {
+  const own = literally(name).source;
+  // Not part of a longer name: no name character before it, and none after it but a full stop
+  // that ends a sentence.
+  const before = "(?<![A-Za-z0-9._-])";
+  const after = "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])";
+  return new RegExp(
+    [
+      `skill://${own}${after}`,
+      `/skill:${own}${after}`,
+      `\`${own}\``,
+      `\\b[Ss]kill[ \\t]+${own}${after}`,
+      `${before}${own}[ \\t]+[Ss]kill\\b`,
+    ].join("|")
+  ).test(text);
+}
+
+/** The outcome of a task labelled `label` from its `runs`, of the `wanted` judged runs the test
+ *  asks for (see the file's header): a run that is not judged makes the task run again, at most
+ *  MAX_EXTRA_RUNS times beyond `wanted`. A task that lacks its judged runs once those are made
+ *  gives no description evidence, and `noEvidence` says why, with the counts. */
 export function taskOutcome(
   label: TaskLabel,
   runs: readonly LoadRun[],
   wanted: number
 ): TaskOutcome {
-  const loadedRuns = runs.filter((run) => run.loaded).map((run) => run.run);
-  const complete = runs.length >= wanted;
+  const judged = runs.filter((run) => run.outcome === "loaded" || run.outcome === "not loaded");
+  const loadedRuns = runs.filter((run) => run.outcome === "loaded").map((run) => run.run);
+  const senders = new Map<string, number>();
+  for (const { sentBy } of runs) {
+    if (sentBy !== null) senders.set(sentBy, (senders.get(sentBy) ?? 0) + 1);
+  }
+  const readsPastLastRound = runs.filter((run) => run.outcome === "reads past last round").length;
+  const lacking = wanted - judged.length;
+  const left = wanted + MAX_EXTRA_RUNS - runs.length;
+  const complete = lacking <= 0;
+  const of = `of ${runs.length} runs`;
+  const why = [
+    ...[...senders].map(([skill, count]) => `sent by ${skill} in ${count} ${of}`),
+    ...(readsPastLastRound > 0 ? [`reads past the last round in ${readsPastLastRound} ${of}`] : []),
+  ];
   return {
     made: runs.length,
+    judged: judged.length,
     loads: loadedRuns.length,
     loadedRuns,
+    sentBy: Object.fromEntries(senders),
+    readsPastLastRound,
+    extraRuns: Math.max(0, runs.length - wanted),
+    toStart: complete ? 0 : Math.max(0, Math.min(lacking, left)),
     complete,
+    noEvidence:
+      complete || left > 0
+        ? null
+        : `${judged.length} of ${wanted} judged runs after ${MAX_EXTRA_RUNS} extra runs: ${why.join("; ")}`,
     fault: complete && wanted === LOAD_RUNS ? taskFault({ label, loads: loadedRuns.length }) : null,
   };
 }
 
-/** The skill's verdict from its tasks' outcomes, of `wanted` runs a task. */
+/** The skill's verdict from its tasks' outcomes, of `wanted` judged runs a task: none yet while a
+ *  task can still make runs; else from the tasks that have their judged runs, a task that gives no
+ *  description evidence left out and named, and none when no task gives any. */
 export function skillOutcome(
   tasks: readonly {
     readonly id: string;
@@ -846,7 +1072,9 @@ export function skillOutcome(
   }[],
   wanted: number
 ): LoadVerdict {
-  const lacking = tasks.filter((task) => !task.outcome.complete).map((task) => task.id);
+  const lacking = tasks
+    .filter((task) => !task.outcome.complete && task.outcome.noEvidence === null)
+    .map((task) => task.id);
   if (lacking.length > 0) {
     return {
       descriptionFault: null,
@@ -859,15 +1087,26 @@ export function skillOutcome(
       reason: `no verdict: the load test's rule takes ${LOAD_RUNS} runs a task, and this test runs ${wanted}`,
     };
   }
+  const evidence = tasks.filter((task) => task.outcome.complete);
+  const without = tasks.filter((task) => !task.outcome.complete).map((task) => task.id);
+  const lack = `lack their ${wanted} judged runs after ${MAX_EXTRA_RUNS} extra runs`;
+  if (evidence.length === 0) {
+    return {
+      descriptionFault: null,
+      reason: `no verdict: no task gives description evidence (tasks ${without.join(", ")} ${lack})`,
+    };
+  }
   const fault = descriptionFault(
-    tasks.map((task) => ({ label: task.label, loads: task.outcome.loads }))
+    evidence.map((task) => ({ label: task.label, loads: task.outcome.loads }))
   );
-  const faulty = tasks.filter((task) => task.outcome.fault).map((task) => task.id);
+  const faulty = evidence.filter((task) => task.outcome.fault).map((task) => task.id);
+  const left =
+    without.length === 0
+      ? ""
+      : `; tasks ${without.join(", ")} give no description evidence: they ${lack}`;
   return {
     descriptionFault: fault,
-    reason: fault
-      ? `a description fault: tasks ${faulty.join(", ")}`
-      : `no description fault in ${tasks.length} tasks`,
+    reason: `${fault ? `a description fault: tasks ${faulty.join(", ")}` : `no description fault in ${evidence.length} tasks`}${left}`,
   };
 }
 
@@ -1048,6 +1287,11 @@ export function loadRunFile(out: string, taskId: string): string {
   return path.join(out, "runs", `${encodeURIComponent(taskId)}.jsonl`);
 }
 
+/** The file of task `taskId`'s failed runs under `out` (FailedRun). */
+export function loadFailedRunFile(out: string, taskId: string): string {
+  return path.join(out, "runs", `${encodeURIComponent(taskId)}.failed.jsonl`);
+}
+
 /** What a Claude Code capture used and saw. */
 interface ClaudeCaptureRecord {
   readonly task: string;
@@ -1082,14 +1326,18 @@ interface ClaudeCaptureRecord {
   readonly harness: HarnessRecord;
 }
 
-/** A task's captured body, the headers it goes with, what the host lists for the skill, and the
+/** A task's captured body, the headers it goes with, what the host lists for the skill, the
  *  milliseconds its context build took (0 when the capture was read back, or the context was
- *  built for an earlier task). */
+ *  built for an earlier task), the arm its runs answer the tested skill's reads from, and the
+ *  installed copies of its profile's other skills, which they answer a read of one from
+ *  (context.ts's `installedCopies`; none on Claude Code, whose runs answer no read). */
 interface Captured {
   readonly body: RequestBody;
   readonly headers: Readonly<Record<string, string>>;
   readonly listed: string;
   readonly contextMs: number;
+  readonly arm: Arm;
+  readonly copies: readonly SkillCopy[];
 }
 
 /** The scratch Claude Code home of one test: the environment each run gets, the working
@@ -1126,12 +1374,11 @@ interface TaskPhases {
   writeMs: number;
 }
 
-/** A task whose capture is made, ready for its runs: the task, its profile, its runs saved so
- *  far, its capture, and its capture's phases. */
+/** A task whose capture is made, ready for its runs: the task, its profile, its capture, and its
+ *  capture's phases. */
 interface ReadyTask {
   readonly task: Task;
   readonly profile: TaskProfile;
-  readonly saved: readonly LoadRun[];
   readonly captured: Captured;
   readonly captureMs: number;
   readonly github: { readonly calls: number; readonly ms: number };
@@ -1209,6 +1456,11 @@ interface LoadResult {
  *  it holds runs that went with their capture's one id, task after task, so it is refused. */
 const SENDS = "each run its own session id; a profile's tasks interleaved in one seeded order";
 
+/** How a test's runs take skill reads, as its settings record it (see the file's header). An
+ *  `--out` whose settings do not record it holds runs that stopped at their first message, so it
+ *  is refused. */
+const SKILL_READS = `Oh My Pi answers a reply that only reads skill files, at most ${MAX_SKILL_ROUNDS} rounds; a run sent by another skill or still reading after them runs again, at most ${MAX_EXTRA_RUNS} extra runs a task`;
+
 /** The settings of a test that an `--out` holds: a test of other settings is refused there. */
 interface Settings {
   readonly skillText: string;
@@ -1220,6 +1472,7 @@ interface Settings {
   readonly runs: number;
   readonly hintModel: string | null;
   readonly sends: typeof SENDS;
+  readonly skillReads: typeof SKILL_READS;
 }
 
 /** A test's summary, as `summary.json` holds it. Only what a later command checks is read back:
@@ -1235,6 +1488,54 @@ const SavedSummary = z.looseObject({
     })
   ),
 });
+
+/** The role prompt a saved capture's record says its context composed (context.ts's
+ *  ContextRecord `rolePrompt`, in capture.ts's record and in the Claude Code one): the plugin
+ *  repository and the commit Compose ran at, and whether that was the daemon image's commit. A
+ *  record made before `commitOf` was recorded composed it at the plugin's commit. A record whose
+ *  context composed none (no Legion role, or the case's own text) does not parse. */
+const SavedRolePrompt = z.looseObject({
+  context: z.looseObject({
+    rolePrompt: z.looseObject({
+      repo: z.string(),
+      commit: z.string(),
+      commitOf: z.enum(["daemon image", "plugin"]).default("plugin"),
+    }),
+  }),
+});
+
+/** Why the capture whose record is `record` is not the capture of a task whose evidence's daemon
+ *  image items are `evidence`: its context composed the role prompt at another commit than that
+ *  evidence names for the repository it composed it from (context.ts's `daemonCommit`; the
+ *  plugin's commit where it names none). Undefined when it is, when no record is saved there, and
+ *  when its context composed no role prompt. */
+function rolePromptFault(
+  record: string,
+  evidence: readonly z.infer<typeof EvidenceItem>[]
+): string | undefined {
+  if (!existsSync(record)) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(record, "utf8"));
+  } catch {
+    // The read back fails it, saying why (capture.ts's `savedCapture`).
+    return undefined;
+  }
+  const made = SavedRolePrompt.safeParse(raw).data?.context.rolePrompt;
+  if (made === undefined) return undefined;
+  const madeAt = made.commitOf === "daemon image" ? made.commit : undefined;
+  const wanted = daemonCommit({ evidence }, made.repo);
+  if (madeAt === wanted) return undefined;
+  const was =
+    madeAt === undefined
+      ? `at the plugin's commit ${made.commit} of ${made.repo}`
+      : `at ${madeAt}, the daemon image's commit of ${made.repo}`;
+  const now =
+    wanted === undefined
+      ? `names no daemon image commit of ${made.repo}, so its role prompt is composed at the plugin's commit`
+      : `names ${wanted} as the daemon image's commit of ${made.repo}`;
+  return `capture's role prompt was composed ${was} (${record}), and its evidence in the tasks file's summary now ${now}`;
+}
 
 /** Runs `argv` to its end with `env` and returns its standard output; throws, naming it and its
  *  last output lines, when it fails. */
@@ -1262,8 +1563,8 @@ function hintUsd(record: CaptureRecord): number {
   }, 0);
 }
 
-/** One load test, as `runLoad` runs it: its options, settings, scratch root and the tested
- *  skill's directory. */
+/** One load test, as `runLoad` runs it: its options, settings, scratch root, the tested skill's
+ *  directory, and each task's daemon image item of its summary evidence, which its capture reads. */
 class LoadTest {
   /** Claude Code's scratch home of each profile, by the SHA-256 of the profile's file. */
   private readonly claudeSetups = new Map<string, Promise<ClaudeSetup>>();
@@ -1272,7 +1573,8 @@ class LoadTest {
     readonly o: LoadOptions,
     readonly settings: Settings,
     readonly root: string,
-    readonly skillDir: string
+    readonly skillDir: string,
+    readonly daemonImages: ReadonlyMap<string, readonly z.infer<typeof EvidenceItem>[]>
   ) {}
 
   say(line: string): void {
@@ -1286,8 +1588,14 @@ class LoadTest {
    *  another name lists it under that name (`renamedListingBlocks`), as the scratch copy's
    *  frontmatter and directory name it. The tested skill's entry names the local directory under
    *  context.ts's LOCAL_SKILL_REPO: context.ts installs an arm's own skill from `skillDir` and
-   *  reads no repository for it. */
-  caseOf(id: string, text: string, profile: LoadProfile): { c: CaptureCase; arm: Arm } {
+   *  reads no repository for it. The case's evidence is `evidence`: a Legion task's daemon image
+   *  item, at whose commit context.ts composes its role prompt. */
+  caseOf(
+    id: string,
+    text: string,
+    profile: LoadProfile,
+    evidence: readonly z.infer<typeof EvidenceItem>[] = []
+  ): { c: CaptureCase; arm: Arm } {
     const { name, renamedFrom, model, thinking } = this.settings;
     const ownName = renamedFrom ?? name;
     const own: ProfileSkill = {
@@ -1331,6 +1639,7 @@ class LoadTest {
         context,
         profile: caseProfile,
         sessionDigest: null,
+        ...(evidence.length === 0 ? {} : { evidence: [...evidence] }),
       },
       arm: {
         name: ARM,
@@ -1399,7 +1708,12 @@ class LoadTest {
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     const { models } = this.o;
-    const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
+    const { c, arm } = this.caseOf(
+      task.id,
+      task.text,
+      profile.profile,
+      this.daemonImages.get(task.id)
+    );
     let capture = savedCapture(files, arm);
     if (capture === undefined && models !== undefined) {
       capture = await captureBody(c, arm, {
@@ -1428,6 +1742,8 @@ class LoadTest {
       headers: capture.record.requestHeaders,
       listed,
       contextMs: capture.made ? capture.record.timings.contextMs : 0,
+      arm,
+      copies: installedCopies(capture.record.context, this.o.cacheDir),
     };
   }
 
@@ -1594,6 +1910,9 @@ class LoadTest {
    *  refused. */
   async claudeCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "claude", task.id);
+    // Its runs end at their first message (see the file's header): they answer no read, so they
+    // need no installed copies, and the arm is there for replay.ts's `replayOnce` alone.
+    const { arm } = this.caseOf(task.id, task.text, profile.profile);
     if (existsSync(files.body) && existsSync(files.record)) {
       const record = JSON.parse(readFileSync(files.record, "utf8")) as ClaudeCaptureRecord;
       if (!Object.hasOwn(record, "harness")) {
@@ -1606,6 +1925,8 @@ class LoadTest {
         headers: record.requestHeaders,
         listed: record.listed,
         contextMs: 0,
+        arm,
+        copies: [],
       };
     }
     const facts = await this.sessionOf(task, profile);
@@ -1727,6 +2048,8 @@ class LoadTest {
       headers: record.requestHeaders,
       listed,
       contextMs: setUpNow ? setup.contextMs : 0,
+      arm,
+      copies: [],
     };
   }
 
@@ -1759,46 +2082,118 @@ class LoadTest {
     return runs;
   }
 
-  /** The run of `task` numbered `run` that `reply` is, in the context of `profile`, as its run
-   *  file keeps it, with the session id it went with and its place in the send order of `seed`. */
-  runOf(
-    task: Task,
-    run: number,
-    reply: Reply,
-    listed: string,
-    profile: TaskProfile,
-    sent: { readonly userId: string | null; readonly seed: string; readonly place: number }
-  ): LoadRun {
-    const first = firstMessageLoad(this.o.host, reply.message.content, profile.tested);
+  /** The failed runs task `id` has saved (FailedRun). Throws a refusal when its file holds a line
+   *  that is not one of task `id`. */
+  savedFailedRuns(id: string): FailedRun[] {
+    const file = loadFailedRunFile(this.o.out, id);
+    if (!existsSync(file)) return [];
+    const failed: FailedRun[] = [];
+    for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+      if (line.trim() === "") continue;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        raw = undefined;
+      }
+      const parsed = FailedRun.safeParse(raw);
+      if (!parsed.success || parsed.data.task !== id) {
+        throw new Refused(`${file}:${index + 1} is not a failed run of task ${id}`);
+      }
+      failed.push(parsed.data);
+    }
+    return failed;
+  }
+
+  /**
+   * One run of `each`'s capture (see the file's header), sent through replay.ts's `replayOnce`:
+   * it ends at a reply that loads the skill, once the answer to a read of another skill names the
+   * skill, on Claude Code at its first reply, else as the replay ends a run. Gives what it came to
+   * and each of its replies. `firstSettled` is told once its first send has its reply or its
+   * failure. Rejects with RunFailed when a send does (the gateway's `BudgetSpent` among them),
+   * which carries what the run's earlier replies used.
+   */
+  async loadRun(each: ReadyTask, firstSettled: () => void): Promise<RunDone> {
+    const { host } = this.o;
+    const { tested } = each.profile;
+    // What each reply used, in the order the replies came, kept as each one comes so that a run
+    // that fails later still counts it.
+    const spent: Spent[] = [];
+    const gateway: Gateway = {
+      send: async (body, options) => {
+        const reply = await this.o.gateway.send(body, options);
+        spent.push(reply.spent);
+        return reply;
+      },
+      spend: () => this.o.gateway.spend(),
+    };
+    const seen: Omit<ReplyRecord, "usage">[] = [];
+    let ended: { readonly outcome: "loaded" | "sent by"; readonly by: string } | undefined;
+    const endsAt = (
+      content: readonly ContentBlock[],
+      round: readonly SkillRead[] | undefined
+    ): boolean => {
+      const load = firstMessageLoad(host, content, tested);
+      seen.push({
+        calls: toolCalls(content).map((call) => ({
+          name: call.name ?? "",
+          target: callTarget(host, call) ?? null,
+        })),
+        // AnsweredRead's fields, as ReplyRecord keeps them.
+        answers:
+          round?.map(({ read: { skill, file, by, from, isError } }) => ({
+            skill,
+            file,
+            by,
+            from,
+            isError,
+          })) ?? null,
+      });
+      if (load.loadedBy !== null) {
+        ended = { outcome: "loaded", by: load.loadedBy };
+        return true;
+      }
+      if (host === "claude") return true;
+      const sender = round?.find(
+        ({ read, text }) =>
+          read.skill !== tested.name &&
+          !read.isError &&
+          namesSkill(stripSkillHeader(text), tested.name)
+      );
+      if (sender === undefined) return false;
+      ended = { outcome: "sent by", by: sender.read.skill };
+      return true;
+    };
+    const { body, headers, arm, copies } = each.captured;
+    let replayed: Replayed;
+    let past = false;
+    try {
+      replayed = await replayOnce(body, arm, gateway, { headers, copies, endsAt }, firstSettled);
+    } catch (error) {
+      if (!(error instanceof ReadsPastLastRound)) throw new RunFailed(error, spent);
+      replayed = error.replayed;
+      past = true;
+    }
+    const replies = seen.map((reply, index) => {
+      const usage = spent[index];
+      if (usage === undefined) throw new Error(`the gateway gave no spend of reply ${index + 1}`);
+      return { ...reply, usage: { ...usage } };
+    });
     return {
-      task: task.id,
-      run,
-      label: task.label,
-      source: task.source,
-      host: this.o.host,
-      name: profile.tested.name,
-      loaded: first.loaded,
-      loadedBy: first.loadedBy,
-      toolCalls: [...first.toolCalls],
-      stopReason: reply.message.stop_reason,
-      requestId: reply.requestId ?? null,
-      usage: { ...reply.spent },
-      listed,
-      profile: profile.file,
-      profileDigest: profile.digest,
-      userId: sent.userId,
-      sendSeed: sent.seed,
-      sendPlace: sent.place,
+      outcome: ended?.outcome ?? (past ? "reads past last round" : "not loaded"),
+      loadedBy: ended?.outcome === "loaded" ? ended.by : null,
+      sentBy: ended?.outcome === "sent by" ? ended.by : null,
+      skillReads: host === "omp" ? "answered" : "first message",
+      replies,
+      stopReason: replayed.step.message.stop_reason,
+      requestId: replayed.step.requestId ?? null,
+      userId: replayed.userId,
     };
   }
 
-  /** Task `task`'s capture in the context of `profile` (made, or read back), ready for the runs
-   *  it lacks beside `saved`, with the time it took and the GitHub reads made in it. */
-  async captureTask(
-    task: Task,
-    profile: TaskProfile,
-    saved: readonly LoadRun[]
-  ): Promise<ReadyTask> {
+  /** Task `task`'s capture in the context of `profile` (made, or read back), ready for its runs,
+   *  with the time it took and the GitHub reads made in it. */
+  async captureTask(task: Task, profile: TaskProfile): Promise<ReadyTask> {
     const readsBefore = this.o.source.reads?.() ?? { calls: 0, ms: 0 };
     const started = performance.now();
     const captured =
@@ -1809,7 +2204,6 @@ class LoadTest {
     return {
       task,
       profile,
-      saved,
       captured,
       captureMs: performance.now() - started,
       github: { calls: readsAfter.calls - readsBefore.calls, ms: readsAfter.ms - readsBefore.ms },
@@ -1817,77 +2211,104 @@ class LoadTest {
   }
 
   /**
-   * The runs the tasks of `ready` (one profile's) lack, sent in one order, replay.ts's
-   * `sendOrder` under a fresh seed, never one task's batch after another's; each run with a
-   * session id of its own when its capture's body names one (gateway.ts's `freshIdentity`), its
-   * body otherwise its capture's. The runs start in that order, all at once but for one wait: the
-   * first run of each task in the order goes alone among its task's, the next send in the order
-   * starting only once it has its reply or has failed, so that the prefix it wrote to the cache
-   * serves its task's later runs; the waits change no place of the order. Gives each task's runs,
-   * its saved ones first and the new ones in the order sent, each run that failed, whether the
+   * `count` runs of each task of `batch` (one profile's tasks), each after the runs it `made`,
+   * sent in one order, replay.ts's `sendOrder` under a fresh seed, never one task's batch after
+   * another's; each run is `loadRun`'s. The runs start in that order, all at once but for one
+   * wait: the first run of each task in the order goes alone among its task's, the next run in the
+   * order starting only once its first send has its reply or has failed, so that the prefix it
+   * wrote to the cache serves its task's later runs; the waits change no place of the order.
+   * Gives each task's runs, those it made first and the new ones in the order sent; its failed
+   * runs, those it had (`failed`) first and then each new run that failed after one or more of its
+   * requests had their replies, the budget's refusal among them; each run that failed, whether the
    * budget refused one, the seed and the time.
    */
-  async sendRuns(ready: readonly ReadyTask[]): Promise<{
+  async sendRuns(
+    batch: readonly {
+      readonly each: ReadyTask;
+      readonly made: readonly LoadRun[];
+      readonly failed: readonly FailedRun[];
+      readonly count: number;
+    }[]
+  ): Promise<{
     readonly runs: ReadonlyMap<string, LoadRun[]>;
+    readonly failed: ReadonlyMap<string, FailedRun[]>;
     readonly failures: string[];
     readonly budgetSpent: boolean;
     readonly seed: string;
     readonly runsMs: number;
   }> {
     const seed = newSeed();
-    const byId = new Map(ready.map((each) => [each.task.id, each]));
+    const byId = new Map(batch.map((entry) => [entry.each.task.id, entry.each]));
     const order = sendOrder(
-      ready.map((each) => ({ key: each.task.id, runs: this.settings.runs - each.saved.length })),
+      batch.map(({ each, count }) => ({ key: each.task.id, runs: count })),
       seed
     );
     const started = new Set<string>();
-    const sends: { id: string; place: number; userId: string | null; reply: Promise<Reply> }[] = [];
+    const sends: { id: string; place: number; run: Promise<RunDone> }[] = [];
     const runsStarted = performance.now();
     for (const [place, { key }] of order.entries()) {
       const each = byId.get(key);
       if (each === undefined) throw new Error(`no task ${key}`);
-      const own = freshIdentity(each.captured.body);
-      const reply = this.o.gateway.send(own.body, { headers: each.captured.headers });
+      const first = Promise.withResolvers<void>();
+      const run = this.loadRun(each, first.resolve);
       // Its outcome is read once every run has started; until then a failure is held, not thrown.
-      const settledOne = reply.then(
+      const settledRun = run.then(
         () => undefined,
         () => undefined
       );
-      sends.push({ id: key, place, userId: own.id, reply });
+      sends.push({ id: key, place, run });
       if (!started.has(key)) {
         started.add(key);
-        await settledOne;
+        // A run that fails before its first send has settled too.
+        await Promise.race([first.promise, settledRun]);
       }
     }
-    const settled = await Promise.allSettled(sends.map((send) => send.reply));
+    const settled = await Promise.allSettled(sends.map((send) => send.run));
     const runsMs = performance.now() - runsStarted;
-    const runs = new Map(ready.map((each) => [each.task.id, [...each.saved]]));
+    const runs = new Map(batch.map(({ each, made }) => [each.task.id, [...made]]));
+    const failed = new Map(batch.map((entry) => [entry.each.task.id, [...entry.failed]]));
     const failures: string[] = [];
     let budgetSpent = false;
-    for (const [index, { id, place, userId }] of sends.entries()) {
+    for (const [index, { id, place }] of sends.entries()) {
       const outcome = settled[index];
       const each = byId.get(id);
       const made = runs.get(id);
       if (outcome === undefined || each === undefined || made === undefined) continue;
       if (outcome.status === "fulfilled") {
-        made.push(
-          this.runOf(
-            each.task,
-            made.length + 1,
-            outcome.value,
-            each.captured.listed,
-            each.profile,
-            {
-              userId,
-              seed,
-              place,
-            }
-          )
-        );
-      } else if (outcome.reason instanceof BudgetSpent) budgetSpent = true;
-      else failures.push(`task ${id}: a run failed: ${messageFor(outcome.reason)}`);
+        const done = outcome.value;
+        made.push({
+          task: each.task.id,
+          run: made.length + 1,
+          label: each.task.label,
+          source: each.task.source,
+          host: this.o.host,
+          name: each.profile.tested.name,
+          outcome: done.outcome,
+          loadedBy: done.loadedBy,
+          sentBy: done.sentBy,
+          skillReads: done.skillReads,
+          replies: done.replies,
+          stopReason: done.stopReason,
+          requestId: done.requestId,
+          listed: each.captured.listed,
+          profile: each.profile.file,
+          profileDigest: each.profile.digest,
+          userId: done.userId,
+          sendSeed: seed,
+          sendPlace: place,
+        });
+      } else {
+        const { reason } = outcome;
+        const cause = reason instanceof RunFailed ? reason.cause : reason;
+        const usage = reason instanceof RunFailed ? reason.usage : [];
+        if (usage.length > 0) {
+          failed.get(id)?.push({ task: id, error: messageFor(cause), usage: [...usage] });
+        }
+        if (cause instanceof BudgetSpent) budgetSpent = true;
+        else failures.push(`task ${id}: a run failed: ${messageFor(cause)}`);
+      }
     }
-    return { runs, failures, budgetSpent, seed, runsMs };
+    return { runs, failed, failures, budgetSpent, seed, runsMs };
   }
 }
 
@@ -1902,8 +2323,9 @@ function phaseWords(phases: TaskPhases, totalMs: number): string {
 
 /** Task `task`'s verdict in words. */
 function verdictWords(task: Task, outcome: TaskOutcome, wanted: number): string {
+  if (outcome.noEvidence !== null) return `no description evidence: ${outcome.noEvidence}`;
   if (!outcome.complete) {
-    return `${outcome.made} of ${wanted} runs made; run the command again for the rest`;
+    return `${outcome.judged} of ${wanted} judged runs made; run the command again for the rest`;
   }
   if (outcome.fault === null)
     return `no verdict: the load test's rule takes ${LOAD_RUNS} runs a task`;
@@ -1911,6 +2333,34 @@ function verdictWords(task: Task, outcome: TaskOutcome, wanted: number): string 
   return task.label === "need"
     ? `a fault: a need task loads it in fewer than ${NEED_MIN_LOADS} of ${LOAD_RUNS} runs`
     : `a fault: a near-miss task loads it in more than ${NEAR_MISS_MAX_LOADS} of ${LOAD_RUNS} runs`;
+}
+
+/** A task's counts in words (TaskOutcome): its loads among its judged runs, and what each of
+ *  `runs` came to when they are given; its runs each other skill sent, its runs that read past
+ *  the last round, and its extra runs. */
+function countWords(outcome: TaskOutcome, runs?: readonly LoadRun[]): string {
+  const senders = Object.entries(outcome.sentBy);
+  const sent = senders.reduce((sum, [, count]) => sum + count, 0);
+  const bySkill =
+    senders.length === 0
+      ? ""
+      : ` (${senders.map(([skill, count]) => `${skill} ${count}`).join(", ")})`;
+  const each = runs === undefined ? "" : ` (${runs.map(runWords).join(", ")})`;
+  return `loaded in ${outcome.loads} of ${outcome.judged} judged runs${each}; runs sent by another skill: ${sent}${bySkill}; runs that read past the last round: ${outcome.readsPastLastRound}; extra runs: ${outcome.extraRuns}`;
+}
+
+/** What run `run` came to, in words. */
+function runWords(run: LoadRun): string {
+  switch (run.outcome) {
+    case "loaded":
+      return `run ${run.run} loads`;
+    case "not loaded":
+      return `run ${run.run} does not`;
+    case "sent by":
+      return `run ${run.run} is sent by ${run.sentBy}`;
+    case "reads past last round":
+      return `run ${run.run} reads past the last round`;
+  }
 }
 
 /** Runs the load test `o` names (see the file's header). Throws a refusal before any model call
@@ -1962,7 +2412,17 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const injected = await injectedRefusal(profiled, o, own, name);
   if (injected !== undefined) throw new Refused(injected);
   // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
-  const { standings: listings, taken } = taskListings(o.tasksFile, tasks);
+  const evidence = summaryEvidence(o.tasksFile, tasks);
+  const { standings: listings, taken } = taskListings(o.tasksFile, tasks, evidence);
+  // Each task's daemon image item (context.ts's DAEMON_IMAGE_ITEM), which its capture reads, so
+  // a Legion task's role prompt is composed at its daemon image's commit, as a behaviour case's
+  // is. No other item of the evidence goes to the capture.
+  const daemonImages = new Map(
+    tasks.map((task) => [
+      task.id,
+      (evidence?.get(task.id) ?? []).filter((each) => each.item.startsWith(DAEMON_IMAGE_ITEM)),
+    ])
+  );
   const listingDrops = new Map(
     [...listings].flatMap(([id, standing]) =>
       standing.state === "dropped" ? [[id, standing.reason] as const] : []
@@ -2019,6 +2479,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     runs: o.runs,
     hintModel: o.host === "omp" ? (o.hintModel ?? null) : null,
     sends: SENDS,
+    skillReads: SKILL_READS,
   };
 
   const summaryFile = path.join(o.out, "summary.json");
@@ -2073,16 +2534,33 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     }
   }
 
+  // A Legion task's capture composed its role prompt at the commit its daemon image item named
+  // when it was made (context.ts); read back for evidence that names another, it would not be
+  // this task's capture.
+  for (const { task } of profiled) {
+    const fault = rolePromptFault(
+      loadCapturePaths(o.out, o.host, task.id).record,
+      daemonImages.get(task.id) ?? []
+    );
+    if (fault !== undefined) {
+      throw new Refused(
+        `${o.out} holds task ${task.id}, whose ${fault}: give the tasks file that summary again, or use another --out`
+      );
+    }
+  }
+
   const root = path.join(o.scratch, `load-${cacheKey(JSON.stringify(settings)).slice(0, 16)}`);
   const test = new LoadTest(
     o,
     settings,
     root,
-    settings.renamedFrom === null ? given : renamedSkill(given, name, path.join(root, "skill"))
+    settings.renamedFrom === null ? given : renamedSkill(given, name, path.join(root, "skill")),
+    daemonImages
   );
   const runsOf = new Map(
     profiled.map(({ task, profile }) => [task.id, test.savedRuns(task.id, profile)])
   );
+  const failedOf = new Map(tasks.map((task) => [task.id, test.savedFailedRuns(task.id)]));
   /** A task's outcome from the runs it has so far. */
   const outcomeOf = (task: Task): TaskOutcome =>
     taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs);
@@ -2097,10 +2575,28 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     hintDollars.set(task.id, hintUsd(JSON.parse(readFileSync(record, "utf8")) as CaptureRecord));
   };
   for (const task of tasks) readHintDollars(task);
+  /** Task `task`'s dollars so far at list price: its runs', its failed runs' (how many, and what
+   *  their replies used) and its capture's hints'. */
+  const spendOf = (task: Task): TaskSpend => {
+    const runsUsd = (runsOf.get(task.id) ?? []).reduce(
+      (sum, run) => sum + usdOf(run.replies.map((reply) => reply.usage)),
+      0
+    );
+    const failed = failedOf.get(task.id) ?? [];
+    const failedRunsUsd = failed.reduce((sum, run) => sum + usdOf(run.usage), 0);
+    const hintsUsd = hintDollars.get(task.id) ?? 0;
+    return {
+      runsUsd,
+      failedRuns: failed.length,
+      failedRunsUsd,
+      hintsUsd,
+      usd: runsUsd + failedRunsUsd + hintsUsd,
+    };
+  };
   /** Writes the summary as the runs stand; returns the skill's verdict and the test's dollars so
-   *  far at list price, its runs' and its hints'. The verdict leaves out each task the listing
-   *  rule dropped, and is made with and without the tasks whose listing was not measured
-   *  (`listedOutcome`), both in the summary. */
+   *  far at list price: its runs', its failed runs' and its hints'. The verdict leaves out each
+   *  task the listing rule dropped, and is made with and without the tasks whose listing was not
+   *  measured (`listedOutcome`), both in the summary. */
   const writeSummary = (): { verdict: LoadVerdict; usd: number } => {
     const listed = listedOutcome(
       tasks.flatMap((task) =>
@@ -2119,9 +2615,15 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     );
     const verdict = listed.verdict;
     const runs = [...runsOf.values()].flat();
-    const runsUsd = runs.reduce((sum, run) => sum + run.usage.usd, 0);
-    let hintsUsd = 0;
-    for (const usd of hintDollars.values()) hintsUsd += usd;
+    const spends = tasks.map(spendOf);
+    const total = (field: "runsUsd" | "failedRunsUsd" | "hintsUsd" | "usd") =>
+      spends.reduce((sum, spend) => sum + spend[field], 0);
+    const spend = {
+      runsUsd: total("runsUsd"),
+      failedRunsUsd: total("failedRunsUsd"),
+      hintsUsd: total("hintsUsd"),
+      usd: total("usd"),
+    };
     writeWhole(
       summaryFile,
       json({
@@ -2141,6 +2643,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           profile: profile.file,
           profileDigest: profile.digest,
           ...outcomeOf(task),
+          spend: spendOf(task),
           dropped: dropped.get(task.id) ?? null,
           listing: listings.get(task.id) ?? null,
         })),
@@ -2151,13 +2654,13 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           withUnmeasured: listed.withUnmeasured,
           withoutUnmeasured: listed.withoutUnmeasured,
         },
-        spend: { runsUsd, hintsUsd, usd: runsUsd + hintsUsd },
+        spend,
         peakRssBytes: peak,
         requestLog: o.requestLog,
         updatedAt: new Date().toISOString(),
       })
     );
-    return { verdict, usd: runsUsd + hintsUsd };
+    return { verdict, usd: spend.usd };
   };
   writeSummary();
   if (listingDrops.size * 2 > tasks.length) {
@@ -2199,7 +2702,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const what = (task: Task) =>
     `task ${task.id} (${task.label}, ${task.source === "session" ? "from a session" : "written"})`;
   // Each profile's tasks are captured one by one, then the runs they lack are sent together in
-  // one seeded order (`sendRuns`), so no task's runs go as a batch of their own.
+  // one seeded order (`sendRuns`), so no task's runs go as a batch of their own; then the runs
+  // again for the runs that are not judged, in an order of their own, until each task has its
+  // judged runs or has used its extra runs.
   for (const group of byFile.values()) {
     // Each task's own capture step: its capture, and the read of its hint dollars after it. Its
     // line's total is that, its group's runs and its writes, so no other task's capture is in it.
@@ -2207,7 +2712,6 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     const ready: ReadyTask[] = [];
     for (const { task, profile } of profiled) {
       if (profile.file !== group.profile.file) continue;
-      const saved = runsOf.get(task.id) ?? [];
       const drop = dropped.get(task.id);
       if (drop !== undefined) {
         test.say(
@@ -2215,16 +2719,16 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         );
         continue;
       }
-      if (saved.length >= o.runs) {
-        const outcome = outcomeOf(task);
+      const outcome = outcomeOf(task);
+      if (outcome.toStart === 0) {
         test.say(
-          `${what(task)}: its run file is complete, skipped: loaded in ${outcome.loads} of ${outcome.made} runs: ${verdictWords(task, outcome, o.runs)}`
+          `${what(task)}: ${outcome.complete ? "its run file is complete" : "its run file holds its extra runs"}, skipped: ${countWords(outcome)}: ${verdictWords(task, outcome, o.runs)}`
         );
         continue;
       }
       const startedAt = performance.now();
       try {
-        ready.push(await test.captureTask(task, profile, saved));
+        ready.push(await test.captureTask(task, profile));
       } catch (error) {
         // The budget refused a hint call of the task's capture: the test stops as it does when
         // it refuses a run.
@@ -2251,27 +2755,56 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       ownMs.set(task.id, performance.now() - startedAt);
     }
     if (ready.length === 0) continue;
-    const sent = await test.sendRuns(ready);
     const writeMs = new Map<string, number>();
-    for (const { task } of ready) {
-      const runs = sent.runs.get(task.id) ?? [];
-      const writeStarted = performance.now();
-      writeWhole(
-        loadRunFile(o.out, task.id),
-        runs.map((run) => `${JSON.stringify(run)}\n`).join("")
+    let runsMs = 0;
+    let summaryMs = 0;
+    let budgetSpent = false;
+    for (let batches = 0; ; batches += 1) {
+      const batch = ready.flatMap((each) => {
+        const { id } = each.task;
+        const count = outcomeOf(each.task).toStart;
+        const made = runsOf.get(id) ?? [];
+        return count > 0 ? [{ each, made, failed: failedOf.get(id) ?? [], count }] : [];
+      });
+      if (batch.length === 0) break;
+      const sent = await test.sendRuns(batch);
+      runsMs += sent.runsMs;
+      for (const { each, failed: before } of batch) {
+        const { id } = each.task;
+        const runs = sent.runs.get(id) ?? [];
+        const failed = sent.failed.get(id) ?? [];
+        const writeStarted = performance.now();
+        writeWhole(loadRunFile(o.out, id), runs.map((run) => `${JSON.stringify(run)}\n`).join(""));
+        if (failed.length > before.length) {
+          writeWhole(
+            loadFailedRunFile(o.out, id),
+            failed.map((run) => `${JSON.stringify(run)}\n`).join("")
+          );
+        }
+        writeMs.set(id, (writeMs.get(id) ?? 0) + performance.now() - writeStarted);
+        runsOf.set(id, runs);
+        failedOf.set(id, failed);
+      }
+      peak = Math.max(peak, o.io.peakRssBytes());
+      const summaryStarted = performance.now();
+      writeSummary();
+      summaryMs += performance.now() - summaryStarted;
+      const ids = batch.map(({ each, count }) =>
+        batches === 0 ? each.task.id : `${each.task.id} (${count})`
       );
-      writeMs.set(task.id, performance.now() - writeStarted);
-      runsOf.set(task.id, runs);
+      test.say(
+        `the ${batches === 0 ? "runs" : "extra runs, for runs that are not judged,"} of ${ids.length === 1 ? "task" : "tasks"} ${ids.join(", ")} in the context of ${group.profile.file} went in one order (seed ${sent.seed}), each with a session id of its own`
+      );
+      for (const failure of sent.failures) {
+        failures.push(failure);
+        o.io.err(`load: ${failure}`);
+      }
+      budgetSpent = sent.budgetSpent;
+      // A run that failed is made again by the next command, not here.
+      if (budgetSpent || sent.failures.length > 0) break;
     }
-    peak = Math.max(peak, o.io.peakRssBytes());
-    const summaryStarted = performance.now();
-    writeSummary();
-    const summaryMs = performance.now() - summaryStarted;
-    test.say(
-      `the runs of ${ready.length === 1 ? "task" : "tasks"} ${ready.map((each) => each.task.id).join(", ")} in the context of ${group.profile.file} went in one order (seed ${sent.seed}), each with a session id of its own`
-    );
     for (const { task, profile, captured, captureMs, github } of ready) {
-      const runs = sent.runs.get(task.id) ?? [];
+      const runs = runsOf.get(task.id) ?? [];
       const outcome = outcomeOf(task);
       const listed = runs[0]?.listed;
       if (listed !== undefined && !listedSaid.has(profile.digest)) {
@@ -2286,20 +2819,17 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         captureMs,
         contextMs: captured.contextMs,
         github,
-        runsMs: sent.runsMs,
+        runsMs,
         writeMs: (writeMs.get(task.id) ?? 0) + summaryMs,
       };
-      const each = runs.map((run) => `run ${run.run} ${run.loaded ? "loads" : "does not"}`);
       const totalMs = (ownMs.get(task.id) ?? captureMs) + phases.runsMs + phases.writeMs;
+      const spend = spendOf(task);
+      const inDollars = (amount: number) => `$${amount.toFixed(4)}`;
       test.say(
-        `${what(task)}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}; ${phaseWords(phases, totalMs)}`
+        `${what(task)}: ${countWords(outcome, runs)}: ${verdictWords(task, outcome, o.runs)}; spend at list price: runs ${inDollars(spend.runsUsd)}, ${spend.failedRuns} failed runs ${inDollars(spend.failedRunsUsd)}, hints ${inDollars(spend.hintsUsd)}, all ${inDollars(spend.usd)}; ${phaseWords(phases, totalMs)}`
       );
     }
-    for (const failure of sent.failures) {
-      failures.push(failure);
-      o.io.err(`load: ${failure}`);
-    }
-    if (sent.budgetSpent) {
+    if (budgetSpent) {
       throw new Stopped(
         `the budget is spent, so no new model call starts; the runs so far are saved under ${o.out}`
       );
@@ -2318,7 +2848,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       ? ` (a load test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`
       : "";
   test.say(
-    `the skill ${name}: ${verdict.reason}${small}; the test's runs and hints so far cost $${usd.toFixed(4)} at list price; written to ${summaryFile}`
+    `the skill ${name}: ${verdict.reason}${small}; the test's runs, its failed runs and its hints so far cost $${usd.toFixed(4)} at list price; written to ${summaryFile}`
   );
   return { failures };
 }

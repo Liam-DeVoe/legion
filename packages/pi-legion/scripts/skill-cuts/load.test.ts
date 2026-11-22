@@ -40,13 +40,16 @@ import {
 import {
   claudeHarnessRules,
   claudeListing,
+  FailedRun,
   firstMessageLoad,
   type Host,
   LOAD_MODEL,
   LoadRun,
   loadCapturePaths,
+  loadFailedRunFile,
   loadProfile,
   loadRunFile,
+  namesSkill,
   renamedSkill,
   runLoad,
   skillName,
@@ -373,37 +376,56 @@ describe("a run loads the skill when its first assistant message reads it", () =
   });
 });
 
-/** The runs of one task, each loading the skill or not, as its run file keeps them. */
-function runsOf(label: TaskLabel, loads: readonly boolean[]): LoadRun[] {
-  return loads.map((loaded, index) =>
-    LoadRun.parse({
+/** What a made-up run came to: `true` (it loaded the skill), `false` (it did not), `sent by
+ *  <skill>`, or `reads past last round`. */
+type RunKind = boolean | `sent by ${string}` | "reads past last round";
+
+/** The runs of one task, each of `kinds`, as its run file keeps them. */
+function runsOf(label: TaskLabel, kinds: readonly RunKind[]): LoadRun[] {
+  return kinds.map((kind, index) => {
+    const sentBy = typeof kind === "string" && kind.startsWith("sent by ") ? kind.slice(8) : null;
+    return LoadRun.parse({
       task: "t",
       run: index + 1,
       label,
       source: "written",
       host: "omp",
       name: "alpha",
-      loaded,
-      loadedBy: loaded ? "read skill://alpha" : null,
-      toolCalls: loaded ? ["read"] : [],
-      stopReason: loaded ? "tool_use" : "end_turn",
+      outcome:
+        kind === true
+          ? "loaded"
+          : kind === false
+            ? "not loaded"
+            : sentBy !== null
+              ? "sent by"
+              : "reads past last round",
+      loadedBy: kind === true ? "read skill://alpha" : null,
+      sentBy,
+      skillReads: "answered",
+      replies: [
+        {
+          calls: kind === true ? [{ name: "read", target: "skill://alpha" }] : [],
+          answers: null,
+          usage: {
+            model: "claude-sonnet-5-5",
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            usd: 0,
+          },
+        },
+      ],
+      stopReason: kind === true ? "tool_use" : "end_turn",
       requestId: null,
-      usage: {
-        model: "claude-sonnet-5-5",
-        input: 1,
-        output: 1,
-        cacheRead: 0,
-        cacheWrite: 0,
-        usd: 0,
-      },
       listed: "Use for the alpha checklist.",
       profile: "/profiles/alpha.json",
       profileDigest: "0".repeat(64),
       userId: JSON.stringify({ session_id: `00000000-0000-4000-8000-00000000000${index}` }),
       sendSeed: "made-up-seed",
       sendPlace: index,
-    })
-  );
+    });
+  });
 }
 
 describe("each task's loads feed score.ts's load rule", () => {
@@ -456,6 +478,67 @@ describe("each task's loads feed score.ts's load rule", () => {
     expect(skillOutcome([task("n1", "need", [true], 1)], 1)).toEqual({
       descriptionFault: null,
       reason: "no verdict: the load test's rule takes 3 runs a task, and this test runs 1",
+    });
+  });
+
+  // Catches: a run sent by another skill or still reading counted as a miss, a task run again
+  // past its 5 extra runs, or a task short of its judged runs read as a fault or a pass.
+  test("runs sent by another skill or reading past the last round are not judged: the task runs again, at most 5 extra runs, then gives no description evidence, saying why, and the skill's verdict leaves it out", () => {
+    const sent = "sent by beta";
+    const past = "reads past last round";
+    const going = taskOutcome("need", runsOf("need", [true, sent, past, false]), 3);
+    expect(going).toMatchObject({
+      made: 4,
+      judged: 2,
+      loads: 1,
+      sentBy: { beta: 1 },
+      readsPastLastRound: 1,
+      extraRuns: 1,
+      toStart: 1,
+      complete: false,
+      noEvidence: null,
+      fault: null,
+    });
+    const done = taskOutcome("need", runsOf("need", [true, sent, past, false, true]), 3);
+    expect(done).toMatchObject({
+      judged: 3,
+      loads: 2,
+      extraRuns: 2,
+      toStart: 0,
+      complete: true,
+      fault: false,
+    });
+    const short = taskOutcome(
+      "near-miss",
+      runsOf("near-miss", [false, sent, sent, sent, "sent by gamma", past, sent, true]),
+      3
+    );
+    expect(short).toMatchObject({
+      made: 8,
+      judged: 2,
+      sentBy: { beta: 4, gamma: 1 },
+      extraRuns: 5,
+      toStart: 0,
+      complete: false,
+      fault: null,
+      noEvidence:
+        "2 of 3 judged runs after 5 extra runs: sent by beta in 4 of 8 runs; sent by gamma in 1 of 8 runs; reads past the last round in 1 of 8 runs",
+    });
+    const n1 = { id: "n1", label: "need" as const };
+    const m1 = { id: "m1", label: "near-miss" as const, outcome: short };
+    expect(skillOutcome([{ ...n1, outcome: going }, m1], 3)).toEqual({
+      descriptionFault: null,
+      reason: "no verdict yet: tasks n1 lack runs",
+    });
+    expect(skillOutcome([{ ...n1, outcome: done }, m1], 3)).toEqual({
+      descriptionFault: false,
+      reason:
+        "no description fault in 1 tasks; tasks m1 give no description evidence: they lack their 3 judged runs after 5 extra runs",
+    });
+    expect(skillOutcome([m1], 3)).toEqual({
+      descriptionFault: null,
+      reason:
+        "no verdict: no task gives description evidence (tasks m1 lack their 3 judged runs after 5 extra runs)",
     });
   });
 });
@@ -576,8 +659,9 @@ const Request = z.looseObject({
 });
 type Request = z.infer<typeof Request>;
 
-/** How the stand-in answers a run's request. */
-let answer: (body: Request) => ReplyBlock[] = () => [{ type: "text", text: "nothing" }];
+/** How the stand-in answers a run's request: with the blocks of its reply, or a response it
+ *  gives as it is (a refusal). */
+let answer: (body: Request) => ReplyBlock[] | Response = () => [{ type: "text", text: "nothing" }];
 let recorder: Recorder;
 beforeAll(() => {
   recorder = startRecorder({
@@ -591,10 +675,12 @@ beforeAll(() => {
       const body = Request.parse(JSON.parse(request.body));
       // Oh My Pi's hint request: no system prompt, no tools, `Skill: <name>` in its message.
       const hint = /\\nSkill: ([^\\]+)\\nDescription: /.exec(request.body)?.[1];
-      const content: ReplyBlock[] =
+      const answered =
         body.system === undefined && body.tools === undefined && hint !== undefined
-          ? [{ type: "text", text: `Use for the ${hint} work, stand-in hint.` }]
+          ? [{ type: "text" as const, text: `Use for the ${hint} work, stand-in hint.` }]
           : answer(body);
+      if (answered instanceof Response) return answered;
+      const content: ReplyBlock[] = answered;
       // A Responses body gets the same answer in its API's stream.
       if (request.path === "/v1/responses") {
         const output = content.flatMap((block): ResponseItem[] =>
@@ -754,7 +840,8 @@ const ENVOY_ENTRY = {
 
 /** Saves under `out` each task's Oh My Pi capture, where the command reads it back: F2's body
  *  with the task's text as its one message, and the fields of its record that the load test
- *  reads, `record`'s over them. */
+ *  reads, `record`'s over them. Its context installed no copy of a skill, unless `record` says
+ *  otherwise. */
 function saveCaptures(
   out: string,
   lines: readonly { id: string; text: string }[],
@@ -778,11 +865,16 @@ function saveCaptures(
         hintCalls: [],
         // A saved capture holds the harness-string rule's record, or it is refused.
         harness: { head: null, replaced: [] },
+        context: NO_COPIES,
         ...record,
       }),
     });
   }
 }
+
+/** A capture's context record that installed no copy of a skill (context.ts's `installedCopies`
+ *  reads its `skills`). */
+const NO_COPIES = { skills: [] };
 
 /** One item of a profile's evidence, as a build-tasks summary keeps it. */
 interface EvidenceItem {
@@ -814,11 +906,13 @@ function measureItem(recorded: number | null, missing: string[] = []): EvidenceI
 
 /** Writes beside the tasks file `tasks` the summary build-tasks writes (`<tasks>.summary.json`):
  *  the evidence of each session task's profile (`sessions`, by task id) and of the context
- *  session's (`context`), which each written task takes, each its one listing measure. */
+ *  session's (`context`, then `more`), which each written task takes, each its one listing
+ *  measure. */
 function writeTasksSummary(
   tasks: string,
   sessions: Record<string, EvidenceItem>,
-  context: EvidenceItem
+  context: EvidenceItem,
+  more: readonly EvidenceItem[] = []
 ): void {
   writeFileSync(
     `${tasks}.summary.json`,
@@ -833,7 +927,7 @@ function writeTasksSummary(
           pathHash: pathHash("/sessions/context.jsonl"),
           context: "devbox",
           secretsRemoved: 0,
-          evidence: [context],
+          evidence: [context, ...more],
         },
         tasks: Object.entries(sessions).map(([task, measure]) => ({
           task,
@@ -924,7 +1018,7 @@ describe("skill-cuts load with saved captures", () => {
       'load: Oh My Pi lists alpha under the hint "Use for the alpha checklist."'
     );
     expect(ran.stdout).toMatch(
-      /task need-1 \(need, from a session\): loaded in 2 of 3 runs \(.*\): no fault/
+      /task need-1 \(need, from a session\): loaded in 2 of 3 judged runs \(.*\); runs sent by another skill: 0; runs that read past the last round: 0; extra runs: 0: no fault/
     );
     // Each task's line ends with the seconds of each phase; its capture is read back, and no
     // GitHub read is made.
@@ -937,7 +1031,7 @@ describe("skill-cuts load with saved captures", () => {
       );
     }
     expect(ran.stdout).toMatch(
-      /task near-1 \(near-miss, written\): loaded in 2 of 3 runs \(.*\): a fault: a near-miss task loads it in more than 1 of 3 runs/
+      /task near-1 \(near-miss, written\): loaded in 2 of 3 judged runs \(.*\); runs sent by another skill: 0; runs that read past the last round: 0; extra runs: 0: a fault: a near-miss task loads it in more than 1 of 3 runs/
     );
     expect(ran.stdout).toContain(
       "the skill alpha: a description fault: tasks near-1 (a load test has at least 5 need and 5 near-miss tasks; this one has 1 and 1)"
@@ -955,12 +1049,14 @@ describe("skill-cuts load with saved captures", () => {
     ] as const) {
       const runs = savedRuns(out, id);
       expect(runs.map((run) => run.run)).toEqual([1, 2, 3]);
-      expect(runs.filter((run) => run.loaded).map((run) => run.loadedBy)).toEqual([
+      expect(runs.filter((run) => run.outcome === "loaded").map((run) => run.loadedBy)).toEqual([
         "read skill://alpha",
         "read skill://alpha",
       ]);
       expect(runs.every((run) => run.listed === "Use for the alpha checklist.")).toBe(true);
-      expect(runs.every((run) => run.usage.model === "claude-sonnet-5-5")).toBe(true);
+      expect(
+        runs.every((run) => run.replies.every((reply) => reply.usage.model === "claude-sonnet-5-5"))
+      ).toBe(true);
       expect(runs.every((run) => run.profile === file && run.profileDigest === sha256(file))).toBe(
         true
       );
@@ -1094,6 +1190,409 @@ describe("skill-cuts load with saved captures", () => {
       `${out} holds a capture or runs of task near-1, which its summary does not list`
     );
     expect(recorder.requests.length).toBe(before);
+  });
+});
+
+// The skill reads rule (the architect, 2026-11-22T18:58Z and 18:59:51Z): a load run answers a
+// reply that only reads skill files as the behaviour replay does, a run sent by another skill or
+// still reading after the last round is not judged and runs again, and the record shows what each
+// read read. Catches: a run that stops at a first message that reads another skill, so that a
+// skill the agent reads next counts as not loaded; a run counted as a load when another skill's
+// text sent the agent to it; and a record that keeps only the names of the first message's calls.
+describe("skill-cuts load answers skill reads as the behaviour replay does", () => {
+  const dir = path.join(scratch, "skill-reads");
+  const skill = path.join(dir, "alpha");
+  const cache = path.join(dir, "cache");
+  let made = { config: "", keyFile: "" };
+
+  beforeAll(() => {
+    made = setup(dir);
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  });
+
+  /** A load test of alpha under `<dir>/<id>` on `host`: the one need task `id`, written, in the
+   *  context of `profile` (BETA_PROFILE unless given), with its capture saved, whose context
+   *  installed beta from the cache entry `<id>`, which holds `beta` as beta's SKILL.md; its
+   *  listing measured; and the arguments that run it. */
+  function readsTest(
+    id: string,
+    beta: string,
+    host: Host = "omp",
+    profile: Record<string, unknown> = BETA_PROFILE
+  ): { out: string; args: string[] } {
+    const root = path.join(dir, id);
+    const out = path.join(root, "out");
+    const tasks = path.join(root, "tasks.jsonl");
+    writeTree(path.join(cache, "skills", id), { "SKILL.md": beta });
+    writeTree(root, {
+      "tasks.jsonl": `${JSON.stringify({ id, text: NEED, label: "need", source: "written" })}\n`,
+      "profile.json": JSON.stringify(profile),
+    });
+    writeTasksSummary(tasks, {}, measureItem(10));
+    const context = {
+      skills: [
+        {
+          name: "beta",
+          from: { repo: "acme/skills", commit: COMMIT, path: "skills/beta", key: id },
+        },
+        { name: "alpha", from: "arm" },
+      ],
+    };
+    if (host === "omp") saveCaptures(out, [{ id, text: NEED }], { context });
+    else {
+      const files = loadCapturePaths(out, "claude", id);
+      writeTree(path.dirname(files.body), {
+        [path.basename(files.body)]: JSON.stringify({
+          ...F2,
+          messages: [{ role: "user", content: [{ type: "text", text: NEED }] }],
+        }),
+        [path.basename(files.record)]: JSON.stringify({
+          requestHeaders: { "anthropic-version": "2023-06-01" },
+          listed: "Use for the alpha checklist.",
+          harness: { head: null, replaced: [] },
+          context,
+        }),
+      });
+    }
+    const args = [
+      "load",
+      ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", host, "--profile", path.join(root, "profile.json")],
+      ...["--out", out, "--scratch", path.join(root, "scratch"), "--cache-dir", cache],
+    ];
+    return { out, args };
+  }
+
+  /** An Oh My Pi `read` of `target`, as the stand-in answers with it. */
+  const readOf = (target: string, id = "toolu_read"): ReplyBlock => ({
+    type: "tool_use",
+    id,
+    name: "read",
+    input: { path: target },
+  });
+  /** How many rounds of reads a request's body answers: each adds a reply and its answers. */
+  const answeredRounds = (body: Request): number =>
+    Array.isArray(body.messages) ? (body.messages.length - 1) / 2 : 0;
+  /** The messages of a request the stand-in took. */
+  const messagesOf = (request: RecordedRequest): unknown[] =>
+    z.object({ messages: z.array(z.unknown()) }).parse(JSON.parse(request.body)).messages;
+  /** The answers a request's last message holds: each `tool_result`'s text and error flag. */
+  const answersOf = (request: RecordedRequest): { text: string; isError: boolean }[] =>
+    z
+      .object({
+        content: z.array(
+          z.object({
+            type: z.literal("tool_result"),
+            content: z.array(z.object({ text: z.string() })),
+            is_error: z.boolean(),
+          })
+        ),
+      })
+      .parse(messagesOf(request).at(-1))
+      .content.map((result) => ({
+        text: result.content.map((part) => part.text).join(""),
+        isError: result.is_error,
+      }));
+  /** The task `id` of the summary under `out`, as far as these rows read it. */
+  const summaryTask = (out: string, id: string) =>
+    z
+      .looseObject({ tasks: z.array(z.looseObject({ id: z.string() })) })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")))
+      .tasks.find((task) => task.id === id);
+
+  test("a first message that reads another installed skill, whose text names no skill, then a read of the tested skill, is a load", async () => {
+    const s = readsTest("plain", BETA_SKILL);
+    answer = (body) => (answeredRounds(body) === 0 ? [readOf("skill://beta")] : READ_ALPHA);
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    // Each run sends its first request, then the one that answers beta's read, whose reply loads
+    // alpha and ends the run.
+    const sent = recorder.requests.slice(before);
+    expect(sent.map((request) => messagesOf(request).length).toSorted()).toEqual([
+      1, 1, 1, 3, 3, 3,
+    ]);
+    // Beta's SKILL.md as a `skill://` read of beta's installed copy shows it.
+    const shown = `[Skill file: /skills/beta/SKILL.md]\n${BETA_SKILL.replace(/\n$/, "")}`;
+    for (const request of sent.filter((each) => messagesOf(each).length === 3)) {
+      expect(answersOf(request)).toEqual([{ text: shown, isError: false }]);
+    }
+    expect(
+      savedRuns(s.out, "plain").map((run) => [run.outcome, run.loadedBy, run.replies.length])
+    ).toEqual(Array(3).fill(["loaded", "read skill://alpha", 2]));
+    expect(ran.stdout).toContain(
+      "load: task plain (need, written): loaded in 3 of 3 judged runs (run 1 loads, run 2 loads, run 3 loads); runs sent by another skill: 0; runs that read past the last round: 0; extra runs: 0: no fault"
+    );
+  });
+
+  test('a run whose answered skill text names the tested skill as skill://<name> is "sent by" that skill: not counted, and the task runs again', async () => {
+    const sends = `${BETA_SKILL}Then read skill://alpha for the checklist.\n`;
+    const s = readsTest("sent", sends);
+    // The first two runs read beta first; every later one reads alpha.
+    let firsts = 0;
+    answer = (body) => {
+      if (answeredRounds(body) > 0) return TEXT;
+      firsts += 1;
+      return firsts <= 2 ? [readOf("skill://beta")] : READ_ALPHA;
+    };
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    // A run sent by beta ends once beta's answer is made: no request carries it.
+    const sent = recorder.requests.slice(before);
+    expect(sent.map((request) => messagesOf(request).length)).toEqual([1, 1, 1, 1, 1]);
+    const runs = savedRuns(s.out, "sent");
+    expect(runs.map((run) => run.outcome).toSorted()).toEqual([
+      "loaded",
+      "loaded",
+      "loaded",
+      "sent by",
+      "sent by",
+    ]);
+    for (const run of runs.filter((each) => each.outcome === "sent by")) {
+      expect([run.sentBy, run.loadedBy, run.replies.at(-1)?.answers]).toEqual([
+        "beta",
+        null,
+        [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+      ]);
+    }
+    expect(summaryTask(s.out, "sent")).toMatchObject({
+      made: 5,
+      judged: 3,
+      loads: 3,
+      sentBy: { beta: 2 },
+      readsPastLastRound: 0,
+      extraRuns: 2,
+      complete: true,
+      noEvidence: null,
+      fault: false,
+    });
+    expect(ran.stdout).toMatch(
+      /^load: the extra runs, for runs that are not judged, of task sent \(2\) in the context of [^\n]* went in one order \(seed [0-9a-f]+\), each with a session id of its own$/m
+    );
+    expect(ran.stdout).toContain(
+      "; runs sent by another skill: 2 (beta 2); runs that read past the last round: 0; extra runs: 2: no fault"
+    );
+  });
+
+  test("a bare-word mention of the tested skill's name in the other skill's text does not stop the load", async () => {
+    const bare = `${BETA_SKILL}The alpha checklist comes after the greeting; greet as alpha does.\n`;
+    const s = readsTest("bare", bare);
+    answer = (body) => (answeredRounds(body) === 0 ? [readOf("skill://beta")] : READ_ALPHA);
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(savedRuns(s.out, "bare").map((run) => [run.outcome, run.sentBy])).toEqual(
+      Array(3).fill(["loaded", null])
+    );
+  });
+
+  test.each([
+    ["Then read skill://alpha for the checklist.", "alpha", true],
+    ["Read skill://alpha/references/x.md first.", "alpha", true],
+    ["Run /skill:alpha now.", "alpha", true],
+    ["Use `alpha` here.", "alpha", true],
+    ["Load the skill alpha next.", "alpha", true],
+    ["Skill alpha.", "alpha", true],
+    ["The alpha skill lists the steps.", "alpha", true],
+    ["The alpha checklist comes after the greeting; greet as alpha does.", "alpha", false],
+    ["The alphabet skill and skill alphabet.", "alpha", false],
+    ["Use `alpha-two` and skill://alpha-two.", "alpha", false],
+    ["The alpha skills.", "alpha", false],
+    ["Analyze the logs, then analyze the plan.", "analyze", false],
+    ["Write the sdd plan.", "sdd", false],
+  ])("the text %p names %p: %p", (text, name, want) => {
+    expect(namesSkill(text, name)).toBe(want);
+  });
+
+  test("a read of a skill the profile does not install gets Oh My Pi's unknown-skill answer, and the run goes on", async () => {
+    const s = readsTest("unknown", BETA_SKILL);
+    answer = (body) => (answeredRounds(body) === 0 ? [readOf("skill://zeta")] : READ_ALPHA);
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const answered = recorder.requests
+      .slice(before)
+      .filter((request) => messagesOf(request).length === 3);
+    expect(answered.map(answersOf)).toEqual(
+      Array(3).fill([{ text: "Unknown skill: zeta\nAvailable: beta, alpha", isError: true }])
+    );
+    expect(savedRuns(s.out, "unknown").map((run) => run.outcome)).toEqual(Array(3).fill("loaded"));
+  });
+
+  test("a run still reading after round 3 gets no verdict and runs again; a task still short after its 5 extra runs gives no description evidence, and the report names the reason", async () => {
+    const s = readsTest("past", BETA_SKILL);
+    answer = () => [readOf("skill://beta")];
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    // 3 runs and 5 extra runs, each its first request and 3 answered rounds.
+    expect(recorder.requests.length - before).toBe(32);
+    const runs = savedRuns(s.out, "past");
+    expect(runs.map((run) => [run.outcome, run.replies.length])).toEqual(
+      Array(8).fill(["reads past last round", 4])
+    );
+    const reason =
+      "0 of 3 judged runs after 5 extra runs: reads past the last round in 8 of 8 runs";
+    expect(summaryTask(s.out, "past")).toMatchObject({
+      made: 8,
+      judged: 0,
+      readsPastLastRound: 8,
+      extraRuns: 5,
+      toStart: 0,
+      complete: false,
+      noEvidence: reason,
+      fault: null,
+    });
+    expect(ran.stdout).toContain(
+      `; runs sent by another skill: 0; runs that read past the last round: 8; extra runs: 5: no description evidence: ${reason}`
+    );
+    expect(ran.stdout).toContain(
+      "load: the skill alpha: no verdict: no task gives description evidence (tasks past lack their 3 judged runs after 5 extra runs)"
+    );
+    // A command started again makes no run of it.
+    const again = await cli(s.args);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toContain("task past (need, written): its run file holds its extra runs");
+    expect(recorder.requests.length - before).toBe(32);
+  });
+
+  // Catches: a run whose later request fails dropped whole, so that what its earlier replies used
+  // is in no total, and a total that forgets a failed run once the command is started again.
+  test("a run whose second round fails after the first succeeded counts the first round's spend, in its task's line and the summary's totals", async () => {
+    const s = readsTest("failing", BETA_SKILL);
+    let failing = true;
+    answer = (body) => {
+      if (answeredRounds(body) === 0) return [readOf("skill://beta")];
+      return failing
+        ? new Response(JSON.stringify({ error: { message: "made-up refusal" } }), { status: 400 })
+        : READ_ALPHA;
+    };
+    const ran = await cli(s.args);
+    expect(ran.code).toBe(1);
+    expect(ran.stderr).toContain("load: task failing: a run failed: ");
+    expect(readFileSync(loadRunFile(s.out, "failing"), "utf8")).toBe("");
+    const failed = readFileSync(loadFailedRunFile(s.out, "failing"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => FailedRun.parse(JSON.parse(line)));
+    expect(
+      failed.map((run) => run.usage.map(({ model, input, output }) => [model, input, output]))
+    ).toEqual(Array(3).fill([["claude-sonnet-5-5", 10, 3]]));
+    const failedUsd = failed.reduce((sum, run) => sum + (run.usage[0]?.usd ?? 0), 0);
+    expect(failedUsd).toBeGreaterThan(0);
+    const Spend = z.object({
+      runsUsd: z.number(),
+      failedRunsUsd: z.number(),
+      hintsUsd: z.number(),
+      usd: z.number(),
+    });
+    const spendOf = () => {
+      const summary = JSON.parse(readFileSync(path.join(s.out, "summary.json"), "utf8"));
+      const task = z
+        .object({ spend: Spend.extend({ failedRuns: z.number() }) })
+        .parse(summaryTask(s.out, "failing"));
+      return { total: Spend.parse(Reflect.get(summary, "spend")), task: task.spend };
+    };
+    const first = spendOf();
+    expect(first.task).toEqual({
+      runsUsd: 0,
+      failedRuns: 3,
+      failedRunsUsd: failedUsd,
+      hintsUsd: 0,
+      usd: failedUsd,
+    });
+    expect(first.total).toEqual({
+      runsUsd: 0,
+      failedRunsUsd: failedUsd,
+      hintsUsd: 0,
+      usd: failedUsd,
+    });
+    expect(ran.stdout).toContain(
+      `; spend at list price: runs $0.0000, 3 failed runs $${failedUsd.toFixed(4)}, hints $0.0000, all $${failedUsd.toFixed(4)}; seconds: `
+    );
+    // A command started again counts them still, beside the runs it makes.
+    failing = false;
+    const again = await cli(s.args);
+    expect({ code: again.code, stderr: again.stderr }).toEqual({ code: 0, stderr: "" });
+    const runsUsd = savedRuns(s.out, "failing").reduce(
+      (sum, run) => sum + run.replies.reduce((each, reply) => each + reply.usage.usd, 0),
+      0
+    );
+    const second = spendOf();
+    expect(second.total.failedRunsUsd).toBe(failedUsd);
+    expect(second.total.runsUsd).toBeCloseTo(runsUsd, 12);
+    expect(second.total.usd).toBeCloseTo(runsUsd + failedUsd, 12);
+  });
+
+  test("the record holds each reply's call targets and each answer's source", async () => {
+    const s = readsTest("record", BETA_SKILL);
+    const byPath = "/home/agent/skills/alpha/SKILL.md";
+    answer = (body) =>
+      answeredRounds(body) === 0
+        ? [readOf("skill://beta", "toolu_beta"), readOf("skill://zeta", "toolu_zeta")]
+        : [readOf(byPath)];
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    for (const run of savedRuns(s.out, "record")) {
+      expect(run).toMatchObject({
+        outcome: "loaded",
+        loadedBy: `read ${byPath}`,
+        sentBy: null,
+        skillReads: "answered",
+        stopReason: "tool_use",
+        replies: [
+          {
+            calls: [
+              { name: "read", target: "skill://beta" },
+              { name: "read", target: "skill://zeta" },
+            ],
+            answers: [
+              { skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false },
+              { skill: "zeta", file: "SKILL.md", by: "skill", from: "absent", isError: true },
+            ],
+          },
+          { calls: [{ name: "read", target: byPath }], answers: null },
+        ],
+      });
+      expect(run.replies.map((reply) => reply.usage.model)).toEqual([
+        "claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+      ]);
+    }
+  });
+
+  test("a Claude Code run ends at its first message, which its record says: a Read of another skill's SKILL.md is not answered", async () => {
+    const s = readsTest("claude-first", BETA_SKILL, "claude", {
+      ...BETA_PROFILE,
+      claude: {
+        marketplace: "acme-market",
+        plugins: [{ name: "acme-tools", skills: ["beta"] }],
+        skillPlugin: "acme-tools",
+      },
+    });
+    const betaPath = "/config/plugins/cache/acme-market/acme-tools/0.0.0/skills/beta/SKILL.md";
+    answer = () => [
+      { type: "tool_use", id: "toolu_read_beta", name: "Read", input: { file_path: betaPath } },
+    ];
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length - before).toBe(3);
+    expect(
+      savedRuns(s.out, "claude-first").map((run) => [run.outcome, run.skillReads, run.replies])
+    ).toEqual(
+      Array(3).fill([
+        "not loaded",
+        "first message",
+        [
+          {
+            calls: [{ name: "Read", target: betaPath }],
+            answers: null,
+            usage: expect.objectContaining({ model: "claude-sonnet-5-5" }),
+          },
+        ],
+      ])
+    );
   });
 });
 
@@ -1340,6 +1839,82 @@ describe("skill-cuts load applies the listing rule", () => {
   });
 });
 
+// Catches: a Legion task's saved capture, whose role prompt was composed at the plugin's commit,
+// read back as it is after the task's evidence came to name another commit its daemon image was
+// built from, so its runs go under a role prompt the pod's daemon never sent.
+test("a saved capture whose role prompt was composed at another commit than the task's evidence names as its daemon image's is refused (exit 2) before any run, naming both; one composed at that commit is read back and run", async () => {
+  const dir = path.join(scratch, "saved-role-commit");
+  const made = setup(dir);
+  const skill = path.join(dir, "alpha");
+  writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  const lines = [{ id: "need-1", text: NEED, label: "need", source: "written" }];
+  const tasks = path.join(dir, "tasks.jsonl");
+  writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(
+    profile,
+    JSON.stringify({
+      ...BETA_PROFILE,
+      plugins: [
+        { repo: "acme/legion", commit: COMMIT, path: "plugins/skills-only", name: "skills-only" },
+      ],
+      context: "legion:acme:implementer",
+    })
+  );
+  /** The made-up commit of acme/legion that the project's daemon image was built from. */
+  const DAEMON_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+  const digest = "8".repeat(64);
+  writeTasksSummary(tasks, {}, measureItem(null), [
+    {
+      item: "the daemon image's commit of acme/legion",
+      source: `acme/infra:legion/projects/10-ACME.yaml at ${COMMIT} gives the project ACME the daemonImage registry.example/acme/daemon@sha256:${digest}; gh api repos/acme/legion/attestations/sha256:${digest} names git+https://github.com/acme/legion@refs/heads/main at ${DAEMON_COMMIT}, so the role prompt is composed from acme/legion at ${DAEMON_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
+    },
+  ]);
+  /** A capture record's context whose role prompt Compose ran at `commit` of acme/legion. */
+  const recordAt = (commit: string, commitOf?: "daemon image" | "plugin") => ({
+    context: {
+      ...NO_COPIES,
+      rolePrompt: {
+        repo: "acme/legion",
+        commit,
+        ...(commitOf === undefined ? {} : { commitOf }),
+        role: "implementer",
+        isRoot: false,
+        promptsBlob: "made-up",
+        key: "made-up",
+        parts: ["packages/daemon/internal/prompts/roles/worker.md"],
+      },
+    },
+  });
+  const out = path.join(dir, "out");
+  const record = loadCapturePaths(out, "omp", "need-1").record;
+  answer = () => TEXT;
+  const args = [
+    ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+    ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out, "--runs", "1"],
+    ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
+    ...["--cache-dir", path.join(dir, "cache")],
+  ];
+  const from = recorder.requests.length;
+  // Composed at the plugin's commit: so recorded, and as a record made before `commitOf` was.
+  for (const commitOf of ["plugin", undefined] as const) {
+    saveCaptures(out, lines, recordAt(COMMIT, commitOf));
+    const refused = await cli(args);
+    expect({ code: refused.code, stderr: refused.stderr }).toEqual({
+      code: 2,
+      stderr: `skill-cuts: ${out} holds task need-1, whose capture's role prompt was composed at the plugin's commit ${COMMIT} of acme/legion (${record}), and its evidence in the tasks file's summary now names ${DAEMON_COMMIT} as the daemon image's commit of acme/legion: give the tasks file that summary again, or use another --out\n`,
+    });
+  }
+  expect(recorder.requests.length).toBe(from);
+  expect(existsSync(loadRunFile(out, "need-1"))).toBe(false);
+
+  // Composed at the commit the evidence names: read back, and run.
+  saveCaptures(out, lines, recordAt(DAEMON_COMMIT, "daemon image"));
+  const ran = await cli(args);
+  expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+  expect(savedRuns(out, "need-1")).toHaveLength(1);
+}, 60_000);
+
 test("the skill's name is read as Oh My Pi reads its frontmatter: a value that holds ': ' does not stop the read", () => {
   const named = path.join(scratch, "colon", "folder");
   writeTree(named, {
@@ -1566,6 +2141,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
         requestHeaders: { "anthropic-version": "2023-06-01" },
         hintCalls: [],
         harness: { head: null, replaced: [] },
+        context: NO_COPIES,
       }),
     });
     answer = () => TEXT;
@@ -1635,6 +2211,7 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
         requestHeaders: { "anthropic-version": "2023-06-01" },
         hintCalls: [],
         harness: { head: null, replaced: [] },
+        context: NO_COPIES,
       }),
     });
   }
@@ -1877,6 +2454,7 @@ describe("skill-cuts load sends a profile's tasks' runs in one order, each with 
           requestHeaders: { "anthropic-version": "2023-06-01" },
           hintCalls: [],
           harness: { head: null, replaced: [] },
+          context: NO_COPIES,
         }),
       });
     }
@@ -2212,6 +2790,54 @@ function writeEnvoyPlugin(repos: string): void {
   });
 }
 
+/** The role prompt composer of a made-up Legion daemon, with the API context.ts runs
+ *  (`New(stateDir)`, `Compose(role, isRoot)`, the embedded `roles/` parts written under
+ *  prompts/shared): every role's one part is `roles/worker.md`. */
+const DAEMON_PROMPTS_GO = `package prompts
+
+import (
+	"embed"
+	"os"
+	"path/filepath"
+
+	"example.com/acme/daemon/internal/claim"
+)
+
+//go:embed roles
+var roleParts embed.FS
+
+type Parts struct{ RolePromptPaths []string }
+
+type Composer struct{ sharedDir string }
+
+func New(stateDir string) (*Composer, error) {
+	shared := filepath.Join(stateDir, "prompts", "shared")
+	body, err := roleParts.ReadFile("roles/worker.md")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(shared, "worker.md"), body, 0o600); err != nil {
+		return nil, err
+	}
+	return &Composer{sharedDir: shared}, nil
+}
+
+func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
+	return Parts{RolePromptPaths: []string{filepath.Join(c.sharedDir, "worker.md")}}, nil
+}
+`;
+
+/** The made-up daemon module of acme/legion, its one role part holding `part`. */
+const daemonFiles = (part: string): Record<string, string> => ({
+  "packages/daemon/go.mod": "module example.com/acme/daemon\n\ngo 1.22\n",
+  "packages/daemon/internal/claim/claim.go": "package claim\n\ntype Role string\n",
+  "packages/daemon/internal/prompts/prompts.go": DAEMON_PROMPTS_GO,
+  "packages/daemon/internal/prompts/roles/worker.md": `${part}\n`,
+});
+
 describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () => {
   test(
     "captures the first request of a one-message history, lists the renamed skill under its hint, and counts a read of skill://<name> as a load",
@@ -2251,7 +2877,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
       expect(savedRuns(out, "need-1")).toMatchObject([
         {
-          loaded: true,
+          outcome: "loaded",
           loadedBy: "read skill://omega",
           name: "omega",
           listed: "Use for the omega work, stand-in hint.",
@@ -2373,7 +2999,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
         const body = JSON.parse(readFileSync(loadCapturePaths(out, "omp", id).body, "utf8"));
         expect([...skillListing(body).keys()].sort()).toEqual(["alpha", other]);
         expect(savedRuns(out, id)).toMatchObject([
-          { loaded: true, profile: file, profileDigest: sha256(file) },
+          { outcome: "loaded", profile: file, profileDigest: sha256(file) },
         ]);
       }
     },
@@ -2428,7 +3054,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(texts(body.messages).some((text) => text.includes(NEED))).toBe(true);
       expect(savedRuns(out, "need-1")).toMatchObject([
         {
-          loaded: true,
+          outcome: "loaded",
           listed: hint,
           profile: subagent,
           profileDigest: sha256(subagent),
@@ -2500,7 +3126,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(record.recordedPrompt?.line).toBe("replaced");
       expect(savedRuns(out, "need-1")).toMatchObject([
         {
-          loaded: true,
+          outcome: "loaded",
           loadedBy: "read skill://beta-renamed",
           name: "beta-renamed",
           listed: hint,
@@ -2571,13 +3197,90 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(sent.filter((request) => request.path === "/v1/messages")).toHaveLength(2);
       expect(savedRuns(out, "need-1")).toMatchObject([
         {
-          loaded: true,
+          outcome: "loaded",
           loadedBy: "read skill://alpha",
-          toolCalls: ["read"],
+          skillReads: "answered",
+          replies: [
+            {
+              calls: [{ name: "read", target: "skill://alpha" }],
+              usage: { model: "gpt-6.1-sol", reasoning: 0 },
+            },
+          ],
           stopReason: "completed",
-          usage: { model: "gpt-6.1-sol", reasoning: 0 },
         },
       ]);
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  // Catches: a Legion task's role prompt composed at its plugin's commit (the worker image's)
+  // where the tasks file's summary names another commit its daemon image was built from, so a
+  // load test ran under a role prompt the pod's daemon never sent.
+  test(
+    "a Legion task's role prompt is composed at the commit its evidence in the tasks file's summary names as its daemon image's, not at its plugin's commit",
+    async () => {
+      const dir = path.join(scratch, "omp-daemon-commit");
+      const { out, common } = hostInputs(dir);
+      /** The made-up commit of acme/legion that the project's daemon image was built from. */
+      const DAEMON_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+      const repos = path.join(dir, "repos");
+      writeTree(path.join(repos, "acme/legion", COMMIT), {
+        ...daemonFiles("The role part at the plugin's commit."),
+        "plugins/skills-only/skills/beta/SKILL.md": BETA_SKILL,
+      });
+      writeTree(
+        path.join(repos, "acme/legion", DAEMON_COMMIT),
+        daemonFiles("The role part at the daemon image's commit.")
+      );
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(
+        profile,
+        JSON.stringify({
+          ...BETA_PROFILE,
+          plugins: [
+            {
+              repo: "acme/legion",
+              commit: COMMIT,
+              path: "plugins/skills-only",
+              name: "skills-only",
+            },
+          ],
+          context: "legion:acme:implementer",
+        })
+      );
+      const digest = "8".repeat(64);
+      writeTasksSummary(path.join(dir, "tasks.jsonl"), {}, measureItem(null), [
+        {
+          item: "the daemon image's commit of acme/legion",
+          source: `acme/infra:legion/projects/10-ACME.yaml at ${COMMIT} gives the project ACME the daemonImage registry.example/acme/daemon@sha256:${digest}; gh api repos/acme/legion/attestations/sha256:${digest} names git+https://github.com/acme/legion@refs/heads/main at ${DAEMON_COMMIT}, so the role prompt is composed from acme/legion at ${DAEMON_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
+        },
+      ]);
+      answer = () => TEXT;
+      const ran = await cli([
+        "load",
+        ...common,
+        ...["--host", "omp", "--profile", profile, "--omp", String(omp), "--models", models],
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const files = loadCapturePaths(out, "omp", "need-1");
+      const body = JSON.parse(readFileSync(files.body, "utf8"));
+      const record = JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord;
+      expect(
+        texts(body.system).some((text) =>
+          text.includes("The role part at the daemon image's commit.")
+        )
+      ).toBe(true);
+      expect(
+        texts(body).some((text) => text.includes("The role part at the plugin's commit."))
+      ).toBe(false);
+      expect(record.context.rolePrompt).toMatchObject({
+        repo: "acme/legion",
+        commit: DAEMON_COMMIT,
+        commitOf: "daemon image",
+        role: "implementer",
+      });
     },
     HOST_ROW_TIMEOUT_MS
   );
@@ -2693,9 +3396,10 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
         expect([record.profile, record.profileDigest]).toEqual([file, sha256(file)]);
         expect(savedRuns(out, id)).toMatchObject([
           {
-            loaded: true,
+            outcome: "loaded",
             loadedBy: `Skill ${plugin}:alpha`,
-            toolCalls: ["Skill"],
+            skillReads: "first message",
+            replies: [{ calls: [{ name: "Skill", target: `${plugin}:alpha` }] }],
             profile: file,
             profileDigest: sha256(file),
           },
@@ -2857,7 +3561,7 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
       const [one = ""] = readdirSync(profiles);
       expect(treeOf(path.join(profiles, one, "context", "work", KAPPA.path))).toEqual(KAPPA_FILES);
       expect(savedRuns(out, "need-1")).toMatchObject([
-        { loaded: true, loadedBy: "Skill acme-tools:alpha" },
+        { outcome: "loaded", loadedBy: "Skill acme-tools:alpha" },
       ]);
     },
     HOST_ROW_TIMEOUT_MS

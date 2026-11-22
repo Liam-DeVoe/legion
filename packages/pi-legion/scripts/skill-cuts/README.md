@@ -327,33 +327,76 @@ task's own profile (Oh My Pi through `capture.ts`, which lists the skill under t
 has a model write, with the plugins' stand-ins, and sends a subagent's recorded prompt with only
 the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile, into
 which a local marketplace installs the profile's skills and the tested skill, each in its plugin,
-while a project skill goes in the checkout), then sent `--runs` times. The plugins' stand-ins of
-an Oh My Pi capture listen on 127.0.0.1. A Legion role's run gets a stand-in Legion daemon, a
-stand-in Envoy listener and a sink for the NATS server the Envoy plugin dials. The run of every
-other profile that installs the Envoy plugin, whatever its context (a devbox one included), gets
-that listener and that sink, since the plugin defines its tools only when it has a listener to
-reach; a subagent's run gets the listener alone. A capture follows the harness strings rule
-above: a session task stands for its own session, and a written task for the one
-`--context-session` names (the session its profile was rebuilt from; `<path hash>` is the
+while a project skill goes in the checkout), then sent until it has `--runs` judged runs (below).
+The plugins' stand-ins of an Oh My Pi capture listen on 127.0.0.1. A Legion role's run gets a
+stand-in Legion daemon, a stand-in Envoy listener and a sink for the NATS server the Envoy plugin
+dials. The run of every other profile that installs the Envoy plugin, whatever its context (a
+devbox one included), gets that listener and that sink, since the plugin defines its tools only
+when it has a listener to reach; a subagent's run gets the listener alone. A capture follows the
+harness strings rule above: a session task stands for its own session, and a written task for the
+one `--context-session` names (the session its profile was rebuilt from; `<path hash>` is the
 SHA-256 of that session file's path in hex), or for none, with neutral values, when it is not
 given. The runs of a profile's tasks are sent together, once each of its tasks has its capture,
-in one seeded order, each run with a fresh session id, the first run of each task in the order
-alone among its task's. An `openai/<id>` model runs on Oh My Pi only, on the Responses route,
-with an Anthropic `--hint-model`. A run loads the skill
-when the first assistant message reads it (Oh My Pi: `read` of `skill://<name>` or its
-`SKILL.md`, a `tool_use` block or a Responses `function_call` item; Claude Code: `Skill` naming
-`<name>` or `<plugin>:<name>`, or `Read` of its `SKILL.md`), and never goes past that message. It
-prints each task's loads and verdict, each profile's send seed, and the skill's verdict
-(`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per run, with its session id, its
-send seed and its place in the order), `<out>/captures/`, `<out>/sessions/` and
-`<out>/summary.json`; each run line and each task of the summary names its profile file and the
-SHA-256 of its bytes. A task whose run file is complete is skipped, so a run started again goes
-on from what was saved; a task whose capture or runs were made under a profile of other bytes is
-refused, and so is an `--out` whose runs were sent before each had its own session id. A task
-whose context needs a directory no read can give (as `behaviour` drops a case for) is dropped:
-its line and the summary's `dropped` give the reason (`unreadable-directory: ` and the
-repository, the commit and the path), a run started again skips it while its profile file keeps
-the same bytes, and the verdict rule counts it as a task with no runs.
+in one seeded order, each run with a fresh session id that each of its requests keeps, the first
+run of each task in the order alone among its task's. Each body is its capture's but for that id
+and a cache breakpoint on its last message (`replay.ts`'s `withCacheBreakpoint`), so that a
+task's later runs read the whole body from the cache. An `openai/<id>` model runs on Oh My Pi
+only, on the Responses route, with an Anthropic `--hint-model`. A reply loads the skill when one
+of its tool calls reads it (Oh My Pi: `read` of `skill://<name>` or its `SKILL.md`, a `tool_use`
+block or a Responses `function_call` item; Claude Code: `Skill` naming `<name>` or
+`<plugin>:<name>`, or `Read` of its `SKILL.md`).
+
+Skill reads follow the behaviour replay's rule (the architect, 2026-11-22). On Oh My Pi, a reply
+whose every tool call reads a skill file is answered as `behaviour` answers one: a read of
+another skill the profile installs from that skill's installed copy, a read of a skill the
+profile does not install with Oh My Pi's unknown-skill answer, a read of another file of the
+tested skill from its directory. Then the request goes again with the answers, at most 3 rounds.
+Each run comes to one of four outcomes:
+
+- `loaded`: a reply reads the skill, the first message or one after answered rounds, before any
+  reply does more than read skill files. The run ends there.
+- `sent by` another skill: the answer to a read of that skill holds a text that names the tested
+  skill, that is `skill://<name>`, `/skill:<name>`, the name in backticks, or the name next to the
+  word "skill" ("the `x` skill", "skill x", "x skill"). The name alone as a word does not count,
+  so names such as `analyze` or `sdd` do not match ordinary prose. The run ends once that answer
+  is made, before it is sent.
+- `reads past last round`: the reply after the third answered round still only reads skill files.
+- `not loaded`: any other run.
+
+Claude Code's runs end at their first message, and their run lines say so (`skillReads: "first
+message"`): the runner does not rebuild Claude Code's result of a `Skill` or `Read` call, so it
+answers no read there.
+
+`loaded` and `not loaded` runs are judged. For each `sent by` or `reads past last round` run the
+task runs again, at most 5 extra runs a task, until it has `--runs` judged runs; the extra runs go
+in a seeded order of their own. A task still short of them after its 5 extra runs gives no
+description evidence, a need task and a near-miss task alike: the skill's verdict leaves it out,
+and its line and the summary's `noEvidence` say why, with the counts (`sent by <skill> in <n> of
+<m> runs`, `reads past the last round in <n> of <m> runs`). It prints, per task, its loads among
+its judged runs, what each run came to, its runs sent by each other skill, its runs that read past
+the last round, its extra runs, its verdict and its spend at list price (its runs, its failed runs,
+its hints, all); each send order's seed; and the skill's verdict (`score.ts`). It writes
+`<out>/runs/<task>.jsonl`, one line per run: its outcome, `loadedBy`, `sentBy`, `skillReads`, and
+each reply (its tool calls with their names and targets, the answers made to its reads with where
+each came from, `arm` for the tested skill's directory, `copy` for an installed copy and `absent`
+for none, and what it used; every reply but the last went back with its answers), with its session
+id, its send seed and its place in the order. A run that fails after one or more of its requests
+had their replies (a later request refused, the budget's refusal among them) comes to no outcome
+and is made again by the next command, but what those replies used is kept in
+`<out>/runs/<task>.failed.jsonl` (the error and each reply's usage), and counts in its task's spend,
+its task's line and the test's spend from then on. It also writes `<out>/captures/`,
+`<out>/sessions/` and `<out>/summary.json`, whose tasks give `judged`, `loads`, `sentBy`,
+`readsPastLastRound`, `extraRuns`, `noEvidence`, `fault` and `spend` (`runsUsd`, `failedRuns`,
+`failedRunsUsd`, `hintsUsd`, `usd`), and whose `spend` gives the test's `runsUsd`,
+`failedRunsUsd`, `hintsUsd` and `usd`; each run line and each task of the summary names its
+profile file and the SHA-256 of its bytes. A task whose run file holds its judged runs, or has used
+its extra runs, is skipped, so a run started again goes on from what was saved; a task whose
+capture or runs were made under a profile of other bytes is refused, and so is an `--out` whose
+runs were sent before each had its own session id or before this rule. A task whose context needs
+a directory no read can give (as `behaviour` drops a case for) is dropped: its line and the
+summary's `dropped` give the reason (`unreadable-directory: ` and the repository, the commit and
+the path), a run started again skips it while its profile file keeps the same bytes, and the
+verdict rule counts it as a task with no runs.
 
 Every load applies the listing rule (the architect, 2026-11-22), so no one applies it by hand.
 Each task's listing measure comes from the tasks file's build-tasks summary
@@ -672,10 +715,13 @@ alone, which a profile does not tell apart.
 
 A Legion profile reads the worker image's packages (the units of the repository that the prefix
 rows under `/opt/legion/` come from) at the commit that image was built from, not at that
-repository's default branch at the session's start. The deployment's Pulumi config
-(`Pulumi.prod.yaml` in the directory above the project file's: `legion/Pulumi.prod.yaml` for
-`legion/projects/<file>.yaml`), read at the deployment's commit of the session's start, names the
-project's image in the `image:` line of its entry `- key: <PROJECT>`. The commit is the one that
+repository's default branch at the session's start. The deployment, read at its commit of the
+session's start, names the project's image in the top-level `image:` line of the project file
+(`legion/projects/<file>.yaml`), where a deployment keeps each project's values once it moves
+them out of its Pulumi config; with no such line, in the `image:` line of the project's entry
+`- key: <PROJECT>` of the Pulumi config (`Pulumi.prod.yaml` in the directory above the project
+file's: `legion/Pulumi.prod.yaml`). A nested map's `image:` and the `daemonImage:` line are not
+that line. The commit is the one that
 GitHub's build provenance of the image's digest names (`gh api
 repos/<repository>/attestations/sha256:<digest>`, the `gitCommit` of its first resolved
 dependency). For an image whose digest has no provenance there (GitHub answers 404, as for an
@@ -686,13 +732,27 @@ repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of 
 word of the form `<name>-v<version>` or `v<version>`, such as `legion-v15.2.0`, at the tag's last
 commit at or before the deployment's read). The order matters: a comment that names the image's
 base commit first and an older release after it ("before it …") is read at the base commit. Where
-none of these gives a commit (no config file at that commit, no entry or `image:` line for the
-project, or a comment that names none), the
+none of these gives a commit (no `image:` line in the project file and no config file at that
+commit, no entry or `image:` line for the project, or a comment that names none), the
 repository is read at its default branch at the session's start. The evidence item `the worker
 image's commit of <repository>` says which rule decided, with each read; the image's units are
 resolved from the repository's tree at that commit, and their copies and plugin directories name
 it. The rest of that repository is still read at the session's start: a Legion workspace of the
 image's repository gives its project skills and context files at that commit.
+
+The Legion daemon composes a pod's role prompt, and a project's daemon image can be another build
+than its worker image. The deployment names it in a `daemonImage:` line, found as the `image:` line
+is (the project file's top-level one, else the one of the project's entry in the Pulumi config),
+and its commit of the same repository is decided by the same rule: its digest's provenance, else
+the first word of the comment right above it that names a commit. The evidence item `the daemon
+image's commit of <repository>` says which rule decided, or why none did. A capture composes the
+role prompt (context.ts) from `prompts.go` and its parts at that commit when the item names one,
+else at the commit the profile reads that repository's plugins at (the worker image's), and its
+record's `rolePrompt.commitOf` says which (`daemon image` or `plugin`). A load task's capture
+reads the item from its task's evidence in the tasks file's build-tasks summary. `load` refuses
+(exit 2, before any run) an `--out` that holds a task's capture whose record says its role prompt
+was composed at another commit than that evidence names now, naming both; a record with no
+`commitOf`, made before it was recorded, was composed at the plugin's commit.
 
 The arms and the load test tell the copies of the tested skill apart by their source, not their
 name (cases.ts's `testedCopy`: the repository and path of the copy listed under the skill's own
@@ -1024,8 +1084,13 @@ fails that read, naming the command and the limit: a pull is the `pull-failed` d
 read fails the run. Each wait for a GitHub rate limit is said on standard error before it starts:
 the call, gh's reason, the wait and when it ends. A refusal for GitHub's secondary rate limit, which
 has no reset, waits a minute, doubled at each refusal; a refusal for the primary limit waits until
-its reset, at most 15 minutes. copies.ts and context.ts use the same rule (common.ts's
-`rateLimitWait`).
+its reset, at most 15 minutes. copies.ts, context.ts and the profile's reads here use the same rule
+(common.ts's `rateLimitWait`); a profile read takes the reset from `gh api rate_limit`, the
+GraphQL limit's for a batch of blobs and the REST limit's for any other read. A call is sent again
+after at most 5 waits; a profile read GitHub still refuses after them fails as a read that fails
+for a transient reason on every try does, so no SKILL.md it held is left out of a profile in
+silence: `build-cases` drops the session as `profile-failed`, and `build-cases --reprofile` leaves
+the case out, names the read in the summary's `leftOut` and exits 1.
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
 skill, the seed, and the SHA-256 of `--old`'s files, every file of `--new`, the sessions file, the

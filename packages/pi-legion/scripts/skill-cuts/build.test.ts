@@ -30,7 +30,7 @@ import {
   STOP_AFTER_SESSIONS,
 } from "./build";
 import { type Case, loadCases, pathHash } from "./cases";
-import { GhRetries } from "./common";
+import { GhRetries, MAX_RATE_RETRIES, SECONDARY_WAIT_MS } from "./common";
 import {
   type GhResult,
   INSTALLERS_COLUMNS,
@@ -5521,7 +5521,10 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
     // The summary's listing counts gained `fromRecorded` (the misses diagnosis, cause A), and the
     // Legion context session's evidence `the worker image's commit of acme/skills` (cause C2).
-    "profiles summary": "c16018d2feab918d905861c0faf6bf6891ee33818c67b404f5496a792eda9c5a",
+    // Since then that item's text says the project file was read first, and its rule says so, and
+    // the item `the daemon image's commit of acme/skills` follows it: with that item's old text
+    // and without the new item, the summary's digest is c16018d2…, the one pinned before.
+    "profiles summary": "1d3be7ef98954326114e69a5d53bb69de43592a64a28759c64eb40e74f994584",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -6168,6 +6171,312 @@ test("build-cases --reprofile of a Legion pane whose image has no provenance rea
     `), so the image's units of acme/skills are read at ${IMAGE_SHA}: a Legion pod runs the worker image`
   );
 }, 120_000);
+
+/** GitHub's attestations of an image digest in acme/skills whose build provenance names `commit`
+ *  of acme/skills as its first resolved dependency. */
+function attestationOf(commit: string): string {
+  const statement = {
+    predicateType: "https://slsa.dev/provenance/v1",
+    predicate: {
+      buildDefinition: {
+        resolvedDependencies: [
+          {
+            uri: "git+https://github.com/acme/skills@refs/heads/main",
+            digest: { gitCommit: commit },
+          },
+        ],
+      },
+    },
+  };
+  const payload = Buffer.from(JSON.stringify(statement)).toString("base64");
+  return JSON.stringify({ attestations: [{ bundle: { dsseEnvelope: { payload } } }] });
+}
+
+/** The legion case of the suite built again by build-cases --reprofile under `image-<name>`, with
+ *  gh's answers to acme/infra's legion/Pulumi.prod.yaml at SHA (`pulumi`; a 404 when undefined),
+ *  to ACME's project file (`project`; the suite's own when undefined) and to each attestation of
+ *  acme/skills (`attested`, the commit by digest; a 404 for another digest): the profile's skills
+ *  and plugins of acme/skills (`<name> <commit>`), and the sources of its evidence items of the
+ *  worker image's and the daemon image's commits. */
+async function reprofiledLegion(
+  name: string,
+  answers: {
+    readonly pulumi?: string;
+    readonly project?: string;
+    readonly attested: Readonly<Record<string, string>>;
+  }
+) {
+  const legion = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("legion"))
+  ) as Case;
+  const dir = path.join(scratch, `image-${name}`);
+  mkdirSync(dir, { recursive: true });
+  const from = path.join(dir, "old.jsonl");
+  writeFileSync(from, `${JSON.stringify(legion)}\n`);
+  const fresh = path.join(dir, "reprofiled.jsonl");
+  const lines: string[] = [];
+  const standin = io(lines);
+  const missing = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+  const code = await main(
+    [
+      ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+      ...["--count", countDir, "--reprofile", from, "--out", fresh],
+    ],
+    {
+      ...standin,
+      gh: async (args) => {
+        const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+        if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
+          ghCalls.push([...args]);
+          return answers.pulumi !== undefined && args.includes(`ref=${SHA}`)
+            ? { code: 0, stdout: answers.pulumi, stderr: "" }
+            : missing;
+        }
+        if (
+          route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml" &&
+          answers.project !== undefined
+        ) {
+          ghCalls.push([...args]);
+          return { code: 0, stdout: answers.project, stderr: "" };
+        }
+        const digest = /^repos\/acme\/skills\/attestations\/sha256:([0-9a-f]{64})$/.exec(
+          route
+        )?.[1];
+        if (digest !== undefined) {
+          ghCalls.push([...args]);
+          const commit = answers.attested[digest];
+          return commit === undefined
+            ? missing
+            : { code: 0, stdout: attestationOf(commit), stderr: "" };
+        }
+        return standin.gh(args);
+      },
+    }
+  );
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const [c] = loadCases(fresh, old);
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    skills: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/skills")
+      .map((skill) => `${skill.name} ${skill.commit}`)
+      .sort(),
+    plugins: (c?.profile.plugins ?? [])
+      .filter((plugin) => plugin.repo === "acme/skills")
+      .map((plugin) => `${plugin.name} ${plugin.commit}`),
+    worker: evidence["the worker image's commit of acme/skills"] ?? "",
+    daemon: evidence["the daemon image's commit of acme/skills"] ?? "",
+  };
+}
+
+// Catches: a deployment that keeps a project's values in its project file (a top-level image:
+// and daemonImage:, where a deployment moved them out of its Pulumi.prod.yaml) read at the default
+// branch, as the Pulumi config names no image for the project; and a daemon image of another
+// build than the worker image, whose commit the role prompt is not composed at.
+describe("build-cases --reprofile of a Legion pane whose project file names its images", () => {
+  const image = (digest: string) => `registry.example/acme/worker@sha256:${digest}`;
+  /** Image digests: ATTESTED's provenance names IMAGE_SHA, DAEMON's DAEMON_SHA, and PLUS and
+   *  NESTED have none. */
+  const ATTESTED = "1".repeat(64);
+  const PLUS = "2".repeat(64);
+  const NESTED = "7".repeat(64);
+  const DAEMON = "8".repeat(64);
+  /** The made-up commit of acme/skills that ACME's daemon image was built from. */
+  const DAEMON_SHA = "d4".repeat(20);
+  const attested = { [ATTESTED]: IMAGE_SHA, [DAEMON]: DAEMON_SHA };
+  const own = `acme/infra:legion/projects/10-ACME.yaml at ${SHA}`;
+  const pulumiAt = `acme/infra:legion/Pulumi.prod.yaml at ${SHA}`;
+  /** acme/infra's Pulumi config with ACME's entry holding `fields`. */
+  const pulumi = (fields: readonly string[]) =>
+    [
+      "config:",
+      "  legion:projects:",
+      "    - key: ACME",
+      "      instructions: acme.md",
+      ...fields.map((field) => `      ${field}`),
+      "",
+    ].join("\n");
+  const names = (digest: string, commit: string) =>
+    `gh api repos/acme/skills/attestations/sha256:${digest} names git+https://github.com/acme/skills@refs/heads/main at ${commit}`;
+  const atImage = `, so the image's units of acme/skills are read at ${IMAGE_SHA}: a Legion pod runs the worker image that the deployment names for its project`;
+  const imaged = [`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`];
+  const atPlugins =
+    ", so the role prompt is composed at the commit the profile reads the plugins of acme/skills at: the Legion daemon";
+
+  test("the project file's top-level image: line names the worker image over the Pulumi config's entry, decided by its digest's provenance, else by the base digest the comment right above it names; with no daemonImage: line, the role prompt is composed at the commit of the profile's plugins", async () => {
+    const top = await reprofiledLegion("project-top", {
+      project: `key: ACME\ninstructions: acme.md\nimage: ${image(ATTESTED)}\n`,
+      pulumi: pulumi([`image: ${image(PLUS)}`]),
+      attested,
+    });
+    expect(top.skills).toEqual(imaged);
+    expect(top.plugins).toContain(`pi-acme ${IMAGE_SHA}`);
+    expect(top.worker).toStartWith(
+      `${own} gives the project ACME the image ${image(ATTESTED)}; ${names(ATTESTED, IMAGE_SHA)}${atImage}`
+    );
+    expect(top.daemon).toStartWith(
+      `${own} has no top-level daemonImage: line, and ${pulumiAt} holds no entry - key: ACME with a daemonImage: line${atPlugins}`
+    );
+
+    const based = await reprofiledLegion("project-base", {
+      project: `key: ACME\n# worker-plus, built on the base ${image(ATTESTED)}.\nimage: ${image(PLUS)}\n`,
+      attested,
+    });
+    expect(based.skills).toEqual(imaged);
+    expect(based.worker).toStartWith(
+      `${own} gives the project ACME the image ${image(PLUS)}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${PLUS}); the comment right above its image: line names the image digest sha256:${ATTESTED}, whose build provenance (gh api repos/acme/skills/attestations/sha256:${ATTESTED}) names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}${atImage}`
+    );
+    expect(based.daemon).toStartWith(
+      `${own} has no top-level daemonImage: line, and ${pulumiAt} does not exist (gh api repos/acme/infra/contents/legion/Pulumi.prod.yaml?ref=${SHA})${atPlugins}`
+    );
+  }, 60_000);
+
+  test("a project file with no top-level image: line falls back to the Pulumi config's entry, its nested image: and its daemonImage: line not taken for the image; that daemonImage: line, over the entry's, names the daemon image, whose provenance gives the commit the role prompt is composed at", async () => {
+    const daemonImage = `registry.example/acme/daemon@sha256:${DAEMON}`;
+    const built = await reprofiledLegion("project-daemon", {
+      project: `key: ACME\ninstructions: acme.md\nworker:\n  image: ${image(NESTED)}\ndaemonImage: ${daemonImage}\n`,
+      pulumi: pulumi([`image: ${image(ATTESTED)}`, `daemonImage: ${image(ATTESTED)}`]),
+      attested,
+    });
+    expect(built.skills).toEqual(imaged);
+    expect(built.worker).toStartWith(
+      `${pulumiAt} gives the project ACME the image ${image(ATTESTED)}; ${names(ATTESTED, IMAGE_SHA)}${atImage}`
+    );
+    expect(built.daemon).toStartWith(
+      `${own} gives the project ACME the daemonImage ${daemonImage}; ${names(DAEMON, DAEMON_SHA)}, so the role prompt is composed from acme/skills at ${DAEMON_SHA}: the Legion daemon`
+    );
+  }, 60_000);
+});
+
+// Catches: a SKILL.md read GitHub refused for its primary rate limit ("API rate limit exceeded
+// for installation ID ...", no transient reason) left out of the profile as a fault, in silence:
+// one rebuild went from 40 skills to 19 while the limit was spent.
+describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses for its rate limit", () => {
+  const PRIMARY = "gh: API rate limit exceeded for installation ID 12345. (HTTP 403)";
+  /** The blob of beta's SKILL.md, which the good case's profile installs from acme/skills. */
+  const BETA_BLOB = blobId(REPOSITORIES["acme/skills"]?.["skills/beta/SKILL.md"] ?? "");
+  /** The good case built again: each gh call that reads beta's SKILL.md (a GraphQL batch that
+   *  holds its blob, or the blob alone) refused for the primary rate limit while `refusing` says
+   *  so of the waits made so far, `gh api rate_limit` answering the resets `resets` (seconds since
+   *  the epoch), and each wait kept in `waits`. */
+  const reprofiled = async (
+    name: string,
+    refusing: (waits: readonly number[]) => boolean,
+    resets: { readonly core: number; readonly graphql: number }
+  ) => {
+    const good = (await profileCases()).find(
+      (c) => c.source.pathHash === pathHash(sessionPath("good"))
+    ) as Case;
+    const dir = path.join(scratch, `rate-limited-${name}`);
+    mkdirSync(dir, { recursive: true });
+    const from = path.join(dir, "old.jsonl");
+    writeFileSync(from, `${JSON.stringify(good)}\n`);
+    const fresh = path.join(dir, "reprofiled.jsonl");
+    const lines: string[] = [];
+    const waits: number[] = [];
+    const standin = io(lines);
+    const limits = JSON.stringify({
+      resources: { core: { reset: resets.core }, graphql: { reset: resets.graphql } },
+    });
+    const code = await main(
+      [
+        ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+        ...["--count", countDir, "--reprofile", from, "--out", fresh],
+      ],
+      {
+        ...standin,
+        gh: async (args) => {
+          if (args.includes("rate_limit")) {
+            ghCalls.push([...args]);
+            return { code: 0, stdout: limits, stderr: "" };
+          }
+          if (refusing(waits) && args.some((arg) => arg.includes(BETA_BLOB))) {
+            ghCalls.push([...args]);
+            return { code: 1, stdout: "", stderr: `${PRIMARY}\n` };
+          }
+          return standin.gh(args);
+        },
+        sleep: async (ms) => void waits.push(ms),
+      }
+    );
+    return {
+      good,
+      code,
+      lines,
+      waits,
+      cases: existsSync(fresh) ? loadCases(fresh, old) : [],
+      summary: JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
+        casesWritten: number;
+        leftOut: { id: string; why: string }[];
+      },
+    };
+  };
+  /** The wait until `reset` (seconds since the epoch) and a second, for a read made between the
+   *  times `before` and `after` (milliseconds since the epoch): its least and its most. */
+  const untilReset = (reset: number, before: number, after: number) => [
+    reset * 1000 + 1_000 - after,
+    reset * 1000 + 1_000 - before,
+  ];
+  const now = () => Math.floor(Date.now() / 1000);
+
+  test("a SKILL.md batch refused until the reset `gh api rate_limit` gives for GraphQL waits until then, is sent again, and the case is written with the skill in its profile and no fault of its SKILL.md in its evidence", async () => {
+    const resets = { core: now() + 600, graphql: now() + 90 };
+    const before = Date.now();
+    const built = await reprofiled("once", (waits) => waits.length === 0, resets);
+    const after = Date.now();
+    expect(built.code).toBe(EXIT.ok);
+    expect(built.cases.map((c) => c.id)).toEqual([built.good.id]);
+    const [c] = built.cases;
+    expect(c?.profile.skills.filter((s) => s.repo === "acme/skills").map((s) => s.name)).toContain(
+      "beta"
+    );
+    // A read taken as done would leave its SKILL.md out as a fault ("SKILL.md read failed").
+    expect(
+      (c?.evidence ?? []).filter((each) =>
+        each.item.startsWith("left out: acme/skills skills/beta/")
+      )
+    ).toEqual([]);
+    expect(built.waits).toHaveLength(1);
+    const [least = 0, most = 0] = untilReset(resets.graphql, before, after);
+    expect(built.waits[0]).toBeGreaterThanOrEqual(least);
+    expect(built.waits[0]).toBeLessThanOrEqual(most);
+    expect(
+      built.lines.filter((line) =>
+        line.startsWith(
+          `build-cases: a gh call was refused for its rate limit (${PRIMARY}); waiting `
+        )
+      )
+    ).toHaveLength(1);
+  }, 60_000);
+
+  test("a SKILL.md read still refused after MAX_RATE_RETRIES waits, as a batch and alone, fails the command (exit 1) as any read that fails for a transient reason on every try does: the case is left out of the re-profile, naming the read and the limit, and no profile that lacks the skill is written", async () => {
+    const resets = { core: now() + 600, graphql: now() + 90 };
+    const before = Date.now();
+    const built = await reprofiled("always", () => true, resets);
+    const after = Date.now();
+    expect(built.code).toBe(EXIT.failed);
+    expect(built.lines).toContain(`build-cases: failed: 1 cases left out: ${built.good.id}`);
+    expect(built.cases).toEqual([]);
+    expect(built.summary.casesWritten).toBe(0);
+    expect(built.summary.leftOut).toHaveLength(1);
+    const [left] = built.summary.leftOut;
+    expect(left?.id).toBe(built.good.id);
+    expect(left?.why).toStartWith(
+      `a GitHub read the profile needs failed: gh api repos/acme/skills/git/blobs/${BETA_BLOB} failed: ${MAX_RATE_RETRIES + 1} tries: try 1: ${PRIMARY}`
+    );
+    // The batch's waits run to GraphQL's reset, the blob's to the REST limit's.
+    expect(built.waits).toHaveLength(2 * MAX_RATE_RETRIES);
+    const [graphqlLeast = 0, graphqlMost = 0] = untilReset(resets.graphql, before, after);
+    const [coreLeast = 0, coreMost = 0] = untilReset(resets.core, before, after);
+    for (const [n, wait] of built.waits.entries()) {
+      expect(wait).toBeGreaterThanOrEqual(n < MAX_RATE_RETRIES ? graphqlLeast : coreLeast);
+      expect(wait).toBeLessThanOrEqual(n < MAX_RATE_RETRIES ? graphqlMost : coreMost);
+    }
+  }, 60_000);
+});
 
 // Catches: one transport error on a GitHub read leaving a case out of a re-profile, as a commit
 // read's TLS handshake timeout did on 2026-11-21, where copies.ts sends the read again; and a name
@@ -7214,6 +7523,53 @@ describe("GithubReads", () => {
       expect(outcome).toContain("gh: Not Found (HTTP 404)");
     }
     expect(calls).toEqual([`repos/acme/request-timeout/git/trees/${COMMIT}?recursive=1`]);
+  });
+
+  // Catches: a SKILL.md read GitHub refused for its secondary rate limit (an HTTP 403, no
+  // transient reason) kept as a fault, so the skill is left out of the profile.
+  test("a SKILL.md read refused twice for the secondary rate limit is sent again after SECONDARY_WAIT_MS, then after twice that, with no read of a limit's reset, and is read whole", async () => {
+    const SECONDARY =
+      "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)";
+    let refusals = 2;
+    const { gh, calls } = standIn("acme/skills", () =>
+      refusals-- > 0
+        ? failed(SECONDARY)
+        : {
+            code: 0,
+            stdout: JSON.stringify({
+              content: Buffer.from(SKILL).toString("base64"),
+              encoding: "base64",
+            }),
+            stderr: "",
+          }
+    );
+    const waits: number[] = [];
+    const lines: string[] = [];
+    const retries = new GhRetries(
+      { sleep: async (ms) => void waits.push(ms), err: (line) => void lines.push(line) },
+      "build-cases"
+    );
+    const asked: string[][] = [];
+    const reads = new GithubReads(
+      (args) => {
+        asked.push([...args]);
+        return gh(args);
+      },
+      new Map(),
+      retries
+    );
+    const read = await reads.at("acme/skills", COMMIT, []);
+    expect(read.faults).toEqual([]);
+    expect(read.copies.map((copy) => copy.description)).toEqual(["Use for the alpha list."]);
+    expect(waits).toEqual([SECONDARY_WAIT_MS, 2 * SECONDARY_WAIT_MS]);
+    expect(lines.map((line) => line.replace(/, until \S+, /, ", until <time>, "))).toEqual(
+      [1, 2].map(
+        (n) =>
+          `build-cases: a gh call was refused for its rate limit (${SECONDARY}); waiting ${(n * SECONDARY_WAIT_MS) / 1000} s, until <time>, before sending it again, refusal ${n} of ${MAX_RATE_RETRIES}`
+      )
+    );
+    expect(asked.some((args) => args.includes("rate_limit"))).toBe(false);
+    expect(calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(3);
   });
 });
 
