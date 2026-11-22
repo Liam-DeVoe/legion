@@ -572,3 +572,4 @@ $([ "$differed" -eq 0 ] || printf '%s answers differ:\n%s' "$differed" "$(<"$wor
 fi
 no_difference
 pass
+run_end

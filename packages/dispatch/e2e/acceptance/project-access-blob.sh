@@ -969,3 +969,4 @@ done
 no_difference
 note "every caller is sent the same frames at both builds"
 pass
+run_end
