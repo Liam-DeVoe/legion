@@ -2382,9 +2382,9 @@ type Store interface {
 	// row, that row while it runs — by next_at then id. A start behind a branch row no one is
 	// running is not listed. Issue "" is every issue of project.
 	HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error)
-	// StartsWaitingForPod is, for each issue of project, the roles whose start row waits because
-	// the issue's pod was built before the deployment defined them (its last error begins with
-	// pods.StartWaitsForPodPrefix), distinct and in the order of their rows.
+	// StartsWaitingForPod is, for each issue of project, the roles of the start rows that wait
+	// because the issue's pod lacks the slot of the start's claim or the role of its step (its last
+	// error begins with pods.StartWaitsForPodPrefix), distinct and in the order of their rows.
 	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error)
 	// FinishOutbox deletes row id while leaseToken holds it; a stale lease's finish is a no-op, so
 	// a worker whose lease expired never removes the row its replacement now holds.

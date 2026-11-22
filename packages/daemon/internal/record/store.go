@@ -3080,10 +3080,11 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 	return held, nil
 }
 
-// StartsWaitingForPod is, for each issue of project, the roles whose start row waits because the
-// issue's pod was built before the deployment defined them: a supervise start whose last error
-// begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes it; the idle
-// view's startWaitsForPodRow reads the same rows). Each role once, in the order of its rows.
+// StartsWaitingForPod is, for each issue of project, the roles of the start rows that wait because
+// the issue's pod lacks the slot of the start's claim or the role of its step: a supervise start
+// whose last error begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes
+// it; the idle view's startWaitsForPodRow reads the same rows). Each role once, in the order of
+// its rows.
 func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error) {
 	rows, err := tx.Query(ctx, `select issue, payload->>'role' from outbox
 		where split_part(issue, '-', 1) = $1 and kind = 'supervise' and payload->>'op' = 'start'

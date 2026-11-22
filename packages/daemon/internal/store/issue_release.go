@@ -251,8 +251,9 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 			return err
 		}
 		if !overtaken && row == mark.boundary {
-			// A start that waits because the pod was built before its role is no work the pod
-			// was given (startWaitsForPodRow): the idle rule's Waiting leaves it out too.
+			// A start that waits because the pod lacks the slot of its claim or the role of its
+			// step is no work the pod was given (startWaitsForPodRow): the idle rule's Waiting
+			// leaves it out too.
 			if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (
 				select 1 from outbox where issue = $1 and kind = any($2) and (id < $3 or id > $4) and not %s)`,
 				fmt.Sprintf(startWaitsForPodRow, "$5")),

@@ -1293,10 +1293,10 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 	}
 }
 
-// The served issue names each role whose start waits because the issue's pod was built before the
-// deployment defined it: such a role has no claim to show, and its start row waits on its backoff,
-// which no other part of the state lists. An issue with no such start names none, and its JSON
-// holds no such key.
+// The served issue names the role of each start that waits because the issue's pod lacks the slot
+// of the start's claim or the role of its step: such a start may have no claim to show yet, and
+// its start row waits on its backoff, which no other part of the state lists. An issue with no
+// such start names none, and its JSON holds no such key.
 func TestTheServedIssueNamesTheRoleWhoseStartWaitsForItsPod(t *testing.T) {
 	store := projectionStore{
 		issues: []record.Issue{
