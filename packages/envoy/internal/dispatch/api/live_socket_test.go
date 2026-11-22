@@ -544,27 +544,6 @@ func (l smallSendBuffers) Accept() (net.Conn, error) {
 	return conn, err
 }
 
-// noWriteDeadlines wraps a listener so the server's side of every connection it accepts drops the
-// write deadlines the server sets, ten seconds of the wall clock on (liveSocketWriteWait): a write
-// a page holds back by not reading then waits for the page alone, however long a loaded machine
-// takes to let it read again.
-type noWriteDeadlines struct{ net.Listener }
-
-func (l noWriteDeadlines) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		return conn, err
-	}
-	return writeDeadlineDropped{conn}, nil
-}
-
-// writeDeadlineDropped is a connection that takes read deadlines and drops write deadlines.
-type writeDeadlineDropped struct{ net.Conn }
-
-func (c writeDeadlineDropped) SetWriteDeadline(time.Time) error { return nil }
-
-func (c writeDeadlineDropped) SetDeadline(at time.Time) error { return c.Conn.SetReadDeadline(at) }
-
 // smallReadDialer dials with a small receive buffer, so a page that stops reading holds back the
 // socket's writer after kilobytes; beside smallSendBuffers it is how a test plays a slow page. A
 // test that must know the writer stays held holds it with heldWrites instead. Its handshake ends on
@@ -1018,31 +997,39 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 	client.snapshot(t, "widest")
 }
 
-// The page stops reading, so the server's writer blocks in a write on the connection. Two product
-// timers would end such a socket on the wall clock before the page reads again on a loaded
-// machine, neither of which is this row's subject: the pong deadline, two default heartbeats after
-// the open, which runs on a fake no one moves here (liveSocketClock), and the write deadline the
-// writer sets on the connection (liveSocketWriteWait), which the server's side of the connection
-// drops (noWriteDeadlines). Holding the writer by heldWrites instead would change the row's subject,
-// a page slow at the TCP level.
+// The page stops reading, so the server's writer waits in a write on the connection, its queue
+// fills, and the next frame overflows it. The writer is held at the gate of heldWrites, as a page
+// that reads nothing holds it, rather than by TCP backpressure on shrunken buffers
+// (smallSendBuffers, smallReadDialer), whose wall-clock write deadline this row cannot keep: with
+// that deadline dropped instead, one run in about nine stopped with the page's own frames no
+// longer reaching the server, so the queue never overflowed. ss showed it on such a run: the page's
+// side held 1.2 MB unsent and retransmitted with its timer backed off nine times, while the server
+// had received 101 KB and the page knew of 29 KB acknowledged. Two
+// product timers would end the held socket on the wall clock before the page reads again on a
+// loaded machine, neither of which is this row's subject: the pong deadline, two default
+// heartbeats after the open, which runs on a fake no one moves here (liveSocketClock), and the
+// write deadline the writer sets on the connection (liveSocketWriteWait), which heldConn moves on
+// by the time the write waited at the gate.
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
-	rig := newLiveSocketRig(t, testServerOptions{liveSocketClock: clocktest.Held()}, func(listener net.Listener) net.Listener {
-		return noWriteDeadlines{smallSendBuffers{listener}}
-	})
-	client := rig.open(t, smallReadDialer(), asUser("alice"))
+	held := &heldWrites{}
+	rig := newLiveSocketRig(t, testServerOptions{liveSocketClock: clocktest.Held()}, held.listen)
+	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
+	socket := rig.sockets(t, 1)[0]
+	held.hold(t)
 
 	// Every frame is answered with an error frame echoing its 4 KiB sub, and the page reads none of
-	// them: the socket's writer blocks, its queue fills, and the next frame overflows it.
+	// them: the socket's writer waits at the gate with the first, its queue fills, and the next
+	// frame overflows it.
 	const sent = 300
 	sub := strings.Repeat("s", 4096)
 	for n := range sent {
 		client.sendText(t, []byte(`{"type":"resubscribe","sub":"`+sub+strconv.Itoa(n)+`"}`))
 	}
-	socket := rig.sockets(t, 1)[0]
 	waitUntil(t, fmt.Sprintf("the socket's %d-frame queue to overflow", liveSocketQueue), socket.overflowed)
 
-	// Once the page reads again it is sent what the connection already carried, then 1013, and not
-	// the answers queued behind the overflow.
+	// Once the page reads again it is sent what the writer already held, then 1013, and not the
+	// answers queued behind the overflow.
+	held.release()
 	code, messages := client.read().closeCode(t)
 	if code != gws.CloseTryAgainLater {
 		t.Fatalf("the slow page's socket closed with %d, want 1013", code)
