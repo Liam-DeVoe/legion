@@ -51,8 +51,10 @@ jobs:
     # 66058706 (job 136223826570) read the package at 1,095.4 s and the job at 1,227 s, run
     # 44790111577 at 85f6b018 (job 136476756266) at 1,105.3 s and 1,243 s, and run 44846096964 at
     # 28ce7c74 (job 136669775497) at 1,120.9 s and 1,254 s, under run 44687712471's, so none of
-    # those three raised either limit. The limit must fire before the runner cancels the job, so
-    # a hung test prints the dump that names it.
+    # those three raised either limit; run 44979729824 at 66cba4b8 (job 137077480298) read them at
+    # 1,181.9 s and 1,329 s, under those of runs 44939290502 and 44953084676, and raised neither.
+    # The limit must fire before the runner cancels the job, so a hung test prints the dump that
+    # names it.
     timeout-minutes: 70
     services:
       postgres:

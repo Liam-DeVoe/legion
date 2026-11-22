@@ -176,7 +176,7 @@ else:
     print(read.workdir, read.script)' "$@"; }
 check "envoy-go's count runs the broker's packages less the race lane's, and its command, less the backend count's test" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 9m")"
+    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 10m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 41m ./internal/dispatch/api/")"
@@ -253,7 +253,7 @@ jobs:
   envoy-go:
     steps:
       - name: Count the database broker suites' skips
-        run: packages/envoy/scripts/database-skips.sh --timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' --keep "$RUNNER_TEMP/go-test-json/broker.json"
+        run: packages/envoy/scripts/database-skips.sh --timeout 10m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' --keep "$RUNNER_TEMP/go-test-json/broker.json"
 EOF
 skips=packages/envoy/scripts/database-skips.sh
 { cat "$repo/$skips"; echo '# an edit after the reading its pin is of'; } >"$fixture/$skips"

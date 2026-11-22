@@ -50,8 +50,9 @@ jobs:
     # and 44687712471, and 1,681 s and 1,671 s in the pair (jobs 136026779859 and 136039518210),
     # 28.73 minutes, plus that -timeout plus 6: 28.73 + 55 + 6 = 89.73, so 90, raised from the 89
     # the pair's 28.02 + 54 + 6 = 88.02 gave. Runs 44939290502 and 44953084676 read under those,
-    # so neither raised either limit. The limit must fire before the runner cancels the job, so a
-    # hung test prints the dump that names it. The pair and the six dispatch runs since it ran
+    # and so did run 44979729824 at 66cba4b8 (job 137077480222), 1,563.0 s and 1,645 s, so none of
+    # the three raised either limit. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it. The pair and the seven dispatch runs since it ran
     # this job on arm64 (ubuntu-24.04-arm); the pair at 4f1f4436 read the package at 1,353.2 s at
     # most, on x64 (ubuntu-24.04).
     timeout-minutes: 90

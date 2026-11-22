@@ -552,9 +552,9 @@ dump and a data race report among them), the build output and, for a run of its 
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 9m`, `--skip` of the one test of `./internal/cipher/api/` that the job's "Count the
+`--timeout 10m`, `--skip` of the one test of `./internal/cipher/api/` that the job's "Count the
 store-form rows on each backend" runs (`backend-count.sh`, above), and a step limit of its own
-(`timeout-minutes: 19`), which fires before the job's, and `envoy-go-race-api` runs the Dispatch
+(`timeout-minutes: 20`), which fires before the job's, and `envoy-go-race-api` runs the Dispatch
 API through it as the second line above, with
 `--keep "$RUNNER_TEMP/go-test-json/race-api.json"`: that run's stream is the one the job
 uploads.

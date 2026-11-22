@@ -1690,29 +1690,30 @@ class RaceJob(NamedTuple):
 
 # The lane's three jobs and envoy-go are sized by R6 from the final measurement pair, two
 # workflow_dispatch runs of ci.yaml at one head, runs 44657322918 and 44657415021 at 8cfd2682
-# (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head, which
-# may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
-# open-items.md). Each -timeout is the smallest whole minute at which that call's slowest
-# package's slowest reading takes at most half of it: cmd/listener 871.3 s (run 44939290502 at
-# 3a4ffe0b, job 136952816335), against 869.4 s in run 44953084676 at 4165260d (job
-# 136995820227), 829.4 s in run 44846096964 at 28ce7c74 (job 136669775371), 825.0 s in run
-# 44790111577 at 85f6b018 (job 136476756188), 812.3 s in run 44717243297 at 66058706 (job
-# 136223826856), which raised it from the pair's 23m, 679.7 s in run 44687712471 at 56f4dabc (job
-# 136126011379), and 680.5 s and 686.0 s in the pair (jobs 136026780235 and 136039518500),
-# 871.3 / 30 = 29.04, so 30m, which run 44939290502 raised from 28m; internal/dispatch/api
+# (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head, which may
+# raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's open-items.md).
+# Each -timeout is the smallest whole minute at which that call's slowest package's slowest reading
+# takes at most half of it: cmd/listener 886.8 s (run 44979729824 at 66cba4b8, job 137077480061),
+# against 871.3 s in run 44939290502 at 3a4ffe0b (job 136952816335), which raised it from 28m
+# (871.3 / 30 = 29.04), 869.4 s in run 44953084676 at 4165260d (job 136995820227), 829.4 s in run
+# 44846096964 at 28ce7c74 (job 136669775371), 825.0 s in run 44790111577 at 85f6b018 (job
+# 136476756188), 812.3 s in run 44717243297 at 66058706 (job 136223826856), which raised it from the
+# pair's 23m, 679.7 s in run 44687712471 at 56f4dabc (job 136126011379), and 680.5 s and 686.0 s in
+# the pair (jobs 136026780235 and 136039518500), 886.8 / 30 = 29.56, so 30m; internal/dispatch/api
 # 1,202.6 s (run 44953084676, job 136995820251), against 1,199.9 s in run 44939290502 (job
-# 136952816541), 1,154.1 s in run 44687712471 (job 136126011060), 1,123.8 s and 1,118.6 s in the
-# pair (jobs 136026779922 and 136039518473), 1,095.4 s in run 44717243297 (job 136223826570),
-# 1,105.3 s in run 44790111577 (job 136476756266) and 1,120.9 s in run 44846096964 (job
-# 136669775497), 1,202.6 / 30 = 40.09, so 41m, which both runs raised from 39m (run
-# 44939290502's 1,199.9 / 30 = 39.996 gives 40m); and internal/dispatch/docs 1,630.5 s (run
-# 44846096964, job 136669775477), against 1,610.8 s in run 44953084676 (job 136995819889),
-# 1,530.2 s in run 44939290502 (job 136952816397), 1,613.4 s in run 44790111577 (job
-# 136476756178), 1,609.7 s in run 44717243297 (job 136223826761), 1,602.2 s in run 44687712471
-# (job 136126011928) and 1,603.9 s and 1,590.7 s in the pair, 1,630.5 / 30 = 54.35, so 55m,
-# which run 44846096964 raised from 54m. Each figure is read from that job's own `go test -json`
-# artifact. envoy-go-race-api's step runs its package through database-skips.sh (main's
-# #4456), which takes that -timeout as its --timeout (RACE_API_SCRIPT).
+# 136952816541), 1,181.9 s in run 44979729824 (job 137077480298), 1,154.1 s in run 44687712471 (job
+# 136126011060), 1,123.8 s and 1,118.6 s in the pair (jobs 136026779922 and 136039518473), 1,095.4 s
+# in run 44717243297 (job 136223826570), 1,105.3 s in run 44790111577 (job 136476756266) and
+# 1,120.9 s in run 44846096964 (job 136669775497), 1,202.6 / 30 = 40.09, so 41m, which runs
+# 44939290502 and 44953084676 raised from 39m (run 44939290502's 1,199.9 / 30 = 39.996 gives 40m);
+# and internal/dispatch/docs 1,630.5 s (run 44846096964, job 136669775477), against 1,610.8 s in run
+# 44953084676 (job 136995819889), 1,530.2 s in run 44939290502 (job 136952816397), 1,563.0 s in run
+# 44979729824 (job 137077480222), 1,613.4 s in run 44790111577 (job 136476756178), 1,609.7 s in run
+# 44717243297 (job 136223826761), 1,602.2 s in run 44687712471 (job 136126011928) and 1,603.9 s and
+# 1,590.7 s in the pair, 1,630.5 / 30 = 54.35, so 55m, which run 44846096964 raised from 54m. Each
+# figure is read from that job's own `go test -json` artifact. envoy-go-race-api's step runs its
+# package through database-skips.sh (main's #4456), which takes that -timeout as its --timeout
+# (RACE_API_SCRIPT).
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
@@ -1804,12 +1805,13 @@ DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
 DATABASE_SKIPS_PATTERN = "|".join(
     f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
     if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
-# The count step's --timeout, by R6 from the pair at 8cfd2682: cmd/cipherd, then cmd/broker, the
-# step's slowest package on the slower run, 263.2 s (run 44657322918, job 136026779841), which the
-# step's own stream (DATABASE_SKIPS_STREAM, below) holds, and 263.2 / 30 = 8.77, so 9m; the
-# slowest reading since is 263.9 s (run 44687712471 at 56f4dabc, job 136126011542), 8.80, the
-# same 9m (the comment on the step in ci-job-envoy-go.yaml).
-UNIT_TEST_TIMEOUT = "9m"
+# The count step's --timeout, by R6 from the pair at 8cfd2682 and the dispatch runs since:
+# cmd/cipherd, then cmd/broker, the step's slowest package, 298.8 s (run 44979729824 at 66cba4b8,
+# job 137077480236), which the step's own stream (DATABASE_SKIPS_STREAM, below) holds, and
+# 298.8 / 30 = 9.96, so 10m, which that run raised from the 9m of the pair's 263.2 s (run
+# 44657322918, job 136026779841), 8.77, and of 263.9 s (run 44687712471 at 56f4dabc, job
+# 136126011542), 8.80 (the comment on the step in ci-job-envoy-go.yaml).
+UNIT_TEST_TIMEOUT = "10m"
 # Its --keep copies that run's `go test -json` stream to broker.json under
 # $RUNNER_TEMP/go-test-json, which envoy-go's upload step, after it, uploads with the unit step's
 # streams: the step's go test is one of envoy-go's, so it writes its stream as a job artifact as
@@ -2438,12 +2440,13 @@ def race_impossible_tests(root, packages=None) -> dict:
 
 # The race-impossible call's -timeout: the one place it is written, so the call this module
 # derives and check-ci-filters.test.sh's expected text of that call cannot disagree (the test
-# reads it from here). By R6 from the pair at 8cfd2682: internal/dispatch/docs, the call's
-# slowest package on the slower run, 216.1 s (run 44657322918, job 136026779841), and
-# 216.1 / 30 = 7.20, so 8m; the slowest reading since is 236.1 s (run 44790111577 at 85f6b018,
-# job 136476756402), 7.87, the same 8m; the table in the comment on the envoy-go job holds every
-# call's reading (dispatch://INFRA-1075).
-RACE_IMPOSSIBLE_TIMEOUT = "8m"
+# reads it from here). By R6 from the pair at 8cfd2682 and the dispatch runs since:
+# internal/dispatch/docs, the call's slowest package, 247.5 s (run 44979729824 at 66cba4b8, job
+# 137077480236), and 247.5 / 30 = 8.25, so 9m, which that run raised from the 8m of the pair's
+# 216.1 s (run 44657322918, job 136026779841), 7.20, and of 236.1 s (run 44790111577 at 85f6b018,
+# job 136476756402), 7.87; the table in the comment on the envoy-go job holds every call's reading
+# (dispatch://INFRA-1075).
+RACE_IMPOSSIBLE_TIMEOUT = "9m"
 
 
 def race_impossible_call(packages) -> str:
@@ -2671,13 +2674,13 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # server of its own it took 298.8 s and 223.3 s in the pair at fae4eab5 (runs 43654965125
 # and 43657875798), less than the race-impossible call's 381.3 s and 292.5 s, each from the
 # first event of its stream to the last. The short calls follow it: the longest of them,
-# natslive, took 73.0 s and 65.6 s in that pair. In the pair at 8cfd2682 and the six
-# dispatch runs since, the pgmigrate call took longer than the race-impossible call by that
-# measure, 259.6 s to 284.7 s against 223.1 s to 253.0 s (the documents package, the
-# latter's longest, 200.0 s to 236.1 s); but on each run's one clock, as above, the
-# race-impossible call's first event came 143.1 s to 164.6 s in and the pgmigrate call's
-# 23.9 s to 31.4 s, so the race-impossible call ended later in every one of those runs,
-# 372.7 s to 417.6 s against 287.0 s to 316.1 s.
+# natslive, took 73.0 s and 65.6 s in that pair. In the pair at 8cfd2682 and the seven
+# dispatch runs since, the pgmigrate call took longer than the race-impossible call by
+# that measure in all but run 44979729824, 253.6 s to 284.7 s against 223.1 s to 267.2 s
+# (the documents package, the latter's longest, 200.0 s to 247.5 s); but on each run's one
+# clock, as above, the race-impossible call's first event came 135.8 s to 164.6 s in and
+# the pgmigrate call's 21.8 s to 31.4 s, so the race-impossible call ended later in every
+# one of those runs, 372.7 s to 417.6 s against 275.4 s to 316.1 s.
 #
 # -timeout 19m, by R6 from the pair at 8cfd2682 and the dispatch runs since (the table on
 # this job): this call's slowest package's slowest reading is cmd/cipher, then
@@ -2726,14 +2729,13 @@ unit=$!
 # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
 # //go:build !race and raceEnabled, less the tests that run alone, so a test added to
 # either and missing here fails the ci-filters job naming this step.
-# -timeout 8m, by R6 from the pair at 8cfd2682
-# (the table on this job): this call's slowest package on the slower run is
-# internal/dispatch/docs, 216.1 s (run 44657322918, job 136026779841), and
-# 216.1 / 30 = 7.20, so 8m. The limit leaves 263.9 s above that time, over the 30 s
-# of the documents package's roomWaitMargin. The slowest reading since is 236.1 s (run
-# 44790111577 at 85f6b018, job 136476756402), 236.1 / 30 = 7.87, the same 8m, which leaves
-# 243.9 s. A run that missed the Go build cache on x64 has read 537.3 s there (run
-# 44097184245), more than the 8m.
+# -timeout 9m, by R6 (the table on this job): this call's slowest package is
+# internal/dispatch/docs, 247.5 s (run 44979729824 at 66cba4b8, job 137077480236), and
+# 247.5 / 30 = 8.25, so 9m, which that run raised from the 8m of the pair's 216.1 s (run
+# 44657322918, job 136026779841), 7.20, and of 236.1 s (run 44790111577 at 85f6b018, job
+# 136476756402), 7.87. The limit leaves 292.5 s above 247.5 s, over the 30 s of the
+# documents package's roomWaitMargin. A run that missed the Go build cache on x64 has read
+# 537.3 s there (run 44097184245), 2.7 s under the 9m.
 #
 # One go test over its packages rather than one per package: go builds the test
 # binaries together and runs each package's tests as soon as its own binary is
@@ -2998,7 +3000,7 @@ GUARD_SCRIPT = ("go test -count=1 -run "
 CLAIM_MODEL_JOB = "envoy-go-claim-model"
 CLAIM_MODEL_PACKAGE = "./internal/dispatch/api"
 CLAIM_MODEL_STEP = "Search every order of the mention sender's claims"
-# Twice the step's slowest time on an ubuntu-24.04 runner over the pair at 8cfd2682 and the six
+# Twice the step's slowest time on an ubuntu-24.04 runner over the pair at 8cfd2682 and the seven
 # dispatch runs since, 1,245 s (run 44790111577 at 85f6b018, job 136476756311): 2,490 s, 41.5
 # minutes, so 42m, above main's 40m, twice the 19 min 18 s the step took at three periods; the
 # job's timeout-minutes is this and ten.

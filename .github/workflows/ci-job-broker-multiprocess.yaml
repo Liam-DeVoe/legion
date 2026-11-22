@@ -69,7 +69,7 @@ jobs:
       # again, which envoy-go's step "Count the database broker suites' skips" runs. They are a job
       # of their own rather than a part of that step because each starts real broker processes and
       # waits out tens of seconds: beside cmd/cipherd's other tests they would lengthen the package
-      # time that step's --timeout 9m is sized from (.github/workflows/ci-job-envoy-go.yaml).
+      # time that step's --timeout 10m is sized from (.github/workflows/ci-job-envoy-go.yaml).
       - name: Two-process tests of the secrets broker
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)

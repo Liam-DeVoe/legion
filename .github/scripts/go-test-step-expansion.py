@@ -407,11 +407,11 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "--timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
+            "--timeout 10m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
             "--keep \"$RUNNER_TEMP/go-test-json/broker.json\"":
                 "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
-                "-timeout 9m",
+                "-timeout 10m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 41m "
             "--keep \"$RUNNER_TEMP/go-test-json/race-api.json\" ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 41m ./internal/dispatch/api/",

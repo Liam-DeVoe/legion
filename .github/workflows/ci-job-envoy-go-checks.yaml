@@ -65,8 +65,9 @@ jobs:
     # and 853 s in the pair (run 44657322918, job 136026780288, and run 44657415021, job
     # 136039517954), 988 s in run 44687712471 at 56f4dabc (job 136126010901), 1,042 s in run
     # 44790111577 at 85f6b018 (job 136476756211), 1,000 s in run 44846096964 at 28ce7c74 (job
-    # 136669775694) and 1,008 s in run 44953084676 at 4165260d (job 136995819928), 21.58 minutes,
-    # plus the largest -timeout of its go test calls, the alone step's 2m, plus 6:
+    # 136669775694), 1,008 s in run 44953084676 at 4165260d (job 136995819928) and 1,082 s in run
+    # 44979729824 at 66cba4b8 (job 137077480081), 21.58 minutes, plus the largest -timeout of its
+    # go test calls, the alone step's 2m, plus 6:
     # 21.58 + 2 + 6 = 29.58, so 30, raised from the 29 that run 44717243297 set
     # (20.13 + 2 + 6 = 28.13). Its other go commands are builds, the darwin vet and two `go run`s,
     # which run no test binary and carry no -timeout. The step that tests the API's wall-clock
