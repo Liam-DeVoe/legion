@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
@@ -1204,11 +1205,17 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	cfg.StateDir = underConfig(*file.StateDir, configDir)
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
+	postgresKey := "LEGION_POSTGRES_DSN"
 	if file.PostgresDSN != nil {
-		cfg.PostgresDSN = *file.PostgresDSN
+		cfg.PostgresDSN, postgresKey = *file.PostgresDSN, "postgres_dsn"
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
+	}
+	// By the key alone (store.DSNRefusal): a password holding an unencoded "@" or "/" stands where
+	// pgx reads the host or the database, which every connect error prints.
+	if err := store.DSNRefusal(postgresKey, cfg.PostgresDSN); err != nil {
+		return Config{}, err
 	}
 
 	if file.Port != nil {

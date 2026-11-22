@@ -141,10 +141,72 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 // ConnectError is a failure to reach the Postgres dsn names as an operator reads it: the address
 // it points at and the driver's detail, never dsn's password (connectError). Every connection Legion
 // opens reports its refusal this way, the daemon's own and Oh My Pi's session database's
-// (internal/ompsessions).
+// (internal/ompsessions). A dsn part of whose password stands where pgx reads the host, the port or
+// the database (credentialSpills), which DSNRefusal refuses at load, is named "the configured
+// Postgres", with no driver detail: the driver's text names that host and that database.
 func ConnectError(dsn string, err error) error {
+	if credentialSpills(dsn) {
+		return &connectError{address: spilledAddress, err: err, spilled: true}
+	}
 	address, password := target(dsn)
 	return &connectError{address: address, password: password, err: err}
+}
+
+// spilledAddress is how ConnectError names the Postgres of a DSN it cannot show without a
+// credential.
+const spilledAddress = "the configured Postgres"
+
+// DSNRefusal is why dsn, the value of the setting key names, is refused before Postgres is asked,
+// or nil: a DSN part of whose password stands where pgx reads the host, the port or the database
+// (credentialSpills). Every connect error names the host and the database, and ConnectError the
+// address, so such a password would print. The refusal names key alone, never the value, and says
+// what to change. A keyword DSN (`host=… password=…`) is never refused: its password is a value of
+// its own.
+func DSNRefusal(key, dsn string) error {
+	if !credentialSpills(dsn) {
+		return nil
+	}
+	return fmt.Errorf("%s cannot be read: part of its password stands where Postgres reads the host, the port or the database name,"+
+		" as it does when the password holds an unencoded \"@\" or \"/\"; write such a character percent-encoded (%%40, %%2F)", key)
+}
+
+// credentialSpills reports whether dsn is a postgres:// URL part of whose password stands where pgx
+// reads the host list, the port or the database. pgx, like libpq, ends the userinfo at the first
+// "@" before the first "/" (parseURLSettings): a password holding an unencoded "@" leaves its tail
+// in the host list (`postgres://u:<head>@<tail>@db/x` is the host `<tail>@db`), and one holding an
+// unencoded "/" ends that search, so the password's head is read as the host and the port and its
+// tail as the database, or as a query key (`postgres://u:4821/<tail>@db/x` is the host `u`, the port
+// `4821` and the database `<tail>@db/x`). So the DSN spills when the host list after its userinfo
+// holds an "@", or, with no userinfo, when its database or a query key holds one. A query value may
+// hold an "@" (`user=sa@project.iam`), and a "?" or "#" in a password pgx reads as the password.
+func credentialSpills(dsn string) bool {
+	rest, ok := strings.CutPrefix(dsn, "postgresql://")
+	if !ok {
+		if rest, ok = strings.CutPrefix(dsn, "postgres://"); !ok {
+			return false
+		}
+	}
+	i := strings.IndexAny(rest, "@/")
+	switch {
+	case i < 0:
+		return false
+	case rest[i] == '@':
+		hosts := rest[i+1:]
+		if end := strings.IndexAny(hosts, "/?"); end >= 0 {
+			hosts = hosts[:end]
+		}
+		return strings.Contains(hosts, "@")
+	}
+	database, query, _ := strings.Cut(rest[i+1:], "?")
+	if strings.Contains(database, "@") {
+		return true
+	}
+	for _, pair := range strings.Split(query, "&") {
+		if key, _, _ := strings.Cut(pair, "="); strings.Contains(key, "@") {
+			return true
+		}
+	}
+	return false
 }
 
 // OpenRetryable reports whether err, an error Open returned, is one the next attempt to open the
@@ -529,14 +591,20 @@ func schemaVersionExists(ctx context.Context, db queryRower) (bool, error) {
 
 // connectError says where the daemon could not reach Postgres without saying
 // how it would have got in: an operator reads this in a boot refusal, and a
-// DSN's password has no business in a log line.
+// DSN's password has no business in a log line. spilled is a DSN part of whose
+// password stands in the address (credentialSpills): its address is
+// spilledAddress and the driver's detail is not printed.
 type connectError struct {
 	address  string
 	password string
 	err      error
+	spilled  bool
 }
 
 func (e *connectError) Error() string {
+	if e.spilled {
+		return "connect to " + spilledAddress + ": the driver's error is not printed: it names the host and the database, and part of the DSN's password stands there"
+	}
 	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(e.err.Error(), e.password))
 }
 
@@ -557,8 +625,14 @@ func (e *connectError) Unwrap() error { return e.err }
 
 // target reads the address a DSN points at and the password it carries. pgx
 // understands both the URL and the keyword/value forms; url.Parse answers for a
-// DSN pgx itself rejects, so even then the operator learns the host.
+// DSN pgx itself rejects, so even then the operator learns the host. A DSN part
+// of whose password stands in that address (credentialSpills) is
+// spilledAddress: url.Parse ends the userinfo at the last "@" and pgx at the
+// first, so either one's host can be a part of the password.
 func target(dsn string) (string, string) {
+	if credentialSpills(dsn) {
+		return spilledAddress, ""
+	}
 	if config, err := pgconn.ParseConfig(dsn); err == nil && config.Host != "" {
 		return net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), config.Password
 	}
@@ -566,5 +640,5 @@ func target(dsn string) (string, string) {
 		password, _ := parsed.User.Password()
 		return parsed.Host, password
 	}
-	return "the configured Postgres", ""
+	return spilledAddress, ""
 }

@@ -1996,6 +1996,40 @@ func TestLoadReadsPostgresDSNFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// A postgres_dsn part of whose made-up password stands where Postgres reads the host or the
+// database (a password holding an unencoded "@", or a "/" after digits) is refused by the key it
+// came from, the file's or LEGION_POSTGRES_DSN, and no part of the password is printed.
+func TestLoadRefusesAPostgresDSNWhosePasswordSpills(t *testing.T) {
+	const fileDSN = "postgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
+	for name, tc := range map[string]struct{ dsn, spilled string }{
+		"a password holding an @":             {"postgres://legion:madeuphead0123" + "@madeuptail0123@db.invalid:5432/legion", "madeuptail"},
+		"a password holding a / after digits": {"postgres://legion:48213579/madeuptail0123" + "@db.invalid:5432/legion", "48213579"},
+	} {
+		for key, load := range map[string]func() error{
+			"postgres_dsn": func() error {
+				_, err := Load(writeConfigFile(t, strings.Replace(minimalFile, fileDSN, "postgres_dsn: '"+tc.dsn+"'\n", 1)), noEnv)
+				return err
+			},
+			"LEGION_POSTGRES_DSN": func() error {
+				_, err := Load(writeConfigFile(t, strings.Replace(minimalFile, fileDSN, "", 1)), envMap(map[string]string{"LEGION_POSTGRES_DSN": tc.dsn}))
+				return err
+			},
+		} {
+			t.Run(name+"/"+key, func(t *testing.T) {
+				err := load()
+				if err == nil || !strings.HasPrefix(err.Error(), key+" cannot be read: part of its password stands where Postgres reads") {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, key)
+				}
+				for _, part := range []string{tc.spilled, "madeuphead", "madeuptail"} {
+					if strings.Contains(err.Error(), part) {
+						t.Errorf("Load = %v, which holds %q", err, part)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestLoadReadsAdmissionCapFromTheEnvironment(t *testing.T) {
 	env := envMap(map[string]string{"LEGION_ADMISSION_CAP": "2"})
 

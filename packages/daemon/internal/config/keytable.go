@@ -138,7 +138,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes.",
+			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes. A URL whose password holds an unencoded `@` or `/` is refused by the key alone: pgx reads the password's tail as the host, or its head as the host and port and its tail as the database, which every connection error prints; write them as `%40` and `%2F`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
 		},
 		{

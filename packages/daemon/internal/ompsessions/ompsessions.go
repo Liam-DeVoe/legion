@@ -78,7 +78,9 @@ const undefinedTable = "42P01"
 // (launcher.sessionWritten), which reads the file afresh before each attempt so a URL rewritten
 // under it is picked up. Its refusals name neither what the file holds nor its path, where a URL
 // pasted in place of the path would be: a file that cannot be read is named by why (fileerr.Err),
-// which still unwraps to the read's error.
+// which still unwraps to the read's error, and a URL part of whose password stands where Postgres
+// reads the host, the port or the database (store.DSNRefusal) is named by the file alone, since
+// every connect error would print that part.
 func ReadDSN(file string) (string, error) {
 	body, err := os.ReadFile(file)
 	if err != nil {
@@ -87,6 +89,9 @@ func ReadDSN(file string) (string, error) {
 	dsn := strings.TrimSpace(string(body))
 	if dsn == "" {
 		return "", errors.New("the database URL file is empty")
+	}
+	if err := store.DSNRefusal("the database URL file", dsn); err != nil {
+		return "", err
 	}
 	return dsn, nil
 }

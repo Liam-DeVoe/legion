@@ -33,3 +33,29 @@ func TestReadDSNNamesNoPath(t *testing.T) {
 		t.Fatalf("ReadDSN = %v, which names the path", err)
 	}
 }
+
+// A session database URL part of whose made-up password stands where Postgres reads the host or
+// the database (a password holding an unencoded "@", or a "/" after digits) is refused by the file
+// alone, before any connection names that part.
+func TestReadDSNRefusesAURLWhosePasswordSpills(t *testing.T) {
+	for name, tc := range map[string]struct{ dsn, spilled string }{
+		"a password holding an @":             {"postgres://sessions:madeuphead0123" + "@madeuptail0123@db.invalid/sessions", "madeuptail"},
+		"a password holding a / after digits": {"postgres://sessions:48213579/madeuptail0123" + "@db.invalid/sessions", "48213579"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "session-dsn")
+			if err := os.WriteFile(file, []byte(tc.dsn+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReadDSN(file)
+			if err == nil || !strings.HasPrefix(err.Error(), "the database URL file cannot be read: part of its password stands where Postgres reads") {
+				t.Fatalf("ReadDSN = %v, want the file refused by its name", err)
+			}
+			for _, part := range []string{tc.spilled, "madeuphead", "madeuptail"} {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("ReadDSN = %v, which holds %q", err, part)
+				}
+			}
+		})
+	}
+}
