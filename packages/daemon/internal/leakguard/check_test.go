@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -466,9 +467,10 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 // Rounding to whole seconds keeps that order, so the floor needs no more slack. Where there is no
 // file there is no floor to read; a file written after the deadline, before the stop reached the
 // stand-in, gives a floor of 0 s or less, which any bound meets, so the test asks for no floor
-// either way. A run with no file says in its log that it read no floor. A deadline and a cancel
-// end the check through the same stop of its process group (procgroup.Configure's Cancel), so the
-// cancel test alone sees that stop reach the check's sleep.
+// either way. A run with no file says in its log that it read no floor, and any other failure to
+// read the file fails the test, since it says nothing of when the stand-in wrote. A deadline and a
+// cancel end the check through the same stop of its process group (procgroup.Configure's Cancel),
+// so the cancel test alone sees that stop reach the check's sleep.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -476,9 +478,12 @@ func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing
 	failed := stoppedPush(t, ctx, sleep)
 	stoppedByItsBound(t, failed, 2*time.Second)
 	written, err := os.Stat(sleep)
-	if err != nil {
-		t.Logf("the bound's floor was not read: the stand-in wrote no sleep's process id before its stop (%v)", err)
-	} else {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		t.Logf("the stand-in wrote no process id before its bound ended: no floor read")
+	case err != nil:
+		t.Fatal(err)
+	default:
 		deadline, _ := ctx.Deadline()
 		floor := wholeSeconds(deadline.Sub(written.ModTime()) - 50*time.Millisecond)
 		if _, bound, _ := sharedStop(t, failed); bound < floor {
