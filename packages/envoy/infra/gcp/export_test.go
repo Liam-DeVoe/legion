@@ -45,6 +45,9 @@ type ClusteredNatsHubSettings struct {
 	PodSelector                              map[string]string
 	Tailnet                                  *ClusteredHubTailnetSettings
 	Listener                                 *ClusteredHubListenerSettings
+	// RouteSecretName, RouteSecretKey and RouteStage are routeAuthorization's, all empty without
+	// it.
+	RouteSecretName, RouteSecretKey, RouteStage string
 }
 
 // ClusteredHubTailnetSettings is the resolved tailnet entry.
@@ -96,8 +99,14 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 			ClientNamespaces: l.clientNamespaces, CPU: l.cpu, Memory: l.memory, Env: l.env,
 		}
 	}
+	if r := s.route; r != nil {
+		settings.RouteSecretName, settings.RouteSecretKey, settings.RouteStage = r.secretName, r.secretKey, r.stage.String()
+	}
 	return settings, nil
 }
+
+// ClusteredHubRouteStages are routeAuthorization.stage's names, in their order.
+var ClusteredHubRouteStages = clusteredHubRouteStageNames[:]
 
 // ClusteredHubListenerNamed is the session listener args resolve, with its refusals naming path in
 // place of the input the listener is declared at, for the test that holds the listener's token
@@ -215,9 +224,15 @@ func DispatchKubeconfig(endpoint, ca, name string) string {
 	return renderKubeconfig(endpoint, ca, name)
 }
 
-// PrivateProjectsIgnoredMessage is the warning NewDispatch prints at preview for an entry of
-// privateProjects that is not a project key.
-var PrivateProjectsIgnoredMessage = privateProjectsIgnoredMessage
+// DispatchIgnoredEntryWarnings are the warnings NewDispatch prints at preview for args, one for
+// each entry of privateProjects and of privateBeforeFullSwitch that is not a project key.
+func DispatchIgnoredEntryWarnings(args *DispatchArgs) ([]string, error) {
+	s, err := newDispatchSettings(args)
+	if err != nil {
+		return nil, err
+	}
+	return dispatchIgnoredEntryWarnings(s), nil
+}
 
 // DispatchListenerEnvError resolves the listener container's environment from the one NATS URL,
 // for the refusal tests, with the front door's proxy in the default namespace: nil when the URL

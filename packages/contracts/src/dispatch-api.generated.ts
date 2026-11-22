@@ -60,7 +60,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (&account_issuer=&account_subject=), as the project answer carries it; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description One person's member kind as the membership answer spells it: {person, member_kind, held, as_of, not_held_until} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (&account_issuer=&account_subject=), as the project answer carries it; held is whether Dispatch holds the person's personal tokens and broker credentials until they sign in again (false for a login nobody has signed in with, and left out, with status 200 and member_kind still answered, when that could not be read), and as_of the database time of the read the answer rests on; under DISPATCH_IDENTITY=iap alone, every answer that is not held carries not_held_until, the time it stops being served (the last active Workspace Directory answer plus 24 hours), which is as_of itself for a person no active answer confirmed in 24 hours or no row holds, and a held answer carries none; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessPerson"];
     put?: never;
     post?: never;
@@ -2571,14 +2571,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; and open_invitations, [{email, made_at, expires_at}] for each link of the project that can still enroll someone (unused and not lapsed), sorted by email then made_at, with no token; each [] for none, and all four absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. private_before_full_switch is true while the project is private before its full switch, which DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names and DISPATCH_PRIVATE_PROJECTS does not: Dispatch hides it as any private project, while its namespace, its stores and its bus gate come with its full switch; it is absent for every other project. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; and open_invitations, [{email, made_at, expires_at}] for each link of the project that can still enroll someone (unused and not lapsed), sorted by email then made_at, with no token; each [] for none, and all four absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
     get: operations["getApiV1ProjectsByKeyAccess"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; whatever DISPATCH_SIGNIN_PASSKEY says, giving the project to another owner while a person its list names directly holds a passkey a link of someone else enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, until that link's maker resets the person; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; whatever DISPATCH_SIGNIN_PASSKEY says, giving the project to another owner while a person its list names directly holds a passkey a link of someone else enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, until that link's maker resets the person; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names a project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when neither names this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. For a full switch, of a project DISPATCH_PRIVATE_PROJECTS names, private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. A project DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names and DISPATCH_PRIVATE_PROJECTS does not is made private before its full switch: its switch writes nothing to that bucket and answers private_before_full_switch true. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
     patch: operations["patchApiV1ProjectsByKeyAccess"];
     trace?: never;
   };
@@ -6237,9 +6237,14 @@ export interface components {
       title?: null | string;
     };
     PersonAnswer: {
+      /** Format: date-time */
+      as_of: string;
+      held?: boolean;
       holder?: boolean;
       /** @enum {string} */
       member_kind: "full" | "restricted" | "none";
+      /** Format: date-time */
+      not_held_until?: string;
       person: string;
     };
     PersonNode: {
@@ -6317,6 +6322,12 @@ export interface components {
     };
     Priority: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6351,6 +6362,12 @@ export interface components {
     };
     PriorityRow: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6409,6 +6426,7 @@ export interface components {
       owner: string;
       passkeys?: components["schemas"]["EnrolledPasskey"][];
       people: string[] | null;
+      private_before_full_switch?: boolean;
       project: string;
       slack_channels: string[] | null;
       /** Format: date-time */

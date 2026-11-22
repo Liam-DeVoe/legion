@@ -6,8 +6,9 @@
 // and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
 // broker's page, and relays a machine login's decision with its typed code. The broker reads
 // Dispatch in two places, each with its own projected ServiceAccount token: its model judge,
-// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its token exchange, whether a
-// person may see the projects a token names (BROKER_PROJECT_ACCESS_URL).
+// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its project reads, whether a person
+// may see the projects a token names and which repositories a project's issues resolve to, which
+// it relays to an edge listener (BROKER_PROJECT_ACCESS_URL).
 package main
 
 import (
@@ -39,6 +40,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -46,6 +48,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/groups"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
@@ -54,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -217,6 +222,7 @@ func main() {
 	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
 	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
+	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, fakeSecrets))
 	// And, in the same breath, the airlock's test-only settings: every one of them is a local
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
@@ -342,21 +348,35 @@ func main() {
 	// reads are counted with every read after them; broker_unservable_secrets, which reads the
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
-	// The broker's one client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL), read by
-	// the token exchange, an enrollment naming projects, and every request, release and airlock
-	// connection holding a project-tagged secret; nil when unset. It presents the broker's own
-	// projected ServiceAccount token for Dispatch's audience, read at call time through the reader
-	// every projected token here goes through, so a rotation needs no restart. config.Load holds
-	// the two settings to both or neither. Built before the loader, which serves a tagged secret
-	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
+	// The broker's two clients of the Dispatch at BROKER_PROJECT_ACCESS_URL, both nil when it is
+	// unset. Project access is read by the token exchange, every enrollment and secret request, an
+	// approval, a release and every airlock connection, so one cache of Dispatch's answers serves
+	// them all; the repository answer is what GET /v1/project-repositories relays to an edge
+	// listener, and a broker that reads none answers every edge listener 503 REPOSITORIES_UNKNOWN.
+	// Both present the broker's own projected ServiceAccount token for Dispatch's audience through
+	// one reader, read at call time, so a rotation needs no restart and the broker has one Dispatch
+	// address and one account there. config.Load holds the two settings to both or neither. Built
+	// before the loader, which serves a tagged secret only when this broker can ask whether its
+	// project is private (policy.Loader.ProjectChecks). projectClient is the same client as
+	// projectAccess, for the hold gate below, which reads its person answers (hold.Config.Access)
+	// from the cache the token exchange fills.
 	var projectAccess projectaccess.Access
+	var projectRepositories api.ProjectRepositoriesReader
+	var projectClient *projectaccess.Client
 	if cfg.ProjectAccessURL != "" {
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
+		projectClient = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		projectAccess = projectClient
+		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 	}
-	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
-	// policy version is the one it has today.
-	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
-		StoreReads: policy.NewStoreReads(registry), ProjectChecks: projectAccess != nil}
+	// The broker's one reader of Google group members, which every decision site asks who is a
+	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
+	// its chain check and the approval page. A full policy load names its groups to it; it reads
+	// each once an hour (Start, below, at the first load) with the reader account's token
+	// (BROKER_DIRECTORY_ACCOUNT), minted with this pod's own credential.
+	groupReader := newGroupReader(cfg, "", &secrets.OwnGoogleCredential{})
+	loader := policyLoader(cfg, secretStore, rules, registry, groupReader)
+	loader.ProjectChecks = projectAccess != nil
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
 	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
@@ -368,10 +388,13 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
-	// The NATS auth service's list of services and the verifiers of their platform tokens, read
-	// at boot so an entry it could never admit refuses the start rather than every connection.
-	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	// The verifiers of the NATS auth service's services' platform tokens, read at boot so an entry
+	// it could never admit refuses the start rather than every connection. config.Load parsed the
+	// list (cfg.NATS.Services); a broker that runs no auth service still answers its edge
+	// listeners' entries at GET /v1/project-repositories.
+	natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
 	fatal(err)
+	edgeListeners := cfg.NATS.EdgeListeners()
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -400,12 +423,7 @@ func main() {
 		// from `again` and answers with os.Exit(1) (measured: gone within 30 ms of that signal),
 		// or the kubelet's SIGKILL at the end of the grace period.
 		LoadPolicy: func(serving context.Context) (*policy.Current, error) {
-			current, err := policy.NewCurrent(serving, loader, policyRefresh)
-			if err != nil {
-				return nil, err
-			}
-			policy.NewUnservableSecrets(registry, current)
-			return current, nil
+			return loadFirstPolicy(serving, loader, groupReader, registry, firstGroupReadsWait)
 		},
 		// The receiving half of the reread fan-out, started after the first policy load (it
 		// rereads into that policy) and before the bind, so a pod that cannot hold a LISTEN
@@ -430,7 +448,10 @@ func main() {
 		// airlock: without a rules file no name is ever held back, so there is nothing for a
 		// proxy to carry and no port to bind.
 		ListenAirlock: airlockListen(cfg),
-		// The metrics port, bound by the same boot after the other two, on every deployment.
+		// The edge, bound by the same boot and only for a deployment that names one
+		// (BROKER_EDGE_LISTEN_ADDR): with none, the broker binds nothing for it.
+		ListenEdge: edgeListen(cfg),
+		// The metrics port, bound by the same boot after the others, on every deployment.
 		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
 		Catchup:       func(serving context.Context, current *policy.Current) error { return current.Refresh(serving) },
@@ -453,12 +474,16 @@ func main() {
 	// ever sees the stale placeholder. refusePortZeroPublicURLInProduction (the dev-vs-production
 	// gate) already refused this above, right after config.Load — before st.Migrate, any AWS
 	// call, and the boot's bind — so reaching here means it's safe to apply.
-	if u, urlErr := url.Parse(cfg.PublicURL); urlErr == nil && u.Port() == "0" {
+	if publicURLPortZero(cfg.PublicURL) {
 		cfg.PublicURL = "http://" + listener.Addr().String()
 	}
 	slog.Info("broker listening", "addr", listener.Addr().String())
 	if started.AirlockListener != nil {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
+	}
+	if started.EdgeListener != nil {
+		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
+			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -471,6 +496,9 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators, Projects: projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	// A machine login the edge opened is signed for BROKER_EDGE_URL, and the launcher credential
+	// its approval mints authenticates through this chain as any other does.
+	enr.Chain.EdgeAudience = cfg.EdgeURL
 	// The exchange's listed identities, read here, before the request machine, which reads the
 	// project an operator's entry maps a pod's or a machine's account to from the same entries
 	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
@@ -480,7 +508,7 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
 	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
@@ -523,7 +551,7 @@ func main() {
 		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
 		// shared: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
 		exchangeConfig.Google = oauth.IssuerConfig{Issuer: cfg.GoogleOIDCIssuer, Audience: cfg.GoogleOIDCAudience, Keys: discovered.GoogleKeys}
-		exchangeConfig.MachineCredentials = machineCredentials(enr)
+		exchangeConfig.MachineCredentials = enr.MachineCredentials()
 	}
 	if cfg.SignInDeviceAudience != "" {
 		// A person signs in through Google, which is also the issuer of the machine's actor
@@ -531,7 +559,7 @@ func main() {
 		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
 		// which the exchange's policy already holds.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = personSignIns()
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns()
 		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
@@ -541,12 +569,22 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
+	// The hold of refused people (internal/cipher/hold) asks Dispatch through the exchange's own
+	// client, so the two share one cache of person answers and one call per person, and keeps
+	// each answer in person_standing for when Dispatch cannot be asked. With no Dispatch to ask
+	// the broker builds no gate and holds nobody, as before the hold. An IAP deployment's broker
+	// sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate serves a person only on an answer with a
+	// deadline (hold.Config.RequireDeadline).
+	var holdGate *hold.Gate
 	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
+		holdGate = hold.New(hold.Config{Access: projectClient, Store: st, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
+		exchangeConfig.Hold = holdGate
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
-			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, and a secret tagged with a project is refused project-unchecked")
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is")
+		slog.Info("hold of refused people", "state", "off", "reason", "BROKER_PROJECT_ACCESS_URL is not set")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
@@ -597,7 +635,7 @@ func main() {
 	}
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
-		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
+		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		PendingTTL: machineLoginPendingTTL, CredentialLifetime: credentialLifetime,
 		OAuth: provider, Replay: enr.Replay,
 		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
@@ -610,7 +648,7 @@ func main() {
 	if !cfg.SignInOff {
 		page, err = approval.New(approval.Config{
 			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-			Store: st, Machine: reqMachine,
+			Store: st, Machine: reqMachine, Hold: holdGate,
 		})
 		fatal(err)
 	}
@@ -676,10 +714,11 @@ func main() {
 	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
 	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
 	detached := &api.Detached{}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
+	deps := api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
+		EdgeListeners: edgeListeners, ProjectRepositories: projectRepositories,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
@@ -688,6 +727,8 @@ func main() {
 		GoogleExchangeAudience: googleExchangeAudience(cfg),
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
+		Hold:                   holdGate,
+		Exchange:               exchangePolicy,
 		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
@@ -698,7 +739,8 @@ func main() {
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
-		}})
+		}}
+	api.Register(mux, deps)
 	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
 	// answer, so it sees every answer a handler of this port writes, whichever writer wrote it:
 	// the API's routes, the OAuth provider's library, the approval page and the mux's own 404
@@ -722,6 +764,7 @@ func main() {
 		proxyServer = proxy.New(proxy.Options{
 			Rules:  rules,
 			Grants: reqMachine,
+			Hold:   holdGate,
 			CA:     airlockCA,
 			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
 			Log:    slog.Default(),
@@ -744,6 +787,23 @@ func main() {
 			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxyServer)
+	}
+	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
+	// device login's two routes and the health check (api.RegisterEdge), on the same request
+	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
+	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
+	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
+	var edgeServer *http.Server
+	if started.EdgeListener != nil {
+		edgeMux := http.NewServeMux()
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
+		edgeServer = &http.Server{
+			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
+			ReadHeaderTimeout: srv.ReadHeaderTimeout,
+			ReadTimeout:       srv.ReadTimeout,
+			WriteTimeout:      srv.WriteTimeout,
+			IdleTimeout:       srv.IdleTimeout,
+		}
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
@@ -785,6 +845,14 @@ func main() {
 			}
 		}()
 	}
+	if edgeServer != nil {
+		go func() {
+			if err := edgeServer.Serve(started.EdgeListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("broker: edge serve", "error", err)
+				stopNotify()
+			}
+		}()
+	}
 	go func() {
 		if err := metricsServer.Serve(started.MetricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("broker: metrics serve", "error", err)
@@ -793,11 +861,13 @@ func main() {
 	}()
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
-	// the drain begins.
+	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
+	// which, with the edge listeners GET /v1/project-repositories answers either way.
 	if cfg.NATS.Enabled() {
+		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners))
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
-			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
@@ -806,9 +876,12 @@ func main() {
 		callout.Store(service)
 		go func() {
 			if err := service.Ready(ctx); err == nil {
-				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
+				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(cfg.NATS.Services))
 			}
 		}()
+	} else {
+		slog.Info("NATS auth service", "state", "off", "edge_listeners", len(edgeListeners),
+			"detail", "BROKER_NATS_URLS is unset, so the broker answers no hub; GET /v1/project-repositories reads the edge-listener entries of BROKER_NATS_SERVICES")
 	}
 
 	<-ctx.Done()
@@ -818,14 +891,17 @@ func main() {
 		service.Close()
 	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
-	// proxy port to drain".
-	var airlockShutdown func(ctx context.Context) error
+	// proxy port to drain", and the same for the edge.
+	var airlockShutdown, edgeShutdown func(ctx context.Context) error
 	if proxyServer != nil {
 		airlockShutdown = proxyServer.Shutdown
 	}
+	if edgeServer != nil {
+		edgeShutdown = edgeServer.Shutdown
+	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownEdge: edgeShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -953,19 +1029,59 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	return st, awsCfg, nil
 }
 
-// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is literally "0"
-// unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never dialable, so it can only
-// be dev-broker.sh's own "derive my public URL from whatever address I actually bind" convention
-// (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray literal ":0" reaching a real
-// deployment must fail loudly at boot, never silently reinterpret the broker's own public
-// identity as its internal bind address. Extracted from main so a test can drive it directly
-// instead of through fatal, which calls os.Exit.
+// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is 0
+// (publicURLPortZero) unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never
+// dialable, so it can only be dev-broker.sh's own "derive my public URL from whatever address I
+// actually bind" convention (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray
+// ":0" reaching a real deployment, however its zero is written, must fail loudly at boot, never
+// silently reinterpret the broker's own public identity as its internal bind address. Extracted
+// from main so a test can drive it directly instead of through fatal, which calls os.Exit.
 func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) error {
-	u, err := url.Parse(publicURL)
-	if err != nil || u.Port() != "0" || fakeSecretsFile != "" {
+	if !publicURLPortZero(publicURL) || fakeSecretsFile != "" {
 		return nil
 	}
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
+}
+
+// refuseHTTPEdgeURLsInProduction refuses a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL whose
+// scheme is not https unless BROKER_FAKE_SECRETS_FILE makes this a local run, as
+// refusePortZeroPublicURLInProduction does. Both are on the path of a person on the internet. Over
+// plain http, anyone on the path could rewrite the edge's device authorization, its
+// verification_uri and user_code among them, or serve a page of their own where
+// BROKER_EDGE_MACHINE_LOGIN_URL sends the person to type the user code while signed in to Dispatch.
+// A setting left empty (a broker with no edge) is refused nothing. Extracted from main so a test
+// can drive it directly instead of through fatal, which calls os.Exit.
+func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL, fakeSecretsFile string) error {
+	if fakeSecretsFile != "" {
+		return nil
+	}
+	for _, setting := range []struct{ name, value, what string }{
+		{"BROKER_EDGE_URL", edgeURL, "the edge answers callers on the internet"},
+		{"BROKER_EDGE_MACHINE_LOGIN_URL", machineLoginURL, "the edge sends a person on the internet to this page to type a user code"},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		if u, err := url.Parse(setting.value); err == nil && strings.EqualFold(u.Scheme, "https") {
+			continue
+		}
+		return fmt.Errorf("%s %q: %s, so it must be https in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http", setting.name, redact.URL(setting.value), setting.what)
+	}
+	return nil
+}
+
+// publicURLPortZero reports whether publicURL names port 0, its port read as a number the way
+// the bind reads BROKER_LISTEN_ADDR's (net.LookupPort), so ":00" is port 0 as ":0" is. The
+// production refusal above and main's derive-from-bind rewrite both read it, so the URL one of
+// them takes as port 0 is the one the other does. A URL that does not parse, or names no port
+// (an empty one, as in "http://host:", included), names no port 0.
+func publicURLPortZero(publicURL string) bool {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Port() == "" {
+		return false
+	}
+	port, err := net.LookupPort("tcp", u.Port())
+	return err == nil && port == 0
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
@@ -1080,7 +1196,7 @@ func parseRulesFile(path string) (proxyrules.Rules, error) {
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
 // "LEGION-SLACK-BOT-TOKEN" matches no release at all: the broker would hand the command the real
 // value of the very secret the file was reviewed as holding back. The check is here rather than
-// in proxyrules.Validate because the airlock knows nothing of how a secret is named under the
+// in proxyrules.Validate because that package knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules proxyrules.Rules) error {
 	for i, s := range rules.Secrets {
@@ -1115,7 +1231,7 @@ const maxGuidanceRunes = 2000
 // every secret. Anything else refuses the boot: a path that cannot be read, a file proxyrules.Parse
 // will not read as JSON (whose refusal names the parse position), and a file validateRulesFile
 // refuses (whose refusal names the entry). Each refusal names the variable beside what that
-// reader said about the file, since the airlock package names a rules file no way but by its
+// reader said about the file, since the proxyrules package names a rules file no way but by its
 // contents. Extracted from main so a test can drive it without exiting the test process.
 func readAirlockRules(path string) (proxyrules.Rules, error) {
 	if path == "" {
@@ -1140,6 +1256,15 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
+}
+
+// edgeListen is brokerBoot.ListenEdge in production: the bind on BROKER_EDGE_LISTEN_ADDR, and nil
+// for a deployment that names no edge, which binds nothing for one.
+func edgeListen(cfg config.Config) func() (net.Listener, error) {
+	if cfg.EdgeListenAddr == "" {
+		return nil
+	}
+	return listenTCP(cfg.EdgeListenAddr)
 }
 
 // peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
@@ -1207,12 +1332,14 @@ func airlockCACertificatePEM(ca *proxy.Authority) string {
 // spends the budget leaves a Google mint's failure unretried too: each holds the one pointer,
 // which typeMinters' copies keep. dispatch is the broker's one read of Dispatch (judgeDispatch),
 // nil where BROKER_JUDGE_DISPATCH_URL is unset; where it is set it also names a Legion pod's
-// issue's assignee, whose Inbox lists that pod's request for a shared secret.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules proxyrules.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
+// issue's assignee, whose Inbox lists that pod's request for a shared secret. groupReader is the
+// broker's one reader of group members (newGroupReader), which the machine's decisions, revokes
+// and lists and its chain check ask who is a member of a group.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules proxyrules.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
-		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
+		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 		PodOperators:        cfg.PodOperators,
@@ -1232,7 +1359,16 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// Workload Identity credentials, which it finds on its first mint and keeps, and
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
-			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
+			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry},
+			// The anthropic-federation minter takes the same binding: the broker may mint the
+			// identity token of every bound account, so the binding chooses the account. Each
+			// exchange presents an identity token read for it alone (no cache), which it sends
+			// once, and counts that one attempt on the same Retry.
+			&secrets.AnthropicFederation{
+				Accounts:      cfg.ServiceAccountSecrets,
+				IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience}).Read,
+				Retry:         retry,
+			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
 		// endpoint and retry.
@@ -1243,12 +1379,67 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
 		// person is denied at once.
 		SignInOff: cfg.SignInOff,
+		Groups:    groupReader,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	m.Chain.Groups = groupReader
 	if dispatch != nil {
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// The broker's group reader answers every question a decision site asks of group members.
+var _ record.Directory = (*groups.Reader)(nil)
+
+// newGroupReader is the broker's one reader of Google group members: it reads the Directory API
+// at BROKER_DIRECTORY_URL (Google's when unset) with the token of the reader account
+// BROKER_DIRECTORY_ACCOUNT names, which it mints at IAM's generateAccessToken (iamURL, Google's
+// when empty, where a test names its stand-in) with own, this pod's own Google credential. With no
+// reader account it reads no group, and every group admits nobody. The first policy load starts it
+// on the serving context (loadFirstPolicy).
+func newGroupReader(cfg config.Config, iamURL string, own oauth2.TokenSource) *groups.Reader {
+	return &groups.Reader{
+		BaseURL: cfg.DirectoryURL,
+		Source:  groups.NewTokenSource(groups.TokenOptions{Account: cfg.DirectoryAccount, IAMCredentialsURL: iamURL, Default: own}),
+		Log:     slog.Default(),
+	}
+}
+
+// policyLoader is the loader of the broker's policy: the namespace secretStore holds under
+// BROKER_SECRETS_PREFIX, the registered services, the service-account bindings, the airlock's
+// entries, the store-read counter on registry, and groupReader, which the loader's Current stamps
+// on every set it makes live and names each full load's groups to.
+func policyLoader(cfg config.Config, secretStore secrets.Store, rules proxyrules.Rules, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
+	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
+	// policy version is the one it has today.
+	return policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
+		StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
+}
+
+// firstGroupReadsWait bounds how long the first policy load waits for the group reads it started
+// before the pod serves: a read is a token mint and a page or two of members, well inside it, and
+// a Directory that does not answer holds the boot no longer than this.
+const firstGroupReadsWait = 15 * time.Second
+
+// loadFirstPolicy is the broker's first policy load (the boot's LoadPolicy): it starts the group
+// reader on serving, as the reload does, so a read a load starts and the hourly read end when the
+// broker stops serving rather than at the signal, and a draining pod still admits the members it
+// read; it loads the policy, which names its groups to the reader and starts their reads; and it
+// waits up to wait for those reads, so the pod does not serve its first requests with no group
+// read yet. A read still under way after the wait goes on, and its group admits nobody until it
+// ends; a failed one is read again at the next load (groups.Reader.Want).
+func loadFirstPolicy(serving context.Context, loader policy.Loader, groupReader *groups.Reader, registry *metrics.Registry, wait time.Duration) (*policy.Current, error) {
+	groupReader.Start(serving)
+	current, err := policy.NewCurrent(serving, loader, policyRefresh)
+	if err != nil {
+		return nil, err
+	}
+	firstReads, cancel := context.WithTimeout(serving, wait)
+	groupReader.WaitReads(firstReads)
+	cancel()
+	policy.NewUnservableSecrets(registry, current)
+	return current, nil
 }
 
 // vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
@@ -1449,73 +1640,6 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	return found, nil
 }
 
-// machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the
-// launcher credential a trade mints or moves, written in the exchange's own transaction
-// (enroll.Service.IssueTokenLoginTx), so the credential and the access token that names it land
-// together. Both trades that mint one come through here — a machine's own, which carries its
-// fleet's service and no person, and a person's sign-in on such a machine, which carries that
-// person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds is oauth.ErrMachineKeyTaken, which the exchange answers
-// invalid_grant.
-func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
-	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return "", errors.New("broker: a machine's launcher credential is minted in the exchange's transaction")
-		}
-		id, err := enr.IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
-			Subject:      cred.Subject,
-			Service:      cred.Service,
-			Host:         cred.Host,
-			Operator:     cred.Operator,
-			TokenExpires: cred.Expires,
-			Thumbprint:   cred.Thumbprint,
-			JWK:          cred.JWK,
-			Expires:      cred.Expires,
-		})
-		if store.IsUniqueViolation(err) {
-			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
-		}
-		if err != nil {
-			return "", err
-		}
-		return id.String(), nil
-	}
-}
-
-// personSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's store: the sign-in a
-// person's trade belongs to, written in the exchange's own transaction
-// (enroll.RecordPersonSignIn, which ends a sign-in recording no account and everything it held
-// before it writes the trade's own), so the sign-in and the access token minted under it land
-// together. An account that no longer holds the person's address is
-// store.ErrSignInSubjectReplaced, a box key that person has revoked store.ErrSignInRevoked, and
-// one whose sign-in was made on another machine or by another account
-// store.ErrSignInMachineChanged or store.ErrSignInSubjectChanged; the exchange answers each
-// invalid_grant saying which.
-func personSignIns() oauth.PersonSignIns {
-	return func(ctx context.Context, in oauth.PersonSignIn) error {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return errors.New("broker: a person's sign-in is recorded in the exchange's transaction")
-		}
-		err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
-			Account: store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
-		})
-		switch {
-		case errors.Is(err, store.ErrSignInSubjectReplaced):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
-		case errors.Is(err, store.ErrSignInRevoked):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
-		case errors.Is(err, store.ErrSignInMachineChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
-		case errors.Is(err, store.ErrSignInSubjectChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectChanged, err)
-		}
-		return err
-	}
-}
-
 // issuerKeys reads issuer's published signing keys: the source a token's own key is resolved
 // against, both for the verifier that answers whether a token verifies (a projected
 // service-account token) and for the RFC 8693 exchange, which
@@ -1531,18 +1655,19 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 
 // typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
-// its own binding of each google-service-account secret to the account that minter may mint for,
-// which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that type. The google-service-account minter is a pointer: its method value would
-// otherwise copy the credentials it caches away from the minter every later mint reads. The other
-// two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
-// from its one budget.
-func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+// its own binding of each google-service-account and anthropic-federation secret to the account
+// that minter may mint for, which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given
+// no binding at all mints no secret of that type. The google-service-account and
+// anthropic-federation minters are pointers: a method value would otherwise copy the credentials
+// each caches away from the minter every later mint reads. The other two are copied, and each
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeAnthropicFederation:  anthropicFederation.Mint,
 	}
 }
 

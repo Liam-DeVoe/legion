@@ -432,6 +432,12 @@ type ProjectAccess struct {
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.
 	NotSignedIn []string `json:"not_signed_in"`
+	// PrivateBeforeFullSwitch is true while the project is private before its full switch: the
+	// deployment names it in DISPATCH_PRIVATE_BEFORE_FULL_SWITCH and not in
+	// DISPATCH_PRIVATE_PROJECTS, so Dispatch hides it as any private project while its namespace,
+	// stores and bus gate come with its full switch. Absent for every other project, so a
+	// deployment that names no such project answers what it always answered.
+	PrivateBeforeFullSwitch bool `json:"private_before_full_switch,omitempty"`
 	// Passkeys is, in the owner's answer of a deployment whose people from outside sign in with a
 	// passkey (DISPATCH_SIGNIN_PASSKEY=1), when each passkey of a person People names was enrolled,
 	// sorted by email and then by that time, [] for none; absent from every other answer. The owner
@@ -535,11 +541,23 @@ type PrivateProjectChannels struct {
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it (GET
-// /api/v1/access/person?person=), with Holder as AccessAnswer carries it.
+// /api/v1/access/person?person=), with Holder as AccessAnswer carries it. Held is whether Dispatch
+// holds the person's personal tokens and broker credentials until they sign in again or a refresh
+// confirms them (identity.Membership.Standing): present whenever that answered, false for a person
+// no row holds, and left out when it failed, so a reader tells "not held" from "could not be read".
+// AsOf is the database time of the read the answer rests on: Standing's, or the database's now()
+// where Standing did not answer. NotHeldUntil is set under IAP identity alone, on every answer that
+// is not held: when it stops being served, the last Active Workspace Directory answer plus 24
+// hours, or AsOf itself for an answer that is unavailable (identity.Standing.Unavailable), a
+// person no Active answer confirmed in 24 hours or no row holds. It is left out of a held answer and
+// everywhere outside IAP.
 type PersonAnswer struct {
-	Person     string `json:"person"`
-	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
-	Holder     *bool  `json:"holder,omitempty"`
+	Person       string     `json:"person"`
+	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`
+	Holder       *bool      `json:"holder,omitempty"`
+	Held         *bool      `json:"held,omitempty"`
+	AsOf         time.Time  `json:"as_of"`
+	NotHeldUntil *time.Time `json:"not_held_until,omitempty"`
 }
 
 // The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a
@@ -611,15 +629,22 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
 // priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
 // the first write left them however often the priority is written again.
+//
+// DescriptionTree is the ProseMirror tree Description is shown as, present only for a caller
+// that sent `Dispatch-Trees: 1` and only for a description that is not empty. It stands on this
+// row rather than on a read shape of the api package's own (display_trees.go), because no event
+// payload carries a priority: `priority.updated` names the id and the change alone
+// (PriorityEventPayload).
 type Priority struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Owner       string    `json:"owner"`
-	Rank        string    `json:"rank"`
-	State       string    `json:"state"`
-	MadeAt      time.Time `json:"made_at"`
-	MadeBy      Actor     `json:"made_by"`
+	ID              string      `json:"id"`
+	Title           string      `json:"title"`
+	Description     string      `json:"description"`
+	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
+	Owner           string      `json:"owner"`
+	Rank            string      `json:"rank"`
+	State           string      `json:"state"`
+	MadeAt          time.Time   `json:"made_at"`
+	MadeBy          Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history

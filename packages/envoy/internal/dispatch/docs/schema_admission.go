@@ -268,10 +268,12 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 // store.AccessChangedChannel, so no notification reaches room sync's access lane, and it moves
 // what a person sees all the same: this pass is what finds it, a heartbeat at most after it
 // committed, and closes each socket whose person lost its room with the code an announced change
-// closes it with
-// (errAccessRevoked). A pass while this process holds no socket reads nothing. ctx is a
-// process-lifetime context, outside any transaction of the pool: the passes run on a hold mark of
-// their own (store.ForConcurrentWorker), as each room-sync lane does.
+// closes it with (errAccessRevoked). Each beat moves the access epoch first (accessEpoch), so
+// every socket asks its rule again before its next data frame too (socketStillReads). The pass's
+// read of each person's rooms refreshes the stored listener answer first (readableRooms, through
+// refreshRosterForReader), as each socket's ask does. A pass while this process holds no socket
+// reads nothing. ctx is a process-lifetime context, outside any transaction of the pool: the
+// passes run on a hold mark of their own (store.ForConcurrentWorker), as each room-sync lane does.
 func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 	ctx = store.ForConcurrentWorker(ctx)
 	ticker := time.NewTicker(every)
@@ -281,6 +283,7 @@ func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.accessEpoch.move()
 			s.recheckAccess(ctx)
 		}
 	}
@@ -350,7 +353,9 @@ func (s *Service) recheckAdmission(ctx context.Context, admission *schemaAdmissi
 var readableRoomsStatement = `select a.id::text from artifacts a where a.id = any($1::uuid[]) and ` + access.DocumentClause("a", "$2")
 
 // readableRooms is the rooms of admissions, all person's sockets, that person may read now, as the
-// person's browser sees them (model.BrowserActor): every document socket is a cookie's.
+// person's browser sees them (model.BrowserActor): every document socket is a cookie's. The
+// stored listener answer is refreshed first (refreshRosterForReader), since a session's file
+// follows the session content rule, which reads a listener list only while that answer is fresh.
 func (s *Service) readableRooms(ctx context.Context, person string, admissions []*schemaAdmission) (map[string]bool, error) {
 	who := model.Actor{Kind: "user", ID: person}
 	viewer, err := access.Resolve(ctx, s.store.Pool, model.BrowserActor(person))
@@ -358,6 +363,7 @@ func (s *Service) readableRooms(ctx context.Context, person string, admissions [
 		return nil, err
 	}
 	who.Viewer = &viewer
+	s.refreshRosterForReader(ctx, who)
 	rooms := make([]string, len(admissions))
 	for i, admission := range admissions {
 		rooms[i] = admission.key.room
@@ -375,6 +381,23 @@ func (s *Service) readableRooms(ctx context.Context, person string, admissions [
 		readable[room] = true
 	}
 	return readable, nil
+}
+
+// refreshRosterForReader refreshes the stored listener answer (SetRosterRefresh) before a read of
+// who's documents, unless who reads every document (readsEveryDocument): a session's file follows
+// the session content rule (access.DocumentClause through access.PartyClause), which reads a
+// listener list only from a stored answer that has not passed its expires_at and judges a listed
+// session of an expired one as a session with no list. It is the api's refresh on resolving a
+// reader (readerFor), made where this service resolves one: a socket's admission and each read of
+// which rooms a person still reads. An open reader of a deployment that holds no private project
+// reads nothing for it (R9).
+func (s *Service) refreshRosterForReader(ctx context.Context, who model.Actor) {
+	if readsEveryDocument(who) {
+		return
+	}
+	if refresh := s.rosterRefresh.Load(); refresh != nil {
+		(*refresh)(ctx)
+	}
 }
 
 // errSchemaRevoked is the cause a re-check cancels a revoked socket's request context with. ygo

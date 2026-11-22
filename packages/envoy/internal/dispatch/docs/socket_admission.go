@@ -286,6 +286,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := actor
 	reader.Viewer = &viewer
+	// The room's read follows the session content rule for a session's file, which reads the
+	// listener's lists only while their stored answer is fresh (refreshRosterForReader).
+	s.refreshRosterForReader(r.Context(), reader)
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room, reader)
 	if err != nil {
 		refuseHiddenRoom(w)
@@ -369,9 +372,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go), a socket whose person loses the room before ygo has upgraded
-	// it is refused as a hidden room is, and once upgraded each batch of the room's frames asks
-	// first whether its person still reads the room (revocableSocketWriter, recheckedConn).
-	stillReads := func() bool { return s.socketStillReads(ctx, connection.admission, viewer.Open) }
+	// it is refused as a hidden room is, and once upgraded each data frame of the room asks first
+	// whether its person still reads the room, which reads the database once an access change
+	// has been heard since the socket last read it (revocableSocketWriter, recheckedConn,
+	// socketAsk).
+	stillReads := s.socketAsk(ctx, connection.admission, viewer)
 	s.srv.ServeHTTP(&revocableSocketWriter{ResponseWriter: &awarenessLimitWriter{ResponseWriter: w, room: room}, ctx: ctx, stillReads: stillReads}, r.WithContext(ctx))
 }
 
@@ -395,8 +400,8 @@ func refuseHiddenRoom(w http.ResponseWriter) {
 type revocableSocketWriter struct {
 	http.ResponseWriter
 	ctx context.Context
-	// stillReads asks, before each batch of frames on the upgraded connection, whether the
-	// socket's person still reads its room (recheckedConn); nil asks nothing.
+	// stillReads asks, before each data frame on the upgraded connection, whether the socket's
+	// person still reads its room (recheckedConn, Service.socketAsk); nil asks nothing.
 	stillReads func() bool
 	refused    bool
 }
@@ -425,7 +430,7 @@ func (w *revocableSocketWriter) Write(body []byte) (int, error) {
 }
 
 // Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room, and
-// hands ygo a connection that asks before each batch of frames whether they still read it
+// hands ygo a connection that asks before each data frame whether they still read it
 // (recheckedConn).
 func (w *revocableSocketWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if w.hidden() {

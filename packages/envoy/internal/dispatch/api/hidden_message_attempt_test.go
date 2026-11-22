@@ -13,18 +13,19 @@ import (
 
 // TestAMessageToAHiddenSessionNeverLeavesAnAttemptOwed: alice, an open viewer who does not see
 // PRIV, messages privateSession, which has acted in PRIV and which the walk's listener holds live,
-// and retries it. Neither write commits an attempt pending for that session at any moment - not
-// the message's own attempt 1, unpinned and headed for it, nor an attempt pinned to it - so a
-// process killed between any two of the writes' commits leaves the delivery sweep nothing to
-// send: the sweep resolves a session route as the server's reader (resolveDeliveryTarget), which
-// sees privateSession, and would send it. A constraint trigger the test adds records every
-// pending attempt for privateSession that a transaction commits, as the row stands at that
-// commit; each one is then put back as a crash right after that commit leaves it, its claim lapsed,
-// and a sweep runs. It sends privateSession nothing and queues nothing on its subject.
+// and retries it. Alice reads that target as none, so the Retry answers the message as one with no
+// target and claims nothing (createDelivery). Neither write commits an attempt pending for that
+// session at any moment - not the message's own attempt 1, unpinned and headed for it, nor an
+// attempt pinned to it - so a process killed between any two of the writes' commits leaves the
+// delivery sweep nothing to send: the sweep resolves a session route as the server's reader
+// (resolveDeliveryTarget), which sees privateSession, and would send it. A constraint trigger the
+// test adds records every pending attempt for privateSession that a transaction commits, as the
+// row stands at that commit; each one is then put back as a crash right after that commit leaves
+// it, its claim lapsed, and a sweep runs. It sends privateSession nothing and queues nothing on its
+// subject.
 //
-// Control: settleHiddenMessageAttempt and createStoredMessage's hidden attempt 1 both off. The
-// message's commit records its attempt 1 pending and the claims record attempts pinned to
-// privateSession; restored, the sweep sends one to the session and the row fails naming it.
+// Control: createStoredMessage's hidden attempt 1 off. The message's commit records its attempt 1
+// pending; restored, the sweep sends it to the session and the row fails naming it.
 func TestAMessageToAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	ctx := context.Background()
@@ -51,8 +52,8 @@ func TestAMessageToAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
 		t.Errorf("alice's message to %s answers %s, want it failed: no live session", privateSession, part)
 	}
 	retried := walk.request(t, callerAlice, http.MethodPost, "/api/v1/messages/"+message+"/deliveries", json.RawMessage(`{"delivery":"btw"}`))
-	if part := deliveryPart(t, retried.Body.Bytes()); retried.Code != http.StatusCreated || !strings.Contains(part, "no live session "+privateSession) {
-		t.Errorf("alice's Retry of it answers %d %s, want it failed: no live session", retried.Code, part)
+	if retried.Code != http.StatusNotFound || strings.TrimSpace(retried.Body.String()) != `{"code":"MESSAGE_NOT_FOUND","error":"message not found"}` {
+		t.Errorf("alice's Retry of it answers %d %s, want it answered as a message with no target: 404 message not found", retried.Code, retried.Body.String())
 	}
 	awaitBackgroundWrites(t, walk.server)
 

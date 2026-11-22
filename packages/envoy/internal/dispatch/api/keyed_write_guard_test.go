@@ -54,6 +54,13 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A Workspace Directory check of a person under IAP identity, which a decision's re-read of
+	// its caller can start (approverStanding, personalTokenHeld, identity.Membership.Standing):
+	// the person's one check, shared with the membership pass and run on a context of its own
+	// (identity.Membership.directoryFlight), records the person's Directory outcome, never the
+	// request's work. Its bare writes mark no key, rightly, and a repeat after a takeover only
+	// records a later answer.
+	"identity.Membership.checkDirectory": "records the person's Directory outcome, which is no write of the request's",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",
@@ -85,6 +92,13 @@ var keyedWriteGuardAllowed = map[string]string{
 	// and an admission deletes the rows of every process that is no member, so a count a crash
 	// left behind is cleared rather than replayed.
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
+	// The stored listener answer (route_roster), which every request of a reader that does not see
+	// every object refreshes before the session content rule reads it (readerFor,
+	// refreshRosterForContent, readRouteRoster): the listener's sessions as it answered, shared by
+	// every process and every request, never the request's own work. It replaces the stored row
+	// only with a newer answer (sent_at), so a repeat after a takeover writes nothing a reader
+	// would not read anyway; a failure is only logged, and no write is undone for it.
+	"api.server.storeRouteRoster": "stores the listener's answer every process shares, newer answers only, which no key marks",
 }
 
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside

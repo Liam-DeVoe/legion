@@ -247,9 +247,12 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     session recorded (session_owners, the person the token acts for) is the viewer's person, and
 //     one is. Such a session acts with a credential of the viewer's person, which reaches only what
 //     that person sees. Where the listener lists the session's projects, each must be one the
-//     viewer sees. Where it lists none, the session passes only a viewer whose own credential lists
-//     no project (the person's browser, whose visibility argument has no "lists"): a credential of
-//     the same person that lists fewer projects must not read what a session on a wider list read.
+//     viewer sees. Where it lists none, nothing bounds what the session read but its person's
+//     sight, so it passes only a viewer whose credential sees every project its person sees (the
+//     person's browser, or a token whose list names each): a restricted member's credential is
+//     held to its list for every project, public ones too, and one that sees fewer projects than
+//     its person must not read what a session on a wider credential read, a public project made
+//     private since included, which no pair records while the person still sees it.
 //     A session tied to nobody, or one also tied to another person, answers as one nobody holds,
 //     whatever else it did; another person's credential acting in it ties it to them, which the
 //     live view's re-ask before the replay and before each batch of frames reads.
@@ -257,13 +260,18 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     the viewer does not see, once `envoy-dispatch backfill-session-projects` has filled the pairs
 //     (session_projects_filled). Where the listener record lists the session's credential's
 //     projects, each must be one the viewer sees ([] included), and the session must have written
-//     in a project or list one. Where it lists none (the listener sent no list, as every listener
-//     does until it learns each session's projects), the session's people bound what its
+//     in a project or list one. That list is the whole rule for such a session: a full member's
+//     credential reads a private project only where its list names it (CredentialCovers), and
+//     what it read of a public project was every full member's to read then. A switch to private
+//     hides what is written in the project from the switch on; it does not withdraw what sessions
+//     read while the project was public. Where it lists none (the listener sent no list, as every
+//     listener does until it learns each session's projects), the session's people bound what its
 //     credential could read: a proved write must have tied it to somebody (session_owners), and
 //     every private project each person tied to it sees (store.PersonSeesProjectSQL) must be one
-//     the viewer sees. So a session only people on no private project proved is watched as
-//     before, one a private project's person proved only by a viewer who sees that project too,
-//     and one with neither a list nor a tie by nobody.
+//     the viewer sees, which holds a full member's credential that sees fewer private projects
+//     than its person off that person's own sessions. So a session only people on no private
+//     project proved is watched as before, one a private project's person proved only by a viewer
+//     who sees that project too, and one with neither a list nor a tie by nobody.
 //
 // A listener list counts only from a stored listener answer (route_roster) that has not passed its
 // expires_at; a session of an expired answer is judged as one whose listener sent no list. A reader
@@ -306,6 +314,25 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 // its own.
 func sessionContentFunctionBody() string {
 	held := `(select listener.projects from public.route_roster_session_projects listener join public.route_roster roster on roster.id = listener.id where listener.id = true and roster.expires_at > now())`
+	open := ViewerFlag("$2", "open")
+	// ownOnly is a restricted viewer's arm: the viewer's own person is tied to the session, and
+	// nobody else is.
+	ownOnly := fmt.Sprintf(`(exists (
+				select 1 from public.session_owners tied
+				where tied.session_id = $1 and tied.login = %[1]s
+				offset 0)
+			and not exists (
+				select 1 from public.session_owners tied
+				where tied.session_id = $1 and tied.login is distinct from %[1]s
+				offset 0))`, ViewerPerson("$2"))
+	// coversItsPerson is the restricted viewer's test of its own credential, for a session whose
+	// listener sent no list: every project the viewer's person sees is one the viewer sees.
+	coversItsPerson := fmt.Sprintf(`not exists (
+				select 1 from public.projects seen
+				left join public.people viewer_person on viewer_person.email = %[1]s
+				where not (($2->'sees') ? seen.key) and %[2]s
+				offset 0)`,
+		ViewerPerson("$2"), store.PersonSeesProjectSQLIn("public.", ViewerPerson("$2"), "viewer_person.member_kind", "seen"))
 	return fmt.Sprintf(`select coalesce(not exists (
 				select 1 from public.session_projects unseen
 				where unseen.session_id = $1 and not (($2->'sees') ? unseen.project_key)
@@ -320,7 +347,7 @@ func sessionContentFunctionBody() string {
 						and exists (select 1 from public.session_projects_filled offset 0)
 						and (jsonb_array_length(%[2]s->$1) > 0
 							or exists (select 1 from public.session_projects acted where acted.session_id = $1 offset 0)))
-					or (not %[1]s and %[5]s))
+					or (not %[1]s and %[4]s))
 			else
 				(%[1]s
 					and exists (select 1 from public.session_projects_filled offset 0)
@@ -329,20 +356,11 @@ func sessionContentFunctionBody() string {
 						select 1 from public.session_owners tied
 						join public.projects hidden on hidden.visibility = 'private' and not (($2->'sees') ? hidden.key)
 						left join public.people tied_person on tied_person.email = tied.login
-						where tied.session_id = $1 and %[4]s
+						where tied.session_id = $1 and %[3]s
 						offset 0))
-				or (not %[1]s and %[5]s and not ($2 ? 'lists'))
+				or (not %[1]s and %[4]s and %[5]s)
 			end, false)`,
-		ViewerFlag("$2", "open"), held, ViewerPerson("$2"),
-		store.PersonSeesProjectSQLIn("public.", "tied.login", "tied_person.member_kind", "hidden"),
-		fmt.Sprintf(`(exists (
-				select 1 from public.session_owners tied
-				where tied.session_id = $1 and tied.login = %[1]s
-				offset 0)
-			and not exists (
-				select 1 from public.session_owners tied
-				where tied.session_id = $1 and tied.login is distinct from %[1]s
-				offset 0))`, ViewerPerson("$2")))
+		open, held, store.PersonSeesProjectSQLIn("public.", "tied.login", "tied_person.member_kind", "hidden"), ownOnly, coversItsPerson)
 }
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project

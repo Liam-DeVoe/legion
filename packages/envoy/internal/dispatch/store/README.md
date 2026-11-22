@@ -36,6 +36,7 @@ The concurrent mode above is the way through:
 a first line of exactly `-- pgmigrate:non-transactional`, then one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, non-unique and named.
 `graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration.
 An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused, so a unique key on a table that size needs a stop-the-world migration instead.
+An expression index keeps the values it computed when its immutable function is replaced, so a migration that redefines `canonical_login` (`20261117000831`) runs `REINDEX INDEX CONCURRENTLY agent_tokens_canonical_owner` (`20261119020200`) in the same release.
 
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.
@@ -57,12 +58,13 @@ a passkey's row holds no refresh token, so `people_sign_in_stands` holds a row o
 In the recovery below, `issuer` is the account's own: the sign-in issuer, or the outside origin for a passkey's account.
 The guard is against a statement written by hand, or a mistaken one.
 It refuses each transition no writer makes, so no such statement can make a credential act for an account that no longer holds its address.
-A statement that makes a writer's own transition without the rest of what that writer does passes, since no trigger can tell it from the writer's, and two such leave something to recover;
+A statement that makes a writer's own transition without the rest of what that writer does passes, since no guard can tell it from the writer's, and two such leave something to recover, the first of which the account binding's catch-up recovers by itself;
 the last item is the broker's own clear, which recovers neither:
 
-- **An account written into `people.sub` by itself**, rather than that account signing in, skips the revocations a sign-in records, and leaves a replaced account's credentials acting.
-  Say A held the address and B took it: a statement that writes A back records no revocation of B, so B's machine logins and sign-ins stay live at the broker, which serves them secrets without asking Dispatch, and the broker goes on refusing A, since only a revocation naming A as the holder lifts that.
-  To recover, do on Dispatch's database what that sign-in would have done: first settle every revocation still owed for the account `people` records now (A), as a sign-in that takes an address back does (`settleReclaimedBrokerRevocationsSQL`), so the loop never pays one that would end what A holds; then record the revocation of the account the statement replaced (B, the `sub` it overwrote), naming A as its holder, exactly as a sign-in records one (`recordBrokerRevocationSQL`; an upsert where B was recorded before).
+- **An account written into `people.sub` by itself**, rather than that account signing in, records none of the revocations a sign-in records; the trigger `people_account_binding_replacement` keeps the change (migration `20261121180429`), and once the account binding holds, the revocation loop's catch-up (`CatchUpAccountBinding`) does what that sign-in would have done.
+  Say A held the address and B took it: writing A back is caught up by settling what is still owed for A and recording B's revocation naming A (`TestACatchUpOwesNothingToTheAccountThatHoldsTheAddressAgain` holds that a catch-up owes B's revocation alone, naming A, after A took the address back while the binding was off), which the loop pays, so the broker ends B's credentials and stops refusing A.
+  Until then, while a build without the binding is in the fleet, B's credentials stay live at the broker, which serves them secrets without asking Dispatch, and the broker goes on refusing A.
+  To recover at once, by hand, do on Dispatch's database what that sign-in would have done: first settle every revocation still owed for the account `people` records now (A), as a sign-in that takes an address back does (`settleReclaimedBrokerRevocationsSQL`), so the loop never pays one that would end what A holds; then record the revocation of the account the statement replaced (B, the `sub` it overwrote), naming A as its holder, exactly as a sign-in records one (`recordBrokerRevocationSQL`; an upsert where B was recorded before).
   The server's loop then pays it: the broker ends B's credentials and, since a revoke naming A as the holder deletes its record of A, stops refusing A.
   The block locks the address's `user_sessions` row first, so a sign-out at the same moment waits for it, rather than moving the generation between the statement's read of it and the guard's own check, which would refuse the statement:
 
@@ -77,7 +79,7 @@ the last item is the broker's own clear, which recovers neither:
   ```
 
   `store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this block from this file and the runbook, and `store.TestAnAccountWrittenBackOverARevocationPaidBeforeIsRecordedAgain` runs it where the replaced account's revocation was recorded and paid before, through its conflict arm.
-  A statement that records an account where the address recorded none overwrote no `sub`, and this recovery does not cover it: the first sign-in would also have revoked the address's personal tokens that recorded another account or none, and recorded a revocation of each other account, which nothing then records.
+  A statement that records an account where the address recorded none overwrote no `sub`; the trigger keeps it as a first recording, which the catch-up revokes and owes for as the first sign-in would have.
 
 - **A revocation settled by itself** (`done_at` written while the broker confirmed nothing) is what `envoy-dispatch clear-broker-revocation` does, and tells the broker nothing:
   the replaced account's credentials go on reading the secrets the broker serves without asking Dispatch,
@@ -122,3 +124,46 @@ Strays of the columns the guard leaves free, because their writers move them bot
 `people.member_kind` set to `full` on an outside account's row, or a `confirmed_at` kept fresh, lets that person's personal tokens read as a full member's until the hourly confirmation next runs for them, which only a cookie request or a sign-in starts.
 
 `../../../cmd/dispatch/README.md` has the rule for each surface ("Two builds at once") and for migrations with their examples ("Database migrations"), the naming and the identifiers a set is refused for, and what the census is held to.
+
+**The keyword table holds each past version of the searchable text.**
+Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
+A row is never updated, a new version being a new row, but for the erase (`envoy-dispatch erase`): it deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted (`textversions.RestateIssueVectors`).
+`search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
+The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
+It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").
+No migration writes a row of either table.
+
+`TextVersions.SQL()` is the relation of the version of each item that held at `TextVersions.Cut`, for a statement to join as `from <SQL()> v`.
+A version holds at the cut when it started at or before the cut, and no later version of the same item in its owner's `seq` order started at or before the cut.
+So an item has at most one version at a time, and none before its first version started.
+The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
+It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+`Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
+For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
+With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.
+
+The reach is the latest time T such that every event whose `created_at` is at or before T has its rows.
+This includes an event that a transaction still open will commit.
+`ComputeTextVersionsReach` computes the reach in a READ COMMITTED transaction, one statement at a time, in this order:
+
+1. T0, `clock_timestamp()`, and whether the cursor is at most 5,000 events behind the newest event and not past it.
+   When it is not, no value is computed and no later step runs.
+
+2. A, the oldest `xact_start` of another client backend of this database that can write an event.
+   A backend can write an event when its login is a superuser, when its login or a role it is a member of has `INSERT` on `public.events`, or when its login is a role that the query cannot resolve.
+
+3. B, the oldest `created_at` of the events above the cursor, read in a later statement with its own snapshot, which checks the cursor against the newest event again.
+
+4. The reach: the earliest of A, B and T0 less 1 s, less 1 µs.
+
+A transaction open at step 2 is in A.
+A transaction that commits after step 2 and before step 3 is in B.
+A transaction that starts after step 2 started after T0.
+The 1 s covers the moment between the start of a transaction and its report of `xact_start`.
+No value is computed, and the stored reach stands, while a backend that can write an event is in a transaction whose start this role cannot read.
+The same is true while the cursor is more than 5,000 events behind the newest event, and while it is past the newest event after a reset of the log that the fill has not found yet.
+The fill stores the reach in each batch's transaction and never lowers it, and a reset of the event log sets it to null.
+`Store.TextVersionsReach` computes the reach again and answers the later of the computed reach and the stored reach.
+So a database whose fill is caught up and quiet is not refused a cut that the fill has reached.

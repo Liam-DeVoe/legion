@@ -186,8 +186,8 @@ func onDomain(at, domain string) bool {
 // restricted member was never admitted by a Workspace membership, so "Google did not confirm the
 // person's membership of the domain" would misname why it ended. The reason names what the hourly
 // confirmation found: most often, for such a person, that no project names them any more.
-func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string) error {
-	return endSubject(ctx, people, email, read, reason, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
+func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode) (bool, error) {
+	return endSubject(ctx, people, email, read, reason, mode, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
 }
 
 // SignedOutReason is the reason a restricted member whose sign-in no longer stands

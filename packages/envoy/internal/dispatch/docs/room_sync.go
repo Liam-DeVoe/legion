@@ -242,7 +242,9 @@ func (r *roomSync) connected(ctx context.Context) {
 
 // register registers every handler's channels on hub and returns what runs the lanes. Each handler
 // gets a lane of its own, and what the hub calls - on its own goroutine, which must not block -
-// only queues work there.
+// only queues work there. The sockets' access epoch is registered on hub too (accessEpoch.listen):
+// it moves on the hub's own goroutine as a notification arrives, ahead of any lane, so a socket's
+// next frame asks its rule again without waiting for the access lane's pass.
 //
 // Each lane runs on a context with a pool hold mark of its own (store.ForConcurrentWorker). The
 // pool's one-connection guard is per mark, so lanes sharing one would refuse each other: while
@@ -252,6 +254,7 @@ func (r *roomSync) connected(ctx context.Context) {
 // lifetime, outside any transaction of the shared pool, which is what a fresh mark per lane
 // needs.
 func (r *roomSync) register(hub *pglisten.Hub) (run func(ctx context.Context)) {
+	r.service.accessEpoch.listen(hub)
 	handlers := r.handlers()
 	lanes := make([]*roomSyncLane, 0, len(handlers))
 	for _, handler := range handlers {

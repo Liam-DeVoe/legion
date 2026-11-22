@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -78,12 +79,23 @@ type rig struct {
 }
 
 // rigSetup is what a test changes of the broker newRig wires: secrets served beside the four
-// every rig serves, and the client of Dispatch's project access the request machine and the
-// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL). A rig holding
-// a client serves a secret tagged with a project, as cmd/cipherd's does (Loader.ProjectChecks).
+// every rig serves, the client of Dispatch's project access the request machine and the
+// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), the group
+// reader every decision site asks (nil for none), and the hold gate (withHold). A rig holding a
+// client serves a secret tagged with a project, as cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
 	secrets  []secrets.LocalSecret
 	projects projectaccess.Access
+	groups   record.Directory
+	// hold builds, on the rig's own store, the hold gate the broker's approval page and its routes
+	// ask; nil is a broker with no gate, which holds nobody.
+	hold func(*store.Store) *hold.Gate
+}
+
+// withHold gives the broker the hold gate build makes on the rig's store, as cmd/cipherd gives one
+// where BROKER_PROJECT_ACCESS_URL is set: to the approval page and to the API's routes.
+func withHold(build func(*store.Store) *hold.Gate) func(*rigSetup) {
+	return func(s *rigSetup) { s.hold = build }
 }
 
 // newRig wires the broker as cmd/cipherd does, its approval page signed in at a provider of the
@@ -95,6 +107,10 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		change(&setup)
 	}
 	st := storetest.Open(t)
+	var gate *hold.Gate
+	if setup.hold != nil {
+		gate = setup.hold(st)
+	}
 	local := secrets.NewLocal(append([]secrets.LocalSecret{
 		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
 		policytest.Secret("SECOND_SECRET", ada, policy.TierHuman, "second-v1"),
@@ -103,6 +119,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	}, setup.secrets...)...)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = setup.projects != nil
+	loader.Groups = setup.groups
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -128,15 +145,17 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
+		Groups: setup.groups,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain.Groups = setup.groups
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
-	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine)
+	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, ciphertest.WithApprovalHold(gate))
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
@@ -146,6 +165,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: page,
+		Hold:     gate,
 	})
 
 	claims := issuer.Claims(dispatchAccount, dispatchAudience)

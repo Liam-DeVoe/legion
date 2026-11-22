@@ -412,8 +412,10 @@ signs in nobody of its own: a spec queues each person, with the claims Google gi
 at the issuer's `POST /_dev/sign-in-as`. The person's device is Chromium's virtual authenticator,
 which the spec adds through the page's CDP session (`WebAuthn.addVirtualAuthenticator`); the mode's
 one project is `chromium`. Only `e2e/outside-sign-in.e2e.ts`, which finds a Google account outside
-the domain refused and no Google sign-in at the second origin, and `e2e/outside-passkey.e2e.ts`
-run then, with one server process or two:
+the domain refused and no Google sign-in at the second origin, `e2e/outside-passkey.e2e.ts`, and
+`e2e/leaver-hold.e2e.ts`, which holds a person's personal token once the issuer refuses their
+refresh as Google refuses an account it no longer confirms, run then, with one server process or
+two:
 
 ```bash
 DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslmode=disable' \
@@ -638,10 +640,11 @@ issue still holds that one answered ask and the settlement writes the answer ont
 again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
 whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
 non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
-taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
-server, under no setting, so that check runs against the one server the rest of the script
-drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
-required here because the review and the answer are a person's writes. It writes three issues in
+taken. A replacement that names no token at all is taken unchecked, as it was before #3000, since
+no deployed `dispatch` command could name one (INFRA-4980), so that check runs against the one
+server the rest of the script drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and
+`DEV_SIGNIN_LOGIN`, which is required here because the review and the answer are a person's
+writes. It writes three issues in
 `PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
 
 ```bash
@@ -651,8 +654,8 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIG
 
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
 the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
-proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
-Verification document, and each runs that check's `run` and asserts its `negative_control`:
+proves it. It has one section for each of the checks `k1` to `k5` of the Verification document of
+the work that added it, and each runs that check's `run` and asserts its `negative_control`:
 
 - `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
   refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
@@ -855,17 +858,24 @@ Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh`, `outside-path
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+`query` every driver checks with. It also holds `start_horizon_watch` and `watch_horizon`, with
+which `node-projects.sh` watches the event horizon from 5 s before it sends its event and names a
+transaction of its own database that has held one of the watch's observations back for 5 s, and
+the `observe_horizon` and `own_horizon_hold` they are built on
+(`e2e/__tests__/node-projects-horizon-hold.test.ts` drives all four against a database).
+`with-harness.sh` is no driver and sources none of it.
 
-`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
-(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
-were given to Dispatch, to measure which of our listed addresses that device reaches. What it
-measures is TCP connects from that device to the listed addresses and ports, nothing more: it
-cannot see a service the origin itself forwards by path or by Host on its own host and port, and
-it must run on the device itself, not in a VM, a container or a remote shell, whose network is
-another one. It is handed to that person as the one file with its target list, so it sources
-nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
-three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
+measures which of our listed addresses a machine reaches over the path given to a person from
+outside. What it measures is TCP connects from the machine it runs on to the listed addresses and
+ports, nothing more: it cannot see a service the origin itself forwards by path or by Host on its
+own host and port. So it runs where the path starts. For a path that only that person's device
+has, such as a tunnel, that is the device itself, not a VM, a container or a remote shell, whose
+network is another one; for a public path, any host on the public internet will do, since a public
+load balancer answers every address alike. It is handed to that person as the one file with its
+target list, so it sources nothing and needs only bash (3.2, as macOS ships it, or later), curl
+7.40 or later and sleep, all three on a stock macOS or Linux; curl's own `--connect-timeout` and
+`--max-time` bound every
 probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
 bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
 `sh` of macOS is bash, and runs it. Its inputs:
@@ -917,9 +927,10 @@ rounds are 6 s apart because a tunnel whose first handshake packet was lost stay
 WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
 together would all fall inside that.
 Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
-the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
-not by curl's exit code alone, since our services accept a connection and then wait for the
-client:
+the run measures what that device itself reaches. No line of its output names the device's host
+name, since that output can be posted where anyone reads it. Each probe is judged by whether TCP
+connected, not by curl's exit code alone, since our services accept a connection and then wait for
+the client:
 
 | curl's answer | Class |
 |---|---|
@@ -1107,18 +1118,36 @@ and, given `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against sta
 harness, in one run and split: this checkout's server, where it passes, every write the writer
 makes is delivered and one falls inside the runner's window, and a build with no read check, where
 it fails naming the route, a session's direct message, a GitHub proxy read, the agent view and both
-sockets. CI's `dispatch-project-access` job runs those rows. That build's commit is read from git,
-never written down: the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by
-default; while the read check's pull request is open, the branch it targets), or, once a squash
-merge has put the read check on that branch, the commit just before it. `DISPATCH_E2E_SWEEP_BASE`
-names the commit outright. A commit that holds the read check, or no restricted members, is
-refused by name.
+sockets. The build with no read check is read from git: the commit `DISPATCH_E2E_SWEEP_BASE`
+names, else the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by
+default), or, once a squash merge has put the read check on that branch, the commit just before
+it. With neither variable set and a merge base that holds no restricted members, as every commit of
+main's line does (the pull request that brought the read check to main brought restricted members
+with it), it is b29b710bd5, kept by the tag `archive/INFRA-3862-slack-channels`, which the helper
+fetches from origin where the clone lacks it (`pinnedControlBuild` in
+`e2e/__tests__/restricted-sweep-stack.ts`). A commit that holds the read check, or no restricted
+members, is refused by name.
 
 ```bash
 DISPATCH_E2E_PG_BIN=<a directory holding initdb and pg_ctl, PostgreSQL with vector> \
-  DISPATCH_E2E_SWEEP_BASE_BRANCH=origin/<the branch the read check's pull request targets> \
   bun run test:harness e2e/__tests__/restricted-sweep.test.ts
 ```
+
+`e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: it asks the
+edge's one IPv4 address, on 443, for each path and Host the edge must not forward, and reads
+whether one of the edge's routes took the request, by the `X-Outside-Edge-Backend` marker every
+route sets. `outside-path-reach.sh` cannot see this, since an address that answers on 443 forwards
+by path and by Host there. It needs bash 3.2 or later, curl 8.4.0 or later, `mktemp`, and
+`sha256sum` or `shasum`, and reads PASS (exit 0), FAIL (exit 1) or UNKNOWN (exit 2):
+
+```bash
+OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
+  OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
+```
+
+[`e2e/acceptance/outside-edge-refusals.md`](e2e/acceptance/outside-edge-refusals.md) says what its
+inputs are, how it reads an answer, when a signal ends it, and what its three test files hold;
+`cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals` runs them.
 
 ## Acceptance run against the deployed image
 

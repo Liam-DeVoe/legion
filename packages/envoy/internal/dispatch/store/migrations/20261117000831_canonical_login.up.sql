@@ -13,6 +13,15 @@
 -- The trimmed set is Unicode's White_Space property as Go's unicode.IsSpace reads it: U+0009-000D,
 -- U+0020, U+0085, U+00A0, U+1680, U+2000-200A, U+2028, U+2029, U+202F, U+205F, U+3000. The
 -- function is immutable, so an index may use it. It creates a function and touches no row.
+--
+-- agent_tokens_canonical_owner (migration 20261119020200) is an index on canonical_login(owner),
+-- and an expression index keeps the values it computed when its immutable function is replaced: a
+-- later migration that redefines canonical_login must run
+-- `REINDEX INDEX CONCURRENTLY agent_tokens_canonical_owner` in the same release.
+--
+-- This header was edited in place after the migration was pushed, its statement unchanged; the
+-- line below names the text before the edit, so a database that applied that text still boots.
+-- replaces: 20261117000831_canonical_login.up.sql sha256:0a29bb5beeda046999c2058366050535556e100c2419c681172d80f285ede617
 create function canonical_login(login text) returns text
   language sql immutable strict parallel safe
   return translate(

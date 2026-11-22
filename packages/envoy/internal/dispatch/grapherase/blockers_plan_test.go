@@ -138,3 +138,78 @@ func blockersBefore(t *testing.T, sql string) []explaintest.Part {
 		},
 	}
 }
+
+// blockersReplyRows is how many rows of comments, comment_deliveries and asks the reply plan test
+// seeds: enough that a read of any of them whole costs the planner more than a probe of an index.
+const blockersReplyRows = 5000
+
+// TestTheBlockersReadProbesTheRowsPointingAtACommentThroughTheirIndexes explains the two counts
+// readBlockers sends under the erase's owner locks for the nullable references into comments that
+// had no index on their referencing column: comment_deliveries.reply_id and
+// asks.handed_back_reply_id. Each table holds blockersReplyRows rows that name no reply, and
+// comments as many other comments, written and analyzed before the read; the count is the one the
+// read sends for the comment seedAgreeingStore writes, with the arguments it binds
+// (explaintest.RecordedTx). With hash and merge joins off, under each plan-cache mode the plan
+// must read the comment's row through an index and each table through its reply index
+// (20261119020000, 20261119020100) by its key (explaintest.RequireEachRowProbedOnce). The
+// control is the same count with that index dropped inside the explaining transaction, as the
+// database stood before those migrations, which must plan, run and fail the check under both
+// modes: it reads the table whole.
+func TestTheBlockersReadProbesTheRowsPointingAtACommentThroughTheirIndexes(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	pool := database.Pool
+	seeded := seedAgreeingStore(t, database)
+	if _, err := pool.Exec(ctx, `
+		insert into comments (issue_key, author, body)
+		select 'CORE-1', '{"kind":"user","id":"alice"}'::jsonb, 'Comment ' || i from generate_series(1, $1::int) i`,
+		blockersReplyRows); err != nil {
+		t.Fatalf("seed the other comments of issue CORE-1: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, state)
+		select $1::uuid, 'session:' || i, 1, 'btw', 'sent' from generate_series(1, $2::int) i`,
+		seeded.comment, blockersReplyRows); err != nil {
+		t.Fatalf("seed the deliveries of comment %s: %v", seeded.comment, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into asks (issue_key, author, question)
+		select 'CORE-1', '{"kind":"user","id":"alice"}'::jsonb, 'Question ' || i from generate_series(1, $1::int) i`,
+		blockersReplyRows); err != nil {
+		t.Fatalf("seed the asks of issue CORE-1: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `analyze comments, comment_deliveries, asks`); err != nil {
+		t.Fatalf("analyze the seeded tables: %v", err)
+	}
+	keys := explaintest.NewIndexKeys(pool)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	recorded := &explaintest.RecordedTx{Tx: tx}
+	erasure := &Erasure{Kind: commentNodeKind, ID: seeded.comment}
+	var read erasedRead
+	if err := erasure.readBlockers(ctx, recorded, &read); err != nil {
+		t.Fatalf("read the blockers of comment %s: %v", seeded.comment, err)
+	}
+	if len(erasure.Blockers) != 0 {
+		t.Fatalf("the read names blockers of comment %s, which no row points at: %q", seeded.comment, erasure.Blockers)
+	}
+	// The read's transaction holds a lock on each table it read until it ends, which the control's
+	// drop index would wait behind for ever; the statements it sent are all the test needs of it.
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("end the read: %v", err)
+	}
+	for _, reply := range []struct{ table, index string }{
+		{"comment_deliveries", "comment_deliveries_reply_id"},
+		{"asks", "asks_handed_back_reply_id"},
+	} {
+		count := recorded.Holding(t, "from "+reply.table+" child ")
+		keyed := map[string]string{reply.table: reply.index, "comments": explaintest.AnyIndex}
+		explaintest.RequireEachRowProbedOnce(t, ctx, pool, keys, keyed, "the count of the "+reply.table+" rows pointing at the comment", nil, count)
+		explaintest.RequireTheCheckFails(t, ctx, pool, keys, keyed, "the count of the "+reply.table+" rows with "+reply.index+" dropped",
+			explaintest.PlanCacheModes, []explaintest.Statement{{SQL: "set local lock_timeout = '10s'"}, {SQL: "drop index " + reply.index}}, count)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -27,8 +28,11 @@ const sessionProjectsFillBatch = 10_000
 // starts, and a fill never takes a pair away, so its operator runs it once the last old pod is
 // gone. From the empty to the marker's row, no viewer of a deployment that holds a private project,
 // open or not, reads a session but its own (access.SessionClause). session_owners is not emptied: no
-// build recorded its pairs under another rule. It exits 0 once it has read every event, 1 when the
-// database cannot be opened or written, and 2 for an argument it does not take.
+// build recorded its pairs under another rule. The reset, each batch that writes a pair and the
+// marker's row announce themselves on events.SessionAccessChannel, since the session content rule
+// reads all three, so every server's document sockets ask their rule again before their next
+// frame. It exits 0 once it has read every event, 1 when the database cannot be opened or
+// written, and 2 for an argument it does not take.
 func backfillSessionProjects(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("backfill-session-projects", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -47,7 +51,7 @@ func backfillSessionProjects(ctx context.Context, args []string, databaseURL str
 	defer database.Pool.Close()
 	ctx = store.WithTransactionTracking(ctx)
 	if *reset {
-		for _, statement := range []string{`delete from session_projects`, `delete from session_projects_filled`} {
+		for _, statement := range []string{`delete from session_projects`, `delete from session_projects_filled`, `select ` + events.AnnounceSessionAccess} {
 			if _, err := database.Pool.Exec(ctx, statement); err != nil {
 				fmt.Fprintf(stderr, "backfill-session-projects: --reset: %s: %v\n", statement, err)
 				return 1
@@ -129,8 +133,9 @@ func fillSessionProjects(ctx context.Context, pool *store.Pool, batch int) (sess
 						where recorded.session_id = o.session_id and recorded.login = o.login)
 				returning 1
 			)
-			select (select max(id) from batch), (select count(*) from batch), (select count(*) from inserted)
-		`, after, batch).Scan(&last, &read, &written); err != nil {
+			select (select max(id) from batch), (select count(*) from batch), (select count(*) from inserted),
+				(select `+events.AnnounceSessionAccess+` from (select 1 from inserted union all select 1 from owned) written limit 1)
+		`, after, batch).Scan(&last, &read, &written, nil); err != nil {
 			return report, fmt.Errorf("record the sessions' projects of the events after id %d: %w", after, err)
 		}
 		report.events += read
@@ -141,8 +146,12 @@ func fillSessionProjects(ctx context.Context, pool *store.Pool, batch int) (sess
 		after = *last
 	}
 	if _, err := pool.Exec(ctx, `
-		insert into session_projects_filled (filled_at)
-		select now() where not exists (select 1 from session_projects_filled)
+		with filled as (
+			insert into session_projects_filled (filled_at)
+			select now() where not exists (select 1 from session_projects_filled)
+			returning 1
+		)
+		select `+events.AnnounceSessionAccess+` from filled
 	`); err != nil {
 		return report, fmt.Errorf("record that every event's session project is filled: %w", err)
 	}

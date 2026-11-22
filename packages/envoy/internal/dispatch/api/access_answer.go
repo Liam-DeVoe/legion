@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -14,11 +15,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The membership answer (K3) is what the secrets broker reads to decide a project's secrets and a
 // token's list: one project's owner, visibility and Slack channels, and whether one person sees
-// it, one person's member kind, and every private project's Slack channels. It names no
+// it, one person's member kind and whether Dispatch holds them (personStanding), which the
+// broker's hold gate reads, and every private project's Slack channels. It names no
 // repositories. It is plain data read outside any transaction. Only a Kubernetes service account
 // the deployment names in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before
 // anything is read, a caller with no credential, or one whose credential does not verify, is
@@ -128,12 +131,14 @@ func readAccessQuestion(w http.ResponseWriter, r *http.Request, personRequired b
 // recorded the address's account (people.sub_recorded_at), less than brokerCredentialMargin after
 // it, or at a time the question did not give: the two times come from two databases' clocks, so a
 // skew refuses. It is true otherwise: no account recorded for the person (no row included), no
-// recording time to compare a credential recording none with (a row from before the column), or a
-// deployment whose sign-in records no account. Whether an account is recorded is read as the
-// admission reads it, `sub is not null`; the database refuses an empty sub (migration
-// 20261118041916), so no row reads as recorded to one and as unrecorded to the other. It is nil for
-// a question naming no person, and for one that does not say which account the credential records,
-// which the answer then leaves out, as it always did.
+// recording time to compare a credential recording none with (a row from before the column), a
+// deployment whose sign-in records no account, or a build without the account binding in the
+// fleet (store.AccountBindingHoldsSQL, read in the same statement), which holds no credential to
+// an account either. Whether an account is recorded is read as the admission reads it, `sub is not
+// null`; the database refuses an empty sub (migration 20261118041916), so no row reads as recorded
+// to one and as unrecorded to the other.
+// It is nil for a question naming no person, and for one that does not say which account the
+// credential records, which the answer then leaves out, as it always did.
 func (s *server) accountHolder(ctx context.Context, q access.Querier, question accessQuestion) (*bool, error) {
 	if question.person == "" || !question.describes {
 		return nil, nil
@@ -144,9 +149,10 @@ func (s *server) accountHolder(ctx context.Context, q access.Querier, question a
 	}
 	var recorded, recordedAt, madeAfter bool
 	var sub, subIssuer string
-	err := q.QueryRow(ctx, `select sub is not null, coalesce(sub, ''), coalesce(sub_issuer, ''), sub_recorded_at is not null,
+	legacyWindow, markWindow := store.AccountBindingWindows()
+	err := q.QueryRow(ctx, `select sub is not null and `+store.AccountBindingHoldsSQL("$3", "$4")+`, coalesce(sub, ''), coalesce(sub_issuer, ''), sub_recorded_at is not null,
 			coalesce($2::timestamptz >= sub_recorded_at + `+brokerCredentialMarginSQL+`, false)
-		from people where email = $1`, model.CanonicalLogin(question.person), timeOrNull(question.createdAt)).Scan(&recorded, &sub, &subIssuer, &recordedAt, &madeAfter)
+		from people where email = $1`, model.CanonicalLogin(question.person), timeOrNull(question.createdAt), legacyWindow, markWindow).Scan(&recorded, &sub, &subIssuer, &recordedAt, &madeAfter)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("read the Google account recorded for %s: %w", model.CanonicalLogin(question.person), err)
 	}
@@ -190,7 +196,8 @@ func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// getAccessPerson answers ?person='s member kind, with holder for a question naming an account.
+// getAccessPerson answers ?person='s member kind, whether Dispatch holds them (personStanding), and
+// holder for a question naming an account.
 func (s *server) getAccessPerson(w http.ResponseWriter, r *http.Request) {
 	question, ok := readAccessQuestion(w, r, true)
 	if !ok {
@@ -206,6 +213,7 @@ func (s *server) getAccessPerson(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.personStanding(r.Context(), &answer)
 	if answer.Holder, err = s.accountHolder(r.Context(), pool, question); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -234,4 +242,28 @@ func (s *server) getAccessPrivateProjects(w http.ResponseWriter, r *http.Request
 		return
 	}
 	WriteJSON(w, http.StatusOK, privateProjectsAnswer{Projects: projects})
+}
+
+// personStanding fills in whether Dispatch holds answer's person (Deps.Standing) and the time the
+// answer rests on. Where no Google rule signs people in (Standing nil) nobody is held, and as_of
+// stays the database's now() the member kind was read with. A Standing that fails is no answer: the
+// answer leaves held out, so the broker reads it as Dispatch not asked for the hold and still reads
+// its member_kind, keeps that now() as as_of, and logs the failure; the route still answers 200.
+// Otherwise it carries Standing's held and the time of the read it rests on, and, under IAP
+// identity, the deadline of a not-held answer as not_held_until: as_of itself for an unavailable one
+// (identity.Standing.Unavailable), which the broker refuses as it refuses a deadline passed.
+func (s *server) personStanding(ctx context.Context, answer *model.PersonAnswer) {
+	if s.deps.Standing == nil {
+		answer.Held = new(bool)
+		return
+	}
+	standing, err := s.deps.Standing.Standing(ctx, answer.Person)
+	if err != nil {
+		slog.Warn("dispatch: the person answer leaves held out: whether Dispatch holds the person could not be read", "error", err)
+		return
+	}
+	answer.Held, answer.AsOf = &standing.Held, standing.AsOf
+	if !standing.Held && !standing.NotHeldUntil.IsZero() {
+		answer.NotHeldUntil = &standing.NotHeldUntil
+	}
 }

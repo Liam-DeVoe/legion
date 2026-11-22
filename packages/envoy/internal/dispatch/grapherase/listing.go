@@ -21,6 +21,10 @@ import (
 // erased text: a value tuple is listed without its value and a row by its key alone.
 type listing struct {
 	tuples, rows, versions, reviews, embeddings, search, excerpts, events, documents, left, blockers []string
+	// cutBody is whether the run replaced with the marker the body an event of the node cut
+	// (ownCutBody). That body may be one the comment held before an edit, whose own display tree is
+	// keyed by a text no row holds any more, so the sweep after the commit takes trees by content.
+	cutBody bool
 }
 
 // lines renders the listing as Write prints it and as its digest is taken: the node first, then
@@ -45,8 +49,17 @@ func (l listing) lines(e *Erasure) []string {
 	section("excerpts quoting the node", l.excerpts)
 	section("event rows about the node holding the erased text, redacted in place", l.events)
 	section("live documents whose history is replaced", l.documents)
-	lines = append(lines, "  display trees: the text_trees row of every text above the run removes or rewrites goes; "+
-		"a tree of any other text is that text's, keyed by its digest, and is not listed")
+	trees := "  display trees: the text_trees row of every text above the run removes or rewrites goes, by its key, " +
+		"inside the transaction and again after the commit; "
+	if l.cutBody {
+		lines = append(lines, trees+"so does every tree that holds a text node of an erased text, that of another text included "+
+			"(next line), and no such tree is listed")
+		lines = append(lines, "  display trees of an earlier body: an event of the node carries a body it cut, so a search before "+
+			"the locks finds the key of every tree holding a text node of an erased text or of that body, the transaction deletes "+
+			"those by key, and after the commit every tree holding such a node is deleted once more")
+	} else {
+		lines = append(lines, trees+"a tree of any other text is that text's, keyed by its digest, stays, and is not listed")
+	}
 	section("rows that hold the erased bytes and derive from another node, left as they are", l.left)
 	for _, blocker := range l.blockers {
 		lines = append(lines, "  blocked: "+blocker)
@@ -119,23 +132,47 @@ func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRea
 	return nil
 }
 
-// readSearch lists the search rows that stand on a version the run deletes: the document's own
-// search row, and the issue's search vector where the document is its spec (restateSearch).
+// readSearch lists the search rows the run deletes or writes again: the node's own rows of the
+// keyword table, every version of its text the keyword fill wrote, which go; and for a document a
+// version of which the run deletes, the document's own search row, the issue's search vector where
+// the document is its spec (restateSearch), and the vector of each keyword row of that issue that
+// names a version the run deletes, which is written again without it (restateKeywordVersions). The
+// keyword rows are listed by their key, each set in event_seq order.
 func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	if len(read.artifacts) == 0 {
-		return nil
+	if len(read.artifacts) > 0 {
+		var searched bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
+			read.document.artifact).Scan(&searched); err != nil {
+			return fmt.Errorf("read the search row of %s: %w", read.document.refKey, err)
+		}
+		if searched {
+			read.listing.search = append(read.listing.search, "rewrite document_search of "+read.document.refKey)
+		}
+		if issue := read.document.specIssue(); issue != "" {
+			read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
+		}
 	}
-	var searched bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
-		read.document.artifact).Scan(&searched); err != nil {
-		return fmt.Errorf("read the search row of %s: %w", read.document.refKey, err)
+	document := ""
+	if read.document != nil {
+		document = read.document.artifact
 	}
-	if searched {
-		read.listing.search = append(read.listing.search, "rewrite document_search of "+read.document.refKey)
+	rows, err := tx.Query(ctx, `
+		select line from (
+			select 0 as arm, v.event_seq, 'delete search_text_versions ' || v.kind || ' ' || v.id || ' event_seq ' || v.event_seq as line
+			from search_text_versions v where v.kind = $1 and v.id = $2
+			union all
+			select 1, v.event_seq, 'rewrite search_text_versions.search of issue ' || v.id || ' event_seq ' || v.event_seq
+			from search_text_versions v
+			where v.kind = 'issue' and v.id = $3 and v.spec_artifact_id = nullif($4, '')::uuid and v.spec_version = any($5::integer[])
+		) listed order by arm, event_seq`, e.Kind, e.ID, read.document.specIssue(), document, read.numbers)
+	if err != nil {
+		return fmt.Errorf("read the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	if issue := read.document.specIssue(); issue != "" {
-		read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
+	read.listing.search = append(read.listing.search, lines...)
 	return nil
 }
 
@@ -192,9 +229,11 @@ type derivedRows struct {
 
 // derivedTables is every table holding rows that derive from a node, by name, each with the rows
 // of it that do. It is the same derivation apply writes by, row set for row set: the node's own
-// rows, its tuples, its projections, its own document's rows, its embedding rows, the events about
-// it and its project's term statistics, which the run counts again. The rows that cannot exist
-// without a projection row are added by leftDerived, from the foreign keys into the projections.
+// rows, its tuples, its projections, its own document's rows, its embedding rows, its keyword
+// versions and the search vector of each keyword version of its spec issue that names a version
+// the run deletes, the events about it and its project's term statistics, which the run counts
+// again. The rows that cannot exist without a projection row are added by leftDerived, from the
+// foreign keys into the projections.
 var derivedTables = map[string][]derivedRows{
 	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
@@ -208,6 +247,10 @@ var derivedTables = map[string][]derivedRows{
 	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.number = any(bound.numbers)`}},
 	"document_search":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and cardinality(bound.numbers) > 0`}},
 	"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},
+	"search_text_versions": {
+		{where: `held.kind = bound.kind and held.id = bound.id`},
+		{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue and held.spec_artifact_id = nullif(bound.document, '')::uuid and held.spec_version = any(bound.numbers)`},
+	},
 	"embeddings": {{where: `(held.kind = bound.kind and held.id = bound.id)
 		or (bound.window_kind <> '' and held.kind = bound.window_kind and split_part(held.id, '#', 1) = bound.owner_key)
 		or (bound.document <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.document)
@@ -234,15 +277,15 @@ const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::t
 //
 // An event about the node is passed over only where the redaction leaves its payload holding
 // none of the texts (cleanedEvents). One that still holds one in a value the redaction does not
-// take it out of - a structural value, which it never rewrites (structuralKey), or a value that
-// quotes another node, which it rewrites only where a text stands as a block of its own
-// (quotedFields) - is searched as any other row is, so the listing names it as a row the run
-// leaves holding those bytes, beside the line naming it redacted. The text of a block holding the
-// node's block is passed over only at a version the redaction rewrites (readAncestorTexts): at a
-// version the node's block did not stand in, the same words are that block's own, which the run
-// leaves. Its row of document_blocks is passed over only where the redaction rewrites its excerpt
-// (readAncestorExcerpts): an excerpt cut from such a version is left as it is, and searched as
-// any other row is.
+// take it out of - an identity value, which it never rewrites (who wrote or acted, an id, a
+// state: payloadClassification), or a value that quotes another node, which it rewrites only
+// where a text stands as a block of its own (quotedWords) - is searched as any other row is, so
+// the listing names it as a row the run leaves holding those bytes, beside the line naming it
+// redacted. The text of a block holding the node's block is passed over only at a version the
+// redaction rewrites (readAncestorTexts): at a version the node's block did not stand in, the
+// same words are that block's own, which the run leaves. Its row of document_blocks is passed
+// over only where the redaction rewrites its excerpt (readAncestorExcerpts): an excerpt cut from
+// such a version is left as it is, and searched as any other row is.
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json

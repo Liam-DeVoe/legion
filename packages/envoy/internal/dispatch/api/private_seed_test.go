@@ -98,12 +98,22 @@ func seedPrivateProject(t *testing.T) privateSeed {
 // his token acts only while that rule admits him (restrictedOwnerAdmitted), which PRIV's list does.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
-	broker := ciphertokentest.NewStubBroker(t)
-	options.brokerTokens = stubBrokerTokens(t, broker)
-	options.admitsRestricted = true
 	if options.busProjects == nil {
 		options.busProjects = acceptingBus{}
 	}
+	seed := seedPublicProjectsWith(t, options)
+	seed.makePrivate(t, seedPrivate)
+	return seed
+}
+
+// seedPublicProjectsWith is verification v16's seed on a test server built from options, its
+// private-projects record written through options.busProjects alone, with both projects still
+// public: a test that makes PRIV private through the visibility route itself starts from it.
+func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed {
+	t.Helper()
+	broker := ciphertokentest.NewStubBroker(t)
+	options.brokerTokens = stubBrokerTokens(t, broker)
+	options.admitsRestricted = true
 	handler, database, deps, served := newRegisteredTestServer(t, options)
 	seed := privateSeed{
 		handler: handler, database: database, deps: deps, server: served,
@@ -143,7 +153,6 @@ func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed
 		}
 		seed.tokens[token.caller] = minted.Token
 	}
-	seed.makePrivate(t, seedPrivate)
 	return seed
 }
 
@@ -276,6 +285,17 @@ func (s privateSeed) asSession(t *testing.T, session, project, method, target st
 // introspection for a while, never reads one person's answer for another's.
 func (s privateSeed) asSessionOf(t *testing.T, person, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
 	t.Helper()
+	response := s.sessionRequest(t, person, session, project, method, target, body)
+	if response.Code != status {
+		t.Fatalf("session %s of %s in %s: %s %s = %d %s, want %d", session, person, project, method, target, response.Code, response.Body.String(), status)
+	}
+	return response
+}
+
+// sessionRequest is asSessionOf's request, answered whatever its status, for a row that compares
+// what a session is answered.
+func (s privateSeed) sessionRequest(t *testing.T, person, session, project, method, target string, body any) *httptest.ResponseRecorder {
+	t.Helper()
 	token := "broker-token-of-" + session + "-for-" + person + "-in-" + project
 	s.broker.Says(token, ciphertoken.Introspection{
 		Active: true, Session: session, Person: person,
@@ -284,9 +304,6 @@ func (s privateSeed) asSessionOf(t *testing.T, person, session, project, method,
 	})
 	response := httptest.NewRecorder()
 	s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, body))
-	if response.Code != status {
-		t.Fatalf("session %s of %s in %s: %s %s = %d %s, want %d", session, person, project, method, target, response.Code, response.Body.String(), status)
-	}
 	return response
 }
 

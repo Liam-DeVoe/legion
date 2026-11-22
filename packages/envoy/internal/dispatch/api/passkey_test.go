@@ -443,7 +443,7 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 		}
 	}
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	if err := people.SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", "", model.MemberFull); err != nil {
 		t.Fatalf("erin's first sign-in as a full member: %v", err)
 	}
 	// The sign-in waits, after writing erin's row and before recording her projects, for a lock the
@@ -489,7 +489,7 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 
 	signedIn := make(chan error, 1)
 	go func() {
-		signedIn <- people.SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", model.MemberRestricted)
+		signedIn <- people.SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", "", model.MemberRestricted)
 	}()
 	waiting(1, "erin's sign-in held after writing her row")
 	done := make(chan *httptest.ResponseRecorder, 1)

@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -99,8 +100,12 @@ type Config struct {
 	// Store holds the sessions.
 	Store *store.Store
 	// Machine reads the records and decides them (ReadRecord, PendingForApprover,
-	// ApplyPageDecision).
+	// ApplyPageDecision), and its group reader (requests.Machine.Groups) says whether the signed-in
+	// person is a member of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Check). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.

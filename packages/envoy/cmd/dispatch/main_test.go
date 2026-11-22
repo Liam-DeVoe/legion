@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -33,12 +34,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -80,14 +85,17 @@ func headerIdentityEnvironment(overrides map[string]string) map[string]string {
 const testIAPAudience = "/projects/123456789012/global/backendServices/9876543210"
 
 // iapIdentityEnvironment is an IAP-identity boot environment admitting the people of example.com:
-// the identity, its audience and the domain, and no other sign-in setting.
+// the identity, its audience and the domain, the Directory reader's signer and delegated user, and
+// no other sign-in setting.
 func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 	values := map[string]string{
-		"DATABASE_URL":           "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":   "agent-token",
-		"DISPATCH_IDENTITY":      "iap",
-		"DISPATCH_IAP_AUDIENCE":  testIAPAudience,
-		"DISPATCH_SIGNIN_DOMAIN": "example.com",
+		"DATABASE_URL":               "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":       "agent-token",
+		"DISPATCH_IDENTITY":          "iap",
+		"DISPATCH_IAP_AUDIENCE":      testIAPAudience,
+		"DISPATCH_SIGNIN_DOMAIN":     "example.com",
+		"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner,
+		"DISPATCH_DIRECTORY_ADMIN":   directoryCheckAdmin,
 	}
 	for name, value := range overrides {
 		values[name] = value
@@ -96,7 +104,8 @@ func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 }
 
 // iapKeySet is a key set served on this machine in IAP's place, so no test calls Google, with the
-// ES256 key it publishes; iapBoot is boot pointed at it, as no setting can point a server.
+// ES256 key it publishes; iapBoot is boot pointed at it, and its Directory reader at directory, the
+// Google hosts served on this machine (directorytest), as no setting can point a server.
 func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	keys := oidctest.New(t)
@@ -105,13 +114,14 @@ func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	return keys, signing
 }
 
-func iapBoot(t *testing.T, keys *oidctest.Issuer, overrides map[string]string) bootConfig {
+func iapBoot(t *testing.T, keys *oidctest.Issuer, directory *directorytest.Google, overrides map[string]string) bootConfig {
 	t.Helper()
 	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(overrides)))
 	if err != nil {
 		t.Fatalf("resolve an IAP boot: %v", err)
 	}
 	boot.IAPKeySetURL = keys.URL() + "/keys"
+	boot.DirectoryOptions = directory.ClientOptions()
 	return boot
 }
 
@@ -142,19 +152,25 @@ func iapWhoami(handler http.Handler, assertion string, headers map[string]string
 }
 
 func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
-	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{
+		"DISPATCH_IDENTITY":          " iap ",
+		"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ",
+		"DISPATCH_DIRECTORY_ADMIN":   " " + directoryCheckAdmin + " ",
+	})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
 	}
 	if boot.IAPAudience != testIAPAudience || boot.IAPKeySetURL != oidc.IAPKeySetURL || boot.SignInDomain != "example.com" ||
-		boot.IdentityHeader != "" || boot.SignInIssuer != "" {
-		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com", boot, testIAPAudience)
+		boot.IdentityHeader != "" || boot.SignInIssuer != "" ||
+		boot.DirectoryAccount != directoryCheckSigner || boot.DirectoryAdmin != directoryCheckAdmin || boot.DirectoryOptions != nil {
+		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com, reading the Directory through the trimmed signer and delegated user with no test options", boot, testIAPAudience)
 	}
 }
 
 // IAP signs people in, so an IAP server takes the domain it admits and no other sign-in setting,
-// an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
-// other identity, which would leave it unread.
+// an audience of the shape IAP signs for, both Directory settings (K12), and no dev sign-in; the
+// audience and the Directory settings are refused under any other identity, which would leave them
+// unread.
 func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 	for name, value := range map[string]string{
 		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
@@ -180,6 +196,9 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
+		{map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ACCOUNT"},
+		{map[string]string{"DISPATCH_DIRECTORY_ADMIN": " "}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ADMIN"},
+		{map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": "", "DISPATCH_DIRECTORY_ADMIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ACCOUNT and DISPATCH_DIRECTORY_ADMIN"},
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
 			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
@@ -191,6 +210,17 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 	} {
 		if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap") {
 			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	for _, setting := range []string{"DISPATCH_DIRECTORY_ACCOUNT", "DISPATCH_DIRECTORY_ADMIN"} {
+		for name, environment := range map[string]map[string]string{
+			"cookie identity":    signInEnvironment(map[string]string{setting: "set@example.com"}),
+			"header identity":    headerIdentityEnvironment(map[string]string{setting: "set@example.com"}),
+			"no sign-in setting": noSignInEnvironment(map[string]string{setting: "set@example.com"}),
+		} {
+			if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), setting+" is read only with DISPATCH_IDENTITY=iap") {
+				t.Errorf("%s with %s: err = %v, want a refusal naming it", name, setting, err)
+			}
 		}
 	}
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
@@ -881,32 +911,26 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 }
 
 // /healthz says that the service is degraded while the database holds a private project that
-// DISPATCH_PRIVATE_PROJECTS does not name, with one fixed reason code and nothing else: no key and
-// no count, since a probe answers a caller with no credential, and a key or a count tells it of a
-// project it cannot see (R2). The keys are the operator's, in the ERROR line the boot and each
-// maintenance pass log. It still answers 200 with ok true, so no probe takes the process out of
-// service for it. With none, the body is byte for byte the one a process with no such read
-// answers (R9).
+// neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names, with one fixed
+// reason code, private_project_unprovisioned, compared as the literal a probe reads, and nothing
+// else: no key and no count, since a probe answers a caller with no credential, and a key or a
+// count tells it of a project it cannot see (R2). The keys are the operator's, in the ERROR line
+// the boot and each maintenance pass log. It still answers 200 with ok true, so no probe takes the
+// process out of service for it. With none, the body is byte for byte the one a process with no
+// such read answers (R9).
 func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T) {
 	database := storetest.Open(t)
-	probe := func(state *privateProjectsState) (int, string) {
-		t.Helper()
-		response := httptest.NewRecorder()
-		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, state, nil)).
-			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		return response.Code, response.Body.String()
-	}
 	// read is the state as the boot leaves it: read once, before the listener serves.
 	read := func() *privateProjectsState {
 		t.Helper()
-		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil, nil)
 		if err != nil {
 			t.Fatalf("the first read of the private projects: %v", err)
 		}
 		return state
 	}
-	_, without := probe(nil)
-	if code, body := probe(read()); code != http.StatusOK || body != without {
+	_, without := healthzOf(t, database, nil)
+	if code, body := healthzOf(t, database, read()); code != http.StatusOK || body != without {
 		t.Fatalf("/healthz with no private project = %d %s, want 200 and the body without the read, %s", code, body, without)
 	}
 	for _, key := range []string{"PRIV", "PRIVTWO"} {
@@ -915,30 +939,94 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 			t.Fatalf("seed the private project %s: %v", key, err)
 		}
 	}
-	code, body := probe(read())
-	var health map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(body), &health); err != nil {
+	code, body := healthzOf(t, database, read())
+	if code != http.StatusOK || strings.Contains(body, "PRIV") {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and no private project's key", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_project_unprovisioned"]`)
+}
+
+// healthzOf is /healthz as a handler built with state answers it: its status and its body. A nil
+// state is a handler with no read of the private projects.
+func healthzOf(t *testing.T, database *store.Store, state *privateProjectsState) (int, string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, state, nil)).
+		ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	return response.Code, response.Body.String()
+}
+
+// requireOnlyDegraded fails unless body, a /healthz answer, carries degraded as want, compared as
+// the literal a probe reads, and is otherwise without, the body of a handler with no read, field
+// for field: no key and no count beside the fixed reasons, so nothing in it changes with how many
+// projects are private, or which (R2).
+func requireOnlyDegraded(t *testing.T, body, without, want string) {
+	t.Helper()
+	var fields, withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
 		t.Fatalf("decode /healthz %s: %v", body, err)
 	}
-	if code != http.StatusOK || string(health["ok"]) != "true" {
-		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and ok true", code, body)
-	}
-	if got := string(health["degraded"]); got != `["`+unprovisionedPrivateProjectReason+`"]` {
-		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want [%q]: %s", got, unprovisionedPrivateProjectReason, body)
-	}
-	if strings.Contains(body, "PRIV") {
-		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
-	}
-	// No count either: the body is the one without the read, field for field, plus degraded alone,
-	// so nothing in it changes with how many projects are unprovisioned.
-	delete(health, "degraded")
-	var withoutFields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(without), &withoutFields); err != nil {
 		t.Fatalf("decode /healthz %s: %v", without, err)
 	}
-	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
-		t.Errorf("/healthz with an unprovisioned private project = %s, want the body without one plus degraded alone, %s", body, without)
+	if got := string(fields["degraded"]); got != want {
+		t.Fatalf("/healthz = %s: degraded %s, want %s", body, got, want)
 	}
+	delete(fields, "degraded")
+	if !maps.EqualFunc(fields, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz = %s, want the body without the read plus degraded alone, %s", body, without)
+	}
+}
+
+// /healthz says that a project is private before its full switch, with the fixed reason code
+// private_before_full_switch, compared as the literal a probe reads, and nothing else: no key and
+// no count, the body being the one a handler with no read answers plus degraded alone, as for an
+// unprovisioned private project (R2), and 200 with ok true, since the operator chose that state.
+// The reason is the project's state, not the list's: a key on DISPATCH_PRIVATE_BEFORE_FULL_SWITCH
+// whose project is public answers no reason, and one DISPATCH_PRIVATE_PROJECTS names too is fully
+// switched and answers none either. A private project neither list names still answers
+// private_project_unprovisioned beside it.
+func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
+	database := storetest.Open(t)
+	probe := func(list, beforeFullSwitch []string) (int, string) {
+		t.Helper()
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, list, beforeFullSwitch)
+		if err != nil {
+			t.Fatalf("the first read of the private projects: %v", err)
+		}
+		return healthzOf(t, database, state)
+	}
+	_, without := healthzOf(t, database, nil)
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee) values ('DAYONE', 'Day one', 'alice@example.com')`); err != nil {
+		t.Fatalf("seed DAYONE: %v", err)
+	}
+	if code, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with DAYONE listed and public = %d %s, want 200 and the body without the read, %s", code, body, without)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'DAYONE'`); err != nil {
+		t.Fatalf("make DAYONE private: %v", err)
+	}
+	code, body := probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK || strings.Contains(body, "DAYONE") {
+		t.Fatalf("/healthz with DAYONE private before its full switch = %d %s, want 200 and no private project's key", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_before_full_switch"]`)
+	// A key on both settings takes its full switch: the boot leaves it on DISPATCH_PRIVATE_PROJECTS
+	// alone (resolveBootConfig), and the state is built from the lists the boot hands it.
+	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "DAYONE", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "DAYONE"})
+	if code, body := probe(boot.PrivateProjects, boot.PrivateBeforeFullSwitch); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with DAYONE private and on both settings = %d %s, want 200 and the body without the read: it took its full switch", code, body)
+	}
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee, visibility) values ('OFFL', 'Off both lists', 'alice@example.com', 'private')`); err != nil {
+		t.Fatalf("seed OFFL: %v", err)
+	}
+	code, body = probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK {
+		t.Fatalf("/healthz with DAYONE private before its full switch and OFFL on neither list = %d %s, want 200", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_project_unprovisioned","private_before_full_switch"]`)
 }
 
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
@@ -1170,11 +1258,11 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 }
 
-// /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client
-// reads before it retries a write under its key: an earlier Dispatch ignores the header and would
-// run the retry again. It is the binary's fact, so a probe that answers 503 - its database down,
-// closed or never configured - carries it in its body as a 200 does: a client that reads the body
-// whatever the status resends a write its outage refused.
+// /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the deploy check
+// reads (scripts/e2e/lib/dispatch-keyed-comment.ts): an earlier Dispatch ignores the header and
+// would run a retried write again. It is the binary's fact, so a probe that answers 503 - its
+// database down, closed or never configured - carries it in its body as a 200 does, and the check
+// reads the body whatever the status.
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	closed := storetest.Open(t)
 	closed.Pool.Close()
@@ -2215,5 +2303,198 @@ func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.
 	}
 	if explainMigrateError(nil) != nil {
 		t.Error("explainMigrateError(nil) is not nil")
+	}
+}
+
+// ───── the keyword fill ─────────────────────────────────────────────────────
+
+// The lines the keyword fill (textversions.Run) logs as it takes its hold and as it stands by for
+// the hold of another process, and the line a process logs at boot when DISPATCH_SEARCH_FILL=off
+// keeps it from starting the fill. This file and the multiprocess rows (multiprocess_test.go) read
+// them. The deferral is written out here rather than taken from main.go's searchFillDeferredLine,
+// so the test holds the text an operator reads in the boot log.
+const (
+	keywordFillTookLine     = `msg="dispatch: the keyword fill took its hold; this process fills the keyword table"`
+	keywordFillStandbyLine  = `msg="dispatch: another process holds the keyword fill's hold; standing by"`
+	keywordFillDeferredLine = `msg="dispatch: the keyword fill is deferred; this process fills no keyword table" setting=DISPATCH_SEARCH_FILL value=off`
+)
+
+// A process that the registry of live server processes refuses writes no keyword version. A live
+// peer does not share the signing keys of the process, so the process waits for admission
+// (processes.Register: until a live window and a heartbeat after its first refusal), serves
+// nothing and exits 1. Its keyword fill starts only after the registry admits it: the pause of the
+// fill reads the answers reads that this process serves, and a process that is not admitted serves
+// none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
+// although 200 events wait for their rows.
+func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	writeKeywordFillComments(t, database, 200)
+	// The heartbeat of the peer is an hour ahead of the database's clock, so the peer stays live
+	// (processes.Live) for the whole test with no heartbeat of its own. The peer has the owner
+	// lock protocol of this build, as a peer of this build registers it (processes.admit), so the
+	// process does not find an earlier build in the fleet.
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into server_processes (instance, commit, signing_keys, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), 'peer0commit', '{a-fingerprint-this-process-does-not-hold}', now() + interval '1 hour', $1)`,
+		store.OwnerLockProtocol); err != nil {
+		t.Fatalf("add a live peer that does not share the keys of the process: %v", err)
+	}
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
+	process.waitForLog(t, 30*time.Second, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
+	refused := time.Now()
+	// The test reads the database every 250 ms until the process exits, so it sees each moment of
+	// the wait in which a fill could take the hold and write.
+	stillRunning := refused.Add(processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second)
+	for waiting := true; waiting; {
+		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
+		select {
+		case <-process.Exited:
+			waiting = false
+		case <-time.After(250 * time.Millisecond):
+			if time.Now().After(stillRunning) {
+				t.Fatalf("the refused process still runs %v after its first refusal:\n%s", time.Since(refused).Round(time.Millisecond), process.Output.String())
+			}
+		}
+	}
+	if waited := time.Since(refused); waited < processes.LiveWindow {
+		t.Fatalf("the refused process exited %v after its first refusal; the test needs the whole wait of %v:\n%s",
+			waited.Round(time.Millisecond), processes.LiveWindow+processes.HeartbeatInterval, process.Output.String())
+	}
+
+	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
+		!process.logged(`msg="dispatch: register this server process"`, "signing key set does not match a live server process") {
+		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
+	}
+	requireNoKeywordFillWrite(t, database, "after the refused process exited")
+	for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
+		if process.logged(line) {
+			t.Fatalf("the refused process logged %s; want a keyword fill that never started:\n%s", line, process.Output.String())
+		}
+	}
+}
+
+// requireNoKeywordFillWrite fails the test when the keyword fill took its hold or wrote: a
+// duty_holds row of the hold of the fill, a row of the keyword table, or a cursor row, whatever
+// event the cursor row names (a row at event 0 is a write as much as one at event 50). when says
+// at which moment the test reads them.
+func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string) {
+	t.Helper()
+	if writes := readKeywordFillWrites(t, database); writes != (keywordFillWrites{}) {
+		t.Fatalf("%s, the keyword fill has %d holds, %d rows and %d cursor rows; want none of each", when, writes.holds, writes.rows, writes.cursors)
+	}
+}
+
+// keywordFillWrites counts what the keyword fill takes and writes: the duty_holds rows of its hold
+// (search-text-versions-fill), the rows of search_text_versions, and the rows of
+// search_text_versions_fill, the table of its cursor.
+type keywordFillWrites struct{ holds, rows, cursors int }
+
+// readKeywordFillWrites reads keywordFillWrites in one statement.
+func readKeywordFillWrites(t *testing.T, database *store.Store) keywordFillWrites {
+	t.Helper()
+	var writes keywordFillWrites
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from duty_holds where name = 'search-text-versions-fill'),
+		       (select count(*) from search_text_versions),
+		       (select count(*) from search_text_versions_fill)`).Scan(&writes.holds, &writes.rows, &writes.cursors); err != nil {
+		t.Fatalf("read the hold, the rows and the cursor row of the keyword fill: %v", err)
+	}
+	return writes
+}
+
+// writeKeywordFillComments commits count comment.created events of textversionstest.Issue, each a
+// new comment and so one version, appended through the broker as the routes append them, at most
+// 500 to a transaction of their own (textversionstest.CommitEvents), and answers their ids in
+// order.
+func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []int64 {
+	t.Helper()
+	broker := events.NewBroker()
+	issue := textversionstest.Issue
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	ids := make([]int64, 0, count)
+	for written := 0; written < count; {
+		inThisOne := min(count-written, 500)
+		comments := make([]model.Event, 0, inThisOne)
+		for n := range inThisOne {
+			body := fmt.Sprintf("The signing keys of region %d rotate on Monday.", written+n)
+			comments = append(comments, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
+				Payload: map[string]any{"id": uuid.NewString(), "issue_key": issue, "body": body}})
+		}
+		ids = append(ids, textversionstest.CommitEvents(t, database, broker, comments...)...)
+		written += inThisOne
+	}
+	return ids
+}
+
+// keywordFillDeferredWatch is how long a process booted with DISPATCH_SEARCH_FILL=off is watched,
+// from its admission to the registry of live server processes, for a keyword fill that started
+// anyway: longer than the 10 s a standby waits between its tries for the hold, where a fill that
+// started takes the hold the moment its process serves and writes the waiting events' rows.
+const keywordFillDeferredWatch = 15 * time.Second
+
+// DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
+// off, a process that the registry of live server processes admitted, and so serves, logs once
+// that the fill is deferred, and for keywordFillDeferredWatch takes no hold of the fill's and
+// writes no row and no cursor row, though 50 events wait for their rows and 50 more are written
+// while it serves. Booted with it on, on a database of its own holding the same events, a process
+// takes the hold, writes every event's row and the cursor row, and logs no deferral; the same read
+// that finds none of them in the off row counts each of them there.
+func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
+	t.Run("off", func(t *testing.T) {
+		database := storetest.Open(t)
+		textversionstest.SeedIssue(t, database)
+		writeKeywordFillComments(t, database, 50)
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+		process.waitHealthy(t)
+		awaitRegistryAdmission(t, database, process)
+		writeKeywordFillComments(t, database, 50)
+		admitted := time.Now()
+		for time.Since(admitted) < keywordFillDeferredWatch {
+			requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v after the process was admitted", time.Since(admitted).Round(time.Millisecond)))
+			time.Sleep(250 * time.Millisecond)
+		}
+		requireNoKeywordFillWrite(t, database, "at the end of the watch")
+		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
+			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
+		}
+		for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
+			if process.logged(line) {
+				t.Fatalf("the process logged %s; want a keyword fill that never started:\n%s", line, process.Output.String())
+			}
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		database := storetest.Open(t)
+		textversionstest.SeedIssue(t, database)
+		before := writeKeywordFillComments(t, database, 50)
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "on"}})
+		process.waitHealthy(t)
+		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
+		after := writeKeywordFillComments(t, database, 50)
+		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
+		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
+			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
+		}
+		if process.logged(keywordFillDeferredLine) {
+			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
+		}
+	})
+}
+
+// awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
+// which on a database no other process serves is the process's own: once it is admitted, the
+// process serves, and a keyword fill it started takes its hold.
+func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
+	t.Helper()
+	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool {
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
+			t.Fatalf("read the registry of live server processes: %v", err)
+		}
+		return rows > 0
+	}) {
+		t.Fatalf("the registry of live server processes admitted no process within 30 s:\n%s", process.Output.String())
 	}
 }

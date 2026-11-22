@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -323,12 +324,36 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 	return nil, fmt.Errorf("oauthstore stores *oauth2.DefaultSession and *ExchangeSession sessions, got %T", request.GetSession())
 }
 
+// ErrUnstorableText is a request the store keeps no row of, because text it would write cannot be
+// stored: a key or value of the form a stored request carries, or a DPoP proof's jti, holds a
+// control character (unicode.IsControl, U+0000 among them), or a proof's jti and htu together are
+// longer than maxStoredProofKey. Postgres writes U+0000 in neither text nor jsonb, and refuses a
+// key too long for the primary key's btree (SQLSTATE 54000), so such a write failed and answered
+// 500 where the caller sent a request nobody could serve; the other control characters are
+// refused with it, since no client of the broker writes one in any of those fields. The provider
+// answers it 400 invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is
+// written. Dispatch's replay store refuses the same proofs (its store.ErrUnstorableProof).
+var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, or a DPoP proof's jti and target URI too long, which the store does not keep")
+
+// holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
+// them).
+func holdsControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
 // flatten is the request as a row's JSON, its session the one the request holds rather than the
-// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip.
+// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip. A form
+// whose key or value holds a control character is ErrUnstorableText: every row a request is stored
+// as passes through here, so the refusal holds for each of them, before anything is written.
 func flatten(request oauth2.Requester) (storedRequest, error) {
 	client := request.GetClient()
 	if client == nil {
 		return storedRequest{}, errors.New("oauthstore: the request names no client")
+	}
+	for key, values := range request.GetRequestForm() {
+		if holdsControl(key) || slices.ContainsFunc(values, holdsControl) {
+			return storedRequest{}, ErrUnstorableText
+		}
 	}
 	return storedRequest{
 		ClientID: client.GetID(),
@@ -796,15 +821,6 @@ func DeleteCredentialTokens(ctx context.Context, tx pgx.Tx, credentialID string)
 // broker's other replay stores: exp is dated on the broker's clock and compared with the
 // database's, so the margin covers skew between the two.
 const jtiRetentionMargin = time.Minute
-
-// ErrUnstorableText is a DPoP proof the replay store records nothing of, because the row it would
-// write cannot be stored: its jti holds a control character (unicode.IsControl, U+0000 among them),
-// or its jti and htu together are longer than maxStoredProofKey. PostgreSQL writes U+0000 in no
-// text, and refuses a key too long for the primary key's btree (SQLSTATE 54000); either way the
-// insert failed and the provider answered 500 server_error for a request whose only fault is the
-// caller's. The provider answers it 400 invalid_request REQUEST_INVALID (Provider.writeError), and
-// nothing is written. Dispatch's replay store refuses the same proofs (its store.ErrUnstorableProof).
-var ErrUnstorableText = errors.New("oauthstore: the DPoP proof's jti holds a control character, or its jti and target URI are too long to record")
 
 // maxStoredProofKey bounds the bytes of a recorded proof's jti and htu together, under the primary
 // key (jti, htu)'s btree limit of 2,704 bytes a tuple: the tuple adds to the two texts at most 26

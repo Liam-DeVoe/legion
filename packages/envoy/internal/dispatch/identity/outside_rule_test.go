@@ -127,8 +127,8 @@ func TestOutsideSignInRuleSaysARestrictedSessionEndedOnAWorkspaceDomain(t *testi
 func TestOutsideSignInRuleKeepsTheDomainsPeopleFullWithoutReadingTheList(t *testing.T) {
 	lister := &stubLister{}
 	person, err := outsideRule(lister).Person(context.Background(), googleAccount())
-	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull}) {
-		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member", person, err)
+	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull, HostedDomain: "example.com"}) {
+		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member of example.com", person, err)
 	}
 	if asked := lister.calls(); len(asked) != 0 {
 		t.Fatalf("the lister was asked %q for a member of the domain, want no call", asked)

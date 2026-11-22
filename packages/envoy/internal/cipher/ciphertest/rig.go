@@ -13,6 +13,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
@@ -38,9 +40,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -110,6 +114,10 @@ type Rig struct {
 	// URL is the broker's own httptest.Server base URL: every proof's htu and every request
 	// object's aud must check against this one value.
 	URL string
+	// EdgeURL is the base URL of the broker's edge, the second httptest.Server WithEdge mounts
+	// api.RegisterEdge on: every request object and proof made there names it in place of URL.
+	// It is "" for a Rig with no edge.
+	EdgeURL string
 	// Operator is the approver, named by email as Dispatch names a signed-in person, also the
 	// owner of the fixture secrets below and the operator of the sessions a test enrolls.
 	Operator string
@@ -129,7 +137,8 @@ type Rig struct {
 	Secrets *secrets.Local
 	// Registry holds the policy's two metrics as cmd/cipherd/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
-	// broker_unservable_secrets, registered once that load answered. A test reads them through
+	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
+	// WithDispatchAccess, the hold gate's broker_hold_unchecked_total. A test reads them through
 	// Registry.Handler(), the scrape main serves.
 	Registry *metrics.Registry
 	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
@@ -155,11 +164,77 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease      time.Duration
-	maxConns   int
-	minters    map[string]requests.Minter
-	projects   projectaccess.Access
-	personPods []personPod
+	lease         time.Duration
+	maxConns      int
+	minters       map[string]requests.Minter
+	personPods    []personPod
+	projectAccess *projectaccess.Client
+	// projectAccessNow is the clock WithDispatchAccess gives the client and the gate; nil is the
+	// wall clock.
+	projectAccessNow func() time.Time
+	// projects is WithProjectAccess: the token exchange's own check of projects and member kinds,
+	// for a test that gives it a reader of its own.
+	projects projectaccess.Access
+	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
+	holdRequiresDeadline bool
+	personSignIns        *personSignInConfig
+	edge                 bool
+	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
+	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
+	edgeDeviceLimit *ratelimit.Limit
+	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
+	// it is.
+	edgeDeviceLogin func(api.DeviceLoginFunc) api.DeviceLoginFunc
+}
+
+// EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
+// to (BROKER_EDGE_MACHINE_LOGIN_URL), and EdgeWorkspaceDomain the one domain a Rig's edge counts
+// as the Workspace's beside SignInDomain (BROKER_SIGNIN_WORKSPACE_DOMAINS).
+const (
+	EdgeMachineLoginURL = "https://dispatch.edge.example/credentials/machine"
+	EdgeWorkspaceDomain = "second.example"
+)
+
+// WithEdge gives the broker its edge, as BROKER_EDGE_LISTEN_ADDR does: api.RegisterEdge on an
+// httptest.Server of its own at Rig.EdgeURL, over the same Deps the Rig's own address serves,
+// sending a person to EdgeMachineLoginURL and refusing a login on SignInDomain or
+// EdgeWorkspaceDomain. The Rig's machine-login service, request machine and launcher credentials'
+// chain each take EdgeURL as their EdgeAudience, as cmd/cipherd wires them.
+func WithEdge() Option {
+	return func(c *rigConfig) { c.edge = true }
+}
+
+// WithEdgeDeviceLimit is WithEdge with limit as the edge's bucket every caller of a device
+// authorization shares, for a test of that bucket that cannot wait for its refill.
+func WithEdgeDeviceLimit(limit ratelimit.Limit) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLimit = true, &limit }
+}
+
+// WithEdgeDeviceLogin is WithEdge with wrap around the edge's device login (api.Edge.DeviceLogin),
+// for a test of what the edge does with a login its pre-check refused and its login opened.
+func WithEdgeDeviceLogin(wrap func(api.DeviceLoginFunc) api.DeviceLoginFunc) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLogin = true, wrap }
+}
+
+// ProviderOption changes the OAuth provider NewOAuthProvider constructs. It stays variadic so
+// existing rigs retain the default issuer and exchange entries unchanged.
+type ProviderOption func(*providerConfig)
+
+type providerConfig struct {
+	projectAccess       projectaccess.Access
+	hold                *hold.Gate
+	google              *oidctest.Issuer
+	machineAccount      string
+	machineCredentials  oauth.MachineCredentials
+	personSignInRecords oauth.PersonSignIns
+	// exchange is the token exchange's entries NewRig built and gives the API too; nil has
+	// NewOAuthProvider build its own (newExchangeSet).
+	exchange *exchange.Set
+}
+
+type personSignInConfig struct {
+	google         *oidctest.Issuer
+	machineAccount string
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -181,11 +256,52 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithDispatchAccess wires the rig's broker to Dispatch at baseURL as cmd/cipherd wires one whose
+// BROKER_PROJECT_ACCESS_URL is set: one Dispatch client, which the token exchange, the enrollment,
+// the request machine and the policy loader's project checks read, and the hold gate built on that
+// client and the rig's store, given to every field of the broker that takes it. now is the
+// clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
+// are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
+// wall clock, as main runs. NewRig fails t when it is given with WithProjectAccess, which gives the
+// token exchange a reader of its own.
+func WithDispatchAccess(baseURL string, account ciphertoken.Account, now func() time.Time) Option {
+	return func(c *rigConfig) {
+		c.projectAccess = projectaccess.New(baseURL, account, nil)
+		if now != nil {
+			c.projectAccess.UseClock(now)
+		}
+		c.projectAccessNow = now
+	}
+}
+
 // WithProjectAccess gives the broker's token exchange access as its check of what Dispatch says
 // each person sees and what kind of member they are, as BROKER_PROJECT_ACCESS_URL does; none by
-// default, which is a broker that checks no project.
+// default, which is a broker that checks no project. It builds no hold gate: for a broker that
+// holds people too, WithDispatchAccess.
 func WithProjectAccess(access projectaccess.Access) Option {
 	return func(c *rigConfig) { c.projects = access }
+}
+
+// WithHoldRequiresDeadline sets the hold gate's deadline rule (hold.Config.RequireDeadline), as
+// cmd/cipherd sets it where BROKER_HOLD_REQUIRES_DEADLINE is true, which an IAP deployment's broker
+// sets: Dispatch's answer that a person is not held then serves only with the deadline such a
+// Dispatch puts on it (not_held_until), a person of whom the broker keeps no answer is not served
+// while Dispatch cannot be asked, and every refusal of a held person says the Workspace Directory
+// ends the hold (hold.Gate.HeldWords). NewRig fails t when it is given without WithDispatchAccess,
+// as the broker's boot refuses the setting without BROKER_PROJECT_ACCESS_URL: that broker builds
+// no gate, so the rule would rule nothing and hold nobody.
+func WithHoldRequiresDeadline() Option {
+	return func(c *rigConfig) { c.holdRequiresDeadline = true }
+}
+
+// WithPersonSignIns lets the rig accept Google person trades from machineAccount. NewRig binds
+// the option to the broker command's own writers (enroll.Service.MachineCredentials and
+// enroll.PersonSignIns) once its enrollment service exists, so a successful trade creates the
+// same launcher credential and person-sign-in rows as the broker command.
+func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
+	return func(c *rigConfig) {
+		c.personSignIns = &personSignInConfig{google: google, machineAccount: machineAccount}
+	}
 }
 
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
@@ -219,6 +335,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	for _, option := range options {
 		option(&config)
 	}
+	if config.holdRequiresDeadline && config.projectAccess == nil {
+		t.Fatal("ciphertest: WithHoldRequiresDeadline needs WithDispatchAccess: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, as the broker's boot refuses BROKER_HOLD_REQUIRES_DEADLINE without BROKER_PROJECT_ACCESS_URL")
+	}
+	if config.projectAccess != nil && config.projects != nil {
+		t.Fatal("ciphertest: WithDispatchAccess and WithProjectAccess each give the token exchange its reader of Dispatch; give one")
+	}
 	var params []string
 	if config.maxConns > 0 {
 		params = append(params, "pool_max_conns="+strconv.Itoa(config.maxConns))
@@ -232,12 +354,25 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	local := secrets.NewLocal(fixtures...)
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
+	// whether that project is private, as main's does (policy.Loader.ProjectChecks).
 	registry := metrics.New()
-	cur := policytest.MeteredCurrent(t, local, registry)
+	loader := policytest.Loader(local)
+	loader.ProjectChecks = config.projectAccess != nil
+	cur := policytest.Metered(t, loader, registry)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// The edge's server, made before anything is built on its URL, as srv is for the Rig's own.
+	var edgeMux *http.ServeMux
+	var edgeURL string
+	if config.edge {
+		edgeMux = http.NewServeMux()
+		edgeSrv := httptest.NewServer(edgeMux)
+		t.Cleanup(edgeSrv.Close)
+		edgeURL = edgeSrv.URL
+	}
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -274,6 +409,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
+	enr.Chain.EdgeAudience = edgeURL
+	// The enrollment asks Dispatch whether a person may see each project their session names, on
+	// the one client main gives every consumer (enroll.Service.Projects); none without it.
+	if config.projectAccess != nil {
+		enr.Projects = config.projectAccess
+	}
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
 	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
@@ -283,19 +424,65 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
-		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := newOAuthProvider(t, st, issuer, config.projects)
+	// The token exchange's entries, built once and given to both the OAuth provider and the API
+	// (Deps.Exchange, which GET /v1/person-access counts), as main gives both the one set.
+	google, machineAccount := config.personSignIns != nil, ""
+	if google {
+		machineAccount = config.personSignIns.machineAccount
+		// BROKER_VM_SERVICES, the one map main gives the enrollment service and the request
+		// machine: the service newExchangeSet's Google entry names. Without it no launcher
+		// credential a trade mints for this machine, a person's sign-in's among them,
+		// authenticates at a launcher route (enroll.Service.AuthenticateLauncher).
+		vmServices := map[string]string{machineAccount: "leaver-machine"}
+		enr.VMServicesByAccount, reqMachine.VMServicesByAccount = vmServices, vmServices
+	}
+	entries := newExchangeSet(t, google, machineAccount)
+	// The request machine reads a credential's project from the same entries the exchange mints
+	// from, and asks Dispatch about projects on the one client, as main gives it both
+	// (requests.Machine.Exchange and Projects).
+	reqMachine.Exchange = entries
+	if config.projectAccess != nil {
+		reqMachine.Projects = config.projectAccess
+	}
+	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
+	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
+	// own Dispatch client, this rig's store and its registry, with the deadline rule where
+	// WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE does. Without
+	// WithDispatchAccess there is none, and every field that takes one is nil, which holds nobody.
+	var gate *hold.Gate
+	if config.projectAccess != nil {
+		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
+		providerOptions = append(providerOptions, func(c *providerConfig) {
+			c.projectAccess = config.projectAccess
+			c.hold = gate
+		})
+	}
+	if signIns := config.personSignIns; signIns != nil {
+		providerOptions = append(providerOptions, func(c *providerConfig) {
+			c.google = signIns.google
+			c.machineAccount = signIns.machineAccount
+			c.machineCredentials = enr.MachineCredentials()
+			c.personSignInRecords = enroll.PersonSignIns()
+		})
+	}
+	if config.projects != nil {
+		// WithProjectAccess: the token exchange's own check of projects and member kinds, and no
+		// hold gate.
+		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
+	}
+	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
-		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
 
-	api.Register(mux, api.Deps{
+	deps := api.Deps{
 		PublicURL: srv.URL,
 		APIAccounts: map[string]api.Account{
 			APIAccount:      Caller(t, APICaller),
@@ -308,8 +495,15 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
-	})
+		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
+		Hold:     gate,
+		Exchange: entries,
+	}
+	api.Register(mux, deps)
+	if config.edge {
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain},
+			DeviceLimit: config.edgeDeviceLimit, DeviceLogin: config.edgeDeviceLogin})
+	}
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
 	if err := os.WriteFile(operatorFile, []byte(operator), 0o600); err != nil {
@@ -317,7 +511,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	rig := &Rig{
-		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
+		URL: srv.URL, EdgeURL: edgeURL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
 		Registry:  registry,
@@ -345,6 +539,44 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
+const (
+	// GoogleMachineAudience is the audience a machine's metadata identity token carries when the
+	// rig accepts a Google machine or a person signing in on that machine.
+	GoogleMachineAudience = "legion-broker-google-machine"
+	// PersonSignInAudience is the audience of the person's Google device-flow identity token.
+	PersonSignInAudience = "legion-broker-person-sign-in"
+)
+
+const personSignInDomain = "example.com"
+
+// newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/cipherd
+// builds from its exchange settings: the two accounts and the one workflow the Rig's constants
+// name, and, for a rig that accepts Google person trades (google), the Google entry for
+// machineAccount on the sign-in domain.
+func newExchangeSet(t *testing.T, google bool, machineAccount string) *exchange.Set {
+	t.Helper()
+	var machines []exchange.GoogleEntry
+	signInDomain := ""
+	if google {
+		machines = []exchange.GoogleEntry{{Account: machineAccount, Service: "leaver-machine"}}
+		signInDomain = personSignInDomain
+	}
+	set, err := exchange.NewSet(
+		[]exchange.AccountEntry{
+			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
+			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+		},
+		nil,
+		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+		machines,
+		signInDomain,
+	)
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	return set
+}
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
@@ -352,49 +584,47 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
 // one, and an unlisted one to be refused as.
-func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
+func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, opts ...ProviderOption) *oauth.Provider {
 	t.Helper()
-	return newOAuthProvider(t, st, issuer, nil)
-}
-
-// newOAuthProvider is NewOAuthProvider whose token exchange checks its projects with projects,
-// nil for none.
-func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, projects projectaccess.Access) *oauth.Provider {
-	t.Helper()
+	var config providerConfig
+	for _, opt := range opts {
+		opt(&config)
+	}
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
 	if err != nil {
 		t.Fatalf("OAuth secret: %v", err)
 	}
-	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{
-			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
-			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
-		},
-		nil,
-		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		nil,
-		// The rig lists no machine, so there is no box a person could have signed in on and no
-		// domain to hold one to.
-		"",
-	)
-	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
+	policy := config.exchange
+	if policy == nil {
+		policy = newExchangeSet(t, config.google != nil, config.machineAccount)
 	}
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
+	exchangeConfig := oauth.ExchangeConfig{
+		Policy:     policy,
+		Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
+		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+		Projects:   config.projectAccess,
+		Hold:       config.hold,
+	}
+	if config.google != nil {
+		googleKeys, err := oidc.NewKeys(context.Background(), config.google.URL())
+		if err != nil {
+			t.Fatalf("Google keys: %v", err)
+		}
+		exchangeConfig.Google = oauth.IssuerConfig{Issuer: config.google.URL(), Audience: GoogleMachineAudience, Keys: googleKeys}
+		exchangeConfig.MachineCredentials = config.machineCredentials
+		exchangeConfig.PersonAudience = PersonSignInAudience
+		exchangeConfig.PersonSignIns = config.personSignInRecords
+	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
-		Exchange: oauth.ExchangeConfig{
-			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
-			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
-			Projects:   projects,
-		},
+		Exchange: exchangeConfig,
 	}, oauthStore)
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)
@@ -583,6 +813,13 @@ func (r *Rig) Decide(t *testing.T, recordID string, approve bool) {
 func (r *Rig) DecideMachineLogin(t *testing.T, code string, approve bool) (credentialID string) {
 	t.Helper()
 	return decideMachineLogin(t, r.UI, r.Operator, code, approve, "")
+}
+
+// DecideMachineLoginAs decides the pending machine login whose confirmation code is code, naming
+// approver as the approver, as a person other than the Rig's Operator does on Dispatch's page.
+func (r *Rig) DecideMachineLoginAs(t *testing.T, approver, code string, approve bool) (credentialID string) {
+	t.Helper()
+	return decideMachineLogin(t, r.UI, approver, code, approve, "")
 }
 
 // MintPodToken mints a projected service-account token bound to podUID — the shape

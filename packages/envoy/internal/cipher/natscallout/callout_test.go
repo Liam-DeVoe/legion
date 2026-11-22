@@ -27,26 +27,32 @@ import (
 // stopped when the test ends, and returns once its subscription has reached the server.
 func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps, decide decideFunc) *Service {
 	t.Helper()
-	dir := t.TempDir()
-	write := func(name, seed string) string {
-		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
-		return path
-	}
-	settings := Settings{
-		URLs:           []string{url},
-		SeedFile:       write("service.seed", keys.ServiceSeed),
-		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       exampleServices,
-	}
-	service, err := start(t.Context(), settings, deps, decide)
+	service, err := start(t.Context(), serviceSettings(t, url, keys), deps, decide)
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	require.NoError(t, service.Ready(ctx), "the auth service's subscription never reached the server")
 	return service
+}
+
+// serviceSettings are the settings of an auth service that connects to the server at url with
+// keys' seeds, each written to a file of the test's own, and admits exampleServices.
+func serviceSettings(t *testing.T, url string, keys testnats.CalloutKeys) Settings {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, seed string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
+		return path
+	}
+	return Settings{
+		URLs:           []string{url},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       exampleServices,
+	}
 }
 
 // connectSession connects to url as s, presenting its token and its proof over the nonce the
@@ -135,6 +141,23 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 	if served, err := other.NextMsg(500 * time.Millisecond); err == nil {
 		t.Fatalf("ses_a received %q on session ses_b's channel", served.Data)
 	}
+}
+
+// Through the service, the hub refuses the connection of a session whose person Dispatch holds,
+// whose token the broker's introspection answers live and held, and admits a session whose person
+// it does not hold, on the same hub at the same time: a held person's broker token opens no NATS
+// connection, as it opens no broker route.
+func TestTheHubRefusesASessionWhosePersonDispatchHolds(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	served, held := newSession(t, "ses_served", 15*time.Minute), newSession(t, "ses_held", 15*time.Minute)
+	held.answer.Held = true
+	startService(t, url, keys, Deps{Introspect: introspector(served, held)}, Decide)
+
+	_, err := connectSession(t, url, held, nil)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a session whose person Dispatch holds")
+	_, err = connectSession(t, url, served, nil)
+	require.NoError(t, err, "the hub refused a session whose person Dispatch does not hold")
 }
 
 // Each authorization request the hub sends is sealed to the service's curve key: a second client

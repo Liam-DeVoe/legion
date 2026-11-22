@@ -508,8 +508,9 @@ func proxyPassword(names map[string]AirlockName) string {
 
 // AirlockConnection is what one proxy connection's password proves: the live grant behind it and
 // every airlock name it may carry. It runs the checks that must hold on EVERY connection - the
-// grant's liveness, its enrollment's lease, and the names its operator withheld - and no others;
-// the full release checks run once per grant per pod, in AirlockValues.
+// grant's liveness, its enrollment's lease, whether Dispatch calls the enrollment's person a
+// restricted member, and the names its operator withheld - and no others; the full release
+// checks run once per grant per pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
@@ -521,6 +522,11 @@ type AirlockConnection struct {
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
 	Expires              *time.Time
 	Names                map[string]AirlockGrantName
+	// Operator is the enrollment's operator, the person its session acts for, whose hold the
+	// proxy asks about (proxy's holdRefusal), and "" for an enrollment that names none: a
+	// pod's own, or a machine's own session. It costs nothing either: the read below joins the
+	// enrollment row already.
+	Operator string
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -536,6 +542,15 @@ type AirlockGrantName struct {
 // enrollment's operator withheld, and refuses with ErrAirlockNoNames when that leaves none, which
 // the proxy answers 407.
 //
+// It asks, on every connection, whether Dispatch calls the person the enrollment was made for a
+// restricted member (restrictedOperator), because the proxy serves a grant's values from what it
+// read once for as long as its pod holds them (AirlockValues), and this is the one read every
+// call makes. A restricted member's grant ends for good here (errRestrictedMember), answered
+// ErrGrantNotLive, which the proxy answers 407 and which cuts the calls it carries for the grant;
+// an answer that cannot be had is the *projectaccess.MemberKindUncheckable restrictedOperator
+// returns, which the proxy answers 503, so nothing is carried for the person while it cannot be
+// told. The answer is projectaccess's, cached CacheTTL, so most connections ask Dispatch nothing.
+//
 // It applies the project rule as well (projectFacts, policy.Set.Evaluate's project block): when
 // a held name is tagged with a private project the session no longer names, or with one Dispatch
 // does not hold, the grant ends for good (endGrant, errProjectNotNamed) and the connection is
@@ -543,11 +558,11 @@ type AirlockGrantName struct {
 // client's cache (at most one call to Dispatch per project per projectaccess.CacheTTL), so an
 // untagged grant's connection asks Dispatch nothing.
 //
-// This runs on every connection, so it is indexed reads alone and nothing else: the row by its
-// primary key with its grant and enrollment joined in, the grant's other placeholders by
-// grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
-// policy snapshot already in memory, which costs no query. The checks a release makes besides —
-// the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
+// Besides those two questions it is indexed reads alone: the row by its primary key with its
+// grant and enrollment joined in, the grant's other placeholders by grant_id, and the
+// enrollment's withheld names by enrollment_id. Each name's type comes from the policy snapshot
+// already in memory, which costs no query. The checks a release makes besides — the approval
+// chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
 // AirlockValues's, once per grant per pod.
 func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
 	var conn AirlockConnection
@@ -555,7 +570,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
-		e.runtime_id, coalesce(e.session_id, ''),
+		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
 		e.kind, e.operator, e.subject, e.projects, c.service
 		from airlock_placeholders p
@@ -565,7 +580,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
-			&conn.RuntimeID, &conn.SessionID, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
+			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -574,6 +589,14 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	}
 	if !live {
 		return AirlockConnection{}, ErrGrantNotLive
+	}
+	enr.ID = conn.EnrollmentID
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
+		return AirlockConnection{}, err
+	}
+	if restricted {
+		return AirlockConnection{}, m.endGrant(ctx, conn.GrantID, restrictedMember())
 	}
 	conn.Issue = record.IssueKeyInReason(reason)
 	held, err := placeholdersOf(ctx, m.Store.Pool, conn.GrantID)
@@ -596,7 +619,6 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		}
 		conn.Names[name] = AirlockGrantName{Slots: slots, Type: set.Secrets[name].Type()}
 	}
-	enr.ID = conn.EnrollmentID
 	if err := m.airlockProjectRule(ctx, conn.GrantID, enr, slices.Collect(maps.Keys(conn.Names)), set); err != nil {
 		return AirlockConnection{}, err
 	}

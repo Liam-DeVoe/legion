@@ -127,7 +127,7 @@ func (s *outsideSignIn) restrict(t *testing.T, email, subject string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.people.ConfirmSubject(ctx, email, subject, membership.RefreshToken, membership.RefreshToken, model.MemberRestricted); err != nil {
+	if err := s.people.ConfirmSubject(ctx, email, subject, membership.RefreshToken, membership.RefreshToken, "", model.MemberRestricted); err != nil {
 		t.Fatalf("record %s as a restricted member: %v", email, err)
 	}
 }
@@ -267,7 +267,9 @@ func TestOutsideSignInAnEndedDomainMemberIsAPlainNoIdentity(t *testing.T) {
 // A restricted member's Google sign-in that an earlier build admitted from outside the domain ends
 // at its next hourly confirmation on a deployment that admits no restricted member, and the 401
 // says why (OUTSIDE_SIGNIN_OFF, naming the address) there and at every request after: the
-// refreshed account is of no Workspace, and no rule this deployment runs admits it.
+// refreshed account is of no Workspace, and no rule this deployment runs admits it. The end is a
+// restricted member's refusal, so it holds nobody: the row keeps its refresh token for membership
+// checks and reads signed out, and the session generation the end advanced refuses the cookie.
 func TestOutsideSignInARestrictedGoogleSignInEndsAtTheHourlyCheck(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.restrictedMember(t, s.handler, outsiderEmail, "google-outsider")
@@ -279,8 +281,8 @@ func TestOutsideSignInARestrictedGoogleSignInEndsAtTheHourlyCheck(t *testing.T) 
 			t.Fatalf("%s: %+v, want %+v", read, got, want)
 		}
 	}
-	if membership, _, err := s.people.Membership(context.Background(), outsiderEmail); err != nil || membership.RefreshToken != "" {
-		t.Fatalf("%s's membership %+v (%v), want the refresh token the check ended gone", outsiderEmail, membership, err)
+	if membership, _, err := s.people.Membership(context.Background(), outsiderEmail); err != nil || membership.RefreshToken == "" || !membership.SignedOut || membership.Held {
+		t.Fatalf("the restricted member's membership %+v (%v), want its refresh token kept, the row signed out and not held", membership, err)
 	}
 }
 

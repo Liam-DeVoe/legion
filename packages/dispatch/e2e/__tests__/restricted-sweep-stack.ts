@@ -165,6 +165,16 @@ function git(repository: string, ...args: string[]): { code: number; out: string
   };
 }
 
+/** The tag that keeps the build the sweep's control is made from when neither variable names one:
+ *  b29b710bd5, the private-projects stack's slack-channels tip. The pull request that brought the
+ *  read check to main brought restricted members (a migration that writes `member_kind`) with it,
+ *  so no commit of main's line holds restricted members and no read check, and the merge base this
+ *  helper reads from git first is never the control there. The stack's branches were deleted when
+ *  it merged, so the tag keeps the commit, and noReadCheckBase fetches it from `origin` where the
+ *  clone lacks it. Move it only when the restricted seed changes so that this build can no longer
+ *  take it. */
+export const pinnedControlBuild = "archive/INFRA-3862-slack-channels";
+
 /** The commit a build with no read check is made from, in `repository`, for this checkout's HEAD.
  *
  *  `override` (DISPATCH_E2E_SWEEP_BASE) names it outright. Otherwise it is read from git, never
@@ -173,14 +183,17 @@ function git(repository: string, ...args: string[]): { code: number; out: string
  *  check's pull request targets, `origin/main` once the check is on main); and where that merge
  *  base holds the read check already, as main does once the check's pull request has merged, it is
  *  the first parent of the commit of `branch`'s first-parent line that added it, which a squash
- *  merge makes the build just before the check. Whichever it is must hold restricted members (a
- *  migration that writes `member_kind`) and no read check, or this throws, naming it and the two
- *  variables: a base with the check would pass the sweep, and one without restricted members
- *  would refuse the seed, so neither is the control. */
+ *  merge makes the build just before the check. Where that commit holds no restricted members and
+ *  `pinned` names a tag (the caller passes pinnedControlBuild when neither variable is set), it is
+ *  the tag's commit, fetched from `origin` where the clone lacks the tag. Whichever it is must hold
+ *  restricted members and no read check, or this throws, naming it and the two variables: a base
+ *  with the check would pass the sweep, and one without restricted members would refuse the seed,
+ *  so neither is the control. */
 export function noReadCheckBase(
   repository: string,
   override: string | undefined,
-  branch: string
+  branch: string,
+  pinned?: string
 ): string {
   const variables =
     "Name the build in DISPATCH_E2E_SWEEP_BASE, or the branch the read check's pull request targets in DISPATCH_E2E_SWEEP_BASE_BRANCH";
@@ -192,6 +205,8 @@ export function noReadCheckBase(
   };
   const holdsReadCheck = (commit: string) =>
     git(repository, "cat-file", "-e", `${commit}:${readCheckFile}`).code === 0;
+  const holdsRestricted = (commit: string) =>
+    git(repository, "grep", "-l", "-e", "member_kind", commit, "--", migrations).code === 0;
   let commit: string;
   let how: string;
   if (override !== undefined && override !== "") {
@@ -229,13 +244,25 @@ export function noReadCheckBase(
       commit = commitOf(`${added}^1`);
       how = `the first parent of ${added}, which added the read check on ${branch}'s first-parent line`;
     }
+    if (pinned !== undefined && !holdsReadCheck(commit) && !holdsRestricted(commit)) {
+      const tag = `refs/tags/${pinned}`;
+      if (git(repository, "rev-parse", "--verify", "--quiet", `${tag}^{commit}`).code !== 0) {
+        const fetched = git(repository, "fetch", "--no-tags", "origin", `+${tag}:${tag}`);
+        if (fetched.code !== 0)
+          throw new Error(
+            `${how}, ${commit}, holds no restricted members, and the pinned build ${pinned} is not in this clone and its fetch from origin failed: ${fetched.err}. ${variables}.`
+          );
+      }
+      commit = commitOf(tag);
+      how = `the pinned build ${pinned}, since ${how} holds no restricted members`;
+    }
   }
   if (holdsReadCheck(commit)) {
     throw new Error(
       `${how}, ${commit}, holds the read check (${readCheckFile}), so its build is no control. ${variables}.`
     );
   }
-  if (git(repository, "grep", "-l", "-e", "member_kind", commit, "--", migrations).code !== 0) {
+  if (!holdsRestricted(commit)) {
     throw new Error(
       `${how}, ${commit}, holds no restricted members (no migration writes member_kind), so the seed cannot make bob one. ${variables}.`
     );
@@ -838,7 +865,10 @@ if (import.meta.main) {
         ? noReadCheckBase(
             repositoryRoot,
             process.env.DISPATCH_E2E_SWEEP_BASE,
-            process.env.DISPATCH_E2E_SWEEP_BASE_BRANCH || "origin/main"
+            process.env.DISPATCH_E2E_SWEEP_BASE_BRANCH || "origin/main",
+            process.env.DISPATCH_E2E_SWEEP_BASE || process.env.DISPATCH_E2E_SWEEP_BASE_BRANCH
+              ? undefined
+              : pinnedControlBuild
           )
         : undefined;
     if (base !== undefined) process.env.DISPATCH_E2E_SERVER_BIN = buildBase(base, scratch);

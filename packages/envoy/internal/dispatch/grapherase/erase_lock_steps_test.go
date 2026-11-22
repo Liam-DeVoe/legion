@@ -27,10 +27,19 @@ var ownerLockStatement = lockstep.OwnerLockStatement
 // untouchedBeforeTheNode are the tables the erase's locking transaction reads nothing of before it
 // holds the node's row: the tuples, the record of the erase and the event log, which it reads and
 // writes only once it has read the node under its locks. Before then it reads the node's
-// projection rows and its document alone, to learn their owner rows (ownerRows). The search for
-// the rows the run leaves reads them in a read-only transaction of its own, which ends before the
-// locking transaction begins (searchLeft).
+// projection rows and its document alone, to learn their owner rows (ownerRows), and the projects
+// of those owners, whose term statistics totals rows it takes, and it takes the keyword fill's
+// cursor row (lockInStoreOrder). The search for the rows the run leaves reads them in a read-only
+// transaction of its own, which ends before the locking transaction begins (searchLeft).
 var untouchedBeforeTheNode = []string{"graph_tuples", "graph_erasures", "events"}
+
+// takenBeforeTheOwners are the tables whose rows the erase's locking transaction takes before its
+// first owner lock (lockInStoreOrder), each a row a background pass holds for a whole transaction:
+// the term statistics totals row of each project of its owners, whose snapshot it clears
+// (api.TakeErasedTermTotalsTx), and the keyword fill's cursor row, which it takes `for share`
+// (textversions.HoldFillBack). Neither is a row the node derives, so a test that holds the erase
+// to having written none of those yet reads past these two.
+var takenBeforeTheOwners = []string{"search_term_totals", "search_text_versions_fill"}
 
 // commentLockStatement is how the statement starts that takes the erased comment's own comments
 // row, `for update`, right after its node row (lockProjectionRows).
@@ -63,7 +72,8 @@ func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 	quoteTheComment(t, database, quoting, seeded.comment)
 
 	// While the run waits at an owner lock it has read the node's projection rows and its
-	// document, and no more: the node row comes next and everything it writes after that. While
+	// document, and taken the term statistics totals row of its project and the keyword fill's
+	// cursor row, and no more: the node row comes next and everything it writes after that. While
 	// it waits at the node row it holds the owner lock and has still read nothing of the tuples or
 	// the event log.
 	acme := lockstep.HoldOwner(t, database, &lockstep.Hold{
@@ -160,6 +170,123 @@ func TestTheEraseTakesTheCommentsRowBeforeItTouchesItsWindows(t *testing.T) {
 	}
 	if windows := itemWindows(t, database, windowKind, ownerKey); windows != 0 {
 		t.Errorf("after the erase the comment still has %d window row(s) and window state row(s), want none", windows)
+	}
+}
+
+// holdFillBackStatement is the statement that takes the keyword fill's cursor row `for share`,
+// after the term statistics totals rows and before the erase takes its first owner lock
+// (textversions.HoldFillBack).
+const holdFillBackStatement = "select event_id from public.search_text_versions_fill where id = 1 for share"
+
+// TestTheEraseWaitsForAKeywordBatchInFlightAndListsWhatItWrote holds the erase to holding the
+// keyword fill back (textversions.HoldFillBack) before it takes its first owner lock, and so
+// before it reads under its locks. A batch of the fill reads an item's text from its event and its
+// row and writes its keyword version (search_text_versions) in a transaction of its own, which
+// takes the fill's cursor row `for update` first. A batch that read the comment before the erase
+// took its locks and commits after the erase deleted the comment's versions would leave a version
+// holding the erased text. A full batch runs 0.6 to 1.3 s, and every writer of an issue takes the
+// issue's owner lock first and waits there while another transaction holds it, so an erase that
+// waited for the batch under that lock would hold every such writer for as long.
+//
+// The fill has run before: its cursor row stands, created as its first batch creates it
+// (textversions' createCursorQuery). A transaction stands for a batch: it takes the cursor row
+// `for update`, as every batch does first, and writes a keyword version of the comment holding its
+// text, at the event_seq after the one the table holds. The confirmed erase, given the digest of a
+// run without --confirm made before that batch began, queues behind it at the statement that takes
+// the cursor row. While it waits there a comment create on CORE-1 runs as the API's createComment
+// orders its writes (createACommentUnderItsOwnerLock) and must commit: an erase that held the fill
+// back under its owner locks would hold CORE-1's owner lock there, and the create would wait for it
+// until its lock_timeout ended it. Once the batch commits, the listing the erase reads under its
+// locks names the batch's version, which that digest does not cover, so the erase refuses and
+// removes nothing; the erase run again lists it and removes every keyword version of the comment.
+// An erase that did not hold the fill back would not wait: it would read its listing without the
+// batch's version, delete the versions it listed, and leave the batch's, committed after it,
+// holding the erased text.
+func TestTheEraseWaitsForAKeywordBatchInFlightAndListsWhatItWrote(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const word = "pangolin4vestibule"
+	if _, err := database.Pool.Exec(ctx, `update comments set body = $2 where id = $1::uuid`, seeded.comment, word); err != nil {
+		t.Fatalf("write the comment's body: %v", err)
+	}
+	writeKeywordVersion(t, database.Pool, keywordVersion{kind: commentNodeKind, id: seeded.comment, project: "CORE", seq: 1, body: word})
+	if _, err := database.Pool.Exec(ctx, `
+		insert into search_text_versions_fill (id, event_id, holder, rules) values (1, 0, null, 1) on conflict (id) do nothing`); err != nil {
+		t.Fatalf("create the keyword fill's cursor row as its first batch does: %v", err)
+	}
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+
+	batch, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the keyword fill's batch: %v", err)
+	}
+	defer batch.Rollback(ctx)
+	var cursor int64
+	if err := batch.QueryRow(ctx, `select event_id from search_text_versions_fill where id = 1 for update`).Scan(&cursor); err != nil {
+		t.Fatalf("take the keyword fill's cursor row as a batch does: %v", err)
+	}
+	writeKeywordVersion(t, batch, keywordVersion{kind: commentNodeKind, id: seeded.comment, project: "CORE", seq: 2, body: word})
+
+	answered := make(chan eraseAnswer, 1)
+	go func() {
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment,
+			listing.Digest, time.Millisecond)
+		answered <- eraseAnswer{erasure, err}
+	}()
+	pid := eraseBackendIn(t, ctx, database)
+	if early, done := storetest.WaitForQueuedBehind(t, batch, pid, answered, lockstep.Wait); done {
+		if err := batch.Commit(ctx); err != nil {
+			t.Fatalf("commit the keyword fill's batch: %v", err)
+		}
+		t.Fatalf("the erase answered (applied %t, err %v) without waiting for the keyword fill's batch in flight; once that batch committed, the keyword table holds the erased comment's text in %q",
+			early.erasure != nil && early.erasure.Applied, early.err, keywordVersionsHolding(t, database, word))
+	}
+	waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid))
+	t.Logf("the erase waits behind the keyword fill's batch at %q", waited)
+	if !strings.HasPrefix(waited, holdFillBackStatement) {
+		t.Errorf("the erase waits behind the keyword fill's batch at %q, which is not the statement that takes the cursor row (%q)",
+			waited, holdFillBackStatement)
+	}
+	if err := createACommentUnderItsOwnerLock(t, database, "A remark written while the erase waited for a keyword batch."); err != nil {
+		t.Fatalf("a comment create on issue CORE-1 failed while the erase of comment %s waited for the keyword fill's batch in flight: %v; the erase holds the issue's owner lock while it waits for the batch, and every writer of the issue waits for it",
+			seeded.comment, err)
+	}
+	if err := batch.Commit(ctx); err != nil {
+		t.Fatalf("commit the keyword fill's batch: %v", err)
+	}
+
+	var answer eraseAnswer
+	select {
+	case answer = <-answered:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the erase did not answer within %s of the keyword fill's batch's commit", lockstep.Wait)
+	}
+	if answer.err != nil {
+		t.Fatalf("the erase failed once the keyword fill's batch committed: %v", answer.err)
+	}
+	if !answer.erasure.Mismatch() || answer.erasure.Applied {
+		t.Fatalf("the erase answered mismatch %t and applied %t once the batch committed, want its listing to name the batch's keyword version, which the digest it was given does not cover, and nothing removed:\n%s",
+			answer.erasure.Mismatch(), answer.erasure.Applied, strings.Join(answer.erasure.Listing, "\n"))
+	}
+	if !listed(answer.erasure, "delete search_text_versions comment "+seeded.comment+" event_seq 2") {
+		t.Errorf("the listing the erase read under its locks does not name the batch's keyword version:\n%s",
+			strings.Join(answer.erasure.Listing, "\n"))
+	}
+	if rows := keywordVersionsOf(t, database, commentNodeKind, seeded.comment); rows != 2 {
+		t.Errorf("the refused erase left %d keyword version(s) of the comment, want the 2 it held", rows)
+	}
+
+	erasure, err := confirmedErase(t, database, commentNodeKind, seeded.comment, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase the comment again: %v", err)
+	}
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	if held := keywordVersionsHolding(t, database, word); len(held) != 0 {
+		t.Errorf("after the erase run again the keyword versions %q hold the erased text", held)
+	}
+	if rows := keywordVersionsOf(t, database, commentNodeKind, seeded.comment); rows != 0 {
+		t.Errorf("after the erase run again the keyword table holds %d version(s) of the comment, want none", rows)
 	}
 }
 
@@ -281,9 +408,9 @@ func TestTheEraseTakesABlocksRowsBeforeItTouchesItsText(t *testing.T) {
 		t.Errorf("the erase waits behind the block's document_blocks row at %q, which is not the statement that takes the block's rows right after its node row (it starts %q)",
 			waited, blockLockStatement)
 	}
-	if len(written) > 0 {
+	if derived := slices.DeleteFunc(slices.Clone(written), func(table string) bool { return slices.Contains(takenBeforeTheOwners, table) }); len(derived) > 0 {
 		t.Errorf("the erase waits at the block's document_blocks row holding a write's lock on %v: it wrote before it took the row, where it should have written nothing yet, neither the block's text in document_block_texts nor a row of embeddings",
-			written)
+			derived)
 	}
 
 	if err := holder.Rollback(ctx); err != nil {
@@ -637,6 +764,83 @@ func TestTheEraseListsARowWrittenBetweenItsSearchAndItsLocks(t *testing.T) {
 	}
 }
 
+// TestTheEraseReadsUnderItsLocksAnEventAboutTheNodeWrittenAfterItsSearch holds a confirmed erase
+// to reading under its locks an event about the node that was written after its search before the
+// locks. Its search reads every event for the node (readEvents with no bound), and under its locks
+// it reads only the events the search found, by id, and the events of the owners it took, through
+// the event log's owner indexes (eventsUnderLocks). An event about the node is written under the
+// node's owner, whose lock its writer takes before the insert, so one written between the search
+// and the locks is among the owner's events the run reads.
+//
+// The run erases the comment seedAgreeingStore writes on a document of issue CORE-1, whose owner
+// lock is the first lock the run takes. Once the run without --confirm has printed its digest, a
+// transaction holds that owner lock, and the confirmed run is started: the test reads that it
+// waits at the statement that takes the lock, which it reaches only once its search has ended.
+// While it waits there, the holder appends a comment.edited event of the erased comment under
+// CORE-1 whose body is the comment's text, and commits. The listing the run then reads under its
+// locks names that event, which the listing its digest covers does not, so the run refuses and
+// removes nothing: that is the read under the locks finding the event. The erase made again
+// redacts the event, and no event of the comment holds its text afterwards.
+func TestTheEraseReadsUnderItsLocksAnEventAboutTheNodeWrittenAfterItsSearch(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	var erasedText string
+	if err := database.Pool.QueryRow(ctx, `select body from comments where id = $1::uuid`, seeded.comment).Scan(&erasedText); err != nil {
+		t.Fatalf("read the body of comment %s, the text the erase takes: %v", seeded.comment, err)
+	}
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	core := lockstep.HoldOwner(t, database, &lockstep.Hold{Name: "issue CORE-1's owner lock", Step: lockstep.StepOwner, Statement: ownerLockStatement},
+		store.IssueOwner("CORE-1"))
+
+	pid, answered := startConfirmedEraseOver(t, database, commentNodeKind, seeded.comment, listing, true)
+	if early, done := storetest.WaitForQueuedBehind(t, core.Tx, pid, answered, lockstep.Wait); done {
+		t.Fatalf("the confirmed erase answered (err %v) without waiting on issue CORE-1's owner lock, which another transaction held", early.err)
+	}
+	if waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid)); !strings.HasPrefix(waited, ownerLockStatement) {
+		t.Fatalf("the confirmed erase waits behind issue CORE-1's owner lock at %q, which is not the statement that takes it (it starts %q)",
+			waited, ownerLockStatement)
+	}
+
+	author := model.Actor{Kind: "user", ID: "alice"}
+	edited := appendEventBy(t, core.Tx, "CORE-1", "comment.edited", author,
+		model.CommentEventPayload{Comment: model.Comment{ID: seeded.comment, IssueKey: new("CORE-1"), Author: author, Body: erasedText}})
+	if err := core.Tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the comment.edited event %d of comment %s: %v", edited, seeded.comment, err)
+	}
+	line := fmt.Sprintf("events %d comment.edited", edited)
+
+	var answer eraseAnswer
+	select {
+	case answer = <-answered:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the confirmed erase did not answer within %s of the commit of event %d, which let go of issue CORE-1's owner lock", lockstep.Wait, edited)
+	}
+	if answer.err != nil {
+		t.Fatalf("the confirmed erase failed once issue CORE-1's owner lock was let go: %v", answer.err)
+	}
+	if answer.erasure.Applied || !answer.erasure.Mismatch() || !listed(answer.erasure, line) {
+		t.Fatalf("the confirmed erase of comment %s answered applied %t and a listing that differs from the one its digest covers %t, naming %q %t; want it to refuse, its read under its locks naming the event written after its search:\n%s",
+			seeded.comment, answer.erasure.Applied, answer.erasure.Mismatch(), line, listed(answer.erasure, line), strings.Join(answer.erasure.Listing, "\n"))
+	}
+
+	erasure, err := confirmedErase(t, database, commentNodeKind, seeded.comment, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase comment %s again: %v", seeded.comment, err)
+	}
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	var held int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events
+		where (payload->>'id' = $1 or payload->>'comment_id' = $1) and position($2 in payload::text) > 0`,
+		seeded.comment, erasedText).Scan(&held); err != nil {
+		t.Fatalf("read the events of comment %s after the erase: %v", seeded.comment, err)
+	}
+	if held != 0 || !listed(erasure, line) {
+		t.Errorf("after the erase %d event(s) of comment %s hold its text, and its listing names event %d %t", held, seeded.comment, edited, listed(erasure, line))
+	}
+}
+
 // createACommentUnderItsOwnerLock writes a comment by alice on issue CORE-1 in the order the API's
 // createComment takes its locks: its transaction takes the issue's owner lock first
 // (store.LockOwner, which lockCommentOwner's read is guarded by), then writes the comment's row and
@@ -830,6 +1034,14 @@ func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <
 // millisecond, which no lock step here rests on.
 func startConfirmedErase(t *testing.T, database *store.Store, kind, id string, listing *Erasure) (uint32, <-chan eraseAnswer) {
 	t.Helper()
+	return startConfirmedEraseOver(t, database, kind, id, listing, false)
+}
+
+// startConfirmedEraseOver is startConfirmedErase, which fails the test where the confirmed run
+// read a listing other than the one its digest covers, unless moved says the test moves that
+// listing on purpose and reads the refusal itself.
+func startConfirmedEraseOver(t *testing.T, database *store.Store, kind, id string, listing *Erasure, moved bool) (uint32, <-chan eraseAnswer) {
+	t.Helper()
 	answered := make(chan eraseAnswer, 1)
 	go func() {
 		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listing.Digest, time.Millisecond)
@@ -837,7 +1049,7 @@ func startConfirmedErase(t *testing.T, database *store.Store, kind, id string, l
 			for _, document := range erasure.Documents {
 				t.Errorf("document %s has a stored history, which this test never writes", document.Document)
 			}
-			if erasure.Mismatch() {
+			if erasure.Mismatch() && !moved {
 				t.Errorf("the confirmed run read a listing of digest %s, not the %s the run before it printed:\n%s",
 					erasure.Digest, listing.Digest, strings.Join(erasure.Listing, "\n"))
 			}

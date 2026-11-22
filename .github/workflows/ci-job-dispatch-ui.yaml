@@ -60,9 +60,10 @@ jobs:
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
-      # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, which
-      # must refuse to run and name bash, and skips that row where zsh is missing; the runner image
-      # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
+      # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
+      # and name bash; each skips that row where zsh is missing, and the runner image has no zsh
+      # (dash, the other shell they run under, is Ubuntu's /bin/sh).
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The database cases of e2e/__tests__/psql-session.test.ts and harness-stacks.test.ts skip
@@ -74,7 +75,11 @@ jobs:
       # database and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set,
       # which is how a developer and an issue pod run them (`bun run test` in packages/dispatch;
       # psql-session makes a database of its own there), and the stack contract they guard is also
-      # covered end to end by every multi-worker run of the browser suite itself.
+      # covered end to end by every multi-worker run of the browser suite itself. The database
+      # rows of e2e/__tests__/node-projects-horizon-hold.test.ts skip here the same way. What they
+      # prove - which transaction node-projects.sh's watch of the event horizon names as holding
+      # it back - is proven where LEGION_TEST_PG_DSN is set, as above, and in the harness lane of
+      # dispatch-unit-repeat.yaml, which starts the runner's own PostgreSQL for such rows.
       #
       # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
       # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is

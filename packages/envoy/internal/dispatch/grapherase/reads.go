@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -68,9 +69,21 @@ type erasedRead struct {
 	artifacts []string
 	numbers   []int32
 	events    []redactedEvent
+	// cutBodies are the bodies an event of the node cut (ownCutBody), each as the event carried
+	// it, which the redaction replaced whole with the marker. Each may be the head of a body the
+	// comment held before an edit, whose display tree no sum the run holds keys (treeNeedles).
+	cutBodies []string
+	// heldTrees are the keys of the stored display trees that hold a text node of the node's
+	// (treeKeysHolding), which a confirmed run reads before its locks (searchLeft) and deletes
+	// under them by key, so no read of every tree runs while the run holds its owners' writers.
+	heldTrees [][]byte
 	embedded  []embeddingRow
 	owners    events.OwnerRows
-	listing   listing
+	// termTotals are the projects whose term statistics totals row a confirmed run took before
+	// its owner locks (ownerProjects, api.TakeErasedTermTotalsTx), which api.ForgetErasedTermsTx
+	// then takes no wait for.
+	termTotals []string
+	listing    listing
 }
 
 // read reads the node as the erase would remove it and every row that derives from it
@@ -96,13 +109,13 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 // locks nothing and writes nothing.
 //
 // What derives from a node is fixed by the node, never by a search for its bytes: its tuples,
-// its projection rows and the rows that cannot exist without them, its own embedding rows and the
-// events about it, for a block its own document's versions, editing state, search rows and
-// windows and the excerpts cut from it, and for a comment the editing state of every document
-// whose margin record holds its body (marginDocuments). A row anywhere else that holds the same
-// bytes derives from another node - another issue's spec quoting a comment's `Yes`, another
-// person's comment, a sibling block of the same document - and is that node's text: the run lists
-// it (readLeft) and changes nothing in it.
+// its projection rows and the rows that cannot exist without them, its own embedding rows and
+// keyword versions and the events about it, for a block its own document's versions, editing
+// state, search rows and windows and the excerpts cut from it, and for a comment the editing state
+// of every document whose margin record holds its body (marginDocuments). A row anywhere else
+// that holds the same bytes derives from another node - another issue's spec quoting a comment's
+// `Yes`, another person's comment, a sibling block of the same document - and is that node's text:
+// the run lists it (readLeft) and changes nothing in it.
 func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	var read erasedRead
 	if err := tx.QueryRow(ctx, `select supertag from graph_nodes where kind = $1 and id = $2`,
@@ -146,7 +159,7 @@ func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error
 			return erasedRead{}, err
 		}
 	}
-	if read.owners, err = e.ownerRows(ctx, tx); err != nil {
+	if read.owners, _, err = e.ownerRows(ctx, tx); err != nil {
 		return erasedRead{}, err
 	}
 	return read, nil
@@ -298,6 +311,12 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 // one place it holds its text. A node whose rows hold no text - a block reference, a person -
 // redacts nothing.
 //
+// A text longer than an event carries (model.EventBody) is read with the first part of it that
+// a copy carries in its place, as an event's body and a version an accepted suggestion named
+// after the comment do, the text trimmed first as that version's name is: such a copy is cut at a
+// line break or a character as well as at a blank line, so it can end inside a block and hold no
+// text above whole, and the search for the rows the run leaves would pass over it.
+//
 // The texts are distinct, longest first, so a text that holds a shorter one is replaced whole
 // before the shorter one is, and two reads of one node list them in one order.
 func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
@@ -326,9 +345,19 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 	if err != nil {
 		return fmt.Errorf("read the texts of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	for _, text := range found {
-		if strings.TrimSpace(text) != "" {
+	seen := map[string]bool{}
+	add := func(text string) {
+		if strings.TrimSpace(text) != "" && !seen[text] {
+			seen[text] = true
 			read.texts = append(read.texts, text)
+		}
+	}
+	for _, text := range found {
+		add(text)
+		for _, whole := range []string{text, strings.TrimSpace(text)} {
+			if head, cut := model.EventBody(whole); cut {
+				add(head)
+			}
 		}
 	}
 	slices.SortFunc(read.texts, func(a, b string) int {
@@ -790,37 +819,71 @@ func (e *Erasure) readLiveTexts(ctx context.Context, tx pgx.Tx, read erasedRead)
 // run replaces that document's history. The rest of what the erase writes is owed no owner row,
 // since none of its other writers takes one: an event payload already written (the outbox's
 // record of what it published takes no owner row), a tuple, which is appended once and never
-// written again, the term statistics, the display trees, and the node's own row. It reads no
-// graph_nodes, graph_tuples or events row, so lockOwnersThenNode reads it before it holds
-// anything.
-func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, error) {
-	owners, err := nodeOwners(ctx, tx, e.Kind, e.ID)
+// written again, the keyword versions, whose writer, the keyword fill, the run holds back by its
+// cursor row instead (textversions.HoldFillBack), the term statistics, the display trees, and the
+// node's own row. It reads no graph_nodes, graph_tuples or events row, so lockOwnersThenNode reads
+// it before it holds anything. Beside the owners it answers the id of every document it read
+// those through, every owner document among them, whose projects ownerProjects reads.
+func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, []string, error) {
+	owners, documents, err := nodeOwners(ctx, tx, e.Kind, e.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	document, _, err := e.ownDocument(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if document != nil {
 		owners.Add(document.issue, document.artifact, "document "+document.refKey)
+		documents = append(documents, document.artifact)
 	}
 	margins, err := e.marginDocuments(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, margin := range margins {
 		owners.Add(margin.issue, margin.artifact, "document "+margin.refKey)
+		documents = append(documents, margin.artifact)
 	}
-	return owners, nil
+	return owners, documents, nil
+}
+
+// ownerProjects reads, in key order, the projects whose term statistics totals row a confirmed
+// run takes before its owner locks (api.TakeErasedTermTotalsTx): the project of each owner issue
+// (issues.project_key) and of each document ownerRows read (artifacts.project_key), every owner
+// document among them. Those are the projects of every item the run changes, which the term
+// statistics count by the item's issue else its document.
+//
+// A document's own project is read beside its issue's because nothing in the schema holds the
+// two equal. Every writer of this tree writes a document of an issue with its issue's project
+// (api's storeArtifact and createIssue, cmd/dispatch-seed) and nothing moves either one
+// (api/project_scope.go), but artifacts carries no constraint or trigger tying its project_key to
+// its issue's, so a row written by any other path can name another project, and a comment on that
+// document, or its search row, is counted in that project's statistics.
+func (e *Erasure) ownerProjects(ctx context.Context, tx pgx.Tx, owners events.OwnerRows, documents []string) ([]string, error) {
+	issues, _ := owners.Owners()
+	rows, err := tx.Query(ctx, `
+		select project_key from issues where key = any($1::text[])
+		union
+		select project_key from artifacts where id = any($2::uuid[]) and project_key is not null
+		order by 1`, issues, documents)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects of the owners of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the projects of the owners of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	return projects, nil
 }
 
 // nodeOwners reads the owner row each projection row of the node stands under: an issue's own
 // comment stands under the issue, and every other row under the owner of the document it belongs
 // to, which is that document's issue or, for a document no issue owns, the document's own
 // artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A node
-// no row projects stands under none.
-func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, error) {
+// no row projects stands under none. Beside the owners it answers the id of each document a
+// projection row belongs to.
+func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, []string, error) {
 	arms := make([]string, len(graphstore.ProjectedTables))
 	for index, held := range graphstore.ProjectedTables {
 		issue := "null::text"
@@ -834,7 +897,7 @@ func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRo
 		from (`+strings.Join(arms, " union all ")+`) as held (issue_key, artifact_id)
 		left join artifacts a on a.id = held.artifact_id`, kind, id)
 	if err != nil {
-		return nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
+		return nil, nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
 	}
 	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
 		var owner [2]string
@@ -842,13 +905,17 @@ func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRo
 		return owner, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
+		return nil, nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
 	}
 	owners := events.OwnerRows{}
+	var documents []string
 	for _, owner := range held {
 		owners.Add(owner[0], owner[1], kind+":"+id)
+		if owner[1] != "" {
+			documents = append(documents, owner[1])
+		}
 	}
-	return owners, nil
+	return owners, documents, nil
 }
 
 // referencingColumn is one foreign key pointing at a projected table: the table and column that

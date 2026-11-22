@@ -190,10 +190,10 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 //   - so does a session both bob's and carol's credentials proved;
 //   - bob's own session that lists PRIV relays its verdict, its replay and its live frames to bob
 //     and to his token, since its listener's list bounds what it read within what bob sees;
-//   - bob's own session whose listener sent no list relays them to bob at his browser, whose
-//     credential lists no project, and answers bob's token that lists PRIV the no-responder
-//     verdict: a credential that lists projects watches no unlisted session, which nothing bounds
-//     within its list.
+//   - bob's own session whose listener sent no list relays them to bob at his browser, and to his
+//     token that lists PRIV, since each sees every project bob sees: a session with no list passes
+//     only a credential that does (TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis
+//     holds the token that sees fewer).
 //
 // carol, an open viewer of a deployment with no private project, is relayed her pod session (R9).
 // The agents list is not this rule's: it keeps access.SessionClause (K6), whose rows carry no
@@ -202,9 +202,8 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 // Controls: the clause as it was (a restricted viewer passing a session whose written projects and
 // listed ones it sees), under which bob is relayed carol's pod session; the second person's arm
 // dropped, under which bob is relayed the shared session; a restricted viewer's own session with no
-// list refused (the round before), under which bob is refused his unlisted session; the own-session
-// arm asking nothing of the viewer's list, under which bob's token is relayed his unlisted session.
-// Each fails the row.
+// list refused (the round before), under which bob is refused his unlisted session. Each fails the
+// row.
 func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 	rig := newContentAgentRig(t, testServerOptions{})
 	bobs := func() []contentView {
@@ -215,7 +214,7 @@ func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 			{callerBob, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
 			{callerBobPrivToken, contentCarolPodSession, agentViewHidden, "carol's, commented on PRIV and read PUB"},
 			{callerBobPrivToken, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
-			{callerBobPrivToken, contentBobUnlistedSession, agentViewHidden, "bob's own, its listener sent no list, to a credential that lists PRIV"},
+			{callerBobPrivToken, contentBobUnlistedSession, agentViewResponding, "bob's own, its listener sent no list, to a credential that sees every project bob sees"},
 			{callerBobPrivToken, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -248,9 +251,9 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 }
 
 // approverHint is approver as a login_hint: the person's own login, and nothing for a shared
-// secret, whose approver is anyone signed in.
+// secret, whose approver is anyone signed in, or a group's, whose approver is no one login.
 func approverHint(approver string) string {
-	if approver == record.AnyoneApprover {
+	if _, group := record.GroupOf(approver); approver == record.AnyoneApprover || group {
 		return ""
 	}
 	return approver
@@ -265,7 +268,7 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		Reason:            d.Reason, Lifetime: "until the session ends",
 		RequestedAt: d.RequestedAt.UTC().Format(timeLayout), ExpiresAt: d.ExpiresAt.UTC().Format(timeLayout),
 		Approver: approverText(d.Approver), State: d.State,
-		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login),
+		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups),
 	}
 	if d.Session.Request != "" && d.Session.Request != d.Session.Enrollment {
 		v.RequestSession = d.Session.Request
@@ -332,6 +335,9 @@ func approverText(approver string) string {
 	if approver == record.AnyoneApprover {
 		return "anyone signed in to this broker"
 	}
+	if group, ok := record.GroupOf(approver); ok {
+		return "a member of the group " + group
+	}
 	return approver
 }
 
@@ -382,25 +388,26 @@ func (p *Page) outcomes(ctx context.Context, decided, refused, login string, now
 				return nil, err
 			}
 		}
-		lines = append(lines, outcome(d, login, now, codes[id]))
+		lines = append(lines, outcome(d, login, now, codes[id], p.cfg.Machine.Groups))
 	}
 	return lines, nil
 }
 
-// outcome says what became of a record a decision named, from its state now. refusal is the code
-// of why this page's decision of it was refused (refusalSentences), empty when it was not.
+// outcome says what became of a record a decision named, from its state now, to login, whom
+// groups says is or is not a member of a group approver. refusal is the code of why this page's
+// decision of it was refused (refusalSentences), empty when it was not.
 //
 // "already decided: " opens the line whenever somebody other than the reader decided the record,
 // the model judge and the current policy included: the reader clicked Approve and got the
 // broker's refusal, and what they must read first is that the record was already decided and by
 // whom. A record nobody decided — one that expired, or that its requesting session withdrew —
 // has no decider to compare, and its own line says what became of it.
-func outcome(d requests.RecordDetail, login string, now time.Time, refusal string) string {
+func outcome(d requests.RecordDetail, login string, now time.Time, refusal string, groups record.Groups) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
 	case d.Kind != record.KindAgentSecret:
 		return what + "a machine login, which is decided by typing its code on Dispatch's machine-login page."
-	case d.Decided == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login):
+	case d.Decided == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, groups):
 		return what + "not yours to decide; only " + approverText(d.Approver) + " may."
 	case d.Decided == nil && !d.ExpiresAt.After(now):
 		return what + "expired before anyone decided it."
@@ -494,6 +501,12 @@ func firstRecordID(values []string) string {
 // POST answers as a lapsed session's does. The revoke takes that lock too, so a decision either
 // commits before the revoke reads the person's sessions, made while the account still held the
 // address, or waits for the revoke to commit and decides nothing.
+//
+// Once the form checks out, and before any record is decided, the hold gate (Config.Hold) is
+// asked whether Dispatch holds the signed-in person, so no ask is made under the person's lock
+// that each decision takes: a held approver's POST decides nothing and is answered the page's
+// refusal, 403 in the broker's own words, and while the gate cannot tell, the same page with 503.
+// The record's own page (ServeRecord) asks nothing.
 func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session) {
 	if !p.sameOrigin(r) {
 		refuseOrigin(w)
@@ -543,6 +556,9 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 			return
 		}
 	}
+	if p.refuseHeld(w, r, sess.Login) {
+		return
+	}
 	var decided, ended bool
 	var refused []string
 	for _, id := range decide {
@@ -579,6 +595,30 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	redirect(w, http.StatusSeeOther, to)
 }
 
+// refuseHeld asks the hold gate whether Dispatch holds login, the signed-in approver, and answers
+// the page's refusal when it does or cannot tell, reporting whether it refused: 403 in the gate's
+// words for a hold (hold.Gate.HeldWords), and 503 while the gate cannot tell (hold.ErrUncheckable,
+// tested first, so a held answer the gate could not keep is a 503), saying why in hold.Reason's
+// fixed words and logging the gate's own error, which can carry the database's user, name and
+// address, alone. A broker with no gate holds nobody.
+func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) bool {
+	err := p.cfg.Hold.Check(r.Context(), login)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
+		slog.Error("approval page: whether Dispatch holds the approver cannot be read, so nothing was decided", "login", login, "error", err)
+		writeMessage(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", say("Unavailable",
+			fmt.Sprintf("Whether Dispatch holds %s cannot be read: %s.", login, hold.Reason(err)),
+			"Nothing was decided. Try again shortly."))
+	default:
+		writeMessage(w, http.StatusForbidden, "MEMBERSHIP_HELD", say("Held",
+			p.cfg.Hold.HeldWords(login)+".",
+			"Nothing was decided."))
+	}
+	return true
+}
+
 // writeSignedOut answers a POST whose session is not live, or ended while it was being decided:
 // 200 saying nothing was decided, with a page linking the first record the form names. It is a
 // page rather than a redirect to the sign-in provider because the page's Content-Security-Policy
@@ -602,16 +642,18 @@ func writeSignedOut(w http.ResponseWriter, records []string) {
 // id no record has (requests.Machine.ReadRecordFor), and one Dispatch could not answer for prints its
 // own line (unansweredOutcome).
 var refusalSentences = map[string]string{
-	refusedPolicy: "still pending; it was not decided: the current policy no longer lets you approve it.",
-	refusedChain:  "still pending; it was not decided: its approval chain no longer verifies.",
-	refusedError:  "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+	refusedPolicy:      "still pending; it was not decided: the current policy no longer lets you approve it.",
+	refusedChain:       "still pending; it was not decided: its approval chain no longer verifies.",
+	refusedError:       "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+	refusedGroupUnread: "still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.",
 }
 
 // The codes refusalSentences maps, which decide answers.
 const (
-	refusedPolicy = "policy"
-	refusedChain  = "chain"
-	refusedError  = "error"
+	refusedPolicy      = "policy"
+	refusedChain       = "chain"
+	refusedError       = "error"
+	refusedGroupUnread = "group-unread"
 )
 
 // decide decides one record under sess and answers what became of it, for the log, the code of
@@ -625,13 +667,18 @@ const (
 // with that decision's own detail, so the person who pressed approve reads which secret refused it
 // and why rather than one fixed sentence. A record Dispatch could not say whether the person may
 // see (requests.ErrProjectAccessUnavailable) is decided by nobody, and the POST's other records
-// are decided as ever: the page it lands on says that one is unavailable. A record of a private
-// project the person may not see is "no such record", as for an id no record has (the machine's
-// refusal is pgx.ErrNoRows alone), so the POST tells them nothing of it. A refusal
-// record.ErrNotApprover carries for a record whose approver line names someone else is said by the
-// page it lands on in its own words ("not yours to decide"), and carries no code; one for a record
-// the person may still see and decide is the current policy's — its owner, a max-grant or a
-// withheld name moved since the page was printed.
+// are decided as ever: the page it lands on says that one is unavailable. An approval for which
+// Dispatch could not say whether the request's person is a restricted member
+// (*projectaccess.MemberKindUncheckable) is decided by nobody either, and its page says it could
+// not be decided; neither writes an ERROR line. A record of a private project the person may not
+// see is "no such record", as for an id no record has (the machine's refusal is pgx.ErrNoRows
+// alone), so the POST tells them nothing of it. A refusal record.ErrNotApprover carries for a
+// record whose approver line names someone else is said by the page it lands on in its own words
+// ("not yours to decide"), and carries no code; one for a record the person may still see and
+// decide is the current policy's — its owner, a max-grant or a withheld name moved since the page
+// was printed — or, where a name's requesters name a group the broker has not read in the last two
+// hours, that group's (requests.ErrRequestersGroupUnread), which the same approval passes once the
+// group is read.
 func (p *Page) decide(ctx context.Context, id string, approve bool, sess Session) (outcome, refusal string, made, ended bool) {
 	login := sess.Login
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
@@ -660,13 +707,21 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, sess Session
 		return "already decided", "", false, false
 	case errors.Is(err, requests.ErrGrantChainInvalid):
 		return "refused: " + err.Error(), refusedChain, false, false
+	case errors.Is(err, requests.ErrRequestersGroupUnread):
+		return "refused: " + err.Error(), refusedGroupUnread, false, false
 	case errors.Is(err, record.ErrNotApprover):
-		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login) {
+		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups) {
 			return "refused: " + err.Error(), "", false, false
 		}
 		return "refused: " + err.Error(), refusedPolicy, false, false
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		return "unavailable: " + err.Error(), "", false, false
+	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
+		// Dispatch could not say whether the request's person is a restricted member, which an
+		// approval asks (requests.Machine.restrictedOperator): nothing was decided, and the
+		// person approves again once Dispatch answers. Dispatch not answering is no fault of the
+		// page's, so no ERROR line; the decision line logs the outcome.
+		return "unavailable: " + err.Error(), refusedError, false, false
 	case errors.Is(err, requests.ErrJudgeHolds):
 		return "refused: the model judge is deciding this request", "", false, false
 	}

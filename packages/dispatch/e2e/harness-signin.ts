@@ -21,8 +21,9 @@
  * (`DISPATCH_SIGNIN_PASSKEY=1`): a person outside the domain whom a project's access list names
  * enrolls a passkey through the link the project's owner makes, and signs in with it there as a
  * restricted member. The issuer signs in nobody of its own: a spec queues each person, with the
- * claims Google gives that account, at the issuer's `/_dev/sign-in-as`. Only
- * `e2e/outside-sign-in.e2e.ts` and `e2e/outside-passkey.e2e.ts` run then, with one process or two.
+ * claims Google gives that account, at the issuer's `/_dev/sign-in-as` (`e2e/google-sign-in.ts`).
+ * Only `e2e/outside-sign-in.e2e.ts`, `e2e/outside-passkey.e2e.ts` and `e2e/leaver-hold.e2e.ts` run
+ * then, with one process or two.
  *
  * Any other value is refused naming the allowed ones, as `e2e/harness-processes.ts` refuses its
  * own, and `e2e/run-server.sh` refuses it the same way.

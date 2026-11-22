@@ -1,0 +1,28 @@
+kind: Fixed
+body: |-
+  The account binding starts only once no Dispatch build without it is in the fleet, so two builds
+  can serve one database during a rolling update. While a build without the binding is in the
+  fleet, from its dashboard publish until its registration is gone and an hour has passed since it
+  last arrived, Dispatch checks, records and revokes no account, as that build does, and every
+  credential acts as it did before the binding. Each process registers the binding it serves under
+  (`server_processes.account_binding` and `dashboard_builds.account_binding`, migration
+  `20261120222130_account_binding_fleet`, each a constant default that rewrites no row). A broker
+  revocation whose account holds its address again, which a build without the binding let take the
+  address back with no settlement, is settled by the revocation pass rather than sent, so the
+  holder's broker credentials are not ended. The database keeps each change of an address's
+  account that this build's sign-in does not revoke: the sign-in keeps its own made while the
+  binding is off, and a trigger keeps every change any other writer makes, a build without the
+  binding's included, whatever the fleet reads (migrations
+  `20261121121717_account_binding_replacements` and `20261121180429_account_binding_unmarked_changes`),
+  and announces every change so the revocation loop wakes. Once the binding holds, a token
+  recording no account made since a kept change is refused, every such token of the address is
+  revoked (the new holder mints again), and the broker is owed a revocation of each replaced
+  account. A personal token the binding refuses, and every token recording no account made while
+  one was live, is refused and then revoked, and the broker is owed each account a token of the
+  address recorded, so no later time with a build without the binding admits it again. A new
+  index on the owner as `people.email` holds it (migration
+  `20261119020200_agent_tokens_canonical_owner`, built concurrently) lets the check of a token
+  recording no account read only its address's tokens.
+time: 2026-11-20T22:58:44.165301240Z
+custom:
+    Issue: pr4674

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/approvetimingtest"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -80,6 +81,9 @@ type fakeBroker struct {
 	// duringRevoke, when set, runs inside each subject revoke before the broker answers, as
 	// whatever else happens while a call is in flight: another process's pass, or time passing.
 	duringRevoke func()
+	// unavailableApproves is how many approves still to answer 503 before the broker approves
+	// again, as a broker that is down answers them.
+	unavailableApproves int
 }
 
 // fakeCredential is one machine login (signIn false) or one sign-in on a machine (signIn true) of
@@ -231,6 +235,12 @@ func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 		delete(b.replaced, [2]string{revocation.Person, revocation.HolderSubject})
 		_ = json.NewEncoder(w).Encode(answer)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/credential-requests/") && strings.HasSuffix(r.URL.Path, "/approve"):
+		if b.unavailableApproves > 0 {
+			b.unavailableApproves--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"UNAVAILABLE","error":"the test's broker is down"}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"state":"approved","credential_id":"login-approved"}`))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/credential-requests/") && strings.HasSuffix(r.URL.Path, "/deny"):
 		_, _ = w.Write([]byte(`{"state":"denied"}`))
@@ -280,8 +290,12 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 		t.Fatal(err)
 	}
 	built.Passkeys, built.PasskeyAccounts = ceremonies, accounts
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, ceremonyStore(ceremonies))
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
+	var membership *identity.Membership
+	built.Identity, membership, err = requestIdentityFor(t.Context(), boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, ceremonyStore(ceremonies))
+	if err != nil {
+		t.Fatalf("build the request identity: %v", err)
+	}
+	appCtx, err := buildAppContext(boot, rule, built, membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -705,10 +719,9 @@ func TestOutsideSignInAClaimedRevocationPastItsSendWindowIsNotSent(t *testing.T)
 
 // The hourly confirmation's end of a full member's sign-in, Google refusing their refresh, revokes
 // nothing (R9), so nothing a person made is lost: no personal token of the member's is revoked, no
-// broker revocation is recorded and no pass tells the broker anything, and once Google confirms the
-// member again and they sign in, the personal token they made before acts again. Whether a person's
-// tokens and broker credentials are held while their sign-in is lapsed is separate work, decided
-// as a hold for everyone.
+// broker revocation is recorded and no pass tells the broker anything. It holds the member instead:
+// until they sign in again, their personal token and their machine's broker token answer 401
+// MEMBERSHIP_HELD, and once Google confirms the member again and they sign in, both act again.
 func TestOutsideSignInHourlyEndOfAFullMemberRevokesNothing(t *testing.T) {
 	const memberEmail = "alice@example.com"
 	ctx := context.Background()
@@ -725,6 +738,8 @@ func TestOutsideSignInHourlyEndOfAFullMemberRevokesNothing(t *testing.T) {
 	broker.holds(&fakeCredential{id: "login-member", person: memberEmail, subject: "google-subject", tokens: []string{machineToken}}, machine)
 	requireTokenActs(t, "GET /api/v1/whoami with the member's personal token, before the hourly check ends the sign-in",
 		bearerRequest(handler, http.MethodGet, "/api/v1/whoami", "", token))
+	requireTokenActs(t, "GET /api/v1/whoami with the member's machine's broker token, before the hourly check ends the sign-in",
+		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", machineToken))
 
 	s.pool.FailToken(http.StatusBadRequest, "invalid_grant")
 	ageConfirmation(t, s.people, memberEmail)
@@ -745,6 +760,10 @@ func TestOutsideSignInHourlyEndOfAFullMemberRevokesNothing(t *testing.T) {
 	if got := broker.calls(); len(got) != 0 {
 		t.Errorf("after the hourly check's end of %s's sign-in, a revocation pass told the broker %q, want nothing", memberEmail, got)
 	}
+	requireMembershipHeld(t, "GET /api/v1/whoami with the member's personal token, after the hourly check ended the sign-in",
+		bearerRequest(handler, http.MethodGet, "/api/v1/whoami", "", token))
+	requireMembershipHeld(t, "GET /api/v1/whoami with the member's machine's broker token, after the hourly check ended the sign-in",
+		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", machineToken))
 
 	s.pool.FailToken(0, "")
 	if again := googleSignIn(t, handler, s.pool, "example.com"); again.Code != http.StatusFound || !sessionCookieSet(again) {
@@ -752,6 +771,17 @@ func TestOutsideSignInHourlyEndOfAFullMemberRevokesNothing(t *testing.T) {
 	}
 	requireTokenActs(t, "GET /api/v1/whoami with the member's personal token, once they signed in again",
 		bearerRequest(handler, http.MethodGet, "/api/v1/whoami", "", token))
+	requireTokenActs(t, "GET /api/v1/whoami with the member's machine's broker token, once they signed in again",
+		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", machineToken))
+}
+
+// requireMembershipHeld requires recorder to be the 401 MEMBERSHIP_HELD a credential of a person
+// Dispatch holds is answered.
+func requireMembershipHeld(t *testing.T, what string, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Code != http.StatusUnauthorized || errorCode(recorder) != "MEMBERSHIP_HELD" {
+		t.Fatalf("%s answered %d %s, want 401 MEMBERSHIP_HELD", what, recorder.Code, recorder.Body.String())
+	}
 }
 
 // A member who reclaims an address a restricted member held keeps their own broker credentials. The
@@ -768,7 +798,7 @@ func TestOutsideSignInReclaimKeepsTheMembersOwnBrokerCredentials(t *testing.T) {
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.listOn(t, "PRIV", access.PrincipalPerson, memberEmail)
-	if err := s.people.SignInSubject(ctx, memberEmail, "outsider", "refresh-of-the-outsider", model.MemberRestricted); err != nil {
+	if err := s.people.SignInSubject(ctx, memberEmail, "outsider", "refresh-of-the-outsider", "", model.MemberRestricted); err != nil {
 		t.Fatalf("record the restricted member's sign-in at %s: %v", memberEmail, err)
 	}
 	machine, box := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)

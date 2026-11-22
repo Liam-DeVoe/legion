@@ -160,14 +160,14 @@ type dispatchInput struct {
 }
 
 // dispatchClusterOnlyRefusals is every input the cluster-only mode refuses, one row each, holding
-// a value a consumer would plausibly send. The eight rows of the tailnet and sign-in groups come
-// from the groups' own tables, which are where those values are written
-// (dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup), so a group that gains an input is
-// refused here without that input being written down a second time.
+// a value a consumer would plausibly send. The ten rows of the tailnet, sign-in and Directory
+// groups come from the groups' own tables, which are where those values are written
+// (dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, dispatchDirectoryGroup), so a group
+// that gains an input is refused here without that input being written down a second time.
 // TestDispatchEveryInputIsLiveOrRefusedUnderClusterOnly holds the table complete against
 // DispatchArgs itself.
 func dispatchClusterOnlyRefusals() []dispatchInput {
-	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
+	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, dispatchDirectoryGroup, []dispatchInput{
 		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInPasskey", func(a *gcp.DispatchArgs) { a.SignInPasskey = true }},
 		{"trustedProxyRanges", func(a *gcp.DispatchArgs) { a.TrustedProxyRanges = []string{"192.0.2.0/24"} }},
@@ -190,6 +190,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"accessAccounts", func(a *gcp.DispatchArgs) { a.AccessAccounts = []string{dispatchBrokerAccount} }},
 		{"projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner@example.com" }},
 		{"privateProjects", func(a *gcp.DispatchArgs) { a.PrivateProjects = []string{"PRIV"} }},
+		{"privateBeforeFullSwitch", func(a *gcp.DispatchArgs) { a.PrivateBeforeFullSwitch = []string{"PRIV"} }},
 		{"appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }},
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},

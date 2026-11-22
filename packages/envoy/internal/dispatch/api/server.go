@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -88,6 +89,17 @@ type AgentPublisher interface {
 	// acknowledged it, reporting whether the stream already held it. ctx bounds the whole publish,
 	// and a publish whose ctx has ended sends nothing.
 	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
+}
+
+// PersonStanding answers whether Dispatch holds a person's personal tokens and broker credentials
+// until they sign in again, or until a refresh confirms them: *identity.Membership is the one
+// Dispatch serves with (identity.Membership.Standing). Its error is no answer. ChecksDirectory
+// reports whether it follows the Workspace Directory (IAP identity), where no refresh token or
+// sign-in confirmation is kept, so a personal token's own read of those columns answers nothing
+// and personalTokenHeld asks Standing at every use.
+type PersonStanding interface {
+	Standing(ctx context.Context, email string) (identity.Standing, error)
+	ChecksDirectory() bool
 }
 
 // Deps are the API's application dependencies.
@@ -154,11 +166,27 @@ type Deps struct {
 	// Nil, a server with no sign-in rule (header identity, dev sign-in), admits no restricted
 	// member. A full member's token never asks it.
 	RestrictedAdmission identity.RestrictedAdmission
+	// Standing answers whether Dispatch holds a person's personal tokens and broker credentials
+	// until they sign in again (identity.Membership.Standing): a personal token whose owner's
+	// confirmation is older than identity.MembershipMaxAge asks it, and under IAP identity every
+	// personal token asks it (personalTokenActor), and the person route answers its held, as_of
+	// and not_held_until (getAccessPerson). It is set only where a Google rule signs people in
+	// (identity.SignInRule's Holds), IAP's included; nil holds nobody, a recorded hold included.
+	Standing PersonStanding
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
-	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made
-	// private (privateProjectProvisioned). Empty refuses every switch to private 409
-	// PRIVATE_PROJECTS_OFF before anything is read, as every deployment before the setting did.
+	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): their switch to private is
+	// the full switch (privateProjectProvisioned). With PrivateBeforeFullSwitch empty too, every
+	// switch to private is refused 409 PRIVATE_PROJECTS_OFF before anything is read, as every
+	// deployment before the settings did.
 	PrivateProjects []string
+	// PrivateBeforeFullSwitch are the keys of the projects this deployment makes private before
+	// their full switch, sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_BEFORE_FULL_SWITCH).
+	// Such a project's switch to private needs neither the provisioning PrivateProjects names nor
+	// the bus record (BusProjects), and still needs a complete store: Dispatch hides it as any
+	// private project, and its namespace, stores and bus gate come with its full switch. It shares
+	// no key with PrivateProjects: NewDeps refuses lists that do, and cmd/dispatch takes a key both
+	// settings name off this list, since that project takes its full switch.
+	PrivateBeforeFullSwitch []string
 	// BusProjects writes the private-projects record the listeners hold a private project's
 	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
 	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
@@ -178,6 +206,13 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
+	// Outliving answers whether a person has access that outlives their browser session: an
+	// unrevoked personal token, or a live broker credential, an exchange entry or an account
+	// BROKER_POD_OPERATORS maps to them (cipher.OutlivingAccess). A sign-out under a Google rule
+	// keeps the person's refresh token while it answers yes or cannot answer (routes'
+	// authLogout). NewDeps builds it from Store's pool and AgentSecrets, so with no broker it reads
+	// agent_tokens alone.
+	Outliving cipher.OutlivingAccess
 	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER), as
 	// oidc.CanonicalIssuer spells it: the issuer of every Google account people records, which a
 	// machine login's approve names the approving account under (approveCredentialRecord) and the
@@ -263,6 +298,11 @@ type Deps struct {
 	// the gauges of the mention sends held behind an earlier event to it (registerHeldGauges). Nil,
 	// as this package's tests run, serves an empty one and adds none.
 	Metrics *metrics.Registry
+	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
+	// serves from the moment it enters the route's handler chain, as the access-log line times
+	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
+	// none.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -333,9 +373,13 @@ type DepsInput struct {
 	// RestrictedAdmission is Deps.RestrictedAdmission: the sign-in rule, which a restricted
 	// member's tokens are held to.
 	RestrictedAdmission identity.RestrictedAdmission
-	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
-	PrivateProjects []string
-	BusProjects     BusProjects
+	// Standing is Deps.Standing: nil where no Google rule signs people in.
+	Standing PersonStanding
+	// PrivateProjects, PrivateBeforeFullSwitch and BusProjects are Deps.PrivateProjects,
+	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects.
+	PrivateProjects         []string
+	PrivateBeforeFullSwitch []string
+	BusProjects             BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -385,6 +429,9 @@ type DepsInput struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry; see Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads for the keyword fill's pause; see
+	// Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -406,6 +453,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
+	}
+	for _, key := range input.PrivateBeforeFullSwitch {
+		if _, both := slices.BinarySearch(input.PrivateProjects, key); both {
+			return Deps{}, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS and DISPATCH_PRIVATE_BEFORE_FULL_SWITCH both name %q: "+
+				"a project takes its full switch or is private before it, never both", key)
+		}
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
@@ -456,6 +509,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Passkeys != nil {
 		passkeyAccounts = input.Passkeys.Store()
 	}
+	outliving := cipher.OutlivingAccess{Broker: agentSecretsClient}
+	if input.Store != nil {
+		outliving.Pool = input.Store.Pool
+	}
 	var signInIssuer string
 	if issuer := strings.TrimSpace(input.SignInIssuer); issuer != "" {
 		signInIssuer = oidc.CanonicalIssuer(issuer)
@@ -465,46 +522,50 @@ func NewDeps(input DepsInput) (Deps, error) {
 		heartbeat = defaultStreamHeartbeat
 	}
 	return Deps{
-		Store:                  input.Store,
-		Identity:               input.Identity,
-		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
-		NewIssueLabel:          newIssue.Label,
-		NewIssueSession:        newIssue.Session,
-		Origins:                origins,
-		Docs:                   input.Docs,
-		Embedder:               input.Embedder,
-		Answerer:               input.Answerer,
-		Envoy:                  envoyClient,
-		Events:                 input.Events,
-		GitHub:                 github,
-		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
-		OIDC:                   input.OIDC,
-		OIDCAccounts:           input.OIDCAccounts,
-		AccessAccounts:         input.AccessAccounts,
-		RestrictedAdmission:    input.RestrictedAdmission,
-		PrivateProjects:        input.PrivateProjects,
-		BusProjects:            input.BusProjects,
-		BrokerTokens:           input.BrokerTokens,
-		AgentStream:            input.AgentStream,
-		AgentPublisher:         input.AgentPublisher,
-		AgentSecrets:           agentSecretsClient,
-		SignInIssuer:           signInIssuer,
-		Passkeys:               input.Passkeys,
-		PasskeyAccounts:        passkeyAccounts,
-		Files:                  input.Files,
-		TestHooksEnabled:       input.TestHooksEnabled,
-		StreamHeartbeat:        heartbeat,
-		RouteRosterTTL:         input.RouteRosterTTL,
-		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
-		HorizonStallAfter:      input.HorizonStallAfter,
-		HorizonWarnEvery:       input.HorizonWarnEvery,
-		TestHookTimeout:        input.TestHookTimeout,
-		ListenerRosterUncached: input.ListenerRosterUncached,
-		OutboxPublishes:        input.OutboxPublishes,
-		Metrics:                input.Metrics,
-		DashboardEntry:         input.DashboardEntry,
-		BuildCommit:            input.BuildCommit,
+		Store:                   input.Store,
+		Identity:                input.Identity,
+		AgentTokens:             input.AgentTokens,
+		DefaultProject:          defaultProject,
+		NewIssueLabel:           newIssue.Label,
+		NewIssueSession:         newIssue.Session,
+		Origins:                 origins,
+		Docs:                    input.Docs,
+		Embedder:                input.Embedder,
+		Answerer:                input.Answerer,
+		Envoy:                   envoyClient,
+		Events:                  input.Events,
+		GitHub:                  github,
+		Architecture:            architecture.NewImporter(input.Store, github, input.Events),
+		OIDC:                    input.OIDC,
+		OIDCAccounts:            input.OIDCAccounts,
+		AccessAccounts:          input.AccessAccounts,
+		RestrictedAdmission:     input.RestrictedAdmission,
+		Standing:                input.Standing,
+		PrivateProjects:         input.PrivateProjects,
+		PrivateBeforeFullSwitch: input.PrivateBeforeFullSwitch,
+		BusProjects:             input.BusProjects,
+		BrokerTokens:            input.BrokerTokens,
+		AgentStream:             input.AgentStream,
+		AgentPublisher:          input.AgentPublisher,
+		AgentSecrets:            agentSecretsClient,
+		Outliving:               outliving,
+		SignInIssuer:            signInIssuer,
+		Passkeys:                input.Passkeys,
+		PasskeyAccounts:         passkeyAccounts,
+		Files:                   input.Files,
+		TestHooksEnabled:        input.TestHooksEnabled,
+		StreamHeartbeat:         heartbeat,
+		RouteRosterTTL:          input.RouteRosterTTL,
+		ListenerTakeoverWindow:  input.ListenerTakeoverWindow,
+		HorizonStallAfter:       input.HorizonStallAfter,
+		HorizonWarnEvery:        input.HorizonWarnEvery,
+		TestHookTimeout:         input.TestHookTimeout,
+		ListenerRosterUncached:  input.ListenerRosterUncached,
+		OutboxPublishes:         input.OutboxPublishes,
+		Metrics:                 input.Metrics,
+		AnswersLatency:          input.AnswersLatency,
+		DashboardEntry:          input.DashboardEntry,
+		BuildCommit:             input.BuildCommit,
 		// The process's count of revocations the broker answered superseded.
 		BrokerRevocationsSuperseded: input.BrokerRevocationsSuperseded,
 	}, nil
@@ -567,8 +628,11 @@ type server struct {
 	readOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
-	going           GoingCatalogue
-	adviceQueryHook func(context.Context, pgx.Tx, string) error
+	going GoingCatalogue
+	// unguardedReplacements counts the document replacements stored naming no token
+	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
+	unguardedReplacements *metrics.Counter
+	adviceQueryHook       func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -932,6 +996,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
+	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -1011,8 +1076,8 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
 		}
 		// A session's documents follow the session content rule, which reads the stored listener
-		// answer only while it is fresh, so the document service refreshes it before each batch's
-		// ask, as the live agent view does (refreshRosterForContent).
+		// answer only while it is fresh, so the document service refreshes it before each read of
+		// a socket's rule, as the live agent view does (refreshRosterForContent).
 		if refresh, ok := deps.Docs.(interface {
 			SetRosterRefresh(func(context.Context))
 		}); ok {
@@ -1124,11 +1189,18 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, so every one of those answers is
-	// compressed for a caller that takes gzip and the line counts the bytes that went on the
-	// wire. The two websockets register mounts beside the table carry no compressed answer: the
-	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	// them resolved. Compression sits just inside it, with nothing between them but the answers
+	// read's timing below, so every one of those answers is compressed for a caller that takes
+	// gzip and the line counts the bytes that went on the wire. The two websockets register
+	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
+	// frames after it are the socket's (compressAnswers).
+	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
+		// Just inside the access-log line, so the time of an answers read the keyword fill
+		// pauses on is the time the line records for it, every layer of the chain included.
+		served = timedAnswersReads(s.deps.AnswersLatency, served)
+	}
+	return accesslog.HandlerFunc(route.Pattern, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1360,9 +1432,9 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
-	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
-	// writes the header.
+	// brokerTokenActor's 429, its 503 for a broker token past its deadline (errBrokerTokenLapsed),
+	// the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's 502 for a linked
+	// repository's read GitHub rate-limited with a wait. writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header

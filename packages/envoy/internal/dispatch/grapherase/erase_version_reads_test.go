@@ -128,12 +128,14 @@ func TestTheEraseTestsEachDocumentEventAgainstTheVersionsItNames(t *testing.T) {
 	}
 }
 
-// R5: the erase deletes the display tree of every text it removes or rewrites, and of no other
-// text. The outer list item reads `Ship it on Friday. Then rest.` at version 1, as its own words;
-// version 2 nests the inner block, reading `Ship it on Friday.`, under a line of the outer
-// block's own. The erase of the inner block rewrites the outer block's text at version 2 and
-// deletes that text's tree, and leaves the outer block's text at version 1, which the inner block
-// did not stand in, with the tree of that text.
+// R5: where no event of the node carries a body it cut, the erase deletes the display tree of
+// every text it removes or rewrites, by its key, and of no other text; a block's events carry no
+// cut body, so this erase deletes trees by key alone (treeNeedles answers no needle). The outer
+// list item reads `Ship it on Friday. Then rest.` at version 1, as its own words; version 2
+// nests the inner block, reading `Ship it on Friday.`, under a line of the outer block's own.
+// The erase of the inner block rewrites the outer block's text at version 2 and deletes that
+// text's tree, and leaves the outer block's text at version 1, which the inner block did not
+// stand in, with the tree of that text.
 func TestTheEraseLeavesTheDisplayTreeOfAnAncestorsTextItLeaves(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()

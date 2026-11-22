@@ -98,11 +98,14 @@ type testServerOptions struct {
 	// recording each passkey's subject under it, and the rule's check of a Workspace address
 	// (testOutsideRule's). Empty is the deployment with passkey sign-in off.
 	passkeyIssuer string
-	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
-	// the deployment has provisioned as private, and the private-projects record's writer. Nil
-	// and nil are the deployment that names no private project.
-	privateProjects []string
-	busProjects     BusProjects
+	// privateProjects, privateBeforeFullSwitch and busProjects are Deps.PrivateProjects,
+	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects: the projects the deployment has
+	// provisioned as private, those it makes private before their full switch, and the
+	// private-projects record's writer. Nil, nil and nil are the deployment that names no private
+	// project.
+	privateProjects         []string
+	privateBeforeFullSwitch []string
+	busProjects             BusProjects
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -129,6 +132,9 @@ type testServerOptions struct {
 	// rosterUncached is Deps.ListenerRosterUncached: every read of the listener's session list asks
 	// the listener, as an end-to-end test process does (DISPATCH_TEST_ROSTER_UNCACHED).
 	rosterUncached bool
+	// routeRosterTTL is Deps.RouteRosterTTL: how long a stored listener answer serves reads before
+	// a read fetches it again. Zero keeps five seconds.
+	routeRosterTTL time.Duration
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
@@ -350,31 +356,33 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		ListenerRosterUncached: options.rosterUncached,
+		RouteRosterTTL:         options.routeRosterTTL,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:     horizontest.StallWarning,
-		HorizonWarnEvery:      horizontest.StallWarning,
-		OIDC:                  options.oidc,
-		OIDCAccounts:          options.oidcAccounts,
-		AccessAccounts:        options.accessAccounts,
-		SignInIssuer:          options.signInIssuer,
-		Passkeys:              passkeysOf(t, options, database.Pool),
-		RestrictedAdmission:   restrictedAdmissionOf(options.admitsRestricted, database.Pool),
-		PrivateProjects:       options.privateProjects,
-		BusProjects:           options.busProjects,
-		BrokerTokens:          brokerTokens,
-		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: agentSecretsTokenFile,
-		AgentStream:           options.agentStream,
-		AgentPublisher:        agentPublisher,
-		Embedder:              options.embedder,
-		Answerer:              options.answerer,
-		Files:                 options.files,
-		DashboardEntry:        options.dashboardEntry,
-		BuildCommit:           options.buildCommit,
-		OutboxPublishes:       options.outboxPublishes,
-		Metrics:               options.metrics,
+		HorizonStallAfter:       horizontest.StallWarning,
+		HorizonWarnEvery:        horizontest.StallWarning,
+		OIDC:                    options.oidc,
+		OIDCAccounts:            options.oidcAccounts,
+		AccessAccounts:          options.accessAccounts,
+		SignInIssuer:            options.signInIssuer,
+		Passkeys:                passkeysOf(t, options, database.Pool),
+		RestrictedAdmission:     restrictedAdmissionOf(options.admitsRestricted, database.Pool),
+		PrivateProjects:         options.privateProjects,
+		PrivateBeforeFullSwitch: options.privateBeforeFullSwitch,
+		BusProjects:             options.busProjects,
+		BrokerTokens:            brokerTokens,
+		AgentSecretsURL:         options.agentSecretsURL,
+		AgentSecretsTokenFile:   agentSecretsTokenFile,
+		AgentStream:             options.agentStream,
+		AgentPublisher:          agentPublisher,
+		Embedder:                options.embedder,
+		Answerer:                options.answerer,
+		Files:                   options.files,
+		DashboardEntry:          options.dashboardEntry,
+		BuildCommit:             options.buildCommit,
+		OutboxPublishes:         options.outboxPublishes,
+		Metrics:                 options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

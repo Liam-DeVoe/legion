@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/api/option"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -56,10 +57,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -124,6 +127,16 @@ type bootConfig struct {
 	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
 	IAPAudience  string
 	IAPKeySetURL string
+	// DirectoryAccount and DirectoryAdmin are DISPATCH_DIRECTORY_ACCOUNT and
+	// DISPATCH_DIRECTORY_ADMIN under DISPATCH_IDENTITY=iap, both required there and refused under
+	// any other identity: the signer service account and the delegated Workspace user the Directory
+	// reader checks each person's account through (identity.NewDirectoryReader). DirectoryOptions
+	// are the options that reader reaches Google with, which no setting changes: none in a
+	// deployment, whose Application Default Credentials call signJwt; a test points them at the
+	// Google hosts it serves (directorytest).
+	DirectoryAccount string
+	DirectoryAdmin   string
+	DirectoryOptions []option.ClientOption
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -236,15 +249,26 @@ type bootConfig struct {
 	OIDCIssuer   string
 	OIDCAudience string
 	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
-	// provisioned as private, sorted and each once (privateProjectsSetting). Only these can be made
-	// private; the boot and the maintenance sweep report a private project it does not name, by key,
-	// and /healthz says only that one exists, naming none (reportPrivateProjects,
+	// provisioned as private, sorted and each once (privateProjectsSetting). A switch of one of them
+	// to private is its full switch. Only these and PrivateBeforeFullSwitch's can be made private;
+	// the boot and the maintenance sweep report a private project neither names, by key, and
+	// /healthz says only that one exists, naming none (reportPrivateProjects,
 	// unprovisionedPrivateProjectReason).
 	PrivateProjects []string
 	// PrivateProjectsIgnored is each entry of DISPATCH_PRIVATE_PROJECTS that is no project key, in
 	// the order given: never read as a key, and logged at boot as one ERROR line each
 	// (reportIgnoredPrivateProjects).
 	PrivateProjectsIgnored []string
+	// PrivateBeforeFullSwitch is DISPATCH_PRIVATE_BEFORE_FULL_SWITCH: the keys of the projects
+	// this deployment makes private before their full switch, read as PrivateProjects is. Such a
+	// project goes private with no provisioning and no bus record, and a complete store; the boot
+	// names each that is private in an INFO line, and /healthz says only that one exists, naming
+	// none (reportPrivateProjects, privateBeforeFullSwitchReason). A key PrivateProjects names too
+	// is left off, since it takes its full switch, so the two lists are disjoint.
+	PrivateBeforeFullSwitch []string
+	// PrivateBeforeFullSwitchIgnored is each entry of DISPATCH_PRIVATE_BEFORE_FULL_SWITCH that is no
+	// project key, in the order given, logged at boot as PrivateProjectsIgnored's are.
+	PrivateBeforeFullSwitchIgnored []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -302,6 +326,10 @@ type bootConfig struct {
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
 	RoleHolderWindows roles.Windows
+	// SearchFillOff is DISPATCH_SEARCH_FILL=off: this process does not start the keyword fill
+	// (textversions.Run), so it takes no hold and writes no row of search_text_versions or its
+	// cursor. Unset or on, it starts the fill.
+	SearchFillOff bool
 	// Embedder is where meaning search embeds text (DISPATCH_EMBEDDER and DISPATCH_AZURE_*),
 	// checked whole; newEmbedder builds its client.
 	Embedder embedderConfig
@@ -322,7 +350,8 @@ func main() {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
 	}
-	reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
+	reportIgnoredPrivateProjects(privateProjectsVariable, boot.PrivateProjectsIgnored)
+	reportIgnoredPrivateProjects(privateBeforeFullSwitchVariable, boot.PrivateBeforeFullSwitchIgnored)
 	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
 	// a machine with none refuses to start, naming the setting, and a metadata server that does
 	// not answer later fails only the call it was asked for, which its delivery tries again.
@@ -517,15 +546,15 @@ func main() {
 	// before the first loop and the repository seed, then every 30 s (privateProjectsState): every
 	// response says it (Dispatch-Private-Projects). This first read does not fail open: a failure
 	// ends the boot, as a database that will not open does.
-	privateState, err := startPrivateProjectsState(ctx, database.Pool, boot.PrivateProjects)
+	privateState, err := startPrivateProjectsState(ctx, database.Pool, boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
 	if err != nil {
 		slog.Error("dispatch: read the private projects", "error", err)
 		os.Exit(1)
 	}
-	// What the provisioned list says of private projects, reported and never refused: Dispatch
-	// runs as one process, so an exit here would stop every project, and the owner's repair
-	// through the API with it. Each condition fails closed for its own projects
-	// (reportPrivateProjects). The store's check is the maintenance loop's, as it starts.
+	// What the two lists say of private projects, reported and never refused: Dispatch runs as one
+	// process, so an exit here would stop every project, and the owner's repair through the API
+	// with it. Each condition fails closed for its own projects (reportPrivateProjects). The
+	// store's check is the maintenance loop's, as it starts.
 	reportPrivateProjects(privateState)
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
@@ -579,13 +608,22 @@ func main() {
 		os.Exit(1)
 	}
 	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	// Under DISPATCH_SIGNIN_DOMAIN, the people census, and the refusal of a domain no full member's
+	// sign-in records, which would hold every member (checkPeopleAtBoot). It reads people after the
+	// retirement above, so a retired row counts as one Dispatch cannot check, and refuses before
+	// the server serves.
+	if err := checkPeopleAtBoot(ctx, people, rule, boot.SignInDomain); err != nil {
+		slog.Error("dispatch: check the sign-in domain against the people", "error", err)
+		os.Exit(1)
+	}
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
 	if boot.IAPAudience != "" {
-		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain,
+			"directory_account", boot.DirectoryAccount, "directory_admin", boot.DirectoryAdmin)
 	}
 	passkeyAccounts, ceremonies, err := passkeySignIn(boot, people, rule)
 	if err != nil {
@@ -596,7 +634,11 @@ func main() {
 	if passkeys != nil {
 		slog.Info("dispatch: people outside the domain that a project names sign in with a passkey", "origin", boot.OutsideOrigin)
 	}
-	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule, passkeys)
+	requestIdentity, membership, err := requestIdentityFor(ctx, boot, signingKey, people, sessions, signIn, rule, passkeys)
+	if err != nil {
+		slog.Error("dispatch: build the request identity", "error", err)
+		os.Exit(1)
+	}
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, serverURL, docs.Deps{
@@ -658,6 +700,10 @@ func main() {
 	// simply leaves the outbox's counter at zero. The API adds the gauges of the mention sends it
 	// holds behind an earlier event to it, and the outbox those of its fallback copies.
 	met := metrics.New()
+	// The answers reads this process serves, each timed from the moment it enters the route's
+	// handler chain, as its access-log line times it: the API records them, and the keyword fill
+	// (textversions.Run, below) pauses on them, so the two share this one Latency.
+	answersLatency := sessionanswers.NewLatency(time.Now)
 	built := routes.AppContextOptions{
 		SigningKey:      signingKey,
 		WebDistDir:      webDistDir,
@@ -683,6 +729,7 @@ func main() {
 		Lifetime:        ctx,
 		// Beside the owed revocations RegisterBrokerRevocationMetrics puts on met below.
 		BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(met),
+		AnswersLatency:              answersLatency,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -703,8 +750,11 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
-
+	// Under a Google rule, whether a person's personal tokens and broker credentials are held
+	// (identity.Membership.Standing), asked by the API and answered on the person route; nil, which
+	// holds nobody, under any other rule. The membership is handed the router's check of access
+	// that outlives the browser here, before anything is served (buildAppContext).
+	appCtx, err := buildAppContext(boot, rule, built, membership)
 	if err != nil {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
@@ -760,7 +810,8 @@ func main() {
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
+	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute, whose
+	//     last work under a Google rule is the membership pass, identity.MembershipPass), the
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
 	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
@@ -779,6 +830,9 @@ func main() {
 	// (outbox.Outbox): it renews duty.Hold "dispatch-outbox" on its own pool every second, so
 	// one process publishes at a time and the other takes over within seconds of a holder that
 	// stops, dies or loses NATS.
+	//
+	// The keyword fill writes search_text_versions under a hold of its own as well
+	// (textversions.Run): one process fills at a time, and the others stand by for its hold.
 	//
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
@@ -862,6 +916,13 @@ func main() {
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
 	if err != nil {
 		slog.Error("dispatch delivery: reserve the lease pool for the intakes", "error", err)
+		os.Exit(1)
+	}
+	// The keyword fill's two callers - its own goroutine's hold statements, batches and reads, and
+	// its hold's renewal (textversions.ReserveLeases).
+	textVersionsLeases, err := textversions.ReserveLeases(leaseCallers)
+	if err != nil {
+		slog.Error("dispatch: reserve the lease pool for the keyword fill", "error", err)
 		os.Exit(1)
 	}
 	// Every caller of the lease pool has reserved its connection now, so the count is this
@@ -972,6 +1033,12 @@ func main() {
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
+	// The keyword fill's own wakes (textversions.Run): a commit that wrote an event wakes its
+	// holder's next pass, and a hold's release its standby's next try for the hold. A Wake is a
+	// channel of its own with one buffered signal, which one reader takes, so the fill registers
+	// its own on api.EventsChannel rather than reading the suggestion sweep's eventsWake.
+	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
+	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// The block schema the store holds, read again each time a supertag write announces itself.
@@ -1217,12 +1284,54 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
-	// exitAfterIntakes ends a process that started its intakes and will not serve: it stops them,
-	// releasing their holds, and exits 1. The deferred stop (stopIntakesOnExit) does not run on an
-	// os.Exit, so every exit here goes through this.
+	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
+	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
+	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
+	// serves and fills, its passes woken by every commit that wrote an event (its own wake on
+	// api.EventsChannel, above), and every other process stands by for the hold, woken by a
+	// hold's release and a 10 s retry. A lease taken per pass (duty.RunWoken) would move the fill
+	// between processes from pass to pass, and the pause each batch asks first reads the answers
+	// reads of the process that writes (answersLatency). Its goroutine starts here, once all it
+	// runs with exists, but the fill takes nothing and writes nothing until serving closes, after
+	// the server listens and the registry of live server processes admits this process
+	// (joinRegistry, below). So it never runs inside a migration, and never in a process that the
+	// registry refuses or is still waiting to admit: its pause reads the answers reads this process
+	// serves, and a process the registry has not admitted serves none. Every way out from here
+	// waits for the fill (waitFill) only once ctx is cancelled, or exits without waiting for it:
+	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
+	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
+	// through the pool, before the pool closes. DISPATCH_SEARCH_FILL=off starts no fill at all:
+	// the process says so once, and fillStopped is closed from the start, so nothing waits for it.
+	serving := make(chan struct{})
+	fillStopped := make(chan struct{})
+	if boot.SearchFillOff {
+		close(fillStopped)
+		slog.Info(searchFillDeferredLine, "setting", "DISPATCH_SEARCH_FILL", "value", "off")
+	} else {
+		go func() {
+			defer close(fillStopped)
+			if err := textversions.Run(ctx, textversions.Config{
+				Leases:   textVersionsLeases,
+				Horizon:  background.EventHorizon(),
+				Latency:  answersLatency,
+				Serving:  serving,
+				Events:   textVersionsEventsWake,
+				Released: textVersionsReleasedWake,
+			}); err != nil {
+				slog.Error("dispatch: start the keyword fill", "error", err)
+			}
+		}()
+	}
+	// waitFill waits for the keyword fill to stop; only a cancelled ctx stops it.
+	waitFill := func() { <-fillStopped }
+	// exitAfterIntakes ends a process that started its intakes and its keyword fill and will not
+	// serve: it cancels ctx, waits for both to stop, which releases the intakes' holds, and exits
+	// 1. The deferred stop (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes
+	// through this.
 	exitAfterIntakes := func() {
 		cancel()
 		waitIntakes()
+		waitFill()
 		os.Exit(1)
 	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
@@ -1232,16 +1341,25 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
-	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
-	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
-	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above. With a list of private
-	// projects, it checks the store once as it starts, beside the serving process, then hourly.
+	// The Idempotency-Keys past their 24 hours, the deliveries a process that died left owed and,
+	// under a Google rule, the membership pass (identity.MembershipPass), once a minute across the
+	// processes under the suggestion-outcomes lease. It is a timer and not a woken loop because no
+	// commit announces any of these, and it starts here because it resumes those deliveries
+	// through the API server built just above. With a list of private projects, it checks the
+	// store once as it starts, beside the serving process, then hourly. The membership pass asks
+	// the Membership the router's Standing asks, and the sign-out's check of access that outlives
+	// the browser (routes.AppContext.Outliving); under IAP identity, whose rule is the domain's and
+	// whose Membership follows the Workspace Directory, it checks each full member's account there.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
+	var confirmMemberships func(context.Context) error
+	if standingFor(rule, membership) != nil {
+		confirmMemberships = identity.MembershipPass{Membership: membership, People: people, Outliving: appCtx.Outliving()}.Run
+	}
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries,
+		boot.PrivateProjects, boot.PrivateBeforeFullSwitch, confirmMemberships)
 	// The credentials at the secrets broker of a Google account another account took the
 	// address of are revoked there with one call naming that account, woken by each revocation a
 	// sign-in records and retried until the broker confirms. It takes no lease: each pass claims the
@@ -1251,7 +1369,11 @@ func main() {
 	// recorded waits, on a process without, for the first pass of a process that has one. The owed
 	// revocations are on /metrics, each series read from the table when a scrape asks for it, so one
 	// the broker never confirms shows whichever process recorded it (envoy-dispatch
-	// clear-broker-revocation settles it).
+	// clear-broker-revocation settles it). Each pass also catches up, broker or none, once the
+	// account binding holds, the changes of an address's account the database kept, and the live
+	// personal tokens the binding refuses (store.CatchUpAccountBindingOf); every change of an
+	// account wakes it, and it reads the fleet every 10 seconds while such an address waits for the
+	// binding to hold.
 	go api.RunBrokerRevocations(ctx, background.RevokeBrokerCredentials, brokerRevocationsWake)
 	api.RegisterBrokerRevocationMetrics(met, database.Pool)
 	api.RegisterMachineLoginRevocationMetrics(met, database.Pool)
@@ -1311,6 +1433,7 @@ func main() {
 		// a process that has served nothing: a clean stop, not a failed start.
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			waitIntakes()
+			waitFill()
 			slog.Info("dispatch: stopped while waiting for admission to the registry of live server processes")
 			return
 		}
@@ -1325,12 +1448,16 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The registry admitted this process, so it serves: the keyword fill starts (above).
+	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
-	// fetching then would write into a closing pool.
+	// fetching then would write into a closing pool. The keyword fill is waited for here too, so
+	// its hold is released before the pool closes.
 	waitBackground := func() {
 		background.Wait()
 		appCtx.Architecture().Close()
+		waitFill()
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
 		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
@@ -1535,6 +1662,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.RoleHolderWindows, err = roleHolderWindows(env); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.SearchFillOff, err = searchFillOff(env); err != nil {
+		return bootConfig{}, err
+	}
 	for _, setting := range []struct {
 		name   string
 		target *time.Duration
@@ -1560,7 +1690,15 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
-	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS"))
+	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get(privateProjectsVariable))
+	boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored = privateProjectsSetting(env.get(privateBeforeFullSwitchVariable))
+	// A key both settings name takes its full switch, so it is DISPATCH_PRIVATE_PROJECTS' alone: this
+	// is the one place the overlap is settled, and every reader gets two disjoint lists
+	// (api.NewDeps refuses lists that are not).
+	boot.PrivateBeforeFullSwitch = slices.DeleteFunc(boot.PrivateBeforeFullSwitch, func(key string) bool {
+		_, provisioned := slices.BinarySearch(boot.PrivateProjects, key)
+		return provisioned
+	})
 	for _, setting := range []struct {
 		name   string
 		target *bool
@@ -1694,6 +1832,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 		boot.DevSignIn = true
+	}
+	// The Directory settings are IAP identity's alone (K12), read after the dev sign-in fence, so
+	// dev sign-in beside IAP identity is refused for the identity first.
+	if boot.DirectoryAccount, boot.DirectoryAdmin, err = directorySettings(env, boot.IAPAudience != ""); err != nil {
+		return bootConfig{}, err
 	}
 	return boot, nil
 }
@@ -2092,6 +2235,7 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
 	built.PrivateProjects = boot.PrivateProjects
+	built.PrivateBeforeFullSwitch = boot.PrivateBeforeFullSwitch
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
 	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
@@ -2212,6 +2356,23 @@ func positiveSetting(env settingValues, name string) (int, error) {
 		return 0, fmt.Errorf("%s=%q (expected a positive integer)", name, raw)
 	}
 	return value, nil
+}
+
+// searchFillDeferredLine is the line a process logs once at boot when DISPATCH_SEARCH_FILL=off
+// keeps it from starting the keyword fill.
+const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
+
+// searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
+// it. Any other value refuses the boot, naming the variable.
+func searchFillOff(env settingValues) (bool, error) {
+	switch value := env.get("DISPATCH_SEARCH_FILL"); value {
+	case "", "on":
+		return false, nil
+	case "off":
+		return true, nil
+	default:
+		return false, fmt.Errorf("DISPATCH_SEARCH_FILL=%q (expected on or off)", value)
+	}
 }
 
 // openFileStore is the uploaded-file store boot names (files.Open: gs://<bucket> is a Cloud
@@ -2482,16 +2643,19 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // publishes at a time, so a healthy process may well report false, and it never decides `ok`.
 //
 // `idempotency_keys` is true on every build that judges a write's Idempotency-Key (INFRA-258,
-// api/request_keys.go): the agents' client reads it before it retries a write under its key, since
+// api/request_keys.go): the deploy check reads it (scripts/e2e/lib/dispatch-keyed-comment.ts), since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
 //
-// `degraded` is `["private_project_unprovisioned"]` while the database holds a private project
-// that DISPATCH_PRIVATE_PROJECTS does not name (a read cached 30 s), and absent otherwise, so a
-// deployment with none answers the body it always did. It is a fixed reason code: /healthz answers
-// a caller with no credential, so it names no key and gives no count (R2); the operator reads the
-// keys in reportPrivateProjects' ERROR line. It never decides ok: such a project stays private,
-// and a probe that failed for it would take every project out of service.
+// `degraded` lists fixed reason codes, and is absent while none holds, so a deployment with none
+// answers the body it always did: `private_project_unprovisioned` while the database holds a
+// private project neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names,
+// and then `private_before_full_switch` while it holds a project private before its full switch
+// (privateProjectsState.BeforeFullSwitch), each as the last read, cached 30 s, found it. Each is a
+// fixed code: /healthz answers a caller with no credential, so it names no key and gives no count
+// (R2); the operator reads the keys in reportPrivateProjects' lines, which the boot writes, so a
+// project made private after the boot is named at the next one. Neither decides ok: such a
+// project stays private, and a probe that failed for it would take every project out of service.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
@@ -2548,12 +2712,16 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		if !ok {
 			status = http.StatusServiceUnavailable
 		}
-		// Never counted against ok: an unprovisioned private project stays private, and a probe
-		// that failed for it would take every project out of service. The state's last read
-		// decides it, so a probe adds no read.
+		// Never counted against ok: an unprovisioned private project stays private, a project
+		// private before its full switch is private by the operator's choice, and a probe that
+		// failed for either would take every project out of service. The state's last read
+		// decides both, so a probe adds no read.
 		var degraded []string
 		if databaseOK && len(privateState.Unprovisioned()) > 0 {
-			degraded = []string{unprovisionedPrivateProjectReason}
+			degraded = append(degraded, unprovisionedPrivateProjectReason)
+		}
+		if databaseOK && len(privateState.BeforeFullSwitch()) > 0 {
+			degraded = append(degraded, privateBeforeFullSwitchReason)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)

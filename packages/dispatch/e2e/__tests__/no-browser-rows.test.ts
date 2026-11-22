@@ -21,11 +21,12 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // All five listings are read-only subprocesses, so they start here rather than in the test that
 // awaits them: the others collect while the first does, and the two scans below run while all
 // five do, which is most of this file's cost. All five are needed. The default run ignores every
-// `*.multiprocess.e2e.ts`, `outside-sign-in.e2e.ts` and `outside-passkey.e2e.ts`; the two-process
-// run takes the first of those and ignores `signin.multiprocess.e2e.ts`; only DISPATCH_E2E_SIGNIN=oidc
-// with DISPATCH_E2E_PROCESSES=2 lists that spec, whose servers sign people in through the dev OIDC
-// issuer as a sign-in pool; and only DISPATCH_E2E_SIGNIN=google lists `outside-sign-in.e2e.ts` and
-// `outside-passkey.e2e.ts`, whose servers sign people in through that issuer as Google, and with a
+// `*.multiprocess.e2e.ts`, `outside-sign-in.e2e.ts`, `outside-passkey.e2e.ts` and
+// `leaver-hold.e2e.ts`; the two-process run takes the first of those and ignores
+// `signin.multiprocess.e2e.ts`; only DISPATCH_E2E_SIGNIN=oidc with DISPATCH_E2E_PROCESSES=2 lists
+// that spec, whose servers sign people in through the dev OIDC issuer as a sign-in pool; and only
+// DISPATCH_E2E_SIGNIN=google lists `outside-sign-in.e2e.ts`, `outside-passkey.e2e.ts` and
+// `leaver-hold.e2e.ts`, whose servers sign people in through that issuer as Google, and with a
 // passkey at their outside origin (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts).
 // The fifth names the three wall-clock projects
 // (`clockProjectNames`, e2e/configurations.ts): they carry `default: false` since the
@@ -161,6 +162,14 @@ test(
       ]),
     ].sort();
     expect(listed).toEqual(scannedFiles);
+
+    // The google specs run only under DISPATCH_E2E_SIGNIN=google: their servers sign people in
+    // through the issuer as Google, which no other listing's servers do.
+    const googleSpecs = ["leaver-hold.e2e.ts", "outside-passkey.e2e.ts", "outside-sign-in.e2e.ts"];
+    expect(outsideSignInFiles).toEqual(googleSpecs);
+    for (const files of [plainFiles, multiprocessFiles, signInFiles, clockFiles]) {
+      expect(files.filter((file) => googleSpecs.includes(file))).toEqual([]);
+    }
 
     // The evidence a reader of CI records for this check. It prints the two results the tests
     // above assert, so the line is there only when all three rules held in this run.

@@ -171,8 +171,14 @@ type Service struct {
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// rosterRefresh is the API's refresh of the stored listener answer (SetRosterRefresh), run
-	// before a socket's ask before each batch of frames (socketStillReads); nil refreshes nothing.
+	// once before each read of which rooms a person still reads (readableRooms,
+	// refreshRosterForReader); nil refreshes nothing.
 	rosterRefresh atomic.Pointer[func(context.Context)]
+	// accessEpoch counts the access changes this process has heard, on which its document
+	// sockets ask their rule again (socketAsk), and projectsPrivate is the last read of whether a
+	// project is private, kept for the epoch it was read at (anyProjectPrivate).
+	accessEpoch     accessEpoch
+	projectsPrivate privateRead
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
 	// as New sets it: the rule its marks, its event cursor and its index passes carry
 	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run

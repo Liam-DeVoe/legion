@@ -1067,12 +1067,14 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
-// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller, a
+// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller here, a
 // google: entry in BROKER_API_ACCOUNTS or a BROKER_VM_SERVICES entry, is enough for the Google
-// audience and needs it, and that an audience with neither, a Kubernetes API caller being no
-// Google caller, is refused at boot naming the audience and both ways to give it a caller.
+// audience and needs it, and that an audience with none, a Kubernetes API caller being no Google
+// caller, is refused at boot naming the audience and all three ways to give it a caller. The
+// third, a google: edge-listener entry in BROKER_NATS_SERVICES, has its rows in
+// TestNATSCalloutSettings.
 func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
-	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES"
+	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES"
 	for _, row := range []struct {
 		name                                string
 		api, kubernetes, audience, services bool
@@ -2947,6 +2949,159 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
+	}
+}
+
+// TestHoldRequiresDeadlineIsAnOnOffSetting pins BROKER_HOLD_REQUIRES_DEADLINE, which an IAP
+// deployment's broker sets, read as the broker's other on/off settings are: unset, or blank, is
+// off, every spelling strconv.ParseBool reads is taken, and anything else refuses the start naming
+// the setting rather than being taken as off, which would serve an IAP deployment's people with no
+// deadline. It needs the hold it rules, which BROKER_PROJECT_ACCESS_URL builds: set true without
+// that URL, the start is refused naming both settings, since a broker that asks no Dispatch holds
+// nobody, deadline or not; set false without it, the start goes on.
+//
+// Controls: Load leaving HoldRequiresDeadline unread ("true" reads as off, and the test fails
+// naming it); Load taking it true with no BROKER_PROJECT_ACCESS_URL (the start goes on, and the
+// test fails naming the refusal it wanted).
+func TestHoldRequiresDeadlineIsAnOnOffSetting(t *testing.T) {
+	withHold := func() map[string]string {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766"
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		return e
+	}
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{{"", false}, {"  ", false}, {"false", false}, {"0", false}, {"true", true}, {" TRUE ", true}, {"1", true}} {
+		e := withHold()
+		if c.value != "" {
+			e["BROKER_HOLD_REQUIRES_DEADLINE"] = c.value
+		}
+		cfg, err := Load(env(e))
+		if err != nil || cfg.HoldRequiresDeadline != c.want {
+			t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = (%t, %v); want %t", c.value, cfg.HoldRequiresDeadline, err, c.want)
+		}
+	}
+	e := withHold()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "required"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "must be true or false") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = %v; want a refusal naming the setting", "required", err)
+	}
+
+	e = validEnv()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "true"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=true with no BROKER_PROJECT_ACCESS_URL) = %v; want a refusal naming both settings: that broker holds nobody", err)
+	}
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "false"
+	if cfg, err := Load(env(e)); err != nil || cfg.HoldRequiresDeadline {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=false with no BROKER_PROJECT_ACCESS_URL) = (%t, %v); want the start to go on with it off", cfg.HoldRequiresDeadline, err)
+	}
+}
+
+// TestTheDirectoryURLIsGooglesUnlessSet pins BROKER_DIRECTORY_URL: unset, the broker reads no
+// address of its own, so the group reader calls Google's Directory API; set, it is read without
+// the slashes it ends in, as a test's stand-in is named; and a value that is no absolute https URL,
+// or http to a loopback host, refuses the start naming the setting: a group read sends the reader
+// account's token to it, which only a run on one machine may send in plain text.
+func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryURL != "" {
+		t.Fatalf("with BROKER_DIRECTORY_URL unset the broker reads %q; want nothing, so the reader calls Google's own address", cfg.DirectoryURL)
+	}
+
+	for value, want := range map[string]string{
+		" https://directory.internal.example:8443// ": "https://directory.internal.example:8443",
+		"http://127.0.0.1:8080/":                      "http://127.0.0.1:8080",
+		"http://localhost:8080":                       "http://localhost:8080",
+	} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = value
+		if cfg, err = Load(env(e)); err != nil {
+			t.Fatalf("Load(BROKER_DIRECTORY_URL=%q) = %v; want it taken", value, err)
+		}
+		if cfg.DirectoryURL != want {
+			t.Fatalf("BROKER_DIRECTORY_URL %q is read as %q; want %q, without its spaces and trailing slashes", value, cfg.DirectoryURL, want)
+		}
+	}
+
+	for _, bad := range []string{"directory.internal.example", "//directory.internal.example", "ftp://directory.internal.example", "http://", "http://%zz", "http://directory.internal.example:8080", "https://"} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = bad
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_URL") || !strings.Contains(err.Error(), "absolute https URL, or http to a loopback host") {
+			t.Errorf("Load(BROKER_DIRECTORY_URL=%q) = %v; want a refusal naming the variable and the rule", bad, err)
+		}
+	}
+}
+
+// groupReaderAccount is the reader account a deployment names in BROKER_DIRECTORY_ACCOUNT.
+const groupReaderAccount = "group-reader@example-project.iam.gserviceaccount.com"
+
+// TestTheDirectoryAccountIsAServiceAccount pins BROKER_DIRECTORY_ACCOUNT: unset, the broker loads
+// and names no reader account, so it reads no group; set, it is read as given, without spaces;
+// and an address that is no user-managed Google service account, the only kind generateAccessToken
+// mints for, refuses the start naming the setting: a person, a capitalised address, a list and a
+// Google-managed service agent, which Google's own services run as.
+func TestTheDirectoryAccountIsAServiceAccount(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != "" {
+		t.Fatalf("with BROKER_DIRECTORY_ACCOUNT unset the broker reads %q; want no reader account", cfg.DirectoryAccount)
+	}
+
+	e := validEnv()
+	e["BROKER_DIRECTORY_ACCOUNT"] = " " + groupReaderAccount + "\n"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
+	}
+
+	for _, c := range []struct{ name, account, want string }{
+		{"a person", "reader@example.com", "user-managed Google service account"},
+		{"an upper-case address", "Group-Reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a list", groupReaderAccount + " other-reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a service agent", "service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := validEnv()
+			e["BROKER_DIRECTORY_ACCOUNT"] = c.account
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load(BROKER_DIRECTORY_ACCOUNT=%q) = %v; want a refusal naming the setting and %q", c.account, err, c.want)
+			}
+		})
+	}
+}
+
+// TestADirectoryAccountThatASecretBindsIsRefused: a reader account that BROKER_SERVICE_ACCOUNT_SECRETS
+// binds to a secret refuses the start, naming the secret, since a grant of that secret would
+// release the token the group read uses; a reader account that no secret binds loads beside
+// those bindings.
+func TestADirectoryAccountThatASecretBindsIsRefused(t *testing.T) {
+	e := validEnv()
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com GROUP_READER=" + groupReaderAccount
+	e["BROKER_DIRECTORY_ACCOUNT"] = groupReaderAccount
+	_, err := Load(env(e))
+	if err == nil || !strings.Contains(err.Error(), "the directory account is bound to a secret") || !strings.Contains(err.Error(), "GROUP_READER") || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") {
+		t.Fatalf("Load with BROKER_DIRECTORY_ACCOUNT bound to GROUP_READER = %v; want a refusal saying the directory account is bound to a secret, naming it", err)
+	}
+
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a reader account no secret binds = %v; want it loaded", err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
 	}
 }
 

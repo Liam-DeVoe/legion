@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -21,7 +23,13 @@ const (
 	// The PUB-made-private row's third session: its listener lists CORE, and no person is tied to
 	// it.
 	reachedUntiedSession = "2c9b4d2f-6a3e-4b8c-8d4f-2e3a4b5c6d83"
+	// A session of carol's, PUB's owner, under a broker token that lists CORE alone, which the
+	// PUB-made-private row reads PUB's issue as.
+	reachedCarolListedSession = "2c9b4d2f-6a3e-4b8c-8d4f-2e3a4b5c6d84"
 )
+
+// listedNobody is an issue key no row holds, which a hidden issue is read beside.
+const listedNobody = "NOPE-404"
 
 // The people of the reached-project rows: each a full member who sees PRIV in one way, and loses it.
 const (
@@ -138,8 +146,10 @@ func (rig contentAgentRig) hidden(t *testing.T, state string, caller privateCall
 // neither subscribes to them nor asks them for a replay. carol, who sees PRIV, still watches both.
 //
 // The last two rows switch a public project to private, by the switch route and by an SQL
-// statement alone, which takes PUB from every full member its list does not name: the projects
-// table's trigger records the pairs (testPUBMadePrivate).
+// statement alone, which takes PUB from every full member its list does not name. A switch hides
+// what is written in the project from the switch on and withdraws nothing a session read while it
+// was public: the projects table's trigger records the pair only for a session whose stored
+// listener list names the project (testPUBMadePrivate).
 //
 // Control: the reached pairs left unwritten; alice is relayed each session's replay, which holds
 // PRIV's issue's text, and the test fails.
@@ -228,19 +238,36 @@ func TestAPersonsLostProjectStaysOnTheSessionsThatReadIt(t *testing.T) {
 // testPUBMadePrivate is TestAPersonsLostProjectStaysOnTheSessionsThatReadIt's row for a project
 // switched from public to private, by switchPUB: the server's switch (access.SetVisibility, the
 // write the visibility route makes, committed), or an SQL statement alone. xavier, a full member
-// no list names, has two sessions: one whose listener lists CORE, a
-// public project, and one with no list. Each reads PUB's issue while PUB is public, which records
-// nothing, and comments on CORE's, which ties it to xavier. A third session, listed PUB and CORE,
-// is tied to nobody, its history in CORE written as a stand-in, since every proved request ties
-// its session. xavier also uploads a file to his unlisted session's conversation and sends it a
-// direct message, both of which alice, an open viewer, reads while PUB is public. Then carol, PUB's
-// owner, makes PUB private with a list naming nobody, so neither xavier nor alice sees it, and the
-// third session's listener lists CORE alone afterwards, as a token traded again without PUB lists
-// it. alice gets the no-responder verdict for all three sessions, and reads the file and the
-// direct message as ones nobody holds; carol, who sees PUB, still watches them.
+// no list names, has two sessions: one whose listener lists CORE, a public project, and one with
+// no list. Each reads PUB's issue while PUB is public, which records nothing, and comments on
+// CORE's, which ties it to xavier. A third session, listed PUB and CORE, is tied to nobody, its
+// history in CORE written as a stand-in, since every proved request ties its session. xavier also
+// uploads a file to his unlisted session's conversation and sends it a direct message, both of
+// which alice, an open viewer, reads while PUB is public. Then carol, PUB's owner, makes PUB
+// private with a list naming nobody, so neither xavier nor alice sees it, and the third session's
+// listener lists CORE alone afterwards, as a token traded again without PUB lists it.
 //
-// Control: projects_made_private_reached dropped (migration 20261121173500); alice is relayed all
-// three sessions and reads the file and the message.
+// A switch to private withdraws nothing xavier's sessions read while PUB was public, to every full
+// member: the switch records no pair against a session for the people tied to it, so xavier reads
+// his own session's file and direct message, and alice watches both his sessions and reads both
+// too. The third session's list named PUB at the switch, so its credential reads PUB from the
+// switch on: the switch records PUB against it, and alice gets the no-responder verdict for it.
+// carol, who sees PUB, watches all three.
+//
+// A listed session reads a private project only where its credential's list names it, and a
+// full member's credential reads every public project its person sees whatever it lists
+// (access.CredentialCovers, credential.go:42, and its SQL twin in access.VisibleProjectsSQL).
+// While PUB is public, xavier's session listed with CORE and a session of carol's, both under
+// broker tokens that list CORE alone, read PUB's issue; once PUB is private both read it exactly as
+// an issue nobody holds, while carol at her browser still reads it, so for carol's session the list
+// alone decides.
+//
+// Controls: the trigger's pass over the people tied to the sessions restored (migration
+// 20261121173500's function), and xavier reads his own session's file and message as 404, alice
+// gets the no-responder verdict for his sessions, and 2 tie pairs are recorded; the trigger's
+// listener pass removed, and alice is relayed the third session; VisibleProjectsSQL's list arm
+// covering every project for a full member's credential, and carol's session reads PUB's issue
+// once PUB is private.
 func testPUBMadePrivate(t *testing.T, switchPUB func(t *testing.T, rig contentAgentRig)) {
 	listed := func(third string) string {
 		return `[
@@ -278,14 +305,30 @@ func testPUBMadePrivate(t *testing.T, switchPUB func(t *testing.T, rig contentAg
 	}](t, uploaded).Artifact
 	direct := createdID(t, dispatchRequest(t, rig.seed.handler, http.MethodPost, "/api/v1/agents/"+reachedUnlistedSession+"/messages",
 		map[string]any{"body": "What did you read of PUB?", "delivery": "btw"}, reachedXavier))
-	reads := map[string][2]string{
-		"the file": {"/api/v1/agents/" + reachedUnlistedSession + "/artifacts/" + file.Slug,
-			"/api/v1/agents/" + reachedUnlistedSession + "/artifacts/nobody-holds-this-png"},
-		"the direct message": {"/api/v1/messages/" + direct, "/api/v1/messages/00000000-0000-4000-8000-000000000000"},
+	reads := map[string]string{
+		"the file":           "/api/v1/agents/" + reachedUnlistedSession + "/artifacts/" + file.Slug,
+		"the direct message": "/api/v1/messages/" + direct,
 	}
 	for name, read := range reads {
-		if got := rig.seed.request(t, callerAlice, http.MethodGet, read[0], nil); got.Code != http.StatusOK {
+		if got := rig.seed.request(t, callerAlice, http.MethodGet, read, nil); got.Code != http.StatusOK {
 			t.Fatalf("alice reads %s of xavier's session while PUB is public as %d %s, want 200: the row proves nothing", name, got.Code, got.Body.String())
+		}
+	}
+	// The tokens that list CORE alone read PUB's issue while PUB is public: a full member's list
+	// decides only private projects.
+	readsPUB := func(person, session string) *httptest.ResponseRecorder {
+		t.Helper()
+		return rig.seed.sessionRequest(t, person, session, reachedCore, http.MethodGet, "/api/v1/issues/"+rig.seed.issue[seedPublic], nil)
+	}
+	readsNobody := func(person, session string) *httptest.ResponseRecorder {
+		t.Helper()
+		return rig.seed.sessionRequest(t, person, session, reachedCore, http.MethodGet, "/api/v1/issues/"+listedNobody, nil)
+	}
+	listedReaders := []struct{ person, session string }{{reachedXavier, reachedListedSession}, {seedCarol, reachedCarolListedSession}}
+	for _, reader := range listedReaders {
+		if got := readsPUB(reader.person, reader.session); got.Code != http.StatusOK {
+			t.Fatalf("PUB public: %s's session %s under a token listing CORE reads PUB's issue as %d %s, want 200: the row proves nothing",
+				reader.person, reader.session, got.Code, strings.TrimSpace(got.Body.String()))
 		}
 	}
 	switchPUB(t, rig)
@@ -297,16 +340,42 @@ func testPUBMadePrivate(t *testing.T, switchPUB func(t *testing.T, rig contentAg
 		t.Fatalf("store the listener's sessions, the third listed CORE alone: %v", err)
 	}
 	const state = "PUB made private"
-	for _, session := range []string{reachedListedSession, reachedUnlistedSession, reachedUntiedSession} {
-		rig.hidden(t, state, callerAlice, session)
+	reached := func(session string) int {
+		t.Helper()
+		var pairs int
+		if err := rig.seed.database.Pool.QueryRow(context.Background(), `
+			select count(*) from session_reached_projects where session_id = $1 and project_key = $2`,
+			session, seedPublic).Scan(&pairs); err != nil {
+			t.Fatalf("read %s's reached pairs: %v", session, err)
+		}
+		return pairs
+	}
+	for _, session := range []string{reachedListedSession, reachedUnlistedSession} {
+		if pairs := reached(session); pairs != 0 {
+			t.Errorf("%s, the switch recorded %d pairs of PUB against xavier's session %s, want none: a switch withdraws nothing read while PUB was public", state, pairs, session)
+		}
+		rig.watch(t, state, contentView{callerAlice, session, agentViewResponding, "alice watches what xavier's session read while PUB was public"})
 		rig.watch(t, state, contentView{callerCarol, session, agentViewResponding, "carol sees PUB"})
 	}
+	if pairs := reached(reachedUntiedSession); pairs != 1 {
+		t.Errorf("%s, the switch recorded %d pairs of PUB against the session whose list named PUB, want 1", state, pairs)
+	}
+	rig.hidden(t, state, callerAlice, reachedUntiedSession)
+	rig.watch(t, state, contentView{callerCarol, reachedUntiedSession, agentViewResponding, "carol sees PUB"})
 	for name, read := range reads {
-		got, nobody := rig.seed.request(t, callerAlice, http.MethodGet, read[0], nil), rig.seed.request(t, callerAlice, http.MethodGet, read[1], nil)
-		if got.Code != http.StatusNotFound || got.Code != nobody.Code {
-			t.Errorf("%s, alice reads %s of xavier's session as %d %s, want what one nobody holds answers, %d",
-				state, name, got.Code, got.Body.String(), nobody.Code)
+		if got := dispatchRequest(t, rig.seed.handler, http.MethodGet, read, nil, reachedXavier); got.Code != http.StatusOK {
+			t.Errorf("%s, xavier reads %s of his own session as %d %s, want 200", state, name, got.Code, got.Body.String())
 		}
+		if got := rig.seed.request(t, callerAlice, http.MethodGet, read, nil); got.Code != http.StatusOK {
+			t.Errorf("%s, alice reads %s of xavier's session as %d %s, want 200", state, name, got.Code, got.Body.String())
+		}
+	}
+	if got := rig.seed.request(t, callerCarol, http.MethodGet, "/api/v1/issues/"+rig.seed.issue[seedPublic], nil); got.Code != http.StatusOK {
+		t.Fatalf("%s, carol at her browser reads PUB's issue as %d %s, want 200: the row proves nothing", state, got.Code, strings.TrimSpace(got.Body.String()))
+	}
+	for _, reader := range listedReaders {
+		requireAnsweredAsMissing(t, fmt.Sprintf("%s, %s's session %s under a token listing CORE reads PUB's issue", state, reader.person, reader.session),
+			readsPUB(reader.person, reader.session), readsNobody(reader.person, reader.session), rig.seed.issue[seedPublic], listedNobody)
 	}
 }
 

@@ -108,7 +108,7 @@ func TestOutsideSignInARestrictedMembersTokenActsForNobodyWhereNoneIsAdmitted(t 
 	}
 	kind := func(kind model.MemberKind) {
 		t.Helper()
-		if err := s.people.ConfirmSubject(ctx, outsiderEmail, "google-outsider", membership.RefreshToken, membership.RefreshToken, kind); err != nil {
+		if err := s.people.ConfirmSubject(ctx, outsiderEmail, "google-outsider", membership.RefreshToken, membership.RefreshToken, "", kind); err != nil {
 			t.Fatalf("record %s as a %s member: %v", outsiderEmail, kind, err)
 		}
 	}

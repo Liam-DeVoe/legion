@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,16 +71,26 @@ func TestOutsideSignInReclaimRevokesTheOutsidersToken(t *testing.T) {
 // sessions ends its cookies here too.
 func (s *outsideSignIn) routerWithSessions(t *testing.T) http.Handler {
 	t.Helper()
+	return s.routerWithSessionsFor(t, s.boot)
+}
+
+// routerWithSessionsFor is routerWithSessions for boot.
+func (s *outsideSignIn) routerWithSessionsFor(t *testing.T, boot bootConfig) http.Handler {
+	t.Helper()
 	built := routes.AppContextOptions{
-		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(s.boot), People: s.people,
+		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: s.people,
 		Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool),
 	}
-	rule, err := signInRule(s.boot, accessLister(built.Store))
+	rule, err := signInRule(boot, accessLister(built.Store))
 	if err != nil {
 		t.Fatal(err)
 	}
-	built.Identity = requestIdentityFor(s.boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, nil)
-	appCtx, err := routes.BuildAppContext(appContextOptions(s.boot, rule, built))
+	var membership *identity.Membership
+	built.Identity, membership, err = requestIdentityFor(t.Context(), boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, nil)
+	if err != nil {
+		t.Fatalf("build the request identity: %v", err)
+	}
+	appCtx, err := buildAppContext(boot, rule, built, membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -183,7 +194,7 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 			reclaimed, reclaimDone := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(reclaimDone)
-				reclaimed <- s.people.SignInSubject(ctx, email, secondHolder, "refresh-second", model.MemberFull)
+				reclaimed <- s.people.SignInSubject(ctx, email, secondHolder, "refresh-second", "", model.MemberFull)
 			}()
 			if !waitForBlockedBackends(t, s, 1, "the second holder's reclaim", reclaimDone) {
 				t.Fatalf("the second holder's reclaim finished while the test held it: %v", <-reclaimed)
