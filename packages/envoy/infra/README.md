@@ -4262,7 +4262,13 @@ within five minutes; two clocks each within five minutes of true time can be ten
 them synchronized (NTP), not merely close. A signing time more than five minutes ahead of the
 broker's clock (a row stored before this check, or read after the broker's clock jumped back) is
 no genuine row's: the broker judges later rows against its own clock instead, so such a time holds
-no correct clock back. A restart does not clear such a time, since the log keeps it, and needs not.
+no correct clock back, and a refusal judged that way names that clock. A restart does not clear
+such a time, since the log keeps it, and needs not. Each replica decides with its own clock, as
+it reads, whether a time is that far ahead, so while one is in the log a row the writing replica
+stores can read as unknown on the other, whose floor took the far time and whose clock does not
+put it that far ahead, until the next move or until that replica starts again. Only clocks
+outside this requirement reach that state (a broker clock that jumped back, or replicas or
+operator machines more than five minutes apart), and it fails closed, on that replica alone.
 
 **Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
 command of a hold through the broker's records, one command at a time: while one command's intent
@@ -4350,15 +4356,65 @@ shows `hold release` or `hold abort` done. After any other `held` entry it refus
 `bad_transition`, so no restore frees every client while a command of a hold may run. Whatever the
 latest entry, it refuses a `released` row, naming a hold or none, while a hold the verified log
 does not show ended has a signed journal showing `hold set` done and no end: that hold is held by
-its own record. The log shows a hold ended by a verified `released` entry naming it, at any gen (a
-release or abort cut before its done entry included), or by a later hold's `prepare` after its own
-entries. A journal of a hold the log does not show ended is read against the broker's record floor
-and its signature: an older version than one the broker wrote or served, or one that does not
-verify, is unknown (409 `below_floor`). The log and the floors are per database and per process: a
-database writer who empties the log, or cuts it back to an earlier entry, lets `Bootstrap` or a
-restore at the gen it names write a row again on a replica that has served no row since it
-started, sent by a client that has seen no row; the journals stop a `released` row then only while
-a hold's journal shows it held.
+its own record. Only a verified `released` entry naming a hold, at any gen (a release or abort cut
+before its done entry included), shows it ended. A later hold's `prepare` does not: after a
+point-in-time restore, or saved rows put back into a log cut back, the log holds entries of two
+histories, whose gens and signing times say nothing of each other. A journal of a hold the log
+does not show ended is read against the broker's record floor and its signature: an older version
+than one the broker wrote or served, or one that does not verify, is unknown (409 `below_floor`).
+Each refusal names the hold, and for a signature whose key has left
+`BROKER_NATS_HOLD_SIGNING_KEYS` that key's id (`RouteError.Message` in the operator's client); it
+advises restoring the row `held` with the hold's id only when the route admits that restore, after
+a log whose latest entry is that hold's own `prepare` or `held` entry. The log and the floors are
+per database and per process: a database writer who empties the log, or cuts it back to an
+earlier entry, lets `Bootstrap` or a restore at the gen it names write a row again on a replica
+that has served no row since it started, sent by a client that has seen no row; the journals stop
+a `released` row then only while a hold's journal shows it held.
+
+The residual: a database writer can leave the operator no restore on any route, and that lasts
+after the writer stops. One unsigned insert of a done record under a hold id no hold uses, an
+ended hold's `released` entry deleted, the log cut back under a live hold, or an older journal put
+back, and every `released` restore is refused, and a `held` one too unless the log's latest entry
+is that hold's own; with `BROKER_NATS_HOLD_READ=true` every client but the operator is refused
+meanwhile. No route can tell such a record from a live hold's journal a writer broke, and skipping
+it would free every client mid-hold. The refusal names the rows: 409 `below_floor` naming the hold
+whose done record does not verify or is older than one the broker saw, or 400 `bad_transition`
+naming the hold whose journal shows it held while the log's latest entry is not that hold's. The
+hand repair, by a database admin: read the named hold's rows (`select * from nats_hold_records
+where hold_id = '<hold>'` and `select * from nats_hold_log where hold_id = '<hold>' order by gen`);
+delete by name a done record that no hold of the operator's wrote (`delete from nats_hold_records
+where hold_id = '<hold>' and kind = 'done'`), or restore from a backup the entries a writer deleted
+or the journal it put back; then send the restore again.
+
+**Rotating the hold signing key.** `BROKER_NATS_HOLD_SIGNING_KEYS` is the one list every hold row,
+record, log entry, record delete and cutover row verifies against, and every signature names its
+key: it is `<key id>.<signature>`, the key id the unpadded base64url of the first 8 bytes of the
+public key's SHA-256 (`signedrecord.KeyID`), which holds no key material. A record whose key has
+left the list reads as unknown, and a done record that does then refuses every `released` restore,
+naming the hold and the key id. So a rotation goes in this order:
+
+1. Add the new public key to `BROKER_NATS_HOLD_SIGNING_KEYS` beside the old one, and roll it out to
+   the broker and to every command that verifies the hold's rows.
+2. Sign with the new key alone: the operator's commands hold only the newest private key.
+3. Read which stored rows the old key signed, by its id (`<old>` below). A signature written before
+   signatures named their key has no dot, so `split_part` gives the whole signature and the read
+   lists it too:
+
+   ```sql
+   select 'nats_hold' as tbl, gen::text as row from nats_hold where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_hold_log', gen::text from nats_hold_log where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_hold_records', hold_id || ' ' || kind || ' ' || key from nats_hold_records where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_hold_record_deletes', hold_id || ' ' || kind || ' ' || key from nats_hold_record_deletes where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_cutover', family from nats_cutover where split_part(sig, '.', 1) in ('<old>', sig);
+   ```
+
+4. Remove the old key from the list only once that read returns no row. Until then it stays,
+   verify-only.
+
+A key removed because it leaked is the exception: what it signed can no longer be trusted. Run the
+read in step 3 with the leaked key's id and, with no hold live, delete by name each journal
+(`nats_hold_records`, kind `done`) and each log entry (`nats_hold_log`) it lists; then restore the
+lost row as above.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

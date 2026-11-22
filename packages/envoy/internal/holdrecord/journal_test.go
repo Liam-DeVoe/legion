@@ -972,4 +972,6 @@ func TestTheHoldJournal(t *testing.T) {
 	clockRows(t)
 	restoreJournalRows(t)
 	endedHoldRows(t)
+	forkRows(t)
+	keyRotationRows(t)
 }

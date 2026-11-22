@@ -9,6 +9,11 @@
 // and a field holding a line feed is refused, so no two records write the same lines. A record's
 // JSON value enters its lines as the hex SHA-256 of its canonical form (Canonical), because
 // Postgres stores it as jsonb and gives it back with its keys reordered and its whitespace dropped.
+//
+// A signature names the key that made it, by an id derived from the public key (KeyID), so a
+// reader names the key of a record it cannot verify: a record signed by a key retired from the
+// list it verifies against reads as unknown naming that id, the cue to keep the key listed,
+// verify-only, while records it signed remain.
 package signedrecord
 
 import (
@@ -50,6 +55,32 @@ var (
 	// ErrBadField is a field holding a line feed, or a value that is not JSON.
 	ErrBadField = errors.New("signedrecord: a field that cannot be signed")
 )
+
+// KeyID is key's id: the unpadded base64url of the first 8 bytes of the SHA-256 of its 32 bytes,
+// 11 characters. Sign opens every signature with its key's id, so a reader names the key of a
+// record it cannot verify, a retired key among them, by an id that holds no key material.
+func KeyID(key ed25519.PublicKey) string {
+	digest := sha256.Sum256(key)
+	return base64.RawURLEncoding.EncodeToString(digest[:keyIDBytes])
+}
+
+// keyIDBytes is how many bytes of a key's SHA-256 its id holds.
+const keyIDBytes = 8
+
+// UnlistedKeyError is a signature whose key id names no key of the list it was verified against:
+// a record signed by a key since removed from the list, or by a key never in it. It carries the id,
+// which holds no key material, and is ErrBadSignature too.
+type UnlistedKeyError struct {
+	KeyID string
+}
+
+// Error names the key id.
+func (e *UnlistedKeyError) Error() string {
+	return fmt.Sprintf("%v: signed by key %s, which is not in the list", ErrBadSignature, e.KeyID)
+}
+
+// Unwrap is ErrBadSignature.
+func (e *UnlistedKeyError) Unwrap() error { return ErrBadSignature }
 
 // The tags each kind's lines open with.
 const (
@@ -158,7 +189,8 @@ func sha256Hex(s string) bool {
 	return true
 }
 
-// Sign signs lines with key and returns the signature, base64url without padding.
+// Sign signs lines with key and returns the signature as <key id>.<signature>: the id of key's
+// public half (KeyID), a dot, and the 64-byte Ed25519 signature, base64url without padding.
 func Sign(key ed25519.PrivateKey, lines []string) (string, error) {
 	if len(key) != ed25519.PrivateKeySize {
 		return "", errors.New("signedrecord: no signing key")
@@ -167,12 +199,17 @@ func Sign(key ed25519.PrivateKey, lines []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, msg)), nil
+	return KeyID(key.Public().(ed25519.PublicKey)) + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, msg)), nil
 }
 
-// Verify reports whether some key of keys signed lines with sig: nil when one did, ErrNoSignature
-// for an empty sig, ErrBadField for lines Sign would refuse, and ErrBadSignature otherwise, for a
-// sig that does not decode, an empty key list included.
+// Verify reports whether a key of keys signed lines with sig: nil when one did, ErrNoSignature for
+// an empty sig, ErrBadField for lines Sign would refuse, and ErrBadSignature otherwise. A sig
+// naming a key id (Sign's <key id>.<signature>) is verified by the listed key of that id alone:
+// *UnlistedKeyError, carrying the id, when no listed key has it, and ErrBadSignature naming the id
+// when that key did not sign these lines. A sig with no key id, as Sign wrote before signatures
+// named their key, is verified by trying each listed key, and refused saying it was signed with no
+// key id when none verifies it. A sig that does not decode, its key id included, is refused naming
+// no part of it, since a database writer chooses that text.
 func Verify(keys []ed25519.PublicKey, sig string, lines []string) error {
 	if sig == "" {
 		return ErrNoSignature
@@ -181,16 +218,37 @@ func Verify(keys []ed25519.PublicKey, sig string, lines []string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(sig)
-	if err != nil || len(raw) != ed25519.SignatureSize {
+	kid, encoded, named := strings.Cut(sig, ".")
+	if !named {
+		encoded = sig
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(raw) != ed25519.SignatureSize || (named && !isKeyID(kid)) {
 		return fmt.Errorf("%w: the signature does not decode", ErrBadSignature)
 	}
+	listed := false
 	for _, key := range keys {
-		if len(key) == ed25519.PublicKeySize && ed25519.Verify(key, msg, raw) {
+		if len(key) != ed25519.PublicKeySize || (named && KeyID(key) != kid) {
+			continue
+		}
+		listed = true
+		if ed25519.Verify(key, msg, raw) {
 			return nil
 		}
 	}
-	return ErrBadSignature
+	switch {
+	case !named:
+		return fmt.Errorf("%w: signed with no key id, and no listed key verifies it", ErrBadSignature)
+	case !listed:
+		return &UnlistedKeyError{KeyID: kid}
+	}
+	return fmt.Errorf("%w: key %s did not sign these lines", ErrBadSignature, kid)
+}
+
+// isKeyID reports whether s is a key id as KeyID writes it: the unpadded base64url of 8 bytes.
+func isKeyID(s string) bool {
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(s)
+	return err == nil && len(decoded) == keyIDBytes
 }
 
 // ParsePublicKeys reads a list of the operator's public keys from the text of setting: entries
@@ -258,21 +316,34 @@ func WithinSkewOf(signedAt, now time.Time) error {
 	return nil
 }
 
-// NotBackdated answers ErrBackdated, naming both gens and both times, when signedAt, gen's signing
-// time, is more than SignedAtSkew before the time it is judged against: latestAt, latestGen's, the
-// latest signing time the reader has accepted or verified, as long as latestAt is no more than
-// SignedAtSkew ahead of now, the reader's clock. A later time is no genuine row's (a row stored
-// before the hold's routes judged signing times, or a reader whose clock jumped back), so the gen is
-// judged against now instead, as the routes' WithinSkewOf judges it: a correct clock, which signs a
-// little before the reader reads, is never held back by such a time. It answers nil otherwise.
-// Floor.Accept and Floor.Admits judge by it, and the hold's routes judge a new row by it against
-// the log's latest verified signing time, which every replica shares.
+// NotBackdated answers ErrBackdated when signedAt, gen's signing time, is more than SignedAtSkew
+// before the time it is judged against: latestAt, latestGen's, the latest signing time the reader
+// has accepted or verified, as long as latestAt is no more than SignedAtSkew ahead of now, the
+// reader's clock, naming both gens and both times. A later time is no genuine row's (a row stored
+// before the hold's routes judged signing times, or a reader whose clock jumped back), so the gen
+// is judged against now instead, as the routes' WithinSkewOf judges it, and the refusal names gen's
+// time and the clock: a correct clock, which signs a little before the reader reads, is never held
+// back by such a time. It answers nil otherwise. Floor.Accept and Floor.Admits judge by it, and the
+// hold's routes judge a new row by it against the log's latest verified signing time, which every
+// replica shares.
+//
+// Each reader decides with its own clock, at the moment it reads, whether latestAt is that far
+// ahead, so two readers can judge one gen differently while a time more than SignedAtSkew ahead of
+// one of their clocks is stored: the writer judges a row against its clock and stores it, and the
+// other replica, whose floor took the far time and whose clock does not yet put that time out of
+// reach, reads the row as unknown until the next move, or until it starts again. Only a clock
+// outside the hold's requirement reaches that state: a broker clock that jumped back, or replicas
+// or operator machines further apart than SignedAtSkew, since the routes refuse to write a row
+// signed that far from the broker's clock. The result fails closed, on that replica alone.
 func NotBackdated(gen uint64, signedAt time.Time, latestGen uint64, latestAt, now time.Time) error {
-	judged := latestAt
 	if latestAt.After(now.Add(SignedAtSkew)) {
-		judged = now
+		if signedAt.Before(now.Add(-SignedAtSkew)) {
+			return fmt.Errorf("%w: gen %d signed at %s, and the reader's clock reads %s, which it is judged against since the latest signing time is further ahead of that clock than the allowance",
+				ErrBackdated, gen, signedAt.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+		}
+		return nil
 	}
-	if signedAt.Before(judged.Add(-SignedAtSkew)) {
+	if signedAt.Before(latestAt.Add(-SignedAtSkew)) {
 		return fmt.Errorf("%w: gen %d signed at %s, before gen %d signed at %s", ErrBackdated, gen,
 			signedAt.UTC().Format(time.RFC3339), latestGen, latestAt.UTC().Format(time.RFC3339))
 	}

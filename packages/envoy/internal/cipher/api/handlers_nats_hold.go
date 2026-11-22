@@ -113,7 +113,8 @@ type holdRow struct {
 	// When the operator signed the row, RFC 3339 with nanoseconds in UTC, the text its signature's
 	// lines carry (signedrecord.HoldRow).
 	SignedAt string `json:"signed_at"`
-	// The operator's Ed25519 signature over the row's lines, base64url without padding.
+	// The operator's Ed25519 signature over the row's lines, as signedrecord.Sign writes it: the
+	// signing key's id, a dot, and the signature, base64url without padding.
 	Sig string `json:"sig"`
 }
 
@@ -334,8 +335,14 @@ var errRowSkewed = errors.New("the row's signed_at is outside the clock-skew all
 // the write, given log, every log entry as the write's transaction reads it: against the broker's
 // own clock, against this broker's floor of the row (signedrecord.Floor.Admits, which moves
 // nothing), and against the latest signing time among the log's verified entries
-// (signedrecord.NotBackdated), so a row one replica stores never reads as unknown on the other. It
-// answers errRowSkewed, naming both times and the gen compared with.
+// (signedrecord.NotBackdated), so that, while every clock keeps the hold's requirement, a row one
+// replica stores never reads as unknown on the other. Outside it, a row can: while the log holds a
+// time more than signedrecord.SignedAtSkew ahead of this broker's clock (a broker clock that jumped
+// back, or replicas or operator machines further apart than the allowance), NotBackdated judges a
+// new row against this clock instead, and the other replica, whose floor took the far time and
+// whose clock does not put it that far ahead, reads the row stored here as unknown until the next
+// move or until it starts again: fail-closed, on that replica alone. It answers errRowSkewed,
+// naming both times and the gen compared with.
 func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time, log []natshold.LogEntry) error {
 	now := time.Now()
 	if err := signedrecord.WithinSkewOf(signedAt, now); err != nil {
@@ -392,7 +399,7 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 	}
 	gen := uint64(body.ExpectedGen) + 1
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, body.Sig, signedrecord.HoldRow(gen, body.Phase, body.HoldID, signedAt)); err != nil {
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the gen it would store", nil)
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the gen it would store: "+err.Error(), nil)
 		return
 	}
 	accept := func(current natshold.Row, log []natshold.LogEntry) error {
@@ -497,7 +504,7 @@ func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ str
 	}
 	gen := uint64(body.ExpectedGen) + 1
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, body.Sig, signedrecord.Record(body.HoldID, body.Kind, body.Key, gen, body.Value)); err != nil {
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record at the gen it would store", nil)
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record at the gen it would store: "+err.Error(), nil)
 		return
 	}
 	floorKey := recordFloorKey{holdID: body.HoldID, kind: body.Kind, key: body.Key}
@@ -635,7 +642,7 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, query.Get("sig"), signedrecord.RecordDelete(holdID, kind, key, gen)); err != nil {
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record's delete at the gen it names", nil)
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record's delete at the gen it names: "+err.Error(), nil)
 		return
 	}
 	released := func(journal *natshold.Record) error {
@@ -648,9 +655,9 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		}
 		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
 		if journal != nil {
-			var ok bool
-			if d, ok = s.verifiedJournal(holdID, journal); !ok {
-				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID)}
+			var err error
+			if d, err = s.journalDone(holdID, journal); err != nil {
+				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify: %v", natshold.ErrHoldMismatch, holdID, err)}
 			}
 		}
 		if err := holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandAbort, RowReleased: true}); err != nil {
@@ -755,7 +762,7 @@ func (s *server) putNATSHoldCutover(w http.ResponseWriter, r *http.Request, oper
 	switch {
 	case err == nil:
 	case isSignatureRefusal(err):
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the hold row's current gen", nil)
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the hold row's current gen: "+err.Error(), nil)
 		return
 	case !errors.As(err, &conflict):
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "write the cutover row", err)
