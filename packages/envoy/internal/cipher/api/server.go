@@ -891,12 +891,13 @@ func answerUnavailable(w http.ResponseWriter, code, op string) {
 // answers 503 OIDC_ISSUER_UNAVAILABLE with Dispatch's sentence for the same fault
 // (serviceTokenActor) and Retry-After: oidc.IssuerUnavailableRetryAfter, the Envoy listener's
 // answer to the same fault. It is a 5xx because nothing was decided about the token: the Legion
-// daemon stops trying after a 4xx and tries again after a 5xx. It logs nothing, since the
-// clusters' verifier the broker builds (cmd/cipherd, loggedIssuers) logs an issuer once when a
-// token of it is first answered this and once when a token of it verifies again, and a line here
-// would repeat the first for every token. The answer recorder (internal/cipher/answer) counts
-// each such answer in broker_answers_total as outcome failed with code HTTP_503, since it reads a
-// code from a 4xx answer alone, and writes no line for it.
+// daemon stops trying after a 4xx and tries again after a 5xx. It logs nothing: the key set whose
+// read failed logs that once, when the read fails, and once when a read succeeds again
+// (cmd/cipherd, keySetUnreadableMessage and keySetReadableMessage), and an issuer whose discovery
+// document the boot could not read is logged at boot and once when it can be read
+// (loggedIssuers), so a line here would repeat one of those for every token. The answer recorder
+// (internal/cipher/answer) counts each such answer in broker_answers_total as outcome failed with
+// code HTTP_503, since it reads a code from a 4xx answer alone, and writes no line for it.
 func writeIssuerUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", strconv.Itoa(oidc.IssuerUnavailableRetryAfter))
 	writeError(w, http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)

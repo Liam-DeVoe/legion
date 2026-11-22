@@ -1566,10 +1566,10 @@ type verifiers struct {
 	// Pod verifies a pod's enrollment token and a service's login token, each against the issuer
 	// of BROKER_K8S_OIDC_ISSUER that its iss names, and refuses a token of any other issuer as
 	// oidc.ErrIssuer. Each issuer is read in the background, and until one is, its tokens are
-	// oidc.ErrIssuerUnavailable, as is a token whose key the broker cannot read; it logs once when
-	// a read issuer's tokens start to be answered so, and once when an issuer that could not be
-	// read, at the boot or since, can be read again (loggedIssuers). Nil on a broker told about no
-	// cluster.
+	// oidc.ErrIssuerUnavailable, as is a token whose key the broker cannot read. It logs once when
+	// an issuer the boot could not read can be read (loggedIssuers), and each issuer's key set logs
+	// once when a read of it fails and once when a read succeeds after that, whatever the tokens
+	// were answered (logKeySetChange). Nil on a broker told about no cluster.
 	Pod enroll.PodVerifier
 	// Clusters is the issuer set Pod reads, logged (loggedIssuers), through which a verifier of
 	// the clusters' tokens for another audience reads each issuer's keys (loggedIssuers.audience),
