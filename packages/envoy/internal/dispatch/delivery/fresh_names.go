@@ -520,9 +520,13 @@ func (d *heldDurable) adoptionCreate(held *jetstream.ConsumerInfo) (jetstream.Co
 // candidate this take-over did not see created -- one an interrupted take-over left, of this
 // process or another -- is published only when every setting no update changes is as createFresh
 // would have created it, its explicit acks and its deliver subject's kind among them, and it holds
-// no setting this build does not know. A refusal leaves the operation open, so the intake delivers
-// nothing until an operator acts. The settings an update changes, its filter among them, are
-// corrected in place before the intake delivers from it (correctAdopted).
+// no setting this build does not know. A refusal leaves the operation open, so every later
+// take-over refuses again, at ERROR naming the candidate, and the intake delivers nothing. The
+// remedy is the operator's: delete the named candidate from ENVOY_NOTIFICATIONS; the next
+// take-over's Step 0 then finds it gone, retires it once the operation is SettleAge old, and
+// creates a fresh generation at the saved start (consumernames.Names, settleOp). The settings an
+// update changes, its filter among them, are corrected in place before the intake delivers from
+// it (correctAdopted).
 func (d *heldDurable) adopt(ctx context.Context, _ string, candidate *jetstream.ConsumerInfo) error {
 	create, err := d.adoptionCreate(candidate)
 	if err != nil {
@@ -793,8 +797,9 @@ func natsInfo(info *jetstream.ConsumerInfo) *natsgo.ConsumerInfo {
 }
 
 // refused logs a take-over the protocol stopped, at ERROR, at most once a standbyLogEvery for the
-// same message: a refusal (the cutover not run, lost selection state, no safe start) repeats at
-// every attempt until an operator acts.
+// same message: a refusal (the cutover not run, lost selection state, no safe start, a refused
+// candidate) repeats at every attempt until an operator acts: adopt names the act for a refused
+// candidate, and consumernames' README for the rest ("The two modes", "Recovery").
 func (d *heldDurable) refused(err error) {
 	d.fresh.refusals.reportStandbyAt(slog.LevelError, d.name, "dispatch delivery: the fresh-name take-over stopped: "+err.Error())
 }
