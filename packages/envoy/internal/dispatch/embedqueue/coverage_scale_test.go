@@ -545,14 +545,14 @@ func rebuildWindowIndexes(t *testing.T, database *store.Store, stage string) []w
 }
 
 // measurementConn opens the one connection of databaseURL the statements are timed on, which t's
-// end closes. Its statement_timeout is 0, so no run is cut off by a bound, and every statement on
-// it is planned again at each run (QueryExecModeDescribeExec, as benchtime's runner does): a
-// cached prepared statement switches to a generic plan from its sixth execution, which is not the
-// plan a call gets.
+// end closes, with the session settings of every Dispatch connection (store.ConnConfig). Its
+// statement_timeout is 0, so no run is cut off by a bound, and every statement on it is planned
+// again at each run (QueryExecModeDescribeExec, as benchtime's runner does): a cached prepared
+// statement switches to a generic plan from its sixth execution, which is not the plan a call gets.
 func measurementConn(t *testing.T, databaseURL string) *pgx.Conn {
 	t.Helper()
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := store.ConnConfig(databaseURL)
 	if err != nil {
 		t.Fatalf("parse the measurement database's URL: %v", err)
 	}
@@ -572,7 +572,11 @@ func measurementConn(t *testing.T, databaseURL string) *pgx.Conn {
 func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, prose [][]any, script string) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, databaseURL)
+	config, err := store.ConnConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the measurement database's URL: %v", err)
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("connect to load the corpus: %v", err)
 	}

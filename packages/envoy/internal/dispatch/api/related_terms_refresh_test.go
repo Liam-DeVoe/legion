@@ -541,7 +541,7 @@ func itemRowsRead(t *testing.T, pool *store.Pool) int64 {
 // reads an item table between them.
 func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 	fixture := newTermFixture(t, "QUIET")
-	config, err := pgxpool.ParseConfig(fixture.database.Pool.Config().ConnString())
+	config, err := store.PoolConfig(fixture.database.Pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("read the test database's connection string: %v", err)
 	}

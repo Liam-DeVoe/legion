@@ -64,7 +64,7 @@ func requireConnectionCeiling(t *testing.T, databaseURL string) (release func())
 	}
 
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := store.ConnConfig(databaseURL)
 	if err != nil {
 		t.Fatalf("read the test database's URL: %v", err)
 	}
@@ -115,7 +115,11 @@ func connectionRefusalCause(refused, databaseURL string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var allowed, open int
-	conn, err := pgx.Connect(ctx, databaseURL)
+	config, err := store.ConnConfig(databaseURL)
+	var conn *pgx.Conn
+	if err == nil {
+		conn, err = pgx.ConnectConfig(ctx, config)
+	}
 	if err == nil {
 		defer conn.Close(ctx)
 		err = conn.QueryRow(ctx, `

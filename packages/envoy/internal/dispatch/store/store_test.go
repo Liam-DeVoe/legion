@@ -684,8 +684,8 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 }
 
 // openIsolatedStoreWithPool opens a database of its own and a pool of maxConns connections to it,
-// built as the shared pool is (scanTimestampsInUTC on each connection), so a test can hold every
-// connection the pool can give and read each one.
+// built as the shared pool is (PoolConfig), so a test can hold every connection the pool can give
+// and read each one.
 func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	t.Helper()
 	ctx := context.Background()
@@ -695,12 +695,11 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	config, err := PoolConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}
 	config.MaxConns = maxConns
-	config.AfterConnect = scanTimestampsInUTC
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("open the isolated pool: %v", err)
@@ -712,7 +711,7 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 // connectForTest opens one connection of its own to store's database, closed when t ends.
 func connectForTest(t *testing.T, ctx context.Context, store *Store) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(ctx, store.Pool.Config().ConnString())
+	conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
 	if err != nil {
 		t.Fatalf("connect to the test database: %v", err)
 	}

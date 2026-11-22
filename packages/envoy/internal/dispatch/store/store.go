@@ -43,8 +43,8 @@ const poolSizeParam = "pool_max_conns"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
-// string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC) and carries sessionSettings, as do the pools Pool.separate copies from its
+// string that names its database. Its pool is PoolConfig's, so every connection it opens scans
+// timestamptz in UTC and carries sessionSettings, as do the pools Pool.separate copies from its
 // configuration and every connection opened from Pool.Config.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
@@ -56,13 +56,11 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.sharedPoolSize). Remove the parameter",
 			poolSizeParam, sharedPoolSize)
 	}
-	config, err := pgxpool.ParseConfig(databaseURL)
+	config, err := PoolConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, err
 	}
 	config.MaxConns = sharedPoolSize
-	config.AfterConnect = scanTimestampsInUTC
-	applySessionSettings(config.ConnConfig)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
@@ -75,13 +73,13 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 }
 
 // sessionSettings are the server settings every connection Dispatch opens on its database sends in
-// its startup message (applySessionSettings): Open's shared pool, and so every pool Pool.separate
-// copies from its configuration and every connection opened from Pool.Config (the server process
-// registry's pool, the migration runner's lock watch, the test helpers' pools), and every
-// connection opened from ConnConfig (Census, CheckVersions, the measurements of benchtime, the
-// reads of horizontest.Dialed). Sent at startup, a setting is the session's default rather than a
-// SET: `discard all` (pgmigrate.ResetSession) and `reset all` keep it, and it replaces whatever the
-// connection string sets for the same name.
+// its startup message (applySessionSettings): every pool PoolConfig configures, Open's shared pool
+// among them, and so every pool Pool.separate copies from its configuration and every connection
+// opened from Pool.Config (the server process registry's pool, the migration runner's lock watch,
+// the test helpers' pools), and every connection opened from ConnConfig (Census, CheckVersions,
+// the measurements of benchtime, the reads of horizontest.Dialed). Sent at startup, a setting is
+// the session's default rather than a SET: `discard all` (pgmigrate.ResetSession) and `reset all`
+// keep it, and it replaces whatever the connection string sets for the same name.
 //
 // jit = off. A server built with LLVM JIT (pg_jit_available(); the official postgres image and the
 // pgdg packages are) compiles a statement, again at each execution, when the planner's estimate of
@@ -105,8 +103,22 @@ func applySessionSettings(config *pgx.ConnConfig) {
 	}
 }
 
+// PoolConfig is the configuration of a pool on the Dispatch database databaseURL names, as Open
+// builds its own before it sizes it: every connection scans timestamptz in UTC
+// (scanTimestampsInUTC) and carries sessionSettings. A pool of a size or shape of its own, such as
+// a test's pool of one connection, starts from it, or from Pool.Config, never from the bare URL.
+func PoolConfig(databaseURL string) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+	}
+	config.AfterConnect = scanTimestampsInUTC
+	applySessionSettings(config.ConnConfig)
+	return config, nil
+}
+
 // ConnConfig is the configuration of one connection of its own on the Dispatch database
-// databaseURL names, carrying sessionSettings as every connection of Open's pool does: for a
+// databaseURL names, carrying sessionSettings as every connection of a PoolConfig pool does: for a
 // connection that is not opened from a Store's Pool.Config, as Census's and CheckVersions' are.
 func ConnConfig(databaseURL string) (*pgx.ConnConfig, error) {
 	config, err := pgx.ParseConfig(databaseURL)
