@@ -884,18 +884,6 @@ func (t flattenedText) spelling(match quoteMatch) Spelling {
 	return Spelling{units: units}
 }
 
-// spells reports whether s writes mark's markup over every unit of its match at a position from
-// from to to, and over one at least, and writes none of them under another link: the quote spells
-// that markup over that stretch of the match, not over another stretch of it. A link is spelled
-// only with its own URL and its own title: a find that writes the link's text under another URL,
-// or with another title or none, copied from an older read after another writer changed the link,
-// spells another link, and what the document holds would go with no word. A mark the markdown
-// matcher does not read (markTypeMarkup), strikethrough or an anchor, is never spelled.
-func (s Spelling) spells(mark Mark, from, to int) bool {
-	markup, own := s.writes(mark, from, to)
-	return markup && own
-}
-
 // writes reports whether s writes mark's markup over every unit of its match at a position from
 // from to to, and over one at least (markup), and whether it writes none of those units under a
 // link with another URL or title than mark, a link, has (own). One unit written as another link
@@ -1464,15 +1452,19 @@ func (s *markSearch) close() {
 // it too or drops it by leaving it off; one that spells it over part of that text alone (`a **b**
 // c` over `**a b c**`) spells that part's markup, not the span's, so the span keeps it. A quote
 // matched as written spells nothing: its `*`, `_` or backtick is text the document holds (`2*3*4`
-// in `*a 2\*3\*4 b*`), and one that writes a link's text under another URL or another title spells
-// another link, so the link keeps its own. Strikethrough is never markup the finder reads, so it
-// is never taken off.
+// in `*a 2\*3\*4 b*`). A quote inside a link that writes the link's markup with another URL or
+// title leaves it as one with the link's own does: the text written over it lands outside the
+// link, and the rest of the link keeps the document's URL and title (`that[ one](…)`), as on
+// `main`; a quote over the whole link spelled so is refused before it writes
+// (TextblockAt.CrossedSpan). Strikethrough is never markup the finder reads, so it is never taken
+// off.
 func WithoutQuotedMarkup(marks []Mark, spelled Spelling) []Mark {
 	if len(spelled.units) == 0 {
 		return marks
 	}
 	return slices.DeleteFunc(marks, func(mark Mark) bool {
-		return spelled.spells(mark, math.MinInt, math.MaxInt)
+		markup, _ := spelled.writes(mark, math.MinInt, math.MaxInt)
+		return markup
 	})
 }
 

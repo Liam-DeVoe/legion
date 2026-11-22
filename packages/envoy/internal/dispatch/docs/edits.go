@@ -260,27 +260,28 @@ func (e *ErrQuoteSpansBlocks) Unwrap() error { return pmdoc.ErrTargetSpansBlocks
 
 // ErrFindCrossesSpan names a document edit's find, a replace's or a delete's, that crosses a
 // marked span - bold, italic, strikethrough, a link, code (pmdoc.TextblockAt.CrossedSpan). A find
-// names text to change, so it crosses a link it spells with another URL or title, even one that
-// is that link alone or lies inside it: such a find may have been read before another writer
-// changed the link, and the edit would change that text with no word of the change. A replace's
-// find also crosses the edge of every span it covers text inside and text outside of, unless it
-// spells the span's own markup over all of the span's text it covers: its with written over both
-// lands outside the span, so a link it covered would go with its URL, and a span it cut to end on
-// a space would be written with character references. Even then it crosses a bold or italic
-// span's edge where the part of the span it leaves would meet the written text at a space, which
-// markdown cannot write the span's delimiters beside (pmdoc.LeavesEdgeOnSpace). An insert's or a
-// move's anchor names a place, not text to change, so it crosses no span (quoteInOneTextblock).
+// that covers a link's whole text and spells it with another URL or title crosses it: the edit
+// would remove a link another writer may have changed since the find was read, its URL and title
+// with it, with no word of the change. A find over part of a link removes no link: it changes only
+// the text it names, and the rest of the link keeps the document's URL and title, as on `main`. A
+// replace's find also crosses the edge of every span it covers text inside and text outside of,
+// unless it spells the span's own markup over all of the span's text it covers: its with written
+// over both lands outside the span, so a link it covered would go with its URL, and a span it cut
+// to end on a space would be written with character references. Even then it crosses a bold or
+// italic span's edge where the part of the span it leaves would meet the written text at a space,
+// which markdown cannot write the span's delimiters beside (pmdoc.LeavesEdgeOnSpace). An insert's
+// or a move's anchor names a place, not text to change, so it crosses no span
+// (quoteInOneTextblock).
 //
-// The refusal names finds that cover the very text the find named and are taken there, each with
+// The refusal names the find that covers the very text the find named and is taken there, with
 // the occurrence at which it matches that text (findKeepingRange): the text it matched written
-// with each span the document holds over it, a link under its own URL and title (Own); and for a
-// find over part of a link it spells as another, the same text with no link markup (Bare). Where
-// it names none, it says to move the space out of the bold or italic span, where that space is
-// what no find can keep (Kept); for strikethrough, whose markup no find spells, to replace the
-// text inside the struck span and the text outside it in two operations; and otherwise that no
-// find written from the document's text covers that text, and to read the document again. A
-// replace's find that spells a span's markup replaces that markup too, so with decides that
-// formatting, and one inside a link that spells none writes with inside the link.
+// with each span the document holds over it, a link under its own URL and title (Own). Where it
+// names none, it says to move the space out of the bold or italic span, where that space is what
+// no find can keep (Kept); for strikethrough, whose markup no find spells, to replace the text
+// inside the struck span and the text outside it in two operations; and otherwise that no find
+// written from the document's text covers that text, and to read the document again. A replace's
+// find that spells a span's markup replaces that markup too, so with decides that formatting, and
+// one that is a bare link's own text writes with inside the link.
 type ErrFindCrossesSpan struct {
 	opIndex
 	Quote string
@@ -289,11 +290,9 @@ type ErrFindCrossesSpan struct {
 	Crossing pmdoc.Crossing
 	// Own is the find to send in place of this one: the text the find matched, with each span the
 	// document holds over it written with its markup, the span the find crosses and a link under
-	// its own URL and title (pmdoc.TextblockAt.SpanOver). Bare is that text with no link markup,
-	// for a find over part of a link it spells as another (pmdoc.SpellsAnotherLinkInside,
-	// pmdoc.SpellsAnotherLinkAcrossEdge). Each is zero where no match of it is that text or it
-	// would be refused there itself (findKeepingRange).
-	Own, Bare NamedFind
+	// its own URL and title (pmdoc.TextblockAt.SpanOver). It is zero where no match of it is that
+	// text or it would be refused there itself (findKeepingRange).
+	Own NamedFind
 	// Kept is the part of the span the find leaves where no find is named because that part would
 	// meet the written text at a space (pmdoc.TextblockAt.KeptOnSpace), and "" otherwise.
 	Kept string
@@ -334,8 +333,8 @@ func (e *ErrFindCrossesSpan) Kind() string {
 }
 
 // What a replace's with does over a find: one that spells a span's markup replaces that markup
-// too, and one inside a link that spells none - the text bare, or a bare link's own text, which a
-// find matches as written - is written inside the link (pmdoc.WithoutQuotedMarkup).
+// too, and one that is a bare link's own text, which a find matches as written, spells none, so
+// the with is written inside the link (pmdoc.WithoutQuotedMarkup).
 const (
 	replacesMarkup   = ", which then replaces the markup too, so with decides that formatting"
 	writesInsideLink = ", which writes with inside the link"
@@ -347,30 +346,26 @@ func (e *ErrFindCrossesSpan) Error() string {
 		noun = "link"
 	}
 	// crossesEdge opens the refusal of a find that covers text inside the span and text outside
-	// it, and spellsAnother that of one that covers no text outside the link it spells as another.
+	// it, and spellsAnother that of one over the link's whole text and nothing more that spells
+	// it as another.
 	crossesEdge := fmt.Sprintf("%sfind %q crosses the edge of the %s %q: it covers text inside the %s and text outside it, and ",
 		e.prefix(), e.Quote, noun, e.Span.Text, noun)
 	spellsAnother := fmt.Sprintf("%sfind %q spells the link %q with another URL or title than the one it has; ", e.prefix(), e.Quote, e.Span.Text)
-	const anotherLink = "it spells the link with another URL or title than the one it has; "
 	switch e.Crossing {
-	// A find, a delete's or a replace's, that spells a link with another URL or title.
+	// A find, a delete's or a replace's, over a whole link it spells with another URL or title.
 	case pmdoc.SpellsAnotherLinkAlone:
 		// A bare link's markup is its own text, so a replace's find that is that text spells no
 		// markup, and its with is written inside the link.
 		if e.Own.Quote == e.Span.Text {
-			return spellsAnother + e.named("write the link as it is in find", "", writesInsideLink)
+			return spellsAnother + e.named("write the link as it is in find", writesInsideLink)
 		}
-		return spellsAnother + e.named("write the link as it is in find", "", replacesMarkup)
-	case pmdoc.SpellsAnotherLinkInside:
-		return spellsAnother + e.named("to keep the text find names, quote it", " under the link's own URL and title", replacesMarkup)
+		return spellsAnother + e.named("write the link as it is in find", replacesMarkup)
 	case pmdoc.SpellsAnotherLink:
-		return crossesEdge + anotherLink + e.named("write the whole link as it is in find", "", replacesMarkup)
-	case pmdoc.SpellsAnotherLinkAcrossEdge:
-		return crossesEdge + anotherLink +
-			e.named("to keep the text find names, write the part of the link it covers", " under the link's own URL and title", replacesMarkup)
+		return crossesEdge + "it spells the link with another URL or title than the one it has; " +
+			e.named("write the whole link as it is in find", replacesMarkup)
 	// pmdoc.LeavesEdgeOnSpace and pmdoc.CrossesEdge, which CrossedSpan answers only for a find text
-	// is written over, a replace's: a delete's find crosses a span only by spelling a link as
-	// another, above.
+	// is written over, a replace's: a delete's find crosses a span only by covering a whole link it
+	// spells as another, above.
 	case pmdoc.LeavesEdgeOnSpace:
 		return crossesEdge + fmt.Sprintf("the part of the %s it leaves, %q, would meet the text written over it at a space, "+
 			"where markdown cannot write the %s's delimiters; move that space out of the %s", noun, e.Kept, noun, noun)
@@ -384,37 +379,23 @@ func (e *ErrFindCrossesSpan) Error() string {
 			return refusal + fmt.Sprintf("no find keeps the text find names, since the part of the %s it leaves, %q, would meet the written text "+
 				"at a space, where markdown cannot write the %s's delimiters; move that space out of the %s", noun, e.Kept, noun, noun)
 		}
-		return refusal + e.named("to keep the text find names, spell the "+noun+"'s markup over the part of it find covers", "", replacesMarkup)
+		return refusal + e.named("to keep the text find names, spell the "+noun+"'s markup over the part of it find covers", replacesMarkup)
 	}
 }
 
-// named is the fix the refusal gives where finds keep the text the find named: fix, then those
-// finds, each with the occurrence that matches that text where it needs one - Own, written ownAs,
-// then Bare - with what a replace's with does over each (ownWrites over Own). Where it names
-// neither, it says that no find written from the document's text covers that text, and to read
-// the document again.
-func (e *ErrFindCrossesSpan) named(fix, ownAs, ownWrites string) string {
-	if e.Own.Quote == "" && e.Bare.Quote == "" {
+// named is the fix the refusal gives where a find keeps the text the find named: fix, then that
+// find, Own, with the occurrence that matches that text where it needs one and what a replace's
+// with does over it (ownWrites). Where there is none, it says that no find written from the
+// document's text covers that text, and to read the document again.
+func (e *ErrFindCrossesSpan) named(fix, ownWrites string) string {
+	if e.Own.Quote == "" {
 		return "no find written from the document's text covers the text find names and is taken there: read the document again and quote what it holds"
 	}
-	var named strings.Builder
-	named.WriteString(fix)
-	if e.Own.Quote != "" {
-		named.WriteString(ownAs + e.Own.written())
-		if e.Writes {
-			named.WriteString(ownWrites)
-		}
+	named := fix + e.Own.written()
+	if e.Writes {
+		named += ownWrites
 	}
-	if e.Bare.Quote != "" {
-		if e.Own.Quote != "" {
-			named.WriteString(", or")
-		}
-		named.WriteString(" with no link markup" + e.Bare.written())
-		if e.Writes {
-			named.WriteString(writesInsideLink)
-		}
-	}
-	return named.String()
+	return named
 }
 
 // ErrInsertDoesNotFit names an insert whose markdown the block it lands in cannot hold where the
@@ -2477,10 +2458,11 @@ func quoteInOneTextblock(tree *batchTree, field, quote string, occurrence *int) 
 // finder did; and byMarker reports that the find's leading list marker selected the item it
 // matched. The write and the block guard each resolve a find here, so they read it the same way.
 //
-// A find names text to change, so it must spell each link as it is: one that spells a link with
-// another URL or title is refused, and a replace's, whose with is written over its match, for
-// crossing any span's edge besides. A replace's find is refused before its with is read. The
-// refusal names the finds that cover the text it named and are taken there (ErrFindCrossesSpan).
+// A find names text to change: one that covers a whole link and spells it with another URL or
+// title is refused, since the edit would remove a link another writer may have changed, and a
+// replace's, whose with is written over its match, for crossing any span's edge besides. A
+// replace's find is refused before its with is read. The refusal names the find that covers the
+// text it named and is taken there (ErrFindCrossesSpan).
 func findEditQuote(tree *batchTree, op model.EditOp) (r pmdoc.Range, at pmdoc.TextblockAt, spelled pmdoc.Spelling, byMarker bool, err error) {
 	r, spelled, byMarker, err = quoteInOneTextblock(tree, "find", op.Find, op.Occurrence)
 	if err != nil {
@@ -2493,15 +2475,11 @@ func findEditQuote(tree *batchTree, op model.EditOp) (r pmdoc.Range, at pmdoc.Te
 		return r, at, spelled, byMarker, nil
 	}
 	refusal := &ErrFindCrossesSpan{Quote: op.Find, Span: span, Crossing: crossing, Writes: writes}
-	own, bare, err := at.SpanOver(span.Mark, r)
+	own, err := at.SpanOver(span.Mark, r)
 	if err != nil {
 		return pmdoc.Range{}, pmdoc.TextblockAt{}, pmdoc.Spelling{}, false, err
 	}
-	refusal.Own = findKeepingRange(tree, at, own, op.Occurrence, r, writes)
-	if crossing == pmdoc.SpellsAnotherLinkInside || crossing == pmdoc.SpellsAnotherLinkAcrossEdge {
-		refusal.Bare = findKeepingRange(tree, at, bare, op.Occurrence, r, writes)
-	}
-	if refusal.Own.Quote == "" && refusal.Bare.Quote == "" {
+	if refusal.Own = findKeepingRange(tree, at, own, op.Occurrence, r, writes); refusal.Own.Quote == "" {
 		refusal.Kept = at.KeptOnSpace(span.Mark, span.Range, r)
 	}
 	return pmdoc.Range{}, pmdoc.TextblockAt{}, pmdoc.Spelling{}, false, refusal
@@ -2511,10 +2489,8 @@ func findEditQuote(tree *batchTree, op model.EditOp) (r pmdoc.Range, at pmdoc.Te
 // with occurrence: quote, with the occurrence at which it matches r, where it matches r there and
 // is taken there (findKeepsRange), and zero where none of its matches is r or it would be refused.
 // It names the occurrence where the refused find named one or quote matches more than once: a
-// quote with no markup is read by the matcher of text as written, which matches the same words
-// wherever they stand, inside another word too (`one` in `Someone`), and a quote that spells each
-// span the document holds over its match matches only where the text holds those spans, so either
-// may count r at another place than the refused find did.
+// quote that spells each span the document holds over its match matches only where the text holds
+// those spans, so it may count r at another place than the refused find did.
 func findKeepingRange(tree *batchTree, at pmdoc.TextblockAt, quote string, occurrence *int, r pmdoc.Range, writes bool) NamedFind {
 	if quote == "" {
 		return NamedFind{}

@@ -6,9 +6,12 @@ body: |-
   which matched the text as written spells none (`2*3*4` in `*a 2\*3\*4 b*`). It names the new
   refusal too: a `find` that crosses a span's edge, covering text inside it and text outside it, is
   `400 FIND_CROSSES_SPAN`, which names the find that keeps the text it names: the span's markup
-  spelled over the part of it the find covers, a link's with the URL and title it has; a `find`, a `replace`'s or a `delete`'s, that
-  spells a link with another URL or title is refused the same way, even one that is that link
-  alone (`[this](https://wrong.example/9)`). It names the two limits of that rule: no `find`
+  spelled over the part of it the find covers, a link's with the URL and title it has. A `find`, a
+  `replace`'s or a `delete`'s, that covers a link's whole text and spells it with another URL or
+  title is refused the same way, even one that is that link alone
+  (`[this](https://wrong.example/9)`), since the edit would remove a link another writer may have
+  changed; one over part of a link changes only the text it names, and the rest of the link keeps
+  the document's URL and title, as on `main`. It names the two limits of that rule: no `find`
   spells strikethrough's markup, so the text outside a struck span is replaced in an operation of
   its own; and a span is kept only by a `with` of one paragraph, since a `with` that parses to
   blocks keeps none of the spans the match lies inside.

@@ -38,11 +38,11 @@ import (
 // markup, so its with is written inside the link. A find that spells the span's markup over part
 // of the text it covers (`a **b** c` over `**a b c**`) spells it over that part alone, so the span
 // keeps its mark, where the with was written without the bold. A find that runs past a span's
-// edge without spelling its markup, or spells a link with another URL or title, is refused
-// (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as written,
-// whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a backtick inside
-// a bold, an italic and a code span, the review's two finds (`2*3*4` in italic, `2**3**4` in
-// bold), and `snake_case_name`, whose underscores no reading takes for markup.
+// edge without spelling its markup, or covers a whole link it spells with another URL or title, is
+// refused (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as
+// written, whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a
+// backtick inside a bold, an italic and a code span, the review's two finds (`2*3*4` in italic,
+// `2**3**4` in bold), and `snake_case_name`, whose underscores no reading takes for markup.
 // Each row writes one replace and reads it back three ways: the markdown the version stored, the
 // document a caller reads, and the text of the paragraph the replace wrote in.
 func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
@@ -362,23 +362,21 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // gave the link a title: each was written, and the URL or the title the document held went with
 // no word. The next two are a find that is that one link alone, spelled with another URL and with
 // another title: it lay inside the link, so it was written there under the URL and title the
-// document held, where the same spelling in a longer find was refused. The last five are that
-// spelling in other shapes: four that were taken - a bare link spelled as a link to another URL,
-// alone and in a longer find, which the bare link's own exemption let in; a find over a link's
-// whole text that spells only part of it as another link, taken alone; and a find inside a link
-// that spells its text as another link, taken there - and the control, the row after the third,
-// a longer find spelling part of a link's text as another link, which was refused already. Each
-// refusal gives the link's markup as the document holds it. A longer find's refusal says it
-// covers text outside the link and that it spells the link with another URL or title, where it
-// said text written over both would not keep the link whole, though the find of a delete
-// spelling the link the same way was refused for spelling it. A find over the link's whole text
-// and nothing more says it spells the link with another URL or title, to write the link as it
-// is, and nothing of text outside it; for a bare link it says with is then written inside the
-// link, where it said with decides that formatting, which a find that is the link's own text
-// spells none of. A find inside the link says to quote the text it names under the link's own URL
-// and title, or with no link markup, where it said to write the whole link as it is, which would
-// replace text the find did not name; TestARefusedFindNamesTheFindsThatKeepItsRange reads each
-// refusal of such a find whole and sends each find it names.
+// document held, where the same spelling in a longer find was refused. The last four are that
+// spelling in other shapes over the link's whole text: three that were taken - a bare link
+// spelled as a link to another URL, alone and in a longer find, which the bare link's own
+// exemption let in, and a find over a link's whole text that spells only part of it as another
+// link, taken alone - and the control, the last row, a longer find spelling part of a link's text
+// as another link, which was refused already. Each refusal gives the link's markup as the document
+// holds it. A longer find's refusal says it covers text outside the link and that it spells the
+// link with another URL or title, where it said text written over both would not keep the link
+// whole, though the find of a delete spelling the link the same way was refused for spelling it. A
+// find over the link's whole text and nothing more says it spells the link with another URL or
+// title, to write the link as it is, and nothing of text outside it; for a bare link it says with
+// is then written inside the link, where it said with decides that formatting, which a find that
+// is the link's own text spells none of. A find over part of a link that spells it with another
+// URL or title removes no link, so it is taken as on `main`
+// (TestARefusedFindNamesTheFindsThatKeepItsRange, whose rows send each find a refusal names).
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 	// acrossAnotherLink is what the refusal of a longer find spelling a link with another URL or
 	// title says: why it crosses the link, not what text written over it would do.
@@ -547,19 +545,6 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			markup:   "[one two](https://a.example/1)",
 			says:     acrossAnotherLink,
 		},
-		{
-			name:     "a find inside a link that spells its text as another link",
-			markdown: "I wrote [one two](https://a.example/1) today.\n",
-			find:     "[one](https://b.example/2)",
-			with:     "that",
-			kind:     "link",
-			span:     "one two",
-			markup:   "[one two](https://a.example/1)",
-			says: `spells the link "one two" with another URL or title than the one it has; to keep the text find names, ` +
-				`quote it under the link's own URL and title ("[one](https://a.example/1)"), which then replaces the markup too, ` +
-				`so with decides that formatting, or with no link markup ("one"), which writes with inside the link`,
-			unsaid: "text outside it",
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
@@ -603,7 +588,8 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 // title; a with that writes the same link, URL and title, joins the rest of the link: the live
 // paragraph holds one text run under that link, not two beside each other. Each of those was
 // refused, though the find spelled the span as the document holds it. The same find with another
-// URL or title is still refused, and its refusal names the find with the link's own URL and title.
+// URL or title over that part of the link removes no link, so it writes what `main` writes: the
+// with outside the link, which keeps the document's URL and title.
 func TestAReplaceFindThatSpellsASpansOwnMarkupOverThePartItCoversIsTaken(t *testing.T) {
 	const (
 		plain  = "I wrote [one two](https://a.example/1) today.\n"
@@ -627,6 +613,14 @@ func TestAReplaceFindThatSpellsASpansOwnMarkupOverThePartItCoversIsTaken(t *test
 		{
 			name: "a titled link, with written as the same link", markdown: titled, find: `wrote [one](https://a.example/1 "Spec")`,
 			with: `[NEW](https://a.example/1 "Spec")`, want: "I [NEW two](https://a.example/1 \"Spec\") today.\n",
+		},
+		{
+			name: "a link spelled with another URL, with plain text", markdown: plain, find: "wrote [one](https://b.example/2)", with: "NEW",
+			want: "I NEW[ two](https://a.example/1) today.\n",
+		},
+		{
+			name: "a titled link spelled with another title, with plain text", markdown: titled, find: `wrote [one](https://a.example/1 "Draft")`, with: "NEW",
+			want: "I NEW[ two](https://a.example/1 \"Spec\") today.\n",
 		},
 		{name: "a bold span's end, cut inside a word", markdown: "**Sami said bold** now.\n", find: "**old** now", with: "NEW", want: "**Sami said b**NEW.\n"},
 		{name: "a bold span's start, cut inside a word", markdown: "Then **Sami said bold**.\n", find: "Then **Sa**", with: "NEW", want: "NEW**mi said bold**.\n"},
@@ -658,60 +652,20 @@ func TestAReplaceFindThatSpellsASpansOwnMarkupOverThePartItCoversIsTaken(t *test
 			}
 		})
 	}
-	for _, test := range []struct {
-		name, markdown, find string
-		// refusal is the refusal after the operation's index.
-		refusal string
-	}{
-		{
-			name: "a link spelled with another URL", markdown: plain, find: "wrote [one](https://b.example/2)",
-			refusal: `find "wrote [one](https://b.example/2)" crosses the edge of the link "one two": it covers text inside the link and text outside it, ` +
-				`and it spells the link with another URL or title than the one it has; to keep the text find names, ` +
-				`write the part of the link it covers under the link's own URL and title ("wrote [one](https://a.example/1)"), ` +
-				`which then replaces the markup too, so with decides that formatting`,
-		},
-		{
-			name: "a titled link spelled with another title", markdown: titled, find: `wrote [one](https://a.example/1 "Draft")`,
-			refusal: `find "wrote [one](https://a.example/1 \"Draft\")" crosses the edge of the link "one two": it covers text inside the link and text outside it, ` +
-				`and it spells the link with another URL or title than the one it has; to keep the text find names, ` +
-				`write the part of the link it covers under the link's own URL and title ("wrote [one](https://a.example/1 \"Spec\")"), ` +
-				`which then replaces the markup too, so with decides that formatting`,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			service, artifactID := newTestService(t)
-			seedServiceText(t, service, artifactID, test.markdown)
-			before, _ := latestVersionOf(t, service.store, artifactID)
-			_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: test.find, With: "NEW"}}, actor, nil)
-			read, readErr := service.Text(context.Background(), artifactID)
-			if readErr != nil {
-				t.Fatalf("read the document: %v", readErr)
-			}
-			var crossed *ErrFindCrossesSpan
-			if want := "operation 0: " + test.refusal; !errors.As(err, &crossed) || err.Error() != want {
-				t.Fatalf("replace %q in %q =\n%v\nwant the refusal\n%s", test.find, test.markdown, err, want)
-			}
-			// A refused edit stores no version: the latest is the one before the seed, or the
-			// seed's own if a settlement has stored it since.
-			if stored, _ := latestVersionOf(t, service.store, artifactID); (stored != before && stored != test.markdown) || read != test.markdown {
-				t.Fatalf("after the refused replace %q:\n stored markdown %q, was %q\n read markdown   %q\nwant both unchanged", test.find, stored, before, read)
-			}
-		})
-	}
 }
 
 // A find names text to change, so a delete's spells a link as a replace's does
-// (TestReplaceAcrossAMarkedSpansEdgeIsRefused): one that spells a link with another URL or
-// another title, as a find copied from an older read after another writer changed the link may,
-// is refused with ErrFindCrossesSpan, and the document is left as it was, where the delete
-// removed that text with no word of the change. The refusal names finds that delete the very text
-// the find named: for the link alone, the link as it is; for a longer find, that find with the
-// link as it is, where it gave the whole link and then the find narrowed to the link's inside,
-// which deletes less than it named; for a find inside the link, that text under the link's own
-// URL and title, or with no link markup; and for a find over part of the link and the text before
-// it, that find with the part under the link's own URL and title, or with no link markup, where it
-// gave the whole link, which deletes text the find did not name. Each spelling of the link as the
-// document holds it is taken, and deletes the text it named; so is each find a refusal names
+// (TestReplaceAcrossAMarkedSpansEdgeIsRefused): one that covers the whole link and spells it with
+// another URL or another title, as a find copied from an older read after another writer changed
+// the link may, is refused with ErrFindCrossesSpan, and the document is left as it was, where the
+// delete removed the link with no word of the change. The refusal names the find that deletes the
+// very text the find named: for the link alone, the link as it is; for a longer find, that find
+// with the link as it is, where it gave the whole link and then the find narrowed to the link's
+// inside, which deletes less than it named. A find over part of the link, inside it or with the
+// text before it, removes no link, whatever URL or title it spells it with: it deletes the text
+// it named and the rest of the link keeps the document's URL and title, the document `main`
+// stores, where it was refused. Each spelling of the link as the document holds it is taken, and
+// deletes the text it named; so is each find a refusal names
 // (TestARefusedFindNamesTheFindsThatKeepItsRange).
 func TestADeleteOfAFindThatSpellsALinkIsRefusedOrDeletesWhatItNamed(t *testing.T) {
 	const markdown = "I wrote [this one](https://a.example/1 \"Spec\") today.\n"
@@ -746,18 +700,12 @@ func TestADeleteOfAFindThatSpellsALinkIsRefusedOrDeletesWhatItNamed(t *testing.T
 				`write the whole link as it is in find ("wrote [this one](https://a.example/1 \"Spec\") today")`,
 		},
 		{
-			name: "a quote inside the link spelling its text as another link", quote: `[this](https://b.example/2 "Spec")`, crossing: pmdoc.SpellsAnotherLinkInside,
-			want: `find "[this](https://b.example/2 \"Spec\")" spells the link "this one" with another URL or title than the one it has; ` +
-				`to keep the text find names, quote it under the link's own URL and title ("[this](https://a.example/1 \"Spec\")"), ` +
-				`or with no link markup ("this")`,
+			name: "a quote inside the link spelling its text as another link", quote: `[this](https://b.example/2 "Spec")`,
+			want: "I wrote [ one](https://a.example/1 \"Spec\") today.\n",
 		},
 		{
 			name: "a quote over part of the link and the text before it, spelling that part as another link", quote: `wrote [this](https://b.example/2 "Spec")`,
-			crossing: pmdoc.SpellsAnotherLinkAcrossEdge,
-			want: `find "wrote [this](https://b.example/2 \"Spec\")" crosses the edge of the link "this one": it covers text inside the link ` +
-				`and text outside it, and it spells the link with another URL or title than the one it has; ` +
-				`to keep the text find names, write the part of the link it covers under the link's own URL and title ` +
-				`("wrote [this](https://a.example/1 \"Spec\")"), or with no link markup ("wrote this")`,
+			want: "I [ one](https://a.example/1 \"Spec\") today.\n",
 		},
 		{name: "the link alone, spelled as it is", quote: `[this one](https://a.example/1 "Spec")`, want: "I wrote  today.\n"},
 		{name: "a longer quote spelling the link as it is", quote: `wrote [this one](https://a.example/1 "Spec") today`, want: "I .\n"},
@@ -876,38 +824,37 @@ func TestAnAnchorFindsItsBlockWhateverItSpellsALinkWith(t *testing.T) {
 	}
 }
 
-// A refused find's refusal names the finds that cover the very text the find named and are taken
-// there, which the caller sends in its place, each with the occurrence at which it matches that
-// text. The table is each shape of a find that spells a link with another URL or title - the whole
-// link; part of it; the whole link with text before or after it; part of it with text before or
-// after it; a bare link, alone and in a longer find - by a delete and a replace (with `NEW`), over
-// a document holding the link, with a title where a spelling names one; then each shape of a
+// A refused find's refusal names the find that covers the very text the find named and is taken
+// there, which the caller sends in its place, with the occurrence at which it matches that text.
+// The table is each shape of a find that spells a link with another URL or title - the whole link;
+// part of it; the whole link with text before or after it; part of it with text before or after
+// it; a bare link, alone and in a longer find - by a delete and a replace (with `NEW`), over a
+// document holding the link, with a title where a spelling names one; then each shape of a
 // replace's find across a span's edge: a link's, a code span's, a struck span's, and a bold or an
 // italic span's end and start, cut inside a word or at a space, the find spelling the span's
-// markup over the part it covers or none. Each row reads the refusal's whole text, then sends the
+// markup over the part it covers or none. A find over a whole link it spells so would remove a
+// link another writer may have changed, so it is refused. A find over part of a link removes no
+// link, so it is taken, as on `main`: its row reads the document it leaves, the one `main` stores,
+// where exactly the text the find named is deleted or replaced and the rest of the link keeps the
+// document's URL and title. Each refused row reads the refusal's whole text, then sends the
 // operation again with each find the refusal gives names (each `("…")` in it), with the occurrence
 // it names after that find, and reads the document that leaves: exactly the text the refused find
-// named is deleted or replaced, and the rest is as it was, the link keeping its URL and title
-// where that text does not cover all of it. A find is named only where one of its matches is that
-// text and it is taken there. Where none is, the refusal says so and names none: to move the space
-// out of a bold or italic span where the part the find leaves would meet the written text at a
-// space, which markdown cannot write the span's delimiters beside; for a struck span, to replace
-// inside it and outside it in two operations; otherwise to read the document again. Before, a find
-// over part of a link and text outside it got the whole link's fix, which deleted `wrote one two`
-// where it named `wrote one`, and the find narrowed to the link's inside, which deleted less; a
-// find over the whole link and text outside it got that narrowed find too; a find inside a link
-// got its text with no link markup first, which the matcher of text as written found inside
-// `Someone`, and, with the occurrence the find had, in another link; one over part of a link
-// holding a bold run got that part without the bold, which a replace refused for crossing the bold
-// span's edge; a replace's find over part of a link and text outside it was refused however it
-// spelled the link; a find matching the text at another occurrence than the refused find did was
-// not named; a replace's find across another span's edge got the find narrowed to the span's
-// inside or widened to the whole span, neither of which names the same text; and one that spelled
-// a bold span's markup over the part it covers, cut at a space, was taken and written with
-// character references (`**Sami said&#32;**&#78;EW`). The rows with a document of their own show
-// those cases: the text stands inside another word before the link, or bare before it, or in a
-// second link, or in a link before it with no bold run; the link holds a bold run; or the find runs
-// into a struck span, which no find written from the document can replace across.
+// named is deleted or replaced, and the rest is as it was. A find is named only where one of its
+// matches is that text and it is taken there. Where none is, the refusal says so and names none:
+// to move the space out of a bold or italic span where the part the find leaves would meet the
+// written text at a space, which markdown cannot write the span's delimiters beside; for a struck
+// span, to replace inside it and outside it in two operations; otherwise to read the document
+// again. Before, a find over part of a link it spelled with another URL or title was refused,
+// though `main` takes it and loses nothing; a find over the whole link and text outside it got the
+// find narrowed to the link's inside, which deleted less than it named; a find matching the text
+// at another occurrence than the refused find did was not named; a replace's find across another
+// span's edge got the find narrowed to the span's inside or widened to the whole span, neither of
+// which names the same text; and one that spelled a bold span's markup over the part it covers,
+// cut at a space, was taken and written with character references (`**Sami said&#32;**&#78;EW`).
+// The rows with a document of their own show those cases: the text stands inside another word
+// before the link, or bare before it, or in a second link, or in a link before it with no bold
+// run; the link holds a bold run; or the find runs into a struck span, which no find written from
+// the document can replace across.
 func TestARefusedFindNamesTheFindsThatKeepItsRange(t *testing.T) {
 	const (
 		plain   = "I wrote [one two](https://a.example/1) today.\n"
@@ -923,10 +870,11 @@ func TestARefusedFindNamesTheFindsThatKeepItsRange(t *testing.T) {
 	for _, test := range []struct {
 		shape, name, markdown, op, find string
 		occurrence                      *int
-		// refusal is the refusal's whole text after the operation's index, and leaves the document
-		// each find it names leaves, in the order it names them.
-		refusal string
-		leaves  []string
+		// takes is the document a find that is taken leaves, the one `main` stores; refusal is the
+		// refusal's whole text after the operation's index, and leaves the document each find it
+		// names leaves, in the order it names them.
+		takes, refusal string
+		leaves         []string
 	}{
 		{
 			shape: "the whole link", name: "spelled with another URL", markdown: plain, op: "delete", find: "[one two](https://b.example/2)",
@@ -949,100 +897,62 @@ func TestARefusedFindNamesTheFindsThatKeepItsRange(t *testing.T) {
 			leaves:  []string{"I wrote NEW today.\n"},
 		},
 		{
-			shape: "part of the link", name: "spelled with another URL", markdown: plain, op: "delete", find: "[one](https://b.example/2)",
-			refusal: `find "[one](https://b.example/2)" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[one](https://a.example/1)"), or with no link markup ("one")`,
-			leaves: []string{"I wrote [ two](https://a.example/1) today.\n", "I wrote [ two](https://a.example/1) today.\n"},
+			// The find's occurrence counts each place `one two` stands under a link, the first
+			// link and then this one; the link as it is, spelling its bold run, matches only this
+			// one, so it is named with occurrence 0.
+			shape: "the whole link", name: "holding a bold run, after a link with none", markdown: "I wrote [one two](https://a.example/1) and [one **two**](https://a.example/1) today.\n",
+			op: "delete", find: "[one two](https://b.example/2)", occurrence: occurrence(1),
+			refusal: `find "[one two](https://b.example/2)" ` + another + `write the link as it is in find ("[one **two**](https://a.example/1)") with occurrence 0`,
+			leaves:  []string{"I wrote [one two](https://a.example/1) and  today.\n"},
 		},
 		{
-			shape: "part of the link", name: "spelled with another URL", markdown: plain, op: "replace", find: "[one](https://b.example/2)",
-			refusal: `find "[one](https://b.example/2)" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[one](https://a.example/1)")` + replaces +
-				`, or with no link markup ("one")` + inside,
-			leaves: []string{"I wrote NEW[ two](https://a.example/1) today.\n", "I wrote [NEW two](https://a.example/1) today.\n"},
+			shape: "the whole link", name: "holding a bold run, after a link with none", markdown: "I wrote [one two](https://a.example/1) and [one **two**](https://a.example/1) today.\n",
+			op: "replace", find: "[one two](https://b.example/2)", occurrence: occurrence(1),
+			refusal: `find "[one two](https://b.example/2)" ` + another +
+				`write the link as it is in find ("[one **two**](https://a.example/1)") with occurrence 0` + replaces,
+			leaves: []string{"I wrote [one two](https://a.example/1) and NEW today.\n"},
 		},
+		{shape: "part of the link", name: "spelled with another URL", markdown: plain, op: "delete", find: "[one](https://b.example/2)", takes: "I wrote [ two](https://a.example/1) today.\n"},
+		{shape: "part of the link", name: "spelled with another URL", markdown: plain, op: "replace", find: "[one](https://b.example/2)", takes: "I wrote NEW[ two](https://a.example/1) today.\n"},
 		{
 			shape: "part of the link", name: "spelled with another title", markdown: titled, op: "delete", find: `[two](https://a.example/1 "Draft")`,
-			refusal: `find "[two](https://a.example/1 \"Draft\")" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[two](https://a.example/1 \"Spec\")"), or with no link markup ("two")`,
-			leaves: []string{"I wrote [one ](https://a.example/1 \"Spec\") today.\n", "I wrote [one ](https://a.example/1 \"Spec\") today.\n"},
+			takes: "I wrote [one ](https://a.example/1 \"Spec\") today.\n",
 		},
 		{
 			shape: "part of the link", name: "spelled with another title", markdown: titled, op: "replace", find: `[two](https://a.example/1 "Draft")`,
-			refusal: `find "[two](https://a.example/1 \"Draft\")" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[two](https://a.example/1 \"Spec\")")` + replaces +
-				`, or with no link markup ("two")` + inside,
-			leaves: []string{"I wrote [one ](https://a.example/1 \"Spec\")NEW today.\n", "I wrote [one NEW](https://a.example/1 \"Spec\") today.\n"},
-		},
-		{
-			// The text with no link markup matches `one` inside `Someone` first, so it is named
-			// with occurrence 1, where the link's is its first.
-			shape: "part of the link", name: "whose text stands inside a word before the link", markdown: "Someone wrote [one two](https://a.example/1) today.\n",
-			op: "delete", find: "[one](https://b.example/2)", occurrence: occurrence(0),
-			refusal: `find "[one](https://b.example/2)" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[one](https://a.example/1)") with occurrence 0, ` +
-				`or with no link markup ("one") with occurrence 1`,
-			leaves: []string{"Someone wrote [ two](https://a.example/1) today.\n", "Someone wrote [ two](https://a.example/1) today.\n"},
+			takes: "I wrote [one ](https://a.example/1 \"Spec\")NEW today.\n",
 		},
 		{
 			shape: "part of the link", name: "whose text stands inside a word before the link", markdown: "Someone wrote [one two](https://a.example/1) today.\n",
-			op: "replace", find: "[one](https://b.example/2)", occurrence: occurrence(0),
-			refusal: `find "[one](https://b.example/2)" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[one](https://a.example/1)") with occurrence 0` + replaces +
-				`, or with no link markup ("one") with occurrence 1` + inside,
-			leaves: []string{"Someone wrote NEW[ two](https://a.example/1) today.\n", "Someone wrote [NEW two](https://a.example/1) today.\n"},
+			op: "delete", find: "[one](https://b.example/2)", occurrence: occurrence(0), takes: "Someone wrote [ two](https://a.example/1) today.\n",
+		},
+		{
+			shape: "part of the link", name: "whose text stands inside a word before the link", markdown: "Someone wrote [one two](https://a.example/1) today.\n",
+			op: "replace", find: "[one](https://b.example/2)", occurrence: occurrence(0), takes: "Someone wrote NEW[ two](https://a.example/1) today.\n",
 		},
 		{
 			shape: "part of the link", name: "in the second link holding its text", markdown: "I wrote [one](https://a.example/1) and [one two](https://a.example/1) today.\n",
 			op: "delete", find: "[one](https://b.example/2)", occurrence: occurrence(1),
-			refusal: `find "[one](https://b.example/2)" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[one](https://a.example/1)") with occurrence 1, ` +
-				`or with no link markup ("one") with occurrence 1`,
-			leaves: []string{
-				"I wrote [one](https://a.example/1) and [ two](https://a.example/1) today.\n",
-				"I wrote [one](https://a.example/1) and [ two](https://a.example/1) today.\n",
-			},
+			takes: "I wrote [one](https://a.example/1) and [ two](https://a.example/1) today.\n",
 		},
 		{
 			shape: "part of the link", name: "in the second link holding its text", markdown: "I wrote [one](https://a.example/1) and [one two](https://a.example/1) today.\n",
 			op: "replace", find: "[one](https://b.example/2)", occurrence: occurrence(1),
-			refusal: `find "[one](https://b.example/2)" ` + another +
-				`to keep the text find names, quote it under the link's own URL and title ("[one](https://a.example/1)") with occurrence 1` + replaces +
-				`, or with no link markup ("one") with occurrence 1` + inside,
-			leaves: []string{
-				"I wrote [one](https://a.example/1) and NEW[ two](https://a.example/1) today.\n",
-				"I wrote [one](https://a.example/1) and [NEW two](https://a.example/1) today.\n",
-			},
+			takes: "I wrote [one](https://a.example/1) and NEW[ two](https://a.example/1) today.\n",
 		},
 		{
 			shape: "part of the link", name: "holding a bold run", markdown: "I wrote [one **two** three](https://a.example/1) today.\n",
-			op: "delete", find: "[one **two**](https://b.example/2)",
-			refusal: `find "[one **two**](https://b.example/2)" spells the link "one two three" with another URL or title than the one it has; ` +
-				`to keep the text find names, quote it under the link's own URL and title ("[one **two**](https://a.example/1)"), or with no link markup ("one **two**")`,
-			leaves: []string{"I wrote [ three](https://a.example/1) today.\n", "I wrote [ three](https://a.example/1) today.\n"},
+			op: "delete", find: "[one **two**](https://b.example/2)", takes: "I wrote [ three](https://a.example/1) today.\n",
 		},
 		{
 			shape: "part of the link", name: "holding a bold run", markdown: "I wrote [one **two** three](https://a.example/1) today.\n",
-			op: "replace", find: "[one **two**](https://b.example/2)",
-			refusal: `find "[one **two**](https://b.example/2)" spells the link "one two three" with another URL or title than the one it has; ` +
-				`to keep the text find names, quote it under the link's own URL and title ("[one **two**](https://a.example/1)")` + replaces +
-				`, or with no link markup ("one **two**")` + inside,
-			leaves: []string{"I wrote NEW[ three](https://a.example/1) today.\n", "I wrote [NEW three](https://a.example/1) today.\n"},
+			op: "replace", find: "[one **two**](https://b.example/2)", takes: "I wrote NEW[ three](https://a.example/1) today.\n",
 		},
 		{
-			// The find's occurrence counts each place `one two` stands under a link, the first
-			// link's whole text and then this one; a find spelling the bold run counts only this
-			// one, so each is named with occurrence 0, where it matches this text.
 			shape: "part of the link", name: "whose text stands before it under a link with no bold run",
 			markdown: "I wrote [one two](https://a.example/1) and [one **two** three](https://a.example/1) today.\n",
 			op:       "delete", find: "[one two](https://b.example/2)", occurrence: occurrence(1),
-			refusal: `find "[one two](https://b.example/2)" spells the link "one two three" with another URL or title than the one it has; ` +
-				`to keep the text find names, quote it under the link's own URL and title ("[one **two**](https://a.example/1)") with occurrence 0, ` +
-				`or with no link markup ("one **two**") with occurrence 0`,
-			leaves: []string{
-				"I wrote [one two](https://a.example/1) and [ three](https://a.example/1) today.\n",
-				"I wrote [one two](https://a.example/1) and [ three](https://a.example/1) today.\n",
-			},
+			takes: "I wrote [one two](https://a.example/1) and [ three](https://a.example/1) today.\n",
 		},
 		{
 			shape: "the whole link and text", name: "before and after it", markdown: titled, op: "delete", find: `wrote [one two](https://b.example/2 "Spec") today`,
@@ -1067,50 +977,26 @@ func TestARefusedFindNamesTheFindsThatKeepItsRange(t *testing.T) {
 			leaves:  []string{"I wrote NEW.\n"},
 		},
 		{
-			shape: "part of the link and text", name: "before it", markdown: plain, op: "delete", find: "wrote [one](https://b.example/2)",
-			refusal: `find "wrote [one](https://b.example/2)" ` + crosses +
-				`to keep the text find names, write the part of the link it covers under the link's own URL and title ("wrote [one](https://a.example/1)"), ` +
-				`or with no link markup ("wrote one")`,
-			leaves: []string{"I [ two](https://a.example/1) today.\n", "I [ two](https://a.example/1) today.\n"},
+			// The find runs from the link into a struck span, whose markup no find spells, so a
+			// replace's find over that text crosses the struck span's edge however it is written.
+			shape: "the whole link and text", name: "after it, which a struck span holds", markdown: "I wrote [one two](https://a.example/1) ~~three four~~ today.\n",
+			op: "replace", find: "[one two](https://b.example/2) three",
+			refusal: `find "[one two](https://b.example/2) three" ` + crosses +
+				`no find written from the document's text covers the text find names and is taken there: read the document again and quote what it holds`,
 		},
-		{
-			// A replace's find with no link markup that covers part of the link and text outside
-			// it crosses the link's edge, so the refusal does not name it.
-			shape: "part of the link and text", name: "before it", markdown: plain, op: "replace", find: "wrote [one](https://b.example/2)",
-			refusal: `find "wrote [one](https://b.example/2)" ` + crosses +
-				`to keep the text find names, write the part of the link it covers under the link's own URL and title ("wrote [one](https://a.example/1)")` + replaces,
-			leaves: []string{"I NEW[ two](https://a.example/1) today.\n"},
-		},
+		{shape: "part of the link and text", name: "before it", markdown: plain, op: "delete", find: "wrote [one](https://b.example/2)", takes: "I [ two](https://a.example/1) today.\n"},
+		{shape: "part of the link and text", name: "before it", markdown: plain, op: "replace", find: "wrote [one](https://b.example/2)", takes: "I NEW[ two](https://a.example/1) today.\n"},
 		{
 			shape: "part of the link and text", name: "after it", markdown: titled, op: "delete", find: `[two](https://b.example/2 "Spec") today`,
-			refusal: `find "[two](https://b.example/2 \"Spec\") today" ` + crosses +
-				`to keep the text find names, write the part of the link it covers under the link's own URL and title ("[two](https://a.example/1 \"Spec\") today"), ` +
-				`or with no link markup ("two today")`,
-			leaves: []string{"I wrote [one ](https://a.example/1 \"Spec\").\n", "I wrote [one ](https://a.example/1 \"Spec\").\n"},
+			takes: "I wrote [one ](https://a.example/1 \"Spec\").\n",
 		},
 		{
 			shape: "part of the link and text", name: "after it", markdown: titled, op: "replace", find: `[two](https://b.example/2 "Spec") today`,
-			refusal: `find "[two](https://b.example/2 \"Spec\") today" ` + crosses +
-				`to keep the text find names, write the part of the link it covers under the link's own URL and title ("[two](https://a.example/1 \"Spec\") today")` + replaces,
-			leaves: []string{"I wrote [one ](https://a.example/1 \"Spec\")NEW.\n"},
+			takes: "I wrote [one ](https://a.example/1 \"Spec\")NEW.\n",
 		},
 		{
-			// The text with no link markup matches `wrote one` before the link first, so it is
-			// named with occurrence 1.
 			shape: "part of the link and text", name: "before it, which stands bare before the link too", markdown: "I wrote one, then I wrote [one two](https://a.example/1) today.\n",
-			op: "delete", find: "wrote [one](https://b.example/2)",
-			refusal: `find "wrote [one](https://b.example/2)" ` + crosses +
-				`to keep the text find names, write the part of the link it covers under the link's own URL and title ("wrote [one](https://a.example/1)"), ` +
-				`or with no link markup ("wrote one") with occurrence 1`,
-			leaves: []string{"I wrote one, then I [ two](https://a.example/1) today.\n", "I wrote one, then I [ two](https://a.example/1) today.\n"},
-		},
-		{
-			// The find runs from the link into a struck span, whose markup no find spells, so a
-			// replace's find over that text crosses the struck span's edge however it is written.
-			shape: "part of the link and text", name: "after it, which a struck span holds", markdown: "I wrote [one two](https://a.example/1) ~~three four~~ today.\n",
-			op: "replace", find: "[two](https://b.example/2) three",
-			refusal: `find "[two](https://b.example/2) three" ` + crosses +
-				`no find written from the document's text covers the text find names and is taken there: read the document again and quote what it holds`,
+			op: "delete", find: "wrote [one](https://b.example/2)", takes: "I wrote one, then I [ two](https://a.example/1) today.\n",
 		},
 		{
 			shape: "a bare link", name: "alone", markdown: bare, op: "delete", find: "[https://a.example/1](https://b.example/2)",
@@ -1268,6 +1154,20 @@ func TestARefusedFindNamesTheFindsThatKeepItsRange(t *testing.T) {
 			seedServiceText(t, service, artifactID, test.markdown)
 			before, _ := latestVersionOf(t, service.store, artifactID)
 			_, err := joinedApplyOps(service, artifactID, edit(test.find, test.occurrence), actor, nil)
+			if test.takes != "" {
+				if err != nil {
+					t.Fatalf("%s %q in %q: %v, want it taken", test.op, test.find, test.markdown, err)
+				}
+				stored := settledMarkdown(t, service.store, artifactID, test.takes)
+				read, err := service.Text(context.Background(), artifactID)
+				if err != nil {
+					t.Fatalf("read the document: %v", err)
+				}
+				if stored != test.takes || read != test.takes {
+					t.Fatalf("%s %q in %q:\n stored markdown %q\n read markdown   %q\nwant %q", test.op, test.find, test.markdown, stored, read, test.takes)
+				}
+				return
+			}
 			read, readErr := service.Text(context.Background(), artifactID)
 			if readErr != nil {
 				t.Fatalf("read the document: %v", readErr)
