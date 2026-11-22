@@ -48,6 +48,12 @@ type discovery[T any] struct {
 	// now is the clock the spacing between failed attempts and the log's rate are measured by.
 	now    func() time.Time
 	flight singleflight.Group
+	// attemptTimeout, when set, bounds one read of the discovery document in place of
+	// discoveryAttemptTimeout. Only a test sets it, to its own deadline (codeflow_test.go's
+	// newCodeFlowForDomain): the product's bound is for an issuer that accepts a read and never
+	// answers, and on a loaded machine the time a test's read of its own issuer takes is the
+	// machine's.
+	attemptTimeout time.Duration
 
 	mu         sync.Mutex
 	value      T
@@ -68,6 +74,15 @@ func (d *discovery[T]) done() bool {
 	return d.discovered
 }
 
+// attemptBound is how long one read of the discovery document may take: discoveryAttemptTimeout,
+// or the bound a test set in its place (attemptTimeout).
+func (d *discovery[T]) attemptBound() time.Duration {
+	if d.attemptTimeout > 0 {
+		return d.attemptTimeout
+	}
+	return discoveryAttemptTimeout
+}
+
 // discover reads the discovery document unless it has been read, joining an attempt already in
 // flight, or fails at once with the last attempt's error when that attempt failed less than
 // discoveryRetrySpacing ago. The attempt runs on a context of its own, detached from ctx's
@@ -83,7 +98,7 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 		if value, err, settled := d.settled(); settled {
 			return value, err
 		}
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.attemptBound())
 		defer cancel()
 		value, err := d.read(attemptCtx)
 		d.mu.Lock()

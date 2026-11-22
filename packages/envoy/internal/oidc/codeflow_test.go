@@ -19,6 +19,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -37,12 +38,33 @@ func newCodeFlowFor(t *testing.T) (*oidctest.Issuer, *CodeFlow) {
 }
 
 // newCodeFlowForDomain starts a code-flow issuer for flowClientID and a code flow for it for the
-// hosted domain, empty for group mode. The flow discovers the issuer on its first call.
+// hosted domain, empty for group mode. The flow discovers the issuer on its first call, and waits
+// for its issuer until the test ends (untilTheTestEnds).
 func newCodeFlowForDomain(t *testing.T, domain string) (*oidctest.Issuer, *CodeFlow) {
 	t.Helper()
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
-	return issuer, NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
+	untilTheTestEnds(t, flow)
+	return issuer, flow
+}
+
+// issuerWaitMargin is how long before the test binary's deadline a flow untilTheTestEnds bounds
+// gives up on its issuer, as testwait's waits give up: the time the failing test's cleanups and
+// its failure have to run in before Go's alarm panics the binary.
+const issuerWaitMargin = 30 * time.Second
+
+// untilTheTestEnds bounds flow's reads of its issuer's discovery document and its calls to the
+// token and revocation endpoints by what is left of the test binary's deadline less
+// issuerWaitMargin (testwait.Remaining), in place of discoveryAttemptTimeout and TokenTimeout. Those
+// ten seconds are for an issuer that accepts a call and never answers; the test's own issuer
+// answers in the machine's time, which on a loaded machine can be longer, and a test of how a
+// call fails would then read the bound's timeout as the issuer's answer.
+func untilTheTestEnds(t *testing.T, flow *CodeFlow) {
+	t.Helper()
+	bound := testwait.Remaining(t, issuerWaitMargin)
+	flow.discovery.attemptTimeout = bound
+	flow.http.Timeout = bound
 }
 
 // authURL is flow's authorization URL for flowRedirect, failing the test when there is none.
