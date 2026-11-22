@@ -416,3 +416,50 @@ func TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesI
 			cursorOf(t, rig.database, "INFRA"), history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), c.served())
 	}
 }
+
+// TestTheRecordedOldStoreIsFoundAgainWhenTheSettingsURLServesIt: the variant of
+// TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesIt for the store a
+// write recorded as the daemon the setting named before (previous_state_id). R3 reads a project
+// whole when a boot names a run that does not follow, so a daemon whose store was replaced is
+// found again; the architect ruled at 21:11Z that a boot of the recorded old store, while the
+// cursor holds another verified store, calls for a store read, and a good read that finds that
+// store clears the record, as read-rule-cases row 5.2 does.
+//
+// INFRA's setting names A, read well in the rig's store, then B, whose starting read fails, then
+// C, read well in a store of its own, so A's store is the recorded old store. Then a redeploy
+// starts A where C ran, with no write of the setting: C's URL serves A's store at 40. A boots
+// under a new run at 41 and publishes 42. Within about a minute, INFRA follows A's store, the
+// record is cleared, and 42's testing is applied.
+//
+// At b58c9b76 every message of the recorded old store is finished unapplied (cursor.forgets), the
+// boot included, and none calls for a read while the cursor holds C's store.
+func TestTheRecordedOldStoreIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T) {
+	const bootRun = "8b3d1f6e-2a4c-4d79-b0e5-3c7a9f1d6e28"
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	b := newFakeDaemon(t, "")
+	b.refuses(http.StatusServiceUnavailable)
+	rig.pointAt(b, 2)
+	c := newFakeDaemon(t, daemonStateIn("INFRA", 5, inPhase("implementing"), cStore, cRun))
+	rig.pointAt(c, 3)
+	if cur := cursorOf(t, rig.database, "INFRA"); cur.stateID == nil || *cur.stateID != cStore || cur.previousStateID == nil || *cur.previousStateID != rigStateID {
+		t.Fatalf("control: INFRA's cursor after C's starting read is %s, want C's store %s and A's store %s recorded", cur, cStore, rigStateID)
+	}
+
+	// A takes C's place behind C's URL, with no write of the setting, and boots there.
+	c.serves(daemonStateIn("INFRA", 40, inPhase("reviewing"), rigStateID, bootRun))
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	rig.publishIn("INFRA", bootRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
+	rig.publishIn("INFRA", bootRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, change(42, "INFRA-1", moved("phase", "testing")))
+	if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.stateID != nil && *c.stateID == rigStateID && c.previousStateID == nil &&
+			slices.Contains(history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), `"testing"`)
+	}) {
+		t.Errorf("75 s after the daemon behind the setting's URL came to serve A's store, the recorded old store, and booted there, INFRA's cursor is %s and INFRA-1's phase history is %v; C's URL served %d reads: the boot and the event of the recorded old store were dropped, and nothing read the setting's daemon to find its store again",
+			cursorOf(t, rig.database, "INFRA"), history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), c.served())
+	}
+}
