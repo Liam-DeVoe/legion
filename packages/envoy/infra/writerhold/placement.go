@@ -55,7 +55,9 @@ func PlacementBound(bound time.Duration) time.Duration {
 
 // RetryPlacementUntil is RetryPlacement with its limit as a deadline, which several of a caller's
 // creates share, each sent with what is left of it: its first attempt always runs, and past deadline
-// a refusal is UNKNOWN as RetryPlacement's is.
+// a refusal is UNKNOWN as RetryPlacement's is. The limit caps when the last attempt starts, not the
+// attempt: each runs on the caller's ctx, so one started just before the limit runs to its own end.
+// The caller's ctx ending is UNKNOWN naming that, never the limit.
 func RetryPlacementUntil(ctx context.Context, deadline time.Time, op string, out io.Writer, fn func() error) error {
 	within, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
