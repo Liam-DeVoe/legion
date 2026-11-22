@@ -445,7 +445,7 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
+earlier version does not count: the spec changed since. The gate holds the tree's start and its merge: no merger starts while it is closed.
 Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
 its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
 `approved` or `changes_requested`): the tree waits until every entry reads `approved`, and

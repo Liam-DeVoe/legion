@@ -122,8 +122,8 @@ admission to close. The architect:
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
 6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
 
-The architect writes no code. A child issue runs the same phases as its root, with a pull request
-of its own, inside the same tree.
+The architect writes no code. A child issue runs the steps its own plan names, as its root does,
+with a pull request of its own, inside the same tree.
 
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
 Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
@@ -204,9 +204,10 @@ yet, and the child's first step takes the newest plan its owner gave. Legion run
 in the order the plan names them, then the retro and the merge, so an issue with that plan runs no
 planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
 reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
-project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
-unless the project sets others; so does an issue whose work started before its owner gave it a
-plan, until the owner stops that task with `stop_task` and gives a plan whose one task replaces it.
+project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are
+`planner implementer tester reviewer acceptance:owner` unless the project sets others; so does an
+issue whose work started before its owner gave it a plan, until the owner stops that task with
+`stop_task` and gives a plan whose one task replaces it.
 Set `default_steps` only once every daemon that reads the file runs a release that knows it: an
 earlier daemon refuses the whole file (`Unknown key "projects.<KEY>.default_steps"`).
 An issue that leaves its tree, as an orphan admitted again as a root of its own does, takes no plan
@@ -384,8 +385,9 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
+again, naming what changed since your approval. Work already in flight carries on, but the gate
+holds a tree's start and its merge: while it is closed the daemon starts no merger, and a merger
+already running is told to merge nothing until it opens again. The daemon only reads approvals;
 nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
 answer is yours, in your name.
 
