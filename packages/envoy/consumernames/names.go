@@ -757,8 +757,12 @@ func (n *Names) deleteOnce(ctx context.Context, logical string, listed *jetstrea
 
 // RecordLastFloor writes floor, read from consumer name on the stream streamID, as logical's last
 // floor, when name is still the current and no operation is open. A floor of another name changes
-// nothing.
+// nothing. A key the family's rule refuses (checkKey) is refused before anything is read, as at
+// every other entry point.
 func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor uint64, streamID string) error {
+	if err := n.checkKey(logical); err != nil {
+		return err
+	}
 	for conflicts := 0; ; {
 		sel, err := n.read(ctx, logical)
 		if err != nil {

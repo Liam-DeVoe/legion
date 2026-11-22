@@ -179,8 +179,12 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 }
 
 // Read implements Store. A value under logical that is not logical's record (DecodeKVValue) is
-// ErrMalformedRecord, naming the key and the value's sequence.
+// ErrMalformedRecord, naming the key and the value's sequence. The sentinel's key is no record's
+// (ErrInvalidKey, recordKey).
 func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, error) {
+	if err := recordKey(logical); err != nil {
+		return Record{}, 0, err
+	}
 	data, revision, err := s.last(ctx, logical)
 	if err != nil {
 		return Record{}, 0, err
@@ -192,14 +196,28 @@ func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, err
 	return record, revision, nil
 }
 
-// Write implements Store. It writes the record under its own key (Record.Key).
+// Write implements Store. It writes the record under its own key (Record.Key), never under the
+// sentinel's (recordKey): only WriteSentinel writes there.
 func (s *KVStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
+	if err := recordKey(logical); err != nil {
+		return 0, err
+	}
 	record.Key = logical
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
 	}
 	return s.put(ctx, logical, data, revision)
+}
+
+// recordKey refuses, as ErrInvalidKey, the sentinel's key (SentinelKey) as the key of a record: a
+// record read there is the sentinel decoded as no record, and one written there replaces the
+// sentinel, after which every State is ErrMalformedSentinel.
+func recordKey(logical string) error {
+	if logical == SentinelKey {
+		return fmt.Errorf("%w: %q is the sentinel's key, no record's", ErrInvalidKey, logical)
+	}
+	return nil
 }
 
 // WriteSentinel writes the sentinel, under its own key (StoreState.Key) and naming the session
