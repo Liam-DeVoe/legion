@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
-import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { type IssueListing, listingName } from "./issues-table-data";
@@ -28,12 +28,11 @@ interface Confirmation {
   run: () => void;
 }
 
-/** What a bulk action is pressed over, read at the press: the issues the table lists, their
- *  rows, and the way to clear the table's selection once the action has moved what it named. A
- *  table drawn again since the press (another view of the Issues tab) has a selection of its
- *  own, which the action leaves as it is. */
+/** What a bulk action is pressed over, read at the press: the rows the table lists, and the way
+ *  to clear the table's selection once the action has moved what it named. A table drawn again
+ *  since the press (another view of the Issues tab) has a selection of its own, which the action
+ *  leaves as it is. */
 export interface ActionRows {
-  readonly issues: readonly IssueSummary[];
   readonly items: readonly Item[];
   readonly clearSelection: () => void;
 }
@@ -162,10 +161,10 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
       setBusy(false);
     }
   };
-  const named = (keys: readonly string[], issues: readonly IssueSummary[]) => {
+  const named = (keys: readonly string[], items: readonly Item[]) => {
     if (keys.length !== 1) return `${keys.length} issues`;
     const key = keys[0] ?? "";
-    return `${key} “${issues.find((issue) => issue.key === key)?.title ?? key}”`;
+    return `${key} “${items.find((item) => item.issue.key === key)?.issue.title ?? key}”`;
   };
   /** Whether a bulk action may begin. Where it may not, the notice says why: another tab's move
    *  or this tab's own interrupted action is still in the store (`useTableRecovery`). */
@@ -213,16 +212,16 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
   /** Sends a start-next action for queued issues already checked by `startNext`. The controls are
    *  held (`perform`) from the press, before the begin waits for the record's lock, so the focus
    *  moves as the press's doing when the action changes the rows. */
-  const runQueued = (queued: readonly string[], { issues, items, clearSelection }: ActionRows) => {
+  const runQueued = (queued: readonly string[], { items, clearSelection }: ActionRows) => {
     if (!startNextWrites(items, queued).length) {
       setNotice({
         kind: "success",
-        text: `${named(queued, issues)} already ${queued.length === 1 ? "starts" : "start"} next.`,
+        text: `${named(queued, items)} already ${queued.length === 1 ? "starts" : "start"} next.`,
       });
       return;
     }
     void perform(
-      `${named(queued, issues)} now ${queued.length === 1 ? "starts" : "start"} next.`,
+      `${named(queued, items)} now ${queued.length === 1 ? "starts" : "start"} next.`,
       async () => {
         // Refused here too: another tab can begin a move while the confirm is open.
         const begun = await recovery.begin({ kind: "startNext", keys: queued }, async (record) => {

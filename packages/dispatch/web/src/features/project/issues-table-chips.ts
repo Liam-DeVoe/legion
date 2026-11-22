@@ -4,7 +4,7 @@ import {
   columnFilterPicks,
   type FilterChip,
 } from "../../components/filter-chips";
-import type { IssueFiltersState } from "./issue-filters";
+import { type IssueFiltersState, readIssueFlags } from "./issue-filters";
 import { sameSet } from "./issues-filter-picks";
 import { defaultView, type Item, readUrl, UNCLAIMED_FACET, type View } from "./issues-table-model";
 import { expandView } from "./issues-views";
@@ -32,12 +32,7 @@ export const LISTING_OWN: OwnNarrowings = {
 export function ownNarrowings(own: URLSearchParams): OwnNarrowings {
   const expanded = expandView(own);
   const view = readUrl(expanded);
-  return {
-    filters: view.filters,
-    search: view.search,
-    needsYou: expanded.get("needs-you") === "1",
-    unread: expanded.get("unread") === "1",
-  };
+  return { filters: view.filters, search: view.search, ...readIssueFlags(expanded) };
 }
 
 /**

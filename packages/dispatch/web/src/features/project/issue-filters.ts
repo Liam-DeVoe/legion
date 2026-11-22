@@ -44,6 +44,17 @@ const ISSUE_FILTER_PARAMS = {
   unread: flagParam(),
 };
 
+/** The Needs you and Unread flags `params` sets, read as the page reads its own (`?needs-you=1`,
+ *  `?unread=1`): for an address that is not the page's, as a view's own address. */
+export function readIssueFlags(
+  params: URLSearchParams
+): Pick<IssueFiltersState, "needsYou" | "unread"> {
+  return {
+    needsYou: ISSUE_FILTER_PARAMS["needs-you"].read(params, "needs-you"),
+    unread: ISSUE_FILTER_PARAMS.unread.read(params, "unread"),
+  };
+}
+
 /**
  * The project page's issue filters, read from and written to the URL - `?label=` (repeatable),
  * `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the control row and the issues table share one

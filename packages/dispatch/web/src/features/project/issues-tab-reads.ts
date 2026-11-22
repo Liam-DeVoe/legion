@@ -121,8 +121,6 @@ export function useTabReads({
     ...rows,
     statusPicks,
     readsOpen,
-    /** The view lists done issues. */
-    listsDone: listings.done,
     done,
     boardWaits,
     loading,

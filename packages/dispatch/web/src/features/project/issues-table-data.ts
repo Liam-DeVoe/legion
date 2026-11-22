@@ -114,6 +114,29 @@ const NO_FACTS: Readonly<Record<string, LegionFacts>> = {};
  *  it (dispatch://INFRA-2916's R21). */
 export const CLOSE_ITEMS_AGAIN_MS = 60_000;
 
+/** The rows of `all` as a table draws them (`buildItems`), with the names the agents go by. A row
+ *  is free where nobody holds its claim or the server would hand the claim over
+ *  (`claimIsTakeable`, against `registry`). `legion` is a project's Legion reads, where it has a
+ *  daemon. */
+function useBuiltItems(
+  all: readonly IssueSummary[],
+  registry: AgentRegistry,
+  viewer: string | undefined,
+  legion?: LegionReads
+) {
+  const text = useAgentText();
+  return useMemo(
+    () =>
+      buildItems(
+        all,
+        text.label,
+        (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry),
+        { legion, viewer }
+      ),
+    [all, text, registry, legion, viewer]
+  );
+}
+
 /**
  * A project's issues as a view of its Issues tab shows them: the open listing once, unless the
  * view lists only done issues, and the done issues the view lists (`DoneRead`), never the full
@@ -133,7 +156,6 @@ export function useProjectTableItems(
     viewer,
   }: { reads: ProjectReads; registry: AgentRegistry; viewer?: string | undefined }
 ) {
-  const text = useAgentText();
   const done = reads.done;
   // A view that reads its done rows a page at a time.
   const paged = done?.kind === "page";
@@ -226,16 +248,7 @@ export function useProjectTableItems(
   // Each build is of its own moment (`Item.at`): the board's facts that grow are closed at it,
   // and the rows' times count to it. A board frame builds the rows again, and the board's header
   // moves with each read of the daemon, once a minute (`legionBoardView` in `api/live_frames.go`).
-  const allItems = useMemo(
-    () =>
-      buildItems(
-        all,
-        text.label,
-        (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry),
-        { legion: legionReads, viewer }
-      ),
-    [all, text, registry, legionReads, viewer]
-  );
+  const allItems = useBuiltItems(all, registry, viewer, legionReads);
   const listingError =
     done !== undefined && doneRead.isError
       ? doneRead
@@ -243,7 +256,6 @@ export function useProjectTableItems(
         ? openIssues
         : undefined;
   return {
-    all,
     allItems,
     board,
     doneLoaded,
@@ -272,25 +284,15 @@ export function useAdvancesTableItems(
     viewer,
   }: { closed: boolean; registry: AgentRegistry; viewer?: string | undefined }
 ) {
-  const text = useAgentText();
   const whole = useQuery({ ...advancesIssuesQuery(listing), enabled: closed });
   const wholeIn = closed && whole.data !== undefined;
   const open = useQuery({ ...advancesIssuesQuery(listing, true), enabled: !wholeIn });
   // The whole listing once it has answered; else the open read.
   const issues = wholeIn ? whole : open;
   const all = issues.data ?? NO_ISSUES;
-  const allItems = useMemo(
-    () =>
-      buildItems(
-        all,
-        text.label,
-        (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry),
-        { viewer }
-      ),
-    [all, text, registry, viewer]
-  );
+  const allItems = useBuiltItems(all, registry, viewer);
   const listingError = closed && whole.isError ? whole : open.isError ? open : undefined;
-  return { all, allItems, issues, whole, wholeIn, listingError };
+  return { allItems, issues, whole, wholeIn, listingError };
 }
 
 /**

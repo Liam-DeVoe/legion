@@ -12,10 +12,8 @@ import type {
   LegionBoardFacts,
   LegionBoardResponse,
 } from "../../api/types";
+import { HOUR_MS } from "../../lib/closed-window";
 import { DAY_MS, MAX_WINDOW_DAYS } from "../delivery/lib/window";
-
-/** An hour in milliseconds. */
-export const HOUR_MS = 3_600_000;
 
 /** The moment an RFC 3339 time names, in milliseconds since the epoch, or undefined for no time
  *  or one that does not parse: where a card's time runs from, or when a row closed. */

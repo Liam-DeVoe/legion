@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, GroupingState, Row, RowSelectionState, Table } from "@tanstack/react-table";
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { IssueSummary, UserState } from "../../api/types";
+import { userStateQuery, whoAmIQuery } from "../../api/queries";
+import type { UserState } from "../../api/types";
 import { type DataTableModel, type DataTableNames, useDataTable } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
 import type { LayoutColumns, TableLayoutModel } from "../../components/table-layout";
@@ -9,11 +11,12 @@ import {
   copyAddress,
   type TableAddress,
   useAddressNavigate,
+  useNavigationState,
   usePageAddress,
 } from "../../lib/page-address";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
-import type { IssueFiltersState } from "./issue-filters";
+import { type IssueFiltersState, useIssueFilters } from "./issue-filters";
 import type { IssueTableActions } from "./issues-table-actions";
 import { type IssueTableMode, useIssueTableColumns } from "./issues-table-columns";
 import {
@@ -119,13 +122,21 @@ export function useFilterPanel(filters: View["filters"]): FilterPanel {
   return { openFilter, setOpenFilter, registry, unclaimedUnchecked };
 }
 
+/** What every issue table reads as it opens, beside its rows: the project page's flags
+ *  (`useIssueFilters`), the reader's read state, the signed-in login, and the open column filter
+ *  of a view that holds `filters` (`useFilterPanel`). */
+export function useIssueTableReads(filters: View["filters"]) {
+  const flags = useIssueFilters();
+  const userState = useQuery(userStateQuery());
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const panel = useFilterPanel(filters);
+  return { flags, userState, viewer, panel };
+}
+
 /** What every issue table holds over the rows its listing answered, as `useIssueTable` gives it. */
 export interface IssueTableState {
   readonly model: DataTableModel<Item>;
   readonly table: Table<Item>;
-  /** The rows the view lists by its narrowings (`passesNarrowings`), before the table's own
-   *  filters and search. */
-  readonly items: readonly Item[];
   /** The rows the table lists under the filters and the search it is showing, in row order. */
   readonly listedRows: readonly Row<Item>[];
   /** The issue the reader marked last, by its own checkbox or `x` on its row. */
@@ -144,7 +155,7 @@ export interface IssueTableState {
 /**
  * What every issue table holds over the rows its listing answered, whatever page draws it: its
  * selection, the rows its narrowings list, its columns and its `DataTable` model, and the
- * selection kept to the rows it lists. `all` and `allItems` are every row the listing answered;
+ * selection kept to the rows it lists. `allItems` is every row the listing answered;
  * `listingIn` says every listing the view reads has answered, `loaded` that the rows are drawn,
  * and `counted` that the rows the table waits on are in, which the `only=` chip counts by.
  * `onBoard` says the Issues tab draws the Board in the table's place, which takes the selection
@@ -153,7 +164,6 @@ export interface IssueTableState {
 export function useIssueTable({
   actions,
   address,
-  all,
   allItems,
   columnsLayout,
   counted,
@@ -166,14 +176,12 @@ export function useIssueTable({
   moveFrom,
   onBoard,
   panel,
-  priorityTitles,
   serverRowCount,
   userState,
   viewKey,
 }: {
   actions: IssueTableActions;
   address: TableAddress<View>;
-  all: readonly IssueSummary[];
   allItems: readonly Item[];
   /** The columns the table has, their widths and their minimums. */
   columnsLayout: LayoutColumns;
@@ -189,7 +197,6 @@ export function useIssueTable({
   moveFrom: "page" | "row";
   onBoard: boolean;
   panel: FilterPanel;
-  priorityTitles: ReadonlyMap<string, string> | undefined;
   /** The count of every row of a server's page of rows, which the table pages by. */
   serverRowCount: number | undefined;
   userState: UserState | undefined;
@@ -201,6 +208,8 @@ export function useIssueTable({
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const pageAddress = usePageAddress();
   const navigate = useAddressNavigate();
+  // What the navigation to this entry carried, which the `only=` chip's remove carries on.
+  const entryState = useNavigationState();
   const [selection, setSelection] = useState<RowSelectionState>({});
   const clearSelection = () => setSelection({});
   // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
@@ -236,11 +245,12 @@ export function useIssueTable({
   // `only=` and leaves every other control where the reader set it. It is a chip of the control
   // row, beside the flags' and the columns', drawn by the same `filterChips` and named as they
   // are, `Remove Showing: <title> filter`, and its removal leaves a history entry, so Back gives
-  // the narrowing back (`useAddressNavigate`'s `replace: false`). The toolbar is drawn in every
-  // state, so the chip counts what it shows only once the rows the table waits on are in
-  // (`counted`): not beside the loading skeleton, not after a failed read, and not while the
-  // closed issues it asked for are still out, where it would count rows the table has not read.
-  // Until then it names its narrowing alone.
+  // the narrowing back (`useAddressNavigate`'s `replace: false`). That entry carries what the
+  // entry before it carried, as every write of the address does, so a saved view open on the
+  // Issues tab stays open. The toolbar is drawn in every state, so the chip counts what it shows
+  // only once the rows the table waits on are in (`counted`): not beside the loading skeleton,
+  // not after a failed read, and not while the closed issues it asked for are still out, where
+  // it would count rows the table has not read. Until then it names its narrowing alone.
   const pickedChip: FilterChip | undefined =
     picked === null
       ? undefined
@@ -257,7 +267,7 @@ export function useIssueTable({
                 clearPicked(copyAddress(pageAddress.search)),
                 pageAddress.hash
               ),
-              { replace: false }
+              { replace: false, state: entryState }
             ),
         };
 
@@ -267,8 +277,7 @@ export function useIssueTable({
     recordMark,
     columnsLayout,
     sorting,
-    mode,
-    priorityTitles
+    mode
   );
   const model = useDataTable<Item>({
     rows: items,
@@ -351,14 +360,13 @@ export function useIssueTable({
   return {
     model,
     table,
-    items,
     listedRows,
     lastMarked,
     pickedChip,
     panel,
     openFacets,
     startNext: (keys, confirmFirst) =>
-      actions.startNext(keys, { issues: all, items: allItems, clearSelection }, confirmFirst),
+      actions.startNext(keys, { items: allItems, clearSelection }, confirmFirst),
     finish: () => actions.finish(clearSelection),
   };
 }

@@ -9,7 +9,7 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 import {
   inboxQuery,
-  listedIssues,
+  issueListRows,
   projectDefaultAssigneesQuery,
   readIssueList,
 } from "../../api/queries";
@@ -151,7 +151,7 @@ function lookOf(
 function listedIssue(client: QueryClient, issueKey: string): IssueSummary | undefined {
   for (const query of client.getQueryCache().getAll()) {
     if (cacheOf(query.queryKey) !== "list") continue;
-    const row = listedIssues(query.state.data)?.find((each) => each.key === issueKey);
+    const row = issueListRows(query.state.data)?.find((each) => each.key === issueKey);
     if (row !== undefined) return row;
   }
   return undefined;
@@ -188,7 +188,7 @@ export function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Lo
     return looks;
   }
   if (cache === "list") {
-    for (const row of listedIssues(data) ?? []) {
+    for (const row of issueListRows(data) ?? []) {
       if (!looks.has(row.key)) looks.set(row.key, { fields: pickedFields(row) });
     }
     return looks;

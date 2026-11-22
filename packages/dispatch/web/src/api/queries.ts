@@ -557,7 +557,7 @@ export function readIssueList(data: unknown): IssueListData | undefined {
 
 /** The rows `data` holds where it is a listing or a page of one (`readIssueList`), else
  *  undefined: Open's count holds no row. */
-export function listedIssues(data: unknown): readonly IssueSummary[] | undefined {
+export function issueListRows(data: unknown): readonly IssueSummary[] | undefined {
   const read = readIssueList(data);
   return read === undefined || read.kind === "count" ? undefined : read.issues;
 }

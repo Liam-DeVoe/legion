@@ -10,7 +10,7 @@ import type {
 } from "../../api/types";
 import { fold } from "../../components/MultiSelect";
 import type { LayoutColumns } from "../../components/table-layout";
-import { inWindow, readWindow } from "../../lib/closed-window";
+import { HOUR_MS, inWindow, readWindow } from "../../lib/closed-window";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
@@ -41,13 +41,7 @@ import {
   waitingReasonPick,
   workerPicks,
 } from "./issues-filter-picks";
-import {
-  HOUR_MS,
-  LEGION_PHASES,
-  type LegionFacts,
-  legionFactsOf,
-  legionPhaseTitle,
-} from "./issues-legion";
+import { LEGION_PHASES, type LegionFacts, legionFactsOf, legionPhaseTitle } from "./issues-legion";
 
 /** An issue's card on the Legion board: the card, and the board column it is in, by its id and
  *  the board's own label for it. That column is the issue's Legion phase. */

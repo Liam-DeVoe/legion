@@ -1,17 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { userStateQuery, whoAmIQuery } from "../../api/queries";
 import type { FilterChip } from "../../components/filter-chips";
 import { useTableLayout } from "../../components/table-layout";
-import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { LISTING_OWN } from "./issues-table-chips";
-import {
-  type IssueTableMode,
-  issueTableLayout,
-  listingColumns,
-  type ShownColumnId,
-} from "./issues-table-columns";
+import { issueTableLayout, listingColumns, type ShownColumnId } from "./issues-table-columns";
 import {
   type AdvancesListing,
   answeredWhole,
@@ -21,16 +13,13 @@ import {
 import { IssueTableFrame, ListingNotices, ReadStates } from "./issues-table-frame";
 import { tableStorageKey } from "./issues-table-model";
 import { IssueTableStatus } from "./issues-table-page";
-import { picksOf, useFilterPanel, useIssueTable } from "./issues-table-state";
+import { picksOf, useIssueTable, useIssueTableReads } from "./issues-table-state";
 import { useTableView } from "./issues-table-view";
 
 /** The one layout key of every table scoped to a priority: the work advancing a priority is
  *  one table, drawn under an opened row of the priorities page and on the priority's own page,
  *  so the columns a reader drags there are dragged once rather than once per priority. */
 const SCOPED_LAYOUT_KEY = "priority-work";
-
-/** A listing table draws today's cells at today's widths (`useIssueTableColumns`). */
-const EMBEDDED: IssueTableMode = { kind: "embedded" };
 
 /** A listing table leaves out no tree: `exclude_tree` is a narrowing of the Issues tab alone. */
 const NO_TREES: readonly string[] = [];
@@ -84,10 +73,7 @@ export function ListingTable({
     columnsLayout,
     view.sorting
   );
-  const flags = useIssueFilters();
-  const userState = useQuery(userStateQuery());
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const panel = useFilterPanel(view.filters);
+  const { flags, panel, userState, viewer } = useIssueTableReads(view.filters);
   // A listing its open read answers whole reads no closed issue, even where the Status filter
   // picks Done; any other reads its whole listing once the Status filter lets Done through.
   const whole = answeredWhole(listing);
@@ -102,7 +88,6 @@ export function ListingTable({
   const state = useIssueTable({
     actions,
     address,
-    all: rows.all,
     allItems: rows.allItems,
     columnsLayout,
     counted: loaded && listingError === undefined && closedIn,
@@ -111,11 +96,11 @@ export function ListingTable({
     layout,
     listingIn: issues.data !== undefined && closedIn,
     loaded,
-    mode: EMBEDDED,
+    // A listing table draws today's cells at today's widths (`useIssueTableColumns`).
+    mode: { kind: "embedded", priorityTitles },
     moveFrom,
     onBoard: false,
     panel,
-    priorityTitles,
     serverRowCount: undefined,
     userState: userState.data,
     viewKey: params.toString(),

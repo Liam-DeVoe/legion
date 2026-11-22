@@ -863,19 +863,24 @@ export function issueTableLayout(
  *  whose board-fed columns are neither in the Columns menu nor in Group by in a project with no
  *  Legion daemon (`hasLegion`). */
 export type IssueTableMode =
-  | { readonly kind: "embedded" }
+  | {
+      readonly kind: "embedded";
+      /** Each priority's title by its id, which the Advances column names a priority by; one
+       *  this map does not hold, a priority deleted since it was read, is named by its id. */
+      readonly priorityTitles?: ReadonlyMap<string, string>;
+    }
   | { readonly kind: "tab"; readonly hasLegion: boolean };
 
 /**
  * The columns of `layout`, in its order: the registry's (`viewLayoutColumns` on the Issues tab,
  * `issueTableLayout` elsewhere), and a scoped table's listing columns after Title. `onMark` is
  * told the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
- * stable one, as it does `layout` and `priorityTitles`. A column starts at the layout's width and
- * goes no narrower than its minimum there (`compact`: a phone's). `mode` says which table they
- * are drawn for. Time per phase's mode is the reader's (`usePhaseHoursMode`), and a switch of it
- * draws the columns anew. A column whose cells can be empty reads the direction it is sorted in
- * from `sorting` (`emptyLast`), through a ref set at each draw, so a change of sort draws no
- * column anew.
+ * stable one, as it does `layout` and the embedded mode's `priorityTitles`. A column starts at
+ * the layout's width and goes no narrower than its minimum there (`compact`: a phone's). `mode`
+ * says which table they are drawn for. Time per phase's mode is the reader's
+ * (`usePhaseHoursMode`), and a switch of it draws the columns anew. A column whose cells can be
+ * empty reads the direction it is sorted in from `sorting` (`emptyLast`), through a ref set at
+ * each draw, so a change of sort draws no column anew.
  */
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -885,15 +890,13 @@ export function useIssueTableColumns(
   layout: LayoutColumns,
   /** The sorting state the table is given, which the table sorts its rows by. */
   sorting: SortingState,
-  mode: IssueTableMode,
-  /** Each priority's title by its id, which the Advances column names a priority by; one this
-   *  map does not hold, a priority deleted since it was read, is named by its id. */
-  priorityTitles?: ReadonlyMap<string, string>
+  mode: IssueTableMode
 ): ColumnDef<Item>[] {
   const [phaseMode, setPhaseMode] = usePhaseHoursMode();
   const sorted = useRef(sorting);
   sorted.current = sorting;
   const embedded = mode.kind === "embedded";
+  const priorityTitles = mode.kind === "embedded" ? mode.priorityTitles : undefined;
   // A board-fed column of a project with no Legion daemon has nothing to draw.
   const noLegion = mode.kind === "tab" && !mode.hasLegion;
   return useMemo<ColumnDef<Item>[]>(() => {

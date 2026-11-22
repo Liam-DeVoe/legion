@@ -7,6 +7,7 @@ import {
 } from "../../api/queries";
 import type { UserState } from "../../api/types";
 import { copyAddress } from "../../lib/page-address";
+import { readIssueFlags } from "./issue-filters";
 import { type DoneRead, listingsOf } from "./issues-table-data";
 import {
   type Item,
@@ -72,13 +73,13 @@ function openListingCount(query: URLSearchParams, reads: TabReads): number | und
   if (!reads.openIn) return undefined;
   const own = readUrl(expandView(query));
   const excluded = readExcludedTrees(query);
-  const unread = query.get("unread") === "1";
+  const { needsYou, unread } = readIssueFlags(query);
   if (listingsOf(picksOf(own.filters, "status")).done) return undefined;
   if (!reads.boardIn && narrowsByBoard(own.filters, excluded)) return undefined;
   if (unread && reads.userState === undefined) return undefined;
   const narrowings: Narrowings = {
     selection: own.selection,
-    needsYou: query.get("needs-you") === "1",
+    needsYou,
     unread,
     userState: reads.userState,
     excluded,

@@ -2510,6 +2510,24 @@ test("a press on a view tab leaves a history entry, and Back opens the view befo
   await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2"]));
 });
 
+// A press on the open view's tab, while the view is as it opens, writes over its history entry
+// rather than leaving a second one at the same address: Back still opens the view before it.
+test("a press on the open, unchanged view's tab leaves no history entry", async () => {
+  const user = userEvent.setup();
+  table(VIEW_ROWS());
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.click(screen.getByRole("tab", { name: "Done" }));
+  await screen.findByRole("row", { name: "CORE-5 Work CORE-5" });
+  await user.click(screen.getByRole("tab", { name: /^Done/ }));
+  expect(routeSearch()).toBe("?view=done");
+  act(() => back());
+  await waitFor(() => expect(routeSearch()).toBe(""));
+  expect(await screen.findByRole("tab", { name: "Open, 2 issues" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+});
+
 // The open saved view's name goes with its history entry, so Back to a saved view the reader
 // changed selects its tab again, with its mark, and not the built-in view it narrows.
 test("Back to a saved view the reader changed selects its tab again", async () => {
@@ -2535,6 +2553,35 @@ test("Back to a saved view the reader changed selects its tab again", async () =
   );
   expect(screen.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "false");
   expect(new URLSearchParams(routeSearch()).get("q")).toBe("CORE-1");
+});
+
+// A saved view may hold the issues a link names (`only=`). Taking their chip off leaves a history
+// entry that names the saved view, as every write of the address does, so its tab stays open,
+// marked changed, and not the built-in view it narrows.
+test("removing the narrowing chip of a saved view keeps its tab selected, marked changed", async () => {
+  const user = userEvent.setup();
+  keepSavedViews([
+    {
+      name: "Picked",
+      query:
+        "only=CORE-1,CORE-3&onlyLabel=Finished+last+week&nofilter=1&cols=key,title,status&layout=table",
+    },
+  ]);
+  table(VIEW_ROWS());
+  await user.click(await screen.findByRole("tab", { name: /^Picked/ }));
+  expect(await screen.findByRole("tab", { name: /^Picked/ })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await user.click(
+    await screen.findByRole("button", { name: "Remove Showing: Finished last week filter" })
+  );
+  await waitFor(() => expect(routeSearch()).not.toContain("only="));
+  expect(await screen.findByRole("tab", { name: /^Picked, .*changed$/ })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(screen.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "false");
 });
 
 // The view tabs are a tablist with its keyboard: the arrow keys, Home and End move the focus and

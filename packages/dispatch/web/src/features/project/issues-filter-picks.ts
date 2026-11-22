@@ -6,8 +6,9 @@
  */
 import { LEGION_ROLES } from "@legion/contracts";
 import type { Actor } from "../../api/types";
+import { HOUR_MS } from "../../lib/closed-window";
 import { isViewer } from "../refs/actor";
-import { HOUR_MS, LEGION_PHASES, type LegionFacts, sinceMs } from "./issues-legion";
+import { LEGION_PHASES, type LegionFacts, sinceMs } from "./issues-legion";
 
 /** Whether `a` and `b` hold as many values, each value of `a` one of `b`'s: the same set of
  *  picks, in any order. */

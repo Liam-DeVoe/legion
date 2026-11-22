@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { apiErrorMessage } from "../../api/client";
-import { legionDaemonQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
+import { legionDaemonQuery } from "../../api/queries";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import type { FilterChip } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -27,17 +27,16 @@ import {
   ViewControls,
   viewTabButtonId,
 } from "./IssueViewTabs";
-import { useIssueFilters } from "./issue-filters";
 import { type BoardToggles, IssuesTabBoard } from "./issues-tab-board";
 import { type HeldDoneRead, useHeldDone, useTabCounts } from "./issues-tab-counts";
 import { useTabTableLayout } from "./issues-tab-layout";
 import { useTabReads } from "./issues-tab-reads";
 import { type IssueTableActions, useIssueTableActions } from "./issues-table-actions";
 import { countStatuses, IssueStatusBar } from "./issues-table-bar";
-import { ownNarrowings } from "./issues-table-chips";
+import { type OwnNarrowings, ownNarrowings } from "./issues-table-chips";
 import { IssueTableFrame, ListingNotices, ReadStates } from "./issues-table-frame";
 import { readUrl, tableStorageKey, type View, writeUrl } from "./issues-table-model";
-import { useFilterPanel, useIssueTable } from "./issues-table-state";
+import { useIssueTable, useIssueTableReads } from "./issues-table-state";
 import {
   type ActiveView,
   BUILT_IN_VIEWS,
@@ -123,10 +122,13 @@ interface IssuesTabPlace {
   readonly changed: boolean;
   /** The address the open view opens at: its built-in address, or its saved query. */
   readonly ownAddress: URLSearchParams;
+  /** What the open view narrows by of itself, at `ownAddress` (`ownNarrowings`). */
+  readonly own: OwnNarrowings;
   readonly saved: SavedViews;
   /** Opens the view at `address`, with `name` the saved view open on it, or none. A press on a
-   *  tab pushes a history entry (`push`), so Back gives the view before it; a save or a delete
-   *  writes over the entry. */
+   *  tab pushes a history entry (`push`), so Back gives the view before it, but a press on the
+   *  open view's tab at the address it is on writes over the entry; a save or a delete writes
+   *  over the entry too. */
   readonly openView: (address: URLSearchParams, name: string | undefined, push: boolean) => void;
   readonly layout: ViewLayout;
   readonly setLayout: (layout: ViewLayout) => void;
@@ -187,12 +189,23 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const tabPressed = useRef(false);
   const openView = (address: URLSearchParams, name: string | undefined, push: boolean) => {
     tabPressed.current = push;
+    // A press on the tab of the view open now, at the address it is on, writes over its entry,
+    // so the press leaves no second entry at the same address.
+    const same = address.toString() === params.toString() && name === savedView?.name;
     navigate(addressPath(here.pathname, address), {
-      replace: !push,
+      replace: !push || same,
       state: name === undefined ? undefined : { [SAVED_VIEW_STATE]: name },
     });
   };
   const base = viewFor(expandView(params).get("view"));
+  // The address the open view opens at, and what it narrows by of itself: one of each while the
+  // open view stays, so a render of the view parses neither again.
+  const savedQuery = savedView?.query;
+  const ownAddress = useMemo(
+    () => (savedQuery === undefined ? builtInAddress(base.id) : copyAddress(savedQuery)),
+    [savedQuery, base.id]
+  );
+  const own = useMemo(() => ownNarrowings(ownAddress), [ownAddress]);
   // One object while the open view stays, so the tab counts, which read it, are worked out again
   // only when it changes.
   const savedName = savedView?.name;
@@ -247,7 +260,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     active,
     changed:
       savedView === undefined ? isViewChanged(params) : isSavedViewChanged(params, savedView),
-    ownAddress: savedView === undefined ? builtInAddress(base.id) : copyAddress(savedView.query),
+    ownAddress,
+    own,
     saved,
     openView,
     layout,
@@ -283,15 +297,12 @@ function IssuesTabView({
   const address = useTableAddress(PROJECT_GRAMMAR);
   const update = useAddressUpdate();
   const { params, view } = address;
-  const { hasLegion, project } = tab;
+  const { hasLegion, own, project } = tab;
   const { columnsLayout, layout } = useTabTableLayout(address, tab);
-  const flags = useIssueFilters();
+  const { flags, panel, userState, viewer } = useIssueTableReads(view.filters);
   // The trees an Evals link leaves out (`exclude_tree`), a narrowing of the Issues tab alone: a
   // row is in a tree when it is the tree's root or its facts name that root.
   const [excluded, keepTree] = useExcludedTrees();
-  const userState = useQuery(userStateQuery());
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const panel = useFilterPanel(view.filters);
   const onBoard = tab.layout === "board";
   const reads = useTabReads({
     address,
@@ -308,7 +319,6 @@ function IssuesTabView({
   const state = useIssueTable({
     actions,
     address,
-    all: reads.all,
     allItems: reads.allItems,
     columnsLayout,
     counted: reads.counted,
@@ -321,7 +331,6 @@ function IssuesTabView({
     moveFrom: "page",
     onBoard,
     panel,
-    priorityTitles: undefined,
     serverRowCount: doneTotal,
     userState: userState.data,
     viewKey: reads.viewKey,
@@ -353,7 +362,6 @@ function IssuesTabView({
     saved: tab.saved.views,
     userState: userState.data,
   });
-  const own = ownNarrowings(tab.ownAddress);
   const narrowed = narrowingsDiffer(params, tab.ownAddress);
   const clearView = () => update((current) => clearNarrowings(current, tab.ownAddress));
 
@@ -464,7 +472,7 @@ function IssuesTabView({
         hasLegion={hasLegion}
         header={tabs}
         layoutSwitch={layoutSwitch}
-        listsDone={reads.listsDone}
+        listsDone={done !== undefined}
         loaded={reads.loaded}
         name={NAME}
         notices={notices}

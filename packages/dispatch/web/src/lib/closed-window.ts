@@ -6,7 +6,7 @@
  */
 
 /** An hour in milliseconds. */
-const HOUR_MS = 3_600_000;
+export const HOUR_MS = 3_600_000;
 
 /** A day in milliseconds. */
 const DAY_MS = 24 * HOUR_MS;

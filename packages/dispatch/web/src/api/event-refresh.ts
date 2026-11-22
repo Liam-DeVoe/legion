@@ -6,7 +6,7 @@ import {
   architectureSourcesQuery,
   inboxQuery,
   inboxThreadsKey,
-  listedIssues,
+  issueListRows,
   myRepliesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
@@ -813,7 +813,7 @@ function priorityWriteTargets(
     row !== null &&
     ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
   const when: RefreshCheck = (data) => {
-    const rows = listedIssues(data);
+    const rows = issueListRows(data);
     return rows === undefined ? advancesIt(data) : rows.some(advancesIt);
   };
   targets.push(
