@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,10 +30,18 @@ var legionBuildDir string
 // links leakguardtest.NoCurl as its guards' curl (leakguardtest.NoCurlLinked), as TestMain gives
 // this binary's own: the built binary reads no LEGION_CMD_TEST_CURL, and without the link its
 // guards would run the system's /usr/bin/curl, with a token of the test's bundle, wherever a
-// stand-in gh is stopped by the guard's bound on its REST read (INFRA-3904).
+// stand-in gh is stopped by the guard's bound on its REST read (INFRA-3904). It also links in this
+// test binary's deadline (programbound's linkedDeadline, from testDeadlineEnv), so each wait the
+// built binary bounds on a program it starts takes what is left of that deadline, as this binary's
+// own runs as `legion` do; under -timeout 0 it links none, and the product's bounds hold. The two
+// go in one -ldflags, since go build takes only the last.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	if out, err := exec.Command("go", "build", "-ldflags", leakguardtest.NoCurlLinked, "-o", binary, ".").CombinedOutput(); err != nil {
+	ldflags := leakguardtest.NoCurlLinked
+	if deadline, ok := os.LookupEnv(testDeadlineEnv); ok {
+		ldflags += " -X github.com/sjawhar/legion/daemon/internal/programbound.linkedDeadline=" + deadline
+	}
+	if out, err := exec.Command("go", "build", "-ldflags", ldflags, "-o", binary, ".").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build: %v\n%s", err, out)
 	}
 	return binary, nil
@@ -289,6 +299,53 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The legion these tests build links this test binary's deadline (legionBuild,
+// programbound.linkedDeadline), so each bound it sets on a program it starts is what is left of
+// that deadline, as it is in this binary's own runs as `legion`. The linker takes an -X of a name
+// no package holds without a word, and a rename would give the built binary the product bounds
+// back and every row that runs it a race with them again. So this row runs the built `legion gh`
+// under a git whose configuration read answers past the product's 30 s for it (ghGitReadBound):
+// it passes only where the built binary took the linked deadline, and a built binary with the
+// product bound refuses the call, the read killed at 30 s.
+func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
+	if _, ok := os.LookupEnv(testDeadlineEnv); !ok {
+		t.Skip("this test binary runs with -timeout 0, so the built legion links no deadline")
+	}
+	legion := buildLegion(t)
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrappers := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}
+	cmd := exec.Command(legion, append([]string{"gh"}, args...)...)
+	cmd.Dir = t.TempDir()
+	cmd.Env = []string{
+		"PATH=" + wrappers + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull,
+		"LEGION_GH_PATH=" + stub, "GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root,
+		"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the built legion gh %q under a git whose configuration read answers past %s: %v, stderr %s; want it to wait, its bound the linked deadline", args, ghGitReadBound, err, stderrOf(err))
+	}
+	if got, want := string(out), strings.Join(args, " ")+"\n"; got != want {
+		t.Fatalf("the real gh received %q, want %q", got, want)
+	}
 }
 
 // stderrOf is what a run that failed printed on stderr, as exec.Cmd.Output keeps it.
