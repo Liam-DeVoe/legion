@@ -123,7 +123,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // each merger at entry 1, given and served, which is where a merger that took its merging task
 // stands after the upgrade. The fill records no task for that entry: it reads only a start that
 // still carries the slot mark, and S's (below), the one start the old record still holds, has
-// lost its mark by then. The whole daemon then boots on the store (startDaemonWithin).
+// lost its mark by then. The whole daemon then boots on the store (startDaemonLogging).
 //
 // The ten issues, each a tree root of its own, all but N and T in `awaiting_merge`, and all but N
 // with their merger's READY head and `completed_at` on its phase row. None holds a slot but T:
@@ -790,7 +790,7 @@ func (r *cutoverRig) boot(t *testing.T) {
 			t.Logf("the end of a boot's log:\n%s", log[max(0, len(log)-idleRigLogTailBytes):])
 		}
 	})
-	r.daemon = startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(logs, nil)), cutoverWait)
+	r.daemon = startDaemonLogging(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(logs, nil)))
 }
 
 // await waits for condition within cutoverWait, or what is left of the test binary's own deadline

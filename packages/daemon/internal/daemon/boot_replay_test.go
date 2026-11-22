@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -308,11 +309,14 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		said.Wait()
 		close(hello)
 	}()
+	// The wait for the daemon's worker stream has the start's own bound (startDaemonLogging's,
+	// testwait.Remaining), read here on the test's goroutine, rather than a span of its own.
+	addressWait := testwait.Remaining(t)
 	go func() {
 		var address string
-		for deadline := time.Now().Add(60 * time.Second); address == ""; time.Sleep(5 * time.Millisecond) {
+		for deadline := time.Now().Add(addressWait); address == ""; time.Sleep(5 * time.Millisecond) {
 			if time.Now().After(deadline) {
-				// The daemon never built its runtime; startDaemonWithin fails the test.
+				// The daemon never built its runtime; startDaemonLogging fails the test.
 				return
 			}
 			record.mu.Lock()
@@ -327,7 +331,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 	}()
 
-	startDaemonWithin(t, cfg, o, quietLogger(), 60*time.Second)
+	startDaemonLogging(t, cfg, o, quietLogger())
 
 	var conns []net.Conn
 	t.Cleanup(func() {

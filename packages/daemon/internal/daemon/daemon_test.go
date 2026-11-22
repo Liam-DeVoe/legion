@@ -1197,17 +1197,14 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. It waits for the daemon to
+// answer /healthz, or for run to return, whichever comes first, and sets no span of its own: its
+// one bound is the test binary's deadline less testwait's margin (testwait.Remaining), so a boot a
+// loaded machine makes slow is waited for, and one that never serves fails by name. A boot that
+// returns first fails the test with what run returned. A test that points its workflow at no
+// GitHub of its own gets repositoriesGitHub, so every launch on a repository reads its default
+// branch from a stand-in rather than from github.com.
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
-	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
-}
-
-// startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
-// within the given time. A test that points its workflow at no GitHub of its own gets
-// repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
-// rather than from github.com.
-func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
@@ -1224,9 +1221,10 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
 	t.Cleanup(d.stop)
-	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
-	// daemon serves, the held listener queues the connection unanswered.
+	// Each poll is bounded by a second, so a poll that meets a daemon not serving yet (the held
+	// listener queues the connection unanswered) asks again rather than holding the wait.
 	poll := &http.Client{Transport: transport, Timeout: time.Second}
+	within := testwait.Remaining(t)
 	var err error
 	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
 		var response *http.Response
@@ -1245,7 +1243,7 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 		}
 		return false
 	}) {
-		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
+		t.Fatalf("the daemon did not answer /healthz on %s within %s, 30s before the test binary's deadline: %v", d.base, within.Round(time.Millisecond), err)
 	}
 	return d
 }
@@ -1560,7 +1558,7 @@ func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubA
 	root := seedLiveTreeOn(t, cfg, repo)
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens, o.githubAPI = tokens, githubAPI
-	d := startDaemonWithin(t, cfg, o, log, 20*time.Second)
+	d := startDaemonLogging(t, cfg, o, log)
 	var entry api.LiveRepositoryView
 	settled(t, d, "name "+repo+" with what GitHub answered for it", func(state api.State) bool {
 		for _, live := range state.Repositories.Live {
