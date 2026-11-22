@@ -15,7 +15,9 @@
 // A restricted member decides one kind of record here, at a browser alone: a pending machine login
 // of their own, which is how an outside person approves the device login of their own agents
 // (ownMachineLogin). Every other decision of theirs is refused before the broker is asked to make
-// it.
+// it. What such a member lists and ends Dispatch decides too, not the broker: their machine logins
+// (memberMachineLogins) and their grants (memberGrants), the grants of the sessions that act for
+// them alone.
 //
 // These decisions write no Dispatch event - the broker records the decision itself - so the agent
 // that made one for its person is recorded on Dispatch's own access-log line instead
@@ -637,6 +639,14 @@ func (s *server) dismissCredentialRecord(w http.ResponseWriter, r *http.Request)
 
 // --- GET /api/v1/credential-grants, POST .../{id}/revoke ---
 
+// listCredentialGrants answers the live grants of the caller's Live grants page, which the broker
+// lists for the caller's login: those the caller approved, those of the sessions that act for the
+// caller, those the model judge approved in anyone's stead and those a pod that acts for no person
+// took without asking. A restricted member is answered the grants of the sessions that act for them
+// alone (memberGrants): Dispatch decides it, and drops every other row the broker lists whatever
+// its approver, so the list holds no grant of a project the member is not on whether or not the
+// broker itself knows what kind of member they are. Every other caller is answered the broker's
+// list verbatim.
 func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -650,15 +660,33 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.Grants(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	if !restricted {
+		body, err := client.Grants(r.Context(), login)
+		relayBrokerResponse(w, body, err)
+		return
+	}
+	own, err := memberGrants(r.Context(), client, login)
+	if err != nil {
+		relayBrokerResponse(w, nil, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, wire.ApproverGrantsResponse{Grants: own})
 }
 
-// revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
-// login is the grant's approver or the person its enrollment acts for (an unmapped person's pod
-// acts for no one), or, for a grant the model judge approved in anyone's stead, anyone who may see
-// it; and, as an approver, only for a person Dispatch does not call a restricted member. The
-// browser's body carries nothing Dispatch reads.
+// revokeCredentialGrant ends a grant as the caller. For every caller but a restricted member the
+// broker decides: it allows the revoke only when the caller's login is the grant's approver or the
+// person its enrollment acts for (an unmapped person's pod acts for no one), or, for a grant the
+// model judge approved in anyone's stead, anyone who may see it. Dispatch decides for a restricted
+// member: it relays their revoke only of a grant of memberGrants, one whose session acts for them,
+// and answers any other id, an id the broker lists no grant for among them, 403 RESTRICTED_MEMBER
+// with the one sentence that names nothing of the grant, sending the broker no revoke. While the
+// broker's list cannot be read, a restricted member's revoke fails closed: it is answered as that
+// read failed (relayBrokerResponse: the broker's own refusal, or 503 AGENT_SECRETS_UNAVAILABLE),
+// whatever the id, and revokes nothing. The browser's body carries nothing Dispatch reads.
 func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -669,8 +697,52 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeByApprover(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	login, id := model.CanonicalLogin(actor.ID), r.PathValue("id")
+	if restricted {
+		own, err := memberGrants(r.Context(), client, login)
+		if err != nil {
+			relayBrokerResponse(w, nil, err)
+			return
+		}
+		if !slices.ContainsFunc(own, func(grant wire.ApproverGrantResp) bool { return grant.GrantID == id }) {
+			writeError(w, codeRestrictedMember, http.StatusForbidden,
+				"a restricted member revokes only a grant of a session that acts for them")
+			return
+		}
+	}
+	body, err := client.RevokeByApprover(r.Context(), id, login)
 	relayBrokerResponse(w, body, err)
+}
+
+// memberGrants is the grants the broker lists for person (GET /v1/grants) whose session acts for
+// person: those whose enrollment's operator is person. On a grant list the broker writes that
+// field as the person the enrollment acts for at the read (wire.RecordEnrollmentResp's Operator,
+// requests' operatorOf), and it is the field the broker's own rule for a restricted member reads
+// (GrantsForApprover's notOwn), so the two agree on which grants are the member's. A grant person
+// approved on another person's session, one the model judge or a person approved in anyone's
+// stead on another session, a group's, and an automatic grant of a pod that acts for no person are
+// none of them, whatever their approver. An empty person has no grant, so a row whose session acts
+// for no person is never anyone's here.
+func memberGrants(ctx context.Context, client *cipher.Client, person string) ([]wire.ApproverGrantResp, error) {
+	listed, err := client.Grants(ctx, person)
+	if err != nil {
+		return nil, err
+	}
+	var grants wire.ApproverGrantsResponse
+	if err := json.Unmarshal(listed, &grants); err != nil {
+		return nil, fmt.Errorf("read %s's grants from the secrets broker: %w", person, err)
+	}
+	own := []wire.ApproverGrantResp{}
+	for _, grant := range grants.Grants {
+		if person != "" && model.CanonicalLogin(grant.Enrollment.Operator) == person {
+			own = append(own, grant)
+		}
+	}
+	return own, nil
 }
 
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---

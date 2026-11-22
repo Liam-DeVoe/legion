@@ -47,7 +47,8 @@ func (rig *fakeBrokerRig) decisions() int {
 	}))
 }
 
-// revokes is the "METHOD path" of each machine-login revoke the fake broker has been sent, in order.
+// revokes is the "METHOD path" of each revoke, a machine login's or a grant's, the fake broker has
+// been sent, in order.
 func (rig *fakeBrokerRig) revokes() []string {
 	return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
 }
