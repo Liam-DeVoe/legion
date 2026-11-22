@@ -13,8 +13,8 @@ import (
 )
 
 // ownerStepAgain moves key's work, back at step 1 after the owner's step returned it, on to the
-// owner's step 2 again at newHead: the implementer pushes newHead and completes, as the review
-// range's later round does (v-review-range).
+// owner's step 2 again at newHead: the implementer pushes newHead and completes, as it does before
+// a later review round, which is told the commit the round before it read.
 func ownerStepAgain(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, newHead string) {
 	t.Helper()
 	assertWalksAt(t, pool, engine, key, phase.Implementing, stepPlace(1))
@@ -27,10 +27,10 @@ func ownerStepAgain(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, newHe
 func reviewedLine(sha string) string { return " Last reviewed commit: " + sha + "." }
 
 // A review step the owner does is told, at its next run, the commit its run before read, as a
-// reviewer's later round is (v-review-range for the owner): for `reviewer:owner`, the commit its
-// complete_step fail named, and for `acceptance:owner`, the head of the pull request its
-// request_backward_move acted on, since that move names no commit of its own. Its first run names
-// no commit read. A step of another type the owner does names none at any run.
+// reviewer's later round is told the commit the round before it read: for `reviewer:owner`, the
+// commit its complete_step fail named, and for `acceptance:owner`, the head of the pull request
+// its request_backward_move acted on, since that move names no commit of its own. Its first run
+// names no commit read. A step of another type the owner does names none at any run.
 //
 // The controls: the reviewed commit cleared between the two runs (the rule that reads the
 // reviewer's row alone writes none for acceptance, and the move back writes none): the second
