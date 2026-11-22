@@ -50,9 +50,13 @@ import (
 // the state's own partial index rather than misjudging the stored flag; the narrowing these routes
 // add is applied over that set, where the issue join costs one lookup per matched row.
 //
-// The match reads the index and nothing else - the thread id it answers and the mark it narrows by
-// are both columns the state's partial index holds - and each matched row's owner is then read by
-// that id, fenced from the planner as the list route's page read is (myRepliesPageRows,
+// The match reads the thread id it answers and the mark it narrows by, both columns the state's
+// partial index holds. Over the unread and the Inbox state that is all it reads, so it reads the
+// index and nothing else; over the Dismissed state (the restore's inboxRestoreReplyThreads,
+// api/inbox_dismiss.go) it also tests replied_at (myRepliesDismissed), which
+// user_threads_dismissed - login, dismissed_at and thread_id - does not hold, so it reads the
+// table's row of each dismissed row it meets for that column. Each matched row's owner is then
+// read by that id, fenced from the planner as the list route's page read is (myRepliesPageRows,
 // api/replies.go): a one-step match reads the owner columns too, and the cheapest way to read a
 // few columns of a thousand rows out of a table one login owns is a scan of the whole table, which
 // at INFRA-450's a14 seed is 101,540 rows read to mark 1,300.
