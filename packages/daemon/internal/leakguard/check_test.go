@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Resolve looks in the order the shared check documents — PUBLIC_LEAK_CHECK, then
@@ -338,10 +339,9 @@ exit 0
 // does, and then sleeps far past any bound these tests give it, and past hangGuard: a check whose
 // git waits on a remote that never answers, as the guard sees one. The sleep runs in the
 // background of the check's bash, in its process group, and its process id goes to the file
-// STANDIN_SLEEP names, so a test can see that the stop ended it (sleepEnded). The check then makes
-// the file STANDIN_STARTED names, where that is set, to say it is running.
-const stopsAfterItsInput = "cat >/dev/null\nsleep 300 &\necho $! > \"$STANDIN_SLEEP\"\n" +
-	"[ -z \"${STANDIN_STARTED:-}\" ] || : > \"$STANDIN_STARTED\"\nwait\n"
+// STANDIN_SLEEP names, which also says the check is running, so a test can wait for it and see
+// that the stop ended the sleep (sleepEnded).
+const stopsAfterItsInput = "cat >/dev/null\nsleep 300 &\necho $! > \"$STANDIN_SLEEP\"\nwait\n"
 
 // stopsAfterItsInputSleeps is how long stopsAfterItsInput sleeps.
 const stopsAfterItsInputSleeps = 300 * time.Second
@@ -349,15 +349,12 @@ const stopsAfterItsInputSleeps = 300 * time.Second
 // standInSleeps is how long the other stand-ins these stop tests meet sleep: `sleep 30`.
 const standInSleeps = 30 * time.Second
 
-// stoppedPush is a push under ctx through a guard whose shared check is stopsAfterItsInput, with
-// env in the check's environment, as the setup failure it must be. The shared check runs before a
-// push reads anything of its repository, so the push needs none. It also fails the test where the
-// stop did not end the check's sleep, which the check's bash started in the check's own process
-// group: the stop is the group's.
-func stoppedPush(t *testing.T, ctx context.Context, env ...string) *SetupFailure {
+// stoppedPush is a push under ctx through a guard whose shared check is stopsAfterItsInput, its
+// sleep's process id going to the file sleep, as the setup failure it must be. The shared check
+// runs before a push reads anything of its repository, so the push needs none.
+func stoppedPush(t *testing.T, ctx context.Context, sleep string) *SetupFailure {
 	t.Helper()
-	sleep := filepath.Join(t.TempDir(), "sleep")
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput), Public, append(env, "STANDIN_SLEEP="+sleep)...)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput), Public, "STANDIN_SLEEP="+sleep)
 	started := time.Now()
 	err := guard.Push(ctx, PushRequest{
 		Dir:     t.TempDir(),
@@ -366,7 +363,6 @@ func stoppedPush(t *testing.T, ctx context.Context, env ...string) *SetupFailure
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 	})
 	answeredBefore(t, started, stopsAfterItsInputSleeps)
-	sleepEnded(t, sleep)
 	return setupFailure(t, err)
 }
 
@@ -383,8 +379,8 @@ func answeredBefore(t *testing.T, started time.Time, sleep time.Duration) {
 
 // sleepEnded fails the test unless the process whose id the file pidFile holds has ended within
 // hangGuard: it is gone, or a zombie its new parent has yet to reap. The stand-in's sleep lasts
-// longer than hangGuard, so only a stop that reached it ends it in time. A sleep still running is
-// killed when the test ends.
+// longer than hangGuard, so only a stop that reached it ends it in time. A sleep still running
+// then is killed.
 func sleepEnded(t *testing.T, pidFile string) {
 	t.Helper()
 	read, err := os.ReadFile(pidFile)
@@ -395,13 +391,9 @@ func sleepEnded(t *testing.T, pidFile string) {
 	if err != nil {
 		t.Fatalf("the stand-in's sleep has the process id %q: %v", read, err)
 	}
-	deadline := time.Now().Add(hangGuard)
-	for !processEnded(pid) {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			t.Fatalf("the stand-in's sleep, process %d, still ran %s after the call answered: the stop did not reach it", pid, hangGuard)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(hangGuard, testwait.Poll, func() bool { return processEnded(pid) }) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("the stand-in's sleep, process %d, still ran %s after the call answered: the stop did not reach it", pid, hangGuard)
 	}
 }
 
@@ -465,12 +457,12 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 // from one that hung. The bound is what was left of the caller's 2 s when the check started, and
 // the time it ran is measured, so both are read as stoppedByItsBound reads them: a bound no
 // longer than 2 s and a run no shorter than it, never exact seconds a loaded machine would not
-// keep. That the stop reached the sleep bash started in the check's process group is seen in the
-// sleep itself (stoppedPush).
+// keep. A deadline and a cancel end the check through the same stop of its process group, so the
+// cancel test alone sees that stop reach the check's sleep.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	failed := stoppedPush(t, ctx)
+	failed := stoppedPush(t, ctx, filepath.Join(t.TempDir(), "sleep"))
 	stoppedByItsBound(t, failed, 2*time.Second)
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
@@ -479,29 +471,28 @@ func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing
 
 // A shared check that a cancel stops, under a context with no deadline, says that a cancel
 // stopped it and how long it ran: there is no bound to name. The cancel comes 2 s after the check
-// says it is running, so it has run at least that long however late it started; the time is
-// measured, and on a loaded machine the stop after the cancel takes longer, so it is read as a
-// floor (stoppedByACancel), never as exact seconds.
+// wrote its sleep's process id, so it has run at least that long however late it started; the
+// time is measured, and on a loaded machine the stop after the cancel takes longer, so it is read
+// as a floor (stoppedByACancel), never as exact seconds. The stop must also have ended the sleep
+// the check's bash started in its process group (sleepEnded).
 func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
 	const after = 2 * time.Second
-	running := filepath.Join(t.TempDir(), "running")
+	sleep := filepath.Join(t.TempDir(), "sleep")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		deadline := time.Now().Add(hangGuard)
-		for ctx.Err() == nil && time.Now().Before(deadline) {
-			if _, err := os.Stat(running); err == nil {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		testwait.Holds(hangGuard, testwait.Poll, func() bool {
+			_, err := os.Stat(sleep)
+			return err == nil || ctx.Err() != nil
+		})
 		select {
 		case <-time.After(after):
 		case <-ctx.Done():
 		}
 		cancel()
 	}()
-	failed := stoppedPush(t, ctx, "STANDIN_STARTED="+running)
+	failed := stoppedPush(t, ctx, sleep)
+	sleepEnded(t, sleep)
 	stoppedByACancel(t, failed, after)
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)

@@ -110,10 +110,8 @@ type Guard struct {
 	curl string
 	// waitDelay, where it is not 0, stands in for procgroup.WaitDelay in every child of the guard,
 	// as exec's WaitDelay and as the wait readOutput gives a child's output after it exits
-	// (Guard.exitDelay). This package's own tests set it to an hour, so that a read that ends at
-	// the pipe's end, or at once after Wait answered an error, is told from one that waited out
-	// the end after the exit (TestAReadEndsAtThePipesEndOnceTheChildExits,
-	// TestReadOutputEndsAtOnceAfterAFailedChildThoughAProcessHoldsItsOutput).
+	// (Guard.exitDelay). This package's own tests set it to an hour, so that the end after the
+	// exit never comes first and the end a test checks is the one the read takes.
 	waitDelay time.Duration
 	// onWait, where it is not nil, is handed the argv of each child whose output the guard reads as
 	// it is written (Guard.readOutput) and what that child's Wait answered. This package's own

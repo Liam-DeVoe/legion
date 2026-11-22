@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,25 +190,17 @@ func TestNoHolderOutlivesItsTest(t *testing.T) {
 			loops = append(loops, loop)
 		})
 	}
-	ended := make(chan int, len(loops))
-	for i, loop := range loops {
-		go func() {
+	ended := make(chan struct{})
+	go func() {
+		for _, loop := range loops {
 			_ = loop.Wait()
-			ended <- i
-		}()
-	}
-	running := map[int]bool{}
-	for i := range loops {
-		running[i] = true
-	}
-	deadline := time.After(hangGuard)
-	for len(running) > 0 {
-		select {
-		case i := <-ended:
-			delete(running, i)
-		case <-deadline:
-			t.Fatalf("holders %v still ran %s after their tests ended", slices.Sorted(maps.Keys(running)), hangGuard)
 		}
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(hangGuard):
+		t.Fatalf("holders still ran %s after their tests ended", hangGuard)
 	}
 }
 
