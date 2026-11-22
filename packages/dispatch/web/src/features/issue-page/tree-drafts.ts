@@ -25,6 +25,7 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import {
   blockIdOfNode,
+  type DecisionContent,
   decisionChangeComments,
   decisionChanges,
   decisionContent,
@@ -598,6 +599,46 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
+/** Each record's text source, by its kind and then its id: `textSourceOf`'s, made once, so every
+ *  build of the drafts hands a row the source object it handed it before, and the row's words are
+ *  not drawn again for a source that only looks new. */
+const sources: { readonly [Kind in TextSource["kind"]]: Map<string, TextSource> } = {
+  artifact: new Map(),
+  ask: new Map(),
+  comment: new Map(),
+  message: new Map(),
+};
+
+/** The text source of record `id` of `kind` (`textSourceOf`), the one object `sources` holds; none
+ *  where there is no id, as `textSourceOf` answers. */
+export function stableSourceOf(
+  kind: TextSource["kind"],
+  id: string | undefined
+): TextSource | undefined {
+  if (id === undefined) return undefined;
+  const byId = sources[kind];
+  let source = byId.get(id);
+  if (source === undefined) {
+    source = textSourceOf(kind, id);
+    if (source !== undefined) byId.set(id, source);
+  }
+  return source;
+}
+
+/** Each decision's own content (`decisionContent`), by the entry it was read from: a re-read
+ *  whose answer is unchanged keeps the entry's object, and so a row is handed the words it was
+ *  handed before. */
+const decisionContents = new WeakMap<DecisionEntry, DecisionContent>();
+
+function stableDecisionContent(decision: DecisionEntry): DecisionContent {
+  let own = decisionContents.get(decision);
+  if (own === undefined) {
+    own = decisionContent(decision);
+    decisionContents.set(decision, own);
+  }
+  return own;
+}
+
 /**
  * Each agent's decision of the decisions read that no node of the tree read holds
  * (`decisionNodes`) - a section of the issue's `decisions.md` a server of the release before
@@ -703,8 +744,8 @@ export function addDecisions(
     if (decider !== undefined) draft.author = decider;
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
-    const own = decisionContent(decision);
-    draft.source = textSourceOf("artifact", decisionDocumentId(reads.issue, decision));
+    const own = stableDecisionContent(decision);
+    draft.source = stableSourceOf("artifact", decisionDocumentId(reads.issue, decision));
     draft.text = own.text;
     draft.tree = own.tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape

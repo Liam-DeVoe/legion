@@ -874,6 +874,49 @@ test("a decisions.md section finds its Change by its words", () => {
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
 
+// A decision of a decisions read of the release before is drafted beside the tree read's nodes,
+// and a re-read of the same reads hands its row the words and the source it handed it before, as
+// a node of the tree read's does.
+test("drawing the same decisions read twice hands a section's row the same words and source", () => {
+  const section: Decision = {
+    asks: [],
+    block_id: "d1",
+    changed_at: "2026-11-05T00:00:00Z",
+    changed_version: 1,
+    heading: "Keep it",
+    kept: null,
+    kind: "agent",
+    links: [],
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-d1`,
+    replaced: false,
+    text: "## Keep it\n\nKeep the model pure.",
+    text_sha256: "sum",
+    text_tree: typedReading("decision", { blockId: "d1" }, "Keep the model pure."),
+    unsure: false,
+    waiting_review: true,
+  };
+  const reads = {
+    decisions: withEntries(
+      {
+        decisions: [section],
+        document: `dispatch://${KEY}/artifact/decisions-md`,
+        open_questions: [],
+      },
+      KEY
+    ),
+    issue: issueDetails(),
+    tree: answer([]),
+  };
+
+  const [row, again] = [buildIssueTree(reads), buildIssueTree(reads)].map((root) =>
+    nodeOf(root, blockNodeId("decisions-md", "d1"))
+  );
+  expect(row?.source).toEqual({ id: DECISIONS.id, kind: "artifact" });
+  expect(row?.tree).toEqual(reading("Keep the model pure."));
+  expect(again?.tree, "a re-read hands the section new words").toBe(row?.tree);
+  expect(again?.source, "a re-read hands the section a new source").toBe(row?.source);
+});
+
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
 // blocks of that role's document in their `document.position` order, each with its attributes -
 // a list of pointers as `block[]` - and the asks and comments the read hangs under it; and, on an

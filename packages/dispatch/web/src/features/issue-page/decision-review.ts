@@ -100,6 +100,12 @@ export function inReviewList(
   );
 }
 
+/** A decision's own words and its own reading (`decisionContent`). */
+export interface DecisionContent {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+}
+
 /**
  * What `decision` says: the decisions read answers a decision's text as its one `decision` block
  * (`decisionread`'s words, the block rendered alone) and the server's reading of it as that
@@ -109,10 +115,9 @@ export function inReviewList(
  * its own already. `tree` is absent where the read sent no reading. Every reader of a decision's
  * words reads them here: the tree's node (`tree-drafts.ts`) and a Change's quote (`anchorQuote`).
  */
-export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
-  readonly text: string;
-  readonly tree?: DisplayTree;
-} {
+export function decisionContent(
+  decision: Pick<DecisionEntry, "text" | "text_tree">
+): DecisionContent {
   const text = ownWords(decision.text);
   const tree = ownTree(decision.text_tree);
   return tree === undefined ? { text } : { text, tree };
