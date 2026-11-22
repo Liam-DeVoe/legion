@@ -16,7 +16,7 @@ body: |-
     since its launch is missing or shows background work. The daemon makes no relaunch of a role
     whose launcher is not connected, no launch that would replace the pod for a reason of its own
     and so end the other roles running in it, and no relaunch of a claim whose pod holds two or more
-    claims that are all unreachable, and it does nothing more after a stop that the claim's process
+    claims while Envoy lists the session of no other claim of that pod as live, and it does nothing more after a stop that the claim's process
     outlived. When the relaunched claim has not answered an update round over its pod, and the
     round does not pass the claim over, the relaunch holds the pod from its stop until its launch
     starts, even when that launch waits for a retry, and at most until the round's bound, so the

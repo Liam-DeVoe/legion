@@ -64,7 +64,8 @@ var (
 	}
 	// ClaimRelaunchRefused is a workflow role's claim out of reach whose relaunch the daemon cannot
 	// make: its launcher is not connected, the launch would replace its pod, its process outlived
-	// the stop, every claim of its pod is out of reach, or the guard has refused it for 60 minutes.
+	// the stop, Envoy lists no other claim of its pod of two or more as live, or the guard has
+	// refused it for 60 minutes.
 	ClaimRelaunchRefused = Case{
 		Word:     "claim_relaunch_refused",
 		Sentence: "a workflow role's claim is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its pod or its process",
