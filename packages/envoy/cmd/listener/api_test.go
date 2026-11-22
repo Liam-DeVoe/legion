@@ -3305,7 +3305,9 @@ func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
 // JetStream duplicate, which the stream stores no second time; the answer has to say so, or
 // Dispatch records the retry as an ordinary send and the attempt history claims a delivery that
 // never happened. A send under a key its caller chose carries no MsgId, so it can never be one;
-// a key minted once for its message can.
+// a key minted once for its message can. Each send names the key-taken answer as one it reads,
+// as Dispatch's client does: a Dispatch copy names no session, so its repeat is answered with the
+// copy's ids alone (requestSender.answer), whose event_id is the first send's.
 func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
@@ -3314,7 +3316,7 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	send := func(t *testing.T, body string) listenerwire.SendResponse {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body)))
+		sendHandler(state, logging.New("test")).ServeHTTP(recorder, readingKeyTaken(httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body))))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 		}
