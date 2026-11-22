@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,8 +39,22 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// reachDaemonAccount is the service account of the Legion daemon the exchange list gives PUB.
-const reachDaemonAccount = "system:serviceaccount:legion-pub:legion-daemon"
+// The accounts of the test's services: the Legion daemon the exchange list gives PUB, another
+// daemon's, whose reply prefix the first must not reach, and an edge listener's, which the exchange
+// list also gives PUB and the auth service grants nothing.
+const (
+	reachDaemonAccount      = "system:serviceaccount:legion-pub:legion-daemon"
+	reachOtherDaemonAccount = "system:serviceaccount:legion-priv:legion-daemon"
+	reachEdgeAccount        = "system:serviceaccount:example-ns:example-edge-listener"
+)
+
+// The GitHub events the daemon's GitHub consumer must deliver, by subject: one of acme/priv, a
+// repository only PRIV's issues resolve to, and one of acme/none, which no issue names. A GitHub
+// event is a message of no project.
+var reachGitHubEvents = map[string]string{
+	contracts.GithubTopicPrefix + "acme.priv.pull_request": "acme/priv's pull request",
+	contracts.GithubTopicPrefix + "acme.none.pull_request": "acme/none's pull request",
+}
 
 // reachWait bounds a message or a violation the server is to send; reachRefusalWait bounds a
 // JetStream call the server refuses, which nats.go waits on until its context ends, since the
@@ -53,8 +68,9 @@ const (
 // service admits reaches only its token's projects: on testnats.HubImage, the nats-server image
 // the hub deploys, behind the real auth service (natscallout.Start, deciding with its own Decide and
 // scopeGrant), whose broker answers are the test's: Introspect as the broker answers two sessions'
-// tokens, ServiceToken as it verifies the daemon's platform token, and Exchange and Access as the
-// broker's exchange list and Dispatch answer, the exchange list giving the daemon's account PUB.
+// tokens, ServiceToken as it verifies the daemon's and the edge listener's platform tokens, and
+// Exchange and Access as the broker's exchange list and Dispatch answer, the exchange list giving
+// the daemon's account and the edge listener's PUB.
 //
 //   - A session's connection, presenting its token and a proof over the server's nonce, receives on
 //     its own delivery channel and is refused the other session's by name. The control grants a
@@ -62,16 +78,23 @@ const (
 //     subscribe to the other's channel is served, and the test fails naming that session.
 //   - The daemon, connecting as the Legion daemon does (user natscred.ServiceUser, its token, and
 //     its account's reply prefix, natsgrant.InboxPrefix), subscribes PUB's role exceptions and
-//     receives on them, creates each consumer it opens under PUB and pulls PUB's issue event from
-//     its Dispatch consumer; it is refused PRIV's role exceptions, every reply inbox (_INBOX.>),
-//     each consumer it would open under PRIV, and its own Dispatch consumer on PRIV's lane, each by
-//     name, and receives nothing of PRIV. The control has the auth service answer the daemon's grant
-//     whole, as an all-projects entry; the subscribe to PRIV's role exceptions is served, and the
-//     test fails naming PRIV's subject.
+//     receives on them, creates each consumer it opens under PUB, pulls PUB's issue event from its
+//     Dispatch consumer, and pulls every repository's GitHub events from its one GitHub consumer
+//     (reachGitHubEvents). It is refused, each by name: PRIV's role exceptions; the listener's and
+//     Dispatch's reply inboxes (_INBOX.>), every service's reply root (natsgrant.ReplyRoot) and
+//     another daemon's reply prefix; the stream's stored-message get and its info; each consumer it
+//     would open under PRIV, and its own Dispatch consumer on PRIV's lane. It receives nothing of
+//     PRIV. The control has the auth service answer the daemon's grant whole, as an all-projects
+//     entry; the subscribe to PRIV's role exceptions is served, and the test fails naming PRIV's
+//     subject.
+//   - An edge listener's entry is answered no grant, so the hub refuses its connection.
 //
-// The check's listener rows (a listener called with a token listing PUB refuses PRIV's interest,
-// role claim, session consumer's resume and send, and serves PUB's) come with the listener's
-// project checks, which have no branch yet; they join this test then.
+// The session's GitHub row (a session whose token lists only PRIV receives, through an interest
+// that names acme/pub, that repository's event and none of acme/priv's) is in cmd/listener's test
+// of this name, since the relay it drives is the listener's. The listener's own rows (a listener
+// in required mode with a privacy stand-in, and its all-public control; called with a token
+// listing only PUB, it refuses PRIV's interest, role claim, session consumer's resume and send, and
+// serves each of PUB's) join that test with the listener's project checks, which are not on main.
 func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 	sessions := []*reachSession{newReachSession(t, "ses_pub", "PUB"), newReachSession(t, "ses_priv", "PRIV")}
 	daemonToken := unsignedPlatformToken(reachDaemonAccount, time.Now().Add(time.Hour))
@@ -79,13 +102,14 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	adminSeed, adminPublic := testnats.User(t)
 	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	startReachService(t, url, keys, "daemon/-/-="+reachDaemonAccount, natscallout.Deps{
+	edgeToken := unsignedPlatformToken(reachEdgeAccount, time.Now().Add(time.Hour))
+	startReachService(t, url, keys, "daemon/-/-="+reachDaemonAccount+" edge-listener/edge-a/PUB="+reachEdgeAccount, natscallout.Deps{
 		Introspect:   introspectSessions(sessions...),
-		ServiceToken: verifyPlatformToken(daemonToken),
+		ServiceToken: verifyPlatformTokens(daemonToken, edgeToken),
 		// As the broker's exchange list answers it (exchange.Set.MappedForAccount): the person the
 		// account's entry acts for, whom the auth service asks Dispatch about, and its projects.
 		Exchange: func(account string) (string, []string, bool) {
-			if account == reachDaemonAccount {
+			if account == reachDaemonAccount || account == reachEdgeAccount {
 				return "ada@example.com", []string{"PUB"}, true
 			}
 			return "", nil, false
@@ -129,10 +153,10 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 		if _, err := adminJS.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()}); err != nil {
 			t.Fatalf("create %s: %v", bus.Stream, err)
 		}
-		for subject, body := range map[string]string{
-			contracts.DispatchIssueTopicPrefix + "PRIV.PRIV-1.comment.created": "PRIV-1",
-			contracts.DispatchIssueTopicPrefix + "PUB.PUB-1.comment.created":   "PUB-1",
-		} {
+		privEvent := contracts.DispatchIssueTopicPrefix + "PRIV.PRIV-1.comment.created"
+		stored := map[string]string{privEvent: "PRIV-1", contracts.DispatchIssueTopicPrefix + "PUB.PUB-1.comment.created": "PUB-1"}
+		maps.Copy(stored, reachGitHubEvents)
+		for subject, body := range stored {
 			if _, err := adminJS.Publish(ctx, subject, []byte(body)); err != nil {
 				t.Fatalf("publish %s: %v", subject, err)
 			}
@@ -143,25 +167,53 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 		privExceptions := bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + "PRIV.>"
 		pubSub := daemon.subscribe(t, pubExceptions)
 		privSub := daemon.subscribe(t, privExceptions)
-		inboxSub := daemon.subscribe(t, natsgo.InboxPrefix+">")
+		// The listener's and Dispatch's replies arrive under _INBOX.>; every service's under the
+		// reply root, each under its own account's prefix.
+		otherPrefix := natsgrant.InboxPrefix(reachOtherDaemonAccount) + ".>"
+		replyRoot := natsgrant.ReplyRoot + ".>"
+		inboxSubs := map[string]*natsgo.Subscription{}
+		for _, subject := range []string{natsgo.InboxPrefix + ">", replyRoot, otherPrefix} {
+			inboxSubs[subject] = daemon.subscribe(t, subject)
+		}
 		publishCore(t, admin, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+"PRIV.controller", "PRIV's exception")
-		publishCore(t, admin, natsgo.InboxPrefix+"priv-daemon.reply", "PRIV's reply")
+		publishCore(t, admin, natsgo.InboxPrefix+"listener.reply", "a listener's reply")
+		publishCore(t, admin, natsgrant.InboxPrefix(reachOtherDaemonAccount)+".reply", "the PRIV daemon's reply")
 		publishCore(t, admin, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+"PUB.controller", "PUB's exception")
 		daemon.requireReceived(t, pubSub, "PUB's exception", "the PUB daemon on PUB's role exceptions %s", pubExceptions)
 		daemon.requireNothing(t, privSub, "the PUB daemon on PRIV's role exceptions %s", privExceptions)
-		daemon.requireNothing(t, inboxSub, "the PUB daemon on every reply inbox %s", natsgo.InboxPrefix+">")
 		daemon.requireRefused(t, "subscription", privExceptions)
-		daemon.requireRefused(t, "subscription", natsgo.InboxPrefix+">")
+		for subject, sub := range inboxSubs {
+			daemon.requireNothing(t, sub, "the PUB daemon on the reply subjects %s", subject)
+			daemon.requireRefused(t, "subscription", subject)
+		}
+
+		// The stream's stored-message get would read PRIV's issue event, and its info lists every
+		// stored subject: the server refuses both, and nats.go waits out a refused request.
+		get, err := json.Marshal(map[string]string{"last_by_subj": privEvent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := json.Marshal(map[string]string{"subjects_filter": contracts.DispatchIssueTopicPrefix + "PRIV.>"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for subject, body := range map[string][]byte{streamMsgGet: get, streamInfo: info} {
+			if msg, err := daemon.conn.Request(subject, body, reachRefusalWait); err == nil {
+				t.Fatalf("the server answered the PUB daemon's %s: %s", subject, msg.Data)
+			}
+			daemon.requireRefused(t, "publish", subject)
+		}
 
 		js, err := jetstream.New(daemon.conn)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Each consumer the daemon opens under PUB, created and read back through its info; then
-		// PUB's issue event pulled from the first, its Dispatch consumer, and acknowledged.
+		// Each consumer the daemon opens under PUB but its GitHub one, created and read back
+		// through its info; then PUB's issue event pulled from the first, its Dispatch consumer,
+		// and acknowledged.
 		pubConsumers := daemonConsumers("PUB")
 		opened := make([]jetstream.Consumer, len(pubConsumers))
-		for i, consumer := range pubConsumers {
+		for i, consumer := range pubConsumers[:githubConsumer] {
 			if opened[i], err = js.CreateOrUpdateConsumer(ctx, bus.Stream, consumer.config()); err != nil {
 				t.Fatalf("the PUB daemon could not create PUB's consumer %s on %s: %v", consumer.name, consumer.filter, err)
 			}
@@ -186,6 +238,7 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 		if !slices.Equal(pulled, []string{"PUB-1"}) {
 			t.Fatalf("the PUB daemon pulled %q from %s, want only PUB-1", pulled, pubConsumers[0].name)
 		}
+		daemon.requireGitHubEvents(t, js, pubConsumers[githubConsumer])
 
 		// Each consumer the daemon would open under PRIV, and its own Dispatch consumer on PRIV's
 		// lane: the server refuses each create, so no PRIV message reaches the daemon through one.
@@ -206,6 +259,18 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 				t.Fatalf("the PUB daemon created consumer %s on PRIV's %s", consumer.name, consumer.filter)
 			}
 			daemon.requireRefused(t, "publish", consumer.createSubject())
+		}
+	})
+
+	t.Run("an edge listener's entry is granted nothing, and the hub refuses its connection", func(t *testing.T) {
+		credential, _ := natscred.Service(fixedToken(edgeToken))
+		conn, err := natsgo.Connect(url, credential, natsgo.Timeout(5*time.Second), natsgo.NoReconnect())
+		if err == nil {
+			conn.Close()
+			t.Fatalf("the hub admitted the edge listener edge-listener/edge-a: the auth service granted its entry a grant")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
+			t.Fatalf("the edge listener's connection failed for another reason than a refusal: %v", err)
 		}
 	})
 }
@@ -264,12 +329,12 @@ func unsignedPlatformToken(account string, expiry time.Time) string {
 		encode(map[string]any{"sub": account, "iat": time.Now().Unix(), "exp": expiry.Unix()}) + ".unsigned"
 }
 
-// verifyPlatformToken is a Deps.ServiceToken that verifies token alone: the account it names, a
-// Kubernetes one, issued now and lapsing in an hour.
-func verifyPlatformToken(token string) func(context.Context, string) (string, bool, time.Time, time.Time, error) {
+// verifyPlatformTokens is a Deps.ServiceToken that verifies each of tokens alone: the account it
+// names, a Kubernetes one, issued now and lapsing in an hour.
+func verifyPlatformTokens(tokens ...string) func(context.Context, string) (string, bool, time.Time, time.Time, error) {
 	issued := time.Now()
 	return func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
-		if raw != token {
+		if !slices.Contains(tokens, raw) {
 			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
 		}
 		account, err := natscred.Identity(raw)
@@ -455,9 +520,19 @@ func publishCore(t *testing.T, conn *natsgo.Conn, subject, body string) {
 // the one filter its create names.
 type daemonConsumer struct{ name, filter string }
 
+// githubConsumer is where daemonConsumers puts a project's GitHub consumer.
+const githubConsumer = 3
+
+// The notification stream's two reads no consumer names: its stored-message get, which reads any
+// stored message, and its info, which lists every stored subject with its count.
+const (
+	streamMsgGet = "$JS.API.STREAM.MSG.GET." + bus.Stream
+	streamInfo   = "$JS.API.STREAM.INFO." + bus.Stream
+)
+
 // daemonConsumers are the consumers a Legion daemon of project opens (natsgrant.WithinProjects
 // holds a daemon's grant to these): its issue events first, then its wake lane, the shared wake
-// lane, and every repository's GitHub events, a message of no project.
+// lane, and, at githubConsumer, every repository's GitHub events, a message of no project.
 func daemonConsumers(project string) []daemonConsumer {
 	named := func(kind, filter string) daemonConsumer {
 		return daemonConsumer{name: "legion-go-" + project + "-" + kind, filter: filter}
@@ -466,8 +541,57 @@ func daemonConsumers(project string) []daemonConsumer {
 		named("dispatch", contracts.DispatchIssueTopicPrefix+project+".>"),
 		named("wake", contracts.LegionWakeSubject(strings.ToLower(project))),
 		named("ready", bus.LegionWakeTopic),
-		named("github", "notifications.github.>"),
+		named("github", contracts.GithubTopicPrefix+">"),
 	}
+}
+
+// requireGitHubEvents creates consumer, the daemon's GitHub consumer, reads its info, pulls the
+// stream's GitHub events (reachGitHubEvents) through it and acknowledges each, and fails naming
+// each GitHub subject the daemon did not receive. Every call is bounded by reachWait, so a server
+// that refuses the create or the pull, and so sends no answer, fails the test in seconds.
+func (c *reachClient) requireGitHubEvents(t *testing.T, js jetstream.JetStream, consumer daemonConsumer) {
+	t.Helper()
+	received, why := c.pullGitHubEvents(t.Context(), js, consumer)
+	var missing []string
+	for subject, body := range reachGitHubEvents {
+		if !slices.Contains(received, body) {
+			missing = append(missing, subject)
+		}
+	}
+	slices.Sort(missing)
+	if len(missing) > 0 {
+		t.Fatalf("the PUB daemon did not receive the GitHub event on %s through %s (%s); it received %q, and the server reported %v",
+			strings.Join(missing, " and "), consumer.name, why, received, c.reported())
+	}
+}
+
+// pullGitHubEvents is the bodies consumer delivers, each acknowledged, and why it stopped when it
+// delivered fewer than reachGitHubEvents holds.
+func (c *reachClient) pullGitHubEvents(ctx context.Context, js jetstream.JetStream, consumer daemonConsumer) ([]string, string) {
+	call, cancel := context.WithTimeout(ctx, reachWait)
+	defer cancel()
+	opened, err := js.CreateOrUpdateConsumer(call, bus.Stream, consumer.config())
+	if err != nil {
+		return nil, "its create on " + consumer.createSubject() + " failed: " + err.Error()
+	}
+	if _, err := opened.Info(call); err != nil {
+		return nil, "its info failed: " + err.Error()
+	}
+	batch, err := opened.Fetch(len(reachGitHubEvents), jetstream.FetchMaxWait(reachWait))
+	if err != nil {
+		return nil, "its pull failed: " + err.Error()
+	}
+	var received []string
+	for msg := range batch.Messages() {
+		received = append(received, string(msg.Data()))
+		if err := msg.DoubleAck(call); err != nil {
+			return received, fmt.Sprintf("its acknowledgement of %q failed: %v", msg.Data(), err)
+		}
+	}
+	if err := batch.Error(); err != nil {
+		return received, "its pull failed: " + err.Error()
+	}
+	return received, "its pull delivered only these"
 }
 
 func (c daemonConsumer) config() jetstream.ConsumerConfig {

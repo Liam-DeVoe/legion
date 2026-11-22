@@ -1092,8 +1092,10 @@ go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
 go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
 reach=$(../../{TAGGED_TESTS} natslive ./internal/integration)
-go test -count=1 -timeout 5m -tags natslive -run "$reach" -v ./internal/integration/"""
-# One call per package, never one union -run over the five: a name an untagged test of one
+go test -count=1 -timeout 5m -tags natslive -run "$reach" -v ./internal/integration/
+relay=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
+go test -count=1 -timeout 5m -tags natslive -run "$relay" -v ./cmd/listener/"""
+# One call per package, never one union -run over the six: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
@@ -3274,18 +3276,20 @@ GATES = [
         # projects behind an auth callout on the hub's image, the auth service's check that the
         # deployed server lets an empty allow list through, which its guard refuses, and the check
         # that each connection the real auth service admits on the hub's image reaches only its
-        # token's projects (internal/integration). The rest of internal/testnats and natsgrant runs
-        # in the unit step, and the rest of internal/integration in the integration step; the rest
-        # of internal/bus and internal/cipher/natscallout runs in envoy-go-race, since
-        # UNIT_TEST_PATTERN leaves the race lane's packages out of the unit step, and the envoy_go
-        # entry of TAG_RUNS, one entry per step, checks the testnats, natsgrant and integration
-        # half.
+        # token's projects (internal/integration), with its listener half, a session's GitHub
+        # interest relayed by the listener (cmd/listener). The rest of internal/testnats and
+        # natsgrant runs in the unit step, and the rest of internal/integration in the integration
+        # step; the rest of internal/bus, internal/cipher/natscallout and cmd/listener runs in
+        # envoy-go-race, since UNIT_TEST_PATTERN leaves the race lane's packages out of the unit
+        # step, and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats,
+        # natsgrant and integration half.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
             (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
             (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
             (ENVOY, ["./internal/integration/"], "go test -tags natslive ./internal/integration/", {"tags": "natslive"}),
+            (ENVOY, ["./cmd/listener/"], "go test -tags natslive ./cmd/listener/", {"tags": "natslive"}),
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
