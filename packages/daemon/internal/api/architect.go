@@ -117,12 +117,16 @@ type PhaseBackwardResponse struct{}
 // task the restarted role is given and into the daemon's own log line for the release, and an
 // escalation sends it to the controller in the held notice, beside the cause that hold already
 // names (record.Notice.Escalation). A request naming none leaves the daemon's own words in the
-// restarted role's task and the escalation's notice without the field, so it is optional.
+// restarted role's task and the escalation's notice without the field, so it is optional. Task
+// is the held task of the issue's plan the decision is of (intake.RetryOrEscalate.Task), optional
+// too: a request that names none is of the one held task, and the workflow refuses it where two
+// or more are held (TASK_REQUIRED), and a named task that is not held (TASK_NOT_AT_PHASE).
 type PhaseRetryRequest struct {
 	GrantID  string                         `json:"grantId"`
 	Issue    string                         `json:"issue"`
 	Decision intake.RetryOrEscalateDecision `json:"decision"`
 	Reason   string                         `json:"reason,omitempty"`
+	Task     string                         `json:"task,omitempty"`
 }
 
 // PhaseRetryResponse confirms the retry-or-escalate fact committed.
@@ -1465,7 +1469,7 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation, Task: req.Task}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {

@@ -2117,12 +2117,16 @@ export const LegionPhaseBackwardRequest = z.strictObject({
  * the task the restarted role is given and into the daemon's own log line for the release, and
  * an escalation sends it to the controller in the held notice, beside the cause that hold
  * already names. A request that names none is unchanged: the restarted role is told the
- * daemon's own words, and the escalation's notice carries no such field. */
+ * daemon's own words, and the escalation's notice carries no such field. `task` names the held
+ * task of the issue's plan the decision is of (contract 224): a request that names none is of the
+ * one held task, and the daemon answers `409 TASK_REQUIRED` where two or more are held and
+ * `409 TASK_NOT_AT_PHASE` for a named task that is not held. */
 export const LegionPhaseRetryRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   decision: z.enum(["retry", "escalate"]),
   reason: nonEmptyString.optional(),
+  task: nonEmptyString.optional(),
 });
 
 /** `api.EscalateRequest`, the architect's report to the controller. */

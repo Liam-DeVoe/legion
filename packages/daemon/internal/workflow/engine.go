@@ -1258,10 +1258,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	return intake.Result{}, nil
 }
 
-// claimFailed holds the issue whose phase worker's claim failed — a budget ran out — and tells the
+// claimFailed holds the step whose phase worker's claim failed — a budget ran out — and tells the
 // architect and the controller of the hold; the worker-died that comes with it is the architect's
-// alone. The tree's architect failing holds nothing, since a phase is its worker's; it is told as a
-// worker-died of the architect, lingering or not, and the controller hears it from a row of its
+// alone. The hold is of the task of the claim's agent's step (viewOfAgent, record.Store.HoldTask):
+// an issue whose plan holds several tasks is held only where no other task runs, and the held
+// notice names the task and its step (heldTaskSummary). The tree's architect failing holds
+// nothing, since a phase is its worker's; it is told as a worker-died of the architect, lingering
+// or not, and the controller hears it from a row of its
 // own, because every notice of the tree that no child's own architect takes reaches that
 // architect and nobody inside the tree is left to act on its own. That is why the architect's
 // branch comes before the lingering tree's guard. The row sent to the architect's own role
@@ -1358,24 +1361,42 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers || issue.Phase == phase.Done {
 		return intake.Result{}, err
 	}
-	working := issue.WorkingPhase()
-	failure := noticeFailure(fact)
-	works, err := worksAt(ctx, e.store, tx, *issue, working, fact.Role)
+	// The failure is of the step the claim's agent runs (viewOfAgent): of a plan of several tasks
+	// the copy of the issue read for that step's task, which stands in that task's own phase and
+	// hold, and of a plan of one task, or none, the issue itself. A claim whose agent runs no step
+	// of a plan of several works none of its phases.
+	view, w, ok, err := e.viewOfAgent(ctx, tx, *issue, agentOf(fact.Claim))
 	if err != nil {
 		return intake.Result{}, err
 	}
+	working := view.WorkingPhase()
+	failure := noticeFailure(fact)
+	works := false
+	if ok {
+		if works, err = worksAt(ctx, e.store, tx, view, working, fact.Role); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	if !works {
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: view.Phase, Failure: failure,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
 	}
-	if issue.Phase == phase.Held {
+	if view.Phase == phase.Held {
 		return intake.Result{}, nil
 	}
-	from := issue.Phase
+	from := view.Phase
 	// The hold keeps the task's place (moveTask): the task does not move, and held overlays the
-	// phase its place derives, which Hold.From names.
-	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from}
-	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
+	// phase its place derives, which Hold.From names. The task is held with it, for the failed
+	// claim (record.Store.HoldTask), so a plan of several tasks holds this task alone and the
+	// others go on: the issue is written where its tasks put it (putIssue), held only where no
+	// other task runs.
+	view.Phase, view.Hold = phase.Held, &record.Hold{From: from}
+	if w.Stored {
+		if err := e.store.HoldTask(ctx, tx, view.Key, view.Generation, w.Task, ""); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	if _, err := e.putIssue(ctx, tx, view); err != nil {
 		return intake.Result{}, err
 	}
 	// A claim that failed takes its issue into held, which is a phase change and so a movement
@@ -1383,16 +1404,33 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	// already held writes nothing here, so a second report of the same dead claim moves the
 	// tree nowhere. It matters for the measure rather than for the record: a tree stops at the
 	// moment its worker dies, and marking the movement here is what makes the quiet time run
-	// from that moment instead of from whatever last touched the issue before it.
+	// from that moment instead of from whatever last touched the issue before it. The hold of
+	// one task of several is a movement of the same kind: that task stopped where it stood.
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
-		Failure: failure}); err != nil {
+	held := record.Notice{Kind: "held", Role: fact.Role, Phase: from, Failure: failure}
+	if view.ViewTask != "" {
+		held.Summary = heldTaskSummary(w)
+	}
+	if err := e.noticeWithController(ctx, tx, issue.Key, held); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
 		Failure: failure, Reason: deathReason(fact, failure != nil)})
+}
+
+// heldTaskSummary is what the held notice of a failed claim of one task of a plan of several says
+// of the step it holds, so its owner reads which of its tasks is held: `task <id>, step <i>`, or
+// the task's retro or its merge.
+func heldTaskSummary(w Walk) string {
+	switch w.Place.Kind {
+	case record.PlaceRetro:
+		return fmt.Sprintf("task %s, its retro", w.Task)
+	case record.PlaceMerge:
+		return fmt.Sprintf("task %s, its merge", w.Task)
+	}
+	return fmt.Sprintf("task %s, step %d", w.Task, w.Place.Position)
 }
 
 // deathReason is what a worker-died notice says on the two paths that build no reason of their
@@ -2108,28 +2146,48 @@ func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 // hold is from and starts its role again (retryPhase), and an escalation records the reason
 // `escalated` and tells the controller. A hold its plan holds the issue in, a stopped task or a
 // parent held for its children, is neither one's to release, and both are refused
-// (planHoldRefusal) with nothing changed.
+// (planHoldRefusal) with nothing changed. Of a plan of several tasks the decision is of one held
+// task (heldView): the one it names, the one whose step its claim runs, or the one held task, read
+// for that task, so its release and its escalation hold or release that task alone; a decision
+// that names none while two or more are held, or a named task that is not held, is refused.
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Phase != phase.Held || issue.Hold == nil {
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if refusal, err := e.planHoldRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+	view, refusal, err := e.heldView(ctx, tx, *issue, fact.Task, fact.Claim)
+	if err != nil || refusal != nil || view.Phase != phase.Held || view.Hold == nil {
+		return intake.Result{Refusal: refusal}, err
+	}
+	if refusal, err := e.planHoldRefusal(ctx, tx, view); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	if fact.Decision == intake.EscalateDecision {
 		// Recorded on the issue as well as sent: the controller reads holds from the record at every
-		// start, so an escalation made while none ran still reaches it.
-		issue.Hold.Reason = record.HoldEscalated
-		if err := e.WriteIssue(ctx, tx, *issue); err != nil {
+		// start, so an escalation made while none ran still reaches it. The held task takes the
+		// reason too (record.Store.HoldTask), which the issue's hold is derived from.
+		view.Hold.Reason = record.HoldEscalated
+		w, err := e.walk(ctx, tx, view)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if w.Stored {
+			if err := e.store.HoldTask(ctx, tx, view.Key, view.Generation, w.Task, record.HoldEscalated); err != nil {
+				return intake.Result{}, err
+			}
+		}
+		if _, err := e.putIssue(ctx, tx, view); err != nil {
 			return intake.Result{}, err
 		}
 		// The architect's own words where it named any, beside the cause the hold already names:
 		// the controller must act on this hold, and why the architect escalated it is what it
 		// acts on. They travel in a field of their own, since Reason is the word `escalated`
 		// both agents' texts branch on (record.Notice.Escalation).
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Phase: issue.Hold.From,
-			Reason: string(record.HoldEscalated), Escalation: fact.Reason})
+		held := record.Notice{Kind: "held", Phase: view.Hold.From, Reason: string(record.HoldEscalated), Escalation: fact.Reason}
+		if view.ViewTask != "" {
+			held.Summary = heldTaskSummary(w)
+		}
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, held)
 	}
 	if fact.Decision != intake.RetryDecision {
 		return intake.Result{}, nil
@@ -2137,20 +2195,28 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	// The role the hold is from is the role of the issue's step at that phase
-	// (record.Issue.RunningAt, which keeps a held step at the phase its place derives): for a hold
-	// from step, the role of the step it was held at, since phase.RoleFor knows no role of step.
-	var held claim.Role
-	if at := issue.RunningAt(issue.Hold.From); len(at) > 0 {
-		held = at[0].Role
-	}
-	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, held, fact.Claim); err != nil || refusal != nil {
+	held := heldStepRole(view, view.Hold.From)
+	if refusal, err := e.stepMovedRefusal(ctx, tx, view, held, fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
 	// line for the release both carry; a decision that names none keeps the daemon's.
-	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false)
+	_, err = e.retryPhase(ctx, tx, view, view.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false)
 	return intake.Result{}, err
+}
+
+// heldStepRole is the role of the step the hold of issue keeps at from, the phase the hold is from
+// (record.Issue.RunningAt, which keeps a held step at the phase its place derives): for a hold from
+// step, the role of the step it was held at, since phase.RoleFor knows no role of step. Of a copy
+// read for one task of a plan of several (view) it is that task's step, and otherwise the first
+// such step in task id order.
+func heldStepRole(issue record.Issue, from phase.Phase) claim.Role {
+	for _, step := range issue.RunningAt(from) {
+		if issue.ViewTask == "" || step.Task == issue.ViewTask {
+			return step.Role
+		}
+	}
+	return ""
 }
 
 // stepMovedRefusal refuses a restart of role's phase of issue asked for one claim, asked, where the
@@ -2181,22 +2247,30 @@ func (e *Engine) stepMovedRefusal(ctx context.Context, tx pgx.Tx, issue record.I
 // role. A restart that asks for a new session (`--fresh-session`) says so on the start it
 // queues, so the claim forgets its recorded session in the retry that start makes and no refusal
 // above can leave a session discarded for a restart that never happened. An issue its plan holds
-// is refused as the architect's retry is (planHoldRefusal).
+// is refused as the architect's retry is (planHoldRefusal). Of a plan of several tasks the phase
+// is that of the step the claim's agent runs (viewOfAgent), read for that step's task, so the
+// restart releases and starts that task alone; a claim whose agent runs no step works no phase.
 func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.RestartPhase) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	working := issue.WorkingPhase()
-	works, err := worksAt(ctx, e.store, tx, *issue, working, fact.Role)
+	view, _, ok, err := e.viewOfAgent(ctx, tx, *issue, agentOf(fact.Claim))
 	if err != nil {
 		return intake.Result{}, err
+	}
+	working := view.WorkingPhase()
+	works := false
+	if ok {
+		if works, err = worksAt(ctx, e.store, tx, view, working, fact.Role); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if !InWorkflow(*issue) || !works {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
-	if refusal, err := e.planHoldRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+	if refusal, err := e.planHoldRefusal(ctx, tx, view); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -2206,10 +2280,10 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
 	}
-	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, fact.Role, fact.Claim); err != nil || refusal != nil {
+	if refusal, err := e.stepMovedRefusal(ctx, tx, view, fact.Role, fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession)
+	_, err = e.retryPhase(ctx, tx, view, working, "the operator retried this phase's worker", fact.FreshSession)
 	return intake.Result{}, err
 }
 
@@ -2244,9 +2318,21 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // (transition).
 func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession bool) (phase.Phase, error) {
 	// The retry keeps the task's place (moveTask): it puts back Hold.From, the phase that place
-	// derives, so the task never moved.
+	// derives, so the task never moved. A held task is released at that place first
+	// (record.Store.ReleaseTask), and the issue is written where its tasks then put it (putIssue):
+	// issue may be a copy read for the one task of several the retry is of (view). A task the
+	// release before left running beside its issue's hold has nothing to release.
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	if w.Stored && w.State == record.TaskHeld {
+		if err := e.store.ReleaseTask(ctx, tx, issue.Key, issue.Generation, w.Task); err != nil {
+			return "", err
+		}
+	}
 	issue.Phase, issue.Hold = from, nil
-	if err := e.WriteIssue(ctx, tx, issue); err != nil {
+	if _, err := e.putIssue(ctx, tx, issue); err != nil {
 		return "", err
 	}
 	// The retry puts the issue back in the phase its worker failed in, which is a phase write
@@ -2280,12 +2366,9 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	// The role of the step the retry starts again: the step the hold kept at from
-	// (record.Issue.RunningAt), the first in task id order.
-	var role claim.Role
-	if at := issue.RunningAt(from); len(at) > 0 {
-		role = at[0].Role
-	}
+	// The role of the step the retry starts again: the step the hold kept at from, of the task the
+	// retry is of (heldStepRole).
+	role := heldStepRole(issue, from)
 	return from, e.restart(ctx, tx, issue, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
 	}, freshSession)

@@ -1835,7 +1835,8 @@
       "decision",
       "grantId",
       "issue",
-      "reason"
+      "reason",
+      "task"
     ]
   },
   {

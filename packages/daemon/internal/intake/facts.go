@@ -1084,6 +1084,12 @@ const (
 // Claim is the claim a caller retrying the phase for one claim read as the worker on the held
 // phase's step (api's restartWorkedPhase), and "" for the architect's own decision, which names
 // none: a retry that names one is refused where the step is another claim's when it applies.
+//
+// Task is the task of the issue's plan the decision is of, "" where it names none: the held task
+// of a plan of several tasks whose other tasks run on (workflow's heldView). A decision that names
+// none is of the one held task; with two or more held it is refused (TaskRequired), and a named
+// task that is not held is refused too (TaskNotAtPhase). Of a plan of one task, or of none, it is
+// the decision on the issue's hold as before, whatever task it names.
 type RetryOrEscalate struct {
 	Issue      string
 	Decision   RetryOrEscalateDecision
@@ -1091,6 +1097,7 @@ type RetryOrEscalate struct {
 	By         claim.Token
 	Generation uint64
 	Claim      claim.Token
+	Task       string
 }
 
 func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
@@ -1385,8 +1392,12 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
+	Issue string
+	Role  claim.Role
+	// Claim is the claim that failed, whose name is its agent's (claim.Token.Cut): of an issue
+	// whose plan holds several tasks, the step that agent runs is the one the failure holds
+	// (workflow's viewOfAgent). It is "" for a fact built without it, which names no agent.
+	Claim        claim.Token
 	Reason       string
 	Death        string
 	StartFailure string
@@ -1975,6 +1986,26 @@ func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refu
 func TaskAwaitsPerson(issue, task string) *Refusal {
 	return &Refusal{Status: 409, Code: "TASK_AWAITING_PERSON", Message: fmt.Sprintf(
 		"%s waits on a person before its first step, and Legion cannot stop task %s there. To change the task, give a later version of the plan with register_plan; to stop it, call stop_task again once the person has answered. This stop changed nothing.", issue, task)}
+}
+
+// TaskRequired is the 409 TASK_REQUIRED refusal of an owner's call on issue that names no task
+// where tasks, two or more tasks of its plan in id order, each stand at at, the act the call
+// answers: the call does not say which of them it is of, so it changed nothing.
+func TaskRequired(issue string, tasks []string, at phase.Phase) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_REQUIRED", Message: fmt.Sprintf(
+		"tasks %s of %s each stand at %s: name the task with task.", strings.Join(tasks, ", "), issue, at)}
+}
+
+// TaskNotAtPhase is the 409 TASK_NOT_AT_PHASE refusal of an owner's call on issue that names task,
+// which stands at stands, the phase its own place derives, and not at at, the act the call
+// answers; stands is "" for a task the issue's plan does not hold. It changed nothing.
+func TaskNotAtPhase(issue, task string, stands, at phase.Phase) *Refusal {
+	if stands == "" {
+		return &Refusal{Status: 409, Code: "TASK_NOT_AT_PHASE", Message: fmt.Sprintf(
+			"the plan of %s holds no task %s, so it stands at no %s.", issue, task, at)}
+	}
+	return &Refusal{Status: 409, Code: "TASK_NOT_AT_PHASE", Message: fmt.Sprintf(
+		"task %s of %s stands at %s, not at %s.", task, issue, stands, at)}
 }
 
 // RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the

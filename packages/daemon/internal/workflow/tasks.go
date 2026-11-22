@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -72,6 +74,86 @@ func (e *Engine) viewsOf(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]
 		}
 	}
 	return views, walks, nil
+}
+
+// viewOfAgent is the copy of issue read for the task whose running step agent runs
+// (record.Issue.StepOfAgent, a held step among them), and the walk of that task: the one reading
+// of a fact of a step that reaches its task by the agent of the claim it names. An issue whose
+// plan holds one task, or none, is its own view, whatever agent is named. ok is false where its
+// plan holds several tasks and agent runs none of their steps: a step that waits for its agent is
+// none of them.
+func (e *Engine) viewOfAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Agent) (record.Issue, Walk, bool, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return record.Issue{}, Walk{}, false, err
+	}
+	task := ""
+	if stored != nil && len(stored.Tasks) > 1 {
+		step, ok := issue.StepOfAgent(agent)
+		if !ok {
+			return issue, Walk{}, false, nil
+		}
+		task = step.Task
+	}
+	return viewOn(issue, stored, task)
+}
+
+// agentOf is the agent whose claim token is token (claim.Token.Cut), "" for a token that names
+// none.
+func agentOf(token claim.Token) claim.Agent {
+	_, agent, _ := token.Cut()
+	return agent
+}
+
+// heldView is the copy of issue read for the held task an owner's decision on a hold is of
+// (retryOrEscalate): the task it names; else the task whose step the claim it names runs, the
+// operator's retry of one claim; else the one held task of the plan. With none held, it is the
+// first stopped task in task id order, whose hold its stop is (planHoldRefusal refuses its
+// release), and with none of either the issue as it stands, which stands in no hold. A named task
+// that is not held is refused (intake.TaskNotAtPhase), and so is a decision that names neither a
+// task nor a claim while two or more tasks are held (intake.TaskRequired). An issue whose plan
+// holds one task, or none, is its own view, as before tasks were held, whatever the decision names.
+func (e *Engine) heldView(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, by claim.Token) (record.Issue, *intake.Refusal, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
+		return issue, nil, err
+	}
+	switch {
+	case task != "":
+		view, w, ok, err := viewOn(issue, stored, task)
+		switch {
+		case err != nil:
+			return record.Issue{}, nil, err
+		case !ok:
+			return record.Issue{}, intake.TaskNotAtPhase(issue.Key, task, "", phase.Held), nil
+		case w.State != record.TaskHeld:
+			return record.Issue{}, intake.TaskNotAtPhase(issue.Key, task, view.Phase, phase.Held), nil
+		}
+		return view, nil, nil
+	case by != "":
+		view, _, ok, err := e.viewOfAgent(ctx, tx, issue, agentOf(by))
+		if err != nil || ok {
+			return view, nil, err
+		}
+		return issue, nil, nil
+	}
+	var held, stopped []string
+	for _, row := range stored.Tasks {
+		switch row.State {
+		case record.TaskHeld:
+			held = append(held, row.Task)
+		case record.TaskStopped:
+			stopped = append(stopped, row.Task)
+		}
+	}
+	switch {
+	case len(held) > 1:
+		return record.Issue{}, intake.TaskRequired(issue.Key, held, phase.Held), nil
+	case len(held) == 0 && len(stopped) == 0:
+		return issue, nil, nil
+	}
+	view, _, _, err := viewOn(issue, stored, slices.Concat(held, stopped)[0])
+	return view, nil, err
 }
 
 // putIssue writes issue, the issue itself or a copy of it read for one of its tasks (view), and

@@ -588,7 +588,16 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	marks := startMarks{resend: true, freshSession: freshSession}
+	// A retry of the step of one task of a plan of several (view) names the claim of that step's
+	// agent (stepToken), as the start of that step did, so the retry reaches the agent whose step
+	// it releases and not the claim the role's row last named.
+	if issue.ViewTask != "" {
+		if marks.agent, err = e.stepToken(issue, w, w.Place, role); err != nil {
+			return err
+		}
+	}
+	return e.started(ctx, tx, issue, role, told(at), row.Entry, marks)
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim

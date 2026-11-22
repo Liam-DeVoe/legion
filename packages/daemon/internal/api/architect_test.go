@@ -452,7 +452,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	retryGrant := architect.grant(t)
 	retry := h.request(http.MethodPost, "/legion/v1/phase/retry", map[string]any{
-		"grantId": retryGrant, "issue": "LEGION-209", "decision": "retry",
+		"grantId": retryGrant, "issue": "LEGION-209", "decision": "retry", "task": "b",
 	}, nil)
 	if retry.Code != http.StatusOK {
 		t.Fatalf("phase retry = %d: %s", retry.Code, retry.Body)
@@ -494,7 +494,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 		t.Fatalf("gate fact = %#v", got[0])
 	}
 	if fact, ok := got[1].(intake.RetryOrEscalate); !ok || fact.Issue != "LEGION-209" ||
-		fact.Decision != intake.RetryDecision {
+		fact.Decision != intake.RetryDecision || fact.Task != "b" {
 		t.Fatalf("retry fact = %#v", got[1])
 	}
 	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" {

@@ -3178,6 +3178,13 @@ package api
 // working copy by its branch, which the launcher of the pod that replaces a released one puts
 // back beside the issue's own; a bundle without it restores the issue's working copy alone. No
 // answer a plugin parses changes, so no record of an earlier contract and no serving-down changes.
+// `POST /legion/v1/phase/retry` (`api.PhaseRetryRequest`, `retry_or_escalate`) takes an optional
+// `task`, the held task of the issue's plan the decision is of: a failed claim holds the task of
+// its agent's step, and the issue only where no other task runs. A request that names none is of
+// the one held task, as every request of a plan of one task is; where two or more are held it is
+// answered `409 TASK_REQUIRED`, and a named task that is not held `409 TASK_NOT_AT_PHASE`.
+// `readBody` refuses an unknown field, so a plugin that sends `task` needs this contract; a
+// plugin before it sends none, which a daemon of this contract takes while one task is held.
 // (224 is a working number, above every number this tree's entries hold and every number the
 // changes this one is built on hold. No reading of the open pull requests chose it: the pull
 // request that carries this entry reads `const DaemonAPIVersion` at each open pull request's head
