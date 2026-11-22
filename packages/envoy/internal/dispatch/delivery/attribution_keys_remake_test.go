@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -201,6 +202,31 @@ func TestTheKeyRemakeLoopRemakesKeysAfterAChangeWhileItRuns(t *testing.T) {
 	noReadFollows(t, ctx, pool)
 }
 
+// remakeStatements records the rows each statement of RemakeKeys remade on the pool it traces:
+// the chunk statement (remakeKeysStatement), told by its row lock.
+type remakeStatements struct {
+	mu   sync.Mutex
+	rows []int64
+}
+
+type remakeStatementKey struct{}
+
+func (r *remakeStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "for update of t skip locked") {
+		return context.WithValue(ctx, remakeStatementKey{}, true)
+	}
+	return ctx
+}
+
+func (r *remakeStatements) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if ctx.Value(remakeStatementKey{}) == nil || data.Err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows = append(r.rows, data.CommandTag.RowsAffected())
+}
+
 // Two remakes at once take disjoint rows. 300 texts rows, three chunks of the 100 the test sets
 // (shrinkRemakeChunk), are on another reading after a change of the reading. Two RemakeKeys calls
 // start together. Their counts add up to 300, and no row stays on another reading. It fails where a
@@ -209,7 +235,10 @@ func TestTheKeyRemakeLoopRemakesKeysAfterAChangeWhileItRuns(t *testing.T) {
 // dropped alone changes nothing a test can read: it repeats the chunk's condition on rows the same
 // statement holds locked (`for update ... skip locked`, which PostgreSQL checks again on the row it
 // locks), so no row the chunk took can fail it. It also fails where the two remakes stop while rows
-// are on another reading (a remake of one chunk: 200 of 300).
+// are on another reading (a remake of one chunk: 200 of 300). Each chunk statement the two remakes
+// run remakes at most the 100 rows the test sets, and at least three remake rows, so the chunk the
+// statements take is the shrunk one: with a chunk of 1,000, 300 rows are one or two statements, and
+// the test would read no remake of several chunks.
 func TestTwoRemakesTakeDisjointRows(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	shrinkRemakeChunk(t)
@@ -220,6 +249,8 @@ func TestTwoRemakesTakeDisjointRows(t *testing.T) {
 	if other := rowsOnAnotherReading(t, ctx, pool, change.schema); other != rows {
 		t.Fatalf("%d rows are on another reading after the change, want %d", other, rows)
 	}
+	statements := &remakeStatements{}
+	traced := storetest.Traced(t, pool, statements, nil)
 
 	var counts [2]int
 	var failures [2]error
@@ -228,7 +259,7 @@ func TestTwoRemakesTakeDisjointRows(t *testing.T) {
 	for i := range counts {
 		remakes.Go(func() {
 			<-start
-			counts[i], failures[i] = RemakeKeys(ctx, pool)
+			counts[i], failures[i] = RemakeKeys(ctx, traced)
 		})
 	}
 	close(start)
@@ -244,6 +275,21 @@ func TestTwoRemakesTakeDisjointRows(t *testing.T) {
 	if other := rowsOnAnotherReading(t, ctx, pool, change.schema); other != 0 {
 		t.Errorf("%d rows are on another reading after the two remakes, want 0", other)
 	}
-	t.Logf("the two remakes remade %d and %d rows", counts[0], counts[1])
+	statements.mu.Lock()
+	chunks := slices.Clone(statements.rows)
+	statements.mu.Unlock()
+	remaking := 0
+	for _, remade := range chunks {
+		if remade > int64(remakeChunk) {
+			t.Errorf("a chunk statement remade %d rows, more than the %d the test sets: the remakes did not take the shrunk chunk (statements %v)", remade, remakeChunk, chunks)
+		}
+		if remade > 0 {
+			remaking++
+		}
+	}
+	if remaking < rows/remakeChunk {
+		t.Errorf("%d chunk statements remade rows (%v), want at least %d: 300 rows are three chunks of %d", remaking, chunks, rows/remakeChunk, remakeChunk)
+	}
+	t.Logf("the two remakes remade %d and %d rows, in chunk statements of %v rows", counts[0], counts[1], chunks)
 	noReadFollows(t, ctx, pool)
 }

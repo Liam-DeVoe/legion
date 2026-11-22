@@ -158,6 +158,67 @@ func TestTheStatementReadsTheRenamesOnceForEachPullRequestWhateverTheirNumber(t 
 	}
 }
 
+// api's link check, its lock and the lookup by reference read the links of one pull request
+// through PullRequestLinksSQL, which reads the names of its repository from the renaming rule's
+// inverse (refs.NamesSQL): only the rows that rename to its canonical name. The loops of the nodes
+// that read repo_projects add up to the same count with 2 renamed repositories and with 41. Where
+// it compared the canonical name of every renamed repository, that count grew by one or more for
+// each of them. The controls in the same test: the plan reads repo_projects, and the links hold
+// the forms of #7 under acme/widgets and under oldco/widgets, the name renamed to it, at both counts.
+func TestPullRequestLinksSQLReadsOnlyTheRenamesOfItsRepository(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	exec := func(what, sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	exec("project", `insert into projects (key, name, default_assignee) values ('RNMD', 'RNMD', 'alice') on conflict do nothing`)
+	exec("the old name of acme/widgets", `insert into repo_projects (repo, project, created_by, renamed_to)
+		values ('oldco/widgets', 'RNMD', '{"kind":"system","id":"test"}', 'acme/widgets')`)
+	renames := func(first, last int) {
+		t.Helper()
+		exec("renamed repositories", `insert into repo_projects (repo, project, created_by, renamed_to)
+			select 'gone/r' || g, 'RNMD', '{"kind":"system","id":"test"}', 'kept/r' || g from generate_series($1::int, $2::int) g`, first, last)
+	}
+	query := `select ` + PullRequestLinksSQL("$1::text", "$2::int")
+	want := fmt.Sprint([]string{"https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/7",
+		"https://github.com/oldco/widgets/issues/7", "https://github.com/oldco/widgets/pull/7"})
+	loops := func(what string) float64 {
+		t.Helper()
+		var links []string
+		if err := pool.QueryRow(ctx, query, "acme/widgets", 7).Scan(&links); err != nil {
+			t.Fatalf("read the links of acme/widgets#7 %s: %v", what, err)
+		}
+		if got := fmt.Sprint(slices.Sorted(slices.Values(links))); got != want {
+			t.Fatalf("the links of acme/widgets#7 %s are %s, want %s", what, got, want)
+		}
+		var raw []byte
+		if err := pool.QueryRow(ctx, `explain (analyze, format json) `+query, "acme/widgets", 7).Scan(&raw); err != nil {
+			t.Fatalf("explain the links of acme/widgets#7 %s: %v", what, err)
+		}
+		var sum float64
+		for _, node := range explaintest.Nodes(t, explaintest.OnePlan(t, raw)) {
+			if node.Relation == "repo_projects" {
+				sum += node.Loops
+			}
+		}
+		return sum
+	}
+
+	renames(1, 1)
+	few := loops("with 2 renamed repositories")
+	renames(2, 40)
+	many := loops("with 41 renamed repositories")
+	t.Logf("loops of the nodes that read repo_projects: %v with 2 renamed repositories, %v with 41", few, many)
+	if few == 0 {
+		t.Fatalf("control: the plan reads repo_projects in no node, so its loops say nothing")
+	}
+	if many != few {
+		t.Errorf("the nodes that read repo_projects ran %v loops with 41 renamed repositories and %v with 2, want the same: the links of one pull request read only the renames of its repository", many, few)
+	}
+}
+
 // renameRuleLoops is the loops of the nodes of a plan that read the renaming rule from
 // repo_projects: a node on the table whose filter or condition names renamed_to. The join of an
 // issue's project to its default repository reads the table too (refs.IssueRepoJoin), by

@@ -511,20 +511,29 @@ func TestAReaderByIssueMatchesACitationInAnotherCase(t *testing.T) {
 // names a pull request by what it says, not by matching the stored text. ACME-55 links #55 by a
 // host spelled with U+0130, which the rule refuses (a link of a character outside ASCII) and which
 // lower() folds to the ASCII host, so its lower() is one of #55's links: the statement's arm by key
-// takes a link only where the rule takes it too, and #55 answers nobody. The control is ACME-54,
-// which links #54 by the name it has today. The issues resolve to acme/stmt, so each pull request
-// is a link's in another repository. When the statement matched a link with the stored URL
-// alone, #51 and #52 answered nobody, which main's linked reader did not (review of #4209, B1).
+// takes a link only where the rule takes it too, and #55 answers nobody. ACME-56 links #56 by
+// acme/older, a second old name of the same repository: the settings route refuses a chain of
+// renames, not two names renamed to one, so a repository renamed twice holds both once its first
+// mapping points at the newest name, and a link by either names the pull request. The control is
+// ACME-54, which links #54 by the name it has today. The issues resolve to acme/stmt, so each pull
+// request is a link's in another repository. When the statement matched a link with the stored
+// URL alone, #51 and #52 answered nobody, which main's linked reader did not (review of #4209, B1);
+// when it read one name of the names renamed to a repository, #51 or #56 did.
 func TestALinkNamesItsPullRequestUnderAnyNameOfItsRepository(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	statementIssues(t, ctx, pool, "RENM-1", "ACME-51", "ACME-52", "ACME-53", "ACME-54", "ACME-55")
+	statementIssues(t, ctx, pool, "RENM-1", "ACME-51", "ACME-52", "ACME-53", "ACME-54", "ACME-55", "ACME-56")
 	renameStatementRepo(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+		values ('acme/older', 'RENM', '{"kind":"system","id":"test"}'::jsonb, false, 'acme/new')`); err != nil {
+		t.Fatalf("map acme/older as renamed to acme/new too: %v", err)
+	}
 	links := map[string]string{
 		"ACME-51": "https://github.com/acme/old/pull/51",
 		"ACME-52": "https://github.com/ACME/Old/ISSUES/52",
 		"ACME-53": "https://github.com/acme/new/pull/53#discussion_r1",
 		"ACME-54": "https://github.com/acme/new/pull/54",
 		"ACME-55": "https://g\u0130thub.com/acme/new/pull/55",
+		"ACME-56": "https://github.com/acme/older/pull/56",
 	}
 	var folded string
 	if err := pool.QueryRow(ctx, `select lower($1::text)`, links["ACME-55"]).Scan(&folded); err != nil {
@@ -538,7 +547,7 @@ func TestALinkNamesItsPullRequestUnderAnyNameOfItsRepository(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, number := range []int{51, 52, 53, 54, 55} {
+	for _, number := range []int{51, 52, 53, 54, 55, 56} {
 		row := statementRow{repo: "acme/new", number: number, branch: "main", title: "no key", texts: readTexts(""), timeline: &statementTimeline{}}
 		if number == 53 {
 			row.url = links["ACME-53"]
@@ -550,13 +559,15 @@ func TestALinkNamesItsPullRequestUnderAnyNameOfItsRepository(t *testing.T) {
 	wantAnswer(t, ctx, pool, "acme/new", 53, "nobody from none")
 	wantAnswer(t, ctx, pool, "acme/new", 54, "ACME-54 from external_link")
 	wantAnswer(t, ctx, pool, "acme/new", 55, "nobody from none")
+	wantAnswer(t, ctx, pool, "acme/new", 56, "ACME-56 from external_link")
 	wantAnswer(t, ctx, pool, renamedRepo, 51, "ACME-51 from external_link")
 	wantListed(t, ctx, pool, "ACME-51", "#51")
 	wantListed(t, ctx, pool, "ACME-52", "#52")
 	wantListed(t, ctx, pool, "ACME-53")
 	wantListed(t, ctx, pool, "ACME-54", "#54")
 	wantListed(t, ctx, pool, "ACME-55")
-	for issue, want := range map[string]string{"ACME-51": "acme/new#51", "ACME-52": "acme/new#52", "ACME-54": "acme/new#54"} {
+	wantListed(t, ctx, pool, "ACME-56", "#56")
+	for issue, want := range map[string]string{"ACME-51": "acme/new#51", "ACME-52": "acme/new#52", "ACME-54": "acme/new#54", "ACME-56": "acme/new#56"} {
 		listed, err := ListPullRequestsOfIssues(ctx, pool, []string{issue})
 		if err != nil {
 			t.Fatal(err)

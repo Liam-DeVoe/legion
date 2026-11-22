@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	neturl "net/url"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -122,16 +123,45 @@ func TestEverySessionDispatchOpensRunsWithJITOff(t *testing.T) {
 	t.Cleanup(copied.Close)
 	off("a pool opened from Pool.Config", copied.QueryRow)
 
-	config, err := ConnConfig(url)
-	if err != nil {
-		t.Fatalf("ConnConfig: %v", err)
+	// CheckVersions' own connection, read from the database's side with no hook in Dispatch: the
+	// version table it reads is put behind a view, under the same name, whose filter refuses a
+	// session whose jit is not off. CheckVersions finds the table by information_schema.columns,
+	// which lists a view's columns too, and reads it in its read-only transaction, so the read
+	// answers only on a session that runs with jit = off. The control: the plain connection's read
+	// of the same view is refused. The table is put back before the census below reads it.
+	swap := []string{
+		`create function session_settings_test_jit_off() returns boolean language plpgsql volatile as $$
+		begin
+			if current_setting('jit') <> 'off' then
+				raise exception 'this session runs with jit = %', current_setting('jit');
+			end if;
+			return true;
+		end $$`,
+		`alter table ` + versionTable + ` rename to session_settings_test_versions`,
+		`create view ` + versionTable + ` as select * from session_settings_test_versions where session_settings_test_jit_off()`,
 	}
-	own, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("connect as CheckVersions does: %v", err)
+	back := []string{
+		`drop view ` + versionTable,
+		`alter table session_settings_test_versions rename to ` + versionTable,
+		`drop function session_settings_test_jit_off()`,
 	}
-	t.Cleanup(func() { own.Close(context.Background()) })
-	off("CheckVersions' connection (ConnConfig)", own.QueryRow)
+	for _, statement := range swap {
+		if _, err := store.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("put %s behind a view that refuses jit: %v", versionTable, err)
+		}
+	}
+	var versions int
+	if err := plain.QueryRow(ctx, `select count(*) from `+versionTable).Scan(&versions); err == nil || !strings.Contains(err.Error(), "this session runs with jit = on") {
+		t.Errorf("control: a plain connection's read of the view answered %d rows and error %v, want the view's refusal of jit = on: else the row below tests nothing", versions, err)
+	}
+	if _, err := CheckVersions(ctx, url); err != nil {
+		t.Errorf("CheckVersions' own connection does not run with jit = off: %v", err)
+	}
+	for _, statement := range back {
+		if _, err := store.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("put %s back: %v", versionTable, err)
+		}
+	}
 
 	// The census reads its own session's setting: a census counting the settings that are not off
 	// refuses its migration unless the census's connection runs with jit = off.

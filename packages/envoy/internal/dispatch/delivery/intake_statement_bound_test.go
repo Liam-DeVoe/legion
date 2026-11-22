@@ -30,7 +30,9 @@ import (
 
 // The settle. #4299 is owed a read; the read of its event is held, the owed table is locked, and
 // the read is released: the head is written, and the settle waits on the lock. The message's
-// deadline is 20 s.
+// deadline is 20 s. The test times the settle's statement on the intake's pool and holds it to the
+// bound and statementWaitMargin, as the head write's and the place's tests hold theirs, and the
+// delivery to the bound and 5 s, far below that deadline.
 func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -52,7 +54,8 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 		close(reading)
 		<-answer
 	}
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
+	settles := &statementWaitTracer{match: "delete from pull_request_reads_owed"}
+	intake := newIntake(nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
 	payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 	if err != nil {
 		t.Fatal(err)
@@ -79,9 +82,17 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	took := ended.Sub(answered)
 	release()
 	heads := headRowCount(t, ctx, intake, "acme/widgets", number)
-	t.Logf("delivery_after_answer=%s head_rows=%d message_timeout=%s owe_bound=%s", took.Round(time.Millisecond), heads, intakeMessageTimeout, owedReadWriteTimeout)
+	settled := settles.first()
+	t.Logf("delivery_after_answer=%s settle_waited=%s head_rows=%d message_timeout=%s owe_bound=%s", took.Round(time.Millisecond), settled.Round(time.Microsecond), heads, intakeMessageTimeout, owedReadWriteTimeout)
 	if heads != 1 {
 		t.Errorf("#%d has %d head rows after its delivery, want 1: the head was written before the settle", number, heads)
+	}
+	if settled == 0 {
+		t.Fatalf("no settle of #%d's owed read was timed on the intake's pool: the case did not happen", number)
+	}
+	if settled > owedReadWriteTimeout+statementWaitMargin {
+		t.Errorf("the settle of the owed read waited %s on the lock of pull_request_reads_owed, want no longer than the owe's bound (%s) and %s",
+			settled.Round(time.Millisecond), owedReadWriteTimeout, statementWaitMargin)
 	}
 	if took > owedReadWriteTimeout+5*time.Second {
 		t.Errorf("the delivery ended %s after GitHub answered, while pull_request_reads_owed was locked; want within the owe's bound (%s) and 5 s: the settle of the owed read waits on the message's deadline (%s)",
