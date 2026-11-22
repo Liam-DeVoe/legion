@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import { type ReactNode, useEffect } from "react";
 
+import { settle } from "../../__tests__/fake-clock";
 import { chunk, chunkComponent } from "./chunk-component";
 import { ErrorBoundary } from "./ErrorBoundary";
 
@@ -81,5 +82,57 @@ test("a download that fails reaches the error boundary, and the next load asks a
   } finally {
     console.error = consoleError;
     view.unmount();
+  }
+});
+
+test("a download that fails offline draws the fallback, reaches no error boundary, and draws the component once the browser is back online", async () => {
+  const first = Promise.withResolvers<typeof Greeting>();
+  const second = Promise.withResolvers<typeof Greeting>();
+  let imports = 0;
+  const source = chunk<{ name: string }>(() => {
+    imports += 1;
+    return imports === 1 ? first.promise : second.promise;
+  });
+  const Loading = chunkComponent(source, <p>Loading</p>);
+  const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  const view = render(
+    <ErrorBoundary region="this panel">
+      <Loading name="Ada" />
+    </ErrorBoundary>
+  );
+  try {
+    await act(async () => {
+      first.reject(new TypeError("Failed to fetch dynamically imported module"));
+      await settle();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("Loading")).toBeDefined();
+    expect(imports).toBe(1);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await settle();
+    });
+    expect(imports).toBe(2);
+    await act(async () => {
+      second.resolve(Greeting);
+      await settle();
+    });
+    expect(await screen.findByText("Hello Ada")).toBeDefined();
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    // Every download settled and the event sent, whichever step failed: a download still out
+    // through `renderChunk` would be counted for the rows of other files run after this one
+    // (`chunkLoadsOut`), and one still waiting on `online` would never end. Settling a settled
+    // promise does nothing, and an `online` nothing waits on reaches no listener.
+    first.reject(new TypeError("Failed to fetch dynamically imported module"));
+    window.dispatchEvent(new Event("online"));
+    second.resolve(Greeting);
+    view.unmount();
+    Reflect.deleteProperty(navigator, "onLine");
+    if (onLine !== undefined) {
+      Object.defineProperty(Navigator.prototype, "onLine", onLine);
+    }
   }
 });

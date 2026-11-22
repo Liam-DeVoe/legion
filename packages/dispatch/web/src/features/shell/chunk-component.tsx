@@ -1,6 +1,6 @@
 import { type ComponentType, type ReactNode, useEffect, useState } from "react";
 
-import { keptUntilRejected, renderChunk } from "./chunk-loads";
+import { importWhenOnline, keptUntilRejected, renderChunk } from "./chunk-loads";
 
 /**
  * A component whose code is a chunk of its own: the issue page's tab panels
@@ -12,13 +12,13 @@ import { keptUntilRejected, renderChunk } from "./chunk-loads";
  * has run, so its first render always suspends, also when the chunk has already arrived. Then
  * the nearest `Suspense` commits its fallback, and React shows the content of a boundary that
  * showed its fallback no sooner than 300 ms after that fallback (`FALLBACK_THROTTLE_MS` in
- * react-dom). So each `lazy` boundary added at least 300 ms to what it drew. Two rows of run
+ * react-dom). So each `lazy` boundary adds at least 300 ms to what it draws. Two rows of run
  * 43367787934 failed on that delay:
  *
  * - A comment link on a phone (`e2e/phone-conversation.e2e.ts`). The Conversation's chunk was
  *   in before the issue page rendered, because the entry starts it beside the landing read. But
- *   its `lazy` suspended, and the thread drew about 300 ms of the page's clock later than before
- *   the tabs were chunks.
+ *   its `lazy` suspended, and the thread drew about 300 ms of the page's clock later than it
+ *   does with no `lazy`.
  * - Skip to the answer in the Inbox (`e2e/inbox-pane-scroll.e2e.ts`). The decision cards mounted
  *   340 ms after their chunk arrived. The reader's press came before that, and a card that drew
  *   above the answer then pushed the answer 373 px down the column.
@@ -26,7 +26,9 @@ import { keptUntilRejected, renderChunk } from "./chunk-loads";
  * This component has no `Suspense` stage. A chunk that is already in draws in the commit of
  * its parent. A chunk that is not in yet draws `fallback` until the download is done, and then
  * the component itself draws in an ordinary update, which React does not hold back. A download
- * that fails goes to the nearest error boundary, as a failed `lazy` did.
+ * that fails while the browser is offline is tried again once it is back online, as
+ * `lazyChunk`'s is (`importWhenOnline`), and one that fails online goes to the nearest error
+ * boundary.
  */
 export interface Chunk<P> {
   /** Starts the download, or joins the download that is already out. Resolves with the
@@ -54,7 +56,9 @@ export function chunk<P>(importer: () => Promise<ComponentType<P>>): Chunk<P> {
 /**
  * The component of `source`, which draws `fallback` while the chunk is not in. The download is
  * under `renderChunk`, because a reader is in front of what this component draws: a download
- * that fails must spend one of the tab's recovery reloads (`DeploymentResilience.tsx`).
+ * that fails must spend one of the tab's recovery reloads (`DeploymentResilience.tsx`). It is
+ * under `importWhenOnline` too, so a download that fails offline is asked for again once the
+ * network is back, rather than reaching an error boundary.
  */
 export function chunkComponent<P extends object>(
   source: Chunk<P>,
@@ -69,7 +73,7 @@ export function chunkComponent<P extends object>(
         return;
       }
       let mounted = true;
-      renderChunk(source.load).then(
+      renderChunk(() => importWhenOnline(source.load)).then(
         (loaded) => {
           if (mounted) setComponent(() => loaded);
         },

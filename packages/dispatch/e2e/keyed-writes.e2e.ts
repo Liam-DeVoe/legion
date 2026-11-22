@@ -35,6 +35,7 @@ import { sql } from "./psql";
 import {
   fetchedChunk,
   KEPT_WRITES_CHUNK,
+  PENDING_WRITES_CHUNK,
   shellLoads,
   tabReloads,
   WRITE_KINDS_CHUNK,
@@ -1184,9 +1185,22 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 // tab's budget (`web/src/features/shell/DeploymentResilience.tsx`), although the writes host's
 // prefetch of the same chunk is out beside it; and the reloaded page takes the write up and sends
 // it.
+//
+// The pending-writes indicator is a chunk of its own, drawn through `chunkComponent`
+// (`web/src/features/writes/write-hosts.tsx`), and in the outage its download fails while the
+// browser is offline: the writes host's prefetch of it is held on the wire, the browser goes
+// offline, the pin and the pick are pressed - the indicator mounts on that held download - and
+// the download fails. An offline failure is an outage, not a replaced deployment, so the recovery
+// reloads nothing for it (`web/src/features/shell/DeploymentResilience.tsx`,
+// `reloadForChunkFailure`), and the indicator asks again once the browser is back online
+// (`importWhenOnline`, `web/src/features/shell/chunk-component.tsx`). Until then the page stays
+// drawn: the failure reaches no error boundary, where the app's top one (`web/src/main.tsx`)
+// would take the whole page down with nothing to bring it back but a reload by hand. Chromium
+// downloads the chunk on that second ask, so no recovery reload is spent before the kinds' below.
 // SLOW(>=2s): the kept writes are only observable across real reloads, so the row pays four page
 // loads - the issue, Settings and its reload, the issue again and the recovery's reload of it -
-// and the resumed writes' round trips.
+// the wait for the chunks the Conversation fetches once it has drawn before the browser goes
+// offline, and the resumed writes' round trips.
 test("a pin on a turn and a priority pick pressed during an outage survive a reload on another page, and a write pressed while the kinds of write fail to download survives the reload that failure makes", async ({
   browser,
 }) => {
@@ -1202,14 +1216,45 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     const answers = watchAnswers(page, "PATCH", path);
     const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
     const pickNetwork = await outage(page, `**${path}`, "PATCH");
+    const load = await shellLoads(page);
+    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
     await page.goto(`/issues/${issue.key}/conversation`);
-    await page
+    const indicator = await indicatorCode.held;
+    const pin = page
       .getByRole("list", { name: "Conversation turns" })
       .locator(":scope > li")
       .filter({ has: page.getByText("Pinned through the outage", { exact: true }) })
-      .getByRole("button", { name: "Pin" })
-      .click();
+      .getByRole("button", { name: "Pin" });
+    // Everything else the page fetches once it has drawn is in before the browser goes offline,
+    // so the held download is the one chunk that fails offline: the turn the pin is pressed on,
+    // the writes host's two other chunks, whose fetches show they came down, and the margin and
+    // the preview layer, rendered from their own.
+    await expect(pin).toBeVisible();
+    await fetchedChunk(page, KEPT_WRITES_CHUNK);
+    await fetchedChunk(page, WRITE_KINDS_CHUNK);
+    await load().settled();
+    await alice.setOffline(true);
+    await pin.click();
     await page.getByRole("combobox", { name: `Priority of ${issue.key}` }).selectOption("1");
+    // Vite reports the failed download as `vite:preloadError` before the import's rejection
+    // reaches the indicator, and React draws what that rejection sets in a task of its own; the
+    // wait ends a frame and a task later, so an error boundary the failure reached is drawn by
+    // then. The listener is in the page before the download fails.
+    const failure = await page.evaluateHandle(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      window.addEventListener(
+        "vite:preloadError",
+        () => requestAnimationFrame(() => setTimeout(resolve)),
+        { once: true }
+      );
+      return { handled: promise };
+    });
+    await indicator.abort("internetdisconnected");
+    await failure.evaluate((reading) => reading.handled);
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Conversation turns" })).toBeVisible();
+
+    await alice.setOffline(false);
     await expect(pendingWrites(page)).toBeVisible();
     await expect.poll(() => keptWrites(page)).toBe(2);
     await expect.poll(() => patches.length).toBeGreaterThan(0);
@@ -1247,7 +1292,6 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     // (`write-hosts.tsx`) - and the margin and the preview layer have rendered from their own
     // chunks: the take-up's ask is then the one download out that a reader waits on. Every later
     // document gets the chunk.
-    const load = await shellLoads(page);
     const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
     const statuses = watchWrites(page, "PATCH", path);
     await page.goto(`/issues/${issue.key}`);
