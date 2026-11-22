@@ -24,7 +24,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // indexScanTypes is every plan node that reads a relation through an index, and so every node
@@ -463,6 +463,13 @@ func (k *IndexKeys) RequireIndexKeyed(t testing.TB, plan json.RawMessage, index,
 	}
 }
 
+// Session is what GenericPlan needs of its connection: a way to open a transaction, and to run a
+// statement outside the one it opens. Both a *pgxpool.Conn and a pgx.Tx are one.
+type Session interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // GenericPlan is the plan Postgres builds for statement without knowing the values it will be
 // executed with, the plan a prepared statement settles on. It is the plan at risk: an index
 // whose eligibility depends on the bound value is lost there, and a fixture small enough for a
@@ -474,10 +481,14 @@ func (k *IndexKeys) RequireIndexKeyed(t testing.TB, plan json.RawMessage, index,
 // the planner can hash or merge a whole relation into needs those two off as well. The prepared
 // statement outlives the transaction that explains it and is deallocated by name on connection,
 // the one connection that holds it.
+//
+// connection is a pooled connection, or a transaction its caller holds open: Begin on a
+// transaction is a savepoint of it, so the plan is read under the settings that transaction set
+// as well as settings, and the forced mode then lasts to that transaction's end.
 func GenericPlan(
 	t testing.TB,
 	ctx context.Context,
-	connection *pgxpool.Conn,
+	connection Session,
 	name, statement string,
 	parameters, literals []string,
 	settings ...string,
@@ -507,4 +518,34 @@ func GenericPlan(
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
+}
+
+// Beginner is the one call AnalyzedPlan needs of a pool: a transaction of its own.
+type Beginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
+// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
+// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
+// of rows, which is read fastest whole however a statement is written, so without that setting
+// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
+// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
+// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
+// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
+func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+		t.Fatalf("disable sequential scans: %v", err)
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	return OnePlan(t, raw), string(raw)
 }
