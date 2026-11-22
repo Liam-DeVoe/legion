@@ -344,9 +344,12 @@ func publishedAll(t *testing.T, marker string) observed {
 // gone says whether a process has ended. A process whose parent never reaps it stays a zombie,
 // which still takes a signal, so the state its /proc entry reports decides: in a container whose
 // PID 1 is the test's own stand-in rather than a reaping init — the probe pod runs `sleep` —
-// every ended descendant the launcher killed is a zombie until the container exits.
-func gone(pid int) bool {
-	return testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+// every ended descendant the launcher killed is a zombie until the container exits. Every caller
+// asks it after the thing that ends the process has returned, and no caller's claim is how soon
+// the process ends, so it waits under the test's hang guard: it once allowed five seconds, which
+// a loaded machine can spend before a killed process's exit shows in /proc.
+func gone(t *testing.T, pid int) bool {
+	return testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid)
 	})
 }
@@ -400,7 +403,7 @@ func TestAGenerationsCredentialsLiveExactlyAsLongAsItsChild(t *testing.T) {
 	}
 
 	g.stop(7)
-	if !gone(descendant) {
+	if !gone(t, descendant) {
 		t.Fatalf("the launcher left descendant %d running", descendant)
 	}
 	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
@@ -1177,13 +1180,12 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	done := make(chan struct{})
 	go func() { reapOrphans(ctx, signals, managers, guard); close(done) }()
 	signals <- syscall.SIGCHLD
-	// A reaped process is gone from the process table; a zombie still takes signal 0.
-	deadline := time.Now().Add(5 * time.Second)
-	for !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
-		if time.Now().After(deadline) {
-			t.Fatal("the reaper left the orphan unreaped")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// A reaped process is gone from the process table; a zombie still takes signal 0. The wait is
+	// for that fact under the test's hang guard: when the reaper's pass runs is not the claim.
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		return errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH)
+	}) {
+		t.Fatal("the reaper left the orphan unreaped")
 	}
 	cancel()
 	<-done
@@ -1759,12 +1761,10 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		t.Fatalf("the session socket refused a dial during the wedged child's stop grace: %v", err)
 	}
 	_ = conn.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for upstreamDials() == before {
-		if time.Now().After(deadline) {
-			t.Fatal("the proxy accepted a connection during the stop grace but never dialed the upstream for it")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The dial is the proxy's own, after its accept; how soon it comes is not the claim, so the
+	// wait is for it under the test's hang guard.
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return upstreamDials() != before }) {
+		t.Fatal("the proxy accepted a connection during the stop grace but never dialed the upstream for it")
 	}
 
 	select {
@@ -1774,13 +1774,13 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run = %v, want the container's shutdown", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("Run did not return after the wedged child's stop grace")
 	}
 	if waited := time.Since(stopped); waited < grace {
 		t.Fatalf("Run returned %s after the shutdown, inside the %s grace a child ignoring SIGTERM is owed", waited, grace)
 	}
-	if !gone(pid) {
+	if !gone(t, pid) {
 		t.Fatalf("the wedged child %d outlived its stop grace", pid)
 	}
 	if conn, err := net.Dial("unix", socket); err == nil {
