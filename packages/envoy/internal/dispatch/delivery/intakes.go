@@ -134,7 +134,11 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	durables := []*heldDurable{&intake.heldDurable, &job.heldDurable}
 	if naming.Mode == consumernames.ModeFresh {
 		for _, durable := range durables {
-			durable.nameFreshly(records, connect, naming.Steps)
+			if err := durable.nameFreshly(records, connect, naming.Steps); err != nil {
+				intakeClient.Close()
+				jobClient.Close()
+				return nil, err
+			}
 		}
 	} else {
 		for _, durable := range durables {

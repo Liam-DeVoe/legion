@@ -212,6 +212,9 @@ type freshNaming struct {
 	logical string
 	store   consumernames.Store
 	names   *consumernames.Names
+	// naming is the family table's naming of the durable in Dispatch's store
+	// (consumernames.FamilyNaming of DispatchFamily), which names, marks and keys its consumers.
+	naming  consumernames.Naming
 	connect func(name string) (*bus.Client, error)
 	// reader is the intake's own connection, which reads the stream and nothing of a consumer.
 	reader *bus.Client
@@ -273,21 +276,27 @@ const generationConnectWithin = 5 * time.Second
 // nameFreshly puts the intake's durable in the fresh mode: its selection records in store, each
 // generation's connection opened by connect, and each step counted on steps. The intake's own
 // client becomes the stream's reader (freshNaming.reader), and d.nats is nil until the first
-// take-over sets it to the connection of the generation it delivers from. Its naming is the family
-// table's for Dispatch's store (consumernames.LogicalNaming, FamilyNaming's for DispatchFamily),
-// the one an operator's reader judges the record by (consumernames.CheckFamily).
-func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string) (*bus.Client, error), steps *metrics.Counter) {
+// take-over sets it to the connection of the generation it delivers from. Its naming, metadata and
+// key rule are the family table's for Dispatch's store (consumernames.FamilyNaming of
+// DispatchFamily), the ones an operator's reader judges the record and the consumer by
+// (consumernames.CheckFamily, OwnsFamily); a durable the table refuses, none of Dispatch's two, is
+// its error.
+func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string) (*bus.Client, error), steps *metrics.Counter) error {
+	naming, err := consumernames.FamilyNaming(consumernames.DispatchFamily, d.name)
+	if err != nil {
+		return fmt.Errorf("the fresh names of %s: %w", d.name, err)
+	}
 	fresh := &freshNaming{
-		logical: d.name, store: store, connect: connect, reader: d.nats,
+		logical: d.name, store: store, naming: naming, connect: connect, reader: d.nats,
 		candidates: map[string]*candidateConn{}, read: map[string]*natsgo.ConsumerInfo{},
 	}
-	naming := consumernames.LogicalNaming()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:    store,
 		Server:   freshServer{d},
 		Prefix:   naming.Prefix,
 		Fixed:    naming.Fixed,
 		Metadata: naming.Metadata,
+		CheckKey: naming.CheckKey,
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: fresh.streamID,
 		MissingRecord: func(_ context.Context, logical string) error {
@@ -301,6 +310,7 @@ func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string
 		},
 	})
 	d.fresh, d.nats = fresh, nil
+	return nil
 }
 
 // streamID is the stream's identity (bus.StreamIDMetadataKey), read on the intake's own connection.
@@ -476,7 +486,7 @@ func converted[To any](from any) (*To, error) {
 // createConfig is the config createFresh sends candidate name, its start aside: this build's, or
 // deployed's own where that consumer carries a higher configuration generation (newestConfig, as
 // takeOverConfig keeps a newer build's), named name and marked with the family table's metadata of
-// the durable's logical name (consumernames.LogicalNaming), which Names.Owns reads.
+// the durable's logical name (freshNaming.naming), which Names.Owns and OwnsFamily read.
 func (d *heldDurable) createConfig(name string, deployed *natsgo.ConsumerInfo) natsgo.ConsumerConfig {
 	config := d.config()
 	if deployed != nil {
@@ -487,7 +497,7 @@ func (d *heldDurable) createConfig(name string, deployed *natsgo.ConsumerInfo) n
 	if config.Metadata == nil {
 		config.Metadata = map[string]string{}
 	}
-	maps.Copy(config.Metadata, consumernames.LogicalNaming().Metadata(d.fresh.logical))
+	maps.Copy(config.Metadata, d.fresh.naming.Metadata(d.fresh.logical))
 	return config
 }
 
@@ -530,9 +540,8 @@ func (d *heldDurable) adopt(ctx context.Context, _ string, candidate *jetstream.
 // setting an update changes (bus.CorrectedConfig) -- its filter, ack wait and pending bound among
 // them -- on client, the connection its generation is granted its create on, before the intake
 // binds it. The update goes out as the create does, with the filter after the name, which the
-// generation's grant holds. The create is read as the server stores it: an unset max deliver is
-// the server's -1 (nats-server consumer.go setConsumerConfigDefaults, :612-613), so a candidate
-// made by this durable's own create is already as it creates it and takes no update.
+// generation's grant holds. CorrectedConfig compares the create as the server stores it, so a
+// candidate made by this durable's own create takes no update.
 func (d *heldDurable) correctAdopted(ctx context.Context, client *bus.Client, current string) error {
 	held, err := client.ConsumerInfo(ctx, current)
 	if err != nil {
@@ -541,9 +550,6 @@ func (d *heldDurable) correctAdopted(ctx context.Context, client *bus.Client, cu
 	create, err := d.adoptionCreate(held)
 	if err != nil {
 		return err
-	}
-	if create.MaxDeliver == 0 {
-		create.MaxDeliver = -1
 	}
 	next, changed := bus.CorrectedConfig(held.Config, create)
 	if !changed {

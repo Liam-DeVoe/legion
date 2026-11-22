@@ -650,11 +650,12 @@ func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, to
 	}
 }
 
-// Dispatch's durable creator names as the family table does: its Config's prefix, fixed name and
-// metadata are the table's for Dispatch's store (consumernames.FamilyNaming of DispatchFamily), the
-// first two the durable's own name, and consumernames.CheckFamily, the one public fence, gives the
-// answer each case pins. The control, run with a fault and seen failing: a creator whose prefix is
-// not the table's fails the naming check.
+// Dispatch's durable creator names as the family table does: its Config's prefix, fixed name,
+// metadata and key rule are the table's for Dispatch's store (consumernames.FamilyNaming of
+// DispatchFamily), the first two the durable's own name, the key rule taking only Dispatch's two
+// durables; and consumernames.CheckFamily, the one public fence, gives the answer each case pins.
+// The controls, run with a fault and seen failing: a creator whose prefix is not the table's, and
+// one whose key rule is LogicalNaming's, which takes any key.
 func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	for i, kind := range durableKinds {
 		other := durableKinds[len(durableKinds)-1-i].logical
@@ -664,7 +665,9 @@ func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 				t.Fatal(err)
 			}
 			d := &heldDurable{name: kind.logical}
-			d.nameFreshly(store, nil, nil)
+			if err := d.nameFreshly(store, nil, nil); err != nil {
+				t.Fatal(err)
+			}
 			names := d.fresh.names
 			table, err := consumernames.FamilyNaming(consumernames.DispatchFamily, kind.logical)
 			if err != nil {
@@ -679,6 +682,18 @@ func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 			}
 			if got, want := creator.Metadata(kind.logical), table.Metadata(kind.logical); !maps.Equal(got, want) {
 				t.Errorf("the creator's metadata of %s is %v, the table's %v", kind.logical, got, want)
+			}
+			if creator.CheckKey == nil {
+				t.Fatalf("the creator of %s has no key rule; want the table's", kind.logical)
+			}
+			for _, key := range []string{kind.logical, other, "legion-go-p-github", "notifications"} {
+				own, family := creator.CheckKey(key), table.CheckKey(key)
+				if (own == nil) != (family == nil) {
+					t.Errorf("the creator's key rule on %q = %v, the table's %v; want the same answer", key, own, family)
+				}
+				if want := key == kind.logical || key == other; (own == nil) != want {
+					t.Errorf("the creator's key rule on %q = %v; want it taken %t, as Dispatch's store takes only its two durables", key, own, want)
+				}
 			}
 			reserved := time.Unix(1_700_000_000, 0)
 			for _, c := range []struct {

@@ -325,7 +325,9 @@ func startDurableProcess(t *testing.T, hub *freshHub, pool *store.Pool, kind dur
 	}
 	if mode == freshNames {
 		process.store = &cuttableStore{inner: dispatchRecords(t, second.Pool)}
-		held.nameFreshly(process.store, hub.connect, nil)
+		if err := held.nameFreshly(process.store, hub.connect, nil); err != nil {
+			t.Fatalf("name %s freshly: %v", kind.logical, err)
+		}
 		held.freshHook = func(point, name string) error {
 			if step := process.step.Load(); step != nil {
 				return (*step)(process, point, name)
