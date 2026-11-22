@@ -601,11 +601,12 @@ func TestSignOffMovesTheTaskToItsNextStepInTheRoleParts(t *testing.T) {
 	}
 }
 
-// `accepting`, `retro` and `merging` hold no slot and take a merge forward wherever the task places
-// the acceptance, so no part says the review comes before them (record.PastReview reads the three
-// phases, never the review's place). A parent is held before its retro wherever its last step is not
-// the owner's acceptance, and a planner's plan goes to the steps after it, whichever they are. Each
-// part is read alone, by its name. This shows the text is loaded, never that an agent follows it.
+// `accepting`, `retro` and `merging` hold no slot wherever the task places the acceptance, so no
+// part says the review comes before them (record.PastReview reads the three phases, never the
+// review's place). A parent is held before its retro wherever its last step is not the owner's
+// acceptance, and a planner's plan goes to the steps after it, whichever they are. What a merge
+// forward asks in those phases is TestTheMergeForwardPartsReadTheTasksOwnSteps's. Each part is read
+// alone, by its name. This shows the text is loaded, never that an agent follows it.
 func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -617,19 +618,18 @@ func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 			[]string{
 				"a stop in `accepting`, `retro` or `merging` holds none, and a stop in any other phase keeps the slot it holds",
 				"a parent whose task passed its last step, which is not your `acceptance:owner` step",
-				"the issue stands in `accepting`, `retro` or `merging` (`merge-next`)",
 				"moves the issue on to its task's next step with no further notice",
 			},
 			[]string{"past its review", "Past review", "a stop before `accepting` keeps it", "no `acceptance:owner` step to wait in"},
 		},
 		{
 			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
-			[]string{"In `accepting`, `retro` or `merging`, where the task has a reviewer step, the reviewer is asked as well"},
+			nil,
 			[]string{"Past review"},
 		},
 		{
 			"roles/core/reviewer.md", func(t *testing.T) string { return rolePart(t, "core/reviewer.md") },
-			[]string{"while the issue stands in `accepting`, `retro` or `merging`"},
+			nil,
 			[]string{"past its review"},
 		},
 		{
@@ -875,7 +875,8 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 }
 
 // The fifth round's readers showed five more sentences false. In `accepting` no worker holds the
-// phase, so the reviewer of a merge forward tells a phase's worker only in `retro` or `merging`;
+// phase, so the reviewer of a merge forward tells no phase's worker there
+// (TestTheMergeForwardPartsReadTheTasksOwnSteps pins that sentence now);
 // the architect accepts no head whose code it reads red, which a re-run of a flaky check is not;
 // only the implementer fixes a defect, and the other roles send it to the implementer; a
 // production-check look comes to the implementer as a task that names no phase; the completion
@@ -891,7 +892,6 @@ func TestTheSentencesTheFifthRoundsReadersShowedFalseSayWhatTheDaemonDoes(t *tes
 		{
 			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
 			[]string{
-				"to tell you and, in `retro` or `merging`, the phase's worker what it decided",
 				"So does your own read before you accept: you accept no head whose code you read red, and send it back with `request_backward_move`.",
 			},
 			[]string{"to tell you and the phase's worker what it decided", "a red head is one you send back"},
@@ -921,4 +921,68 @@ func TestTheSentencesTheFifthRoundsReadersShowedFalseSayWhatTheDaemonDoes(t *tes
 			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
 		})
 	}
+}
+
+// A merge forward reads the task's own steps (workflow's mergeForwardLanded and
+// mergeForwardOnEntry, classify.MergeComesNext). The reviewer is asked to approve the new head
+// only where its step already ran, and a reviewer step still to come reviews that head when it
+// runs. The merge comes next in `retro`, in `merging`, and in `accepting` only where no step of the
+// task follows the acceptance. Each part is read alone, by its name. This shows the text is loaded,
+// never that an agent follows it.
+func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{
+				"`merge-next`: the merge comes next, since the issue stands in `retro` or `merging`, or in `accepting` with no step of its task after yours.",
+				"The daemon acts once the issue reaches a phase where the merge comes next.",
+				"Where the task's reviewer step already ran, the daemon also asks the reviewer to read the merge.",
+				"The reviewer tells you what it decided, and tells the phase's worker too where a worker holds the phase.",
+				"A reviewer step after yours reviews the new head when it runs.",
+			},
+			[]string{
+				"the issue stands in `accepting`, `retro` or `merging` (`merge-next`)",
+				"the daemon acts once the issue moves into `accepting`, `retro` or `merging`",
+				"In `accepting`, `retro` or `merging`, where the task has a reviewer step",
+			},
+		},
+		{
+			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
+			[]string{
+				"The merge comes next: the issue stands in `retro` or `merging`, or in `accepting` with no step of the task after it.",
+				"Where the task's reviewer step already ran, the reviewer is asked as well to read the merge and approve the new head or request changes.",
+				"A reviewer step still to come reviews the new head when it runs.",
+			},
+			[]string{
+				"the issue stands in `accepting`, `retro` or `merging`;",
+				"In `accepting`, `retro` or `merging`, where the task has a reviewer step",
+			},
+		},
+		{
+			"roles/core/reviewer.md", func(t *testing.T) string { return rolePart(t, "core/reviewer.md") },
+			[]string{"when the merge lands after your step ran and no review round is open."},
+			[]string{"while the issue stands in `accepting`, `retro` or `merging`"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
+		})
+	}
+}
+
+// The plan review's loop resolves each blocking issue in the plan and sends a repeated finding to
+// the architect, so the open-decision paragraph says a check's finding is no decision to wait on,
+// never that a finding does not block the plan. The planner part is read alone, by its name. This
+// shows the text is loaded, never that an agent follows it.
+func TestThePlannerResolvesACheckFindingInThePlan(t *testing.T) {
+	holdsAndRetires(t, "roles/planner.md", rolePart(t, "planner.md"),
+		[]string{
+			"A check's finding is not one: resolve it in the plan by the loop above, and send it to the architect only when a round repeats it.",
+			"A rejection of the goal or of a requirement is never one you proceed past, as above.",
+		},
+		[]string{"a check's other findings never block the plan"})
 }

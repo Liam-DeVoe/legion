@@ -457,13 +457,15 @@ Legion uses GitHub's own review mechanisms rather than labels:
   checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
-  minute apart, since a read made while GitHub is still computing can be stale, and acts only on a
-  conflict both reads report, and only when the next step needs a mergeable head: the issue stands
-  in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head;
-  the base requires a pull request to be current with it; or the daemon could not read the base's
-  rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
-  records the conflict, and the task's steps go on at that head; an approval of the head ends the
-  review round, and the daemon acts once the issue moves into `accepting`, `retro` or `merging`.
+  minute apart, since a read made while GitHub is still computing can be stale. It acts only on a
+  conflict both reads report, and only when the next step needs a mergeable head. That is so in
+  four cases. The merge comes next: the issue stands in `retro` or `merging`, or in `accepting` with
+  no step of its task after the acceptance. A check the base requires has no green result on the
+  head. The base requires a pull request to be current with it. The daemon could not read the
+  base's rules, which it reads (rulesets and branch protection) only on a conflicting read.
+  Otherwise it records the conflict, and the task's steps go on at that head. An approval of the
+  head ends the review round, and the daemon acts once the issue reaches a phase where the merge
+  comes next.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. The
   implementer is asked on its role topic to merge the base forward in the issue workspace and
   push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
@@ -474,11 +476,12 @@ Legion uses GitHub's own review mechanisms rather than labels:
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
-  phase the issue has already left is recorded as before. In `accepting`, `retro` or `merging`, where
-  the task has a reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its
-  SHA, or request changes, and a merger that enters `merging` while that approval is owed merges
-  the new head only once the approval is on the pull request. A task with no reviewer step has no
-  review to ask, and its merger goes on at the new head.
+  phase the issue has already left is recorded as before. Where the task's reviewer step already
+  ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or
+  request changes. A reviewer step still to come reviews the new head when it runs. A merger that
+  enters `merging` while that approval is owed merges the new head only once the approval is on
+  the pull request. A task with no reviewer step has no review to ask, and its merger goes on at
+  the new head.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue

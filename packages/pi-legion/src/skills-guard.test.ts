@@ -680,18 +680,23 @@ test("an implementer and owner task is accepted on the evidence its steps give",
     ...lacks("legion-architect/references/acceptance.md", [
       /Only a task whose steps name `acceptance:owner` enters `accepting`/,
       /tester step comes before your acceptance[^.;]*--phase test/,
-      /`dispatch results --issue <issue>`[^.;]*the head the step before your acceptance passed/,
+      /`dispatch results --issue <issue>`[^.;]*each `before_merge` check at the head the step before your acceptance passed/,
       /reviewer step comes before your acceptance[^.;]*approval/,
       /no tester step before your acceptance[^.;]*the implementer's evidence/,
       /steps after your acceptance in the task run, then retro/,
-      /the daemon acts once the issue moves into `accepting`, `retro` or `merging`/,
-      /In `accepting`, `retro` or `merging`, where the task has a reviewer step, the daemon asks the reviewer/,
+      /the daemon acts once the merge comes next[^.;]*`accepting` with no step after yours/,
+      /Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge/,
+      /A reviewer step after yours reviews the new head when it runs/,
       // Each sentence a reader of the acceptance showed false is gone: the last step can come after
       // the acceptance, and a reviewer step after it leaves `accepting` short of any review.
       /^(?![\s\S]*each check at the last step's head)/,
       /^(?![\s\S]*Past review)/,
       /^(?![\s\S]*on entry to `accepting`, or `retro` without)/,
       /^(?![\s\S]*`Steps:` line names `acceptance:owner`)/,
+      // A merge forward reads the task's own steps: the merge comes next in `accepting` only where
+      // no step follows the acceptance, and only a reviewer step that already ran is asked again.
+      /^(?![\s\S]*acts once the issue moves into `accepting`, `retro` or `merging`)/,
+      /^(?![\s\S]*In `accepting`, `retro` or `merging`, where the task has a reviewer step)/,
     ]),
     ...lacks("legion-architect/SKILL.md", [
       /your acceptance is the task's last step[^.;]*`sign_off` starts retro/,
@@ -700,6 +705,18 @@ test("an implementer and owner task is accepted on the evidence its steps give",
     ]),
   ];
   expect(missing).toEqual([]);
+});
+
+// A new version of a root's spec closes its design gate, except the two kinds of version
+// `references/design-gate.md` says keep it, as the root's prompt says
+// (`roles/architect-root.md`). This shows the text ships, never that a role follows it.
+test("the architect skill names the versions that keep the design gate open", () => {
+  expect(
+    lacks("legion-architect/SKILL.md", [
+      /a new version closes the gate, except two kinds it names/,
+      /^(?![\s\S]*since any new version closes the gate)/,
+    ])
+  ).toEqual([]);
 });
 
 // A person's later request is a requirement only in a spec version they approve, as the architect's

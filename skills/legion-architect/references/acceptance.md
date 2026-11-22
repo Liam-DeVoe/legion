@@ -16,13 +16,11 @@ Read, against the goal, every check and every requirement:
 
 1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
 
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the head the step before your acceptance passed;
+2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
+3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head;
 
-4. where a reviewer step comes before your acceptance, each claim of the reviewer's prose, against the code at that head;
-
-5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
+4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
@@ -82,7 +80,7 @@ When the merger reports:
   Do not wait for a reviewer phase the task does not have;
 
 - a squash into a base other than the default branch:
-  tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in its implementing round.
+  tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward.
   Past `implementing`, the daemon asks for that merge itself (*A conflicting head*, below).
 
 ## A conflicting head
@@ -90,12 +88,13 @@ When the merger reports:
 A head that conflicts with its base keeps the issue in its phase.
 The daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
 A conflict it does not act on yet is recorded:
-the task's steps go on at that head, a reviewer step's approval of it ends its review round, and the daemon acts once the issue moves into `accepting`, `retro` or `merging`.
+the task's steps go on at that head, a reviewer step's approval of it ends its review round, and the daemon acts once the merge comes next: in `retro`, `merging`, or `accepting` with no step after yours.
 When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-In `accepting`, `retro` or `merging`, where the task has a reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes.
+Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
+A reviewer step after yours reviews the new head when it runs.
 A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve
