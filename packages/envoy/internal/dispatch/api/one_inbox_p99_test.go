@@ -284,11 +284,12 @@ func requireOneInboxHistoryInTheStore(t *testing.T, database *store.Store) {
 
 // explainOneInboxRead runs `explain (analyze, buffers)` on the statement of the one read of each
 // reader, as the handler builds it for the dashboard's request (meInboxStatement: the inbox state,
-// display trees, the listener's stored roster) at the event log's horizon and as it runs it, under
-// the settings of the read's own transaction (meInboxSettings, readMeInbox), in a transaction
-// rolled back. It prints each plan's times and its scans of asks and events, which bound nothing,
-// and fails, once every plan is printed, on a sequential scan of comments or messages in any of
-// them, printing the plan of each read that makes one.
+// display trees, the listener's stored roster) at the event log's horizon, with JIT off as the read
+// runs (meInboxNoJIT), in a transaction rolled back. It plans for the reader's own arguments, as the
+// scale test's plan of a page's own arguments does (explainDismissedScaleOneRead), where the read
+// runs the generic plan (meInboxGenericPlan). It prints each plan's times and its scans of asks and
+// events, which bound nothing, and fails, once every plan is printed, on a sequential scan of
+// comments or messages in any of them, printing the plan of each read that makes one.
 func explainOneInboxRead(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -342,8 +343,7 @@ func explainOneInboxRead(t *testing.T, database *store.Store) {
 }
 
 // explainOneInbox answers `explain (analyze, buffers, format <format>)` of statement, the one read's,
-// run after the settings its own transaction runs first (meInboxSettings), in a transaction rolled
-// back.
+// run with JIT off as the read runs it (meInboxNoJIT), in a transaction rolled back.
 func explainOneInbox(t *testing.T, database *store.Store, format, statement string, args []any) string {
 	t.Helper()
 	ctx := context.Background()
@@ -352,8 +352,8 @@ func explainOneInbox(t *testing.T, database *store.Store, format, statement stri
 		t.Fatalf("begin the explain: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, meInboxSettings); err != nil {
-		t.Fatalf("%s before the explain of the one read: %v", meInboxSettings, err)
+	if _, err := tx.Exec(ctx, meInboxNoJIT); err != nil {
+		t.Fatalf("%s before the explain of the one read: %v", meInboxNoJIT, err)
 	}
 	rows, err := tx.Query(ctx, "explain (analyze, buffers, format "+format+") "+statement, args...)
 	if err != nil {

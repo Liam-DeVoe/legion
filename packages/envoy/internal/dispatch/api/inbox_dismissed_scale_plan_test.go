@@ -97,15 +97,17 @@ func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold b
 }
 
 // explainDismissedScaleOneRead explains the one read's Dismissed page as the handler builds it
-// (GET /api/v1/me/inbox?state=dismissed&limit=200, meInboxStatement) and as it runs it, under the
-// settings of the read's own transaction (meInboxSettings, readMeInbox): the first page and, where
-// the shape holds one, the page 50,000 deep, each under the plan of its own arguments and under the
-// generic plan a prepared statement settles on from its sixth execution, which knows nothing of the
-// cursor or the page and is the plan the measurement mostly times. On the loaded shape each plan is
-// held to the cut (meInboxDismissedCut): each of the two arms reads its own index, from the cursor
-// and in that index's order, and takes no more of it than the page and the one row past it, so no
-// node reading either index answers more than 201 rows and no sort orders anything by the
-// dismissal. Before the cut each arm read the whole pile - 100,000 and 10,000 rows - into the walk.
+// (GET /api/v1/me/inbox?state=dismissed&limit=200, meInboxStatement): the first page and, where the
+// shape holds one, the page 50,000 deep, each under the generic plan, the plan the read runs, which
+// knows nothing of the cursor or the page, and under the plan of its own arguments beside it. The
+// generic explain runs under every setting of the read's own transaction (meInboxSettings,
+// readMeInbox), as the read runs. The other runs under meInboxNoJIT alone, leaving out the setting
+// that makes the read's plan the generic one (meInboxGenericPlan), so that it plans for its own
+// arguments. On the loaded shape each plan is held to the cut (meInboxDismissedCut): each of the
+// two arms reads its own index, from the cursor and in that index's order, and takes no more of it
+// than the page and the one row past it, so no node reading either index answers more than 201
+// rows and no sort orders anything by the dismissal. Before the cut each arm read the whole pile -
+// 100,000 and 10,000 rows - into the walk.
 func explainDismissedScaleOneRead(t *testing.T, connection *pgx.Conn, shape *dismissedScaleShape, hold bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -138,9 +140,9 @@ func explainDismissedScaleOneRead(t *testing.T, connection *pgx.Conn, shape *dis
 			plan, text := json.RawMessage(nil), ""
 			if generic {
 				name = page.operation + " / the one read, generic plan @ " + shape.name
-				plan, text = explainDismissedScaleGeneric(t, connection, name, statement, args, meInboxSettings)
+				plan, text = explainDismissedScaleGeneric(t, connection, name, statement, args, meInboxSettings...)
 			} else {
-				plan, text = explainDismissedScale(t, connection, name, statement, args, meInboxSettings)
+				plan, text = explainDismissedScale(t, connection, name, statement, args, meInboxNoJIT)
 			}
 			t.Logf("%s:\n%s", name, text)
 			if !hold {
