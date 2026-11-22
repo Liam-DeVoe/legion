@@ -439,7 +439,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
-		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, func(context.Context, pgx.Tx) error { return nil }); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {
@@ -448,9 +448,10 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The claim binds its issue's own lifecycle (store.Store.AdmitClaim): the operator opens it
-	// where nothing holds it, and an issue the workflow already holds keeps the workflow's, whose
-	// epoch the claim binds, as a worker the operator spawns into a workflow tree binds that tree's.
-	if _, err := s.trees.OpenIssueLifecycle(ctx, s.project, req.Issue, treelifecycle.AuthorityOperator); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+	// where nothing holds it, drawing the issue's own experiments in the open's transaction, and an
+	// issue the workflow already holds keeps the workflow's, whose epoch the claim binds and whose
+	// draws admission made, as a worker the operator spawns into a workflow tree binds that tree's.
+	if _, err := s.trees.OpenOperatorIssueLifecycle(ctx, s.project, req.Issue, s.drawExperiments(req.Issue)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("issue %s is waiting for durable cleanup: %v", req.Issue, err))
 		return
 	} else if err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
@@ -483,16 +484,16 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
-// drawExperiments draws the tree-unit experiments the project declares for tree, for the open
-// that creates the tree's lifecycle row to run in its own transaction
-// (store.Store.OpenOperatorTreeLifecycle, experiment.DrawAndRecord): one answer per experiment,
+// drawExperiments draws the tree-unit experiments the project declares for issue, for the open
+// that creates the issue's lifecycle row to run in its own transaction
+// (store.Store.OpenOperatorIssueLifecycle, experiment.DrawAndRecord): one answer per experiment,
 // under the mode the project declares it at and at the instant this server's clock reads,
-// recorded against the tree's root issue key (record.Store.PutAssignments, which admission's own
-// path draws through too). An operator's tree usually has no issue record at all, and then the
-// draw writes nothing — nothing is refused and no record is invented.
-func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.Tx) error {
+// recorded against the issue's own key (record.Store.PutAssignments, which admission's own path
+// draws through too). An operator's issue usually has no issue record at all, and then the draw
+// writes nothing — nothing is refused and no record is invented.
+func (s *server) drawExperiments(issue string) func(ctx context.Context, tx pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error {
-		return experiment.DrawAndRecord(ctx, tx, s.records, tree, s.experiments, config.ExperimentTree, s.source, s.now())
+		return experiment.DrawAndRecord(ctx, tx, s.records, issue, s.experiments, config.ExperimentTree, s.source, s.now())
 	}
 }
 

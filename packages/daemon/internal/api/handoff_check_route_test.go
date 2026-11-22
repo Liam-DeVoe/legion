@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -23,23 +24,30 @@ import (
 )
 
 // newWorkflowHarness serves the daemon's routes with the workflow of cfg deciding every fact they
-// apply, over a real Postgres and the GitHub stand-in a completing implementer reads. It answers
-// the engine the test applies its own facts with — a settlement, a status a person set, a failed
-// claim — and the recorder of every fact the routes applied.
-func newWorkflowHarness(t *testing.T, cfg workflow.Config) (*harness, *workflow.Engine, *factRecorder) {
+// apply, over a real Postgres and the GitHub stand-in a completing implementer reads, behind the
+// Mirror that writes each route's reads of Dispatch into the copy, as the daemon's own chain does
+// (daemon/workflow.go). It answers the engine the test applies its own facts with — a settlement,
+// a status a person set, a failed claim — and the recorder of every fact the routes applied. Each
+// of configure sets an option of the server first, such as a test's seam.
+func newWorkflowHarness(t *testing.T, cfg workflow.Config, configure ...func(*Options)) (*harness, *workflow.Engine, *factRecorder) {
 	t.Helper()
 	h := newHarness(t)
 	h.handoffs = &statusRecorder{}
 	github := newHandoffGitHub(t)
 	facts := &factRecorder{}
-	engine := workflow.New(record.NewStore(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	records := record.NewStore()
+	engine := workflow.New(records, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	opts := Options{
 		Steps:      cfg.Steps,
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
-		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{engine, facts}, Dispatch: h.handoffs,
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine, facts}, Dispatch: h.handoffs,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
-	}).Handler
+	}
+	for _, set := range configure {
+		set(&opts)
+	}
+	h.handler = NewServer("127.0.0.1", 8437, opts).Handler
 	return h, engine, facts
 }
 
@@ -150,9 +158,11 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 //
 // Routed by the issue's phase, that completion was recorded as the production check passing with
 // nobody having looked at production. Routed by the claim's own live assignment, which is still
-// the testing task's, it is no report on the check — and no phase completion either, since a done
-// issue runs no phase, so the route names the cause (CHECK_LOOK_NOT_SERVED) rather than holding
-// an answer the agent cannot give to a field. Nothing is recorded, and the check is untouched.
+// the testing task's, it is no report on the check. Nor is it a completion of a phase the issue
+// runs: the person's done kept the issue's phase out of Legion's work (R20 of
+// dispatch://INFRA-3320), so the testing entry the turn serves is the one the stop ended, and the
+// completion is refused as every completion of an entry before a stop is
+// (HANDOFF_NOT_CURRENT_PHASE). Nothing is recorded, and the check is untouched.
 func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 1 {
@@ -161,12 +171,15 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 	if look := machine.Claim().ServingCheck(); look.Look != 0 {
 		t.Fatalf("the tester serves check look %+v, want none: its live assignment is the testing task's", look)
 	}
+	if stopped := recordedChild(t, h, "LEGION-209"); stopped == nil || stopped.Phase != phase.Testing || record.InLegionsWork(*stopped) {
+		t.Fatalf("LEGION-209 after the person's done = %#v, want it out of Legion's work with its testing phase kept", stopped)
+	}
 
 	// The testing turn ends with the verdict a check report also names.
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "works no look") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want it to say this session works no look and recorded nothing", message)
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	if !strings.Contains(message, "changed nothing") {
+		t.Fatalf("the refusal is %q, want it to say this completion changed nothing", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -182,9 +195,8 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 // A look the claim has only had sent to it is no look it serves: read as one, this verdict would
 // close the production check as a pass with nobody having looked at production, which is the
 // whole of what the fallback for an unread task must not do. So the completion reports on no
-// look, and a done issue runs no phase for it to complete either: it is refused
-// CHECK_LOOK_NOT_SERVED, before the phase path, with nothing recorded and the check left open at
-// its look.
+// look, and it completes the testing entry the person's done ended, which is refused
+// (HANDOFF_NOT_CURRENT_PHASE), with nothing recorded and the check left open at its look.
 func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	ctx := context.Background()
@@ -210,9 +222,9 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 	}
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "works no look") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want it to say this session works no look and recorded nothing", message)
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	if !strings.Contains(message, "changed nothing") {
+		t.Fatalf("the refusal is %q, want it to say this completion changed nothing", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }

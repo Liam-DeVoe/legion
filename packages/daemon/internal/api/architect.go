@@ -274,6 +274,9 @@ func (s *server) ownsOnChain(w http.ResponseWriter, r *http.Request, grantID, is
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return credential.Grant{}, record.Issue{}, false
 	}
+	if s.callJudged != nil {
+		s.callJudged(ctx, call.Op(), []string{issue})
+	}
 	return grant, *recorded, true
 }
 
@@ -949,6 +952,13 @@ func (s *server) applyStatusCall(w http.ResponseWriter, r *http.Request, route s
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return intake.Result{}, false
 	}
+	if s.callJudged != nil && call.Architect != "" {
+		keys := make([]string, len(call.Issues))
+		for i, issue := range call.Issues {
+			keys[i] = issue.Key
+		}
+		s.callJudged(r.Context(), string(call.Op), keys)
+	}
 	result, err := s.apply(r.Context(), "api", requestFactID(route), call)
 	switch {
 	case err != nil:
@@ -1043,7 +1053,8 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	// A todo child the call left unrecorded because a repository it or its parent chain resolves
 	// to is unread (Options.RepositoryUnread) ends nothing: enterTodoChild answers it as the
-	// recovery will leave it and the wave goes on.
+	// recovery will leave it and the wave goes on, and a child the call wrote under it is told
+	// (tellWrittenUnderPending).
 	byKey := make(map[string]releasedChild, len(children))
 	for _, child := range children {
 		byKey[child.view.Key] = child
@@ -1052,11 +1063,21 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		_, inWave := byKey[key]
 		return inWave
 	}
+	pending := map[string]string{}
 	for _, child := range ordered {
 		if child.write {
 			continue
 		}
-		if _, ok := s.enterTodoChild(w, r, grant, child.view, child.prepared, reads.issue, todoNow); !ok {
+		repo, ok := s.enterTodoChild(w, r, grant, child.view, child.prepared, reads.issue, todoNow)
+		if !ok {
+			return
+		}
+		if repo != "" {
+			pending[child.view.Key] = repo
+		}
+	}
+	for _, child := range ordered {
+		if child.write && !s.tellWrittenUnderPending(w, r, grant, child.view, byKey, pending) {
 			return
 		}
 	}
@@ -1066,6 +1087,47 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeAnswer(w, r, AnswerWaveRelease, http.StatusOK, WaveReleaseResponse{Released: req.Issues, Started: started, Held: held, Queued: queuedOf(result)})
+}
+
+// tellWrittenUnderPending answers a child the release wrote todo, written, whose parent chain
+// within the wave (byKey) reaches a todo child the release left to the recovery of an unread
+// repository (pending: each such child's repository, enterTodoChild). The workflow records a child
+// only under a recorded parent, so the call queued its todo and could not record it, and its
+// todo's event will not record it either while that parent is unrecorded. It is left to the same
+// recovery (tellReleaseWait), and the architect that released it is told at once to release it
+// again once that parent is recorded, when release_children records a child Dispatch shows todo.
+// A child the call recorded, or one under no such child, is not its to answer. It reports whether
+// the wave goes on: false once an answer is written.
+func (s *server) tellWrittenUnderPending(w http.ResponseWriter, r *http.Request, grant credential.Grant, written dispatch.Issue, byKey map[string]releasedChild, pending map[string]string) bool {
+	var above, repo string
+	seen := map[string]bool{written.Key: true}
+	for parent := written.Parent; parent != nil && !seen[*parent]; {
+		key := *parent
+		seen[key] = true
+		if unread, left := pending[key]; left {
+			above, repo = key, unread
+			break
+		}
+		child, inWave := byKey[key]
+		if !inWave {
+			break
+		}
+		parent = child.view.Parent
+	}
+	if above == "" {
+		return true
+	}
+	recorded, err := s.recordedIssue(r.Context(), written.Key)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", written.Key))
+		return false
+	}
+	if recorded != nil {
+		return true
+	}
+	return s.tellReleaseWait(w, r, grant, written, intake.ObservedIssue(written).Parent, repo, fmt.Sprintf(
+		"%s's todo is queued, but it is not recorded: the daemon records a child only under a recorded parent, and %s, above it in this release, is todo and left unrecorded until GitHub answers for %s. Release %s again once %s is recorded.",
+		written.Key, above, repo, written.Key, above))
 }
 
 // releaseWrites says whether release_children writes todo on a child Dispatch shows at status:

@@ -397,6 +397,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// is: the first completion the workflow took is what stands, so a retry that rates again is
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
+	if s.callJudged != nil {
+		s.callJudged(r.Context(), "handoff_complete", []string{grant.Issue})
+	}
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Entry: position.entry, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})

@@ -157,9 +157,9 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 	}
 }
 
-// A6. The refusal is the daemon's own reading of its records, so the ancestor it names is the
-// one record.AcceptedAncestor finds over the tree: the nearest issue above the child in retro or
-// merging, found by walking past a parent that is already done.
+// A6. The refusal is the daemon's own reading of the Dispatch chain, so the ancestor it names is
+// the one record.AcceptedAncestorOf finds over the copy of Dispatch's issues: the nearest issue
+// above the child in retro or merging, found by walking past a parent that is already done.
 func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 	h, _, _ := statusHarness(t)
 	acceptPhase(t, h, statusRoot, phase.Merging)
@@ -171,8 +171,15 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 
 	var ancestor string
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		for _, row := range []struct{ key, parent, status string }{
+			{statusRoot, "", "in_progress"}, {statusChild, statusRoot, "done"}, {"LEGION-300", statusChild, "todo"},
+		} {
+			if err := seedCopy(tx, row.key, row.parent, row.status); err != nil {
+				return err
+			}
+		}
 		var err error
-		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, statusRoot, "LEGION-300", "")
+		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, testDispatchProject, "LEGION-300", "")
 		return err
 	}); err != nil {
 		t.Fatalf("read the accepted ancestor: %v", err)

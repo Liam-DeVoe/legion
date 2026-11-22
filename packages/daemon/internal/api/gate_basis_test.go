@@ -595,13 +595,23 @@ func TestBasisGateOpenings(t *testing.T) {
 // basisFact is the registration the world every basis case starts from records, read at R's event
 // sequence seq by the architect session: R's document at version 4 on P's approved version 3,
 // whose approval Dispatch recorded at sequence 21 of P's log, given by alice; R's one check serves
-// P2; and the view fact names P.
+// P2; and the view fact names P. The fact carries R's architect, who registered it.
 func basisFact(seq int64, session string) intake.GateRegistered {
 	return intake.GateRegistered{Issue: basisR, Step: record.DesignStepSpec, ArtifactID: rSpec, Version: 4, DispatchVersion: 4,
 		Since: record.EventMark{Seq: seq},
 		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pSpec, Version: 3, Approval: record.EventMark{Seq: 21, At: basisApprovedAt},
 			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: session},
-		ViewOf: basisP}
+		ViewOf: basisP, Architect: basisArchitect()}
+}
+
+// basisArchitect is the architect claim token of R, which every registration of these cases
+// carries (intake.GateRegistered.Architect).
+func basisArchitect() claim.Token {
+	token, err := claim.NewToken(testProject, basisR, claim.RoleArchitect)
+	if err != nil {
+		panic(err)
+	}
+	return token
 }
 
 // A deployment that gates the criteria step takes, as its basis, P's Verification document a
@@ -619,7 +629,8 @@ func TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument(t *testing.
 	want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepCriteria, ArtifactID: rVerification, Version: 2, DispatchVersion: 2,
 		Since: record.EventMark{Seq: 300},
 		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pVerification, Version: 2, Approval: record.EventMark{Seq: 22, At: basisApprovedAt},
-			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session}}
+			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session},
+		Architect: architect.token}
 	if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("criteria registration facts = %#v, want %#v", got, want)
 	}
@@ -655,7 +666,8 @@ func TestTheDecisionsStepsBasisGateIsTheAncestorsDecisionsDocument(t *testing.T)
 	want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepDecisions, ArtifactID: rDecisions, Version: 1, DispatchVersion: 1,
 		Since: record.EventMark{Seq: 301},
 		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pDecisions, Version: 1, Approval: record.EventMark{Seq: 23, At: basisApprovedAt},
-			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session}}
+			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session},
+		Architect: architect.token}
 	if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("decisions registration facts = %#v, want %#v", got, want)
 	}
@@ -723,7 +735,7 @@ func TestEveryGateRegistrationOfTheSpecStepRecordsItsViewFact(t *testing.T) {
 			}
 			got := facts.recorded()[before:]
 			want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepSpec, ArtifactID: rSpec, Version: 4, DispatchVersion: 4,
-				Since: record.EventMark{Seq: seq}, ViewOf: tc.viewOf}
+				Since: record.EventMark{Seq: seq}, ViewOf: tc.viewOf, Architect: architect.token}
 			if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 				t.Fatalf("registration facts = %#v, want %#v", got, want)
 			}

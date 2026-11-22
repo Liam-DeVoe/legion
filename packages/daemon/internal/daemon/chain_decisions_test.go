@@ -834,13 +834,20 @@ type chainDaemon struct {
 // is put back from after each architect call (keepFixture).
 func newChainDaemon(t *testing.T, project string, wrong bool) *chainDaemon {
 	t.Helper()
-	ctx := context.Background()
 	var rows []chainRow
 	for _, row := range chainRows {
 		if projectOf(row.key) == project {
 			rows = append(rows, row)
 		}
 	}
+	return newChainDaemonOver(t, project, rows, wrong)
+}
+
+// newChainDaemonOver is newChainDaemon over rows, every one of project, which the store and the
+// stand-in Dispatch hold exactly.
+func newChainDaemonOver(t *testing.T, project string, rows []chainRow, wrong bool) *chainDaemon {
+	t.Helper()
+	ctx := context.Background()
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)

@@ -29,6 +29,17 @@ func (s *Store) OpenIssueLifecycle(ctx context.Context, project, issue string, a
 	return s.openLifecycle(ctx, treelifecycle.Issues, project, issue, authority, runNothing)
 }
 
+// OpenOperatorIssueLifecycle opens issue's lifecycle under the operator's authority, as the
+// operator's spawn does for the issue its claim binds, and runs created in the open's own
+// transaction where the open created the issue's row: the spawn draws the issue's own
+// experiments there (decision 16 of dispatch://INFRA-4730: an issue, not its tree, is the unit a
+// claim binds). An issue another authority holds, the workflow's, answers
+// treelifecycle.ErrAuthorityHeld and runs nothing.
+func (s *Store) OpenOperatorIssueLifecycle(ctx context.Context, project, issue string,
+	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
+	return s.openLifecycle(ctx, treelifecycle.Issues, project, issue, treelifecycle.AuthorityOperator, created)
+}
+
 // ReserveIssueCleanup records the workflow's cleanup of issue at the close of its run generation,
 // before any resource snapshot. A retry of an unconfirmed reservation resumes it whatever the
 // issue has done since; a retry after the cleanup confirmed reserves nothing; and a fresh

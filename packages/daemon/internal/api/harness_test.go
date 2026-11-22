@@ -383,8 +383,11 @@ func (h *harness) launchIn(tree, issue string, role claim.Role) (claim.Token, st
 	if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, issue, treelifecycle.AuthorityWorkflow); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
 		h.t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
 	}
+	// The architect of a tree's own root holds the root's gate, as admission's start of a root
+	// marks its claim (supervise.Claim.HoldsGate) and the operator's spawn of one does.
 	m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
 		Token: token, Project: testProject, Tree: tree, Issue: issue, Role: role, State: supervise.StateQueued,
+		HoldsGate: role == claim.RoleArchitect && tree == issue,
 	}, "role prompt")
 	if err != nil {
 		h.t.Fatalf("create %s: %v", token, err)

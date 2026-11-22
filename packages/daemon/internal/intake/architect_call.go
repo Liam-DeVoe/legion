@@ -46,6 +46,9 @@ var (
 // rule holds even a call no architect made to (CallRefusal).
 func (c ArchitectCall) Roots() bool { return c.kind == root }
 
+// Op is the call's operation, as its refusal names it: sign_off, close_root and the rest.
+func (c ArchitectCall) Op() string { return c.op }
+
 // CallRefusal is the ownership rule an architect's call on key is held to, over chains, a read of
 // the Dispatch chains of dispatchProject that started from or reached key: the API judges a call
 // by it before it builds the fact, and the workflow again where the fact commits (workflow's

@@ -1272,9 +1272,9 @@ func TestTheOperatorsCloseNamesAClaimItSupervisesNoMachineFor(t *testing.T) {
 	}
 }
 
-// The operator closes only a tree no workflow issue backs, and only through its root claim: a
-// workflow issue's tree closes when its linger expires, and a worker's claim is stopped. Each
-// refusal changes nothing.
+// The operator closes only an issue's lifecycle no workflow issue backs, and only through its root
+// claim: a workflow issue's lifecycle ends with its issue's close, and a worker's claim is stopped.
+// Each refusal changes nothing.
 func TestTheOperatorsCloseRefusesAWorkflowTreeAndAWorker(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
@@ -1287,7 +1287,7 @@ func TestTheOperatorsCloseRefusesAWorkflowTreeAndAWorker(t *testing.T) {
 
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil),
-		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which closes when its linger expires")
+		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which ends with its issue's close")
 
 	if releases := h.runtime.CallsOf("Release"); len(releases) != 0 {
 		t.Errorf("a refused close reached the runtime: %+v", releases)
@@ -1331,7 +1331,7 @@ func TestAClosedWorkersRetiredClaimStillRefusesAndStopsNothing(t *testing.T) {
 	}
 }
 
-// A workflow issue's tree closes when its linger expires, whatever state its root claim is in: a
+// A workflow issue's lifecycle ends with its issue's close, whatever state its root claim is in: a
 // root that has already retired is not a way past TreeClosable.
 func TestACloseOfARetiredRootStillAsksWhetherAWorkflowIssueBacksTheTree(t *testing.T) {
 	h := newHarness(t)
@@ -1342,7 +1342,7 @@ func TestACloseOfARetiredRootStillAsksWhetherAWorkflowIssueBacksTheTree(t *testi
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil),
-		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which closes when its linger expires")
+		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which ends with its issue's close")
 }
 
 func TestListAnswersEveryClaim(t *testing.T) {

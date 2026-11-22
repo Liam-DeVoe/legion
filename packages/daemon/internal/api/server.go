@@ -287,6 +287,16 @@ type Options struct {
 	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
 	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
 	GateRegistrationRead func(ctx context.Context, issue string)
+	// CallJudged is told of each call the route judges before the workflow judges it again where
+	// its fact commits (decision 5 of dispatch://INFRA-4730): an architect's call and a worker's
+	// completion, once the route has judged it and before its fact is applied, with the call's
+	// operation and the issues it names, on the route's own context and goroutine, so the call
+	// waits for it to return. A route judged by the ownership rule (ownsOnChain) tells it once
+	// that rule allowed the call; a status call (rerun_child, release_children) once its reads of
+	// Dispatch are made; a completion (handoff_complete) once it passed the route's checks of its
+	// run and its phase entry. It is a test's seam alone, to move a Dispatch chain or stop an
+	// issue between a call's decision and its commit; nil, the daemon's, tells no one.
+	CallJudged func(ctx context.Context, op string, issues []string)
 	// Pause is the project's pause service (internal/pause's Service), which the four pause and
 	// resume routes act through and whose flag the claim routes read to refuse a turn while the
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
@@ -295,17 +305,18 @@ type Options struct {
 }
 
 // TreeLifecycles is the store's durable lifecycle barrier (store.Store) as the operator routes use
-// it: an operator root opens its tree's lifecycle before its claim is stored, which is where the
-// tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle, its created running in the
-// open's own transaction where it created the tree's row), and every spawn opens its issue's own
-// lifecycle, which each claim of the issue binds (store.Store.OpenIssueLifecycle). A close of the
-// operator's tree reserves the cleanup of each issue its claims name, then finishes each once
-// every claim of that issue has retired, by the issue's own identity (R17 of
-// dispatch://INFRA-3320): nothing of a tree is deleted whole.
+// it: an operator root opens its tree's lifecycle before its claim is stored, and every spawn opens
+// its issue's own lifecycle, which each claim of the issue binds and where the issue's own
+// experiments are drawn (store.Store.OpenOperatorIssueLifecycle, its created running in the open's
+// own transaction where it created the issue's row). A close of the operator's tree reserves the
+// cleanup of each issue its claims name, then finishes each once every claim of that issue has
+// retired, by the issue's own identity (R17 of dispatch://INFRA-3320): nothing of a tree is
+// deleted whole.
 type TreeLifecycles interface {
 	OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
 		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
-	OpenIssueLifecycle(ctx context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
+	OpenOperatorIssueLifecycle(ctx context.Context, project, issue string,
+		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
 	ReserveOperatorIssueCleanup(ctx context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedIssue(ctx context.Context, project, issue string, epoch uint64, releaser store.IssueReleaser) error
 }
@@ -400,6 +411,8 @@ type server struct {
 	claimActivity      ClaimActivityStore
 	// gateRead is Options.GateRegistrationRead.
 	gateRead func(ctx context.Context, issue string)
+	// callJudged is Options.CallJudged.
+	callJudged func(ctx context.Context, op string, issues []string)
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -476,6 +489,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		gateRead:           opts.GateRegistrationRead,
+		callJudged:         opts.CallJudged,
 		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,
