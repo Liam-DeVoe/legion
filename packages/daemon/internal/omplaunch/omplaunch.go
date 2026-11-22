@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -221,8 +222,11 @@ func programShown(word string) string {
 var commandName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 
 // commandShaped reports whether name has a command's shape: commandName's, holding no run of 8 or
-// more hexadecimal digits (a hex key) and no run of 10 or more letters and digits that holds a
-// digit (a token). `env`, `nice`, `python3.12` and `omp-proxy-wrapper` have it.
+// more hexadecimal digits (a hex key), no run of 10 or more letters and digits that holds a digit (a
+// token), and not three or more "-"-separated segments that each hold a digit (a token written in
+// segments, `a1b2-c3d4-e5f6`). `env`, `nice`, `secrets`, `python3.12`, `omp-proxy-wrapper` and
+// `aarch64-linux-gnu-gcc-12` have it; the launch prefixes this repository's tests, documents and
+// deploy examples write run `env`, `secrets` and their paths.
 func commandShaped(name string) bool {
 	if !commandName.MatchString(name) || hexRun.MatchString(name) {
 		return false
@@ -232,7 +236,8 @@ func commandShaped(name string) bool {
 			return false
 		}
 	}
-	return true
+	segments := strings.Split(name, "-")
+	return len(segments) < 3 || slices.ContainsFunc(segments, func(segment string) bool { return !strings.ContainsAny(segment, "0123456789") })
 }
 
 // hexRun is a run of 8 or more hexadecimal digits, and alphanumericRun one of 10 or more letters

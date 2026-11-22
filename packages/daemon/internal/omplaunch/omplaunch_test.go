@@ -317,6 +317,8 @@ func TestPrefixMaskedKeepsALineSharingTheProgramsDirectory(t *testing.T) {
 			"sh: madeUpProgramTo: cut", "(a line of 24 bytes that holds part of the launch prefix, not printed)"},
 		{"a line beside a token program", "/opt/bin/madeUpProgramToken0123",
 			"error: cannot read /opt/bin/wrapper.conf", "error: cannot read /opt/bin/wrapper.conf"},
+		{"a segmented token program's cut copy", "a1b2-c3d4-e5f6-g7h8-i9j0",
+			"sh: a1b2-c3d4-e5f6: not found", "(a line of 29 bytes that holds part of the launch prefix, not printed)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := PrefixMasked(tc.text, []string{tc.program, "--"}); got != tc.want {
@@ -350,6 +352,10 @@ func TestPrefixShownNamesNoArgument(t *testing.T) {
 		{"a path ending in a token", []string{"/opt/bin/" + token}, []string{ProgramNotShown}},
 		{"a hex key where the program goes", []string{"deadbeefcafe4bad"}, []string{ProgramNotShown}},
 		{"a base64 key and its padding where the program goes", []string{token + "=="}, []string{ProgramNotShown}},
+		// A made-up token written in segments that each hold a digit, with no long run: it has no
+		// command's shape. A compiler's name with a digit in two of its segments keeps one.
+		{"a token in segments where the program goes", []string{"a1b2-c3d4-e5f6-g7h8-i9j0", "--x"}, []string{ProgramNotShown, "(1 argument, not shown)"}},
+		{"a cross compiler", []string{"/usr/bin/aarch64-linux-gnu-gcc-12"}, []string{"aarch64-linux-gnu-gcc-12"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := PrefixShown(tc.prefix)
