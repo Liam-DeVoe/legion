@@ -19,17 +19,19 @@ import (
 // to its sign-off at 10:30. In its retro its architect files ACME-2 under it, whose first phase
 // starts at 10:35 on a slot of its own; ACME-2 then works 15 minutes in each phase from 10:45. At
 // 11:00 ACME-1 moves to merging, and at 11:15 its merger's turn ends and its pull request merges:
-// the record holds the close's wait on ACME-2 then, and no move. At 12:15 ACME-2's own pull request
-// merges, ACME-2 is done and leaves the workflow, and the daemon closes ACME-1 at once, merging →
-// done by pull_request_merged, and its tree lingers. Under main each issue gives its slot back at
-// the end of its review, as main keeps none past it; under cover each keeps its slot, ACME-1 to the
-// merge, when ACME-2 takes it over as ACME-1's cover, and ACME-2 to its leave.
+// the record holds the close's wait on ACME-2 then, and no move. At 12:15 ACME-2's merger's turn
+// ends and a person sets ACME-2 done: it leaves the workflow, and the daemon closes ACME-1 at once,
+// merging → done by pull_request_merged, and its tree lingers. Under main each issue gives its slot
+// back at the end of its review, as main keeps none past it; under cover each keeps its slot,
+// ACME-1 to the merge, when ACME-2 takes it over as ACME-1's cover, and ACME-2 to its leave.
 //
 // The window starts once ACME-2 has started, so the start state places the two as the record left
 // them: today's daemon holds a child filed beneath an accepted root at admitted until that root
 // closes (record.HeldUnderAccepted), so a replay from before the filing would never start ACME-2.
-// No Dispatch event of either but the daemon's own writes falls in the window: ACME-2 ends by its
-// own merge.
+// The person's done is the one Dispatch event in the window that is not the daemon's own write,
+// and it applies only because the replay's copy of Dispatch starts at the sequence the record
+// stands at (shadow.seedEvent), where the start state records ACME-2: the daemon's fence drops an
+// event at or below that sequence.
 func heldMergeWindow(t *testing.T, rule string) Window {
 	b := newWindowBuilder(t, clock(11, 10), clock(12, 30))
 	b.window.Parts[0].Rule = rule
@@ -58,7 +60,7 @@ func heldMergeWindow(t *testing.T, rule string) Window {
 	pastReview(clock(11, 45), "ACME-2", phase.Accepting, phase.Retro, workflow.TriggerSignOff)
 	pastReview(clock(12, 0), "ACME-2", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
 	b.turnEnds(clock(12, 15), "ACME-2", claim.RoleMerger)
-	b.moved(clock(12, 15), "ACME-2", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.edit(clock(12, 15), "ACME-2", setStatus(record.DoneStatus))
 	b.leaves(clock(12, 15), "ACME-2", record.DoneStatus)
 	b.moved(clock(12, 15), "ACME-1", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
 	b.leaves(clock(12, 15), "ACME-1", record.DoneStatus)
@@ -133,7 +135,7 @@ func heldMergeRun(t *testing.T, rule string) (RunResult, []replayLine, []coverSt
 
 // checkHeldMerge fails t unless the run applied ACME-1's merge at its recorded 11:15, where the
 // engine wrote the close's wait, closed ACME-1 by pull_request_merged at ACME-2's leave at 12:15,
-// counted one held merge and refused no move.
+// counted one held merge, refused no move and had no Dispatch event dropped by a fence.
 func checkHeldMerge(t *testing.T, result RunResult, log []replayLine) {
 	t.Helper()
 	waited := linesAt(log, func(line replayLine) bool { return line.Msg == mergedCloseWaitsLine && line.Issue == "ACME-1" })
@@ -152,6 +154,10 @@ func checkHeldMerge(t *testing.T, result RunResult, log []replayLine) {
 	if result.Divergence.HeldMerges != 1 {
 		t.Errorf("the replay counts %d held merges, want 1, ACME-1's", result.Divergence.HeldMerges)
 	}
+	if result.Divergence.Fenced != 0 {
+		t.Errorf("a fence of the daemon's dropped %d of the replay's Dispatch events, want none: the person's done of ACME-2 among them",
+			result.Divergence.Fenced)
+	}
 	for _, refused := range result.Divergence.Refused {
 		t.Errorf("the replay refused %s's move %s→%s by %s at %s: %s", refused.Issue, refused.From, refused.To, refused.Trigger,
 			stamp(refused.At), refused.Reason)
@@ -163,8 +169,9 @@ func checkHeldMerge(t *testing.T, result RunResult, log []replayLine) {
 // it, not at the close's later move to done. The test replays heldMergeWindow under main: ACME-1's
 // merger's segment ends at 11:15, where the replay applies intake.PullRequestMerged and the engine
 // writes the close's wait on ACME-2; every settle from then until 12:15 shows ACME-1 in merging;
-// at 12:15 ACME-2's own merge makes it done, and the engine closes ACME-1 by pull_request_merged,
-// the replay entering no move of its own. The run counts one held merge and refuses no move.
+// at 12:15 the person's done takes ACME-2 out of the workflow, and the engine closes ACME-1 by
+// pull_request_merged, the replay entering no move of its own. The run counts one held merge and
+// refuses no move.
 func TestAHeldMergeIsAppliedAtItsTimeAndClosesAtTheLastLeave(t *testing.T) {
 	result, log, states := heldMergeRun(t, record.MainRule.Name)
 	checkHeldMerge(t, result, log)
@@ -191,8 +198,9 @@ func TestAHeldMergeIsAppliedAtItsTimeAndClosesAtTheLastLeave(t *testing.T) {
 // the root's slot for it. The test replays heldMergeWindow, recorded under cover, under cover:
 // every settle before the merge at 11:15 shows ACME-1 holding its own slot and no cover; every
 // settle from the merge until 12:15 shows ACME-1 in merging holding no slot, covered by ACME-2,
-// which holds one; and at 12:15, when ACME-2's own merge makes it done, ACME-1 is done and no cover
-// is left. The merge and the close come as under main, with one held merge and no refused move.
+// which holds one; and at 12:15, when the person's done takes ACME-2 out of the workflow, ACME-1 is
+// done and no cover is left. The merge and the close come as under main, with one held merge and no
+// refused move.
 func TestAHeldMergeIsAWaitACoverHolds(t *testing.T) {
 	result, log, states := heldMergeRun(t, "cover")
 	checkHeldMerge(t, result, log)

@@ -15,16 +15,19 @@ import (
 )
 
 // shadow is a replay's copy of Dispatch (design 10.4): each issue's current payload as Dispatch
-// would serve it, and a sequence of its own. Every event a replay applies — a recorded event at
-// its replayed time, or the echo of a status write the replay's own outbox made — takes its
-// issue's next sequence and carries the shadow's whole payload, so no sequence fence of the
-// daemon drops it for arriving out of the record's order, and an echo that changes the status
-// leaves the issue's links, parent, labels and rank as they stand. A recorded issue event changes
-// the payload by what it changed in the record, read as the fields its payload differs in from
-// the recorded event before it, so a person's edit lands on the replay's status rather than
-// writing back the status the record's daemon had written. The daemon's reads of Dispatch — a
-// boot's listing, a tick's re-read, a status write's read, a gate seed's read of a document — are
-// answered from it.
+// would serve it, and a sequence of its own. It starts where the record stands at the window's
+// start: every recorded event before the start is applied at its recorded time and its recorded
+// sequence (seedEvent), so each issue's payload, asks and documents are what the record shows then,
+// and its sequence is the one the start state's record of it stands at. Every event a replay
+// applies from the start on — a recorded event at its replayed time, or the echo of a status write
+// the replay's own outbox made — takes its issue's next sequence past that and carries the shadow's
+// whole payload, so no sequence fence of the daemon drops it for arriving out of the record's
+// order, and an echo that changes the status leaves the issue's links, parent, labels and rank as
+// they stand. A recorded issue event changes the payload by what it changed in the record, read as
+// the fields its payload differs in from the recorded event before it, so a person's edit lands on
+// the replay's status rather than writing back the status the record's daemon had written. The
+// daemon's reads of Dispatch — a boot's listing, a tick's re-read, a status write's read, a gate
+// seed's read of a document — are answered from it.
 type shadow struct {
 	project string
 	issues  map[string]*shadowIssue
@@ -39,16 +42,21 @@ type shadow struct {
 // shadowIssue is one issue of the shadow.
 type shadowIssue struct {
 	key, project string
-	// seq is the sequence of the issue's last event in the replay.
+	// seq is the sequence of the issue's last event in the replay: the recorded sequence of its
+	// newest event before the window's start (seedEvent), then one more for each event the replay
+	// applies.
 	seq int64
 	// payload is the issue as Dispatch shows it now, nil before its first issue event.
 	payload map[string]json.RawMessage
 	// recorded is the payload of the issue's last recorded issue event, whoever wrote it, which
 	// the next recorded issue event's change is read against.
 	recorded map[string]json.RawMessage
-	// log is every event the replay applied of the issue, as applied, which a read of the
-	// issue's event log is answered from (intake.LabelSetter).
-	log []json.RawMessage
+	// log is every event of the issue the shadow holds, as applied: first the recorded events
+	// before the window's start (seedEvent), the first seeded of them, then every event the replay
+	// applied. A read of the issue's event log is answered from it (intake.LabelSetter), as
+	// Dispatch's log holds the issue's events from before the start too.
+	log    []json.RawMessage
+	seeded int
 	// asks is each ask of the issue as its events leave it, and artifacts each document.
 	asks      map[string]*shadowAsk
 	artifacts map[string]*shadowArtifact
@@ -155,6 +163,30 @@ func (s *shadow) note(e envelope) {
 func (s *shadow) apply(e envelope, at time.Time) (json.RawMessage, error) {
 	iss := s.issue(e.key, e.project)
 	iss.seq++
+	return s.take(iss, e, at)
+}
+
+// seedEvent applies a recorded event from before the window's start at its recorded time at and
+// its recorded sequence seq, not its issue's next, which brings the shadow to where the record
+// stood at the start: each issue at the sequence of its newest event before it, where the start
+// state writes its record's LastDispatchSeq, with the payload, asks and documents the record shows
+// then. A write of the daemon's own is applied as any other, since the record's state at the start
+// holds it. The event joins the issue's log ahead of every event the replay applies
+// (shadowIssue.seeded): a replay seeds every event before its start before it applies its first.
+func (s *shadow) seedEvent(e envelope, seq int64, at time.Time) error {
+	iss := s.issue(e.key, e.project)
+	iss.seq = seq
+	if _, err := s.take(iss, e, at); err != nil {
+		return err
+	}
+	iss.seeded = len(iss.log)
+	return nil
+}
+
+// take applies e to iss at at, at the sequence iss stands at: an issue event changes the payload
+// by the fields it changed in the record, and every event's asks and documents are read
+// (notePayload). It answers the event as applied, which joins the issue's log.
+func (s *shadow) take(iss *shadowIssue, e envelope, at time.Time) (json.RawMessage, error) {
 	fields := maps.Clone(e.fields)
 	if issueEvent(e.kind) && e.payload != nil {
 		if iss.payload == nil {

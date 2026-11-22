@@ -488,13 +488,30 @@ func (d *driver) recorded(key string) (*record.Issue, error) {
 	return issue, err
 }
 
-// run replays the window: the start state at its start, then every item of the queue in order to
-// its end, the worker stub after each.
+// run replays the window: the start state at its start, the replay's copy of Dispatch brought to
+// the record's state there, then every item of the queue in order to its end, the worker stub
+// after each.
 func (d *driver) run() error {
 	w, t := d.window, d.trace
 	d.clock.advance(w.From)
 	if err := d.seed(); err != nil {
 		return err
+	}
+	// The copy of Dispatch starts where the record stands at the window's start: every recorded
+	// event before it, the daemon's own writes among them, at its recorded time and sequence, in
+	// the script's order (shadow.seedEvent).
+	for i := range d.script.events {
+		event := &d.script.events[i]
+		if !event.at.Before(w.From) {
+			continue
+		}
+		if err := d.shadow.seedEvent(event.env, event.parsed.Seq, event.at); err != nil {
+			return fmt.Errorf("replay: bring the copy of Dispatch to the window's start with the %s event of %s at %s: %w", event.env.kind,
+				event.env.key, stamp(event.at), err)
+		}
+	}
+	if d.cfg.atStart != nil {
+		d.cfg.atStart(d.shadow)
 	}
 	// An issue that stands in a stretch at the window's start began it where the record shows.
 	for _, key := range sortedKeys(t.Issues) {

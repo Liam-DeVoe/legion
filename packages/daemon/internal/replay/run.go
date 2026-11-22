@@ -62,6 +62,10 @@ type RunConfig struct {
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
 	// it (TestTheShadowMatchesTheMirrorAfterEveryFact).
 	afterFact func(ctx context.Context, pool *store.Pool, shadow *shadow) error
+	// atStart, where set, runs once, before the replay's first fact, with its copy of Dispatch
+	// brought to the record's state at the window's start: a test's look at the copy the window
+	// starts from (TestAPlacedIssuesDispatchWritesApplyAfterAMidwayStart).
+	atStart func(shadow *shadow)
 	// atSettled, where set, runs at each instant the snapshot timeline takes a state at, once
 	// every act of the instant has run, with the replay's store and the instant: a test's look at
 	// the replay's database at the moments its timeline reads (TestReplayStatesAreTheProjectionsStates).
@@ -362,8 +366,10 @@ var laterLines = []string{passMovedSlotsLine, phaseHeldLine}
 // lineTimeline is the replay's line timeline (design 10.1 (b)): BuildTrace over a window that holds
 // the record's lines and events from before the window's start, which the replay's start state
 // was built from, and from the start on the replay's own log and the events its copy of Dispatch
-// applied, recorded and its own alike. It is measured by the record's true ranks (design 10.7)
-// under the rule the replay ran.
+// applied, recorded and its own alike: each issue's log past the recorded events that brought the
+// copy to the window's start (shadowIssue.seeded), which the record's own events before the start
+// stand for here. It is measured by the record's true ranks (design 10.7) under the rule the
+// replay ran.
 //
 // The replay's log is read through the window's line kinds as the record is, so a later kind the
 // replay's daemon writes in place of the older lines a window holds (laterLines) is left out, and
@@ -418,7 +424,7 @@ func (d *driver) lineTimeline() (Timeline, error) {
 		}
 	}
 	for key, iss := range d.shadow.issues {
-		lined.Events[key] = append(lined.Events[key], iss.log...)
+		lined.Events[key] = append(lined.Events[key], iss.log[iss.seeded:]...)
 	}
 	t, err := BuildTrace(lined)
 	if err != nil {
