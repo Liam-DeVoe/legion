@@ -122,7 +122,7 @@ func TestAKeptPodWithoutTheExchangeTokenWaitsForItsRound(t *testing.T) {
 	_, err := r2.Resume(g.ctx, &loc, spec)
 	wantAwaitingRound(t, g, loc, err, before,
 		"pod "+loc.Sandbox.Name+" carries no exchange identity", "the Envoy listener, which takes no shared bearer", "its update round replaces it")
-	if drifted := driftOf(t, g.ctx, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
+	if drifted := driftOf(t, g, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
 		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
 	}
 }

@@ -8,7 +8,7 @@ body: |-
   a role whose claim records its session with no file keeps the one word `--resume=<id>`. It
   registers that id with the secrets broker at the role's shim hello, before the agent
   registers. A launch into a live pod built before that identity waits for the pod's update round.
-  This is daemon API contract 207, so the boot gate and `legion probe-image` refuse a worker image
+  This is daemon API contract 212, so the boot gate and `legion probe-image` refuse a worker image
   built from an earlier contract. `legion config reference` now says that, since `runtime:
   kubernetes` requires `exchange_audience`, this release runs only once its worker image and the
   secrets broker run this release or a later one, only once the worker image's Oh My Pi takes

@@ -1056,7 +1056,7 @@ const legionAgentSecretsLoginView = z.object({
 });
 
 /** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
- * (contract 207): `session`, the session its own Dispatch calls run under
+ * (contract 212): `session`, the session its own Dispatch calls run under
  * (`legion-daemon:<PROJECT>`); and `liveLaunchesWithDispatchToken`, the live launches whose start
  * carried a Dispatch token, whichever daemon started them: the shared bearer a daemon without the
  * setting handed out, which a deployment revokes once the count is 0. Never a token. No plugin
@@ -1320,8 +1320,8 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither.
  * `dispatchCredential` is the daemon's Dispatch credential and the one count of the Dispatch
- * tokens its launches hand out, written only under `dispatch_token_broker` (contract 207); the
- * route strips it for a caller below 207, read the same way (`api.stateFor`,
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 212); the
+ * route strips it for a caller below 212, read the same way (`api.stateFor`,
  * `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
@@ -1827,7 +1827,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each fact-route golden is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
@@ -2109,9 +2109,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
- * its tree for the tree root's architect, and only an issue under its own issue for a child's own
- * architect (`ISSUE_NOT_OWNED` otherwise). */
+/** `api.ChildRequest`, an architect's rerun_child of one issue it owns: any child of its tree for
+ * the tree root's architect, and only an issue under its own issue for a child's own architect
+ * (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

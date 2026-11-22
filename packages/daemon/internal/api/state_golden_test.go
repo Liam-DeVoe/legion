@@ -941,7 +941,7 @@ func populatedState(t *testing.T) State {
 			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
 		},
 		AgentSecretsLogin: &AgentSecretsLoginView{State: "issued"},
-		// A deployment under dispatch_token_broker in its move (contract 207): three live
+		// A deployment under dispatch_token_broker in its move (contract 212): three live
 		// generations, which a daemon before the setting started, still hold the shared bearer.
 		DispatchCredential: &DispatchCredentialView{
 			Session: "legion-daemon:LEGION", LiveLaunchesWithDispatchToken: 3,
@@ -1760,7 +1760,6 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "phase-retry.json", PhaseRetryResponse{})
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
-	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 

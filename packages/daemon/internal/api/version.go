@@ -2979,7 +2979,47 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 207: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
+// Contract 205 is served with no code of its own (193's entry): no key path or value of any
+// answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
+// its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
+// at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193, 199 and 202 hold the route's body (`request-shapes.json`). The route
+// leaves the request types the gate walks, reads no body and answers that body with the refusal,
+// and requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every
+// later contract holds no body for it.
+// (This entry took 191 at first, the lowest number above main's 188 that no other open pull
+// request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
+// 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge
+// of 2026-11-21 that brought in 43b9c9c3 brought main's 199 (INFRA-4605's entry above). A reading
+// of every open pull request at that merge, which ended at 2026-11-21T02:21:13Z, found 200
+// (#4049), 201 (#4611), 202 (#3712, #4273, #4392, #4432, #4493, #4580 and #4590), 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#4030) declared, so this entry moved to 205, the lowest
+// number above main's 199 that no other open pull request declares. The forward merge of
+// 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+//
+// 212: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
 // that session, which moves three surfaces this number names. The agent's argv: the daemon
 // chooses each Oh My Pi role's session id and starts it with `--session-id <id>`, or with
@@ -2996,13 +3036,13 @@ package api
 // Dispatch token, the shared bearer a daemon without the setting handed out, which a deployment
 // waits to see at zero before it revokes that bearer. The settings block's `dispatch_token_broker`
 // is a key of the block the plugin parses loosely (35 above), and moves no number.
-// A caller below 207 is served the state without the key, by its row of shaping.go's
+// A caller below 212 is served the state without the key, by its row of shaping.go's
 // stateNarrowings (withoutDispatchCredential, the band of dispatchCredentialContract): a plugin
 // built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
 // body for a key it does not name, and one built after strips the key, so the band keeps the body
 // each contract's record describes. A caller from 193 up states its contract and is placed by it,
-// and a caller placed by its pod is below 193 (podContracts), so the band reaches both. 207's
-// records are 202's under its own number with the key paths of `dispatchCredential` on the
+// and a caller placed by its pod is below 193 (podContracts), so the band reaches both. 212's
+// records are 205's under its own number with the key paths of `dispatchCredential` on the
 // state's. No other answer a plugin parses moves: the release-names route, which gains a 502 and a
 // 503 for the broker's answer to the release of a claim's session names, answers the `legion`
 // command, which states no contract.
@@ -3013,18 +3053,21 @@ package api
 // `legion probe-image` hold the daemon to an image built from this contract. A kept pod of an
 // older image carries no exchange identity, so a launch into it waits for the pod's update round,
 // which replaces the pod.
-// (This change takes 207, the lowest number above main's 202 that no open pull request declared
-// when the forward merge of 2026-11-21 brought main in at 1cdf5b9ceb, which declares 202 (#4493,
-// the entry above); it had declared 165, then 175 from the merge that brought main in at
+// (This change takes 212, the lowest number above main's 205 that no other open pull request
+// declared when the forward merge of 2026-11-21 brought main in at a155b5a33a, which declares 205
+// (INFRA-3178's entry above). It had declared 165, then 175 from the merge that brought main in at
 // a16c218ee3, then 179 from the merge that brought main in at 506395beea, then 182 from the merge
 // that brought main in at c7e1cbd532, then 192 from the merge that brought main in at 1c7c825367,
 // then 196 from the merge that brought main in at a4cd4949fc, then 199 from the merge that brought
-// main in at fcc746a383, then 202 from the merge that brought main in at f1d27d3a82.
-// `.github/scripts/check-daemon-api-contract.sh`, which reads `const DaemonAPIVersion` at
-// refs/pull/<n>/head for every open pull request, read 203 (#2230, #3993, #4065, #4175, #4553,
-// #4592, #4596, #4661), 204 (#3831, #4030), 205 (#4573) and 206 (#4540) above 202 at
-// 2026-11-21T03:50Z. Read the base's own number and every open pull request again at the next
-// merge rather than from this line, as
+// main in at fcc746a383, then 202 from the merge that brought main in at f1d27d3a82, then 207 from
+// the merge that brought main in at 1cdf5b9ceb. A reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request at the merge of a155b5a33a, which ran from
+// 2026-11-21T21:38:24Z to 2026-11-21T21:47:59Z, found 206 (#3712, #4539), 207 (#3993, #4432,
+// #4590), 208 (#4175), 209 (#4049, #4580), 210 (#4661), 211 (#4611, #4902), 213 (#4030, #4553),
+// 214 (#4592, #4596), 215 (#4065), 216 (#3831, #4173, #4259, #4540) and 217 (#2230, #4273, #4771)
+// declared by other pull requests; #4682 and #4723, stacked on this branch, and #4805, stacked on
+// #4723, declared this branch's 207. Read the base's own number and every open pull request again
+// at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 207
+const DaemonAPIVersion = 212

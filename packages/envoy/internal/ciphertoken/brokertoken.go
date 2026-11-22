@@ -98,9 +98,12 @@ var (
 // second per broker process (internal/cipher/api/limits.go, DefaultAccountLimit) — and that one
 // bucket is shared with the approval relays a person's click produces, so introspection has to
 // stay well under it or a flood of checks would refuse a person their own approval. With
-// single-flight in front, one Dispatch pod's sustained introspection rate is its distinct live
-// tokens divided by this window: under 128 live tokens that is under 26 a second, half the
-// bucket's refill and a fifth of its burst, leaving the relays theirs.
+// single-flight in front, and while the cache keeps each answer, one Dispatch pod's sustained
+// introspection rate is its distinct live tokens divided by this window: under 128 live tokens
+// that is under 26 a second, half the bucket's refill and a fifth of its burst, leaving the relays
+// theirs. Verifier.known says when the cache keeps no answer. The address bucket
+// (DefaultAddressLimit) does not hold that rate down: a live token's introspection gives back the
+// request it took (Verifier.known).
 //
 // Shortening it costs broker requests in that proportion; lengthening it leaves a revoked token
 // accepted for longer, which is the other half of the trade and why the window is seconds.
@@ -118,14 +121,11 @@ const AffirmativeCacheTTL = 5 * time.Second
 // costs that token an introspection and nothing else.
 const AffirmativeCacheSize = 4096
 
-// DefaultAddressLimit bounds the introspections one source address can make Dispatch send, in a
-// bucket of its own per address (Options.Address): a burst of 20 and five a second, per
-// process. A caller holding one token spends one token of this bucket per AffirmativeCacheTTL,
-// since every request inside that window is answered from the cache, so an honest caller never
-// meets it; a stranger presenting tokens the broker has never issued meets it at once, before
-// anything of Dispatch's reaches the broker.
+// DefaultAddressLimit is the introspection bucket each source address (Options.Address) has of
+// its own: a burst of 20 and five a second, per process. Each introspection takes one request from
+// it before it is sent, and which of them give that request back is Verifier.known's rule.
 //
-// That ordering is the rule INFRA-228 wrote down
+// Taking the request before the call is the rule INFRA-228 wrote down
 // (docs/solutions/best-practices/a-route-that-verifies-before-it-limits-lets-a-stranger-spend-your-upstream-INFRA-228.md):
 // a check that costs an upstream call is work an unauthenticated caller can make you do, so the
 // bucket is spent before the call and not inside the handler after it. The budget being guarded
@@ -526,15 +526,37 @@ func shapeOf(answer Introspection) tokenShape {
 //
 // The cache is read first, because an answer served from it reaches no broker and so spends
 // nothing of the budget the bucket guards. A miss joins the single flight for that token, and the
-// bucket is spent inside that flight, by whichever request opens it and once the flight's own
-// look at the cache has missed too — so one request of the source address's bucket is spent for
-// exactly one introspection, which is what the bucket is there to bound. N requests arriving at
-// once with one cold token therefore cost one introspection and one token of the bucket, where
-// charging each of them would refuse an honest caller that made a burst of calls on a token it
-// had just been given. A stranger still pays per distinct token, which is the flood the bucket
-// exists for. The introspection runs under the context of whichever request opened the flight,
-// so one that goes away takes the others' answer with it; they are answered ErrBrokerUnreachable
-// and come back, which is what every other lost answer does.
+// request is taken from the source address's bucket inside that flight, by whichever request opens
+// it and once the flight's own look at the cache has missed too — so one request of the bucket is
+// taken for exactly one introspection. N requests arriving at once with one cold token therefore
+// cost one introspection and take one request of the bucket, where charging each of them would
+// refuse an honest caller that made a burst of calls on a token it had just been given.
+//
+// The request is taken before the introspection is sent, as INFRA-228 requires
+// (DefaultAddressLimit), and given back only when the broker answers that the token is live,
+// stamped with Options.Now, the clock the take read. The give-back follows the broker's answer
+// alone, whatever Verify decides about the token after it (a token that is no session's
+// credential, a proof that does not verify), since a token the broker calls live is one it
+// issued. A not-live answer keeps its request, and so does an introspection that ends in an
+// error, an answer that never came or one this reader does not read: nothing has shown the token
+// live, and the call still cost the broker's budget.
+//
+// So the bucket bounds only the introspections of tokens the broker does not answer live. A
+// stranger pays one request per distinct token it presents, which is the flood the bucket exists
+// for, while a live token's introspection gives back what it took, so many honest callers that
+// share one address, as every caller behind a gateway does, are not refused however many live
+// tokens they hold between them. What holds the introspections of a live token down is the cache
+// and the single flight, not the bucket: its answer is remembered (answerCache.remember), so the
+// requests after it are served from the cache until that answer lapses. Where the cache keeps
+// nothing, because it is full of answers still good and keeps those rather than evict one, or
+// because the answer's own 'exp' has already passed, every request on that token is a new
+// introspection and each gives its request back, so the bucket bounds none of them. What bounds
+// them then is the single flight, which holds the token to one introspection in flight at a time,
+// and past it the broker's own bucket, whose 429 is ErrBrokerUnreachable.
+//
+// The introspection runs under the context of whichever request opened the flight, so one that
+// goes away takes the others' answer with it; they are answered ErrBrokerUnreachable and come
+// back, which is what every other lost answer does.
 func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (Introspection, error) {
 	key := sha256.Sum256([]byte(token))
 	if answer, ok := v.cache.lookup(key, v.now()); ok {
@@ -546,7 +568,8 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 		if answer, ok := v.cache.lookup(key, v.now()); ok {
 			return answer, nil
 		}
-		if !v.addresses.AllowAt(v.address(r), v.now()) {
+		giveBack, ok := v.addresses.TakeAt(v.address(r), v.now())
+		if !ok {
 			return Introspection{}, ErrRateLimited
 		}
 		answer, err := v.introspect(ctx, token)
@@ -558,6 +581,7 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 		// having: a caller presenting a token the broker does not know is the caller the address
 		// bucket above is there to slow.
 		if answer.Active {
+			giveBack(v.now())
 			v.cache.remember(key, answer, v.now())
 		}
 		return answer, nil

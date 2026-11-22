@@ -178,7 +178,7 @@ func TestAKeptPodWithNoExchangeIdentityWaitsForItsRoundUnderTheBroker(t *testing
 		t.Fatalf("the runtime refuses the locator its own refusal named: %v", err)
 	}
 	identity := (movedAddress{agentSecretsExchangeVolume, "(unset)", enrollmentName(exchangeTokenProjection(r2.agentSecrets))}).String()
-	if drifted := driftOf(t, g.ctx, r2, refusal.Pod); !slices.Contains(drifted, identity) {
+	if drifted := driftOf(t, g, r2, refusal.Pod); !slices.Contains(drifted, identity) {
 		t.Errorf("PodDrift through the refusal's locator = %q, want %q among it: the identity the pod lacks is the drift its round is opened for",
 			drifted, identity)
 	}
