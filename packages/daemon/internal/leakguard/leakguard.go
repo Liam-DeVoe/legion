@@ -31,7 +31,7 @@
 // one line of a commit's id each. One line is held whole, a few times over (the reader's buffer,
 // the record's text, the detector's lower-cased copy), however long it is: a line is neither
 // split, since a match could cross the split and pass unread, nor refused for its length, which
-// would refuse pushes the rules pass. A push of a 73 MB line took 369 MiB; a hook the kernel
+// would refuse pushes the rules pass. A push of a 73 MB line took 416 MiB; a hook the kernel
 // stops for its memory refuses the push.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
