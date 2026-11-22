@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -278,13 +279,14 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 	}
 }
 
-// Every NATS connection a fresh daemon opens dials as its own connection does (workflowRuntime.dial):
-// the server admits only the daemon's nkey user and the admin, so a generation's connection that
-// presented another credential, or none, would end the boot; and when the server stops, each of the
-// four connections, the daemon's own and its three durables' generations, logs its loss through
-// the daemon's own events (natsauth.LogEvents), so a generation dialled without the daemon's
-// options logs nothing. The control is a generation dial written apart from the daemon's, which
-// leaves out one of its options: the row then counts one loss, or the boot ends.
+// Every NATS connection a fresh daemon opens goes through its one dial (workflowRuntime.dial), and
+// so dials as its own connection does: the dial hears the daemon's own connection and one
+// generation of each of its three durables, named <logical>/<generation>; the server admits only
+// the daemon's nkey user and the admin, so a generation's connection that presented another
+// credential, or none, would end the boot; and when the server stops, each of the four connections
+// logs its loss through the daemon's own events (natsauth.LogEvents). The control is round 2's
+// generation dial, written apart from the daemon's with the same arguments: the dial then hears the
+// daemon's own connection alone, and the row fails naming the generations it did not hear.
 func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
 	daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
 	defer admin.Close()
@@ -293,11 +295,29 @@ func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
 	cfg.ConsumerNames = consumernames.ModeFresh
 	logs := &syncBuffer{}
 	w := grantWorkflow(t, logs)
+	var heardMu sync.Mutex
+	var heard []string
+	w.dialed = func(name string) {
+		heardMu.Lock()
+		defer heardMu.Unlock()
+		heard = append(heard, name)
+	}
 	writeConvertedSentinel(t, w, cfg.Project)
 	if err := w.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
 		t.Fatalf("connect the daemon on fresh names, on a server that admits only its own user: %v", err)
 	}
 	defer w.closeNATS()
+	heardMu.Lock()
+	dialled := slices.Clone(heard)
+	heardMu.Unlock()
+	if !slices.Contains(dialled, "legion-daemon "+cfg.Project) {
+		t.Fatalf("the one dial heard %v, want the daemon's own connection among them", dialled)
+	}
+	for _, logical := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
+		if !slices.ContainsFunc(dialled, func(name string) bool { return strings.HasPrefix(name, logical+"/") }) {
+			t.Errorf("the one dial heard %v, want a generation connection of %s: it was dialled apart from the daemon's dial", dialled, logical)
+		}
+	}
 	admin.Close()
 	stop := 10 * time.Second
 	if err := server.Stop(t.Context(), &stop); err != nil {

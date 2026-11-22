@@ -88,7 +88,10 @@ type workflowRuntime struct {
 	// own ordering, and internal/daemon runs under the race detector in CI
 	// (.github/workflows/ci.yaml, the step "Test the concurrent packages under the race
 	// detector").
-	conn      atomic.Pointer[nats.Conn]
+	conn atomic.Pointer[nats.Conn]
+	// dialed, when a test sets it, hears the name of each NATS connection the daemon's one dial
+	// (dial) opens, so a test can tell that a connection went through it; nil in production.
+	dialed    func(name string)
 	consumers *intake.Consumers
 	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime
 	// reaches that stream call by (updateSubscription). The boot leaves it nil, which means
@@ -1077,6 +1080,9 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 // connection carries, each generation's carries too, and a generation's connection presents the
 // service token the NATS auth service decides, which grants it that one consumer.
 func (w *workflowRuntime) dial(cfg config.Config, nc natsConnection, name string) (*nats.Conn, error) {
+	if w.dialed != nil {
+		w.dialed(name)
+	}
 	if nc.tokenFile != "" {
 		return natsauth.ConnectService(cfg.NatsURLs, nc.tokenFile, name, nc.options(w.log)...)
 	}
