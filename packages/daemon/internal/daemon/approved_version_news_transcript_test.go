@@ -27,10 +27,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The three variables that narrow a run of part two to one step, one arm or another count of
@@ -223,9 +220,11 @@ func sessionsNoteBeforeRound(task, note string) (string, bool) {
 // The answers reviewer's start task is the start path's own, the phase's resume task ending with
 // its round's two sentences, with the step's note before those two: a note put after them, or into
 // a task that does not end with them, would leave a task marked as ending with them that does not,
-// and the reviewer would read no entry for its round, or one the daemon did not give.
+// and the reviewer would read no entry for its round, or one the daemon did not give. The resume
+// task is the text workflow.Engine.ResumeTask composes for a root in reviewing that holds no plan
+// rows and no working copy.
 func TestApprovedVersionNewsAReviewersNoteGoesBeforeItsRoundsSentences(t *testing.T) {
-	resume := workflow.ResumePhaseTask(record.Issue{Key: "AS0001-1", Title: "The reader", Phase: phase.Reviewing})
+	const resume = "Continue root. Issue: AS0001-1. Phase: reviewing. Resume the existing phase work."
 	const note = "The pull request makes the reader fetch one page on each call."
 	noted, ok := sessionsNoteBeforeRound(resume+reviewround.Sentences("", 1), note)
 	if want := resume + " " + note + reviewround.Sentences("", 1); !ok || noted != want {

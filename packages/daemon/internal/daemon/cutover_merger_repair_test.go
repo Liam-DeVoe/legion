@@ -913,11 +913,7 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 // sentence in front of the news, and is counted as the news.
 func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
 	t.Helper()
-	stands := readIssue(t, r.pool, issue.key)
-	if stands == nil {
-		t.Fatalf("read %s: the record does not hold it", issue.key)
-	}
-	task := workflow.ResumePhaseTask(*stands)
+	task := resumeTaskOf(t, r.pool, r.engine, issue.key)
 	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
 	told := r.tasks(issue.merger)
 	merging, news := 0, 0

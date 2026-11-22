@@ -108,7 +108,7 @@ func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, 
 		Parent: record.ParentOf(root), Project: "LEGION", Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 	seedGate(t, pool, record.DesignGate{Issue: root, ArtifactID: gateDoc, LatestVersion: approved, ApprovedVersion: new(approved), EverOpened: true})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: member, Repo: "sjawhar/legion", Number: 42,
-		Branch: "legion/" + member, HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
+		Branch: "legion/" + member, HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: member, Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: member, Role: claim.RoleTester, Claim: "test-claim"})
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -124,9 +124,10 @@ func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, 
 	}
 }
 
-// laterEntryTesterFails is the tester's failed verdict on laterEntryMember, which starts the
-// implementer.
-var laterEntryTesterFails = intake.HandoffComplete{Generation: 1, Issue: laterEntryMember, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
+// laterEntryTesterFails is the tester's completion of laterEntryMember's testing at its head,
+// which the check states decide: applied after testedAs has held its one check failed there, it
+// starts the implementer.
+var laterEntryTesterFails = intake.HandoffComplete{Generation: 1, Issue: laterEntryMember, Role: claim.RoleTester, Claim: "test-claim", Commit: headOne,
 	HandoffRecord: "test-0", HandoffVersion: 1}
 
 // owedNewsOf is what record.OwedNews owes tree as the record holds it now, over the facts every
@@ -157,6 +158,7 @@ func TestALaterEntryKeepsTheHolderRowItsFirstEntryWrote(t *testing.T) {
 
 	// The tester's fail starts the implementer: the first entry this issue's record holds a holder
 	// row for, written at the version its tree root's gate stands approved at.
+	testedAs(t, pool, engine, member, headOne, false)
 	apply("test-0", laterEntryTesterFails)
 	if got := phaseOf(t, pool, member); got != phase.Implementing {
 		t.Fatalf("%s = %s after the tester's fail, want implementing", member, got)
@@ -199,6 +201,7 @@ func TestAHolderRowThatKnowsNoVersionKeepsItAcrossTheNextEntry(t *testing.T) {
 		return record.NewStore().RaiseTold(t.Context(), tx, member, record.AudienceHolder, nil, engine.now())
 	})
 
+	testedAs(t, pool, engine, member, headOne, false)
 	apply("test-0", laterEntryTesterFails)
 	if got := phaseOf(t, pool, member); got != phase.Implementing {
 		t.Fatalf("%s = %s after the tester's fail, want implementing", member, got)

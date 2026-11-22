@@ -1215,7 +1215,14 @@ func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
 				pr.MergeSHA = "merge-42"
 			}
 			seedPR(t, pool, pr)
-			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the spec changed"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			// The architect's move is its acceptance's changes, so it names what the route reads:
+			// its claim, the run and the head it read (rootsMoveBack).
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the spec changed"}
+			if role == claim.RoleArchitect {
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the spec changed")
+			}
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", move, engine, admissionStub{})
 			if err != nil {
 				t.Fatalf("ApplyFact backward: %v", err)
 			}

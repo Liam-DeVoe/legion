@@ -136,7 +136,8 @@ func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testi
 	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
 		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
 	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
-		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, or take " + statusRoot + " back with a backward move first"
+		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, or take " + statusRoot +
+		" back with a backward move first, unless the pull request of " + statusRoot + " has merged"
 	if message != want {
 		t.Fatalf("the refusal = %q, want %q", message, want)
 	}

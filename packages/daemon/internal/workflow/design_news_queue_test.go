@@ -30,8 +30,8 @@ func TestAMoveIntoAcceptingOfAnOwedMemberQueuesTheReconcile(t *testing.T) {
 				Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: gatedRoot, Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1",
 				HandoffVersion: 1, Summary: "looks right"})
-			// The approval below decides the round only as the reviewer's own review: a review of
-			// the review App whose footer names the session its claim records (byReviewer).
+			// The approval below decides the round only as the reviewer's own verdict: its
+			// completion of reviewing, under the claim its phases row records.
 			seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: gatedRoot, Repo: "sjawhar/legion", Number: 42,
 				Branch: "legion/" + gatedRoot, HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
@@ -40,8 +40,8 @@ func TestAMoveIntoAcceptingOfAnOwedMemberQueuesTheReconcile(t *testing.T) {
 			seedTold(t, pool, gatedRoot, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})
 
 			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, HeadSHA: headOne,
-					Author: testReviewApp, Body: reviewBody("ship it", headOne)})
+				intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "looks right",
+					Verdict: "approve", Commit: headOne, HandoffRecord: "review-2", HandoffVersion: 2})
 
 			assertPhase(t, pool, phase.Accepting)
 			assertOutboxCount(t, pool, "design_changes", tc.want)

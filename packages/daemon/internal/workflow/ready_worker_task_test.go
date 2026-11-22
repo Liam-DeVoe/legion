@@ -157,7 +157,8 @@ func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.
 	}
 
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
-	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != ResumePhaseTask(issue) {
+	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask ||
+		starts[1].Task != phaseResumeTask(t, pool, testEngine(config.DesignGateRootIssues, nil), issue.Key) {
 		t.Fatalf("the starts after the ready = %+v, want the news-only start and, beside it, the phase's resume task: a start of news alone carries no task of the phase", starts)
 	}
 }
