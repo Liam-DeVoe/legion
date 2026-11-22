@@ -231,8 +231,8 @@
 #   SKILL_SCENARIOS_TIMEOUT   seconds one run, or one turn of a spec run, may take (default 1500)
 #   SKILL_SCENARIOS_MEMORY_MAX  the memory an agent's own systemd user scope may hold, with no
 #                             swap (default 8G): an agent past it is killed alone (launch)
-#   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
-#                                 nochange-block, untried or tried (required for that scenario)
+#   SKILL_SCENARIOS_ASKGATE_CASE  askgate: a case askgate-cases.txt lists (required for that
+#                                 scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
 #   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail
@@ -1250,7 +1250,7 @@ run_askgate() {
   nochange-block) printf 'With one dispatch doc-edit command, insert this ask block at the end of the spec of Dispatch issue %s, word for word, and do nothing else. Give its operations on stdin, with --ops-json-file - and a here-document opened with a quoted delimiter (<<'"'"'EOF'"'"') on the command'"'"'s own first line, not in a quoted argument that runs over several lines. %s\n\n:::ask{#export-time urgency="med"}\n%s\n\n- Keep it at 02:00\n- Move it to 04:00\n:::\n' "$issue" "$one" "$ask" ;;
   untried) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. Do not run the command it names yourself. %s Question: "Can you run %s and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$issue" "$one" "$billing" "$ref" ;;
   tried) printf 'First run %s yourself. It will fail. Then, in a command of its own, open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, with the exact error the command printed in place of <error>. %s Question: "I ran %s and it failed with <error>. Can you run it with your access and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$billing" "$issue" "$one" "$billing" "$ref" ;;
-  *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '$askCase', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
+  *) fail "run_askgate has no prompt for the askgate case '$askCase', which askgate-cases.txt lists" ;;
   esac >"$R/prompt.txt"
   dispatch_session capture-askgate ${mode:+"OMP_ASKGATE=$mode"}
 }
@@ -2396,6 +2396,27 @@ heads_scenario() {
   [ ${#cases[@]} -gt 0 ]
 }
 
+# askgate_cases sets askgate, an array of its caller's, to each case of the askgate scenario that
+# askgate-cases.txt lists, one a line, in its order: the catalog that askgate-cases.ts reads for
+# score.ts. run_askgate has a prompt for each.
+askgate_cases() {
+  local catalog=$root/packages/pi-legion/scripts/skill-scenarios/askgate-cases.txt known
+  [ -r "$catalog" ] || fail "cannot read the askgate case catalog $catalog"
+  askgate=()
+  # A last line with no newline is a case too, as askgate-cases.ts reads it.
+  while read -r known || [ -n "$known" ]; do
+    [ -z "$known" ] || askgate+=("$known")
+  done <"$catalog"
+}
+
+# listed_in NAME LISTED... succeeds when NAME is one of LISTED.
+listed_in() {
+  local name=$1 known
+  shift
+  for known in "$@"; do [ "$known" != "$name" ] || return 0; done
+  return 1
+}
+
 # one_of NAME... prints the names that are not empty as a choice of one of them: "a", "a or b",
 # "a, b or c".
 one_of() {
@@ -2498,7 +2519,7 @@ run_ci_pass_and_fail() {
 }
 
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]" cases known listed=false
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]" cases askgate
   # A run takes a case when a world of its scenario in the heads-scenario catalog names one.
   heads_cases "${1:-}"
   [ $# = 5 ] || { [ $# = 6 ] && [ -n "${cases[*]}" ]; } || fail "$usage"
@@ -2512,15 +2533,13 @@ cmd_run() {
   # names one, so the batches or runs of the cases, each numbered from 1, never remove each other's
   # runs.
   if [ "$scenario" = askgate ]; then
-    case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
-    facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-$label-$n
-      ;;
-    *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
-    esac
+    askgate_cases
+    listed_in "${SKILL_SCENARIOS_ASKGATE_CASE:-}" "${askgate[@]}" ||
+      fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not $(one_of "${askgate[@]}")"
+    name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-$label-$n
   elif [ -n "${cases[*]}" ]; then
-    for known in "${cases[@]}"; do [ "$known" != "$scenario_case" ] || listed=true; done
-    $listed || fail "the $scenario case '$scenario_case' is not $(one_of "${cases[@]}")"
+    listed_in "$scenario_case" "${cases[@]}" ||
+      fail "the $scenario case '$scenario_case' is not $(one_of "${cases[@]}")"
     name=$scenario${scenario_case:+-$scenario_case}-$label-$n
   else
     name=$scenario-$label-$n
@@ -2582,7 +2601,7 @@ stop_batch() {
 
 cmd_batch() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
-  local runs=$2 label n index=0 start scenario_case cases
+  local runs=$2 label n index=0 start scenario_case cases askgate
   batch_scenario=$1
   case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;; *) fail "unknown scenario $batch_scenario" ;; esac
   # A heads scenario runs each of its worlds the heads-scenario catalog lists, in the catalog's
@@ -2590,10 +2609,11 @@ cmd_batch() {
   # another scenario runs one world, which names no case.
   heads_cases "$batch_scenario"
   [ ${#cases[@]} -gt 0 ] || cases=('')
-  [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
-    facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
-    *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
-  esac
+  if [ "$batch_scenario" = askgate ]; then
+    askgate_cases
+    listed_in "${SKILL_SCENARIOS_ASKGATE_CASE:-}" "${askgate[@]}" ||
+      fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to $(one_of "${askgate[@]}") (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')"
+  fi
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_MODE:-} in
     '' | warn | block) ;;
     *) fail "an askgate batch takes SKILL_SCENARIOS_ASKGATE_MODE unset, warn or block (got '$SKILL_SCENARIOS_ASKGATE_MODE')" ;;

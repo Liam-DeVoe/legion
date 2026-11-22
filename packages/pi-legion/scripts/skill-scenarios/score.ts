@@ -29,6 +29,7 @@ import { z } from "zod";
 // sources, so they may reach the sibling plugin by path, as the tests that load its entry do
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
+import { ASKGATE_CASES } from "./askgate-cases";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
 import {
@@ -431,17 +432,6 @@ const NOT_SENT = "AskGate did not send this call.";
 /** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
  * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
 const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
-/** Every case rig.sh's run_askgate has a prompt for. */
-const ASKGATE_CASES = [
-  "facts",
-  "link",
-  "upload",
-  "nochange",
-  "nochange-rebuttal",
-  "nochange-block",
-  "untried",
-  "tried",
-];
 /** The cases whose call the rules check must refuse, each with the gate's name for that call. */
 const RULE_REFUSED_CASES: Record<string, string> = {
   nochange: "dispatch_ask",
@@ -831,7 +821,6 @@ export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
   askgate: ASKGATE_RUN,
   ...HEADS_CASED_RUNS,
 };
-/** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
 const LINE_OF_702 = /^ {2}- #702 at /m;
 
@@ -3653,8 +3642,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate, a
-  // reviewer-own-head or a ci-pass-and-fail run's case comes from its directory (CASED_RUNS).
+  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
+  // case, and that of a heads scenario's world that names one, comes from its directory
+  // (CASED_RUNS, from askgate-cases.txt and heads-scenarios.txt).
   const scorers: Record<string, (dir: string, run: string, label: string, dirCase: string) => Row> =
     {
       "ask-on-message": askOnMessage,

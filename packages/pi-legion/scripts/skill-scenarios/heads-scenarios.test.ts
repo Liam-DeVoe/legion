@@ -5,26 +5,17 @@
 //   bun test heads-scenarios.test.ts
 
 import { expect, setDefaultTimeout, test } from "bun:test";
-import {
-  appendFileSync,
-  cpSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { copyOfThisDirectory, rigFunctions } from "./catalog-copy";
 import { HEADS_SCENARIOS, isHeadsScenario } from "./heads-scenarios";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN } from "./test-limit";
 
 // The reach row runs two rig.sh steps and two bun scripts as processes of their own.
 setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, SCRIPT_RUN, SCRIPT_RUN));
 
-const root = path.resolve(import.meta.dir, "../../../..");
 const makeDirectory = temporaryDirectories("heads-catalog");
 
 test("the heads scenarios have one canonical membership", () => {
@@ -38,40 +29,17 @@ test("the heads scenarios have one canonical membership", () => {
   expect(isHeadsScenario("measure-before-ask")).toBe(false);
 });
 
-/** A tree in which this directory is a copy and every other entry on the way down to it is a link
- * to the checkout's own, so an edit of the copy's catalog reaches the copy's readers and no other
- * file. Returns the copy. */
-function copyOfThisDirectory(): string {
-  let from = root;
-  let to = makeDirectory("tree");
-  for (const step of path.relative(root, import.meta.dir).split(path.sep)) {
-    for (const entry of readdirSync(from))
-      if (entry !== step) symlinkSync(path.join(from, entry), path.join(to, entry));
-    from = path.join(from, step);
-    to = path.join(to, step);
-    mkdirSync(to);
-  }
-  cpSync(from, to, { recursive: true });
-  return to;
-}
-
 // Catches: a reader that keeps a list of the worlds of its own, so a world added to the catalog
 // alone is missing from rig.sh's batch, refused by its run, by heads-world.ts or by seed.ts's
 // usage, or read by score.ts as another world's run. The added case's name begins another case's
 // of its scenario (no-verdict, no-verdict-fail), so a pattern that tries the shorter name first
 // reads no-verdict-fail's runs as no-verdict's.
 test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts and score.ts", () => {
-  const copy = copyOfThisDirectory();
+  const copy = copyOfThisDirectory(makeDirectory("tree"));
   const tree = path.resolve(copy, "../../../..");
   appendFileSync(path.join(copy, "heads-scenarios.txt"), "architect-pass-and-fail no-verdict\n");
   const env = { PATH: process.env.PATH ?? "", HOME: makeDirectory("home") };
-  // Every function of the copy's rig.sh, whichever helper reads the catalog, with the commands
-  // that would start services or agents stubbed after them.
-  const rig = path.join(copy, "rig.sh");
-  const fn = scriptFunctions(rig);
-  const functions = [...readFileSync(rig, "utf8").matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm)]
-    .map((found) => fn(found[1] ?? ""))
-    .join("\n");
+  const functions = rigFunctions(copy);
   const bash = (part: string, lines: string[], args: string[]) => {
     const ran = spawnWithin(
       { ...RIG_STEP, part },

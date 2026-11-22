@@ -60,16 +60,16 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh, the world it reads (rig-world.json), the catalog of the heads
-// scenarios' worlds it reads for every run (heads-scenarios.txt) and the e2e helpers it sources,
-// with the two Dispatch stand-ins.
+// The checkout: this rig.sh, the world it reads (rig-world.json), the catalogs it reads for every
+// run (heads-scenarios.txt) and for each askgate run (askgate-cases.txt), and the e2e helpers it
+// sources, with the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
-  for (const data of ["rig-world.json", "heads-scenarios.txt"])
+  for (const data of ["rig-world.json", "heads-scenarios.txt", "askgate-cases.txt"])
     copyFileSync(path.join(import.meta.dir, data), path.join(path.dirname(rig), data));
   for (const lib of [
     "rig.sh",
