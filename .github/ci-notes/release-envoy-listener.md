@@ -52,6 +52,14 @@ A step that runs `.github/scripts/release-push.sh` carries 46 minutes, the whole
 script's 6 x 450 = 2700 s, and one that runs it twice carries 91, the whole minute above
 2 x 2700 = 5400 s.
 
+Each such step sets STEP_TIMEOUT_MINUTES to its own `timeout-minutes` in its `env:`, whichever of
+the script's commands it runs: `restart`, `release` and `release-section` make their GitHub calls
+through `.github/scripts/gh-read.sh`'s gh_wait_reset, which waits out a spent API budget only
+within the nearer of the job's limit and the step's, and `.github/scripts/check-workflow-files.sh`
+refuses a step with a limit of its own that reaches gh-read.sh and passes none
+(dispatch://INFRA-1545, round 55). The entries carry no comment in the workflow, which stands
+close to that check's 64,000-byte limit; this paragraph is theirs.
+
 ## The retried install and module downloads
 
 The workspace install of the `build` and `docker` jobs retries: five bounded attempts through

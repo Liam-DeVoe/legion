@@ -32,7 +32,7 @@ name: CI job plugin-pack
 #     builds its bundle from the installed workspace and fails rather than skips without it;
 #   * Oh My Pi at the pin .omp-pin names, which the tests install their plugins on
 #     (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), installed
-#     through the mise install-jj leaves at ~/.local/bin/mise;
+#     by .github/actions/install-omp from the release archive, checked against its pinned sha256;
 #   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
 #     the same build the daemon-go race step makes, so it restores the same entry.
 # No database, no tmux, no uv and no container image: the tests start none of them.
@@ -64,16 +64,18 @@ jobs:
     runs-on: ubuntu-24.04
     # The step's own -timeout is 15 minutes, as the daemon's plain step carries, so a hung pack
     # prints the goroutine dump that names it before the runner cancels the job. Around it are
-    # the Bun install, the two tool installs and the Go build of internal/daemon's test binary,
+    # the Bun install, the Oh My Pi install and the Go build of internal/daemon's test binary,
     # which the cache restore above makes incremental; 30 minutes leaves that setup room on a
     # slow runner and still fails inside the hour.
     #
     # Budget (ci-budgets.md's Budgets note): those 30 minutes, 1800 s, plus its slowest retried
-    # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
-    # jj release are 3416 + 450 = 3866 s, above setup-bun's two calls at 3416 s, the workspace
-    # install's and the Go module download's 1050 s each, the ci-ok report's 2160 s and
-    # install-omp's `mise install` of 450 s. 1800 + 3866 = 5666 s -> 95 min.
-    timeout-minutes: 95
+    # step alone — setup-bun's two `ci_tools_fetch` calls at 3416 s, above the workspace
+    # install's and the Go module download's 1050 s each, the ci-ok report's 2460 s and
+    # install-omp's fetch of the release archive at 450 s. 1800 + 3416 = 5216 s -> 87 min. It
+    # carried 95, from install-jj's 3866 s, until main's #4877 took install-jj out of this job.
+    timeout-minutes: 87
+    env:
+      JOB_TIMEOUT_MINUTES: 87 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,6 +102,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # go-daemon, shared with typecheck, daemon-go and pi-legion: this step compiles the same
@@ -125,17 +129,11 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
 
-      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
-      # through: no test of this job runs jj.
-      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
-      - uses: ./.github/actions/install-jj
-        timeout-minutes: 65
-
       # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without
       # one (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of
-      # it, installed through the mise above (.github/actions/install-omp).
-      # install-omp's own retry arithmetic: its `mise install`, 5 x 60 + 150 = 450 s -> 8 min.
+      # it (.github/actions/install-omp).
+      # install-omp's own retry arithmetic: its fetch of the release archive,
+      # 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
         timeout-minutes: 8
 
@@ -148,8 +146,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: plugin-pack

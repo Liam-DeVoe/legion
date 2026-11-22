@@ -57,20 +57,21 @@ jobs:
   # when its own injected faults are the only thing wrong — the sum of the budgets the report
   # steps enforce, plus its rig. The recover half's 710 + 530 + 1130 + 1130 + 1130 + 1730 + 380
   # = 6740 s, the stall half's same seven at 6740 s, the carried dependency's 620 s, and about
-  # 330 s for the checkout, the bypass clearing, the three tool installs, the cache emptying,
-  # the unfaulted install the stalled Playwright site needs and the 31 rig steps. That is
-  # 14430 s. Every faulted site runs its retries out inside its own
-  # report budget above, so the term the rule adds is this job's slowest download that is not a
-  # faulted site: install-jj, whose two `ci_tools_fetch` calls are 3416 s and whose
-  # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3866 s together (ci-budgets.md's
-  # Budgets note) — above setup-bun's 3416 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 2160 s. So 14430 + 3866 = 18296 s -> 305 min, the whole minute above the
-  # 304.9 that sum gives. What this key read before, and why each site's budget carries the
-  # probe's 20 s: .github/ci-budgets.md, "The download-retry job's rig".
+  # 330 s for the checkout, the bypass clearing, the tool installs, the cache emptying, the
+  # unfaulted install the stalled Playwright site needs and the 31 rig steps. That is 14430 s,
+  # which still holds the third tool install this job made until main's #4877 left install-jj
+  # nothing to do here. Every faulted site runs its retries out inside its own report budget
+  # above, so the term the rule adds is this job's slowest download that is not a faulted site:
+  # setup-bun's two `ci_tools_fetch` calls, 3416 s (ci-budgets.md's Budgets note), above the
+  # unfaulted workspace install's 1050 s and the ci-ok report's 2460 s. So 14430 + 3416 =
+  # 17846 s -> 298 min, the whole minute above the 297.4 that sum gives. It was 305, from
+  # install-jj's 3866 s, while this job installed jj for the mise install-omp ran. What this key
+  # read before, and why each site's budget carries the probe's 20 s: .github/ci-budgets.md,
+  # "The download-retry job's rig".
   download-retry:
     if: inputs.download_retry_sites == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 305
+    timeout-minutes: 298
     steps:
       # The bypass, emptied for every step of this job, which the job's comment derives: a
       # `no_proxy` or `NO_PROXY` of `*` sends every host past the proxy, and a fault nothing
@@ -89,16 +90,11 @@ jobs:
       # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 57
-      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
-      # through: nothing here drives jj. Unfaulted, because it is this job's prerequisite rather
-      # than one of its sites.
-      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
-      - uses: ./.github/actions/install-jj
-        timeout-minutes: 65
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # No module cache is restored anywhere in this job, and that is the point: a go command
       # reads its own module cache before it reaches any proxy, so a faulted `go mod download`
@@ -138,13 +134,13 @@ jobs:
           --what "changie's release asset (curl, 8 attempts of 60 s)"
           --outcome ${{ steps.recover-changie.outcome }} --attempts 8 --floor 0 --budget 710
 
-      # mise install. The pin is a github: tool spec, so mise reads the GitHub API and the
-      # release asset host; jdx.dev is mise's own registry.
+      # install-omp's curl of the release archive from the address GitHub serves a release asset
+      # at, through retry_fetch: github.com, and the host its redirect lands on.
       - name: Start the recovering fault for install-omp
         id: recover-omp-proxy
         run: |
           .github/scripts/download-retry-proof.sh start recover-omp \
-            --mode recover --recover-after 60 --hosts github.com,githubusercontent.com,jdx.dev
+            --mode recover --recover-after 60 --hosts github.com,githubusercontent.com
           .github/scripts/download-retry-proof.sh probe recover-omp
       - id: recover-omp
         continue-on-error: true
@@ -154,10 +150,10 @@ jobs:
         env:
           http_proxy: ${{ steps.recover-omp-proxy.outputs.proxy }}
           https_proxy: ${{ steps.recover-omp-proxy.outputs.proxy }}
-      - name: What install-omp's mise install did under the recovering fault
+      - name: What install-omp's curl did under the recovering fault
         run: >-
           .github/scripts/download-retry-proof.sh report recover-omp
-          --what "the pinned Oh My Pi (mise install, 5 attempts of 60 s)"
+          --what "the pinned Oh My Pi's release archive (curl through retry_fetch, 5 attempts of 60 s)"
           --outcome ${{ steps.recover-omp.outcome }} --attempts 5 --floor 0 --budget 530
 
       # bun add, of the npm registry.
@@ -298,15 +294,14 @@ jobs:
 
       # Everything the recover half left behind, so the stall half's downloads reach the network
       # again: `go mod download` over a warm module cache, `bun install` over a warm
-      # ~/.bun/install/cache and a full node_modules, `playwright install` over an installed
-      # browser and `mise install` over an installed tool each fetch nothing at all. The reports
-      # below hold this step to account, since a site that fetched nothing ends in seconds.
+      # ~/.bun/install/cache and a full node_modules, and `playwright install` over an installed
+      # browser each fetch nothing at all. The reports below hold this step to account, since a
+      # site that fetched nothing ends in seconds.
       - name: Empty every cache the recovering half filled
         run: |
           go clean -modcache
           rm -rf node_modules packages/*/node_modules docs/site/node_modules \
-            "$HOME/.bun/install/cache" "$HOME/.cache/ms-playwright" \
-            "$HOME/.local/share/mise/installs" "$HOME/.cache/mise"
+            "$HOME/.bun/install/cache" "$HOME/.cache/ms-playwright"
 
       # What each stall site's floor and budget measure: .github/ci-budgets.md, "The
       # download-retry job's rig".
@@ -337,7 +332,7 @@ jobs:
         id: stall-omp-proxy
         run: |
           .github/scripts/download-retry-proof.sh start stall-omp \
-            --mode stall --hosts github.com,githubusercontent.com,jdx.dev
+            --mode stall --hosts github.com,githubusercontent.com
           .github/scripts/download-retry-proof.sh probe stall-omp
       - id: stall-omp
         continue-on-error: true
@@ -347,10 +342,10 @@ jobs:
         env:
           http_proxy: ${{ steps.stall-omp-proxy.outputs.proxy }}
           https_proxy: ${{ steps.stall-omp-proxy.outputs.proxy }}
-      - name: What install-omp's mise install did under the stalling fault
+      - name: What install-omp's curl did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-omp
-          --what "the pinned Oh My Pi (mise install, 5 attempts of 60 s)"
+          --what "the pinned Oh My Pi's release archive (curl through retry_fetch, 5 attempts of 60 s)"
           --outcome ${{ steps.stall-omp.outcome }} --attempts 5 --floor 150 --budget 530
 
       - name: Start the stalling fault for install-claude-code
@@ -525,8 +520,10 @@ jobs:
 
       - name: Report ci-ok when this is the run's last job
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: download-retry
@@ -554,11 +551,11 @@ jobs:
   # that meets it, and the longest such ladder is the worker image's `go mod download`,
   # 5 x 900 + 150 = 4650 s, above the Envoy and held-port images' 5 x 600 + 150 = 3150 s, the
   # browser image's package set at 5 x 300 + 150 = 1650 s, and the ci-ok report, the one
-  # download of this job that is not a faulted build: its `gh api` read and the POST of the
-  # check run, 2 x (5 x 30 + 150) = 600 s, and two calls of runner-shutdown.sh's check-run read
-  # and annotations loop, 2 x (300 + 480) = 1560 s, 2160 s together (ci-budgets.md's Budgets
-  # note, "The ci-ok report"). So 16160 + 4650 = 20810 s -> 347 min, inside the 360 minutes
-  # GitHub gives a job on a hosted runner.
+  # download of this job that is not a faulted build: its `gh api` reads of the jobs and of the
+  # queue's tip and the POST of the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of
+  # runner-shutdown.sh's check-run read and annotations loop, 2 x (300 + 480) = 1560 s, 2460 s
+  # together (ci-budgets.md's Budgets note, "The ci-ok report"). So 16160 + 4650 = 20810 s
+  # -> 347 min, inside the 360 minutes GitHub gives a job on a hosted runner.
   # The pulls' 300 s still holds the browser image's two bases, the Playwright copy among them,
   # 990,220,611 bytes: the three images' pulls took 16 to 24 s in this job's ten runs from run
   # 43761695707 to run 43987988192, and the browser image's whole build, which fetches those
@@ -725,8 +722,10 @@ jobs:
 
       - name: Report ci-ok when this is the run's last job
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: download-retry

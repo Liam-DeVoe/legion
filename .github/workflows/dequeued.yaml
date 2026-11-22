@@ -12,8 +12,9 @@ name: CI (dequeued pull request)
 # Why pull_request_target. `dequeued` is an activity type of that event alone, and GitHub runs the
 # base branch's copy of the workflow with the base branch's token, so a fork's pull request and one
 # the queue took out over a conflict are both safe here. Nothing of the head is read, built or run:
-# this workflow has no checkout step at all, so there is no tree here for a head to reach, and its
-# one job holds `actions: write` and nothing else.
+# the one checkout takes the base branch's commit (github.sha), never the pull request's, and only
+# its .github cone, for the helpers of .github/scripts the step sources, so no code of the pull
+# request runs here with this token; and the one job holds `actions: write` and nothing else.
 #
 # Where the commit comes from. The `dequeued` payload carries no beforeCommit, so the job reads the
 # pull request's timeline with GraphQL and takes the newest RemovedFromMergeQueueEvent after the
@@ -65,16 +66,22 @@ jobs:
     # against a host that accepts the connection and then sends nothing through every attempt
     # of every pass; what this job costs when nothing stalls is one read and one cancel.
     timeout-minutes: 53
+    env:
+      JOB_TIMEOUT_MINUTES: 53 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
-    # scope: the checkout below reads a public repository's git data, which GitHub serves to any
-    # valid token, and so is the GraphQL read of its pull request — the same ground on which
-    # ci.yaml's `cancel-started` holds `actions: write` alone and still checks out.
+    # scope: the checkout and the GraphQL read are of a public repository, which GitHub serves to
+    # any valid token — the same ground on which ci.yaml's `cancel-started` holds `actions: write`
+    # alone and still checks out.
     permissions:
       actions: write
     steps:
       # The job reads nothing of the tree but .github/scripts/ci-retry.sh, the one retry every
-      # download of this repository's CI goes through, so the .github cone is the whole checkout
-      # it needs, as ci.yaml's `cancel-started` takes it.
+      # download of this repository's CI goes through, with ci-log-guard.sh beside it, which
+      # ci-retry.sh sources, and .github/scripts/gh-read.sh, whose gh_wait_reset waits out
+      # GitHub's rate limits in front of that retry; so the .github cone is the whole checkout it
+      # needs, as ci.yaml's `cancel-started` takes it. A pull_request_target run checks out the
+      # base branch's commit (github.sha), never the pull request's, so no code of the pull
+      # request runs here with this token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -83,6 +90,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          STEP_TIMEOUT_MINUTES: 47 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
         # being cut part way by the job. The timeline read is written inside the seven-pass
         # poll below, so the step waits for seven of its ladders and the six 10 s sleeps
@@ -97,6 +105,10 @@ jobs:
         timeout-minutes: 47
         run: |
           . .github/scripts/ci-retry.sh
+          # Every call below is a ladder run through gh_wait_reset, which waits out a spent API
+          # budget only when the wait and one more ladder fit within this step's limit and the
+          # job's, and fails by name otherwise.
+          source .github/scripts/gh-read.sh
           query='query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
@@ -131,7 +143,7 @@ jobs:
           # that counts as refused here is one five bounded attempts could not make.
           refused=0
           for attempt in 1 2 3 4 5 6 7; do
-            if removal=$(retry_fetch "pull request #$PR_NUMBER's timeline" 30 -- \
+            if removal=$(gh_wait_reset retry_fetch "pull request #$PR_NUMBER's timeline" 30 -- \
               gh api graphql -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" \
               -F number="$PR_NUMBER" -f query="$query" --jq "$select"); then
               [ -z "$removal" ] || break
@@ -164,7 +176,7 @@ jobs:
           fi
           # The same 30 s an attempt as the reads above: a refused list would leave the removed
           # group's run holding its runners with nothing to say about it.
-          runs=$(retry_fetch "the merge-group runs of $before" 30 -- \
+          runs=$(gh_wait_reset retry_fetch "the merge-group runs of $before" 30 -- \
             gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --commit "$before" --limit 20 --json databaseId,headSha,status,conclusion)
           doomed=$(jq -r --arg sha "$before" \
@@ -177,7 +189,7 @@ jobs:
           # at the same 30 s an attempt as the read above.
           while read -r id; do
             echo "run $id is the ci.yaml merge-group run of the group whose head is $before, and it has not completed: force-cancel it"
-            retry_fetch "the force-cancel of run $id" 30 -- \
+            gh_wait_reset retry_fetch "the force-cancel of run $id" 30 -- \
               gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
               echo "::warning::force-cancel of run $id failed; it may have completed already" >&2
           done <<<"$doomed"

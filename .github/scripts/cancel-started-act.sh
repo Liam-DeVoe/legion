@@ -12,12 +12,18 @@
 # run's queue branch and id, which merge-group-cancels.sh reads beside the RUNS this script
 # exports. That job checks out with `sparse-checkout: .github`, so this script and the one it runs
 # are both in the checkout when the step runs.
-# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step.
+# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. Each call is
+# retry_fetch's ladder (ci-retry.sh) run through gh-read.sh's gh_wait_reset, which waits out a
+# spent API budget only when the wait and one more ladder fit within the step's
+# JOB_TIMEOUT_MINUTES and fails by name otherwise: a refused list fails the step as it did, and a
+# refused cancel warns as it did.
 #
 # Run from the repository root, with those three and $GITHUB_REPOSITORY set:
 #   .github/scripts/cancel-started-act.sh
 # CI runs it in ci.yaml's cancel-started job, at its second step, after the checkout.
 set -euo pipefail
+# shellcheck source=.github/scripts/gh-read.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
 # shellcheck source=.github/scripts/ci-retry.sh
 . .github/scripts/ci-retry.sh
@@ -27,7 +33,7 @@ set -euo pipefail
 # group of it out of the list, and so out of the act. It retries at the same 30 s an
 # attempt as the force-cancel below: a refused list names no group at all, and every
 # removed group's run then keeps its runners.
-RUNS=$(retry_fetch "the merge-group runs of this repository" 30 -- \
+RUNS=$(gh_wait_reset retry_fetch "the merge-group runs of this repository" 30 -- \
   gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
   --limit 100 --json databaseId,headBranch,status,createdAt)
 export RUNS
@@ -37,7 +43,7 @@ acts=$(.github/scripts/merge-group-cancels.sh)
 # over the groups to cancel, not over the attempts: the attempts are the helper's.
 while read -r act id; do
   [ "$act" = cancel ] || continue
-  retry_fetch "the force-cancel of run $id" 30 -- \
+  gh_wait_reset retry_fetch "the force-cancel of run $id" 30 -- \
     gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
     echo "::warning::force-cancel of run $id failed; it may have completed already" >&2
 done <<<"$acts"

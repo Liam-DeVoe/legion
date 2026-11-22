@@ -384,7 +384,16 @@
 #      read in that place alone. A call outside that signature, or behind `timeout`, another
 #      retry or any other wrapper but `time`, fetches nothing — the helper refuses the first and
 #      the wrapper cannot run a shell function — and is refused by name and charged nothing;
-#      seconds written as a variable are refused as no number this check reads. And a curl's own
+#      seconds written as a variable are refused as no number this check reads. One wrapper is
+#      no such wrapper: .github/scripts/gh-read.sh's `gh_wait_reset`, a shell function that runs
+#      the words after it, in exactly one form, `gh_wait_reset [--stderr <file>] retry_fetch …`
+#      with nothing before or between, which is read and charged as the bare call is, one ladder.
+#      That charge holds because gh_wait_reset waits, and runs the ladder again, only when the
+#      wait plus the whole ladder (5 x <bound> + 150 s) plus 30 s ends before the nearer of the
+#      job's and the step's limit, and otherwise fails by name, so the ladder it runs again after
+#      a wait never outlives the key this check charges one ladder to. Behind any other wrapper
+#      `retry_fetch` stays refused, and a `gh` or a `curl` behind `gh_wait_reset` is a fetch read
+#      as one behind any other wrapper is (dispatch://INFRA-1545, round 55). And a curl's own
 #      `--max-time <seconds>`, written once as two words after no option taking a value, which
 #      this tree writes outside a Dockerfile as ci-tools.sh's two `--max-time "$max_time"`,
 #      declared. Every other spelling is refused by name, at a site an exception leaves
@@ -504,8 +513,8 @@
 #   - a command after the `}` that closes a function, on a line its body holds a command of,
 #     which is read as the function's;
 #   - a definition of a function named `retry_fetch` anywhere but in .github/scripts/ci-retry.sh,
-#     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written
-#     (odd_command);
+#     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written, the
+#     one form `gh_wait_reset [--stderr <file>] retry_fetch …` aside (rule 6; odd_command);
 #   - an option of a wrapper this check drops (PASSTHROUGH) other than those it reads, `env -i`,
 #     `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>` and `command -v`
 #     (WRAPPER_OPTIONS), `env -S` among them, and `busybox` as a command word with any program
@@ -1048,7 +1057,7 @@
 #          reaches runner-shutdown.sh through ci-ok-report.sh and through the ci-ok.sh that runs,
 #          each of which makes one call of runner_shutdown_kills in a shell of its own, is
 #          declared at 2 x (300 + 480) = 1560 s, which .github/ci-budgets.md's Budgets note
-#          writes into the report's 2160 s.
+#          writes into the report's 2460 s.
 #        * a library's fetching functions called more than once after sourcing it, or inside a
 #          loop whose passes this check cannot read, which are charged as the library's one
 #          charge (library_functions). The body is refused unless a DECLARED_LIBRARIES entry,
@@ -1258,10 +1267,18 @@
 #      its `version` source; npm-published-version.sh, which its `version` runs through
 #      `retry_fetch`; and check-private-names.sh, which a refusal of its leak guard names in its
 #      text. None of the four writes a fetch this check reads, so the closure exempts no site of
-#      theirs. release-push.sh's unretried fetches are the gh calls of its `restart`, `release`
-#      and `release-section` commands — `gh run list`, `gh workflow run`, `gh release view`, `gh
-#      release create`, `gh release upload` and `gh release edit` — and nothing in the tree but
-#      those publish jobs runs one of them.
+#      theirs. Since the merge of main's #4893 at round 55 it adds gh-read.sh too, which
+#      release-push.sh sources for its gh calls, and ci-log-guard.sh, which gh-read.sh sources as
+#      ci-retry.sh does. gh-read.sh writes one fetch this check reads, _gh_read_reset's `timeout
+#      30 gh api rate_limit`, the read of a spent budget's reset gh_wait_reset makes after a call
+#      GitHub refused for its rate limit, and the closure exempts it as a site of a file a
+#      credentialed job runs; a call through gh_wait_reset is charged its command alone (rule 6),
+#      so no step's key holds that read's 30 s either, which the wait's own check, made after the
+#      read, holds within the limit instead. release-push.sh's unretried fetches are the gh calls
+#      of its `restart`, `release` and `release-section` commands — `gh run list`, `gh workflow
+#      run`, `gh release view`, `gh release create`, `gh release upload` and `gh release edit`,
+#      each through gh_wait_reset since main's #4893 — and nothing in the tree but those publish
+#      jobs runs one of them.
 #
 #      Retrying them means sourcing .github/scripts/ci-retry.sh into the publish job, and that is
 #      what check-release-credentials.sh refuses: its rule 1(a) lets a credentialed job run no
@@ -1632,9 +1649,13 @@ def ansi_c_escape(text: str, i: int) -> tuple[str, int]:
 # is `env bash -O …` and `/usr/bin/env -S …` is refused as `env -S …` is
 # (dispatch://INFRA-1545, round 42). `ci_log_guard` and `ci_log_guard_stderr` run the command after
 # them, inside a stop-commands block (.github/scripts/ci-log-guard.sh; dispatch://INFRA-1545,
-# round 54).
+# round 54). `gh_wait_reset`, .github/scripts/gh-read.sh's wait for GitHub's rate limits, runs the
+# command after it once, and once more after a wait that fits the job's and the step's limit;
+# it is the one wrapper a `retry_fetch` may stand behind (rule 6; odd_command;
+# dispatch://INFRA-1545, round 55).
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
-               "stdbuf", "setsid", "doas", "xvfb-run", "ci_log_guard", "ci_log_guard_stderr"}
+               "stdbuf", "setsid", "doas", "xvfb-run", "ci_log_guard", "ci_log_guard_stderr",
+               "gh_wait_reset"}
 # The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
 # that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
 # where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its
@@ -1656,6 +1677,10 @@ WRAPPER_OPTIONS = {
     # that need a database` step) runs `sudo -u postgres psql …` at :242, which the gate refused
     # by name.
     "sudo": {"-E": 0, "-u": 1},
+    # `--stderr <file>`, where gh_wait_reset writes the stderr of the run it ended on: the form
+    # release-push.sh's release view and check-daemon-api-contract.sh's reads write
+    # (dispatch://INFRA-1545, round 55).
+    "gh_wait_reset": {"--stderr": 1},
 }
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
 # reads in one form, `bash -c '<text>'` (sites_of_command). The one list of shells this check
@@ -3266,7 +3291,9 @@ SHELL_TEXT_REFUSAL = (
 # no attempt made, both fetching nothing and charged nothing; a `timeout` whose short options end
 # in one that takes the next word, which hides the command behind it; a definition of the
 # helper's own name; and a command after the `}` that closes a function, on a line its body
-# holds a command of. None is written in this tree.
+# holds a command of. None is written in this tree. gh-read.sh's `gh_wait_reset`, a shell
+# function itself, runs the helper, and `gh_wait_reset [--stderr <file>] retry_fetch …` is no
+# such form (rule 6; dispatch://INFRA-1545, round 55).
 RETRY_BEHIND = (
     "runs `retry_fetch` behind `{wrapper}`, which runs an executable and cannot run the helper, "
     "a shell function: the call fails before any attempt and fetches nothing, so this check "
@@ -3288,8 +3315,8 @@ TIMEOUT_CLUSTER = (
 # charged to no budget. The tree writes neither.
 WRAPPER_OPTION = (
     "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
-    "`env -i`, `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>` and `command -v` "
-    "alone, and after any "
+    "`env -i`, `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>`, `command -v` and "
+    "`gh_wait_reset --stderr <file>` alone, and after any "
     "other option reads no command, so a fetch or a script run there is held to no floor and "
     "charged to no budget. Write the wrapper with none of its options but those, and set a "
     "variable the command needs as an assignment before it, `NAME=value curl …`, rather than "
@@ -3657,7 +3684,9 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
     form this check does not read, and whether that form is a call of the helper, which then
     fetches nothing; None where it writes neither (dispatch://INFRA-1545, round 37). The wrappers
     are read as reduce_words reads them. A `retry_fetch` behind `timeout`, another retry, or any
-    wrapper but `time` is run as an executable, which the helper, a shell function, is not; one
+    wrapper but `time` is run as an executable, which the helper, a shell function, is not, but
+    in one form: `gh_wait_reset [--stderr <file>] retry_fetch …`, gh-read.sh's shell function
+    alone in front of it, which runs the helper (rule 6; dispatch://INFRA-1545, round 55); one
     whose `--` is not its third word, or whose seconds are written as no whole number above 0
     and as no variable, is refused by the helper with no attempt made; and a `timeout` whose
     short options are a cluster ending in `-k` or `-s`, such as `-vk 5`, takes the next word as
@@ -3669,6 +3698,9 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
     cannot tell whether a fetch or a script runs there (dispatch://INFRA-1545, round 38)."""
     rest = list(words)
     wrapper: str | None = None
+    # Every wrapper in front of the command, as written, `time` aside: the one that may stand
+    # before a `retry_fetch` is a lone `gh_wait_reset`.
+    behind: list[str] = []
     while rest:
         first = rest[0]
         name = program_name(first)
@@ -3683,6 +3715,7 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
             # The reserved word `time` runs a function, and the program /usr/bin/time does not.
             if first != "time":
                 wrapper = first
+                behind.append(first)
             continue
         if name == "busybox":
             # `busybox --help`, `--list` and `--list-full` print busybox's own text and run no
@@ -3692,7 +3725,7 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
                 return None
             return BUSYBOX_RUN.format(program=" ".join(rest[:2])), False, True
         if first == "retry_fetch":
-            if wrapper is not None:
+            if wrapper is not None and behind != ["gh_wait_reset"]:
                 return RETRY_BEHIND.format(wrapper=wrapper), True, False
             bound = rest[2] if len(rest) > 2 else ""
             if len(rest) < 4 or rest[3] != "--" or not (
@@ -3700,6 +3733,7 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
                     or (re.fullmatch(r"\d+", bound) and int(bound) > 0)):
                 return RETRY_UNSIGNED, True, False
             wrapper = "retry_fetch"
+            behind.append(wrapper)
             del rest[:4]
             continue
         if name == "timeout":
@@ -3714,9 +3748,11 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
                 rest.pop(0)
             del rest[:1]
             wrapper = "timeout"
+            behind.append(wrapper)
             continue
         if first == "retry" and len(rest) > 2 and re.fullmatch(r"\d+", rest[1]):
             wrapper = "retry"
+            behind.append(wrapper)
             del rest[:3]
             continue
         return None
@@ -3725,11 +3761,16 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
 
 def helper_bound_word(words: list[str]) -> str | None:
     """The seconds word of this command's `retry_fetch`, as written, where it opens the command
-    after assignments and reserved words: what a refusal of a bound this check cannot read as a
-    number quotes (dispatch://INFRA-1545, round 37)."""
+    after assignments and reserved words, or after `gh_wait_reset [--stderr <file>]`, the one
+    wrapper it may stand behind: what a refusal of a bound this check cannot read as a number
+    quotes (dispatch://INFRA-1545, rounds 37 and 55)."""
     rest = list(words)
     while rest and (ASSIGNMENT.match(rest[0]) or rest[0] in KEYWORDS or rest[0] == "time"):
         rest.pop(0)
+    if rest and rest[0] == "gh_wait_reset":
+        rest.pop(0)
+        if rest[:1] == ["--stderr"]:
+            del rest[:2]
     return rest[2] if len(rest) > 2 and rest[0] == "retry_fetch" else None
 
 

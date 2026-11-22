@@ -158,6 +158,7 @@ jobs:
       edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
+      gh_read_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.gh_read_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
       disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
@@ -373,6 +374,7 @@ jobs:
       edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
+      gh_read_test: ${{ needs.changes.outputs.gh_read_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
       disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
@@ -876,6 +878,8 @@ jobs:
     # why: .github/ci-notes/ci.md#the-pr-title-jobs-budget
     # 600 + 10260 = 10860 s -> 182 min.
     timeout-minutes: 182
+    env:
+      JOB_TIMEOUT_MINUTES: 182 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -891,8 +895,9 @@ jobs:
           echo "::error::pr-title is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the pull request's text says: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt checks a tree the queue is no longer waiting on."
           exit 1
 
-      # The job reads nothing of the tree but find-pr-payload.sh, check-pr-text.sh and the
-      # check-private-names.sh that one runs, so the .github cone is the whole checkout it needs.
+      # The job reads nothing of the tree but find-pr-payload.sh, check-pr-text.sh, the
+      # check-private-names.sh that one runs, and the ci-retry.sh, ci-log-guard.sh and gh-read.sh
+      # the two source, so the .github cone is the whole checkout it needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -905,6 +910,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+          STEP_TIMEOUT_MINUTES: 171 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: |
           payload=$("$GITHUB_WORKSPACE/.github/scripts/find-pr-payload.sh")
           GITHUB_EVENT_PATH="$payload" "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"
@@ -917,11 +923,14 @@ jobs:
     # why: .github/ci-notes/ci.md#the-cancel-started-jobs-budget
     # 600 + 720 = 1320 s -> 23 min.
     timeout-minutes: 23
+    env:
+      JOB_TIMEOUT_MINUTES: 23 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
-      # The job reads nothing of the tree but .github/scripts/cancel-started-act.sh and the
-      # merge-group-cancels.sh it runs, so the .github cone is the whole checkout it needs.
+      # The job reads nothing of the tree but .github/scripts/cancel-started-act.sh, the
+      # merge-group-cancels.sh it runs and the ci-retry.sh, ci-log-guard.sh and gh-read.sh it
+      # sources, so the .github cone is the whole checkout it needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -931,6 +940,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
+          STEP_TIMEOUT_MINUTES: 12 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         # why: .github/ci-notes/ci.md#the-cancel-started-jobs-budget
         # 300 + 300 = 600 s of ladders, 720 s with the step's own calls -> 12 min.
         timeout-minutes: 12
@@ -993,6 +1003,8 @@ jobs:
     # why: .github/ci-notes/ci.md#the-ci-ok-jobs-budget
     # 600 + 1260 = 1860 s -> 32 min.
     timeout-minutes: 32
+    env:
+      JOB_TIMEOUT_MINUTES: 32 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       checks: write
     steps:
@@ -1030,6 +1042,9 @@ jobs:
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The jobs that run only part of themselves without the label: dispatch-browser, whose
+          # `lane:` input above reads this same term. ci-ok.sh names it as run in part.
+          PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser"]' }}
         run: .github/scripts/ci-ok.sh
 
       - name: Set every other ci-ok on this head to this job's conclusion

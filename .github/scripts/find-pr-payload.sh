@@ -17,7 +17,11 @@
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
 #   GITHUB_EVENT_PATH  the payload Actions wrote for that event.
-#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request.
+#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request,
+#                      retry_fetch's ladder run through gh-read.sh's gh_wait_reset, which waits
+#                      out a spent API budget only when the wait and one more ladder fit within
+#                      the step's JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES, and fails by name
+#                      otherwise.
 #   GITHUB_REPOSITORY  owner/repo, as Actions sets it. merge_group only.
 #   RUNNER_TEMP        where the payload it writes lands. merge_group only.
 #
@@ -28,6 +32,8 @@
 # Its tests are in find-pr-payload.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
+# shellcheck source=.github/scripts/gh-read.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the event payload}
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
@@ -55,6 +61,7 @@ payload="$temp/pull-request-event.json"
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/ci-retry.sh
 . "$script_dir/ci-retry.sh"
-retry_fetch "the queued pull request" 30 -- gh api "repos/$repository/pulls/$number" > "$pull"
+gh_wait_reset retry_fetch "the queued pull request" 30 -- \
+  gh api "repos/$repository/pulls/$number" > "$pull"
 jq --argjson number "$number" '{pull_request: ., number: $number}' "$pull" > "$payload"
 echo "$payload"

@@ -34,9 +34,11 @@ jobs:
     # step's own comment derives it; above the image copy step, whose mirror-ci-images.sh makes
     # two `crane config` ladders at 5 x 60 + 150 = 450 s each, a `crane copy` at
     # 5 x 300 + 150 = 1650 s and a `crane digest` at 450 s, 3000 s together; above
-    # install-crane's one `ci_tools_fetch` of 1708 s; and above the ci-ok report's 2160 s.
+    # install-crane's one `ci_tools_fetch` of 1708 s; and above the ci-ok report's 2460 s.
     # 1500 + 18592 = 20092 s -> 335 min.
     timeout-minutes: 335
+    env:
+      JOB_TIMEOUT_MINUTES: 335 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,8 +110,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: ci-images

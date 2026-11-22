@@ -34,12 +34,14 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 63 s
     # measured maximum, plus its slowest retried step alone — the ci-ok report, which is this
-    # job's only download: its `gh api` read and the POST of the check run, 2 x (5 x 30 + 150) =
-    # 600 s, and two calls of runner-shutdown.sh's check-run read and annotations loop,
-    # 2 x (300 + 480) = 1560 s, 2160 s together (ci-budgets.md's Budgets note, "The ci-ok
-    # report"). 600 + 2160 = 2760 s, a whole number of minutes, so the budget is the next one
-    # strictly above it -> 47 min.
-    timeout-minutes: 47
+    # job's only download: its `gh api` reads of the jobs and of the queue's tip and the POST of
+    # the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of runner-shutdown.sh's check-run
+    # read and annotations loop, 2 x (300 + 480) = 1560 s, 2460 s together (ci-budgets.md's
+    # Budgets note, "The ci-ok report"). 600 + 2460 = 3060 s, a whole number of minutes, so the
+    # budget is the next one strictly above it -> 52 min.
+    timeout-minutes: 52
+    env:
+      JOB_TIMEOUT_MINUTES: 52 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,6 +49,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
@@ -66,8 +70,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: ci-filters

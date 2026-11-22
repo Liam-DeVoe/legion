@@ -36,12 +36,14 @@ jobs:
     # job can have - the 1140 s of the two Bun halves and the 4680 s of the arm64 rows' cases
     # after them - plus its slowest retried step alone: either install-jj step's two
     # `ci_tools_fetch` calls and its `mise install` of the jj release, 3416 + 450 = 3866 s,
-    # above either setup-bun step's 3416 s, the ci-ok report's 2160 s and the other installs'
+    # above either setup-bun step's 3416 s, the ci-ok report's 2460 s and the other installs'
     # and the rig steps' one of 1708 s each.
     # 5820 + 3866 = 9686 s -> 162 min.
     timeout-minutes: 162
     # Why this job's install bounds are loud and its own limit does not reach them first:
     # .github/ci-budgets.md, "The tool-fallback-arm job".
+    env:
+      JOB_TIMEOUT_MINUTES: 162 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,8 +293,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: tool-fallback-arm

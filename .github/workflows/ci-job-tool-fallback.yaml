@@ -17,6 +17,8 @@ jobs:
     # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
     # 1722 + 6832 = 8554 s -> 143 min.
     timeout-minutes: 143
+    env:
+      JOB_TIMEOUT_MINUTES: 143 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -647,8 +649,10 @@ jobs:
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
-        # 600 + 2 x (300 + 480) = 2160 s, the ci-ok report's -> 38 min.
-        timeout-minutes: 38
+        # 900 + 2 x (300 + 480) = 2460 s, the ci-ok report's -> 43 min.
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         with:
           job: tool-fallback
           changes: ${{ inputs.ci-ok-changes }}

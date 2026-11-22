@@ -36,7 +36,7 @@ jobs:
     # main's #3579 gave it a PostgreSQL service and the live Dispatch-stack suite, plus its
     # slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 3416 s,
     # above packages/envoy's `go mod download` and the workspace install at 5 x 180 + 150 =
-    # 1050 s each and the ci-ok report's 2160 s.
+    # 1050 s each and the ci-ok report's 2460 s.
     # 1200 + 3416 = 4616 s -> 77 min.
     timeout-minutes: 77
     services:
@@ -52,6 +52,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 77 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       LEGION_E2E_ENVOY_STACK: "1"
       LEGION_E2E_DISPATCH_STACK: "1"
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -74,6 +75,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
       # e2e-local.sh does.
@@ -158,8 +161,10 @@ jobs:
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-session-stall

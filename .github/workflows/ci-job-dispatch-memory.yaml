@@ -34,10 +34,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 4500 s, the 75 minutes this job carried, above its
     # 1460 s measured maximum and holding the step's own `-timeout 60m`, plus its slowest
-    # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
-    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 4500 + 2160 = 6660 s, a whole number of
-    # minutes, so the budget is the next one strictly above it -> 112 min.
-    timeout-minutes: 112
+    # retried step alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 4500 + 2460 = 6960 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 117 min.
+    timeout-minutes: 117
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -51,6 +51,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 117 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,6 +60,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
@@ -82,8 +85,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-memory

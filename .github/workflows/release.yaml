@@ -162,6 +162,8 @@ jobs:
       # why: .github/ci-notes/release.md#why-legion_build-reads-the-tags-before-setup-go
       - name: Determine next version
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $LEGION_VERSION_ARGS is the argument list, split on purpose
@@ -169,6 +171,8 @@ jobs:
       # why: .github/ci-notes/release.md#why-legion_build-resolves-the-plugin-pair-before-setup-go
       - name: Resolve plugin versions for the smoke test and worker image
         timeout-minutes: 181
+        env:
+          STEP_TIMEOUT_MINUTES: 181
         id: plugin_versions
         run: .github/scripts/release-plugin-versions.sh
       - id: setup-go
@@ -176,6 +180,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # ci.yaml's go-daemon, restored and never saved: .github/workflows/ci-caches.yaml fills that
       # family on a push to main.
@@ -232,16 +238,14 @@ jobs:
         # 1708 s, one ci_tools_fetch -> 29 min.
         timeout-minutes: 29
 
-      # This release's own changelog entries, as in pi_envoy_build and for the reasons
-      # .github/ci-notes/release.md#what-the-envoy-plugins-changelog-step-renders gives: the
-      # fragments under packages/daemon/.changes/unreleased/ that this release's own commits first
-      # added, and the `notes` line fold-notes prints says whether there were any.
+      # why: .github/ci-notes/release.md#what-legion_builds-changelog-step-renders
       - name: Render this release's changelog entries
         # 6 x 450 = 2700 s -> 46 min.
         timeout-minutes: 46
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           .github/scripts/release-push.sh fold-notes "$VERSION" \
@@ -256,6 +260,8 @@ jobs:
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # why: .github/ci-notes/release.md#what-legion_names-checks
@@ -298,6 +304,8 @@ jobs:
       # why: .github/ci-notes/release.md#why-pi_envoy_build-reads-the-tags-before-setup-bun-and-what-a-re-run-releases
       - name: Determine next version
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $PI_ENVOY_VERSION_ARGS is the argument list, split on purpose
@@ -314,6 +322,7 @@ jobs:
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           .github/scripts/release-push.sh fold-notes "$VERSION" \
@@ -352,11 +361,7 @@ jobs:
       - name: Point extensions at the packed bundle
         if: steps.version.outputs.skip != 'true'
         run: |
-          # The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts
-          # (dev sessions) load the source without a build. The published tarball ships only the
-          # self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
-          # omp.extensions. Nothing restores the manifest: this job's tree is discarded, and no job
-          # commits a version, so the committed manifest keeps whatever it last held.
+          # why: .github/ci-notes/release.md#why-pi_envoy_build-points-its-manifest-at-the-packed-bundle
           jq '.omp.extensions = ["dist/envoy.js"]' \
             packages/pi-envoy/package.json > tmp.json \
             && mv tmp.json packages/pi-envoy/package.json
@@ -373,11 +378,7 @@ jobs:
       - name: Check the packed tarball names the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # Read repository.url back out of the tarball the publish job will hand npm, not out of
-          # the working tree the step above wrote: npm refuses a publish with provenance whose url
-          # is not the publishing repository's, so this is the check that catches a regression at
-          # the moment it would refuse the publish, here in the build job rather than in the job
-          # holding the credentials.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           tar -xzOf packages/pi-envoy/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
@@ -392,6 +393,8 @@ jobs:
 
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # The private-name check of the changelog entries pi_envoy_build rendered, as legion_names says;
@@ -435,6 +438,8 @@ jobs:
       # why: .github/ci-notes/release.md#why-pi_legion_build-reads-the-tags-before-setup-bun
       - name: Determine next version
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $PI_LEGION_VERSION_ARGS is the argument list, split on purpose
@@ -451,6 +456,7 @@ jobs:
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           .github/scripts/release-push.sh fold-notes "$VERSION" \
@@ -493,12 +499,8 @@ jobs:
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # As in pi_envoy_build, and for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
-          # gives: npm refuses a publish with
-          # provenance whose repository.url is not the publishing repository's, case for case, and
-          # the publish job packs nothing of its own. The committed manifest keeps today's
-          # repository; this writes whichever one the job runs in, and this job's tree is
-          # discarded.
+          # As in pi_envoy_build, for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
+          # gives. This job's tree is discarded, so the committed manifest keeps its repository.
           url=$(.github/scripts/repo-paths.sh repository_url)
           jq --arg u "$url" '.repository.url = $u' \
             packages/pi-legion/package.json > tmp.json \
@@ -512,8 +514,7 @@ jobs:
       - name: Check the packed tarball names the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # pi_envoy_build's check, over this package's tarball: the packed manifest, which is
-          # what npm verifies the provenance against, must name the publishing repository.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           tar -xzOf packages/pi-legion/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
@@ -528,6 +529,8 @@ jobs:
 
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # The private-name check of the changelog entries pi_legion_build rendered, as legion_names
@@ -571,6 +574,8 @@ jobs:
       # why: .github/ci-notes/release.md#why-claude_envoy_build-reads-the-tags-before-setup-bun
       - name: Determine next version
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $CLAUDE_ENVOY_VERSION_ARGS is the argument list, split on purpose
@@ -587,6 +592,7 @@ jobs:
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           .github/scripts/release-push.sh fold-notes "$VERSION" \
@@ -633,6 +639,8 @@ jobs:
       # this is what puts the checked build where `bun pm pack` finds it.
       - name: Put the checked build into the checkout
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         if: steps.version.outputs.skip != 'true'
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
 
@@ -680,6 +688,8 @@ jobs:
 
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # why: .github/ci-notes/release.md#what-claude_envoy_names-checks-and-why-it-is-a-job-of-its-own
@@ -723,6 +733,8 @@ jobs:
       attestations: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 101 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     outputs:
       # Whether pi-envoy and pi-legion each published or had nothing to release in this run.
       pair_ok: ${{ steps.pair.outputs.ok }}
@@ -760,6 +772,7 @@ jobs:
         id: pi_envoy_handed
         if: ${{ !cancelled() && steps.pi_envoy_download.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
         run: |
           git checkout --force --detach "$GITHUB_SHA"
@@ -791,6 +804,7 @@ jobs:
         id: pi_envoy_tag
         if: ${{ !cancelled() && steps.pi_envoy_npm.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
         run: |
@@ -802,6 +816,7 @@ jobs:
         id: pi_envoy_push_tag
         if: ${{ !cancelled() && steps.pi_envoy_tag.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
         run: |
@@ -812,6 +827,7 @@ jobs:
         id: pi_envoy_release
         if: ${{ !cancelled() && steps.pi_envoy_push_tag.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
@@ -834,6 +850,7 @@ jobs:
         timeout-minutes: 46
         if: ${{ !cancelled() && steps.pi_envoy_notes.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
         run: |
@@ -854,6 +871,7 @@ jobs:
         id: pi_legion_handed
         if: ${{ !cancelled() && steps.pi_legion_download.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
         run: |
           git checkout --force --detach "$GITHUB_SHA"
@@ -883,6 +901,7 @@ jobs:
         id: pi_legion_tag
         if: ${{ !cancelled() && steps.pi_legion_npm.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
         run: |
@@ -894,6 +913,7 @@ jobs:
         id: pi_legion_push_tag
         if: ${{ !cancelled() && steps.pi_legion_tag.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
         run: |
@@ -904,6 +924,7 @@ jobs:
         id: pi_legion_release
         if: ${{ !cancelled() && steps.pi_legion_push_tag.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
@@ -924,6 +945,7 @@ jobs:
         timeout-minutes: 46
         if: ${{ !cancelled() && steps.pi_legion_notes.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
         run: |
@@ -945,6 +967,7 @@ jobs:
         id: claude_envoy_handed
         if: ${{ !cancelled() && steps.claude_envoy_download.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
         run: |
           git checkout --force --detach "$GITHUB_SHA"
@@ -974,6 +997,7 @@ jobs:
         id: claude_envoy_tag
         if: ${{ !cancelled() && steps.claude_envoy_npm.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
         run: |
@@ -985,6 +1009,7 @@ jobs:
         id: claude_envoy_push_tag
         if: ${{ !cancelled() && steps.claude_envoy_tag.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
         run: |
@@ -995,6 +1020,7 @@ jobs:
         id: claude_envoy_release
         if: ${{ !cancelled() && steps.claude_envoy_push_tag.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
@@ -1015,6 +1041,7 @@ jobs:
         timeout-minutes: 46
         if: ${{ !cancelled() && steps.claude_envoy_notes.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
         run: |
@@ -1036,6 +1063,7 @@ jobs:
         id: codex_envoy_handed
         if: ${{ !cancelled() && steps.codex_envoy_download.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
         run: |
           git checkout --force --detach "$GITHUB_SHA"
@@ -1071,6 +1099,7 @@ jobs:
         id: pair
         if: ${{ !cancelled() }}
         env:
+          STEP_TIMEOUT_MINUTES: 91
           PI_ENVOY_RESULT: ${{ needs.pi_envoy_build.result }}
           PI_ENVOY_SKIP: ${{ needs.pi_envoy_build.outputs.skip }}
           PI_ENVOY_VERSION: ${{ needs.pi_envoy_build.outputs.version }}
@@ -1080,16 +1109,7 @@ jobs:
           PI_LEGION_VERSION: ${{ needs.pi_legion_build.outputs.version }}
           PI_LEGION_RELEASED: ${{ steps.pi_legion_release.outcome }}
         run: |
-          # pair_released <build result> <skip> <release outcome> <released version>: succeeds
-          # when npm carries a version of the package for this run, and sets `released` to the
-          # version its release published, or to nothing when it released nothing in this run;
-          # it fails when its release did not publish, and the package's member is then nothing.
-          # This step's own dispatch is which of the three a run is in; release-push.sh
-          # pair-version <tag prefix> turns that answer into a version, reading the newest tag
-          # for a package that released nothing in this run. Each pair-version call is written
-          # where its version is resolved rather than inside the function, so
-          # .github/scripts/check-download-retry.sh reads both as runs this step waits for
-          # (dispatch://INFRA-1545, round 37).
+          # why: .github/ci-notes/release.md#what-the-pair-steps-pair_released-answers
           pair_released() {
             released=''
             [ "$1" = success ] || return 1
@@ -1151,6 +1171,7 @@ jobs:
         id: legion_assets
         if: ${{ !cancelled() && steps.legion_download.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.legion_build.outputs.version }}
         run: |
           git checkout --force --detach "$GITHUB_SHA"
@@ -1182,6 +1203,7 @@ jobs:
         id: legion_tag
         if: ${{ !cancelled() && steps.legion_assets.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 91
           VERSION: ${{ needs.legion_build.outputs.version }}
           TAG: ${{ steps.legion_assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
@@ -1203,6 +1225,7 @@ jobs:
         id: legion_release
         if: ${{ !cancelled() && steps.legion_attest.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.legion_assets.outputs.tag }}
           VERSION: ${{ needs.legion_build.outputs.version }}
@@ -1228,6 +1251,7 @@ jobs:
         timeout-minutes: 46
         if: ${{ !cancelled() && steps.legion_notes.outcome == 'success' }}
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.legion_assets.outputs.tag }}
         run: |
@@ -1293,6 +1317,7 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     env:
+      JOB_TIMEOUT_MINUTES: 56 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       IMAGE: ${{ needs.worker_image.outputs.image }}
       DIGEST: ${{ needs.worker_image.outputs.digest }}
@@ -1329,6 +1354,8 @@ jobs:
       # why: .github/ci-notes/release.md#what-the-releases-worker-image-section-holds
       - name: Name the worker image on the legion release
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: |
           test -n "$REF"
           # shellcheck disable=SC2016 # literal Markdown backticks, no expansion wanted

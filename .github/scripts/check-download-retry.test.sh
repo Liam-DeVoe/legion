@@ -14842,6 +14842,114 @@ YAML
   check "$guard: and nothing else" "$(is "$status|$(printf '%s\n' "$out" | grep -c '^::error')" "1|1")"
 done
 
+# W55. gh-read.sh's `gh_wait_reset`, a shell function that runs the words after it, is the one
+# wrapper a `retry_fetch` may stand behind, in exactly one form, `gh_wait_reset [--stderr <file>]
+# retry_fetch …`, which the gate reads and charges as a bare call, one ladder (rule 6;
+# dispatch://INFRA-1545, round 55). Each case writes gh-read.sh as a one-line stand-in, the shape
+# check-workflow-files.test.sh gives it: the gate reads the words of the call, never the helper's
+# body. Behind any other wrapper, alone behind it or with gh_wait_reset in front of that wrapper,
+# `retry_fetch` stays refused by name; and a `gh` or a `curl` behind gh_wait_reset with no
+# `retry_fetch` is a fetch the gate reads as one behind any other wrapper, refused at the floor.
+# gh_read_stub <root>: that stand-in, in the fixture.
+gh_read_stub() {
+  printf '%s\n' '#!/usr/bin/env bash' 'gh_wait_reset() { "$@"; }' > "$1/.github/scripts/gh-read.sh"
+}
+for form in plain stderr; do
+  echo "case: r55 W55 gh_wait_reset in front of retry_fetch ($form) passes, charged one ladder"
+  root=$(fixture "r55-w55-$form")
+  gh_read_stub "$root"
+  if [ "$form" = plain ]; then
+    call='gh_wait_reset retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json'
+  else
+    call='gh_wait_reset --stderr "$RUNNER_TEMP/words" retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json'
+  fi
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 60 s for the rest of the job, and the step's 300 s: 60 + 300 = 360 s -> 7 min.
+    timeout-minutes: 7
+    steps:
+      - name: Read the pull request behind the rate-limit wait
+        # 5 x 30 + 150 = 300 s -> 6 min.
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          $call
+YAML
+  run_check "$root"
+  check "$form: the call passes" "$(is "$status" 0)"
+  check "$form: no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+  list_check "$root"
+  check "$form: --list lists its gh api as a site of its step" \
+    "$(contains "$out" "^.github/workflows/case.yaml	15	gh api	Read the pull request behind the rate-limit wait\$")"
+  set +e
+  run_gate null "$root" --jobs
+  set -e
+  check "$form: --jobs charges the step one ladder, 5 x 30 + 150 = 300 s, under the job's key" \
+    "$(contains "$out" "^.github/workflows/case.yaml	build	7	7	300	.*	Read the pull request behind the rate-limit wait\$")"
+done
+
+echo "case: r55 W55 retry_fetch behind another wrapper, alone or behind gh_wait_reset, is refused by name"
+root=$(fixture r55-w55-other-wrapper)
+gh_read_stub "$root"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Call the helper behind nice
+        run: |
+          . .github/scripts/ci-retry.sh
+          nice -n 1 retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json
+      - name: Call the helper behind nice behind the wait
+        run: |
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          gh_wait_reset nice -n 1 retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the helper behind nice by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Call the helper behind nice' of job 'build' runs .retry_fetch. behind .nice.")"
+check "and behind nice behind gh_wait_reset, which is no form of the one gh_wait_reset may stand in" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'Call the helper behind nice behind the wait' of job 'build' runs .retry_fetch. behind .nice.")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+echo "case: r55 W55 a gh or a curl behind gh_wait_reset with no retry_fetch is refused at the floor"
+root=$(fixture r55-w55-no-ladder)
+gh_read_stub "$root"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the pull request through the wait alone
+        run: |
+          source .github/scripts/gh-read.sh
+          gh_wait_reset gh api repos/o/r/pulls/1 > pull.json
+      - name: Fetch an asset through the wait alone
+        run: |
+          source .github/scripts/gh-read.sh
+          gh_wait_reset curl -fsSL https://example.com/a -o a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "reads through gh_wait_reset to its gh api, a fetch with no retry" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::.gh api. in step .Read the pull request through the wait alone. fetches with no retry")"
+check "and to its curl, a fetch without the floor" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::.curl. in step .Fetch an asset through the wait alone. fetches without the floor")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
 # W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a
 # one-minute key (dispatch://INFRA-1545, round 38). A literal path names a file of the tree from
 # the repository's root, and a `cd`, a `pushd` or a working directory moves the shell away from

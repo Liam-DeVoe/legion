@@ -34,7 +34,10 @@
 # the pull request: its number, and the base and head sha the run checks, which is the head the
 # event names rather than whatever head the pull request has by the time a route is read, since a
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
-# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY). The title, body and branch name come
+# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY), each call retry_fetch's ladder run
+# through gh-read.sh's gh_wait_reset, which waits out a spent API budget only when the wait and
+# one more ladder fit within the JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES both steps that run
+# this script set, and fails by name otherwise. The title, body and branch name come
 # from the pull request route as the pull request has them now, not from the payload: ci.yaml's
 # `pr-title` job checks at a push and can finish long after a later edit's pr-title.yaml run, and
 # both carry pr-title on the head, so a check of the push's own text would report a pass over
@@ -67,6 +70,8 @@ set -euo pipefail
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=.github/scripts/gh-read.sh
+source "$script_dir/gh-read.sh"
 text=$(mktemp -d)
 work=$(mktemp -d)
 trap 'rm -rf "$text" "$work"' EXIT
@@ -84,14 +89,16 @@ live="$work/live.json"
 # the last starting 150 s after the first, so a refusal costs this lane a wait rather than the
 # required pr-title check (dispatch://INFRA-1545, R1). Each read's redirection is this shell's
 # own and is applied once: the helper buffers every attempt's output and prints the successful
-# attempt's alone, so no refused attempt's body reaches the file.
+# attempt's alone, so no refused attempt's body reaches the file. gh_wait_reset, in front of
+# each, runs that ladder once more after a rate limit's wait, and only when the two fit.
 #
 # 30 s per attempt, for each of the three: the bound that file derives there for one page of a
 # REST route — a JSON read of about 3 s, so ten times what the call takes — which none of these
 # three reads is larger than.
 # shellcheck source=.github/scripts/ci-retry.sh
 . "$script_dir/ci-retry.sh"
-retry_fetch "the pull request" 30 -- gh api "repos/$repository/pulls/$number" > "$live"
+gh_wait_reset retry_fetch "the pull request" 30 -- \
+  gh api "repos/$repository/pulls/$number" > "$live"
 if ! jq -e '(.title | type == "string") and (.head.ref | type == "string")' "$live" > /dev/null 2>&1; then
   echo "::error::the pull request route answered no title and head branch for #$number" >&2
   exit 1
@@ -109,7 +116,7 @@ fi
 # that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every page
 # it creates, printing one JSON object per page, each repeating total_commits.
 compare_json="$work/compare.json"
-retry_fetch "the pull request's commits" 30 -- \
+gh_wait_reset retry_fetch "the pull request's commits" 30 -- \
   gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
 total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
 if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
@@ -144,7 +151,7 @@ read_list() {
   local kind=$1 route=$2 page=1 id trust association body
   mkdir "$text/$kind"
   while :; do
-    retry_fetch "page $page of the $route route" 30 -- \
+    gh_wait_reset retry_fetch "page $page of the $route route" 30 -- \
       gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
     if ! jq -e 'type == "array"' "$work/answer" > /dev/null 2>&1; then
       echo "::error::page $page of the $route route is not a list, so its ${kind}s cannot be" \
@@ -239,7 +246,7 @@ base_ref=$(jq -r '.base.ref // "main"' "$live")
 # 2026-11-19 from a Legion pod, the commits that touch the marker answered in 1.0 s, one release
 # in 0.9 s, #4348's commit with its 73 files in 1.1 s and the files of a pull request of 119 files
 # and 1,090,069 bytes, two pages, in 1.7 s, so the largest of them takes under a sixth of its bound.
-retry_fetch "the commits that touch $cutoff_file" 30 -- \
+gh_wait_reset retry_fetch "the commits that touch $cutoff_file" 30 -- \
   gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
   > "$work/cutoff-commits"
 skill_commit=$(jq -s -r '[.[][]] | last | .sha // empty' "$work/cutoff-commits")
@@ -307,10 +314,15 @@ else
       # newline, its last line then the message's last line and the `(HTTP <code>)`; or with
       # `gh: HTTP <code>` when the body holds no JSON message. A string `errors` field gives
       # `gh: <error> (<message>)`, and gh may add a line after it hinting at a token's scopes or an
-      # SSO authorization.
+      # SSO authorization. gh alone writes gh-error, so no line of retry_fetch's own, and no marker
+      # of its stop-commands blocks, can be the line UNKNOWN names. The attempt then copies those
+      # words to its standard error, inside its block, where the log keeps them and gh_wait_reset
+      # reads a rate limit's refusal in them; it takes no --stderr here, which would send every
+      # attempt's lines, retry_fetch's own among them, to that file rather than to the log.
       # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2, $response and the rest
-      if ! retry_fetch "the release of $tag" 30 -- bash -c \
-        'response=$(gh api "$1" -i 2> "$2"); status=$?; [ -z "$response" ] || printf "%s\n" "$response"
+      if ! gh_wait_reset retry_fetch "the release of $tag" 30 -- bash -c \
+        'response=$(gh api "$1" -i 2> "$2"); status=$?; cat "$2" >&2
+         [ -z "$response" ] || printf "%s\n" "$response"
          read -r proto code _ <<< "$response"
          [ "$status" -eq 0 ] || { [[ $proto == HTTP/* ]] && [ "$code" = 404 ]; } || exit "$status"' \
         release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/response"; then
@@ -647,7 +659,7 @@ AWK
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    retry_fetch "the files of commit $short" 30 -- \
+    gh_wait_reset retry_fetch "the files of commit $short" 30 -- \
       gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
@@ -680,7 +692,7 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    retry_fetch "the files of #$number" 30 -- \
+    gh_wait_reset retry_fetch "the files of #$number" 30 -- \
       gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")

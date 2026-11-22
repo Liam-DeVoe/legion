@@ -51,7 +51,7 @@ jobs:
     # and 781 s) and holding the two-build step's own `-timeout 30m`, plus its slowest retried
     # step alone — the setup-bun step's two `ci_tools_fetch` calls, 3416 s, above the previous
     # build's and the first-rollout build's 2216 s each, Playwright's 1650 s, the workspace
-    # install's and the module download's 1050 s each and the ci-ok report's 2160 s.
+    # install's and the module download's 1050 s each and the ci-ok report's 2460 s.
     # 2700 + 3416 = 6116 s -> 102 min.
     timeout-minutes: 102
     services:
@@ -67,6 +67,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 102 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
       # the service's pull is that step's too.
@@ -120,6 +121,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # As dispatch-multiprocess's download step: 180 s per attempt, 1.6 times the 113 s of the
       # slowest cold run measured (packages/envoy/infra; packages/envoy 77 s), and this job
@@ -305,8 +308,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-two-builds
@@ -342,7 +347,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes main's #4329 gave this job, as
     # the job above carried when it was added, holding the two-build step's own `-timeout 30m`,
     # plus its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
-    # 3416 s, above this tree's build's 2216 s, the ci-ok report's 2160 s and the workspace
+    # 3416 s, above this tree's build's 2216 s, the ci-ok report's 2460 s and the workspace
     # install's and the module download's 1050 s each. 2700 + 3416 = 6116 s -> 102 min.
     timeout-minutes: 102
     services:
@@ -358,6 +363,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 102 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
@@ -390,6 +396,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # As the job above's download step: 180 s per attempt, and this job restores no module cache.
       - name: Download the Go modules this job builds
@@ -431,8 +439,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-two-builds

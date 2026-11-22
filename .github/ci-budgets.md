@@ -48,7 +48,7 @@ A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a b
 each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families the Caches paragraph of .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
 Two lanes prove all of it against the fault it answers, rather than by reading, the two jobs of .github/workflows/ci-job-download-retry.yaml, which ci.yaml's one download-retry job calls:
-download-retry runs each of those sites — a curl of a release asset, `mise install`, `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
+download-retry runs each of those sites — a curl of a release asset, install-omp's curl of its release archive through `retry_fetch` (a `mise install` until main's #4877), `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
 — behind .github/scripts/ci-fault-proxy.py, once with the proxy refusing for 60 s and then serving, where every site must recover, and once with it accepting the connection and sending nothing, where every site must end at its own bound instead of hanging;
 download-retry-images does the same for the inline retries of the four Dockerfiles.
 The two are one ci.yaml job, gated on the download_retry filter, which is both lanes' filters together, and each lane is gated in that file on an input its caller fills from its own filter's output, download_retry_sites or download_retry_images, so each lane runs on exactly the changes its own filter selects:
@@ -113,7 +113,7 @@ The first term is the larger of the budget that job carried before dispatch://IN
 — and the job's measured maximum over the 20 most recent successful ci.yaml push runs on main, 2026-11-06T20:05:59Z to 2026-11-07T04:44:20Z, the last runs this workflow made on that push before the queue took its place (the `on:` note below).
 Three second terms repeat: the workspace install, bounded at 180 s per attempt, is 1050 s;
 a `go mod download`, bounded at 180 s per attempt too, is 1050 s;
-and the ci-ok report's `gh api` read (.github/scripts/ci-ok-report.sh) with the POST of the check run it ends in (.github/scripts/post-check-run.sh), bounded at 30 s each, are 600 s together, in every job that ends with that step.
+and the ci-ok report's `gh api` reads (.github/scripts/ci-ok-report.sh's jobs read and its read of the queue's tip) with the POST of the check run it ends in (.github/scripts/post-check-run.sh), bounded at 30 s each, are 900 s together, in every job that ends with that step.
 FOUR JOBS OF `ci.yaml` DO NOT: `changes`, which every other job waits on and which posts nothing;
 `pr-title` and `cancel-started`, which carry checks of their own; and `ci-ok` itself, which posts the aggregate check rather than reporting to it.
 The four jobs that call a workflow of their own
@@ -123,15 +123,15 @@ A job's budget is rounded up to the whole minute too, and that rounding is what 
 where the slowest step's arithmetic is not itself a whole number of minutes the job's round-up already covers the step's, and where it is
 — 300 s, 600 s, 2100 s — the step takes one more whole minute and the job takes it with it, so the job still outlives the step it names.
 The ci-ok report takes more than that one minute, and this is the one place that says why, since every job of `.github/workflows/ci.yaml` carries that step:
-its arithmetic is `ci-ok-report.sh`'s `gh api` read and `post-check-run.sh`'s POST of the check run, 2 x (5 x 30 + 150) = 600 s, and two calls of `runner-shutdown.sh`'s `runner_shutdown_kills` (main's #2945).
+its arithmetic is `ci-ok-report.sh`'s two `gh api` reads, of the run's jobs and of the tip of the queue's branch (main's #4983), and `post-check-run.sh`'s POST of the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of `runner-shutdown.sh`'s `runner_shutdown_kills` (main's #2945).
 The first is `ci-ok-report.sh`'s own, on a merge-group run where the reporting job failed, to tell a runner shutdown from a failure of the change;
 where it finds none, the script runs `ci-ok.sh`, which makes the second for the run's failed jobs in a process of its own, so it reads the check runs again rather than reusing the first call's.
 Each call is two reads: the check runs on the head, 5 x 30 + 150 = 300 s, and the annotations loop, which one deadline of 180 s bounds and `check-download-retry.sh`'s DECLARED_LOOPS prices at that deadline plus one read's whole ladder, 180 + 300 = 480 s.
-That is 600 + 2 x (300 + 480) = 2160 s, which `check-download-retry.sh` charges since round 37 of dispatch://INFRA-1545, its DECLARED_LIBRARIES entry for the ci-ok-report action writing the two calls, 1560 s;
-until then this note wrote one call, 600 + 300 + 480 = 1380 s, and a step whose first call found no shutdown went past it.
-2160 s is a whole 36 minutes, so rule 8 would take 37 minutes, 2220 s, and the budget is 2280 s, 38 minutes, the same one minute over that the 720 s and 660 s of the two ladders alone carried.
+That is 900 + 2 x (300 + 480) = 2460 s, which `check-download-retry.sh` charges, its DECLARED_LIBRARIES entry for the ci-ok-report action writing the two calls, 1560 s, since round 37 of dispatch://INFRA-1545, and the tip read's ladder since the forward merge of main's #4983 at round 55 put that read through retry_fetch, run through gh-read.sh's gh_wait_reset, which the check charges one ladder as it charges a bare retry_fetch;
+until round 37 this note wrote one call, 600 + 300 + 480 = 1380 s, and a step whose first call found no shutdown went past it, and until round 55 it wrote no tip read, 600 + 2 x (300 + 480) = 2160 s, with a budget of 38 minutes.
+2460 s is a whole 41 minutes, so rule 8 would take 42 minutes, 2520 s, and the budget is 2580 s, 43 minutes, the same one minute over that the 720 s and 660 s of the two ladders alone carried.
 That step posts the required `ci-ok` check, so a budget that cut it between its ladders would lose the check run rather than report a failure, and the extra minute is what keeps the report itself from being the thing that goes missing.
-Every job's report step carries that 38, and a job whose slowest retried step is the report adds 2160 s, the arithmetic, to its first term; ci.yaml's ci-ok verdict step, which sources `runner-shutdown.sh` alone and makes one call, carries its two reads, 300 + 480 = 780 s -> 14 min.
+Every job's report step carries that 43, and its STEP_TIMEOUT_MINUTES with it, since the tip read's wait is held to it; a job whose slowest retried step is the report adds 2460 s, the arithmetic, to its first term; ci.yaml's ci-ok verdict step, which sources `runner-shutdown.sh` alone and makes one call, carries its two reads, 300 + 480 = 780 s -> 14 min.
 
 That check holds a job's own budget above each of its steps' arithmetic too, which is the half of this derivation a check can make:
 it reads the attempts and not the measurement, and a job whose ceiling sits under one of its steps' ladders cuts that step before the step's own budget can name the site that failed.
@@ -471,7 +471,7 @@ The rule every other budget of `.github/workflows/ci.yaml` is written to (the Bu
 the job's 28.7-minute run, job 129478173535, is 1722 s, and 1722 s and the staging step's 6832 s come to 8554 s, 26 s under the 8580 s of the 143 minutes the key carries.
 It carried 114, the construction this section gave at the staging step's 86 minutes, until review round 29 of dispatch://INFRA-1545 read that 6 s under the sum, and the one minute over the construction that closed it is the minute 143 carries over 142, at no cost to any run that finishes.
 What keeps the job's retried steps diagnosable is still their position, which the paragraph after this one gives.
-The slowest retried step there is the staging step, whose sixteen ladders its own comment derives as 6832 s under the 114 minutes that step carries, above either blob read's 4397 s (one step per machine's five ghcr-mirror rows, as "The ci-images job's ceiling and the tool copy" says why), install-jj's 3416 + 450 = 3866 s, either setup-bun step's 3416 s and the ci-ok report's 2160 s.
+The slowest retried step there is the staging step, whose sixteen ladders its own comment derives as 6832 s under the 114 minutes that step carries, above either blob read's 4397 s (one step per machine's five ghcr-mirror rows, as "The ci-images job's ceiling and the tool copy" says why), install-jj's 3416 + 450 = 3866 s, either setup-bun step's 3416 s and the ci-ok report's 2460 s.
 The three minutes of steps this section counts for the job are all that runs before it
 — measured at 0.3 minutes in job 129478173535, a 28.7-minute run of the job
 — so a staging step that spends its whole ladder ends on its own budget at about 114 minutes with the job's limit unspent, and that step names the fetch that failed rather than the job reporting GitHub's bare timeout line.

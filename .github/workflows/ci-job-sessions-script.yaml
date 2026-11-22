@@ -44,7 +44,7 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): those ten minutes, 600 s, plus its slowest retried
     # step alone — setup-bun's two `ci_tools_fetch` calls, 3416 s, above the ci-ok report's
-    # 2160 s. 600 + 3416 = 4016 s -> 67 min.
+    # 2460 s. 600 + 3416 = 4016 s -> 67 min.
     timeout-minutes: 67
     services:
       postgres:
@@ -61,6 +61,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 67 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The server the suite creates its own session-store database on, and drops again: the
       # login is the image's superuser, since the test's first statement is a CREATE DATABASE.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -81,8 +82,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: sessions-script

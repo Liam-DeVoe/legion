@@ -30,11 +30,13 @@ jobs:
     # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. 15 leaves the test step
     # room to grow as it did from 285 s on 2026-11-18 to 406 s.
     # Budget (ci-budgets.md's Budgets note): those 15 minutes, 900 s, are the first term, plus the
-    # job's slowest retried step alone - install-jj's two `ci_tools_fetch` calls and its `mise
-    # install` of the jj release, 3416 + 450 = 3866 s, above setup-bun's 3416 s, the tmux install's
-    # 625 + 775 = 1400 s, the workspace install's 1050 s, install-omp's 450 s and the ci-ok
-    # report's 2160 s. 900 + 3866 = 4766 s -> 80 min.
-    timeout-minutes: 80
+    # job's slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls, 3416 s,
+    # above the ci-ok report's 2460 s, the tmux install's 625 + 775 = 1400 s, the workspace
+    # install's 1050 s and install-omp's 450 s. 900 + 3416 = 4316 s -> 72 min. It carried 80,
+    # from install-jj's 3866 s, until main's #4877 took install-jj out of this job.
+    timeout-minutes: 72
+    env:
+      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -51,18 +53,13 @@ jobs:
       # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 57
-      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
-      # nothing in this package drives jj.
-      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
-      - uses: ./.github/actions/install-jj
-        timeout-minutes: 65
       # extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
       # extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run the pinned
       # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
       # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
-      # (.github/actions/install-omp).
-      # install-omp's own retry arithmetic: its `mise install`, 5 x 60 + 150 = 450 s -> 8 min.
+      # (.github/actions/install-omp, which needs no mise and no token).
+      # install-omp's own retry arithmetic: its fetch of the release archive,
+      # 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
         timeout-minutes: 8
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
@@ -133,8 +130,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: pi-envoy

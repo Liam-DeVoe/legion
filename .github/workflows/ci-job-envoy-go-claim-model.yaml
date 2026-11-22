@@ -39,10 +39,10 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): 3000 s, the 50 minutes the paragraph above derives
     # (main's #4348), above the 19 min 18 s the step measured, plus its slowest retried step
-    # alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
-    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 3000 + 2160 = 5160 s, a whole
-    # number of minutes, so the budget is the next one strictly above it -> 87 min.
-    timeout-minutes: 87
+    # alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 3000 + 2460 = 5460 s, a whole
+    # number of minutes, so the budget is the next one strictly above it -> 92 min.
+    timeout-minutes: 92
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -60,6 +60,7 @@ jobs:
     # (internal/dispatch/store/storetest/storetest.go), and a skip is a pass, so without the
     # service the model's rules would go unchecked against their SQL on a green run.
     env:
+      JOB_TIMEOUT_MINUTES: 92 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,6 +70,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-test, restored only: this job builds the test binary of internal/dispatch/api,
       # which the entry .github/workflows/ci-caches.yaml fills with the test binary of every
@@ -104,8 +107,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-claim-model

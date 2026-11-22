@@ -100,6 +100,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # ci.yaml's go-envoy-infra, restored and never saved: .github/workflows/ci-caches.yaml
       # fills that family on a push to main.
@@ -140,6 +142,8 @@ jobs:
           retry_fetch "envoy-infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       - name: Determine next version
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         id: version
         run: |
           # The paths a version is cut from, as the build defines them: every directory of the
@@ -312,6 +316,8 @@ jobs:
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Checks what build hands over, writes SHA256SUMS, tags the commit, attests build's archives and
@@ -337,6 +343,8 @@ jobs:
       attestations: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 101 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     steps:
       # For release-push.sh and the tag, with every tag (the existing-tag check below reads them).
       # No credential is left in the checkout: the deploy key reaches the "Tag release" step alone.
@@ -358,6 +366,7 @@ jobs:
         timeout-minutes: 46
         id: assets
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           archives=()
@@ -385,6 +394,7 @@ jobs:
       - name: Tag release
         timeout-minutes: 91
         env:
+          STEP_TIMEOUT_MINUTES: 91
           VERSION: ${{ needs.build.outputs.version }}
           TAG: ${{ steps.assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
@@ -404,6 +414,7 @@ jobs:
       - name: Create GitHub release
         timeout-minutes: 46
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.assets.outputs.tag }}
           VERSION: ${{ needs.build.outputs.version }}

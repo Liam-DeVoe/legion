@@ -35,7 +35,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1920 s, the 32 minutes main's #4518 gave this job for
     # its slowest measured runs below, plus its slowest retried step alone — the four `go install`s
     # of the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
-    # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 2160 s. That
+    # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 2460 s. That
     # step's own arithmetic is a whole number of minutes, so it takes one more (71), and this job
     # takes it with it: 1920 + 4260 = 6180 s -> 104 min, the whole minute above a sum that is itself
     # a whole number of minutes. It was 1200 + 4260 = 5460 s, 92 minutes, until main's #4518 put
@@ -55,6 +55,7 @@ jobs:
     # minutes of the measured term.
     timeout-minutes: 104
     env:
+      JOB_TIMEOUT_MINUTES: 104 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,6 +65,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
       # runner's architecture, the Go version and the hash of the files that choose the module
@@ -176,8 +179,10 @@ jobs:
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-infra-go

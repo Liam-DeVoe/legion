@@ -196,6 +196,13 @@ Go module that target's binary compiles in (scripts/go-third-party-notices.sh, r
 build's own GOOS, GOARCH and CGO_ENABLED), and fails the build when one cannot be determined.
 publish writes SHA256SUMS over the archives it accepts.
 
+## What legion_build's changelog step renders
+
+This release's own changelog entries, as in pi_envoy_build and for the reasons
+.github/ci-notes/release.md#what-the-envoy-plugins-changelog-step-renders gives: the
+fragments under packages/daemon/.changes/unreleased/ that this release's own commits first
+added, and the `notes` line fold-notes prints says whether there were any.
+
 ## What legion_names checks
 
 The private-name check of the changelog entries legion_build rendered, over the very file
@@ -237,6 +244,22 @@ it, so fold-notes renders the ones this release's own commits first added, which
 ones its tag will hold. A release no fragment belongs to renders no file, and the `notes`
 line fold-notes prints says which of the two it was, since publish cannot look into the
 artifact before it downloads it.
+
+## Why pi_envoy_build points its manifest at the packed bundle
+
+The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts (dev
+sessions) load the source without a build. The published tarball ships only the
+self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
+omp.extensions. Nothing restores the manifest: this job's tree is discarded.
+
+## Why the packed tarball's repository url is checked in the build jobs
+
+Read repository.url back out of the tarball the publish job will hand npm, not out of the
+working tree: npm refuses a publish with provenance whose url is not the publishing
+repository's, and this catches that here rather than in the job holding the credentials.
+pi_legion_build's step of the same name is pi_envoy_build's check, over that package's
+tarball: the packed manifest, which is what npm verifies the provenance against, must name the
+publishing repository.
 
 ## Why pi_legion_build reads the tags before setup-bun
 
@@ -410,6 +433,18 @@ both plugins are in one of those states; otherwise legion is not released and
 worker_image_attest does not attest the image on main, so neither links a plugin version
 npm lacks.
 
+## What the pair step's pair_released answers
+
+pair_released <build result> <skip> <release outcome> <released version>: succeeds when npm
+carries a version of the package for this run, and sets `released` to the version its release
+published, or to nothing when it released nothing in this run; it fails when its release did
+not publish, and the package's member is then nothing. This step's own dispatch is which of
+the three a run is in; release-push.sh pair-version <tag prefix> turns that answer into a
+version, reading the newest tag for a package that released nothing in this run. Each
+pair-version call is written where its version is resolved rather than inside the function,
+so .github/scripts/check-download-retry.sh reads both as runs this step waits for
+(dispatch://INFRA-1545, round 37).
+
 ## Why legion is released only once both plugins are on npm
 
 legion: what legion_build built and smoke-tested, once legion_names found no private name in
@@ -580,6 +615,15 @@ carries no `timeout-minutes`, a job whose key no comment prices, and a run of th
 shell function, which it cannot count. With the 10 minutes and the bare steps these two jobs
 carry on main, that check refuses every one of their release-push.sh steps and both keys, and
 `pair_member`'s call as well.
+
+Every step of this workflow that runs release-push.sh, or release-plugin-versions.sh, which runs
+it, sets STEP_TIMEOUT_MINUTES to its own `timeout-minutes` in its `env:`, whichever of the
+script's commands it runs: `restart`, `release` and `release-section` make their GitHub calls
+through .github/scripts/gh-read.sh's gh_wait_reset, which waits out a spent API budget only
+within the nearer of the job's limit and the step's, and .github/scripts/check-workflow-files.sh
+refuses a step with a limit of its own that reaches gh-read.sh and passes none
+(dispatch://INFRA-1545, round 55). Those entries carry no comment in the workflow, which stands
+close to that check's 64,000-byte limit; this paragraph is theirs.
 
 ## The legion build step and its notices script
 

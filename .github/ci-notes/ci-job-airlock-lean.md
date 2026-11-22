@@ -44,7 +44,8 @@ does not. Five attempts at that bound with the helper's sleeps between them are
 The Budgets note of `.github/ci-budgets.md`: the job's measured term, 1200 s, the 20 minutes this
 job carried, above the 185 s maximum of the four runs made of it on dispatch://INFRA-1545's
 branch (it was selected by no push to main in the window that note names), plus its single
-slowest retried step. That is the ci-ok report, 2160 s (that note's "The ci-ok report"), above
+slowest retried step. That is the ci-ok report, 2460 s (that note's "The ci-ok report"), above
 install-elan's one `ci_tools_fetch` of the elan tarball, 1708 s, and above the Lean toolchain
-step's 750 s. 1200 + 2160 = 3360 s is a whole number of minutes, so the key is the next one
-strictly above it, 57 minutes.
+step's 750 s. 1200 + 2460 = 3660 s is a whole number of minutes, so the key is the next one
+strictly above it, 62 minutes. It was 57, from 1200 + 2160 = 3360 s, until the ci-ok report
+took the tip read of main's #4983 through its ladder.

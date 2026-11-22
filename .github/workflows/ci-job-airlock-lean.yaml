@@ -33,9 +33,10 @@ jobs:
   airlock-lean:
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci-job-airlock-lean.md#the-jobs-budget
-    # 1200 + 2160 = 3360 s -> 57 min.
-    timeout-minutes: 57
+    # 1200 + 2460 = 3660 s -> 62 min.
+    timeout-minutes: 62
     env:
+      JOB_TIMEOUT_MINUTES: 62 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance skip
       # (internal/cipher/proxyrules/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build
@@ -48,6 +49,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # No Go cache family: the proxyrules package imports the standard library and internal/fold,
       # which imports nothing, so this job downloads no module and compiles no third-party code,
@@ -102,8 +105,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: airlock-lean

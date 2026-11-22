@@ -78,11 +78,13 @@ jobs:
     # the pod that measured the five against the four, left that nearly as it was.
     #
     # Budget (ci-budgets.md's Budgets note): those 15 minutes, 900 s, plus its slowest retried
-    # step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"),
-    # above the Go module download, two calls at 2 x (5 x 180 + 150) = 2100 s. 900 + 2160 =
-    # 3060 s, a whole number of minutes, so the budget is the next one strictly above it
-    # -> 52 min.
-    timeout-minutes: 52
+    # step alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"),
+    # above the Go module download, two calls at 2 x (5 x 180 + 150) = 2100 s. 900 + 2460 =
+    # 3360 s, a whole number of minutes, so the budget is the next one strictly above it
+    # -> 57 min.
+    timeout-minutes: 57
+    env:
+      JOB_TIMEOUT_MINUTES: 57 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,6 +94,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # The modules the five calls below compile, downloaded once and retried before the first
       # of them (ci-budgets.md's Retries note; the retried unit is the download, never the
@@ -151,8 +155,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: text-checks

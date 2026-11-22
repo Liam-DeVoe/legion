@@ -27,9 +27,11 @@ jobs:
     # measured maximum, plus its slowest retried step alone — install-jj, whose two
     # `ci_tools_fetch` calls and `mise install` of the jj release are 3416 + 450 = 3866 s, above
     # the setup-bun step's 3416 s, the workspace install's 5 x 180 + 150 = 1050 s and the ci-ok
-    # report's 2160 s. 600 + 3866 = 4466 s -> 75 min. Main's #4012 added that install-jj step,
+    # report's 2460 s. 600 + 3866 = 4466 s -> 75 min. Main's #4012 added that install-jj step,
     # and this job carried 53 until the forward merge of round 35 priced it.
     timeout-minutes: 75
+    env:
+      JOB_TIMEOUT_MINUTES: 75 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,8 +64,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: pi-shared

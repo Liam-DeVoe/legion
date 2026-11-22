@@ -54,7 +54,10 @@
 # attempt bounds gh itself with `timeout 30`, because a host that accepts the connection and
 # then sends nothing would otherwise hang the step for as long as the job has; the comment at
 # the call says why the attempt carries both bounds and why the inner one is the one that
-# decides.
+# decides. The ladder runs through gh-read.sh's gh_wait_reset, which waits out a spent API
+# budget or a secondary rate limit only when the wait and one more ladder fit within the step's
+# STEP_TIMEOUT_MINUTES and the job's JOB_TIMEOUT_MINUTES, then runs the ladder once more, and
+# otherwise fails by name at once: a rate limit lasts longer than the ladder's 150 s.
 # A read refused after the ladder names the endpoint, which attempt decided the failure - the
 # last one the ladder made - and what that attempt did, what each earlier attempt did where it
 # did something else, how many attempts that was and the run attempt, and says in those words
@@ -81,6 +84,8 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/ci-retry.sh
 source "$script_dir/ci-retry.sh"
+# shellcheck source=.github/scripts/gh-read.sh
+source "$script_dir/gh-read.sh"
 
 usage() {
   echo "::error::dispatch-browser-run-reads.sh takes a mode and its arguments:" \
@@ -216,7 +221,7 @@ case "$mode" in
     # attempt, and an `::error::` line of its own once the fifth is refused. A refused read
     # therefore annotates the step twice, and the line below is the one that names the route,
     # the attempt that decided the failure and the run attempt.
-    if ! retry_fetch "this run's attempt's jobs" 40 -- bash -c '
+    if ! gh_wait_reset retry_fetch "this run's attempt's jobs" 40 -- bash -c '
       attempt=$(( $(cat "$1/attempts") + 1 ))
       printf "%s" "$attempt" > "$1/attempts"
       timeout 30 gh api --paginate --slurp "$2" 2> "$1/stderr.$attempt"

@@ -222,6 +222,10 @@ on:
           dispatch-browser-run-reads.test.sh and what it tests.
         type: string
         required: true
+      gh_read_test:
+        description: "ci.yaml's needs.changes.outputs.gh_read_test: gh-read.test.sh and what it tests."
+        type: string
+        required: true
       dispatch_browser_samples_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_samples_test:
@@ -291,9 +295,11 @@ jobs:
     # `ci_tools_fetch` calls at 3416 s, above the changelog render, whose run of release-push.sh
     # carries that script's retried calls, 2700 s as .github/scripts/check-download-retry.sh's
     # rule 8 sums them, install-changie's one at 1708 s, the workspace install's and the Go
-    # module download's 1050 s each and the ci-ok report's 2160 s.
+    # module download's 1050 s each and the ci-ok report's 2460 s.
     # 2338 + 3416 = 5754 s -> 96 min.
     timeout-minutes: 96
+    env:
+      JOB_TIMEOUT_MINUTES: 96 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -346,6 +352,8 @@ jobs:
       # lint because this is the job that installs changie.
       - name: Check every changelog fragment renders
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: |
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
@@ -540,6 +548,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
         run: .github/scripts/dispatch-browser-run-reads.test.sh
 
+      # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
+      # GitHub; its last case reads this job's own Runner.Worker, which only a runner has.
+      - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
+        if: inputs.changes-result != 'success' || inputs.gh_read_test == 'true'
+        run: .github/scripts/gh-read.test.sh
+
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
       # notice titles are held here, where no browser and no runner are needed.
@@ -648,6 +662,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # The modules this job's Go steps build, downloaded once and retried before the first of
@@ -693,8 +709,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: test

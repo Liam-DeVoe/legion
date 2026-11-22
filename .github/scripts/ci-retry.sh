@@ -147,16 +147,17 @@ fi
 # calls review round 54 of dispatch://INFRA-1545 changed), or runs a command that prints nothing
 # on standard output when it succeeds (`go mod download`, `go install`, `gh api --silent`,
 # `gh cache delete`, `crane copy`, `curl --silent --output`). Second, a caller that captures an
-# answer and prints a value out of it prints it outside any block: check-pr-text.sh:248, :271
-# and :273 (the base branch's name), :323 (the release read's status line), :334 and :341 (a
-# release's published_at) and :350 (the pull request's created_at); ci-ok-reconcile.sh:131,
+# answer and prints a value out of it prints it outside any block: check-pr-text.sh:255, :278
+# and :280 (the base branch's name), :335 (the release read's status line), :346 and :353 (a
+# release's published_at) and :362 (the pull request's created_at); ci-ok-reconcile.sh:131,
 # :135, :141, :149 and :152 (a ci-ok check run's status, conclusion and external_id);
-# dequeued.yaml:156 (the removal's createdAt and reason) and :173 (the group head's runs, as jq's
-# compact JSON); mirror-ci-images.sh:165 and :168 (the GOLANG_VERSION an image's config holds)
-# and :215 (the digest crane read); post-check-run.sh:100 (the check run's html_url);
-# browser-image.yaml:255 (the recipe label an image's config carries); and
-# main-bypass-check.yaml:126 (main-bypass-check.sh's lines, which name the conclusions of the
-# runs and check runs it read, escaped by jq's @tsv). Those lines are the callers' own, outside
+# ci-ok-report.sh:160 (the tip of the queue's branch, main's #4983); dequeued.yaml:168 (the
+# removal's createdAt and reason) and :185 (the group head's runs, as jq's compact JSON);
+# mirror-ci-images.sh:165 and :168 (the GOLANG_VERSION an image's config holds) and :215 (the
+# digest crane read); post-check-run.sh:100 (the check run's html_url); browser-image.yaml:255
+# (the recipe label an image's config carries); and main-bypass-check.yaml:134
+# (main-bypass-check.sh's lines, which name the conclusions of the runs and check runs it read,
+# escaped by jq's @tsv). Those lines are the callers' own, outside
 # this function: the boundary of the INFRA-3862 lane (dispatch://INFRA-5224). Third, the callers'
 # rule: the runner keeps one stop state for the whole step and reads standard output and standard
 # error on two threads, so a workflow command a caller writes on STANDARD OUTPUT just after a call

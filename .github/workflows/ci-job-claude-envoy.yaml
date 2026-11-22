@@ -36,6 +36,8 @@ jobs:
     # of one 450 s fetch = 2700 s, and every other retried step here.
     # 600 + 3416 = 4016 s -> 67 min.
     timeout-minutes: 67
+    env:
+      JOB_TIMEOUT_MINUTES: 67 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,6 +74,8 @@ jobs:
       # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
       - name: Put the checked build into CI's checkout for the pack
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
@@ -116,8 +120,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: claude-envoy
@@ -137,10 +143,12 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes main's #4256 gives this job,
     # which checks out the .github cone and runs the packed-plugin action alone, plus its slowest
-    # retried step alone — the ci-ok report, which is this job's only download: 2160 s
-    # (ci-budgets.md's Budgets note, "The ci-ok report"). 600 + 2160 = 2760 s, a whole number of
-    # minutes, so the budget is the next one strictly above it -> 47 min.
-    timeout-minutes: 47
+    # retried step alone — the ci-ok report, which is this job's only download: 2460 s
+    # (ci-budgets.md's Budgets note, "The ci-ok report"). 600 + 2460 = 3060 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 52 min.
+    timeout-minutes: 52
+    env:
+      JOB_TIMEOUT_MINUTES: 52 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -152,8 +160,10 @@ jobs:
           private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: claude-envoy

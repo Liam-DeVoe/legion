@@ -55,6 +55,8 @@ jobs:
     # 3 x (5 x 30 + 150) = 900 s, a whole number of minutes, so that step's own budget takes one
     # more and this job takes it too. 600 + 960 = 1560 s -> 27 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 27
+    env:
+      JOB_TIMEOUT_MINUTES: 27 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
     # nothing here needs another scope. The checkout needs no `contents: read`, because this
     # repository is public and GitHub serves a public repository's git data to any valid token,
@@ -63,7 +65,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # The job reads nothing of the tree but .github/scripts/main-bypass-check.sh, so the
+      # The job reads nothing of the tree but .github/scripts/main-bypass-check.sh, ci-retry.sh
+      # with the ci-log-guard.sh it sources, and gh-read.sh, all under .github/scripts, so the
       # .github cone is the whole checkout it needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,6 +92,7 @@ jobs:
           # compares every migration it held with main's tip (ci.yaml's migration-base input), so
           # an edit any commit of the push made is judged, not only the head's.
           BASE_SHA: ${{ github.event.before }}
+          STEP_TIMEOUT_MINUTES: 16 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
         # being cut part way by the job: the run list, the check-runs read and the dispatch, each
         # 5 x 30 + 150 = 300 s, 900 s together, a whole number of minutes, so the budget is the
@@ -96,12 +100,16 @@ jobs:
         timeout-minutes: 16
         run: |
           . .github/scripts/ci-retry.sh
+          # Every call below is a ladder run through gh_wait_reset, which waits out a spent API
+          # budget only when the wait and one more ladder fit within this step's limit and the
+          # job's, and fails by name otherwise.
+          source .github/scripts/gh-read.sh
           # The merge-group runs at the push's head. `--workflow ci.yaml` is what holds the list
           # to this repository's router; the decision reads each run's headSha itself, so a run
           # this filter returned for another commit is no run of this head. It retries at the
           # same 30 s an attempt as the check-runs read below, and for the same reason: a
           # refusal here leaves the decision reading an empty list and starting nothing.
-          RUNS=$(retry_fetch "the head's merge-group runs" 30 -- \
+          RUNS=$(gh_wait_reset retry_fetch "the head's merge-group runs" 30 -- \
             gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --commit "$HEAD_SHA" --limit 20 --json conclusion,headSha,workflowName)
           export RUNS
@@ -114,7 +122,7 @@ jobs:
           # REST route (ci-budgets.md's Retries note): a refusal here would otherwise leave the
           # decision reading an empty list and starting nothing, which is the one outcome this
           # backstop exists to prevent.
-          CI_OK=$(retry_fetch "the head's ci-ok check runs" 30 -- \
+          CI_OK=$(gh_wait_reset retry_fetch "the head's ci-ok check runs" 30 -- \
             gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
             --jq '[.check_runs[] | {name, conclusion}]')
           export CI_OK
@@ -151,7 +159,7 @@ jobs:
             # is not safe, and this call's repeat is benign while its failure mode is the
             # absence the backstop exists to prevent. The loop is over the acts the decision
             # wrote, not over the attempts: the attempts are the helper's.
-            retry_fetch "the ci.yaml dispatch" 30 -- \
+            gh_wait_reset retry_fetch "the ci.yaml dispatch" 30 -- \
               gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f migration-base="$BASE_SHA" >&2
             echo "::notice::$sha reached $GITHUB_REF_NAME with no passing merge-group ci-ok, so ci.yaml was started on $GITHUB_REF_NAME, whose tip contains it" >&2
             {

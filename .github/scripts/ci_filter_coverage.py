@@ -1251,6 +1251,10 @@ ENV_ALLOWED = frozenset({
     # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
     "GOPROXY",
+    # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
+    # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
+    # run go commands among them, and around_job reads a job's env. go reads it nowhere.
+    "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     # A directory of binaries a live test runs rather than installing its own: it names no
     # package and changes nothing a go command compiles (dispatch://INFRA-1545).
@@ -1261,6 +1265,11 @@ ENV_ALLOWED = frozenset({
     # it picks to the command as an argument, and go reads it nowhere.
     "MIGRATION_BASE",
     "PREVIOUS_COMMIT",
+    # A step's own timeout-minutes, which gh-read.sh's wait stays within as it does the job's:
+    # every step with a limit of its own that reaches that file sets it, the ci-ok report step
+    # that ends every job among them since that report's tip read waits through gh-read.sh
+    # (dispatch://INFRA-1545, round 55). go reads it nowhere.
+    "STEP_TIMEOUT_MINUTES",
     "TESTCONTAINERS_RYUK_DISABLED",
     # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
     # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this

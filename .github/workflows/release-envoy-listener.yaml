@@ -173,6 +173,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   build:
@@ -205,6 +207,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Download the Go modules the build compiles
         # 5 x 180 + 150 = 1050 s -> 18 min.
@@ -234,6 +238,8 @@ jobs:
           path: packages/envoy/legion-envoy-${{ matrix.arch }}.tar.gz
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # One leg per platform, each on a runner of that architecture, so no build runs under emulation
@@ -288,6 +294,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           # The amd64 leg keeps the module cache it has always had. An arm64 entry would be one more
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
@@ -409,6 +417,8 @@ jobs:
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Joins the docker legs' per-platform images into the `envoy:<sha>` index with `docker buildx
@@ -560,6 +570,8 @@ jobs:
       # on purpose: it is the argument list, split on its spaces.
       - name: Determine next version
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose
@@ -579,6 +591,7 @@ jobs:
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           .github/scripts/release-push.sh fold-notes "$VERSION" \
@@ -597,6 +610,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Download the Go modules this job builds
         if: steps.version.outputs.skip != 'true'
@@ -674,6 +689,8 @@ jobs:
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
         timeout-minutes: 46
+        env:
+          STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
   # The private-name check of the changelog entries release_build rendered, over the very file
@@ -751,6 +768,8 @@ jobs:
       actions: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 101 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     steps:
       # For release-push.sh and the tag, with every tag. No credential is left in the checkout: the
       # deploy key reaches the "Tag release" step alone.
@@ -780,7 +799,10 @@ jobs:
               rm -f "$error_file"
               return 0
             fi
-            if grep -Eqi 'manifest unknown|name unknown|not found' "$error_file"; then
+            # No image only on buildx's own line for a tag the registry does not hold, as the last
+            # line, for this reference: `ERROR: <image>:<tag>: not found`. A refusal of another
+            # request that ends in "404 Not Found" (a token endpoint's) is no answer about the tag.
+            if [ "$(tail -n 1 "$error_file")" = "ERROR: $IMAGE:$sha: not found" ]; then
               rm -f "$error_file"
               return 1
             fi
@@ -927,6 +949,7 @@ jobs:
         id: confirm
         if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true' && needs.release_names.result == 'success'
         env:
+          STEP_TIMEOUT_MINUTES: 91
           VERSION: ${{ needs.release_build.outputs.version }}
           GH_TOKEN: ${{ github.token }}
           LOST_RACES: ${{ inputs.lost_races || 0 }}
@@ -969,6 +992,7 @@ jobs:
         id: assets
         if: steps.confirm.outputs.release == 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           VERSION: ${{ needs.release_build.outputs.version }}
         run: |
           archives=()
@@ -1005,6 +1029,7 @@ jobs:
         timeout-minutes: 91
         if: steps.confirm.outputs.release == 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 91
           VERSION: ${{ needs.release_build.outputs.version }}
           TAG: ${{ steps.assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
@@ -1030,6 +1055,7 @@ jobs:
         id: release
         if: steps.confirm.outputs.release == 'true'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
           FILES: ${{ steps.assets.outputs.files }}
@@ -1059,6 +1085,7 @@ jobs:
         timeout-minutes: 46
         if: steps.notes.outcome == 'success'
         env:
+          STEP_TIMEOUT_MINUTES: 46
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
         run: |

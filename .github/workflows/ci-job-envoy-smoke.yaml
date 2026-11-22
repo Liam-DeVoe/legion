@@ -40,12 +40,13 @@ jobs:
     # meets it (.github/scripts/check-download-retry.sh, rule 10): the `bun install` and the
     # `go mod download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each;
     # the held-port image's `go mod download` is the same 3150 s. Both are above the ci-ok
-    # report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), the Go module
+    # report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), the Go module
     # download, whose two calls for packages/envoy and packages/envoy/infra are
     # 2 x (5 x 180 + 150) = 2100 s, install-pulumi's 1708 s and the docker provider plugin's
     # 1708 s. 1200 + 3150 = 4350 s -> 73 min.
     timeout-minutes: 73
     env:
+      JOB_TIMEOUT_MINUTES: 73 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
       TESTCONTAINERS_RYUK_DISABLED: "true"
@@ -61,6 +62,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # Both modules this job compiles on the host: packages/envoy for the smoke test, and
       # packages/envoy/infra, a workspace of its own, for the live tests and the plugin build.
@@ -228,8 +231,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-smoke

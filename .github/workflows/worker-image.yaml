@@ -110,10 +110,10 @@ jobs:
     # meets it (.github/scripts/check-download-retry.sh, rule 10): the `go` stage's
     # `go mod download` of packages/daemon/docker/worker.Dockerfile, 5 x 900 + 150 = 4650 s,
     # above its 600 s ladders, 5 x 600 + 150 = 3150 s each, and above the ci-ok report's
-    # `gh api` read and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, with two calls
-    # of runner-shutdown.sh's check-run read and annotations loop, 2 x (300 + 480) = 1560 s,
-    # 2160 s together (ci-budgets.md's Budgets note, "The ci-ok report"). 1800 + 4650 = 6450 s
-    # -> 108 min.
+    # `gh api` reads of the jobs and of the queue's tip and the POST of the check run,
+    # 3 x (5 x 30 + 150) = 900 s, with two calls of runner-shutdown.sh's check-run read and
+    # annotations loop, 2 x (300 + 480) = 1560 s, 2460 s together (ci-budgets.md's Budgets note,
+    # "The ci-ok report"). 1800 + 4650 = 6450 s -> 108 min.
     timeout-minutes: 108
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
@@ -146,6 +146,7 @@ jobs:
       group: worker-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
+      JOB_TIMEOUT_MINUTES: 108 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The commit that is built and that the sha- tag names: the PR head on a pull request (ci.yaml's
       # call; github.sha would be the ephemeral merge commit there); the triggering commit for
       # release.yaml's call and workflow_dispatch.
@@ -333,9 +334,11 @@ jobs:
           persist-credentials: false
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && github.event_name == 'pull_request'
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report", which derives the
-        # report's 2160 s once for every step that runs it.
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report", which derives the
+        # report's 2460 s once for every step that runs it.
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: worker-image

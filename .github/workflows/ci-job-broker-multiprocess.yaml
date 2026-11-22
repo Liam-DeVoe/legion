@@ -35,10 +35,10 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
     # 171 s measured maximum and holding the step's own `-timeout 20m` — which is why the
     # carried 30 minutes stay the first term rather than the measurement — plus its slowest
-    # retried step alone: the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
-    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 1800 + 2160 = 3960 s, a whole
-    # number of minutes, so the budget is the next one strictly above it -> 67 min.
-    timeout-minutes: 67
+    # retried step alone: the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 1800 + 2460 = 4260 s, a whole
+    # number of minutes, so the budget is the next one strictly above it -> 72 min.
+    timeout-minutes: 72
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -52,6 +52,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +61,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # As dispatch-memory's download step: 180 s per attempt, 1.6 times the 113 s of the
       # slowest cold run measured (packages/envoy/infra; packages/envoy 77 s), and this job
@@ -78,8 +81,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: broker-multiprocess

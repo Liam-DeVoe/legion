@@ -42,6 +42,8 @@ jobs:
     # section's own sum against it, and 64 from 804 + 3012 until main's #4214 gave each
     # `ci_tools_fetch` a fourth ladder.
     timeout-minutes: 78
+    env:
+      JOB_TIMEOUT_MINUTES: 78 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
@@ -63,10 +65,10 @@ jobs:
         timeout-minutes: 65
       # extensions/legion-phase-stall-omp.test.ts and controller-start-omp.test.ts run the pinned
       # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
-      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it,
-      # installed through the mise install-jj leaves at ~/.local/bin/mise
+      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
       # (.github/actions/install-omp).
-      # install-omp's own retry arithmetic: its `mise install`, 5 x 60 + 150 = 450 s -> 8 min.
+      # install-omp's own retry arithmetic: its fetch of the release archive,
+      # 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
         timeout-minutes: 8
       # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
@@ -77,6 +79,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-daemon, shared with typecheck and daemon-go.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -143,8 +147,10 @@ jobs:
           path: out/pr-artifacts/*.tgz
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
-        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
-        timeout-minutes: 38
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: pi-legion
