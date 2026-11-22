@@ -139,3 +139,26 @@ test("an issue write marks stale each ancestor's tree it names, whose answer hol
     "the parent's tree, which holds no node of the child"
   ).toBe(true);
 });
+
+// An issue write with no `ancestors` - one an older server wrote mid-rollout, or one written
+// before the field existed and replayed with the feed's gap - falls back to what any ancestor
+// could be, as the issue's detail does (every loaded detail refreshes). A new child's create is
+// the one event that reaches its parent: the parent's tree holds no node of the child yet.
+test("an issue write that names no ancestors marks every held tree stale, as it marks every issue's detail", () => {
+  const client = new QueryClient();
+  const parent = issueTreeKey("CORE-1");
+  client.setQueryData(
+    parent,
+    treeAnswer([treeNode("CORE-1", "issue", null)], [], { issue: "CORE-1" })
+  );
+  client.setQueryData(["issue", "CORE-1"], { key: "CORE-1" });
+  const created = eventOf("issue.created", { parent: "CORE-1" }, "CORE-2");
+  refreshQueries(client, eventRefreshTargets(created, "alice"));
+  expect(
+    {
+      detail: client.getQueryState(["issue", "CORE-1"])?.isInvalidated,
+      tree: client.getQueryState(parent)?.isInvalidated,
+    },
+    "the parent's detail and its tree, after a child's create that names no ancestors"
+  ).toEqual({ detail: true, tree: true });
+});
