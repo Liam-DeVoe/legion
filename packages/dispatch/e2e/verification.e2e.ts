@@ -5,7 +5,7 @@ import {
   editArtifact,
   getArtifactText,
   patchIssue,
-  putRepoProject,
+  putProjectDefaultRepository,
   recordCheckResult,
   retractCheckResult,
 } from "./api";
@@ -51,7 +51,7 @@ A check says whether a pass of it stands.
 async function seedIssue(title: string, head: string) {
   const ver = rowKey("VER");
   await createProject({ key: ver, name: "Verification" });
-  await putRepoProject(repository, { default: true, project: ver });
+  await putProjectDefaultRepository(ver, repository);
   const issue = await createIssue({ project: ver, spec, title });
   await seedFakeGithub({
     [repository]: {
@@ -462,7 +462,7 @@ async function seedCICheck(
 ) {
   const ver = rowKey("VER");
   await createProject({ key: ver, name: "Verification" });
-  await putRepoProject(repository, { default: true, project: ver });
+  await putProjectDefaultRepository(ver, repository);
   const issue = await createIssue({ project: ver, spec, title });
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.

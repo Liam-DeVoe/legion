@@ -194,7 +194,7 @@ interface Stubs {
   readonly listIssueAsks: Mock<typeof api.listIssueAsks>;
   readonly listPriorities: Mock<typeof api.listPriorities>;
   readonly listProjectArchitectureSources: Mock<typeof api.listProjectArchitectureSources>;
-  readonly listRepoProjects: Mock<typeof api.listRepoProjects>;
+  readonly listProjects: Mock<typeof api.listProjects>;
   readonly listUsers: Mock<typeof api.listUsers>;
   readonly putDocumentRead: Mock<typeof api.putDocumentRead>;
   readonly whoAmI: Mock<typeof api.whoAmI>;
@@ -276,7 +276,7 @@ beforeEach(() => {
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
       source,
     ]),
-    listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),
+    listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
     listUsers: spyOn(api, "listUsers").mockResolvedValue([
       { login: "alice@example.com" },
       { login: "bob@example.com" },
@@ -1412,8 +1412,6 @@ test("the priority's add control has the height of its siblings in Details", asy
       const text = scope.getByRole("button", { name: "acme/api, Repository of CORE-1" });
       const textHeight = classOf(text).filter((token) => token.startsWith("md:min-h-"));
       await user.click(text);
-      // The focus in the box starts the mappings' read, which lands before the box is taken off.
-      await settleReads();
       const boxHeight = classOf(
         scope.getByRole("combobox", { name: "Repository of CORE-1" })
       ).filter((token) => token.startsWith("md:min-h-"));
@@ -2543,10 +2541,8 @@ test("the default shapes keep main's class strings", async () => {
     const inheritedRepository = within(caseOf(view, "inherited repository"));
     const inherited = inheritedRepository.getByRole("combobox", { name: "Repository of CORE-2" });
     classAt("RepoControl box, inherited", inherited);
-    // A value that is not owner/name, written with Enter, draws the refusal; the focus starts the
-    // mappings' read, which lands before the next read of the mount.
+    // A value that is not owner/name, written with Enter, draws the refusal.
     await user.type(inherited, "nope{Enter}");
-    await settleReads();
     classAt("RepoControl refusal", inheritedRepository.getByRole("alert"));
 
     const components = within(caseOf(view, "components"));
@@ -3722,8 +3718,6 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       expect(box().getAttribute("aria-describedby")).toBe(described);
       expect(document.querySelectorAll(`[id="${described}"]`)).toHaveLength(1);
       expect(scope.queryByRole("button", { name: textName })).toBeNull();
-      // The focus in the box starts the mappings' read, which lands before what follows.
-      await settleReads();
 
       // Escape draws the text again, with the focus on it.
       await user.keyboard("{Escape}");
@@ -3833,12 +3827,10 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
         expect(classOf(line)).not.toContain("w-full");
         continue;
       }
-      // The press of the repository's text draws the box in its place; the focus in the box
-      // starts the mappings' read, which lands before the box is read.
+      // The press of the repository's text draws the box in its place.
       await user.click(
         scope.getByRole("button", { name: "cybermonklabs/legion, Repository of CORE-1" })
       );
-      await settleReads();
       expect(box()).toHaveFocus();
       expect(classOf(line)).toContain("w-full");
       const narrower: string[] = [];
@@ -3923,8 +3915,6 @@ test("inside NoTooltips Escape in the repository box closes the box and not the 
         await settleReads();
         await user.keyboard("{Enter}");
         expect(box()).toHaveFocus();
-        // The focus in the box starts the mappings' read, which lands before what follows.
-        await settleReads();
 
         await user.keyboard("{Escape}");
         expect(scope.queryByRole("combobox")).toBeNull();
@@ -3995,8 +3985,6 @@ test("inside NoTooltips Escape on the repository box's clear control closes the 
       await act(async () => text().focus());
       await user.keyboard("{Enter}");
       expect(box()).toHaveFocus();
-      // The focus in the box starts the mappings' read, which lands before what follows.
-      await settleReads();
       await user.tab();
       expect(clear()).toHaveFocus();
 
@@ -4057,8 +4045,6 @@ test("inside NoTooltips the repository box's clear control is reached by Tab in 
     // Tab from the box opened from the text puts the focus on the clear control, and both stay.
     await user.click(text());
     expect(box()).toHaveFocus();
-    // The focus in the box starts the mappings' read, which lands before what follows.
-    await settleReads();
     await user.tab();
     expect(clear()).toHaveFocus();
     expect(box()).toBeInTheDocument();
@@ -4203,8 +4189,6 @@ test("inside NoTooltips a repository box keeps itself and its focus when the win
       await user.click(scope.getByRole("button", { name }));
       const box = scope.getByRole("combobox", { name: "Repository of CORE-1" });
       expect(box).toHaveFocus();
-      // The focus in the box starts the mappings' read, which lands before what follows.
-      await settleReads();
 
       await blurWithTheWindow(box);
       expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
@@ -6131,8 +6115,6 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
       await settleReads();
       await user.keyboard("{Enter}");
       const box = scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
-      // The focus in the box starts the mappings' read, which lands before what follows.
-      await settleReads();
       await user.keyboard(draft);
       return box;
     },

@@ -92,8 +92,8 @@ function marked(page: Page): Promise<boolean> {
 }
 
 /** The words Settings writes itself: the text `main` draws, leaving out its tables' rows and its
- *  selects' options. Those list what the stack holds - every project, and the tokens, mappings,
- *  sources, daemons, grants and sign-ins the rows before this one made - so a word there is
+ *  selects' options. Those list what the stack holds - every project, and the tokens, sources,
+ *  daemons, grants and sign-ins the rows before this one made - so a word there is
  *  another row's data, not one of Settings' own (doc.e2e.ts names a project "Tabs"). A
  *  textarea's text is its value, which the control draws rather than the page. Each text node
  *  the page draws is one piece, and the pieces are joined by spaces, so no two run into one word.

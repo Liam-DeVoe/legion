@@ -21,7 +21,6 @@ import {
   putArchitectureSource,
   putIssueState,
   putProjectDefaultAssignee,
-  putRepoProject,
   type RowKey,
   requestApproval,
   reviewArtifact,
@@ -203,7 +202,6 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   if (source.last_error !== null) {
     throw new Error(`the component model did not import: ${source.last_error}`);
   }
-  await putRepoProject(repository, { default: false, project });
   await setLiveSessions([{ session_id: planner, title: PLANNER_TITLE }]);
 
   // `force` past the possible-duplicate guard: these titles are deliberately close.
