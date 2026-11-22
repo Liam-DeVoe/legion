@@ -564,7 +564,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/issue-page/node-line.tsx",
+      "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsRow.tsx",
+    ],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
       test: "a parent line is its parent's projected first line, a reference in it read by its target's name",

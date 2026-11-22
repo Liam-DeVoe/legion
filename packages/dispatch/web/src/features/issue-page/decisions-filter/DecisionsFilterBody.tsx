@@ -21,12 +21,13 @@ import {
   textMutedOnCanvas,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
+import { useKnownReferences } from "../../refs/reference-names";
+import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { lineWords, type TreeNode } from "../issue-tree";
-import { chipWords } from "../node-row-chip";
+import { chipName, type TreeNode } from "../issue-tree";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -183,21 +184,24 @@ export function DecisionsFilterBody({
   const agentText = useAgentText();
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
-  // The name each statement takes on a decision's "informs" line: the words its one line is cut
-  // from (`lineWords`), its first block's, cut by G's `chipWords` (decision 83), which each row
-  // draws as it is, so a statement reads here as the outline's chip for it reads. Where the
-  // coverage read sent the server's reading of a statement they are that reading's words, so
-  // they draw none of the marks its author typed; and the tree already holds them, so a
-  // statement is named with no read of names to wait for. A statement drawn under two parents
-  // is one node, so its first placement in the page's reading order names it.
+  // The name each statement takes on a decision's "informs" line, as every chip of the page
+  // names a block (`chipName`), so a statement reads here as the outline's chip for it reads: by
+  // the line the names store projects beside its name from the reading the page published for
+  // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
+  // each row draws as it is. One the store holds no line for yet is named by nothing until it
+  // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
+  // one node, so its first placement in the page's reading order names it.
+  const { lines } = useKnownReferences();
   const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
     const names = new Map<string, string>();
     for (const node of nodesInOrder(root)) {
-      if (node.type === "requirement" && !names.has(node.id))
-        names.set(node.id, chipWords(lineWords(node)));
+      const reference = node.type === "requirement" ? node.reference : undefined;
+      if (reference === undefined || names.has(node.id)) continue;
+      const line = lines.get(reference);
+      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
     }
     return names;
-  }, [root]);
+  }, [lines, root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
