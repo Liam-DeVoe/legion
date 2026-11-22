@@ -3034,75 +3034,13 @@ package api
 // says, and the guard refuses a claim in a turn whose last report of that turn is less than 20
 // minutes old; the body is the one it already posted, so a plugin before it sends none of them
 // and its claim is judged by the rules before it.
-// (This change took 157 at its forward merge over main's 146, read just before
-// 2026-11-17T10:29Z: of the remote branches committed to since 2026-11-10, the heads above 146
-// declare 147 to 156, among them two merge-queue groups at 151, so 157 was the lowest number no
-// head declared at that reading. It took 159 at the forward merge of 2026-11-17 that brought main
-// in at f3dc51da8bcd, which landed cybermonklabs/legion#4106 at 151, the entry right above and the
-// number the base then carried. A reading of `const DaemonAPIVersion` at each of the 1,292 remote
-// branches committed to since 2026-11-10, made between 2026-11-17T16:05:31Z and 16:07:13Z, gave
-// above the base's 151: 152, 153 and 154 at one head each, 155 at twelve, 156 at seven, 157 at
-// four heads of other changes and 158 at one; one head, a branch of images, holds no daemon. The
-// 13 open pull requests whose heads stood on no such branch, read by 16:10:08Z, declared 155 or
-// below. A second reading of the 1,294 such branches between 16:33:02Z and 16:40:03Z gave the
-// same but for 158, then at two heads, and the 9 open pull requests on no such branch, read by
-// 16:40:20Z, declared 151 or below. So 157 was no longer free, and this change took 159, the
-// lowest number above every head's. That is a reading and never the rule: read the base's own
-// number and every open pull request again at the next merge, as the solution named above says.
-// It keeps 159 at the forward merge of 2026-11-18 that brings main in at 4018e58a0d, which landed
-// contract 152, the entry right above: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 232 open pull requests, made between 2026-11-18T12:07:34Z
-// and 12:07:41Z, gave 159 to this change alone, with 153 to 158 at nine heads below it and 160 to
-// 165 at nine above it. It took 168 at the forward merge of 2026-11-19 that brought main in at
-// fd1efd0418, which landed contract 160, the entry right above: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 234 open pull requests, made at
-// 2026-11-19T08:34Z, gave 161 to 167 at fifteen heads, so 168 was the lowest number above the
-// base's 160 that no open head declared. It took 178 at the forward merge of 2026-11-19 that
-// brought main in at d079920d94, which landed contract 168 (cybermonklabs/legion#4488), the entry
-// right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 242
-// open pull requests, made at 2026-11-19T20:24Z, gave 168 at the 55 heads that had merged that main,
-// and 169 to 177 at twenty heads, so 178 was the lowest number above the base's 168 that no open
-// head declared. It took 180 at the forward merge of 2026-11-19 that brought main in at d7c7c53143:
-// a reading at refs/pull/<n>/head for each of the 239 open pull requests, made at
-// 2026-11-19T22:54Z, gave 178 at two other heads (cybermonklabs/legion#3831 among them, which
-// declared it first) and 179 at two, so 180 was the lowest number above 178 that no open head
-// declared. It took 185 at the forward merge of 2026-11-20 that brought main in at 32a82acbee,
-// which landed contract 178 (cybermonklabs/legion#4115): a reading at refs/pull/<n>/head for each
-// of the 248 open pull requests, made at 2026-11-20T04:11Z, gave 179 at one other head, 180 at one
-// (cybermonklabs/legion#4049), 181 at two, 182 at six, 183 at five and 184 at four, so 185 was the
-// lowest number above the base's 178 that no other open head declared. It took 192 at the forward
-// merge of 2026-11-20 that brought main in at 1c7c825367, which landed contract 188
-// (cybermonklabs/legion#4543): a reading at refs/pull/<n>/head for each of the 264 open pull
-// requests, made at 2026-11-20T10:33Z, gave 186 at one other head, 187 at two, 188 at three, 189
-// at three, 190 at two and 191 at one, so 192 was the lowest number above the base's 188 that no
-// other open head declared. It took 198 at the forward merge of 2026-11-20 that brought main in at
-// f21107b285, which landed contract 189 (cybermonklabs/legion#4581): a reading at
-// refs/pull/<n>/head for each of the 289 open pull requests, made at 2026-11-20T18:38Z, gave 189 at
-// 22 heads, 190 at two, 191 at two, 192 at three others, 193 at three, 194 at two, 195 at one, 196
-// at nine and 197 at three, so 198 was the lowest number above the base's 189 that no other open
-// head declared. It keeps 198 at the forward merge of 2026-11-20 that brought main in at
-// 8a9540682d, which landed contract 193 (cybermonklabs/legion#3659), the entry right above: a
-// reading at refs/pull/<n>/head for each of the 292 open pull requests, made at 2026-11-20T20:52Z,
-// gave 193 at one other head, 194 at two, 195 at one, 196 at eleven, 197 at three and 198 at this
-// change alone. It took 203 at the forward merge of 2026-11-21 that brought main in at
-// 81cf5a7938, which landed contract 199 (cybermonklabs/legion#4495), the entry right above: a
-// reading at refs/pull/<n>/head for each of the 315 open pull requests, made at 2026-11-21T00:06Z,
-// gave 198 at one other head, 199 at eighteen, 200 at two, 201 at two and 202 at two, so 203 was
-// the lowest number above every open head's. It keeps 203 at the forward merge of 2026-11-21 that
-// brought main in at f3e26096c7, which landed contract 202 (cybermonklabs/legion#4493), the entry
-// right above: a reading at refs/pull/<n>/head for each of the 355 open pull requests, made at
-// 2026-11-21T05:01Z, gave 202 at twenty-two heads, 203 at six other heads (cybermonklabs/legion#2230,
-// #3993, #4065, #4553, #4596 and #4661), none of which declared it at the reading of 00:06Z, 204 at
-// one, 205 at three, 206 at one, 207 at four and 208 at one. It took 208 at the forward merge of
-// 2026-11-21 that brought main in at 0497e861b0, which landed contract 205
-// (cybermonklabs/legion#4573), the entry right above: a reading at refs/pull/<n>/head made between
-// 2026-11-21T19:23:15Z and 19:23:42Z found 208 at no open head. That reading listed 400 of the 416
-// open pull requests: the list it read stopped at 400 and left out every pull request below #2653,
-// and one it left out, cybermonklabs/legion#2230, declared 208 too. A reading of all 416 open pull
-// requests, 0 unread, made between 2026-11-21T21:01:31Z and 21:01:50Z, gave 205 at twenty-eight
-// heads, 206 at two, 207 at eight, 208 at this change and #2230, 209 at two, 210 at one, 211 at
-// two, 212 at one, 213 at two, 214 at two, 215 at one and 216 at three. This change keeps 208, and
-// #2230 moves to a free number at its own merge of main. Its band of the state's shape is the last
+// (This change keeps 208 at the forward merge of 2026-11-22 that brings main in at bad897aa9d,
+// which still declares 205: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each
+// of the 428 open pull requests of cybermonklabs/legion, the count GitHub's search gives, 0 unread,
+// made between 2026-11-22T04:43:43Z and 04:44:26Z, gave 206 at three heads and 207 at two, and 208
+// at this change and the change stacked on it alone, so 208 is the lowest number above main's that
+// no other open head declares. That is a reading and never the rule: read the base's own number
+// and every open pull request again at the next merge. Its band of the state's shape is the last
 // row of shaping.go's stateNarrowings, and 208 is the last number of answers.go's
 // SupportedContracts.)
 const DaemonAPIVersion = 208
