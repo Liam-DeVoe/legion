@@ -1,0 +1,5 @@
+{"entry":"craft","skill":{"name":"alpha-one","dir":"roots/skills/alpha-one","source":"acme/skills at 1a2b3c4d","files":[{"path":"SKILL.md"}]},"answer":{"judged":[{"rule":"S1","verdict":"gap"}],"gaps":[{"file":"SKILL.md","line":6,"rule":"S1","kind":"missing","why":"No Done when line follows the title."},{"file":"SKILL.md","line":8,"rule":"S1","kind":"present","why":"The step has no name."}]},"refusals":[]}
+{"entry":"craft","skill":{"name":"alpha-two","dir":"roots/skills/alpha-two","source":"acme/skills at 1a2b3c4d","files":[{"path":"SKILL.md"}]},"answer":{"judged":[{"rule":"S1","verdict":"met"}],"gaps":[]},"refusals":[]}
+{"entry":"proposal","id":"41-1.1","state":"open","answer":{"fixes":[],"makes":[]}}
+{"entry":"craft","skill":{"name":"beta-one","dir":"roots/plugins/x/skills/beta-one","source":"acme/dotfiles at 5e6f7a8b","files":[{"path":"SKILL.md"}]},"answer":null,"refusals":["the answer is not one JSON value"]}
+{"entry":"craft","skill":{"name":"beta-two","dir":"roots/plugins/x/skills/beta-two","source":"acme/skills at 1a2b3c4d","files":[{"path":"SKILL.md"}]},"answer":{"judged":[{"rule":"S1","verdict":"met"}],"gaps":[]},"refusals":[]}

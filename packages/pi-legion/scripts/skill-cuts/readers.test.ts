@@ -5,10 +5,13 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
+import { parseCraftList } from "./craftlist";
 import { createGateway, type MessagesBody } from "./gateway";
 import {
   ATTACK_PLANTED_LINE,
   AttackInput,
+  CraftInput,
+  craftInput,
   MapInput,
   NAME_ONLY_REFUSAL,
   nameOnlyReason,
@@ -30,6 +33,7 @@ import {
   skillFiles,
   TASKS_PER_LABEL,
 } from "./readers";
+import { styleRules } from "./style";
 
 /** The one user message of a reader's request body, its blocks' text. */
 const UserMessage = z.tuple([
@@ -325,6 +329,102 @@ const tasksAnswer = {
 const unstated = Object.fromEntries(
   Object.entries(tasksAnswer.tasks[0] ?? {}).filter(([key]) => key !== "firstStep")
 );
+
+/** The craft reader's input: alpha's two files (SKILL.md has 10 lines, references/x.md 3), two
+ *  style rules, one reader property, and one nearest skill of theirs whose SKILL.md has 8 lines. */
+const craftReaderInput = {
+  skill: "alpha",
+  files: [
+    { path: "SKILL.md", text: SKILL_MD },
+    { path: "references/x.md", text: "# X\n\nRead me first.\n" },
+  ],
+  style: [
+    {
+      id: "S1",
+      line: 9,
+      part: "order",
+      text: "| `**Done when:**` | The check that ends the skill |",
+    },
+    {
+      id: "S2",
+      line: 19,
+      part: "rules",
+      text: "- **One rule per bullet or numbered line.** Start it with the rule in bold.",
+    },
+  ],
+  properties: [
+    {
+      id: "C1",
+      property: "The description says when to use the skill, and never sums up its steps.",
+      readerLooksFor: "A Use when clause in the description, and no list of steps.",
+    },
+  ],
+  nearest: [
+    {
+      name: "beta-skill-one",
+      files: [
+        {
+          path: "SKILL.md",
+          text: "---\nname: beta-skill-one\ndescription: Use for the beta checklist.\n---\n\n1. Read the notes first.\n2. Write each result on its own line.\n3. Run the named tests before you report.\n",
+        },
+      ],
+    },
+  ],
+};
+/** A gap of the craft answer. */
+const craftGap = (gap: Record<string, unknown>) => ({
+  file: "SKILL.md",
+  line: 9,
+  rule: "S2",
+  kind: "present",
+  why: "The item holds two rules.",
+  ...gap,
+});
+/** The craft answer that judges S1 met, S2 gap and C1 `c1`, with `gaps`. */
+const craftAnswer = (gaps: readonly unknown[], c1 = "met") => ({
+  judged: [
+    { rule: "S1", verdict: "met" },
+    { rule: "S2", verdict: "gap" },
+    { rule: "C1", verdict: c1 },
+  ],
+  gaps,
+});
+const allMet = {
+  judged: [
+    { rule: "S1", verdict: "met" },
+    { rule: "S2", verdict: "not-applicable" },
+    { rule: "C1", verdict: "met" },
+  ],
+  gaps: [],
+};
+
+const nearestInput = {
+  skill: {
+    name: "alpha",
+    description: "Use when a task asks for the alpha checklist of the made-up fixture project.",
+    body: "# Alpha\n\n1. Read `references/x.md` before the first step.\n",
+  },
+  candidates: [
+    { name: "alpha-list", source: "acme/tools", description: "Use to write the alpha checklist." },
+    { name: "alpha-notes", source: "acme/tools", description: "Use to take notes on alpha." },
+    { name: "alpha-list", source: "acme/skills", description: "Use to print the alpha list." },
+  ],
+};
+/** A nearest entry naming the candidate `name` of `source`. */
+const nearestEntry = (name: string, source: string, verdict: string) => ({
+  name,
+  source,
+  verdict,
+  missing: verdict === "equivalent" ? "none" : "the one-line results",
+  reason: `${name} writes the alpha checklist.`,
+});
+const noNearest = { verdict: "none", nearest: [], reason: "No candidate writes the checklist." };
+
+const claimInput = {
+  claim: "the skill has no check that runs the tests before the summary",
+  gap: craftGap({ line: 10, why: "Nothing says which tests to run before the summary." }),
+  files: [{ path: "SKILL.md", text: SKILL_MD }],
+};
 
 const ROWS: Record<ReaderName, Row> = {
   restate: {
@@ -643,6 +743,203 @@ const ROWS: Record<ReaderName, Row> = {
       { answer: { ...tasksAnswer, terms: [] }, why: "terms" },
     ],
   },
+  craft: {
+    input: craftReaderInput,
+    valid: [
+      craftAnswer([craftGap({})]),
+      allMet,
+      // A missing gap names the line it belongs after, 0 before line 1; a nearest gap is judged
+      // with no style rule or property.
+      craftAnswer(
+        [
+          craftGap({}),
+          craftGap({ line: 0, rule: "C1", kind: "missing", why: "No Use when clause." }),
+          craftGap({ file: "references/x.md", line: 3, rule: "C1", kind: "missing", why: "w" }),
+          craftGap({ line: 10, rule: "nearest:beta-skill-one:SKILL.md:8", why: "Which tests?" }),
+        ],
+        "gap"
+      ),
+    ],
+    bad: [
+      {
+        answer: craftAnswer([craftGap({}), craftGap({ file: "README.md" })]),
+        why: "gaps.1.file: is no file of the skill",
+      },
+      {
+        answer: craftAnswer([craftGap({ line: 11 })]),
+        why: "gaps.0.line: is past the last line, 10, of SKILL.md",
+      },
+      {
+        answer: craftAnswer([craftGap({ line: 11, kind: "missing" })]),
+        why: "gaps.0.line: is past the last line, 10, of SKILL.md",
+      },
+      {
+        answer: craftAnswer([craftGap({ line: 0 })]),
+        why: "gaps.0.line: is 0, and a present gap names a line from 1",
+      },
+      { answer: craftAnswer([craftGap({ rule: "" })]), why: "gaps.0.rule" },
+      {
+        answer: craftAnswer([{ file: "SKILL.md", line: 9, kind: "present", why: "w" }]),
+        why: "gaps.0.rule",
+      },
+      {
+        answer: craftAnswer([craftGap({}), craftGap({ rule: "the paragraph rule" })]),
+        why: "gaps.1.rule: is no style rule, reader property or nearest skill's line of the input",
+      },
+      {
+        // C2 is a property a behaviour test checks: no reader property of the input.
+        answer: craftAnswer([craftGap({}), craftGap({ rule: "C2" })]),
+        why: "gaps.1.rule: is no style rule, reader property or nearest skill's line of the input",
+      },
+      {
+        answer: craftAnswer([craftGap({}), craftGap({ rule: "nearest:gamma:SKILL.md:1" })]),
+        why: "gaps.1.rule: names gamma, no nearest skill of the input",
+      },
+      {
+        answer: craftAnswer([craftGap({}), craftGap({ rule: "nearest:beta-skill-one:x.md:1" })]),
+        why: "gaps.1.rule: names x.md, no file of the nearest skill beta-skill-one",
+      },
+      {
+        answer: craftAnswer([
+          craftGap({}),
+          craftGap({ rule: "nearest:beta-skill-one:SKILL.md:9" }),
+        ]),
+        why: "gaps.1.rule: names line 9, past the last line, 8, of SKILL.md of beta-skill-one",
+      },
+      { answer: craftAnswer([craftGap({ kind: "absent" })]), why: "gaps.0.kind" },
+      {
+        answer: { ...allMet, judged: allMet.judged.slice(1) },
+        why: "judged: judges no S1",
+      },
+      {
+        answer: { ...allMet, judged: [...allMet.judged, { rule: "S2", verdict: "met" }] },
+        why: "judged.3.rule: judges S2 twice",
+      },
+      {
+        answer: { ...allMet, judged: [...allMet.judged, { rule: "S9", verdict: "met" }] },
+        why: "judged.3.rule: is no style rule or reader property of the input",
+      },
+      {
+        answer: { ...allMet, judged: [{ rule: "S1", verdict: "fail" }, ...allMet.judged.slice(1)] },
+        why: "judged.0.verdict",
+      },
+      {
+        answer: craftAnswer([craftGap({})], "gap"),
+        why: "judged.2.verdict: judges C1 gap, and no gap names it",
+      },
+      {
+        answer: { ...allMet, gaps: [craftGap({})] },
+        why: "gaps.0.rule: is S2, which the answer does not judge gap",
+      },
+    ],
+  },
+  nearest: {
+    input: nearestInput,
+    valid: [
+      noNearest,
+      {
+        verdict: "equivalent",
+        nearest: [nearestEntry("alpha-list", "acme/tools", "equivalent")],
+        reason: "alpha-list does the job.",
+      },
+      {
+        verdict: "equivalent",
+        nearest: [
+          nearestEntry("alpha-notes", "acme/tools", "partial"),
+          nearestEntry("alpha-list", "acme/skills", "equivalent"),
+        ],
+        reason: "The best does the whole job.",
+      },
+    ],
+    bad: [
+      {
+        answer: {
+          ...noNearest,
+          verdict: "partial",
+          nearest: [nearestEntry("gamma", "acme/tools", "partial")],
+        },
+        why: "nearest.0: gamma of acme/tools is no candidate",
+      },
+      {
+        answer: {
+          ...noNearest,
+          verdict: "partial",
+          nearest: [nearestEntry("alpha-notes", "acme/skills", "partial")],
+        },
+        why: "nearest.0: alpha-notes of acme/skills is no candidate",
+      },
+      {
+        answer: {
+          verdict: "partial",
+          nearest: [
+            nearestEntry("alpha-list", "acme/tools", "partial"),
+            nearestEntry("alpha-notes", "acme/tools", "partial"),
+            nearestEntry("alpha-list", "acme/skills", "partial"),
+          ],
+          reason: "r",
+        },
+        why: "nearest",
+      },
+      {
+        answer: { ...noNearest, nearest: [nearestEntry("alpha-list", "acme/tools", "partial")] },
+        why: "verdict: is none, and the answer names a candidate",
+      },
+      {
+        answer: { ...noNearest, verdict: "partial" },
+        why: "verdict: is not none, and the answer names no candidate",
+      },
+      {
+        answer: {
+          verdict: "partial",
+          nearest: [
+            nearestEntry("alpha-notes", "acme/tools", "partial"),
+            nearestEntry("alpha-list", "acme/tools", "equivalent"),
+          ],
+          reason: "r",
+        },
+        why: "verdict: is partial, not the best entry's verdict, equivalent",
+      },
+      {
+        answer: {
+          verdict: "partial",
+          nearest: [
+            nearestEntry("alpha-list", "acme/tools", "partial"),
+            nearestEntry("alpha-list", "acme/tools", "partial"),
+          ],
+          reason: "r",
+        },
+        why: "nearest.1: names alpha-list of acme/tools twice",
+      },
+      {
+        answer: {
+          ...noNearest,
+          verdict: "none",
+          nearest: [nearestEntry("alpha-list", "acme/tools", "none")],
+        },
+        why: "nearest.0.verdict",
+      },
+      {
+        answer: {
+          verdict: "partial",
+          nearest: [{ ...nearestEntry("alpha-list", "acme/tools", "partial"), reason: "" }],
+          reason: "r",
+        },
+        why: "nearest.0.reason",
+      },
+    ],
+  },
+  claim: {
+    input: claimInput,
+    valid: [
+      { states: true, reason: "The gap says no tests run before the summary." },
+      { states: false, reason: "The gap is about which tests, not whether any run." },
+    ],
+    bad: [
+      { answer: { states: "yes", reason: "r" }, why: "states" },
+      { answer: { states: true }, why: "reason" },
+      { answer: { states: false, reason: "" }, why: "reason" },
+    ],
+  },
 };
 
 test("each reader's schema refuses a bad answer and a valid one parses", () => {
@@ -815,6 +1112,278 @@ test("the audit's request holds the line, the messages before the step and the s
   expect(text).toContain(
     '<message index="5" role="toolResult">\n[part 2 of 2 of this message]\nKeep each result to a single line.\n</message>'
   );
+});
+
+// The craft reader, and the style text's rule ids it judges (style.ts).
+
+// Catches: a gap the reader places in no file of the skill, or past its end, or against no rule
+// the input gave, kept as a finding; or a missing element whose place is lost.
+test("a craft gap outside the file, or with no rule id, is refused; a missing gap carries the line it belongs after", () => {
+  // Each answer holds S2's gap, which its judgement needs, and the gap under test second.
+  const one = (gap: Record<string, unknown>) =>
+    refusal("craft", craftReaderInput, craftAnswer([craftGap({}), craftGap(gap)], "gap"));
+  expect(one({ file: "README.md", rule: "C1" })).toContain("gaps.1.file: is no file of the skill");
+  expect(one({ line: 11 })).toContain("gaps.1.line: is past the last line, 10, of SKILL.md");
+  expect(one({ file: "references/x.md", line: 4, rule: "C1" })).toContain(
+    "gaps.1.line: is past the last line, 3, of references/x.md"
+  );
+  for (const rule of ["", "S", "the order table", "C2", "S3", "nearest:beta-skill-one:SKILL.md"]) {
+    expect({ rule, refused: one({ rule }) === undefined }).toEqual({ rule, refused: false });
+  }
+  const { rule: _, ...noRule } = craftGap({});
+  expect(refusal("craft", craftReaderInput, craftAnswer([craftGap({}), noRule], "met"))).toContain(
+    "gaps.1.rule"
+  );
+  // A missing gap names the line after which the missing element belongs: 0 before line 1, and
+  // at most the file's last line.
+  for (const line of [0, 4, 10]) {
+    expect({ line, refused: one({ line, kind: "missing", rule: "C1" }) }).toEqual({
+      line,
+      refused: undefined,
+    });
+  }
+  expect(one({ line: 11, kind: "missing", rule: "C1" })).toContain(
+    "gaps.1.line: is past the last line, 10, of SKILL.md"
+  );
+  expect(one({ line: 0, rule: "C1" })).toContain(
+    "gaps.1.line: is 0, and a present gap names a line from 1"
+  );
+  // A gap against a nearest skill names a line of a file of it, and no judgement.
+  expect(one({ rule: "nearest:beta-skill-one:SKILL.md:6" })).toContain("judges C1 gap");
+  expect(
+    refusal(
+      "craft",
+      craftReaderInput,
+      craftAnswer([craftGap({}), craftGap({ rule: "nearest:beta-skill-one:SKILL.md:6" })])
+    )
+  ).toBeUndefined();
+});
+
+// Catches: a rule judged twice or not at all, a rule judged gap with no gap, or a gap against a
+// rule the answer judges met.
+test("the craft answer judges each style rule and reader property once, and its gaps agree with its judgements", () => {
+  expect(refusal("craft", craftReaderInput, allMet)).toBeUndefined();
+  const judged = (list: readonly unknown[]) =>
+    refusal("craft", craftReaderInput, { judged: list, gaps: [] });
+  expect(judged(allMet.judged.filter((each) => each.rule !== "C1"))).toContain(
+    "judged: judges no C1"
+  );
+  expect(judged([...allMet.judged, allMet.judged[0]])).toContain("judges S1 twice");
+  expect(judged([...allMet.judged, { rule: "C2", verdict: "met" }])).toContain(
+    "is no style rule or reader property of the input"
+  );
+  expect(refusal("craft", craftReaderInput, craftAnswer([]))).toContain(
+    "judged.1.verdict: judges S2 gap, and no gap names it"
+  );
+  expect(
+    refusal("craft", craftReaderInput, { ...allMet, gaps: [craftGap({ rule: "C1" })] })
+  ).toContain("gaps.0.rule: is C1, which the answer does not judge gap");
+});
+
+// Catches: a property a behaviour test checks reaching the reader, which would judge it on a
+// skill's text.
+test("the craft reader's input holds only reader properties", () => {
+  const list = parseCraftList(
+    readFileSync(path.join(import.meta.dir, "testdata", "F12-craft-list.json"), "utf8")
+  );
+  const style = styleRules(
+    readFileSync(path.join(import.meta.dir, "testdata", "style-check.md"), "utf8")
+  );
+  const input = CraftInput.parse(
+    craftInput({
+      skill: "alpha",
+      files: craftReaderInput.files,
+      style,
+      list,
+      nearest: craftReaderInput.nearest,
+    })
+  );
+  expect(input.properties).toEqual([
+    {
+      id: "C1",
+      property: "The description says when to use the skill, and never sums up its steps.",
+      readerLooksFor:
+        'In the frontmatter description: a "Use when" clause naming the situations that call for the skill; no list of its steps.',
+    },
+    {
+      id: "C3",
+      property: "The skill's name uses only letters, numbers and hyphens.",
+      readerLooksFor: "The frontmatter name holds only letters, digits and hyphens.",
+    },
+  ]);
+  expect(input.style.map((rule) => rule.id)).toEqual(style.map((rule) => rule.id));
+  const [user] = UserMessage.parse(readerBody("craft", input).messages);
+  const text = user.content.map((part) => part.text).join("\n\n");
+  expect(text).not.toContain("C2");
+  expect(text).not.toContain("an arm that runs with no skill");
+  expect(text).toContain(
+    '<property id="C3">\n<states>The skill\'s name uses only letters, numbers and hyphens.</states>\n<looks-for>The frontmatter name holds only letters, digits and hyphens.</looks-for>\n</property>'
+  );
+  // The input refuses a property that carries how it is checked.
+  expect(
+    READERS.craft.input.safeParse({
+      ...craftReaderInput,
+      properties: [{ ...craftReaderInput.properties[0], checkedBy: "behaviour" }],
+    }).success
+  ).toBe(false);
+});
+
+test("the craft reader's request numbers each file's lines, and gives each style rule with its id and each nearest skill's files", () => {
+  const [user] = UserMessage.parse(readerBody("craft", craftReaderInput).messages);
+  const text = user.content.map((part) => part.text).join("\n\n");
+  expect(text).toStartWith('<skill name="alpha">\n<file path="SKILL.md">\n1: ---\n2: name: alpha');
+  expect(text).toContain(
+    '<file path="references/x.md">\n1: # X\n2: \n3: Read me first.\n</file>\n</skill>'
+  );
+  expect(text).toContain(
+    '<style>\n<rule id="S1" line="9" part="the order table">\n| `**Done when:**` | The check that ends the skill |\n</rule>\n<rule id="S2" line="19" part="the rules">'
+  );
+  expect(text).toContain(
+    '<nearest>\n<skill name="beta-skill-one">\n<file path="SKILL.md">\n1: ---\n2: name: beta-skill-one'
+  );
+  expect(text).toContain(
+    "8: 3. Run the named tests before you report.\n</file>\n</skill>\n</nearest>"
+  );
+  const [alone] = UserMessage.parse(
+    readerBody("craft", { ...craftReaderInput, nearest: [] }).messages
+  );
+  expect(alone.content[0]?.text).toEndWith(
+    "<nearest>\nNone: no nearest skill of theirs was given.\n</nearest>"
+  );
+});
+
+// The style texts are made up in the shapes of the two the reader reads (testdata/CAPTURE.md, "The
+// style texts").
+// Catches: a style text whose rules get no ids, ids out of the text's order, an example or a
+// source of a rule counted as a rule of its own, or a check item left out.
+test("a style text's rules get ids S1, S2, ... in its order: each order-table row, each item under Rules, each under Check before you commit", () => {
+  const read = (name: string) =>
+    styleRules(readFileSync(path.join(import.meta.dir, "testdata", name), "utf8"));
+  // The numbered shape: 5 table rows and 10 numbered rules, each with its nested example and
+  // source.
+  const numbered = read("style-numbered.md");
+  expect(numbered.map((rule) => rule.id)).toEqual(
+    Array.from({ length: 15 }, (_, n) => `S${n + 1}`)
+  );
+  expect(numbered.map((rule): string => rule.part)).toEqual([
+    ...Array<string>(5).fill("order"),
+    ...Array<string>(10).fill("rules"),
+  ]);
+  expect(numbered[0]).toEqual({
+    id: "S1",
+    line: 15,
+    part: "order",
+    text: "| `# Title`, then one or two sentences | The goal: what is true when the skill has worked |",
+  });
+  expect(numbered[5]?.line).toBe(23);
+  expect(numbered[5]?.text.split("\n")).toEqual([
+    "1. **Open with the goal in one or two sentences, then a `**Done when:**` line.**",
+    "   - Example: `Rotate the build key with no outage.` then `**Done when:** the old key is revoked and each job runs with the new one.`",
+    '   - Source: as `alpha-skill-one/SKILL.md:10` ("**Core rule:** evidence before claims."); bs `beta-skill-one/SKILL.md:11` ("**Done when:** the review is complete").',
+  ]);
+  expect(numbered[14]?.line).toBe(50);
+  expect(numbered[14]?.text).toStartWith("10. **Name each reference at the step that needs it");
+  expect(numbered[14]?.text.split("\n")).toHaveLength(3);
+  // The check shape: 7 table rows, 10 items under Rules and 3 under Check before you commit; the
+  // paragraph rule is a check item with its own id.
+  const check = read("style-check.md");
+  expect(check).toHaveLength(20);
+  expect(check.map((rule) => [rule.id, rule.line, rule.part])).toEqual([
+    ...[9, 10, 11, 12, 13, 14, 15].map((line, n) => [`S${n + 1}`, line, "order"]),
+    ...[19, 20, 21, 22, 23, 24, 25, 26, 27, 28].map((line, n) => [`S${n + 8}`, line, "rules"]),
+    ...[32, 33, 34].map((line, n) => [`S${n + 18}`, line, "check"]),
+  ]);
+  expect(check[18]).toEqual({
+    id: "S19",
+    line: 33,
+    part: "check",
+    text: "- No paragraph holds more than one rule.",
+  });
+  // A text with no table row and no item under Rules or Check is refused.
+  expect(() =>
+    styleRules(
+      "# Notes\n\n- An item under no Rules heading.\n\n## Rules\n\nThe rules are elsewhere.\n"
+    )
+  ).toThrow("the style text holds no rule");
+  expect(styleRules("## Rules\n\nSee below.\n\n- **Plain words.**\n")).toEqual([
+    { id: "S1", line: 5, part: "rules", text: "- **Plain words.**" },
+  ]);
+});
+
+// The nearest and claim readers.
+
+// Catches: an answer naming a skill no candidate is, more than two, or a verdict its entries do
+// not give.
+test("nearest answers none or one or two candidates, each with a verdict and a reason", () => {
+  for (const answer of ROWS.nearest.valid) {
+    expect(refusal("nearest", nearestInput, answer)).toBeUndefined();
+  }
+  const entry = nearestEntry("alpha-list", "acme/tools", "partial");
+  const answer = (nearest: unknown[], verdict = "partial") => ({ verdict, nearest, reason: "r" });
+  expect(refusal("nearest", nearestInput, answer([{ ...entry, name: "alpha-lists" }]))).toContain(
+    "alpha-lists of acme/tools is no candidate"
+  );
+  expect(refusal("nearest", nearestInput, answer([entry, entry, entry]))).toContain("nearest");
+  expect(refusal("nearest", nearestInput, answer([entry], "none"))).toContain(
+    "verdict: is none, and the answer names a candidate"
+  );
+  expect(refusal("nearest", nearestInput, answer([], "equivalent"))).toContain(
+    "verdict: is not none, and the answer names no candidate"
+  );
+  expect(refusal("nearest", nearestInput, answer([entry], "equivalent"))).toContain(
+    "is equivalent, not the best entry's verdict, partial"
+  );
+  expect(refusal("nearest", nearestInput, answer([{ ...entry, reason: "" }]))).toContain(
+    "nearest.0.reason"
+  );
+  expect(refusal("nearest", nearestInput, answer([{ ...entry, verdict: undefined }]))).toContain(
+    "nearest.0.verdict"
+  );
+  // The request quotes the skill's whole description and body, and each candidate's whole
+  // description with its source.
+  const [user] = UserMessage.parse(readerBody("nearest", nearestInput).messages);
+  const text = user.content[0]?.text ?? "";
+  expect(text).toStartWith(
+    `<skill name="alpha">\n<description>\n${nearestInput.skill.description}\n</description>\n<body>\n${nearestInput.skill.body}\n</body>\n</skill>`
+  );
+  expect(text).toContain(
+    '<candidate name="alpha-list" source="acme/skills">\nUse to print the alpha list.\n</candidate>'
+  );
+  expect(
+    READERS.nearest.input.safeParse({
+      ...nearestInput,
+      candidates: [nearestInput.candidates[0], nearestInput.candidates[0]],
+    }).success
+  ).toBe(false);
+});
+
+// Catches: a claim answer that is not a plain yes or no, or that gives no reason.
+test("the claim answer is yes or no with a reason", () => {
+  for (const answer of ROWS.claim.valid) {
+    expect(refusal("claim", claimInput, answer)).toBeUndefined();
+  }
+  for (const answer of [
+    { states: "yes", reason: "r" },
+    { states: 1, reason: "r" },
+    { states: true },
+    { states: false, reason: " " },
+    { states: true, reason: "r", line: 10 },
+  ]) {
+    expect({ answer, refused: refusal("claim", claimInput, answer) === undefined }).toEqual({
+      answer,
+      refused: false,
+    });
+  }
+  const [user] = UserMessage.parse(readerBody("claim", claimInput).messages);
+  expect(user.content[0]?.text).toStartWith(
+    `<claim>\n${claimInput.claim}\n</claim>\n\n<gap file="SKILL.md" line="10" rule="S2" kind="present">\nNothing says which tests to run before the summary.\n</gap>\n\n<skill>\n<file path="SKILL.md">\n1: ---`
+  );
+  // Its input refuses a gap in no file of the skill, and a claim of two lines.
+  expect(
+    READERS.claim.input.safeParse({ ...claimInput, gap: { ...claimInput.gap, file: "x.md" } })
+      .success
+  ).toBe(false);
+  expect(READERS.claim.input.safeParse({ ...claimInput, claim: "one\ntwo" }).success).toBe(false);
 });
 
 test("each prompt file pins its settings, and they reach every request made with it", async () => {

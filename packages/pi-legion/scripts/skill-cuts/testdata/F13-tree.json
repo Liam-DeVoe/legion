@@ -1,0 +1,11 @@
+{
+  "skills/alpha-one/SKILL.md": "---\nname: alpha-one\ndescription: Use when a task asks for the alpha checklist of the made-up fixture project.\n---\n\n# Alpha one\n\nWrite each step's result on one line.\n",
+  "skills/alpha-one/examples/inner/SKILL.md": "---\nname: inner-example\ndescription: An example skill inside alpha-one, not a skill of the root.\n---\n",
+  "skills/alpha-two/SKILL.md": "---\nname: alpha-two\ndescription: Use when a task asks for the second alpha checklist.\n---\n\n# Alpha two\n",
+  "skills/vendored-tool/SKILL.md": "---\nname: vendored-tool\ndescription: Use when a task needs the vendored tool, kept as its upstream wrote it.\n---\n",
+  "skills/notes/guide.md": "# Notes\n\nA directory of notes with no SKILL.md.\n",
+  "skills/README.md": "# Skills\n\nThe skills of the made-up fixture project.\n",
+  "plugins/x/skills/beta-one/SKILL.md": "---\nname: beta-one\ndescription: Use when a task asks for the beta greeting.\n---\n\n# Beta one\n",
+  "plugins/x/skills/beta-two/SKILL.md": "---\nname: beta-two\ndescription: Use when a task asks for the beta farewell.\n---\n\n# Beta two\n",
+  "plugins/x/skills/vendored-tool/SKILL.md": "---\nname: vendored-tool\ndescription: Use when a task needs the vendored tool, kept as its upstream wrote it.\n---\n"
+}

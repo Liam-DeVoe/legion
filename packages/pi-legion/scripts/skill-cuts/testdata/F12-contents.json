@@ -1,0 +1,7 @@
+{
+  "repos/acme/alpha-set/contents/skills/writing-alpha/SKILL.md?ref=2ce8aa15d05bd57213e6f746f953aafb7ded7a8b": "---\nname: writing-alpha\ndescription: Use when writing or changing a skill of the alpha set.\n---\n\n# Writing alpha skills\n\nThe description says when to use the skill: start it with \"Use when\" and name the triggers.\nIt never sums up the skill's steps.\n\nTest a skill with an arm that runs with no skill at all.\nName a skill with letters, numbers and hyphens only.\n",
+  "repos/acme/alpha-set/contents/skills/alpha-skill-one/SKILL.md?ref=2ce8aa15d05bd57213e6f746f953aafb7ded7a8b": "---\nname: alpha-skill-one\ndescription: Use when a test fails and its cause is not known.\n---\n\n# Alpha skill one\n",
+  "repos/acme/beta-set-plugin/contents/docs/authoring.md?ref=8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6": "# Authoring a portable skill\n\nA description starts with \"Use when\" or \"Use for\" and lists the situations that call for the skill, never its process.\n\nA skill name is hyphen-case: lowercase letters, digits and hyphens.\n",
+  "repos/acme/beta-set-plugin/contents/.agents/skills/beta-skill-work/references/evaluate.md?ref=8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6": "# Evaluate a skill\n\nRun each case twice: once with the skill, and once with no skill, the control arm.\n",
+  "repos/acme/beta-set-plugin/contents/skills/beta-skill-one/SKILL.md?ref=8a776c13a08eea0d6485c26c9bc96ea84d5a6cc6": "---\nname: beta-skill-one\ndescription: Use for committing a finished change.\n---\n"
+}

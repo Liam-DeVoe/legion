@@ -1,7 +1,8 @@
 # How each fixture was captured
 
 Every fixture here came from a real system on 2026-11-20 (F10 on 2026-11-22), with made-up skills
-(`alpha`, `beta`, `tool-loop-alpha`) and made-up prompts, but for F14, made-up rows in F7's shape.
+(`alpha`, `beta`, `tool-loop-alpha`) and made-up prompts, but for F12, F13, F14, the style texts
+and the control skills, which are made up in the shapes their sections give.
 A test that reads a fixture cites its section of this file in its header. The scan at the end says
 how each file was checked for keys and private names.
 
@@ -627,6 +628,63 @@ in the same file; (e) `beta-skill-two` at `/opt/acme/plugin/dist/skills/`; (f) `
 upstream's raw GitHub URL. A scratch script wrote the file: each row as psql prints count.sql's
 JSON (`"key" : value`, in count.sql's key order), under a header `total` and a rule of dashes as
 wide as the widest row, and the footer `(12 rows)`.
+
+## F12: a craft list, and GitHub's answers for its lines (`F12-*`)
+
+Made up, read from no system, in the shape of the craft list a person writes (`craftlist.ts`):
+two made-up sets, `alpha-set` (`acme/alpha-set`) and `beta-set` (`acme/beta-set-plugin`), each at
+the commit F10 reads it at (`2ce8aa15…` and `8a776c13…`, which F10 gives as `sha` values, so the
+scan accounts for them), and three properties: C1 and C3 checked by a reader, each with an
+example line, and C2 checked by a behaviour test, with a record link. `F12-craft-list.json` is the
+valid list. `F12-craft-list-past-end.json` is the same list with C1's beta-set range running to
+line 7 of a 5-line file, C2's alpha-set line at 30 of a 12-line file, and C3's example at a path
+the commit does not hold. `F12-contents.json` is one JSON object: each key is the route sets.ts's
+`SetReads.text` gives `gh api -H 'Accept: application/vnd.github.raw'` for a file the lists cite
+(`repos/<owner>/<repo>/contents/<path>?ref=<commit>`), and each value the file's text, made up;
+the tests' stand-in gh answers a route it does not hold as GitHub answers a missing file (404).
+
+## F13: two skills trees and the craft entries (`F13-tree.json`, `F13-entries.jsonl`)
+
+Made up, read from no system. `F13-tree.json` is one JSON object of a path to the text of a file:
+a `skills/` tree (`alpha-one`, `alpha-two`, the vendored `vendored-tool`, a SKILL.md nested inside
+`alpha-one`, a directory with no SKILL.md and a README) and a `plugins/x/skills` tree (`beta-one`,
+`beta-two`, `vendored-tool`). `coverage.test.ts` writes it into a temporary directory, so this
+repository holds no SKILL.md of a made-up skill: `copies` lists every SKILL.md of a repository,
+and the repository's code owners review every SKILL.md. `F13-entries.jsonl` holds lines in the
+shape of `craft`'s entries, cut to the fields `craft-coverage` reads (`entry`, `skill.dir`,
+`skill.source`, `answer` with its gaps): alpha-one and alpha-two of the source
+`acme/skills at 1a2b3c4d`, beta-one of `acme/dotfiles at 5e6f7a8b` with every reply refused, and
+beta-two of `acme/skills at 1a2b3c4d`; and a proposal's entry, which `craft-coverage` passes over.
+
+## The style texts (`style-numbered.md`, `style-check.md`)
+
+Made up in the shapes of the two style texts the craft reader reads, so `readers.test.ts` counts
+their rule ids as it would count the originals': `style-numbered.md` follows the style section of
+a dotfiles skill (a title, a `**Done when:**` line, a heading over a table of 5 parts, then
+`## Rules` with 10 numbered rules, each with an indented `- Example:` and `- Source:`), and
+`style-check.md` the version 1 draft of a style research note's Part 4 (a
+`**Order of a SKILL.md** (…):` label over a table of 7 parts whose separator row is `|---|---|`,
+`**Rules:**` with 10 bullets, and `**Check before you commit:**` with 3, "No paragraph holds more
+than one rule" the second). The rules keep the originals' wording where it names nothing; each
+set's name, each cited skill and line, and each source id are made up (`alpha-set`, `beta-set`,
+`as`, `bs`, `alpha-skill-one`, `N1`…). Read by `styleRules` outside this repository, the two
+originals give 15 and 20 ids, as these do, with the paragraph rule `S19`.
+
+## The control skills (`control-skills.json`)
+
+Made up, read from no system: one JSON object of a path to the text of a file, which
+`cli.test.ts` writes into a temporary directory (for the reason F13 gives). `tidy-settled-change`
+has the line layout of the skill that the craft reader's first two controls change: its
+`## Step 4: Verify` runs from line 41 to line 46, after Step 3 (lines 29 to 39) and before Step 5's
+heading (line 47) and summary (line 49); it also holds a LICENSE and one reference file.
+`tracker-first` has the layout of the skill that the other two change: three one-line list items
+at lines 37 to 39 under a heading at line 35. `check-before-claim` is a nearest skill of theirs.
+
+## The canned reader answers
+
+The answers of the `craft`, `nearest` and `claim` readers are made up and written in the tests, as
+the other readers' are: `readers.test.ts`'s rows, each valid answer and each refused one with why,
+and `cli.test.ts`'s stand-in, which answers each request by its prompt.
 
 ## The scan
 

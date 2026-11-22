@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   cpSync,
@@ -1737,4 +1738,783 @@ test("a skill's no-verdict reason says its control's runs are unscreened only wh
   expect(noVerdict(scoreSkill(unscreenedControl(MIN_INFORMATIVE_CASES)))).toBe(
     "control not a loss: its runs are unscreened"
   );
+});
+
+// The readers of our skills: `craft`, `nearest` and `control craft`, each against the stand-in,
+// which answers each request by its prompt (its system text) with a canned answer, made up. The
+// skills are made up (testdata/control-skills.json, CAPTURE.md "The control skills"):
+// tidy-settled-change, whose `## Step 4: Verify` runs from line 41 to 46 after Step 3 (29 to 39),
+// with Step 5's heading at 47 and its summary at 49; tracker-first, whose three list items at
+// lines 37 to 39 sit under its heading at 35; and check-before-claim, a nearest skill of theirs.
+// The style text is testdata/style-check.md (S1 to S20; S19 is "No paragraph holds more than one
+// rule"), and the craft list is F12 (reader properties C1 and C3; C2 is checked by a behaviour
+// test).
+
+const STYLE = path.join(TESTDATA, "style-check.md");
+const STYLE_SOURCE = "the style notes, version 1";
+const CRAFT_LIST = path.join(TESTDATA, "F12-craft-list.json");
+const LIST_SOURCE = "craft-list.json, version 2";
+const CONTROL_SKILLS: Readonly<Record<string, string>> = JSON.parse(
+  readFileSync(path.join(TESTDATA, "control-skills.json"), "utf8")
+);
+const sha256 = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+/** Writes the control skill `name` under `dir`, and gives its directory. */
+function controlSkill(dir: string, name: string): string {
+  const skill = path.join(dir, name);
+  writeSkill(
+    skill,
+    Object.fromEntries(
+      Object.entries(CONTROL_SKILLS).flatMap(([file, text]) =>
+        file.startsWith(`${name}/`) ? [[file.slice(name.length + 1), text]] : []
+      )
+    )
+  );
+  return skill;
+}
+
+/** A gap of a craft answer, in SKILL.md. */
+interface Gap {
+  readonly file: string;
+  readonly line: number;
+  readonly rule: string;
+  readonly kind: "present" | "missing";
+  readonly why: string;
+}
+const gap = (line: number, rule: string, why: string, kind: Gap["kind"] = "present"): Gap => ({
+  file: "SKILL.md",
+  line,
+  rule,
+  kind,
+  why,
+});
+
+/** What a craft answer judges: the style text's rules and the craft list's reader properties. */
+const JUDGED = [...Array.from({ length: 20 }, (_, n) => `S${n + 1}`), "C1", "C3"];
+
+/** A craft answer holding `gaps`: each rule of JUDGED met, but those the gaps name, judged gap. */
+function craftReply(gaps: readonly Gap[]): string {
+  const gapped = new Set(gaps.map((each) => each.rule));
+  return JSON.stringify({
+    judged: JUDGED.map((rule) => ({ rule, verdict: gapped.has(rule) ? "gap" : "met" })),
+    gaps,
+  });
+}
+
+/** The system text and the user text of a request body. */
+function bodyTexts(body: { [field: string]: unknown }): { system: string; user: string } {
+  const system = (body.system as { text: string }[] | undefined)?.[0]?.text ?? "";
+  const messages = body.messages as { content: { text: string }[] }[] | undefined;
+  return { system, user: messages?.[0]?.content[0]?.text ?? "" };
+}
+
+/** Each request since `from`, as the name of its prompt and its user text. */
+function readerRequests(from: number): { prompt: string; user: string }[] {
+  return requestsSince(from).map((request) => {
+    const { system, user } = bodyTexts(JSON.parse(request.body));
+    const prompt = ["craft", "nearest", "claim"].find((name) => loadPrompt(name).text === system);
+    return { prompt: prompt ?? "another prompt", user };
+  });
+}
+
+/** `craft`'s arguments for the skill `skill` and the entry `out`, and `extra`. */
+function craftArgs(skill: string, out: string, ...extra: string[]): string[] {
+  const { config, keyFile } = setup();
+  return [
+    ...["craft", "--config", config, "--key-file", keyFile, "--skill", skill],
+    ...["--style", STYLE, "--style-source", STYLE_SOURCE],
+    ...["--craft", CRAFT_LIST, "--craft-source", LIST_SOURCE, "--out", out, ...extra],
+  ];
+}
+
+describe("craft", () => {
+  // Catches: an entry that cannot say which style text, of which version, its gaps were read
+  // against.
+  test("craft's entry records the style text's source and sha256", async () => {
+    const dir = path.join(scratch, "craft-style");
+    const skill = controlSkill(dir, "tidy-settled-change");
+    const gaps = [gap(39, "S8", "The bold label holds two rules.")];
+    answer = () => craftReply(gaps);
+    const out = path.join(dir, "entry.json");
+    const from = recorder.requests.length;
+    const ran = await cli(craftArgs(skill, out));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const entry = JSON.parse(readFileSync(out, "utf8"));
+    expect(entry.entry).toBe("craft");
+    expect(entry.style).toEqual({
+      file: STYLE,
+      source: STYLE_SOURCE,
+      sha256: sha256(readFileSync(STYLE)),
+      rules: 20,
+    });
+    expect(entry.answer).toEqual(JSON.parse(craftReply(gaps)));
+    expect(entry.reader).toEqual({ prompt: "craft", settings: loadPrompt("craft").settings });
+    expect(entry.refusals).toEqual([]);
+    expect(entry.spent).toHaveLength(1);
+    expect(typeof entry.usd).toBe("number");
+    const requests = readerRequests(from);
+    expect(requests.map((request) => request.prompt)).toEqual(["craft"]);
+    expect(requests[0]?.user).toContain(
+      '<rule id="S19" line="33" part="the check before you commit">\n- No paragraph holds more than one rule.\n</rule>'
+    );
+    expect(ran.stdout).toContain("craft: tidy-settled-change: 1 gap (S8)");
+  }, 30_000);
+
+  // Catches: an entry that cannot say which craft list it read, or a property a behaviour test
+  // checks sent to the reader.
+  test("craft's entry records the craft list's sha256 and sends its reader properties", async () => {
+    const dir = path.join(scratch, "craft-list");
+    const skill = controlSkill(dir, "tidy-settled-change");
+    answer = () => craftReply([]);
+    const out = path.join(dir, "entry.json");
+    const from = recorder.requests.length;
+    const ran = await cli(craftArgs(skill, out));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const entry = JSON.parse(readFileSync(out, "utf8"));
+    expect(entry.craft).toEqual({
+      file: CRAFT_LIST,
+      source: LIST_SOURCE,
+      sha256: sha256(readFileSync(CRAFT_LIST)),
+      readerProperties: ["C1", "C3"],
+    });
+    const [request] = readerRequests(from);
+    expect(request?.user).toContain(
+      '<property id="C1">\n<states>The description says when to use the skill, and never sums up its steps.</states>'
+    );
+    expect(request?.user).toContain('<property id="C3">');
+    expect(request?.user).not.toContain("C2");
+    expect(request?.user).not.toContain("an arm that runs with no skill");
+  }, 30_000);
+
+  // Catches: a nearest skill named in the entry but not sent, or sent without its references.
+  test("craft sends each --nearest skill's files", async () => {
+    const dir = path.join(scratch, "craft-nearest");
+    const skill = controlSkill(path.join(dir, "ours"), "tidy-settled-change");
+    const check = controlSkill(path.join(dir, "theirs"), "check-before-claim");
+    const beta = path.join(dir, "theirs", "beta-skill-one");
+    const betaFiles = {
+      "SKILL.md":
+        "---\nname: beta-skill-one\ndescription: Use for committing a finished change.\n---\n\n1. Stage only the change.\n",
+      "references/r.md": "# R\n\nRead the diff before you stage it.\n",
+    };
+    writeSkill(beta, betaFiles);
+    const gaps = [
+      gap(43, "nearest:check-before-claim:SKILL.md:8", "No step names the check before the claim."),
+    ];
+    answer = () => craftReply(gaps);
+    const out = path.join(dir, "entry.json");
+    const from = recorder.requests.length;
+    const ran = await cli(craftArgs(skill, out, "--nearest", check, "--nearest", beta));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const entry = JSON.parse(readFileSync(out, "utf8"));
+    expect(entry.nearest).toEqual([
+      {
+        name: "check-before-claim",
+        dir: check,
+        files: [
+          { path: "SKILL.md", sha256: sha256(CONTROL_SKILLS["check-before-claim/SKILL.md"] ?? "") },
+        ],
+      },
+      {
+        name: "beta-skill-one",
+        dir: beta,
+        files: [
+          { path: "SKILL.md", sha256: sha256(betaFiles["SKILL.md"]) },
+          { path: "references/r.md", sha256: sha256(betaFiles["references/r.md"]) },
+        ],
+      },
+    ]);
+    expect(entry.answer.gaps).toEqual(gaps);
+    const [request] = readerRequests(from);
+    expect(request?.user).toContain(
+      '<nearest>\n<skill name="check-before-claim">\n<file path="SKILL.md">\n1: ---\n2: name: check-before-claim'
+    );
+    expect(request?.user).toContain(
+      "8: 1. Name the command that proves the claim: the typecheck, the lint, the build or the tests."
+    );
+    expect(request?.user).toContain(
+      '<skill name="beta-skill-one">\n<file path="SKILL.md">\n1: ---\n2: name: beta-skill-one'
+    );
+    expect(request?.user).toContain(
+      '<file path="references/r.md">\n1: # R\n2: \n3: Read the diff before you stage it.\n</file>\n</skill>\n</nearest>'
+    );
+  }, 30_000);
+
+  // Catches: a read of a file the skill does not hold as `.md`, of another skill of ours, or a
+  // second request; and an input file that is not the message sent.
+  test("craft reads every *.md of --skill and no other directory of ours", async () => {
+    const dir = path.join(scratch, "craft-reads");
+    const skill = controlSkill(path.join(dir, "ours"), "tidy-settled-change");
+    controlSkill(path.join(dir, "ours"), "tracker-first");
+    answer = () => craftReply([]);
+    const out = path.join(dir, "entry.json");
+    const from = recorder.requests.length;
+    const ran = await cli(craftArgs(skill, out, "--skill-source", "acme/skills at 1a2b3c4d"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const entry = JSON.parse(readFileSync(out, "utf8"));
+    expect(entry.skill).toEqual({
+      name: "tidy-settled-change",
+      dir: skill,
+      source: "acme/skills at 1a2b3c4d",
+      files: [
+        {
+          path: "SKILL.md",
+          sha256: sha256(CONTROL_SKILLS["tidy-settled-change/SKILL.md"] ?? ""),
+        },
+        {
+          path: "references/reuse-reader.md",
+          sha256: sha256(CONTROL_SKILLS["tidy-settled-change/references/reuse-reader.md"] ?? ""),
+        },
+      ],
+    });
+    expect(entry.nearest).toEqual([]);
+    const requests = readerRequests(from);
+    expect(requests.map((request) => request.prompt)).toEqual(["craft"]);
+    const user = requests[0]?.user ?? "";
+    expect(user).toStartWith('<skill name="tidy-settled-change">\n<file path="SKILL.md">\n1: ---');
+    expect(user).toContain("49: Say what was already sound and what improved.");
+    expect(user).toContain('<file path="references/reuse-reader.md">\n1: # Reuse reader');
+    expect(user).not.toContain("Made-up licence text");
+    expect(user).not.toContain("tracker-first");
+    expect(user).toEndWith("<nearest>\nNone: no nearest skill of theirs was given.\n</nearest>");
+    expect(entry.input).toBe(path.join(dir, "entry.input.md"));
+    expect(readFileSync(path.join(dir, "entry.input.md"), "utf8")).toBe(user);
+  }, 30_000);
+
+  test("craft writes each refusal and a null answer when every reply is refused, and exits 1", async () => {
+    const dir = path.join(scratch, "craft-refused");
+    const skill = controlSkill(dir, "tidy-settled-change");
+    answer = () => craftReply([gap(60, "S8", "Past the end of the file.")]);
+    const out = path.join(dir, "entry.json");
+    const from = recorder.requests.length;
+    const ran = await cli(craftArgs(skill, out));
+    expect(ran.code).toBe(1);
+    const entry = JSON.parse(readFileSync(out, "utf8"));
+    expect(entry.answer).toBeNull();
+    expect(entry.refusals).toHaveLength(READER_TRIES);
+    expect(entry.refusals[0]).toContain("gaps.0.line: is past the last line, 49, of SKILL.md");
+    expect(requestsSince(from)).toHaveLength(READER_TRIES);
+    expect(ran.stderr).toContain("craft: the craft reader's answer was refused");
+  }, 30_000);
+
+  test("craft refuses a style text with no rule, a craft list the shape refuses, a --skill with no SKILL.md and a missing source, before any call", async () => {
+    const dir = path.join(scratch, "craft-refusals");
+    const skill = controlSkill(dir, "tidy-settled-change");
+    const noRules = path.join(dir, "no-rules.md");
+    writeFileSync(noRules, "# Notes\n\nNo table and no rules here.\n");
+    const twice = path.join(dir, "twice.json");
+    const list = JSON.parse(readFileSync(CRAFT_LIST, "utf8"));
+    list.properties[2].id = "C1";
+    writeFileSync(twice, JSON.stringify(list));
+    const notSkill = path.join(dir, "not-a-skill");
+    mkdirSync(notSkill, { recursive: true });
+    const out = path.join(dir, "entry.json");
+    const from = recorder.requests.length;
+    const swap = (args: string[], flag: string, value: string) =>
+      args.map((arg, at) => (args[at - 1] === flag ? value : arg));
+    for (const [args, why] of [
+      [swap(craftArgs(skill, out), "--style", noRules), "the style text"],
+      [swap(craftArgs(skill, out), "--craft", twice), "gives the id C1 twice"],
+      [craftArgs(notSkill, out), "has no SKILL.md"],
+      [craftArgs(skill, out, "--nearest", notSkill), "has no SKILL.md"],
+      [
+        craftArgs(skill, out).filter(
+          (arg, at, all) => arg !== "--style-source" && all[at - 1] !== "--style-source"
+        ),
+        "--style-source required",
+      ],
+    ] as const) {
+      const ran = await cli(args);
+      expect({ why, code: ran.code, says: ran.stderr.includes(why) }).toEqual({
+        why,
+        code: 2,
+        says: true,
+      });
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(existsSync(out)).toBe(false);
+  }, 60_000);
+});
+
+describe("nearest", () => {
+  /** Their skill, whose folded description spans two lines and holds colons, and two roots of
+   *  ours: each holds a skill named ours-one, and the second's description is two lines kept. */
+  function nearestScenario(name: string) {
+    const dir = path.join(scratch, name);
+    const skill = path.join(dir, "theirs", "verify-first");
+    writeSkill(skill, {
+      "SKILL.md":
+        "---\nname: verify-first\ndescription: >-\n  Use when about to say that work is done: run the checks first,\n  and report: what ran, and what it showed.\n---\n\n# Verify first\n\n1. Run the checks.\n",
+    });
+    const rootA = path.join(dir, "ours-a");
+    const rootB = path.join(dir, "ours-b");
+    writeSkill(rootA, {
+      "ours-one/SKILL.md":
+        '---\nname: ours-one\ndescription: "Use when a task asks for the alpha checklist: every step."\n---\n',
+      "tidy/SKILL.md":
+        "---\nname: tidy\ndescription: Use when a change is done and before review.\n---\n",
+      "notes/README.md": "No skill here.\n",
+    });
+    writeSkill(rootB, {
+      "ours-one/SKILL.md":
+        "---\nname: ours-one\ndescription: |-\n  Use when a session ends.\n  Check the work first.\n---\n",
+      "ours-two/SKILL.md": "---\nname: ours-two\ndescription: Use to greet.\n---\n",
+    });
+    const { config, keyFile } = setup();
+    const out = path.join(dir, "row.json");
+    const args = [
+      ...["nearest", "--config", config, "--key-file", keyFile, "--skill", skill],
+      ...["--skill-source", "acme/alpha-set at 2ce8aa15"],
+      ...["--candidates", `acme/skills at 1a2b3c4d=${rootA}`],
+      ...["--candidates", `acme/dotfiles at 5e6f7a8b=${rootB}`, "--out", out],
+    ];
+    return { dir, skill, rootA, rootB, out, args };
+  }
+  const THEIR_DESCRIPTION =
+    "Use when about to say that work is done: run the checks first, and report: what ran, and what it showed.";
+
+  // Catches: a description cut at its first line or at a colon, in the request or the row, or a
+  // named skill of ours given another root's description.
+  test("nearest-theirs rows quote both descriptions whole", async () => {
+    const s = nearestScenario("nearest-whole");
+    const reply = {
+      verdict: "partial",
+      nearest: [
+        {
+          name: "ours-one",
+          source: "acme/dotfiles at 5e6f7a8b",
+          verdict: "partial",
+          missing: "the report of what ran",
+          reason: "It checks the work before a session ends.",
+        },
+      ],
+      reason: "One skill of ours checks the work, and none reports it.",
+    };
+    answer = () => JSON.stringify(reply);
+    const from = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const row = JSON.parse(readFileSync(s.out, "utf8"));
+    expect(row.skill).toEqual({
+      name: "verify-first",
+      description: THEIR_DESCRIPTION,
+      source: "acme/alpha-set at 2ce8aa15",
+      dir: s.skill,
+    });
+    expect(row.answer).toEqual(reply);
+    expect(row.nearest).toEqual([
+      { ...reply.nearest[0], description: "Use when a session ends.\nCheck the work first." },
+    ]);
+    expect(row.candidates).toEqual([
+      { source: "acme/skills at 1a2b3c4d", root: s.rootA, skills: 2 },
+      { source: "acme/dotfiles at 5e6f7a8b", root: s.rootB, skills: 2 },
+    ]);
+    const [request] = readerRequests(from);
+    expect(request?.prompt).toBe("nearest");
+    expect(request?.user).toStartWith(
+      `<skill name="verify-first">\n<description>\n${THEIR_DESCRIPTION}\n</description>\n<body>\n# Verify first\n\n1. Run the checks.\n</body>\n</skill>`
+    );
+    expect(request?.user).toContain(
+      '<candidate name="ours-one" source="acme/skills at 1a2b3c4d">\nUse when a task asks for the alpha checklist: every step.\n</candidate>'
+    );
+    expect(request?.user).toContain(
+      '<candidate name="ours-one" source="acme/dotfiles at 5e6f7a8b">\nUse when a session ends.\nCheck the work first.\n</candidate>'
+    );
+    expect(request?.user).not.toContain("No skill here.");
+    expect(ran.stdout).toContain(
+      "nearest: verify-first: partial: ours-one (acme/dotfiles at 5e6f7a8b)"
+    );
+  }, 30_000);
+
+  test("a none answer's row names no skill of ours, and its reason", async () => {
+    const s = nearestScenario("nearest-none");
+    const reply = { verdict: "none", nearest: [], reason: "No skill of ours checks work first." };
+    answer = () => JSON.stringify(reply);
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const row = JSON.parse(readFileSync(s.out, "utf8"));
+    expect(row.answer).toEqual(reply);
+    expect(row.nearest).toEqual([]);
+    expect(row.skill.description).toBe(THEIR_DESCRIPTION);
+    expect(ran.stdout).toContain("nearest: verify-first: none");
+  }, 30_000);
+
+  test("a --candidates that is not <source>=<root>, or a root with no skill, is refused before any call", async () => {
+    const s = nearestScenario("nearest-refused");
+    const from = recorder.requests.length;
+    const bare = await cli(s.args.map((arg) => (arg.endsWith(s.rootA) ? s.rootA : arg)));
+    expect(bare.code).toBe(2);
+    expect(bare.stderr).toContain(`--candidates ${s.rootA} is not <source>=<root>`);
+    const empty = path.join(s.dir, "empty-root");
+    mkdirSync(empty, { recursive: true });
+    const none = await cli(s.args.map((arg) => (arg.endsWith(s.rootA) ? `acme/x=${empty}` : arg)));
+    expect(none.code).toBe(2);
+    expect(none.stderr).toContain(`holds no <name>/SKILL.md`);
+    expect(requestsSince(from)).toHaveLength(0);
+  }, 30_000);
+});
+
+describe("control craft", () => {
+  const CLAIM_CHECK =
+    "the skill has no check that runs the typecheck, the lint, the build or the tests before the summary of Step 5";
+  const CLAIM_38 = "line 38 holds more than one rule";
+
+  /** The stand-in of a control: a craft request on the unchanged skill (its text holds
+   *  `originalMarker`) gets `original`'s gaps, one on the copy `copy`'s; a claim request says the
+   *  gap states the claim when `states` holds for its words. */
+  function controlStandIn(given: {
+    copy: readonly Gap[];
+    original: readonly Gap[];
+    originalMarker: string;
+    states?: (why: string) => boolean;
+  }) {
+    const claimPrompt = loadPrompt("claim").text;
+    return (body: { [field: string]: unknown }) => {
+      const { system, user } = bodyTexts(body);
+      if (system === claimPrompt) {
+        const why = /<gap [^>]*>\n([\s\S]*?)\n<\/gap>/.exec(user)?.[1] ?? "";
+        const states = given.states?.(why) ?? false;
+        return JSON.stringify({ states, reason: `${states ? "It says" : "It does not say"} so.` });
+      }
+      return craftReply(user.includes(given.originalMarker) ? given.original : given.copy);
+    };
+  }
+
+  /** `control craft`'s arguments on the control skill `name`, written under a fresh directory
+   *  `dir`, with `change` (the change and each side's criteria). */
+  function controlArgs(dir: string, name: string, ...change: string[]) {
+    const { config, keyFile } = setup();
+    const skill = controlSkill(path.join(dir, "ours"), name);
+    const nearest = controlSkill(path.join(dir, "theirs"), "check-before-claim");
+    const out = path.join(dir, "out");
+    return {
+      skill,
+      out,
+      args: [
+        ...["control", "craft", ...change, "--config", config, "--key-file", keyFile],
+        ...["--skill", skill, "--style", STYLE, "--style-source", STYLE_SOURCE],
+        ...["--craft", CRAFT_LIST, "--craft-source", LIST_SOURCE, "--nearest", nearest],
+        ...["--out", out],
+      ],
+    };
+  }
+
+  /** Controls (1) and (2): tidy-settled-change less its Step 4; the copy's lines 31 to 43 and any
+   *  line of the unchanged skill, each with the claim that the check is missing. */
+  const REMOVE = [
+    ...[
+      "--remove-section",
+      "## Step 4: Verify",
+      "--copy-line",
+      "31-43",
+      "--copy-claim",
+      CLAIM_CHECK,
+    ],
+    ...["--original-line", "all", "--original-claim", CLAIM_CHECK],
+  ];
+  /** Controls (3) and (4): tracker-first with its lines 37 to 39 joined; a present gap at the
+   *  copy's line 37 against the paragraph rule (S19), and the unchanged skill's line 38 with the
+   *  claim that it holds two rules. */
+  const JOIN = [
+    ...["--join-lines", "37-39", "--copy-line", "37", "--copy-kind", "present"],
+    ...["--copy-rule", "S19", "--original-line", "38", "--original-claim", CLAIM_38],
+  ];
+  const STEP_4 = "## Step 4: Verify";
+  const LINE_38 = "38: - A result a person asked for is the same";
+  /** The copy's gap at line 43, its Step 5's summary: it reports check outcomes no step makes. */
+  const OUTCOMES = gap(43, "S9", "Step 5 reports check outcomes that no step produces.");
+
+  /** Runs a control, and gives its exit status, its output, its control.json and the prompts of
+   *  its requests. */
+  async function runControl(c: { out: string; args: string[] }) {
+    const from = recorder.requests.length;
+    const ran = await cli(c.args);
+    const control = existsSync(path.join(c.out, "control.json"))
+      ? JSON.parse(readFileSync(path.join(c.out, "control.json"), "utf8"))
+      : undefined;
+    return { ...ran, control, prompts: readerRequests(from).map((request) => request.prompt) };
+  }
+
+  // Catches: a control that holds on a copy with no candidate that states its claim, or on an
+  // unchanged skill with one.
+  test("control craft holds only when the copy has a candidate that states its claim and the unchanged skill has none", async () => {
+    const states = (why: string) => why === OUTCOMES.why;
+    const held = controlArgs(path.join(scratch, "control-holds"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({ copy: [OUTCOMES], original: [], originalMarker: STEP_4, states });
+    const ran = await runControl(held);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.control.held).toBe(true);
+    expect(ran.prompts.toSorted()).toEqual(["claim", "craft", "craft"]);
+    expect(ran.stdout).toContain("control craft: held");
+    expect(ran.control.copy.candidates).toEqual([
+      {
+        gap: OUTCOMES,
+        claim: {
+          states: true,
+          reason: "It says so.",
+          file: path.join(held.out, "claims", "copy-1.json"),
+        },
+      },
+    ]);
+    expect(ran.control.original.candidates).toEqual([]);
+
+    const noCandidate = controlArgs(
+      path.join(scratch, "control-none"),
+      "tidy-settled-change",
+      ...REMOVE
+    );
+    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4, states });
+    const none = await runControl(noCandidate);
+    expect(none.code).toBe(1);
+    expect(none.control.held).toBe(false);
+    expect(none.stderr).toContain("control craft: not held: the copy has no candidate");
+
+    const both = controlArgs(path.join(scratch, "control-both"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({
+      copy: [OUTCOMES],
+      original: [OUTCOMES],
+      originalMarker: STEP_4,
+      states,
+    });
+    const failed = await runControl(both);
+    expect(failed.code).toBe(1);
+    expect(failed.control.copy.holds).toBe(true);
+    expect(failed.control.original.holds).toBe(false);
+  }, 60_000);
+
+  test("(1) a copy nearest: gap within 31-43 that the claim reader says states the claim holds", async () => {
+    const nearestGap = gap(
+      40,
+      "nearest:check-before-claim:SKILL.md:8",
+      "No step runs the check that the nearest skill's line 8 names before the summary.",
+      "missing"
+    );
+    const c = controlArgs(
+      path.join(scratch, "control-1-nearest"),
+      "tidy-settled-change",
+      ...REMOVE
+    );
+    answer = controlStandIn({
+      copy: [nearestGap],
+      original: [],
+      originalMarker: STEP_4,
+      states: (why) => why === nearestGap.why,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 0, held: true });
+    const claim = JSON.parse(readFileSync(path.join(c.out, "claims", "copy-1.json"), "utf8"));
+    expect(claim.input).toMatchObject({ claim: CLAIM_CHECK, gap: nearestGap });
+    expect(claim.answer).toEqual({ states: true, reason: "It says so." });
+    expect(readFileSync(path.join(c.out, "claims", "copy-1.input.md"), "utf8")).toContain(
+      `<claim>\n${CLAIM_CHECK}\n</claim>`
+    );
+  }, 30_000);
+
+  test("(1) a copy present gap at line 43 (Step 5 reports check outcomes no step produces) that states the claim holds", async () => {
+    const c = controlArgs(path.join(scratch, "control-1-43"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({
+      copy: [OUTCOMES],
+      original: [],
+      originalMarker: STEP_4,
+      states: (why) => why === OUTCOMES.why,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 0, held: true });
+    expect(ran.stdout).toContain(
+      "  SKILL.md:43 present S9: Step 5 reports check outcomes that no step produces. (states the claim: It says so.)"
+    );
+  }, 30_000);
+
+  test("(1) a copy gap at the top (a missing Done when line) is no candidate", async () => {
+    const c = controlArgs(path.join(scratch, "control-1-top"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({
+      copy: [gap(7, "S2", "No Done when line follows the goal.", "missing")],
+      original: [],
+      originalMarker: STEP_4,
+      states: () => true,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 1, held: false });
+    expect(ran.control.copy.candidates).toEqual([]);
+    expect(ran.prompts).toEqual(["craft", "craft"]);
+  }, 30_000);
+
+  test("(1) a copy candidate the claim reader says does not state the claim does not hold", async () => {
+    const c = controlArgs(path.join(scratch, "control-1-not"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({
+      copy: [gap(35, "S8", "The item holds a rule and its exception.")],
+      original: [],
+      originalMarker: STEP_4,
+      states: () => false,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 1, held: false });
+    expect(ran.control.copy.why).toBe("no candidate of the copy states the claim (1 candidate)");
+    expect(ran.prompts.toSorted()).toEqual(["claim", "craft", "craft"]);
+  }, 30_000);
+
+  test("(2) an unchanged-skill gap at line 43 about which tests Step 4 runs, which the claim reader says does not state the claim, holds", async () => {
+    const which = gap(43, "C1", "Step 4 does not say which tests cover the changed code.");
+    const doneWhen = gap(7, "S2", "No Done when line follows the goal.", "missing");
+    const c = controlArgs(path.join(scratch, "control-2-which"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({
+      copy: [OUTCOMES],
+      original: [which, doneWhen],
+      originalMarker: STEP_4,
+      states: (why) => why === OUTCOMES.why,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 0, held: true });
+    expect(ran.control.original.candidates.map((each: { gap: Gap }) => each.gap)).toEqual([
+      which,
+      doneWhen,
+    ]);
+    expect(ran.control.original.why).toBe(
+      "no candidate of the unchanged skill states the claim (2 candidates)"
+    );
+    expect(ran.prompts.toSorted()).toEqual(["claim", "claim", "claim", "craft", "craft"]);
+  }, 30_000);
+
+  test("(2) an unchanged-skill gap anywhere that states the claim fails", async () => {
+    const missing = gap(12, "S8", "The skill has no check before its summary.");
+    const c = controlArgs(path.join(scratch, "control-2-states"), "tidy-settled-change", ...REMOVE);
+    answer = controlStandIn({
+      copy: [OUTCOMES],
+      original: [missing],
+      originalMarker: STEP_4,
+      states: (why) => why === OUTCOMES.why || why === missing.why,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 1, held: false });
+    expect(ran.control.original.why).toBe(
+      "a candidate of the unchanged skill states the claim: SKILL.md:12"
+    );
+  }, 30_000);
+
+  test("(3) a copy gap at line 37 against the paragraph rule holds with no claim reader call", async () => {
+    const c = controlArgs(path.join(scratch, "control-3"), "tracker-first", ...JOIN);
+    answer = controlStandIn({
+      copy: [gap(37, "S19", "The paragraph holds three rules.")],
+      original: [
+        gap(37, "S8", "The item holds two rules."),
+        gap(39, "S8", "The item holds two rules."),
+      ],
+      originalMarker: LINE_38,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 0, held: true });
+    expect(ran.prompts).toEqual(["craft", "craft"]);
+    expect(ran.control.copy.why).toBe("the copy has a candidate: SKILL.md:37");
+    expect(ran.control.original.why).toBe("the unchanged skill has no candidate");
+  }, 30_000);
+
+  test("(4) a line-38 gap about a missing bold label, which does not state the claim, holds", async () => {
+    const label = gap(38, "S8", "The item does not start with a bold label.");
+    const c = controlArgs(path.join(scratch, "control-4-label"), "tracker-first", ...JOIN);
+    answer = controlStandIn({
+      copy: [gap(37, "S19", "The paragraph holds three rules.")],
+      original: [label],
+      originalMarker: LINE_38,
+      states: () => false,
+    });
+    const ran = await runControl(c);
+    expect({ code: ran.code, held: ran.control.held }).toEqual({ code: 0, held: true });
+    expect(ran.prompts.toSorted()).toEqual(["claim", "craft", "craft"]);
+  }, 30_000);
+
+  test("(4) a line-38 gap that states line 38 holds two rules fails, whatever its rule", async () => {
+    for (const rule of ["S9", "C1", "nearest:check-before-claim:SKILL.md:9"]) {
+      const two = gap(38, rule, "Line 38 holds two rules: end with an ask, and ask the next step.");
+      const c = controlArgs(
+        path.join(scratch, `control-4-two-${rule.replaceAll(":", "_")}`),
+        "tracker-first",
+        ...JOIN
+      );
+      answer = controlStandIn({
+        copy: [gap(37, "S19", "The paragraph holds three rules.")],
+        original: [two],
+        originalMarker: LINE_38,
+        states: (why) => why === two.why,
+      });
+      const ran = await runControl(c);
+      expect({ rule, code: ran.code, held: ran.control.held }).toEqual({
+        rule,
+        code: 1,
+        held: false,
+      });
+    }
+  }, 60_000);
+
+  // Catches: a copy that removes too much or too little, or a joined paragraph that keeps the
+  // list markers.
+  test("--remove-section and --join-lines write the copies D15 names, --join-lines removing the list markers", async () => {
+    const removed = controlArgs(
+      path.join(scratch, "control-copy-remove"),
+      "tidy-settled-change",
+      ...REMOVE
+    );
+    answer = controlStandIn({ copy: [], original: [], originalMarker: STEP_4 });
+    await runControl(removed);
+    const original = (CONTROL_SKILLS["tidy-settled-change/SKILL.md"] ?? "").split("\n");
+    const copyDir = path.join(removed.out, "copy", "tidy-settled-change");
+    expect(readFileSync(path.join(copyDir, "SKILL.md"), "utf8")).toBe(
+      [...original.slice(0, 40), ...original.slice(46)].join("\n")
+    );
+    expect(readFileSync(path.join(copyDir, "references", "reuse-reader.md"), "utf8")).toBe(
+      CONTROL_SKILLS["tidy-settled-change/references/reuse-reader.md"]
+    );
+    for (const file of ["copy.json", "copy.input.md", "original.json", "original.input.md"]) {
+      expect({ file, written: existsSync(path.join(removed.out, file)) }).toEqual({
+        file,
+        written: true,
+      });
+    }
+
+    const joined = controlArgs(path.join(scratch, "control-copy-join"), "tracker-first", ...JOIN);
+    answer = controlStandIn({ copy: [], original: [], originalMarker: LINE_38 });
+    await runControl(joined);
+    const lines = (CONTROL_SKILLS["tracker-first/SKILL.md"] ?? "").split("\n");
+    expect(readFileSync(path.join(joined.out, "copy", "tracker-first", "SKILL.md"), "utf8")).toBe(
+      [
+        ...lines.slice(0, 36),
+        lines
+          .slice(36, 39)
+          .map((line) => line.replace(/^- /, ""))
+          .join(" "),
+        ...lines.slice(39),
+      ].join("\n")
+    );
+    expect(lines[36]).toStartWith("- The moment a person blocks your work");
+
+    // A heading the skill does not hold, or a range that is not list items, is refused before
+    // any call.
+    const from = recorder.requests.length;
+    const noHeading = controlArgs(
+      path.join(scratch, "control-copy-refused-1"),
+      "tidy-settled-change",
+      ...REMOVE.map((arg) => (arg === "## Step 4: Verify" ? "## Step 9: Ship" : arg))
+    );
+    const refusedHeading = await cli(noHeading.args);
+    expect(refusedHeading.code).toBe(2);
+    expect(refusedHeading.stderr).toContain("no line of SKILL.md is the heading ## Step 9: Ship");
+    const notItems = controlArgs(
+      path.join(scratch, "control-copy-refused-2"),
+      "tracker-first",
+      ...JOIN.map((arg) => (arg === "37-39" ? "35-37" : arg))
+    );
+    const refusedItems = await cli(notItems.args);
+    expect(refusedItems.code).toBe(2);
+    expect(refusedItems.stderr).toContain("line 35 of SKILL.md is no list item");
+    const both = controlArgs(
+      path.join(scratch, "control-copy-refused-3"),
+      "tracker-first",
+      ...JOIN,
+      "--remove-section",
+      "## Which skill to read"
+    );
+    const refusedBoth = await cli(both.args);
+    expect(refusedBoth.code).toBe(2);
+    expect(refusedBoth.stderr).toContain("give one of --remove-section and --join-lines");
+    expect(requestsSince(from)).toHaveLength(0);
+  }, 60_000);
 });
