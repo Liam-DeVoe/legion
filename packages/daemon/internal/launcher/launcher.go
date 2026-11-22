@@ -360,7 +360,9 @@ func (m *manager) serveUntil(ctx context.Context, address string) error {
 	}
 }
 
-// logf writes one line of this role's log, behind its own prefix in an issue pod's container.
+// logf writes one line of this slot's log, behind its own prefix in an issue pod's container: the
+// slot's name (its --role), which is the name of the agent that runs in it, whatever role that
+// agent's step is on.
 func (m *manager) logf(format string, args ...any) {
 	if m.stderr == nil {
 		return
@@ -1256,12 +1258,13 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 	return dir, nil
 }
 
-// roleLog is the one container log an issue pod's roles share: every line a role's launcher or
-// its child writes carries that role's name, since `kubectl logs` shows one log for the pod's
-// roles where one container per role showed six. Whole lines are written under one lock, so two
-// roles never interleave inside a line. Each writer holds its own unfinished line, so the
-// launcher's lines for a role and each generation of its child are written through writers of
-// their own, and none is ever joined to another's unfinished line. stdout and stderr are the
+// roleLog is the one container log an issue pod's slots share: every line a slot's launcher or
+// its child writes carries that slot's name (its --role, the name of the agent that runs in it,
+// whatever role its step is on), since `kubectl logs` shows one log for the pod's slots where one
+// container per role showed six. Whole lines are written under one lock, so two slots never
+// interleave inside a line. Each writer holds its own unfinished line, so the launcher's lines for
+// a slot and each generation of its child are written through writers of their own, and none is
+// ever joined to another's unfinished line. stdout and stderr are the
 // container's behind the URL rule (newManagers): each line reaches them in one write, so the rule
 // reads it whole, a child's lines among them however its pipe was read, but for a line longer than
 // maxLogLine, which reaches them where logLineCut cuts it.
