@@ -840,6 +840,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
 		{"a seed as the app private key secret key", "appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = seed }},
 		{"a lowercase seed inside apiV1End", "apiV1End", func(a *gcp.DispatchArgs) { a.ApiV1End = "2027-01-01T00:00:00Z" + lower }},
+		{"a seed in the consumer-name setting", "consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh-" + seed }},
 		{"a seed in the Azure federation audience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://" + lower)
