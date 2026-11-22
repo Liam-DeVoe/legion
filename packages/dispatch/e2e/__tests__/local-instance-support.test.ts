@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { closeSync, constants, openSync, writeSync } from "node:fs";
+import { closeSync, constants, openSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FakeDispatchServer,
@@ -37,14 +37,24 @@ function groupAlive(pgid: number): boolean {
 
 /** The pid a real child process writes to `path` as one whole line, as `echo` writes it: a file
  *  not yet ending in its newline is not read as a pid. A write another process makes raises no
- *  event here, so the file is read until it holds one. */
+ *  event here, so the file is read until it holds one. That line must be a whole number above 1,
+ *  or this throws, naming it, before any row signals it: the rows signal the pid and its group
+ *  (`-pid`), and `process.kill` reads 0 as this process's own group, -1 as every process it may
+ *  signal and 1 as init, so no signal is sent on a pid this cannot read. */
 async function pidFrom(path: string): Promise<number> {
-  const read = () =>
-    Bun.file(path)
+  let text = "";
+  await eventually(`a line in ${path}`, async () => {
+    text = await Bun.file(path)
       .text()
       .catch(() => "");
-  await eventually(`a pid in ${path}`, async () => /^\d+\n$/u.test(await read()));
-  return Number(await read());
+    return text.endsWith("\n");
+  });
+  const line = text.slice(0, -1);
+  const pid = /^[0-9]+$/u.test(line) ? Number(line) : 0;
+  if (pid <= 1) {
+    throw new Error(`the pid in ${path} could not be read from ${JSON.stringify(line)}`);
+  }
+  return pid;
 }
 
 function processAlive(pid: number): boolean {
@@ -373,6 +383,39 @@ describe("Supervisor.stop", () => {
     rowLimit("short", "short")
   );
 });
+
+test(
+  "pidFrom refuses a line that is no whole number above 1, before any row signals it: 0, an empty line, -1 and 1 are refused, and a whole number above 1 is read",
+  async () => {
+    const directory = makeDirectory();
+    const read: unknown[] = [];
+    for (const [name, line] of [
+      ["zero", "0\n"],
+      ["empty", "\n"],
+      ["minus-one", "-1\n"],
+      ["one", "1\n"],
+      ["real", "4242\n"],
+    ] as const) {
+      const path = join(directory, `${name}.pid`);
+      writeFileSync(path, line);
+      try {
+        read.push(await pidFrom(path));
+      } catch (error) {
+        read.push(String(error).replace(directory, "<dir>"));
+      }
+    }
+    expect(read).toEqual([
+      `Error: the pid in <dir>/zero.pid could not be read from "0"`,
+      `Error: the pid in <dir>/empty.pid could not be read from ""`,
+      `Error: the pid in <dir>/minus-one.pid could not be read from "-1"`,
+      `Error: the pid in <dir>/one.pid could not be read from "1"`,
+      4242,
+    ]);
+  },
+  // Five reads of a pid, each a wait the short bound of `eventually` ends, though every file
+  // holds its whole line before its read starts.
+  rowLimit("short", "short", "short", "short", "short")
+);
 
 describe("Supervisor.untilInterrupted", () => {
   test("handles the step it was given after an interrupt, so nothing goes unhandled", async () => {
