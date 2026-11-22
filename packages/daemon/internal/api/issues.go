@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -21,10 +22,44 @@ type IssueStatusRequest struct {
 	Parent   string `json:"parent,omitempty"`
 }
 
-// IssueStatusResponse confirms the controller's status call committed: its write is queued and
-// counted on the record of an issue the daemon records, so an issue the controller parks stops
-// before the answer, not when the move's event comes back through the Dispatch consumer.
-type IssueStatusResponse struct{}
+// StatusCallResponse is the answer of a status call that writes one issue's status, the
+// controller's set_status and an architect's rerun_child, once the call's transaction has
+// committed: each status write the call queued, in the order it queued them (decision 5 of
+// dispatch://INFRA-4730), none where the call writes no status (a todo on an issue in Legion's
+// work). Each write is counted on the record of an issue the daemon records before Dispatch echoes
+// it, so an issue the controller parks stops before the answer, and Dispatch takes it when its row
+// runs. A caller below the contract that names the writes (chainContract) is served the empty
+// object it has always read (shapeAnswer).
+type StatusCallResponse struct {
+	Queued []QueuedStatusWrite `json:"queued"`
+}
+
+// MarshalJSON keeps `queued` an array on the wire, empty rather than `null`.
+func (sr StatusCallResponse) MarshalJSON() ([]byte, error) {
+	type wire StatusCallResponse
+	out := wire(sr)
+	if out.Queued == nil {
+		out.Queued = []QueuedStatusWrite{}
+	}
+	return json.Marshal(out)
+}
+
+// QueuedStatusWrite is one status write a status call queued (intake.QueuedWrite): its issue, the
+// status the write gives it, and the outbox row that writes it, which runs on the issue's own lane.
+type QueuedStatusWrite struct {
+	Issue  string `json:"issue"`
+	Status string `json:"status"`
+	Row    int64  `json:"row"`
+}
+
+// queuedOf is the writes result queued, as an answer names them.
+func queuedOf(result intake.Result) []QueuedStatusWrite {
+	queued := make([]QueuedStatusWrite, len(result.Queued))
+	for i, write := range result.Queued {
+		queued[i] = QueuedStatusWrite{Issue: write.Issue, Status: write.Status, Row: write.Row}
+	}
+	return queued
+}
 
 // issueStatus is the controller's set_status. It reads the issue, and each issue above it on its
 // Dispatch chain, from Dispatch, and applies one call that brings the copy of Dispatch's issues up
@@ -77,7 +112,9 @@ func (s *server) issueStatus(w http.ResponseWriter, r *http.Request) {
 	if _, ok := reads.issue(w, r, req.Issue); !ok {
 		return
 	}
-	s.applyStatusCall(w, r, "issues/status", intake.StatusCall{Op: intake.SetStatusCall,
+	if result, ok := s.applyStatusCall(w, r, "issues/status", intake.StatusCall{Op: intake.SetStatusCall,
 		Issues:   []intake.StatusCallIssue{{Key: req.Issue, Status: req.Status, Children: req.Children, Parent: req.Parent}},
-		Readings: reads.readings(r.Context(), []string{req.Issue})}, IssueStatusResponse{})
+		Readings: reads.readings(r.Context(), []string{req.Issue})}); ok {
+		s.writeAnswer(w, r, AnswerStatusCall, http.StatusOK, StatusCallResponse{Queued: queuedOf(result)})
+	}
 }

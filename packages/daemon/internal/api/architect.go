@@ -73,17 +73,31 @@ type WaveReleaseRequest struct {
 // child the tree's closed design gate withholds is in released alone: the gate, not a blocker,
 // holds it, its phase starts when the gate opens, and calling it started would be a lie. Both
 // lists follow the request's own order.
+//
+// queued names each status write the release queued, in the wave's order (decision 5 of
+// dispatch://INFRA-4730): each child it writes todo, which Dispatch takes when the child's row
+// runs. A caller below the contract that names the writes (chainContract) is served the answer
+// without it, as it has always read it (shapeAnswer, queuedHidden).
 type WaveReleaseResponse struct {
-	Released []string    `json:"released"`
-	Started  []string    `json:"started"`
-	Held     []HeldChild `json:"held"`
+	Released []string            `json:"released"`
+	Started  []string            `json:"started"`
+	Held     []HeldChild         `json:"held"`
+	Queued   []QueuedStatusWrite `json:"queued"`
+	// queuedHidden leaves `queued` off the wire, for a caller below chainContract.
+	queuedHidden bool
 }
 
-// MarshalJSON keeps `released`, `started` and `held` arrays on the wire, empty rather than `null`:
-// the plugin's parse of this answer refuses a null where it reads an array.
+// MarshalJSON keeps `released`, `started`, `held` and `queued` arrays on the wire, empty rather
+// than `null`: the plugin's parse of this answer refuses a null where it reads an array. `queued`
+// is left off for a caller that does not read it (queuedHidden).
 func (wr WaveReleaseResponse) MarshalJSON() ([]byte, error) {
-	type wire WaveReleaseResponse
-	out := wire(wr)
+	type wire struct {
+		Released []string             `json:"released"`
+		Started  []string             `json:"started"`
+		Held     []HeldChild          `json:"held"`
+		Queued   *[]QueuedStatusWrite `json:"queued,omitempty"`
+	}
+	out := wire{Released: wr.Released, Started: wr.Started, Held: wr.Held}
 	if out.Released == nil {
 		out.Released = []string{}
 	}
@@ -92,6 +106,13 @@ func (wr WaveReleaseResponse) MarshalJSON() ([]byte, error) {
 	}
 	if out.Held == nil {
 		out.Held = []HeldChild{}
+	}
+	if !wr.queuedHidden {
+		queued := wr.Queued
+		if queued == nil {
+			queued = []QueuedStatusWrite{}
+		}
+		out.Queued = &queued
 	}
 	return json.Marshal(out)
 }
@@ -920,26 +941,24 @@ func (s *server) listedIssues(ctx context.Context) (map[string]dispatch.IssueSum
 	return listed, nil
 }
 
-// applyStatusCall applies a route's status call (intake.StatusCall) and answers its refusal or,
-// once it committed, response.
-func (s *server) applyStatusCall(w http.ResponseWriter, r *http.Request, route string, call intake.StatusCall, response any) bool {
+// applyStatusCall applies a route's status call (intake.StatusCall) and answers its refusal. It
+// reports the call's result, and true, once the call committed with no refusal, for the route to
+// answer.
+func (s *server) applyStatusCall(w http.ResponseWriter, r *http.Request, route string, call intake.StatusCall) (intake.Result, bool) {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
-		return false
+		return intake.Result{}, false
 	}
 	result, err := s.apply(r.Context(), "api", requestFactID(route), call)
 	switch {
 	case err != nil:
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the call")
-		return false
+		return intake.Result{}, false
 	case result.Refusal != nil:
 		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
-		return false
+		return intake.Result{}, false
 	}
-	if response != nil {
-		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, response)
-	}
-	return true
+	return result, true
 }
 
 // waveRelease releases children under the architect's own issue into Legion's work (R19 of
@@ -1018,7 +1037,8 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		call.Issues = append(call.Issues, issue)
 	}
-	if !s.applyStatusCall(w, r, "waves/release", call, nil) {
+	result, ok := s.applyStatusCall(w, r, "waves/release", call)
+	if !ok {
 		return
 	}
 	// A todo child the call left unrecorded because a repository it or its parent chain resolves
@@ -1045,7 +1065,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read what the released children wait on")
 		return
 	}
-	s.writeAnswer(w, r, AnswerWaveRelease, http.StatusOK, WaveReleaseResponse{Released: req.Issues, Started: started, Held: held})
+	s.writeAnswer(w, r, AnswerWaveRelease, http.StatusOK, WaveReleaseResponse{Released: req.Issues, Started: started, Held: held, Queued: queuedOf(result)})
 }
 
 // releaseWrites says whether release_children writes todo on a child Dispatch shows at status:
@@ -1396,9 +1416,11 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 	if _, ok := reads.issue(w, r, req.Issue); !ok {
 		return
 	}
-	s.applyStatusCall(w, r, "children/rerun", intake.StatusCall{Op: intake.RerunChildCall, Architect: grant.Claim,
+	if result, ok := s.applyStatusCall(w, r, "children/rerun", intake.StatusCall{Op: intake.RerunChildCall, Architect: grant.Claim,
 		Issues:   []intake.StatusCallIssue{{Key: req.Issue, Status: "todo", Parent: req.Parent}},
-		Readings: reads.readings(r.Context(), []string{req.Issue})}, EmptyResponse{})
+		Readings: reads.readings(r.Context(), []string{req.Issue})}); ok {
+		s.writeAnswer(w, r, AnswerStatusCall, http.StatusOK, StatusCallResponse{Queued: queuedOf(result)})
+	}
 }
 
 func validPhase(value phase.Phase) bool {

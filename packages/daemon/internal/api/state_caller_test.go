@@ -1019,6 +1019,10 @@ func servedShape(want map[string]any, contract int) {
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)
 	}
+	// The conversion's time is a key chainContract added to the daemon block (withoutConvertedAt).
+	if daemon, carries := want["daemon"].(map[string]any); carries && contract < chainContract {
+		delete(daemon, "convertedAt")
+	}
 	for _, issue := range want["issues"].(map[string]any) {
 		issue := issue.(map[string]any)
 		if pull, carries := issue["pullRequest"].(map[string]any); carries {

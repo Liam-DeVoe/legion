@@ -39,7 +39,8 @@ func (f *OwnWriteFailure) Error() string { return f.Code + ": " + f.Message }
 // the legion label, is recorded and stands in the waiting line before its event arrives (R19's
 // handover), and an issue a status call wrote todo under a parent at work is recorded under it.
 // The status a write of a recorded issue gives was counted on its record when the write was queued
-// (R16 of dispatch://INFRA-3320), and its echo changes nothing.
+// (R16 of dispatch://INFRA-3320), and its echo moves only the record's view of Dispatch, the
+// workflow keeping the counted status over an earlier write's echo while a later one is queued.
 //
 // written is the issue as Dispatch answered the write, the state the write's event carries, at that
 // event's sequence (intake.OwnStatusWrite). It applies through the fact path every event takes,

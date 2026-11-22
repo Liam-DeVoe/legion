@@ -2691,6 +2691,11 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
+	// StatusWriteQueued says whether the outbox still holds a Dispatch status write of issue — due,
+	// running, backing off or waiting behind an older row: a status the daemon counted on the
+	// issue's record when it queued it (R16 of dispatch://INFRA-3320) that Dispatch may not show
+	// yet.
+	StatusWriteQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)

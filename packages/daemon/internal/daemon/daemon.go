@@ -3531,12 +3531,20 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
 		return api.State{}, nil, err
 	}
+	// When the project's first boot on this release finished its conversion (R22 of
+	// dispatch://INFRA-3320): the conversion records its time last, and a rollback's step deletes
+	// the row, so a project not converted is served no time.
+	conversion, err := record.ReadTreeConversion(ctx, tx, s.project)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,
 		Boots:         boots,
 		FirstBootAt:   firstBootAt,
 		StartedAt:     s.startedAt,
+		ConvertedAt:   conversion.ConvertedAt,
 	}
 	state.Settings = s.settings
 	state.Admission.Cap = s.admissionCap

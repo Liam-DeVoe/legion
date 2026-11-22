@@ -1668,10 +1668,22 @@ type Handler interface {
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
+//
+// Queued is each status write a status call queued (StatusCall, the workflow's statusCall), in the
+// order it queued them, which the route that applied the call names in its answer.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Queued    []QueuedWrite
+}
+
+// QueuedWrite is one status write a status call queued: its issue, the status it writes and the
+// outbox row that writes it.
+type QueuedWrite struct {
+	Issue  string
+	Status string
+	Row    int64
 }
 
 type commitHooksKey struct{}
@@ -1909,6 +1921,7 @@ func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler
 			result.Refusal = applied.Refusal
 		}
 		result.Unspent = result.Unspent || applied.Unspent
+		result.Queued = append(result.Queued, applied.Queued...)
 	}
 	return result, nil
 }

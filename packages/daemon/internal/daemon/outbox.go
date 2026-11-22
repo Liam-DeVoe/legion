@@ -1654,8 +1654,9 @@ func (r *outbox) applyEntries(ctx context.Context, row record.OutboxRow, key str
 // not count on a record, such as the controller's set_status todo on an issue carrying the legion
 // label, which this records and admission stands in the waiting line before the write's event
 // arrives (decision 5 of dispatch://INFRA-4730). A write of a recorded issue was counted on its
-// record when it was queued, and its echo changes nothing. The write has landed, so a record that
-// does not take the answer is logged and left to the write's event, and the row ends.
+// record when it was queued, and its echo moves only the record's view of Dispatch (the workflow's
+// dispatchIssue). The write has landed, so a record that does not take the answer is logged and
+// left to the write's event, and the row ends.
 func (r *outbox) applyOwnWrite(ctx context.Context, row record.OutboxRow, written dispatch.Issue) error {
 	if r.pool == nil || written.Key == "" {
 		return nil

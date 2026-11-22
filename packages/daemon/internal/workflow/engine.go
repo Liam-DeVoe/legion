@@ -468,6 +468,22 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if fact.Status == issue.Status {
 		return intake.Result{}, nil
 	}
+	// The daemon's own write of an earlier status, while a later status write it queued for the
+	// issue is still in the outbox, is a step the record has already passed: the record counted
+	// each write as it queued it (R16 of dispatch://INFRA-3320), the release's todo and then the
+	// in_progress of the first phase it started, so the earlier one's event takes only Dispatch's
+	// view and the record keeps its own status (keepStatus). Once no write of the issue is queued, an
+	// event the daemon authored is taken as any other: the children Dispatch moved under a status
+	// change's option are counted by nothing but their entries and their events.
+	if fact.DaemonActor && !fact.StatusMove {
+		queued, err := e.store.StatusWriteQueued(ctx, tx, issue.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if queued {
+			return intake.Result{}, e.keepStatus(ctx, tx, *issue, fact)
+		}
+	}
 	// An event carries the whole issue, so it writes a status only when its status differs from the
 	// one Dispatch showed at the event before it. One that does not is an edit — a rank, title or
 	// label change — made while a status the daemon queued has not reached Dispatch, whoever made it.

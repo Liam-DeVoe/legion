@@ -549,13 +549,17 @@ func (s State) MarshalJSON() ([]byte, error) {
 }
 
 // DaemonInfo is the running daemon itself: which project it coordinates, the schema its store is
-// migrated to, and its boot history.
+// migrated to, its boot history, and ConvertedAt, when the project's first boot on this release
+// finished converting the store off the stored tree (R22 of dispatch://INFRA-3320, the
+// tree_conversions row the conversion records last), absent while no conversion has finished,
+// before the first boot and after a rollback's step deleted the row.
 type DaemonInfo struct {
-	Project       string    `json:"project"`
-	SchemaVersion int       `json:"schemaVersion"`
-	Boots         int       `json:"boots"`
-	FirstBootAt   time.Time `json:"firstBootAt"`
-	StartedAt     time.Time `json:"startedAt"`
+	Project       string     `json:"project"`
+	SchemaVersion int        `json:"schemaVersion"`
+	Boots         int        `json:"boots"`
+	FirstBootAt   time.Time  `json:"firstBootAt"`
+	StartedAt     time.Time  `json:"startedAt"`
+	ConvertedAt   *time.Time `json:"convertedAt,omitempty"`
 }
 
 // ContractView is the mark of the serving-down: the contract this body was built at and the

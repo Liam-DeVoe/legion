@@ -1110,6 +1110,10 @@
         "since": 214
       },
       {
+        "value": "chain_unknown",
+        "since": 215
+      },
+      {
         "value": "children_first",
         "since": 98
       },

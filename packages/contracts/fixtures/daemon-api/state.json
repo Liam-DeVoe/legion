@@ -4,11 +4,12 @@
     "schemaVersion": 1,
     "boots": 4,
     "firstBootAt": "2026-09-18T14:03:27Z",
-    "startedAt": "2026-09-22T09:15:02Z"
+    "startedAt": "2026-09-22T09:15:02Z",
+    "convertedAt": "2026-09-18T14:04:11Z"
   },
   "contract": {
-    "daemon": 214,
-    "caller": 214
+    "daemon": 215,
+    "caller": 215
   },
   "admission": {
     "cap": 5,
@@ -1114,7 +1115,7 @@
         }
       }
     },
-    "linger_hours": 1.5,
+    "linger_hours": 0,
     "production_check_hours": 240,
     "pod_update_grace_minutes": 30,
     "stalled_tree_notice_hours": 6,

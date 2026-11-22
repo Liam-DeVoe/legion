@@ -134,9 +134,10 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 	return summaries, nil
 }
 
-// GetIssue answers Dispatch's issue read. Dispatch names the project of every issue it answers,
-// and an API route's read of an issue is a reading of the copy only when it does
-// (intake.ReadingOf), so an issue a case gives no project answers its key's.
+// GetIssue answers Dispatch's issue read. Dispatch names the project of every issue it answers and
+// a sequence of 1 or more, and an API route's read of an issue is a reading of the copy only with
+// both (intake.ReadingOf, record.PutDispatchIssue), so an issue a case gives no project answers its
+// key's, and one a case gives no sequence answers 1.
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {
@@ -148,6 +149,9 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 	}
 	if issue.Project == "" {
 		issue.Project, _, _ = strings.Cut(key, "-")
+	}
+	if issue.LastSeq == 0 {
+		issue.LastSeq = 1
 	}
 	return issue, nil
 }
@@ -344,6 +348,9 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 	return h, facts, statuses
 }
 
+// seedTree records root, in planning, and each of children under it, in planning, with the copy
+// of Dispatch's issues holding the same chain: the daemon reads each chain from the copy (R15 of
+// dispatch://INFRA-3320), so a record with no copy row stands on an unknown chain.
 func seedTree(t *testing.T, h *harness, root string, children ...string) {
 	t.Helper()
 	records := record.NewStore()
@@ -351,6 +358,9 @@ func seedTree(t *testing.T, h *harness, root string, children ...string) {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{
 			Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Status: "in_progress",
 		}); err != nil {
+			return err
+		}
+		if err := seedCopy(tx, root, "", "in_progress"); err != nil {
 			return err
 		}
 		for _, child := range children {
@@ -361,12 +371,23 @@ func seedTree(t *testing.T, h *harness, root string, children ...string) {
 			}); err != nil {
 				return err
 			}
+			if err := seedCopy(tx, child, root, "in_progress"); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("seed tree: %v", err)
 	}
+}
+
+// seedCopy writes key's row of the copy of Dispatch's issues, under parent ("" for none) at status,
+// as a reading at sequence 1 writes it (record.PutDispatchIssue): a reading changes nothing a newer
+// one wrote.
+func seedCopy(tx pgx.Tx, key, parent, status string) error {
+	return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: testDispatchProject, Seq: 1,
+		Status: record.Carry(status), Parent: record.Carry(parent), Labels: record.Carry([]string{})})
 }
 
 type liveClaim struct {
@@ -560,10 +581,15 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 		"artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", "version": 1,
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
+	// An architect of an issue the chain of LEGION-209 does not pass through is refused
+	// ISSUE_NOT_OWNED, and the refusal names the architect that acts on it (R18 of
+	// dispatch://INFRA-3320).
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	if body := refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": foreign.grant(t), "issue": "LEGION-209",
-	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
+	}, nil), http.StatusForbidden, "ISSUE_NOT_OWNED"); !strings.Contains(body, "legion-legion-legion-208-architect") {
+		t.Fatalf("the foreign sign_off's refusal = %s, want it to name the architect of LEGION-208", body)
+	}
 
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	refused(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
@@ -672,25 +698,27 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 	}
 }
 
-// A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
-// parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
-// notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
-// notice reaches may accept it and retry it, and a sub-architect still may not.
-func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
+// A child the daemon records whose chain the copy of Dispatch cannot show to its top - no copy row
+// of its own, or a parent with none, as a record the copy has not caught up with leaves it - has
+// no architect who may act on it yet (R16 of dispatch://INFRA-3320): sign_off and
+// retry_or_escalate on it are refused CHAIN_UNKNOWN to the architect of the issue its record names
+// as its tree's and to every other alike, and apply nothing, until the daemon has read Dispatch
+// again.
+func TestACallOnAChainTheCopyCannotShowIsRefused(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	unrecorded := "LEGION-999"
 	records := record.NewStore()
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		for _, child := range []record.Issue{
-			{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "no parent", Phase: phase.Accepting, Status: "needs_review"},
-			{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "unrecorded parent", Parent: &unrecorded, Phase: phase.Accepting, Status: "needs_review"},
+			{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "no copy row", Phase: phase.Accepting, Status: "needs_review"},
+			{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "a parent with no copy row", Parent: &unrecorded, Phase: phase.Accepting, Status: "needs_review"},
 		} {
 			if err := records.PutIssue(context.Background(), tx, child); err != nil {
 				return err
 			}
 		}
-		return nil
+		return seedCopy(tx, "LEGION-212", unrecorded, "needs_review")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -708,15 +736,13 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 				}
 				return body
 			}
-			before := len(facts.recorded())
-			refused(t, h.request(http.MethodPost, route.path, request(subArchitect.grant(t)), nil), http.StatusForbidden, "ISSUE_NOT_OWNED")
-			if got := h.request(http.MethodPost, route.path, request(root.grant(t)), nil); got.Code != http.StatusOK {
-				t.Fatalf("%s on %s by the root architect = %d: %s", route.path, issue, got.Code, got.Body)
-			}
-			if got := len(facts.recorded()) - before; got != 1 {
-				t.Fatalf("%s on %s applied %d facts, want the root architect's one", route.path, issue, got)
+			for _, architect := range []liveClaim{root, subArchitect} {
+				refused(t, h.request(http.MethodPost, route.path, request(architect.grant(t)), nil), http.StatusConflict, "CHAIN_UNKNOWN")
 			}
 		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("calls on an unknown chain applied %#v, want nothing", got)
 	}
 }
 
@@ -984,15 +1010,15 @@ func TestGateRegistrationRefusesAnotherIssuesDocumentAndAChildIssue(t *testing.T
 	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-209", "artifactId": "5c3d9e1f-7a2b-4e6c-8d40-1f9b3a7e2c65", "version": 1,
 	}, nil), http.StatusForbidden, "GATE_ROOT_ONLY")
-	// The root's gate is its own architect's to register: a sub-architect of the tree holding the
-	// root document's id is refused too.
+	// The root's gate is its own architect's to register: the architect of an issue under it on
+	// the Dispatch chain holding the root document's id is refused too, and told whose it is.
 	statuses.documents["7d1e4f2a-3b5c-4d6e-8f70-9a1b2c3d4e5f"] = "LEGION-208"
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
 	refusal := h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": subArchitect.grant(t), "issue": "LEGION-208", "artifactId": "7d1e4f2a-3b5c-4d6e-8f70-9a1b2c3d4e5f", "version": 1,
 	}, nil)
-	if body := refusal.Body.String(); !strings.Contains(body, "its root architect registers it") {
-		t.Fatalf("sub-architect refusal %s does not say the root architect registers the gate", body)
+	if body := refusal.Body.String(); !strings.Contains(body, "its own architect legion-legion-legion-208-architect registers it") {
+		t.Fatalf("sub-architect refusal %s does not say the root's own architect registers the gate", body)
 	}
 	refused(t, refusal, http.StatusForbidden, "GATE_ROOT_ONLY")
 	if got := facts.recorded(); len(got) != 0 {
@@ -1058,8 +1084,9 @@ func TestGateRegistrationCarriesAnApprovalDispatchAlreadyShows(t *testing.T) {
 	}
 	want := []intake.Fact{
 		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", Version: 3, ApprovedVersion: 3,
-			ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}, DispatchVersion: 3, Since: record.EventMark{Seq: 7}},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "4a6b8c0d-2e4f-4a6b-8c0d-2e4f6a8b0c1d", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 7}},
+			ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}, DispatchVersion: 3, Since: record.EventMark{Seq: 7}, Architect: architect.token},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "4a6b8c0d-2e4f-4a6b-8c0d-2e4f6a8b0c1d", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 7},
+			Architect: architect.token},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gate facts = %#v, want the approved document to carry its approval and the other none", got)
@@ -1095,9 +1122,9 @@ func TestGateRegistrationCarriesAChangesRequestDispatchAlreadyShows(t *testing.T
 	since := record.EventMark{Seq: 7}
 	want := []intake.Fact{
 		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: changed, Version: 4, ChangesRequestedVersion: 4, ChangesReason: reason,
-			ChangesRequestedMark: record.EventMark{Seq: 6, At: reviewed}, ReviewedBy: dispatch.Actor{Kind: "user", ID: "bob"}, DispatchVersion: 4, Since: since},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: open, Version: 4, DispatchVersion: 4, Since: since},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: superseded, Version: 4, DispatchVersion: 5, Since: since},
+			ChangesRequestedMark: record.EventMark{Seq: 6, At: reviewed}, ReviewedBy: dispatch.Actor{Kind: "user", ID: "bob"}, DispatchVersion: 4, Since: since, Architect: architect.token},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: open, Version: 4, DispatchVersion: 4, Since: since, Architect: architect.token},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: superseded, Version: 4, DispatchVersion: 5, Since: since, Architect: architect.token},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gate facts = %#v, want %#v", got, want)
@@ -1130,8 +1157,10 @@ func TestGateRegistrationCarriesTheOpenRequestAndItsTurn(t *testing.T) {
 	}
 	since := record.EventMark{Seq: 7}
 	want := []intake.Fact{
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withPerson, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-person"},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withAgent, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-agent", RequestWaitsOnAgent: true},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withPerson, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-person",
+			Architect: architect.token},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withAgent, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-agent",
+			RequestWaitsOnAgent: true, Architect: architect.token},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gate facts = %#v, want %#v", got, want)
@@ -1211,12 +1240,12 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close = %d: %s", closed.Code, closed.Body)
 	}
-	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed."}) {
+	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed.", Architect: architect.token}) {
 		t.Fatalf("close facts = %#v", got)
 	}
 
-	// A child is not the root, a sub-architect of the tree is not the root's architect, and a
-	// phase worker is not the architect.
+	// A child is not a root on its Dispatch chain, the architect of an issue under the root is
+	// not the root's own, and a phase worker is not the architect.
 	refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-209", "reason": "moot",
 	}, nil), http.StatusForbidden, "ROOT_REQUIRED")

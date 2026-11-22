@@ -3228,4 +3228,41 @@ package api
 // the entry above), below 214, and this change kept 214 at that merge. Read the base's own number
 // and every open head again, by a REST raw read of each head's file, at the next forward merge
 // rather than from this line.)
-const DaemonAPIVersion = 214
+//
+// 215: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
+// from its copy of Dispatch's links (dispatch://INFRA-3320, R15 to R26), and three surfaces move.
+// The status calls decide over that copy and queue their writes. `POST /legion/v1/issues/status`
+// (`api.IssueStatusRequest`) takes two optional fields, the arguments Dispatch's parent rule asks
+// for (R24): `children`, `include` or `unlink`, with `backlog` or `icebox`, and `parent`, `include`,
+// with `todo`; `POST /legion/v1/children/rerun` (`api.RerunChildRequest`) takes `parent` the same
+// way, and `POST /legion/v1/waves/release` takes none. Each refuses with the new codes
+// `CHILDREN_ARGUMENT_REQUIRED`, `PARENT_ARGUMENT_REQUIRED` and `PARENT_NOT_RELEASED` where the rule
+// asks, and every architect call refuses `CHAIN_UNKNOWN` where the copy cannot read the issue's chain
+// to its top; `ISSUE_OUTSIDE_TREE`, `CHILD_IN_OTHER_TREE`, `CHILD_NOT_ADOPTABLE`, `TREE_LINGERING`
+// and `CHILD_REQUIRED` are answered no more, and `ISSUE_NOT_OWNED`, `ROOT_REQUIRED` and
+// `GATE_ROOT_ONLY` read the chain and name the architect claim that may act. Each refusal keeps the
+// shape every refusal has. The three calls answer once their transaction commits, naming each
+// status write they queued under a new key `queued` (`issue`, `status`, `row`): set_status and
+// rerun_child answer `api.StatusCallResponse` (answers.go's `status-call`, the empty object below
+// this contract) and release_children's answer gains the key; a reader below this contract is
+// served each answer without it (shaping.go's shapeAnswer).
+// `GET /legion/v1/state` gains `daemon.convertedAt`, the time the project's first boot on this
+// release finished converting the store, and `admission.held[].reason` takes a word,
+// `chain_unknown`, an issue not at work on a chain the copy cannot read to its top. A caller below
+// 215 is served the state without `daemon.convertedAt` (`withoutConvertedAt`, the row of
+// `chainContract` in shaping.go's `stateNarrowings`) and each `chain_unknown` row as `unclassified`
+// (the value strip `withoutUnadmittedHeldReasons`, which reads the word's arrival from answers.go's
+// `heldReasons`), each following the contract the caller states, else its pod's. Each issue's
+// `tree` is its gate root on the chain and `admission.trees` the roots in Legion's work, with their
+// keys as they were; `lingerUntil` and `ancestry`, optional to every reader, are written no more,
+// and `settings.linger_hours` reads 0.
+// The registration (`POST /legion/v1/claims/register`) answers as `tree` the issue's gate root at
+// the claim's last launch, and `POST /legion/v1/grants` takes any `tree`: a grant acts only as the
+// chain allows. Neither answer's shape moves.
+// (This change took 215, above main's 205 and above 214, which legion/INFRA-4728 declares and this
+// branch carries: a REST raw read of each open head's version.go at 2026-11-22 found 206, 210, 212,
+// 213, 214 (#4592, and #4596, this change's own head), 216, 217, 219 and 220 declared by open heads
+// and 215 by none, so 215 is the lowest number above 214 that no other open head declares. Read
+// the base's own number and every open head again at the next forward merge rather than from this
+// line.)
+const DaemonAPIVersion = 215

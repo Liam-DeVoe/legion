@@ -54,7 +54,7 @@ const ServingFloor = 46
 // dispatch://INFRA-3320's. A renumber of any of the four entries moves its constant and this list
 // with it, and moving one of them alone would describe a shape at a contract no entry declares.
 // 199 moves no shape of an answer a plugin parses, so its records are 193's under its own number.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, gateBasisContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, gateBasisContract, chainContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -77,6 +77,7 @@ const (
 	AnswerCompact            AnswerID = "compact"
 	AnswerTurnOutcome        AnswerID = "turn-outcome"
 	AnswerWaveRelease        AnswerID = "wave-release"
+	AnswerStatusCall         AnswerID = "status-call"
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
@@ -172,14 +173,21 @@ var Answers = []Answer{
 	// childRouteRemovedContract removed answered it too: that route now answers every call with
 	// the refusal (removedChildRoute), and no plugin at that contract calls it.
 	{ID: AnswerEmptyObject, Routes: []string{
-		"POST /legion/v1/issues/status",
 		"POST /legion/v1/gates/register",
 		"POST /legion/v1/phase/backward",
 		"POST /legion/v1/phase/retry",
 		"POST /legion/v1/signoff",
 		"POST /legion/v1/roots/close",
-		"POST /legion/v1/children/rerun",
 	}, Since: ServingFloor},
+	// version.go's 215: the answer of a status call that writes one issue's status, the
+	// controller's set_status and an architect's rerun_child (`api.StatusCallResponse`): `queued`,
+	// the status writes the call queued. Below 215 both routes answered the empty object, which a
+	// caller below it is still served (shaping.go's shapeAnswer), so no contract below 215 records
+	// this answer.
+	{ID: AnswerStatusCall, Routes: []string{
+		"POST /legion/v1/issues/status",
+		"POST /legion/v1/children/rerun",
+	}, Since: chainContract},
 	// version.go's 59: the controller's fresh-session recovery (`api.FreshSessionResponse`).
 	{ID: AnswerFreshSession, Routes: []string{"POST /legion/v1/claims/fresh-session"}, Since: 59},
 	// version.go's 59: the controller's compaction recovery (`api.CompactResponse`).
@@ -557,14 +565,17 @@ var lineKinds = []EnumeratedValue{
 // heldReasons is every word of a held row's `reason`. It names each constant rather than reading
 // record.HeldReasons, because a word added to the ladder later arrives at its own contract and
 // not at the field's. Eleven words arrived with `admission.held` at heldContract, and the list
-// grew once: `awaiting_children`, a parent waiting on its open children, arrived at
-// gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren). So
-// it is written out value by value, sorted by value, as waitAnswers is.
+// grew twice: `awaiting_children`, a parent waiting on its open children, arrived at
+// gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren),
+// and `chain_unknown`, an issue on a Dispatch chain the copy cannot read to its top, arrived at
+// chainContract (version.go's 215, record.HeldChainUnknown). So it is written out value by value,
+// sorted by value, as waitAnswers is.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
 	{Value: string(record.HeldAtWork), Since: heldContract},
 	{Value: string(record.HeldAwaitingChildren), Since: gateBasisContract},
+	{Value: string(record.HeldChainUnknown), Since: chainContract},
 	{Value: string(record.HeldChildrenFirst), Since: heldContract},
 	{Value: string(record.HeldDesignGate), Since: heldContract},
 	{Value: string(record.HeldDispatchBlocker), Since: heldContract},

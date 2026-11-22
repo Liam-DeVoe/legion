@@ -55,14 +55,14 @@ func (e *Engine) statusCall(ctx context.Context, tx pgx.Tx, call intake.StatusCa
 			return intake.Result{}, err
 		}
 	}
-	queued := make([]string, 0, len(rows))
+	var queued []intake.QueuedWrite
 	for _, write := range writes {
 		if id, ok := rows[write.issue.Key]; ok {
-			queued = append(queued, fmt.Sprintf("%s %s (row %d)", write.issue.Key, write.status, id))
+			queued = append(queued, intake.QueuedWrite{Issue: write.issue.Key, Status: write.status, Row: id})
 		}
 	}
 	e.logOnCommit(ctx, "workflow: a status call queued its writes", "call", call.Op, "architect", call.Architect, "writes", queued)
-	return intake.Result{}, nil
+	return intake.Result{Queued: queued}, nil
 }
 
 // callWrite is one issue of a status call as judgeCallIssue decided it: the status the call

@@ -301,6 +301,7 @@ func populatedState(t *testing.T) State {
 			Boots:         4,
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
+			ConvertedAt:   new(time.Date(2026, 9, 18, 14, 4, 11, 0, time.UTC)),
 		},
 		Admission: Admission{
 			Cap:    5,
@@ -1791,16 +1792,16 @@ func TestTask310RouteGoldens(t *testing.T) {
 		GrantID: "grant-for-one-command", ExpiresAt: "2026-09-23T12:01:00Z",
 	})
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
-	golden(t, "issue-status.json", IssueStatusResponse{})
+	golden(t, "issue-status.json", StatusCallResponse{Queued: []QueuedStatusWrite{{Issue: "LEGION-208", Status: "backlog", Row: 41}}})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
 	golden(t, "gate-register.json", GateRegisterResponse{})
-	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
+	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}, Queued: []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 43}}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})
 	golden(t, "phase-retry.json", PhaseRetryResponse{})
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
-	golden(t, "child-rerun.json", EmptyResponse{})
+	golden(t, "child-rerun.json", StatusCallResponse{Queued: []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 42}}})
 }
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes

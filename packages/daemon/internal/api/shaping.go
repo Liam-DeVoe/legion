@@ -289,9 +289,29 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerWaveRelease:
+		release, isRelease := body.(WaveReleaseResponse)
+		if !isRelease {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// `queued`, the status writes the release queued, arrived at chainContract, so a reader
+		// below it is served the three lists it reads and no fourth (WaveReleaseResponse's
+		// queuedHidden).
+		release.queuedHidden = strip < chainContract
+		return release, took
+	case AnswerStatusCall:
+		if _, isCall := body.(StatusCallResponse); !isCall {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// The answer was the empty object until chainContract gave it `queued`, so a reader below
+		// it is served that object.
+		if strip < chainContract {
+			return EmptyResponse{}, took
+		}
+		return body, took
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerProjectPause, AnswerProjectResume:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
@@ -565,6 +585,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: gateBasisContract, issue: withoutGateBasis,
 		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
+	{contract: chainContract, state: withoutConvertedAt, dropped: "daemon.convertedAt"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1032,6 +1053,32 @@ const repositoriesLiveContract = 202
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
 const gateBasisContract = 214
+
+// chainContract is the daemon contract at which the daemon stores no tree and reads every parent
+// and child question from its copy of Dispatch's links (version.go's 215, dispatch://INFRA-4730).
+// It added one key a plugin parses to the state, `daemon.convertedAt`, the time the project's first
+// boot on this release finished its conversion, which a plugin below it is served without
+// (withoutConvertedAt, its row of stateNarrowings); one held word, `chain_unknown`, which a value
+// strip serves to a reader below it as `unclassified` (answers.go's heldReasons,
+// withoutUnadmittedHeldReasons); and `queued`, the status writes a status call queued, to the
+// answers of set_status, rerun_child and release_children, which a reader below it is served
+// without (shapeAnswer). The state's `tree` and `admission.trees` keep their keys and read the
+// chain (R22 of dispatch://INFRA-3320), so no band is owed for them. The rest of the contract is
+// requests and refusal codes, which no reader enumerates.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys and values arrived at stays where it is.
+const chainContract = 215
+
+// withoutConvertedAt is state with no `daemon.convertedAt`, the key chainContract added to the
+// state's daemon block. The key is an `omitempty` pointer, absent until the project's conversion
+// has finished, so the band reports a move only for a state that carries it. The block is a value
+// of the state's own, so the state the source answered is left as it was.
+func withoutConvertedAt(state State) (State, bool) {
+	moved := state.Daemon.ConvertedAt != nil
+	state.Daemon.ConvertedAt = nil
+	return state, moved
+}
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
@@ -1926,17 +1973,18 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 }
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
-// by the claims of its pod: true for the release records and for a refusal whose body is a
-// PauseFailure, and false for every other answer. Those two answers' shapes moved at
-// pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
-// claims for them (placingClaims). Every other answer writeAnswer writes is the identity at every
-// contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
-// one of them would decide nothing. A serving-down added to one of them reaches the caller of a
-// pod only once this answers true for it. The state and the record are no question for it: their
-// routes hand in their own snapshot's claims (writeAnswerFrom).
+// by the claims of its pod: true for the release records, for a refusal whose body is a
+// PauseFailure, and for the two answers of the status calls, the wave release's and the status
+// call's, and false for every other answer. The first two answers' shapes moved at pauseContract,
+// the status calls' at chainContract, and their writers answer from no snapshot of their own, so
+// writeAnswer reads the claims for them (placingClaims). Every other answer writeAnswer writes is
+// the identity at every contract, and so is a plain refusal (a claim.Refusal or a Failure), so a
+// read of the claims for one of them would decide nothing. A serving-down added to one of them
+// reaches the caller of a pod only once this answers true for it. The state and the record are no
+// question for it: their routes hand in their own snapshot's claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
-	case AnswerReleaseRecords:
+	case AnswerReleaseRecords, AnswerWaveRelease, AnswerStatusCall:
 		return true
 	case AnswerRefusal:
 		_, pause := body.(PauseFailure)

@@ -593,8 +593,11 @@ func valueStripCases() map[string]valueStripCase {
 				_, wanted := phasesAndHeldWords(t, whole)
 				_, served := phasesAndHeldWords(t, mixed)
 				for issue, reason := range wanted {
-					if reason == string(record.HeldAwaitingChildren) {
+					switch reason {
+					case string(record.HeldAwaitingChildren):
 						reason = string(record.HeldChildrenFirst)
+					case string(record.HeldChainUnknown):
+						reason = string(record.HeldUnclassified)
 					}
 					if served[issue] != reason {
 						t.Errorf("the {%d, %d} pod is served %s's held row under %q, want %q",
@@ -1196,6 +1199,20 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				refused := PauseFailure{Failure: Failure{Code: projectPaused, Error: "the project is paused"}, Setting: "runtime: tmux"}
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
+				}
+			case AnswerWaveRelease, AnswerStatusCall:
+				queued := []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 42}}
+				var body any = StatusCallResponse{Queued: queued}
+				if answer.ID == AnswerWaveRelease {
+					body = WaveReleaseResponse{Released: []string{"LEGION-209"}, Queued: queued}
+				}
+				below, _ := shapeAnswer(answer.ID, body, ServingFloor, chainContract-1)
+				if encoded, err := json.Marshal(below); err != nil || bytes.Contains(encoded, []byte(`"queued"`)) {
+					t.Errorf("the %s answer served below chainContract = %s (%v), want no `queued`, which chainContract added", answer.ID, encoded, err)
+				}
+				own, _ := shapeAnswer(answer.ID, body, chainContract, chainContract)
+				if encoded, err := json.Marshal(own); err != nil || !bytes.Contains(encoded, []byte(`"queued":[{"issue":"LEGION-209","status":"todo","row":42}]`)) {
+					t.Errorf("the %s answer served at chainContract = %s (%v), want its queued write", answer.ID, encoded, err)
 				}
 			default:
 				body := map[string]string{"shape": "unmoved"}

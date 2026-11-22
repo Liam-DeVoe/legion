@@ -396,7 +396,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	whyWords := []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
 	groupWords := []string{config.MemoryVariantMemory, config.MemoryVariantNone}
 	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
-	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
+	heldWords := []record.HeldReason{record.HeldChainUnknown, record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldAwaitingChildren, record.HeldDesignGate,
 		record.HeldDispatchBlocker, record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork,
 		record.HeldUnclassified}
@@ -624,14 +624,19 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// object: READY and the daemon's merge went, and the `note` that reported them with
 		// them, so the body this route writes carries no key at any contract from 86 on.
 		AnswerHandoffComplete: {roots: typesOf(HandoffCompleteResponse{}), bodies: []any{HandoffCompleteResponse{}}},
-		// The empty object the fact routes answer. Six Go types write it, and none of them
+		// The empty object the fact routes answer. Five Go types write it, and none of them
 		// declares a field, so the record of this answer is an empty set of key paths over a
 		// body that exists.
 		AnswerEmptyObject: {
-			roots: typesOf(EmptyResponse{}, IssueStatusResponse{}, GateRegisterResponse{},
+			roots: typesOf(EmptyResponse{}, GateRegisterResponse{},
 				PhaseBackwardResponse{}, PhaseRetryResponse{}, SignOffResponse{}),
 			bodies: []any{EmptyResponse{}},
 		},
+		// A status call's answer, the writes set_status or rerun_child queued: the empty object
+		// below chainContract, and `queued` from it (shapeAnswer).
+		AnswerStatusCall: {roots: typesOf(StatusCallResponse{}), bodies: []any{StatusCallResponse{
+			Queued: []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 42}},
+		}}},
 		// Richer than the golden, which is the answer of a fresh session that restarted the
 		// phase and so carries no key: the record describes the key this answer can carry.
 		AnswerFreshSession: {roots: typesOf(FreshSessionResponse{}), bodies: []any{FreshSessionResponse{
@@ -646,11 +651,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			RefusedRun: 3, Failed: true,
 		}}},
 		// Richer than the golden, which releases one child that started nothing: the record
-		// describes the two lists a release fills and the keys of a held child.
+		// describes the lists a release fills, the keys of a held child and of a queued write.
 		AnswerWaveRelease: {roots: typesOf(WaveReleaseResponse{}), bodies: []any{WaveReleaseResponse{
 			Released: []string{"LEGION-209", "LEGION-211"},
 			Started:  []string{"LEGION-209"},
 			Held:     []HeldChild{{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}}},
+			Queued:   []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 43}},
 		}}},
 		// The refusal has three Go shapes: claim.Refusal, one sentence under `error`, which the
 		// claim routes answer; api.Failure, which adds the stable `code` the credential and
