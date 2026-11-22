@@ -3104,4 +3104,35 @@ package api
 // and #4540, 217 by #2230, #4273, #4590 and #4771, and nothing at 212, from 218 to 220, or at 221
 // or above. Read the base's own number and every open pull request again at the next merge rather
 // than from this line.)
-const DaemonAPIVersion = 221
+//
+// 227: the owner of an issue, its own architect, reports a step of its own: a step whose key is
+// owner, or the retro of a task whose retro is the owner's. A new route, `POST
+// /legion/v1/steps/complete` (`grantId`, `issue`, `step`, `summary`, and, as a completion of that
+// place carries them, `verdict`, `commit`, `handoffId`, `handoffVersion`, `returnTo`, `planRating`
+// and `planReason`), the architect's `complete_step`, takes it; `step` names the step by its place
+// in the task, 1 for its first, and 0 for the retro. It answers the empty object every fact route
+// answers. It refuses a grant of any claim but the issue's own architect `403 NOT_THE_OWNER`, a
+// step that does not run now or whose agent is not the owner `409 OWNER_STEP_NOT_RUNNING`, a step
+// below 0 `400 INVALID_STEP`, the owner's failed acceptance that names no step to return to and
+// has no step of the type implementation before it `400 RETURN_TO_REQUIRED`, and otherwise as the
+// completion route refuses a report of that place. No plugin below 227 calls it. A reviewer of an
+// issue with no pull request record reports its step on `POST /legion/v1/handoff/complete` with the
+// verdict `pass` or `fail` and a commit (`400 STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the
+// owner's review step does on the new route, since no review on GitHub decides either;
+// `VERDICT_ROLE_FORBIDDEN` now reads `only a tester, a role of the deployment or of the plan, the
+// role acceptance, a reviewer of an issue with no pull request, and the owner in a review step
+// report a verdict`. No answer a plugin parses changes shape: the request records of 227 hold the
+// new route's request, and no recorded request field leaves. A claim of the role `acceptance`, the
+// fresh agent of a step `acceptance` with no key, is a role outside Legion's six, which 221's band
+// already leaves out of the state served a caller below 221. The notice kind this entry adds
+// (`owner-step`) rides inside a notice row's payload, as 189's does, and is no key or value of an
+// answer a plugin parses. From this entry the last number of answers.go's SupportedContracts is
+// `api.completeStepContract`, and `deploymentRolesContract` stays 221.
+// (This entry takes 227, above the base's 221 (the roles a deployment defines, the entry above)
+// and above every number another open pull request declared, with 222 and 225 to 226 left to the
+// changes that build on the same base: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 446 open pull requests, made between 2026-11-22T11:38:55Z and
+// 11:40:04Z, read all 446 and found 223 declared by #4805 and 224 by #4960 as the highest, and
+// nothing at 221, 222 or from 225 up. Read the base's own number and every open pull request again
+// at the next merge rather than from this line.)
+const DaemonAPIVersion = 227
