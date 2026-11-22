@@ -112,8 +112,11 @@
 --   of a store in it as a message of previous_state_id: it finishes it unapplied while state_id is
 --   null or another store, and the message holds no read and calls for none. So a daemon that the
 --   setting named, whose reads all failed and which still publishes after the setting named a
---   daemon that a read verified, makes one `store` read at the most, and none after it. Empty for
---   none.
+--   daemon that a read verified, makes one `store` read at the most, and none after it, unless it
+--   boots: a boot of a store in it, or of previous_state_id, while the row follows the setting's
+--   URL in another store a read verified, calls for a `store` read, so a daemon that a redeploy
+--   started behind that URL in such a store is found again. A read that finds the row's store
+--   unchanged leaves the mark, and never marks previous_state_id. Empty for none.
 -- - released_holder is the stream sequence of the state message that held the owed read when a
 --   write of the setting that names another daemon reset the row: the write sets it to read_holder
 --   where read_holder is set, and keeps it otherwise. At that message's next delivery the intake

@@ -1504,7 +1504,14 @@ func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL stri
 //     read is one that no message holds. While the cursor holds no store, applyBatch queues the
 //     read the cursor owes on the project's runner behind the message where that read is due and
 //     no message holds it (callRead), and the message does not wait for it; once the cursor holds
-//     another store, the message calls for no read at all.
+//     another store, the message calls for no read, with one exception: a boot of such a store,
+//     while the cursor follows the setting's daemon in a store a read verified, may say that the
+//     daemon behind the setting's URL now counts in that store (a redeploy that started it where
+//     the verified daemon ran). R3 reads another store so that a daemon whose store was replaced
+//     is found again, so that boot is judged as a message of another store (outcomeOtherStore,
+//     ReadReasonStore): it calls for a store read and holds it as any message does. A good read
+//     that finds that store takes the mark off, or clears the record of the store the setting
+//     named before (recordWhole); a read that finds the cursor's store unchanged leaves it.
 //   - A project with no starting point calls for a read whatever else holds (ReadReasonStart),
 //     which is always due: there is no read before it to wait after.
 //   - A cursor that holds no store, one whose every read since the setting was written failed,
@@ -1529,6 +1536,9 @@ func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL stri
 //     for a read (ReadReasonSchema) and is taken, as is every message that follows.
 func judge(current cursor, held []part, stateURL string, message stateMessage, readMade, readGood bool) (outcome, string) {
 	if current.forgets(message.StateID) {
+		if message.boots() && current.follows(stateURL) && current.stateID != nil {
+			return outcomeOtherStore, ownRead(ReadReasonStore, readMade)
+		}
 		return outcomeForgotten, ""
 	}
 	if !current.follows(stateURL) {
@@ -2085,7 +2095,8 @@ func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 			triedAt = nil
 		}
 		foreign = without(foreign, *read.stateID)
-		if unchanged && owed.store != "" && owed.store != *read.stateID {
+		if unchanged && owed.store != "" && owed.store != *read.stateID &&
+			(current.previousStateID == nil || *current.previousStateID != owed.store) {
 			foreign = marked(foreign, owed.store)
 		}
 	}
@@ -2419,6 +2430,17 @@ func (m stateMessage) unfollowed(current cursor, held []part) string {
 		return ReadReasonGap
 	}
 	return ""
+}
+
+// boots reports whether the message carries a boot event: its daemon run started (judge reads a
+// boot of a store the cursor drops as a sign that the setting's daemon may now count in it).
+func (m stateMessage) boots() bool {
+	for _, event := range m.Events {
+		if event.Kind == eventBoot {
+			return true
+		}
+	}
+	return false
 }
 
 // movesSchema reports whether the message carries a boot above the position current and the parts

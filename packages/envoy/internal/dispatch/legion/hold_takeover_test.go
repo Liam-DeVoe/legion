@@ -463,3 +463,73 @@ func TestTheRecordedOldStoreIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T)
 			cursorOf(t, rig.database, "INFRA"), history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), c.served())
 	}
 }
+
+// TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNothing: R3 applies
+// none of the messages of a daemon the setting does not name, and reads the state only for the
+// reasons it names (read-rule-cases rows 3.5 and 5.7). A boot of a store marked as no daemon of
+// the project, or of the recorded old store, calls for one store read while the cursor follows
+// the setting's URL in another verified store. When that read finds the cursor's store unchanged,
+// the boot is finished unapplied, the mark stays, the recorded old store is not marked, and the
+// store's later messages call for no read.
+//
+// Each case sets INFRA's setting as the tests above do (A read well, B whose starting read fails,
+// C read well in a store of its own), and C's URL keeps serving C's store: no redeploy took place.
+func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNothing(t *testing.T) {
+	const bootRun = "2c7a9e41-6d3b-4f85-a0e2-8b1d5c4f7a63"
+	for _, tc := range []struct {
+		name  string
+		store string // the store that boots
+		marks []string
+	}{
+		{name: "a store marked as no daemon of the project", store: bStore, marks: []string{bStore}},
+		{name: "the recorded old store", store: rigStateID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIntakeRig(t)
+			a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			seedLegionProject(t, rig.database, "INFRA", a.URL)
+			rig.start()
+			rig.awaitStartingRead("INFRA")
+			b := newFakeDaemon(t, "")
+			b.refuses(http.StatusServiceUnavailable)
+			rig.pointAt(b, 2)
+			c := newFakeDaemon(t, daemonStateIn("INFRA", 5, inPhase("implementing"), cStore, cRun))
+			rig.pointAt(c, 3)
+			if tc.marks != nil {
+				rig.publishIn("INFRA", bRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, change(20, "INFRA-1", moved("phase", "merging")))
+				rig.settled()
+			}
+			if cur := cursorOf(t, rig.database, "INFRA"); cur.stateID == nil || *cur.stateID != cStore || !slices.Equal(cur.foreignStateIDs, tc.marks) {
+				t.Fatalf("control: INFRA's cursor before the boot is %s, want C's store %s and the marks %v", cur, cStore, tc.marks)
+			}
+			before := c.served()
+
+			rig.clock.advance(ReadRetryAfter + time.Second)
+			rig.publishIn("INFRA", bootRun, tc.store, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
+			rig.publishIn("INFRA", bootRun, tc.store, time.Now().UTC().Truncate(time.Microsecond), false, change(42, "INFRA-1", moved("phase", "testing")))
+			rig.settled()
+			cur := cursorOf(t, rig.database, "INFRA")
+			if got := c.served() - before; got != 1 {
+				t.Errorf("the boot of %s made %d reads of C's URL, want the one store read", tc.store, got)
+			}
+			if cur.stateID == nil || *cur.stateID != cStore || cur.lastSeq == nil || *cur.lastSeq != 5 ||
+				cur.previousStateID == nil || *cur.previousStateID != rigStateID || !slices.Equal(cur.foreignStateIDs, tc.marks) {
+				t.Errorf("after a read that found C's store unchanged, INFRA's cursor is %s; want C's store %s at 5, the recorded old store %s, and the marks %v",
+					cur, cStore, rigStateID, tc.marks)
+			}
+			if phases := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(phases, `"testing"`) {
+				t.Errorf("INFRA-1's phase history is %v: an event of %s, which is no daemon of INFRA, was applied", phases, tc.store)
+			}
+
+			rig.clock.advance(ReadRetryAfter + time.Second)
+			rig.publishIn("INFRA", bootRun, tc.store, time.Now().UTC().Truncate(time.Microsecond), false, change(43, "INFRA-1", moved("phase", "reviewing")))
+			rig.settled()
+			if got := c.served() - before; got != 1 {
+				t.Errorf("after a later message of %s, C's URL served %d reads since the boot, want the boot's one: that message called for a read", tc.store, got)
+			}
+			if phases := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(phases, `"reviewing"`) {
+				t.Errorf("INFRA-1's phase history is %v: a later event of %s was applied", phases, tc.store)
+			}
+		})
+	}
+}

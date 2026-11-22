@@ -46,7 +46,11 @@ body: |-
   a read that gives the same store clears the record. Dispatch also marks a store as no daemon of
   the project when a good read made for a message of that store finds the project's store
   unchanged, or when a `PUT` ended the hold of a message of that store. It applies no message of
-  a marked store and makes no read for one, until the next `PUT` of the project's setting. A
+  a marked store and makes no read for one, until the next `PUT` of the project's setting, with
+  one exception: a boot of a marked store, or of the store the setting named before, while the
+  project's store is one a read verified, makes a whole read, so a daemon that a redeploy started
+  behind the setting's URL in that store is found again, and a read that finds it takes the mark
+  off. A
   project keeps at most 16 messages waiting for its turn. A message that arrives past that does
   not wait and makes no read: it owes a read, which the read in flight does not clear, one such
   message holds that read, and Dispatch acknowledges the others. So a project whose daemon does
