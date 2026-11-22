@@ -116,9 +116,12 @@ revision:
 
 ## The protocol (`Names`)
 
-- **Step 0, first in every call:** an open operation is settled. Its candidate, if the server
-  holds it, is published (adopted). If not, once the operation is 2 s old (`Config.SettleAge`), the
-  candidate is retired and a fresh one is created at the saved start.
+- **Step 0, first in every call:** an open operation is settled. A published replace of the key's
+  fixed name whose delete the server has not confirmed (its candidate already the current) deletes
+  that fixed name first, before anything else, and only then closes; a delete that fails is the
+  call's error and keeps the replace open. Otherwise its candidate, if the server holds it, is
+  published (adopted). If not, once the operation is 2 s old (`Config.SettleAge`), the candidate is
+  retired and a fresh one is created at the saved start.
 - **Adoption.** A candidate this call did not see created (Step 0, or a create whose answer was
   lost) is published only when it is as the family creates it (`ErrUnexpectedConsumer` otherwise,
   naming it, and the operation stays open):
@@ -145,7 +148,10 @@ revision:
   reserves the operation and the start in one conditional write, creates the candidate once, then
   publishes it. `Config.NativeFirstCreate` keeps a family's native first create (the daemon's
   deliver policy new) for a logical name that never existed.
-- **Replace:** reserve, create at the saved start, publish, retire and delete the predecessor.
+- **Replace:** reserve, create at the saved start, publish, retire and delete the predecessor. A
+  predecessor that is the key's fixed name (a convert's replace) is deleted and never retired: the
+  replace stays open, naming it, until the server confirms its delete, so a failed delete is
+  retried by the next call's Step 0.
 - **Delete:** reserve, read and save the floor (one that cannot be read stops the call), delete,
   clear the current.
 - **At a full cap:** the retired names the server holds are deleted, and the create is tried once
