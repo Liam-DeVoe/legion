@@ -345,3 +345,49 @@ func TestSessionRegistryDeleteIf_Q6ChangedOutcomes(t *testing.T) {
 		})
 	}
 }
+
+// DeleteIf's own switch case, apart from the fenced-delete fallback inside bus.DeleteAt that the Q6
+// rows above drive: a key that becomes a plain delete marker between DeleteIf's read and its fenced
+// delete. The read finds the session's registration and every condition admits it; the fenced delete
+// at that revision is then refused with a raw "wrong last sequence", which errors.Is(nats.ErrKeyExists)
+// does not match and only bus.IsCASConflict catches; and bus.DeleteAt leaves the refusal standing,
+// since the leader holds a marker, not a record the server wrote. DeleteIf's `case bus.IsCASConflict`
+// re-reads the key, finds it gone, and answers EntryDeleted. The Q6 rows' faults are consumed inside
+// bus.DeleteAt, so this is the only row that reaches DeleteIf's own switch: with that case put back to
+// errors.Is(err, nats.ErrKeyExists), the raw refusal falls through to EntryUnanswered with an error.
+func TestSessionRegistryDeleteIf_AKeyThatBecameAMarkerReReadsAndAnswersDeleted(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	ctx := context.Background()
+	const key = "ses_deleteif_marker_race"
+	if err := r.Put(key, SessionEntry{MachineID: "edge-a", ClientInstanceID: "instance-victim", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s: %v", key, err)
+	}
+	faulty := &faultyDeleteKeyValue{KeyValue: r.watcher.KV().Legacy()}
+	useKV(t, r, faulty)
+	var marked bool
+	faulty.armFault(func(n int) error {
+		if n != 1 {
+			return nil
+		}
+		// The key becomes a plain delete marker between DeleteIf's read and its fenced delete: a real
+		// unconditional delete lands through the embedded handle (no fault counted), so the stream's
+		// leader holds a marker, and the fenced delete the fault stands in for would be refused with a
+		// raw "wrong last sequence" over the deleted key.
+		if err := faulty.KeyValue.Delete(key); err != nil {
+			t.Errorf("mark %s: %v", key, err)
+		}
+		marked = true
+		return errors.New("nats: wrong last sequence: 1")
+	})
+	outcome, err := r.DeleteIf(ctx, key, DeleteConditions{ClientInstanceID: "instance-victim"})
+	if err != nil {
+		t.Fatalf("DeleteIf(%s) error = %v, want none", key, err)
+	}
+	if !marked {
+		t.Fatal("the marker fault never fired, so no raw wrong-last-sequence reached DeleteIf's switch")
+	}
+	if outcome != EntryDeleted {
+		t.Errorf("DeleteIf(%s) = %s, want %s: the retry re-reads the key, finds the marker, and answers deleted", key, outcome, EntryDeleted)
+	}
+}
