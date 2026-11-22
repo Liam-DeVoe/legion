@@ -52,7 +52,9 @@ func resultsRulesBinding(hosts string, extra ...string) string {
 // and its write reaches the stand-in of Dispatch, stored.
 func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(t *testing.T) {
 	e := newResultsEnvironment(t)
-	evil, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Hosts: []string{otherResultsHost}, Authority: e.dispatch.service.Authority()})
+	// The stand-in listens on 127.0.0.2: BROKER_AIRLOCK_TEST_RESOLVE refuses one address given two
+	// ports, and Dispatch's stand-in has 127.0.0.1.
+	evil, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Addr: "127.0.0.2:0", Hosts: []string{otherResultsHost}, Authority: e.dispatch.service.Authority()})
 	if err != nil {
 		t.Fatalf("start the stand-in of %s: %v", otherResultsHost, err)
 	}
