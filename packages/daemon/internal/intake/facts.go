@@ -1703,10 +1703,14 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live
 // claims, never from an event, and its handler decides in the fact's own transaction
-// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is). Claim
+// is the claim the sweep read: two claims of one issue can hold one role, and the handler judges
+// only the one that works the role's step, so a fact of the other is passed over; "" on a fact
+// from before the claim was carried, which the handler reads as the step's worker's.
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
@@ -1718,10 +1722,12 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 // on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
 // Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
 // an event, and its handler tells the architect and sends nothing (internal/daemon's
-// workerBackgroundEventID says what its id is).
+// workerBackgroundEventID says what its id is). Claim is the claim the sweep read, as
+// WorkerSilent's is.
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	ReportedAt time.Time
 	Kinds      []string
