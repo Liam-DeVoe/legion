@@ -18,7 +18,8 @@ import pkg from "../package.json" with { type: "json" }
  * process loaded, never a path read anywhere else. In a pod a Claude Code role installs no plugin
  * (the daemon's `NoPluginInstall`) and loads its image's own claude-envoy, so a relaunch keeps
  * this build and only the update round over the pod brings another. It is an Oh My Pi role's
- * relaunch that installs its plugin pair fresh under the role's state home. */
+ * relaunch that installs its plugin pair fresh under the state home of its claim's agent, the
+ * same whatever role the agent's step is on. */
 const BUILD = pluginBuildOf(pkg)
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */
