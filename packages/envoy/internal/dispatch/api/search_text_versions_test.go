@@ -362,7 +362,16 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		return server.latency.Slow(time.Now())
 	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
-	fill.AwaitLine(t, keywordPausedLine)
+	// The fill asks its pause only before a batch, so a fill that caught up the backlog before the
+	// read turned slow logs that it is caught up and never pauses. Such a run cannot test the
+	// pause: it fails by name at once, rather than waiting to the binary's deadline for a line that
+	// will not come.
+	waitUntil(t, "the keyword fill to log its pause, or that it caught up", func() bool {
+		return fill.Logged(t, keywordPausedLine) || fill.Logged(t, keywordCaughtUpLine)
+	})
+	if !fill.Logged(t, keywordPausedLine) {
+		t.Fatalf("the keyword fill caught up the backlog before the answers read turned slow, so it asked no pause and this run cannot test it; its log:\n%s", fill.Log())
+	}
 	var batchesBeforePause int
 	for _, msg := range fill.Lines(t, "") {
 		if strings.HasPrefix(msg, keywordPausedLine) {
@@ -544,12 +553,14 @@ func startKeywordFill(t *testing.T, server keywordServer) *textversionstest.Fill
 	})
 }
 
-// The lines of the fill the tests read: a batch's (filler.record), and the pause's two
-// (textversions' pausedMessage and continuesMessage), by the start each one's message has.
+// The lines of the fill the tests read: a batch's (filler.record), the pause's two
+// (textversions' pausedMessage and continuesMessage), and the catch-up's (caughtUpMessage), by
+// the start each one's message has.
 const (
 	keywordBatchLine     = "dispatch: the keyword fill wrote a batch"
 	keywordPausedLine    = "dispatch: the keyword fill paused:"
 	keywordContinuesLine = "dispatch: the keyword fill continues:"
+	keywordCaughtUpLine  = "dispatch: the keyword fill is caught up"
 )
 
 // keywordAwaitCursor waits until the fill's cursor reaches id, waking the fill each second.
