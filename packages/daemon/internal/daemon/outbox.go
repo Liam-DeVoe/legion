@@ -3127,12 +3127,16 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 
 // stopInLeftTree handles a suspend or tree close that names a tree its issue has left. It stops a
 // machine only while the claim still stands in payload.Tree, waits for a stored claim in that tree
-// until its machine is available, and otherwise finishes without acting. This row and a new-tree
-// start run on the issue's lifecycle lane, so the claim cannot be re-pointed between this check and
-// the suspension. A stop this call completes wakes the old tree's close rows; this row releases no
-// tree resources itself.
+// until its machine is available, and otherwise finishes without acting. The claim is the one the
+// row names, else the claim of the worker on the role's step (workerToken), as reservedTreeClose
+// reads it: two claims of one issue can hold one role — the agent of a key on a step of another
+// role, beside that role's own claim of an earlier version of the plan — so the role's own token
+// could stop the other one, or wait for its machine, and leave this claim running in the old tree.
+// This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
+// re-pointed between this check and the suspension. A stop this call completes wakes the old
+// tree's close rows; this row releases no tree resources itself.
 func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
 	if err != nil {
 		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 	}
