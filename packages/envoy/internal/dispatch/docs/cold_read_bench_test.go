@@ -19,7 +19,7 @@ import (
 // it moves the stored head without changing rendered Markdown or allowing the log to grow across
 // iterations. A hit leaves that head alone after one warm read.
 func BenchmarkColdDocumentRead(b *testing.B) {
-	for _, size := range []int{51 << 10, 524 << 10} {
+	for _, size := range []int{51 << 10, 200 << 10} {
 		for _, read := range []struct {
 			name string
 			read func(*Service, string) error

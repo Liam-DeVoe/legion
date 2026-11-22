@@ -11,6 +11,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // BenchmarkLiveDocumentRead measures what a read of a resident room costs by each way it can be
@@ -20,7 +21,7 @@ import (
 // every peer's update waits for; the replica takes no document lock, since ygo hands the room's
 // update log each update under the lock its commit already holds.
 func BenchmarkLiveDocumentRead(b *testing.B) {
-	for _, size := range []int{51 << 10, 524 << 10} {
+	for _, size := range []int{51 << 10, 200 << 10} {
 		live := benchmarkLiveDocument(b, size)
 		name := fmt.Sprintf("%dKiB", size>>10)
 		for _, read := range []struct {
@@ -85,10 +86,10 @@ func BenchmarkLiveDocumentRead(b *testing.B) {
 // is its transaction on the live document and the observer's whole turn with the replica
 // (renderedReplica.observe): the drain of the room's update log, the update applied to the
 // replica, and the render (renderDocumentForUpdate), which skips pmdoc.Read's copy since the tree
-// it renders never outlives the call. 120 keystrokes 20 ms apart on a 524 KiB document; each run
-// reports the latencies' percentiles in milliseconds.
+// it renders never outlives the call. 120 keystrokes 20 ms apart on a 200 KiB document, about the
+// largest benchmarkLiveDocument makes; each run reports the latencies' percentiles in milliseconds.
 func BenchmarkKeystrokeBesideReads(b *testing.B) {
-	live := benchmarkLiveDocument(b, 524<<10)
+	live := benchmarkLiveDocument(b, 200<<10)
 	texts := paragraphTexts(live)
 	if len(texts) == 0 {
 		b.Fatal("the document holds no paragraph text")
@@ -159,7 +160,7 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 						latencies = append(latencies, time.Since(start))
 					}
 					close(stop)
-					reading.Wait()
+					testwait.Returns(b, "the reader beside the keystrokes to stop", reading.Wait)
 					slices.Sort(latencies)
 					for _, percentile := range []int{50, 90, 99, 100} {
 						at := min(len(latencies)*percentile/100, len(latencies)-1)
@@ -190,7 +191,10 @@ func benchmarkReplica(b *testing.B, service *Service, live *crdt.Doc) *renderedR
 
 // benchmarkLiveDocument is a live document holding about size bytes of a spec's markdown - headings,
 // marked paragraphs, lists, tables and code - after 2,000 keystrokes typed and deleted across it,
-// so its delete set is a document's that people have edited.
+// so its delete set is a document's that people have edited. That markdown passes the limit of
+// what one document's markdown may make (pmdoc.MaxDocumentElements, 65,536 elements) around
+// 237 KiB, where pmdoc.Parse refuses it (pmdoc.ErrTooManyElements), so the benchmarks ask for at
+// most 200 KiB.
 func benchmarkLiveDocument(b *testing.B, size int) *crdt.Doc {
 	b.Helper()
 	var markdown strings.Builder

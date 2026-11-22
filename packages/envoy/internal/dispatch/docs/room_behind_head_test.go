@@ -364,7 +364,7 @@ func TestAWriteOpeningWhileAReplacedRoomClosesIsRefused(t *testing.T) {
 			settleCurrentGeneration(t, pair.taskA, pair.artifactID)
 		}},
 		{"the catch-up", func(t *testing.T, pair processPair) {
-			pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
+			pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID, catchUpAsked)
 		}},
 	} {
 		t.Run(closer.name, func(t *testing.T) {
@@ -452,7 +452,7 @@ func TestACloseOfAReplacedRoomLeavesTheRoomThatReplacedIt(t *testing.T) {
 			settleCurrentGeneration(t, pair.taskA, pair.artifactID)
 		}},
 		{"the catch-up", func(t *testing.T, pair processPair) {
-			pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
+			pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID, catchUpAsked)
 			// The room no longer holds the instance the close checked, and what replaced it loaded
 			// at the head after that check, so the catch-up has its answer and arms no retry.
 			if wake := pair.taskA.catchUps.wakeIn(); wake != 0 {
@@ -614,7 +614,7 @@ func TestAWriteThatOpensBeforeTheCloseTakesItsLockLeavesTheRoomOpen(t *testing.T
 		pair.taskA.unlockState(room, state)
 	}
 
-	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
+	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID, catchUpAsked)
 	if !opened.Load() {
 		t.Fatal("the close never reached its state lock, so nothing here is tested")
 	}
@@ -679,7 +679,7 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 	}
 	t.Cleanup(leaveRoom)
 
-	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
+	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID, catchUpAsked)
 	if pair.taskA.srv.GetDoc(pair.artifactID) != live {
 		t.Fatal("the room was closed under the caller inside it")
 	}
@@ -785,7 +785,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 			live := pair.taskA.srv.GetDoc(pair.artifactID)
 			finish := other.take(t, pair, live)
 
-			pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
+			pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID, catchUpAsked)
 			if pair.taskA.srv.GetDoc(pair.artifactID) != live {
 				t.Fatal("the room was closed before the other close ran, so nothing here is tested")
 			}
@@ -837,7 +837,7 @@ func TestARoomReservedForTheInstanceItReplacedIsTriedAgain(t *testing.T) {
 	}
 	replaceStoredHistory(t, pair.database, pair.artifactID, "First.\n\nSecond.\n\nBob types again.\n")
 
-	catchUps.catchUp(ctx, pair.artifactID)
+	catchUps.catchUp(ctx, pair.artifactID, catchUpAsked)
 	if pair.taskA.srv.GetDoc(pair.artifactID) != replacement {
 		t.Fatal("the replacement was closed under the reservation for the instance before it")
 	}

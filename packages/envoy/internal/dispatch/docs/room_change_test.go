@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // dropBlock returns a live edit that removes the block whose text starts with prefix, as a
@@ -273,7 +274,7 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 			Find: fmt.Sprintf("Paragraph %d of the specification body with enough words to be realistic prose.", round+1),
 			With: fmt.Sprintf("EDITED %d of the specification body with enough words to be realistic prose.", round+1),
 		}}, alice, nil)
-		browser.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d's browser delete to return (a deadlock with the transaction's capture never does)", round), browser.Wait)
 		if editErr != nil {
 			ledger.Discard()
 			_ = tx.Rollback(ctx)

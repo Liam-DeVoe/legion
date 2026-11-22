@@ -520,7 +520,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 	}
 	close(persistence.release)
-	followers.Wait()
+	testwait.Returns(t, "both followers' reads to return once the shared fold was released", followers.Wait)
 	close(results)
 	for err := range results {
 		if err != nil {

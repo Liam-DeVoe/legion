@@ -152,14 +152,15 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	// taken once here on the test's goroutine for every reader's every socket.
 	firstFrameBy := readDeadline(t)
 	var readers sync.WaitGroup
-	// A wait below that gives up still stops the readers, then the peer and the writer, before the
-	// server closes, so none of them dials or reads on past the test.
+	// A wait below that gives up still stops the readers, the peer and the writer before it joins
+	// any of them, and joins the readers and the peer before the server closes, so none of them
+	// dials or reads on past the test.
 	haveEnough := sync.OnceFunc(func() { close(enough) })
 	t.Cleanup(func() {
 		haveEnough()
-		readers.Wait()
 		stopPeers()
-		peers.Wait()
+		testwait.Returns(t, "the four readers to stop", readers.Wait)
+		testwait.Returns(t, "the peer that joins and leaves to stop", peers.Wait)
 	})
 	for range 4 {
 		readers.Add(1)
@@ -205,9 +206,9 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 		return rounds.Load() >= 40 && writes.Load() >= 20
 	})
 	haveEnough()
-	readers.Wait()
+	testwait.Returns(t, "the four readers to stop", readers.Wait)
 	stopPeers()
-	peers.Wait()
+	testwait.Returns(t, "the peer that joins and leaves to stop", peers.Wait)
 	result := testwait.Receive(t, "the writer loop, whose in-flight joinedReplaceText has no bound, to report", written)
 	if result.err != nil {
 		t.Fatal(result.err)
@@ -570,7 +571,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 		return len(failures) > 0 || writes.Load() >= 20 && projections.Load() >= 5
 	})
 	close(stop)
-	writers.Wait()
+	testwait.Returns(t, "the two peer writers and the projecting writer to stop", writers.Wait)
 	close(failures)
 	for err := range failures {
 		t.Fatal(err)

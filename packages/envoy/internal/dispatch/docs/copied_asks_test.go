@@ -1134,7 +1134,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	}
 	locked.open(t)
 	reconciled.open(t)
-	settling.Wait()
+	testwait.Returns(t, "the three copies' settlements to return once released (a deadlock on the project's copy lock never does)", settling.Wait)
 	service.afterSettleLock, service.afterSettleReconcile = nil, nil
 
 	open := openAsksUnder(t, service, "shared")

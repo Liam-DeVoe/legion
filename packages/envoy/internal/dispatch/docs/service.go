@@ -80,11 +80,13 @@ type Deps struct {
 	Events      *events.Broker
 	Identity    identity.Identity
 	ServerURL   string
-	// Settle is the settle delay: how long a room's settlement waits each time it is armed
-	// (scheduleSettle), by a flushed edit, a failed settlement's retry (retrySettle) or any other
-	// caller. Each arming replaces the one before, so a burst of edits settles once, Settle after
-	// the last. Zero or less means 2 s. The timer runs on Clock, so with a fake Clock a settlement
-	// runs only once the test moves the fake past it.
+	// Settle is the settle delay: the delay scheduleSettle arms a room's settlement with, after a
+	// flushed edit, for a failed settlement's retry (retrySettle) and for its other callers. Each
+	// arming replaces the timer armed before it, so a burst of edits settles once, Settle after the
+	// last. The unrecorded-mark sweep (sweepUnrecordedMarks) and settleAfter arm that timer with
+	// delays of their own: the time left to a mark's TTL, and the delay settleAfter's caller hands
+	// it (SettleNow's 0). Zero or less means 2 s. The timer runs on Clock, so with a fake Clock a
+	// settlement runs only once the test moves the fake past its delay.
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -102,7 +104,7 @@ type Deps struct {
 	// (RunSettlementResumption), Shutdown's drain budget (ShutdownDrainBudget) and each room's
 	// settlement timer (scheduleSettleAfterLocked); nil means the real clock. A test hands a
 	// clocktest fake and moves it past the wait; with a fake, every settlement waits until the test
-	// moves the fake past its delay (Settle). It is also, when set, the clock the reference excerpt
+	// moves the fake past its delay. It is also, when set, the clock the reference excerpt
 	// reconciliation reads the moment it stamps and judges a document's retry at (excerptMoment):
 	// nil, as production leaves it, hands those statements no moment, so the database's own now()
 	// does both; a Clock that is set, clock.Real() included, puts them on that clock.

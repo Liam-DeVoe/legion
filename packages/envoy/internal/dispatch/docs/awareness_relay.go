@@ -1025,8 +1025,9 @@ func (r *awarenessRelay) watchRoomAwareness(room string, aw *awareness.Awareness
 // again, encoded here. A client another process's notification is being applied for is left to
 // the process it came from (inbound, received). Each change is counted for the test hooks
 // (countAwarenessChange) - one a notification applied, and a removal the room made itself, which
-// they count as an expiry of a client another process relayed - under mu: the hooks' lock is
-// taken behind it and takes nothing after.
+// they count as Expired for a client another process relayed: the room's expiry of that client,
+// or a local peer's frame that removes it - under mu: the hooks' lock is taken behind it and takes
+// nothing after.
 //
 // Each removal is decided from one snapshot of its client - the client's state and its clock
 // read together, under the awareness's own lock - and never from one read of which clients are

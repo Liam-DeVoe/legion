@@ -673,7 +673,7 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 		})
 	}
 	close(start)
-	wg.Wait()
+	testwait.Returns(t, "the two services' sweeps to return (a deadlock between them never does)", wg.Wait)
 	if totals[0]+totals[1] != documents {
 		t.Fatalf("the two sweeps sent %d and %d notices, want %d between them", totals[0], totals[1], documents)
 	}
