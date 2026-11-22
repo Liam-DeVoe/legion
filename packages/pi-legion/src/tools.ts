@@ -119,8 +119,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
-  fresh_session: ["issue", "role"],
-  compact: ["issue", "role"],
+  fresh_session: ["issue", "role", "claim"],
+  compact: ["issue", "role", "claim"],
   pause: ["reason"],
   resume: [],
 };
@@ -415,6 +415,14 @@ function toolSchema(pi: PiApi): unknown {
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
       .optional(),
+    // A claim's token (contract 222), for fresh_session and compact: two claims of one issue can
+    // hold one role, and issue and role reach the one that works the role's step.
+    claim: z
+      .string()
+      .describe(
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does"
+      )
+      .optional(),
   });
 }
 
@@ -563,8 +571,11 @@ export function createLegionTool(deps: {
         "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
-        "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+        "fresh_session (issue, role, and optionally claim) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. " +
+        "issue and role reach the claim that works the role's step; two claims of one issue can hold one role, so name the " +
+        "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
+        "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
         "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
         "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
@@ -690,16 +701,23 @@ export function createLegionTool(deps: {
                 `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
               );
             }
+            // A claim the controller names by its token (contract 222) is sent only when named,
+            // since a daemon below 222 refuses the member as unknown.
+            const named = parameters.claim;
+            if (named !== undefined && (typeof named !== "string" || named.trim() === "")) {
+              throw new Error(`${operation}'s claim is a claim token, as a notice names it`);
+            }
+            const target = { issue, role, ...(named === undefined ? {} : { claim: named }) };
             const { grantId } = await controllerGrant(active.sessionID);
             if (operation === "compact") {
               // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so
               // and names why, and the claim is back whatever it says.
-              return jsonSuccess(await client.compact({ grantId, issue, role }));
+              return jsonSuccess(await client.compact({ grantId, ...target }));
             }
             // The daemon's answer again: empty for a claim whose phase was restarted or needed
             // no restart, and naming the refusal where the claim came back owing no task and
             // the workflow refused the restart that would have handed it one.
-            return jsonSuccess(await client.freshSession({ grantId, issue, role }));
+            return jsonSuccess(await client.freshSession({ grantId, ...target }));
           }
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {

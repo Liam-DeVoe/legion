@@ -313,8 +313,11 @@ const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
   "controller's report issue's icebox, because that issue holds no work. " +
-  "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+  "fresh_session (issue, role, and optionally claim) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. " +
+  "issue and role reach the claim that works the role's step; two claims of one issue can hold one role, so name the " +
+  "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
+  "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
   "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
   "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
@@ -500,6 +503,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
+    claim: {
+      type: "string",
+      description:
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does",
+    },
   },
   required: ["op"],
   additionalProperties: false,
@@ -2152,6 +2160,38 @@ test("the controller reads the state without a grant and sets an issue's status 
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
+  // A claim named by its token (contract 222), another claim of the role than the step's worker,
+  // is sent as named, and only when named; compact takes it the same way.
+  await run({
+    op: "fresh_session",
+    issue: "LEGION-209",
+    role: "tester",
+    claim: "legion-legion-legion-209-tester",
+  });
+  expect(calls.at(-1)).toEqual([
+    "freshSession",
+    {
+      grantId: "controller-grant-1",
+      issue: "LEGION-209",
+      role: "tester",
+      claim: "legion-legion-legion-209-tester",
+    },
+  ]);
+  await run({
+    op: "compact",
+    issue: "LEGION-209",
+    role: "tester",
+    claim: "legion-legion-legion-209-tester",
+  });
+  expect(calls.at(-1)).toEqual([
+    "compact",
+    {
+      grantId: "controller-grant-1",
+      issue: "LEGION-209",
+      role: "tester",
+      claim: "legion-legion-legion-209-tester",
+    },
+  ]);
   // Refused before any mint: a status the board does not have, a missing issue, a role no claim
   // is on — the controller's own among them — and every operation of a claim.
   const before = calls.length;
@@ -2166,7 +2206,11 @@ test("the controller reads the state without a grant and sets an issue's status 
     [{ op: "fresh_session", role: "implementer" }, "fresh_session requires issue"],
     [
       { op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" },
-      'fresh_session does not accept field "status"; it takes issue, role',
+      'fresh_session does not accept field "status"; it takes issue, role, claim',
+    ],
+    [
+      { op: "fresh_session", issue: "LEGION-209", role: "tester", claim: " " },
+      "fresh_session's claim is a claim token",
     ],
     [
       { op: "read_state", to: "planning" },
@@ -2198,7 +2242,14 @@ test("the controller reads the state without a grant and sets an issue's status 
     isError: true,
   });
   expect(calls).toHaveLength(before);
-  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
+  expect(minted).toEqual([
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+  ]);
 });
 
 // Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after

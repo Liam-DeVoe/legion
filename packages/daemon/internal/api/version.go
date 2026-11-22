@@ -3128,7 +3128,12 @@ package api
 // (api.PauseHeldView) that names no claim, a merge-queue message or a row the release before
 // wrote, names in `claim` the worker on its role's step, the claim its executor reaches, where it
 // named the role's own token; the key and its shape are unchanged, so every contract is served
-// it. From this entry the last number of answers.go's SupportedContracts is
+// it. The controller's `POST /legion/v1/claims/fresh-session` and `POST /legion/v1/claims/compact`
+// take a claim's token in a new member, `claim` (api.ClaimRequest), a claim of the issue that
+// holds the role the body names: the issue and the role reach the claim that works the role's
+// step, and the other claim of that role a notice can name was out of the controller's reach. A
+// plugin sends it only when it names one, since a daemon below 222 refuses an unknown member. From
+// this entry the last number of answers.go's SupportedContracts is
 // `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
