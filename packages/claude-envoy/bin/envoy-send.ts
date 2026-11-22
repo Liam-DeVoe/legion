@@ -121,7 +121,7 @@ try {
     // Another sender's message holds the key, so the listener stored nothing for this send: it
     // was not delivered, and it is no send that may have arrived. A run without the key mints a
     // new one, which delivers it.
-    process.stderr.write(`Claude Envoy send ${keyTakenText(sent)}\n`)
+    process.stderr.write(`Claude Envoy send ${keyTakenText(sent, "envoy_send")}\n`)
     process.exitCode = 1
   } else {
     process.stdout.write(`Sent Envoy message to ${send.targetSession}.\n`)

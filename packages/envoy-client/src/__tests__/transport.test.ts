@@ -635,6 +635,52 @@ describe("EnvoyClient", () => {
     expect(repeat).toMatchObject({ duplicate: true, envelope: { event_id: "event-alice" } });
   });
 
+  // The listener gives the key-taken answer only to a request that names it (`Envoy-Reads:
+  // key-taken`, listenerwire.ReadsHeader), and any other the envelope it built for the repeat. A
+  // send or a publish that names its source session names it; one that names none does not, since
+  // the listener cannot tell its own retry from another sessionless sender's request. The control
+  // is the sessionless call, which carries no such header.
+  test("a send or a publish that names its session says it reads the key-taken answer, and one that names none does not", async () => {
+    const whole = {
+      event_id: "event-own",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-own",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.key",
+      issued_at: 7,
+      payload_summary: "hello",
+      trace_id: "trace-own",
+      recipient: "ses_target",
+    };
+    const recorded = recordFetch([
+      jsonResponse(whole),
+      jsonResponse(whole),
+      jsonResponse(whole),
+      jsonResponse(whole),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hi",
+    });
+    await client.publish({
+      sourceSessionID: "ses_sender",
+      topic: "notifications.team.x",
+      message: "hi",
+    });
+    await client.send({ sourceSessionID: "", targetSessionID: "ses_target", message: "hi" });
+    await client.publish({ sourceSessionID: "", topic: "notifications.team.x", message: "hi" });
+
+    expect(recorded.requests.map((request) => request.headers.get("Envoy-Reads"))).toEqual([
+      "key-taken",
+      "key-taken",
+      null,
+      null,
+    ]);
+  });
+
   test("a send reads the target's state", async () => {
     const envelope = {
       event_id: "event-stopped",

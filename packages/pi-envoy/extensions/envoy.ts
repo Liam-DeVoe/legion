@@ -5400,7 +5400,7 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
           if (result.keyTaken !== undefined) {
-            return toolSuccess(keyTakenText(result), keyTakenDetails(result));
+            return toolSuccess(keyTakenText(result, "envoy_send"), keyTakenDetails(result));
           }
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
@@ -5422,7 +5422,7 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
           if (result.keyTaken !== undefined) {
-            return toolSuccess(keyTakenText(result), keyTakenDetails(result));
+            return toolSuccess(keyTakenText(result, "envoy_publish"), keyTakenDetails(result));
           }
           // The skip is the listener's own delivery: the role lane skips the holder it resolved
           // when that holder is the message's source, and the fanout skips every interest whose

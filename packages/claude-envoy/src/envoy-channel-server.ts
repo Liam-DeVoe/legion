@@ -2328,7 +2328,7 @@ export async function executeEnvoyTool(
         ...toMessageMetadata(args),
       })
       if (result.keyTaken !== undefined) {
-        return { message: keyTakenText(result), ...keyTakenDetails(result) }
+        return { message: keyTakenText(result, "envoy_send"), ...keyTakenDetails(result) }
       }
       return {
         message: sendConfirmationText(result),
@@ -2355,7 +2355,7 @@ export async function executeEnvoyTool(
       // source, so the listener sends that session a message for a kept copy no session took,
       // unless it drops the copy more than an hour late, and the line says so.
       if (result.keyTaken !== undefined) {
-        return { message: keyTakenText(result), ...keyTakenDetails(result) }
+        return { message: keyTakenText(result, "envoy_publish"), ...keyTakenDetails(result) }
       }
       return {
         message: publishConfirmationText(result, { senderNamed: true }),

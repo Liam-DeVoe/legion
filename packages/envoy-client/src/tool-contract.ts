@@ -361,12 +361,24 @@ export function sendConfirmationText(result: {
 }
 
 /**
+ * How the line for a taken key says to deliver the message after all, for each tool that can get
+ * one: `envoy_send` mints a new idempotency_key when the call names none (its idempotency_key is
+ * only for a send that was not confirmed), and `envoy_publish` takes none and mints one for every
+ * publish.
+ */
+const KEY_TAKEN_AGAIN = {
+  envoy_send: "send it again without an idempotency_key; Envoy gives it a new one",
+  envoy_publish: "publish it again; Envoy gives every publish a new idempotency_key",
+} as const;
+
+/**
  * The line both hosts show the model for a send or a publish whose idempotency key another
  * sender's message already holds ({@link KeyTakenResult}): nothing was delivered for this caller,
- * and the line names that message's event id so the model does not read the key as its own.
+ * and the line names that message's event id so the model does not read the key as its own, and
+ * says how `tool` delivers the message after all.
  */
-export function keyTakenText(result: KeyTakenResult): string {
-  return `not delivered: another sender's message (${result.keyTaken.eventId}) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key`;
+export function keyTakenText(result: KeyTakenResult, tool: keyof typeof KEY_TAKEN_AGAIN): string {
+  return `not delivered: another sender's message (${result.keyTaken.eventId}) already holds this idempotency_key, so Envoy stored nothing for you; ${KEY_TAKEN_AGAIN[tool]}`;
 }
 
 /** The fields of a key-taken result both hosts hand the model beside {@link keyTakenText}, under

@@ -215,7 +215,9 @@ const ErrorWireSchema = z.object({
  * release gave before the state existed. `duplicate` says the listener already stored another
  * request's copy of a send under this target and idempotency key, or of a publish under this
  * idempotency key (a topic publish, or a role send's forward to its holder), so this one stored
- * nothing new; a current listener then answers the stored copy's envelope and an older one the
+ * nothing new; a current listener then answers the stored copy's envelope where it is this
+ * caller's own, and otherwise the key-taken answer (`KeyTakenWireSchema`) to a request that names
+ * it or the envelope it built for the repeat to one that does not, and an older listener the
  * envelope it built for the repeat. Absent reads as false, and an older listener's publish answer
  * never carries it.
  *
@@ -271,12 +273,28 @@ const PublishResponseSchema = EnvelopeResponseSchema.extend({
 });
 
 /**
+ * The request header in which a send or a publish names the answers this client reads beyond the
+ * whole envelope, and the token that names the key-taken answer (`listenerwire.ReadsHeader` and
+ * `listenerwire.ReadsKeyTaken`). The listener gives the key-taken answer only to a request that
+ * names it, and a request that does not gets the envelope the listener built for it, with
+ * `duplicate`, which every client release parses. This client names it on a send or a publish
+ * that names its source session (`RequestOptions.readsKeyTaken`). One that names none is not
+ * named: the listener cannot tell its own earlier attempt from another sessionless sender's, so
+ * its own retry after a lost answer would read as a key taken by someone else, while its own
+ * envelope with `duplicate` reads as the delivered repeat it most likely is. An older listener
+ * ignores the header.
+ */
+const READS_HEADER = "Envoy-Reads";
+const READS_KEY_TAKEN = "key-taken";
+
+/**
  * A send's or a publish's answer when its idempotency key is already taken by another sender's
- * message: `200` with `duplicate: true`, the stored message's `event_id`, `issued_at`, `topic` and
- * `dedupe_key`, and none of what that sender wrote or who it is, whose string fields the listener
- * sends empty (`requestSender.answer` in `cmd/listener/stored_copy.go`). It is told from a whole
- * answer by its `payload_summary`, which a whole envelope never sends empty, so the two schemas
- * never both read one answer.
+ * message, to a request that names it (`READS_HEADER`): `200` (or `202` kept) with
+ * `duplicate: true`, the stored message's `event_id`, `issued_at`, `topic` and `dedupe_key`, and
+ * none of what that sender wrote or who it is, whose string fields the listener sends empty
+ * (`requestSender.answer` in `cmd/listener/stored_copy.go`). It is told from a whole answer by its
+ * `payload_summary`, which a whole envelope never sends empty, so the two schemas never both read
+ * one answer.
  */
 const KeyTakenWireSchema = z.object({
   event_id: z.string().min(1),
@@ -986,6 +1004,9 @@ type RequestOptions = {
    * never acted as would trade for a name the broker refuses.
    */
   readonly actingSession?: string;
+  /** Whether the call names the key-taken answer as one it reads (`READS_HEADER`): a send or a
+   *  publish that names its source session. */
+  readonly readsKeyTaken?: boolean;
 };
 
 /** One attempt's outcome: the listener's status and body; no answer, and why; or nothing that
@@ -1194,7 +1215,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       path,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(options?.readsKeyTaken === true ? { [READS_HEADER]: READS_KEY_TAKEN } : {}),
+        },
         body: JSON.stringify(body),
       },
       options
@@ -1307,7 +1331,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             },
             ...(input.sourceSessionID === undefined || input.sourceSessionID === ""
               ? {}
-              : { actingSession: input.sourceSessionID }),
+              : { actingSession: input.sourceSessionID, readsKeyTaken: true }),
           }
         );
         // A 2xx whose body does not parse is the listener's word that cannot be read. An answer
@@ -1352,7 +1376,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           },
           input.sourceSessionID === undefined || input.sourceSessionID === ""
             ? {}
-            : { actingSession: input.sourceSessionID }
+            : { actingSession: input.sourceSessionID, readsKeyTaken: true }
         ),
         "POST",
         "/v1/messages/publish"

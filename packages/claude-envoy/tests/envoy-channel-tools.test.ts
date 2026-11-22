@@ -135,27 +135,26 @@ test("a send or a publish whose key another sender's message holds is not delive
     session: sessionWith([]),
     clientInstanceID: INSTANCE,
   }
-  const notDelivered = {
-    message:
-      "not delivered: another sender's message (evt-alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key",
+  const notDelivered = (again: string) => ({
+    message: `not delivered: another sender's message (evt-alice) already holds this idempotency_key, so Envoy stored nothing for you; ${again}`,
     event_id: "evt-alice",
     topic: "notifications.agent.ses_receiver",
     delivered: false,
     key_taken: true,
-  }
+  })
 
   expect(
     await executeEnvoyTool(runtime, "envoy_send", {
       session_id: "ses_receiver",
       message: "bob's words",
     }),
-  ).toEqual(notDelivered)
+  ).toEqual(notDelivered("send it again without an idempotency_key; Envoy gives it a new one"))
   expect(
     await executeEnvoyTool(runtime, "envoy_publish", {
       topic: "notifications.team.x",
       message: "bob's words",
     }),
-  ).toEqual(notDelivered)
+  ).toEqual(notDelivered("publish it again; Envoy gives every publish a new idempotency_key"))
 })
 
 // The list is what the model reads before it decides a peer is dead: a session past its live

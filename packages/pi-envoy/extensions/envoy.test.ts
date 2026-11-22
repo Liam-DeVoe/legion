@@ -24581,7 +24581,7 @@ describe("the send and publish answers", () => {
           );
 
         expect(result?.content[0]?.text).toBe(
-          "not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key"
+          `not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; ${tool === "envoy_send" ? "send it again without an idempotency_key; Envoy gives it a new one" : "publish it again; Envoy gives every publish a new idempotency_key"}`
         );
         expect(result?.details).toStrictEqual({
           event_id: "evt_alice",

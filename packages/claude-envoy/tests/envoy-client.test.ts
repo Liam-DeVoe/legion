@@ -53,7 +53,7 @@ function keyTaken(target: string): Record<string, unknown> {
 
 /** The line `keyTakenText` writes for `keyTaken`'s answer. */
 const KEY_TAKEN_LINE =
-  "not delivered: another sender's message (evt-alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key"
+  "not delivered: another sender's message (evt-alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again without an idempotency_key; Envoy gives it a new one"
 
 /** result as a stored send's, which a test reads field by field; a key-taken result fails the
  *  test that expected a stored send. */
