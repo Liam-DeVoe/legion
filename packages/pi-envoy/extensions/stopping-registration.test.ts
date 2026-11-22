@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { LISTENER_CALL_ATTEMPTS } from "@legion/contracts";
+import { LISTENER_CALL_RETRY_DELAY_MS } from "@legion/contracts";
 import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import { onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import {
@@ -221,8 +221,9 @@ test("a heartbeat's registration accepted after the stop began makes no role mov
 
 // A session that holds a role: a heartbeat's pass finds that the listener lost the claim, and its
 // claim of the role again is on the wire when the session's stop begins. The listener answers
-// that claim a 500 only once the stop is done, and the pass fails with it. That failure is no
-// outage to report: no heartbeat follows it, so the pane hears nothing and is promised no retry.
+// that claim a 500 only once the stop is done, and the client's stop gate refuses the retry the
+// 500 asks for, so the pass fails. That failure is no outage to report: no heartbeat follows it,
+// so the pane hears nothing and is promised no retry.
 test("a heartbeat's role claim that fails after the stop began tells the pane nothing", async () => {
   const session = "ses_claim_failed_while_stopping";
   let listenerHoldsClaim = true;
@@ -239,8 +240,7 @@ test("a heartbeat's role claim that fails after the stop began tells the pane no
     if (path === "/v1/roles/set" && failClaims) {
       failedClaims += 1;
       if (failedClaims === 1) {
-        // Answered only once the test lets it go, after the stop. The client's retry of it is
-        // answered the same 500 at once.
+        // Answered only once the test lets it go, after the stop. The stop gate sends no retry.
         const { promise, resolve } = Promise.withResolvers<void>();
         held.push(resolve);
         await promise;
@@ -269,9 +269,12 @@ test("a heartbeat's role claim that fails after the stop began tells the pane no
 
     await fixture.handlers.get("session_shutdown")?.({}, context);
     for (const answer of held.splice(0)) answer();
-    await until(() => failedClaims === LISTENER_CALL_ATTEMPTS, "every attempt of the claim failed");
+    // The client waits its retry delay out before the stop gate refuses the retry, and nothing
+    // marks that refusal, so the row waits the delay out on the real clock too.
+    await Bun.sleep(LISTENER_CALL_RETRY_DELAY_MS * 2);
     await settle();
 
+    expect(failedClaims).toBe(1);
     expect(notifications.slice(notified)).toEqual([]);
   } finally {
     for (const answer of held.splice(0)) answer();

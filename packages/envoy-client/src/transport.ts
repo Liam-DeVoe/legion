@@ -289,6 +289,14 @@ export type EnvoyClientConfig = {
    * loopback listener that asks for none.
    */
   readonly credential?: RequestCredential | undefined;
+  /**
+   * The host's reading that its session's stop has begun (R24 of dispatch://INFRA-3589): the
+   * stop gate. It is read before each attempt and before each retry, and once it answers true a
+   * call of the session's registration or role state is refused before anything is sent
+   * (`STOP_GATE`, `EnvoyStoppingError`). An attempt already sent is not cancelled, and its answer
+   * is read as before. Unset, the session never reads as stopping.
+   */
+  readonly stopping?: () => boolean;
 };
 
 export type Interest = z.infer<typeof InterestWireSchema>;
@@ -946,6 +954,76 @@ export type EnvoyClient = {
   readonly listSessions: (input?: ListSessionsInput) => Promise<readonly SessionInfo[]>;
 };
 
+/**
+ * The calls a host's stop makes itself (R24 of dispatch://INFRA-3589), which the stop gate lets
+ * through: the hand-back of each role hold the process still has. The stop's DELETE is
+ * `EnvoyClient.unregisterSession`, which the gate never refuses.
+ */
+export interface EnvoyStopCalls {
+  /** The stop's release of one role hold: the removal of the role's topic, naming the process
+   *  that held it (`UnsubscribeInput.clientInstanceID`). */
+  readonly handBack: (input: UnsubscribeInput) => Promise<void>;
+}
+
+/** A call this client makes: one of `EnvoyClient`'s, or one of the stop's own. */
+export type EnvoyCall = keyof EnvoyClient | keyof EnvoyStopCalls;
+
+/**
+ * The stop gate's one list (R24 of dispatch://INFRA-3589): what becomes of each call once the
+ * host's stop has begun (`EnvoyClientConfig.stopping`). Every call of the session's registration
+ * and role state is refused: a registration and a heartbeat (`subscribe`), a removal of topics
+ * (`unsubscribe`), a read of the session's registry entry (`getInterest`), a role claim, transfer
+ * or re-assertion (`setRole`) and a role read (`getRole`). These calls are sent: the stop's own
+ * (its DELETE, `unregisterSession`, and its hand-back, `EnvoyStopCalls.handBack`), the session's
+ * own content (`send`, `publish`: a message the model asked for before or as the stop began, which
+ * is worse lost than sent), and the list of sessions (`listSessions`), which changes nothing at
+ * the listener. A call added to the client must be named here, or the client does not compile.
+ */
+const STOP_GATE: { readonly [Call in EnvoyCall]: "refused" | "sent" } = {
+  subscribe: "refused",
+  unsubscribe: "refused",
+  getInterest: "refused",
+  setRole: "refused",
+  getRole: "refused",
+  unregisterSession: "sent",
+  handBack: "sent",
+  send: "sent",
+  publish: "sent",
+  listSessions: "sent",
+};
+
+/**
+ * A call the stop gate refused (`STOP_GATE`): the host's stop had begun
+ * (`EnvoyClientConfig.stopping`) before an attempt of the call was sent, so that attempt reached
+ * no listener. Where an earlier attempt was sent and failed, the gate refused its retry. A caller
+ * tells this refusal apart by its class (`instanceof EnvoyStoppingError`); `call` names the call.
+ */
+export class EnvoyStoppingError extends Error {
+  override readonly name = "EnvoyStoppingError";
+
+  constructor(
+    readonly call: EnvoyCall,
+    method: string,
+    url: string
+  ) {
+    super(
+      `this session is stopping, so it sends the listener nothing: ${method} ${url} was not sent`
+    );
+  }
+}
+
+/** The gate-free calls of each client `createEnvoyClient` made (`stopCallsOf`). */
+const stopCalls = new WeakMap<EnvoyClient, EnvoyStopCalls>();
+
+/**
+ * The stop's own calls on `client` (`EnvoyStopCalls`), which its stop gate lets through. Only a
+ * host's stop calls this. A client `createEnvoyClient` did not make has no gate, so its hand-back
+ * is its own `unsubscribe`.
+ */
+export function stopCallsOf(client: EnvoyClient): EnvoyStopCalls {
+  return stopCalls.get(client) ?? { handBack: (input) => client.unsubscribe(input) };
+}
+
 type RequestOptions = {
   readonly timeoutMs?: number;
   readonly retry?: boolean;
@@ -989,12 +1067,14 @@ type RequestOptions = {
   readonly actingSession?: string;
 };
 
-/** One attempt's outcome: the listener's status and body; no answer, and why; or nothing that
- *  reached a route of the listener, and why (`RequestOptions.onNotSent`). */
+/** One attempt's outcome: the listener's status and body; no answer, and why; nothing that
+ *  reached a route of the listener, and why (`RequestOptions.onNotSent`); or nothing sent,
+ *  because the stop gate refused the attempt (`STOP_GATE`). */
 type AttemptOutcome =
   | { readonly response: Response; readonly body: string }
   | { readonly unanswered: unknown }
-  | { readonly notSent: unknown };
+  | { readonly notSent: unknown }
+  | { readonly stopping: true };
 
 /**
  * The one place the client's call timing resolves: a configuration names a per-attempt timeout
@@ -1052,8 +1132,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     url: string,
     init: RequestInit,
     deadlineMs: number,
-    actingSession: string | undefined
+    actingSession: string | undefined,
+    refusedByStop: () => boolean
   ): Promise<AttemptOutcome> => {
+    // The stop gate, read before the attempt starts and again after its credential's wait, the
+    // last wait before the request is sent. Both reads are synchronous, so the request still
+    // leaves in the turn a bearer's headers are taken in.
+    if (refusedByStop()) return { stopping: true };
     let response: Response;
     // What a credential that could not mint said, where one could not. A listener that asks for
     // no credential answers the same with or without one, so a broker that is down or refused
@@ -1084,6 +1169,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // Only the attempt's own deadline leaves nothing to send: the attempt sent nothing, and
       // fails in the credential's own words (a pending registration names its session).
       if (unminted !== undefined && deadline.aborted) return { notSent: unminted };
+      if (refusedByStop()) return { stopping: true };
       sent.note(presented);
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       // No call follows a redirect: the listener answers none, so a 3xx is something in its
@@ -1129,12 +1215,17 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   };
 
   const request = async (
+    call: EnvoyCall,
     path: string,
     init: RequestInit,
     options: RequestOptions = {}
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
+    // Whether the stop gate refuses this call once the host's stop has begun (`STOP_GATE`), read
+    // at each attempt, a retry's included.
+    const gated = STOP_GATE[call] === "refused";
+    const refusedByStop = (): boolean => gated && config.stopping?.() === true;
     // The last bus-outage 503 an attempt got, where the caller asked for it (`busUnansweredStands`).
     let busUnanswered: EnvoyApiError | undefined;
     for (let attempt = 0; attempt < tries; attempt += 1) {
@@ -1143,8 +1234,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         url,
         init,
         options.timeoutMs ?? timeoutMs,
-        options.actingSession
+        options.actingSession,
+        refusedByStop
       );
+      if ("stopping" in outcome)
+        throw new EnvoyStoppingError(call, init.method ?? "GET", shown(url));
       if ("unanswered" in outcome) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
@@ -1195,8 +1289,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     throw new Error("Envoy request exhausted retries");
   };
 
-  const post = (path: string, body: object, options?: RequestOptions) =>
+  const post = (call: EnvoyCall, path: string, body: object, options?: RequestOptions) =>
     request(
+      call,
       path,
       {
         method: "POST",
@@ -1238,11 +1333,39 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     plugin_version: input.plugin.version,
   });
 
-  return {
+  // A removal of topics from the session's registry entry: the session's own (`unsubscribe`),
+  // which the stop gate refuses once the stop has begun, and the stop's hand-back of a role hold
+  // (`EnvoyStopCalls.handBack`), which it lets through.
+  const removeTopics = async (
+    call: "unsubscribe" | "handBack",
+    input: UnsubscribeInput
+  ): Promise<void> => {
+    await post(
+      call,
+      "/v1/interests/unsubscribe",
+      {
+        session_id: input.sessionID,
+        topics: expandSubscriptionTopics(input.topics),
+        // The process handing the interests back, omitted when the caller names none so an
+        // older listener sees an unchanged body. The listener frees the role claims naming
+        // this process and no others, and forces none.
+        ...(input.clientInstanceID === undefined
+          ? {}
+          : { client_instance_id: input.clientInstanceID }),
+      },
+      // A removal an attempt of which got the bus-outage 503 fails with that answer where a
+      // later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`): the
+      // listener may already have freed the claim or written the record.
+      { actingSession: input.sessionID, busUnansweredStands: true }
+    );
+  };
+
+  const client: EnvoyClient = {
     subscribe: async (input) =>
       parseSubscribeAnswer(
         answerJson(
           await post(
+            "subscribe",
             "/v1/interests/subscribe",
             subscribeBody(input),
             // Every call below whose body names the session it acts for presents that session's
@@ -1255,29 +1378,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           "/v1/interests/subscribe"
         )
       ),
-    unsubscribe: async (input) => {
-      await post(
-        "/v1/interests/unsubscribe",
-        {
-          session_id: input.sessionID,
-          topics: expandSubscriptionTopics(input.topics),
-          // The process handing the interests back, omitted when the caller names none so an
-          // older listener sees an unchanged body. The listener frees the role claims naming
-          // this process and no others, and forces none.
-          ...(input.clientInstanceID === undefined
-            ? {}
-            : { client_instance_id: input.clientInstanceID }),
-        },
-        // A removal an attempt of which got the bus-outage 503 fails with that answer where a
-        // later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`): the
-        // listener may already have freed the claim or written the record.
-        { actingSession: input.sessionID, busUnansweredStands: true }
-      );
-    },
+    unsubscribe: (input) => removeTopics("unsubscribe", input),
     getInterest: async (sessionID) =>
       InterestWireSchema.parse(
         answerJson(
-          await request(`/v1/interests/${sessionID}`, {}),
+          await request("getInterest", `/v1/interests/${sessionID}`, {}),
           "GET",
           `/v1/interests/${sessionID}`
         )
@@ -1297,6 +1402,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       let response: z.infer<typeof EnvelopeResponseSchema>;
       try {
         const answer = await post(
+          "send",
           "/v1/messages/send",
           {
             source: input.source ?? "agent",
@@ -1353,6 +1459,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       const response = PublishResponseSchema.parse(
         answerJson(
           await post(
+            "publish",
             "/v1/messages/publish",
             {
               source: input.source ?? "agent",
@@ -1395,6 +1502,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           ? ""
           : `?client_instance_id=${encodeURIComponent(input.clientInstanceID)}`;
       await request(
+        "unregisterSession",
         `/v1/sessions/${encodeURIComponent(input.sessionID)}${query}`,
         { method: "DELETE" },
         {
@@ -1432,7 +1540,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       };
       let raw: string;
       try {
-        raw = await post("/v1/roles/set", body, { actingSession: input.sessionID });
+        raw = await post("setRole", "/v1/roles/set", body, { actingSession: input.sessionID });
       } catch (error) {
         // A soft claim refused by a live holder is an outcome, not a failure:
         // the listener answers 409 with the holder's id.
@@ -1457,7 +1565,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     getRole: async (role) =>
       RoleWireSchema.parse(
         answerJson(
-          await request(`/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }),
+          await request("getRole", `/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }),
           "GET",
           `/v1/roles/${encodeURIComponent(role)}`
         )
@@ -1469,10 +1577,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       if (input.include !== undefined) search.set("include", input.include);
       const query = search.size === 0 ? "" : `?${search.toString()}`;
       return SessionWireSchema.array().parse(
-        answerJson(await request(`/v1/sessions${query}`, {}), "GET", `/v1/sessions${query}`)
+        answerJson(
+          await request("listSessions", `/v1/sessions${query}`, {}),
+          "GET",
+          `/v1/sessions${query}`
+        )
       );
     },
   };
+  stopCalls.set(client, { handBack: (input) => removeTopics("handBack", input) });
+  return client;
 }
 
 function waitForRetry(delayMs: number): Promise<void> {

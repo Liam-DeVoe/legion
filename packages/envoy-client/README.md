@@ -412,6 +412,17 @@ record (`getInterest`, `getRole`, `listSessions`) names no session and is answer
 credential the client was built with. A bearer is the same header whichever session a call acts
 for.
 
+The client's stop gate (R24 of dispatch://INFRA-3589): a host passes its reading that the
+session's stop has begun as `stopping`, and the client reads it before each attempt and before
+each retry. Once it answers true, a call of the session's registration and role state is refused
+before anything is sent, with `EnvoyStoppingError`, whose `call` names it: `subscribe` (a
+registration and every heartbeat), `unsubscribe`, `getInterest`, `setRole` (a claim, a transfer
+and a re-assertion) and `getRole`. The one list is `STOP_GATE` in `transport.ts`. The stop's own
+calls still go: its DELETE (`unregisterSession`) and its hand-back of each role hold
+(`stopCallsOf(client).handBack`). A `send` and a `publish` still go too: they carry a message the
+model asked for before or as the stop began, and losing it is worse than sending it. An attempt
+already sent when the stop begins is not cancelled, and its answer is read as before.
+
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has
 no event in the configured stream. It sends the client instance driving the session

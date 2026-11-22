@@ -5,16 +5,20 @@ body: |-
   which a Legion pane runs, a SIGTERM emits no `session_shutdown`, so before this a stopped pane
   sent neither the release nor the record's delete; the stop now also runs from the host's exit
   callbacks. A release that does not answer in 250 ms is left, and the delete still goes. Once
-  the stop has begun, the session makes no role move. A heartbeat's pass whose registration the
-  listener accepts after that point reads and claims no role. A role move that runs or waits its
-  turn when the stop begins sends no claim after that point. It claims no role back after the
-  release, fires no regain hook and tells the pane nothing. A claim already on the wire when the
-  stop begins writes no transcript record, also when the listener grants it. `envoy_role_set`
-  and the Legion role claim are refused once the stop has begun, with
-  `this session is stopping, so it claims no role: role <role> is not held here`. The pane is
-  told nothing of a heartbeat that fails or a pass that stalls once the stop has begun. A send
-  answered `no_receiver` says the session takes no message into its conversation now instead of
-  live.
+  the stop has begun, the session registers, unsubscribes and claims nothing, writes no ledger
+  entry or role record, and tells its pane, transcript and log nothing, apart from the stop's own
+  release, delete and log lines. Three gates do this, each in one place: the client's stop gate,
+  the extension's tell gate and its write gate. A pass, a session event, the start's retry and
+  `envoy_unsubscribe` that come after the stop began do nothing. A heartbeat's pass whose
+  registration the listener accepts after that point reads and claims no role. A role move that
+  runs or waits its turn when the stop begins sends no claim after that point. It claims no role
+  back after the release and fires no regain hook. A claim already on the wire when the stop
+  begins writes no transcript record, also when the listener grants it. `envoy_role_set` and the
+  Legion role claim are refused once the stop has begun, with
+  `this session is stopping, so it claims no role: role <role> is not held here`, and
+  `envoy_unsubscribe` with `this session is stopping, so it unsubscribes nothing`. A relay frame
+  that is being delivered when the stop begins is still shown and answered. A send answered
+  `no_receiver` says the session takes no message into its conversation now instead of live.
 time: 2026-11-16T18:40:00Z
 custom:
     Issue: pr4194

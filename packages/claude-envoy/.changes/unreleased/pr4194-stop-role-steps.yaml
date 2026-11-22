@@ -1,12 +1,17 @@
 kind: Fixed
 body: |-
-  A session whose shutdown has begun makes no role write. A heartbeat that is past its own check
-  when the shutdown begins reads the shutdown again after each wait of its role steps. After that
-  point it sends no claim, takes back no role, changes no role record and runs no regain hook.
-  `envoy_role_set` is refused once the shutdown has begun, with
-  `this session is stopping, so it claims no role: role <role> is not held here`. A claim that
-  was on the wire when the shutdown began is not kept as a hold of the session's, though the
-  listener can still grant it: the listener's role reaper frees it once it finds the holder gone.
+  A session whose stop has begun sends no registration, removal of topics or role claim, writes
+  no role record, and tells the session and stderr nothing, apart from the stop's own DELETE and
+  its line. The stop begins at the server's stop, also while the session still starts. Three gates
+  do this, each in one place: the client's stop gate, the server's tell gate and its write gate. A
+  heartbeat that is past its own check when the stop begins sends no claim after that point,
+  takes back no role and runs no regain hook. A `/clear` that the stop overtakes moves nothing
+  more. `envoy_role_set` is refused once the stop has begun, with
+  `this session is stopping, so it claims no role: role <role> is not held here`, and
+  `envoy_unsubscribe` removes nothing. A Legion claim that still waits for the first turn or its
+  bound when the stop begins is not made. A claim that was on the wire when the stop began is not
+  kept as a hold of the session's and leaves no record, though the listener can still grant it:
+  the listener's role reaper frees it once it finds the holder gone.
 time: 2026-11-21T22:33:15Z
 custom:
     Issue: pr4194

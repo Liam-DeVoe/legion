@@ -59,7 +59,8 @@ export interface LegionClaimHost {
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
-  /** Aborts when the host stops: a claim the listener answered 503 is not made again after it. */
+  /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
+   *  from then on, and a claim the listener answered 503 is not made again after it. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
@@ -222,6 +223,10 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  * line per wait, until it lands or is refused. The session stays up meanwhile: the role's messages
  * wait for it, with the holder the claim would have replaced or on the role's kept lane. The
  * promise answers when the step has run, either way, and never rejects.
+ *
+ * A host whose `signal` aborts - the host stopping - claims nothing from then on (R24 of
+ * dispatch://INFRA-3589): the abort clears the bound, and a first turn the host reports after it
+ * runs no claim. The promise answers at the abort, as a step that ran.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
@@ -230,10 +235,18 @@ function claimRoleAtFirstTurn(
 ): Promise<void> {
   const done = Promise.withResolvers<void>();
   let ran = false;
+  // The host's stop: the bound goes, and no claim runs after it.
+  const stop = (): void => {
+    if (ran) return;
+    ran = true;
+    clearTimeout(bound);
+    done.resolve();
+  };
   const claim = (): void => {
     if (ran) return;
     ran = true;
     clearTimeout(bound);
+    host.signal?.removeEventListener("abort", stop);
     void (async () => {
       try {
         await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
@@ -249,6 +262,8 @@ function claimRoleAtFirstTurn(
   };
   const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
+  if (host.signal?.aborted === true) stop();
+  else host.signal?.addEventListener("abort", stop, { once: true });
   firstTurn(claim);
   return done.promise;
 }

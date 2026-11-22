@@ -13,6 +13,7 @@ import {
   type SubscribeResult,
   type UnsubscribeInput,
 } from "@legion/envoy-client/transport";
+import { STOP_HAND_BACK_LINES } from "./hand-back-ledger";
 import {
   createRegistrationState,
   type DialLimit,
@@ -925,9 +926,11 @@ describe("handBackAllHolds", () => {
     held.resolve();
     await handingBack;
 
+    // The stop's own words (`STOP_HAND_BACK_LINES`), which the host's tell gate lets through once
+    // the stop has begun.
     expect(warnings).toEqual([
       {
-        message: "envoy: a role this process gave up was not handed back",
+        message: STOP_HAND_BACK_LINES.failed,
         context: { topic: ALPHA, sessionID: "ses_a", error: "listener failed" },
       },
     ]);
@@ -959,13 +962,12 @@ describe("handBackAllHolds", () => {
     await state.handBackAllHolds();
 
     // The hand-backs go side by side, so the warnings come in no set order.
-    const notHandedBack = "envoy: a role this process gave up was not handed back";
+    const notHandedBack = STOP_HAND_BACK_LINES.failed;
     expect(warnings).toHaveLength(4);
     expect(warnings).toEqual(
       expect.arrayContaining([
         {
-          message:
-            "envoy: the listener's message bus did not answer the hand-back of a role this process gave up. The listener may already have freed the claim. The registry may already be without the role's topic.",
+          message: STOP_HAND_BACK_LINES.busUnanswered,
           context: { topic: ALPHA, sessionID: "ses_a", error: messageFor(failures.ses_a) },
         },
         {

@@ -36,8 +36,9 @@ export function inboundOffChannelSession(options: {
         role,
       })
     },
-    // It registers nothing and deletes no record, so no claim lands behind a DELETE of its own:
-    // the role tool claims as at any other time.
+    // It registers nothing and deletes no record, so no claim lands behind a DELETE of its own,
+    // and it never reads as stopping. Once the server's stop has begun, the client's stop gate
+    // refuses the role tool's claim instead (`createEnvoyClient`'s `stopping`).
     stopping: () => false,
     shutdown: async () => undefined,
   }

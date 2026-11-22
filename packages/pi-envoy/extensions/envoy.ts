@@ -213,6 +213,7 @@ import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
+import { STOP_HAND_BACK_LINES } from "../src/hand-back-ledger";
 import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
@@ -244,6 +245,7 @@ import {
 import { type SessionInbound, sessionInbound } from "../src/session-inbound";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
+import { createStopGates } from "../src/stop-gates";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -753,8 +755,26 @@ const timedDispatchClient = (ms: number, session: () => string = currentSessionI
   sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session)?.client;
 
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
- *  process holds (`../src/scrubbed-host`). */
-const logger = scrubbedLogger(hostLogger);
+ *  process holds (`../src/scrubbed-host`). Each extension instance writes through its own tell
+ *  gate over it (`logger`, below). */
+const scrubbedHostLogger = scrubbedLogger(hostLogger);
+
+/** The line the stop writes when the release of the session's role claims did not answer in its
+ *  share of the stop (`releaseRoleClaims`). */
+const STOP_RELEASE_UNANSWERED =
+  "envoy: the listener did not answer the release of the role claims in time";
+
+/** The stop's own lines, the only lines the tell gate lets through once the stop has begun (R24
+ *  of dispatch://INFRA-3589): the release that did not answer in time, and a hand-back of the
+ *  release that failed (`STOP_HAND_BACK_LINES`). */
+const STOP_LINES: ReadonlySet<string> = new Set([
+  STOP_RELEASE_UNANSWERED,
+  STOP_HAND_BACK_LINES.busUnanswered,
+  STOP_HAND_BACK_LINES.failed,
+]);
+
+/** What `envoy_unsubscribe` answers once the session's stop has begun: it drops no topic. */
+const STOPPING_UNSUBSCRIBES_NOTHING = "this session is stopping, so it unsubscribes nothing";
 
 /**
  * The warning for a request to take `what` out of the listener's registry that the listener's
@@ -774,6 +794,27 @@ export default function envoyExtension(hostApi: PiApi): void {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
   // the secrets this process holds, the backstop under the rules that name no peer's text.
   const pi = scrubbedHost(hostApi);
+  // Whether this session's stop has begun (`shutDownSession`), the one stop reading every gate
+  // and every control-flow read below takes.
+  let shuttingDown = false;
+  // The stop gates (R24 of dispatch://INFRA-3589, `../src/stop-gates`). Once the stop has begun,
+  // the tell gate drops every pane notice (`notify`), held notice (`sendNotice`), notice to the
+  // model and log line (`logger`) of this extension's own, the stop's own lines apart
+  // (`STOP_LINES`); the write gate refuses every ledger entry and role record; and the client
+  // sends no call of the session's registration or role state (`createEnvoyClient`'s `stopping`).
+  // A relay frame already past `deliverRelayed`'s read is a delivered message, not a notice: its
+  // card, its records and its answer pass no gate.
+  const stopGates = createStopGates(() => shuttingDown, STOP_LINES);
+  const logger = stopGates.gatedLogger(scrubbedHostLogger);
+  // A pane notice of the extension's own, through the tell gate: every `ui.notify` here goes
+  // through this.
+  const notify = (
+    context: Pick<SessionContext, "ui"> | undefined,
+    message: string,
+    level: "info" | "warning"
+  ): void => {
+    if (stopGates.tells(message)) context?.ui.notify(message, level);
+  };
   logger.debug("extension instance loaded", { extension: import.meta.url });
   // The interface the Legion plugin reads (`@legion/pi-shared/interface`). `undefined` when an
   // Envoy entry at another interface version published first: that entry's object stays the one
@@ -880,6 +921,9 @@ export default function envoyExtension(hostApi: PiApi): void {
           baseUrl: envoy.url,
           fetch: serverClock.observing(fetch),
           credential: envoy.credential,
+          // The stop gate of the session's listener calls: once the stop has begun, no call of
+          // its registration or role state is sent, its own hand-back and DELETE apart.
+          stopping: () => shuttingDown,
         }),
       }
     : undefined;
@@ -1020,7 +1064,8 @@ export default function envoyExtension(hostApi: PiApi): void {
     const sessionID = context.sessionManager.getSessionId();
     if (availabilityWarningSessionIDs.has(sessionID)) return;
     availabilityWarningSessionIDs.add(sessionID);
-    context.ui.notify(
+    notify(
+      context,
       `envoy: Dispatch open-ask check unavailable (${messageFor(error)}); the stop-time ask reminder is off until it recovers`,
       "warning"
     );
@@ -1054,9 +1099,11 @@ export default function envoyExtension(hostApi: PiApi): void {
     return snapshot;
   };
 
+  // The transcript's record that Legion drives this session, written through the write gate:
+  // a stopping session writes none (R24 of dispatch://INFRA-3589).
   const markLegionManagedSession = (targetSessionID: string): void => {
     legionRoleClaimBridge().managedSessions.add(targetSessionID);
-    if (legionManagedTranscript) return;
+    if (legionManagedTranscript || !stopGates.writes()) return;
     legionManagedTranscript = true;
     pi.appendEntry(LEGION_MANAGED_ENTRY, { session_id: targetSessionID });
   };
@@ -1196,7 +1243,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         const notice = `AskGate could not write its record for session ${id} (${messageFor(error)}), so the dispatch CLI does not ask for AskGate's marker there: a Dispatch write AskGate cannot read posts unreviewed.`;
         logger.warn(notice);
         if (ui === undefined) askgateNotices.push(notice);
-        else ui.notify(`envoy: ${notice}`, "warning");
+        else notify({ ui }, `envoy: ${notice}`, "warning");
       }
     }
     dispatchLedger = {
@@ -1270,6 +1317,9 @@ export default function envoyExtension(hostApi: PiApi): void {
           credential: inbound.relayCredential,
           outage: inboundOutage,
           log: (line) => logger.warn(`envoy: ${line}`),
+          // A socket that closes once the stop has begun is not opened again: the stop drains
+          // the connection only after its hand-back.
+          stopping: () => shuttingDown,
         },
         AbortSignal.timeout(Math.max(0, Math.min(boundMs, leftMs)))
       );
@@ -1342,7 +1392,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           ? () => undefined
           : keepNatsCredential(nats, broker, (text) => {
               logger.warn(`envoy: ${text}`);
-              activeSessionContext?.ui.notify(`envoy: ${text}`, "warning");
+              notify(activeSessionContext, `envoy: ${text}`, "warning");
             }),
     });
   };
@@ -1587,6 +1637,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       });
     },
   });
+  // A held notice of the extension's own (`UnwrittenFrames.sendNotice`), through the tell gate:
+  // every replay, outage and refusal notice goes through this.
+  const sendNotice = (content: string): void => {
+    if (stopGates.tells(content)) unwritten.sendNotice(content);
+  };
 
   // Shows `session` a card the delivery ledger asked for (a failure notice naming a frame the
   // session was never shown) under a claim of that frame, so a live copy arriving meanwhile is
@@ -2362,7 +2417,6 @@ export default function envoyExtension(hostApi: PiApi): void {
   };
 
   const RESUBSCRIBE_DELAY_MS = Number(process.env.ENVOY_RESUBSCRIBE_DELAY_MS ?? "") || 5_000;
-  let shuttingDown = false;
 
   // The topics this session follows, as the concrete subjects a registration carries
   // (`expandSubscriptionTopics`). The listener relays every one of them from the session's own
@@ -2574,7 +2628,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // again.
   const tellGapNotice = (notice: ConsumerGapNotice): void => {
     logger.warn(`envoy: ${notice.message}`);
-    unwritten.sendNotice(gapNoticeText(notice));
+    sendNotice(gapNoticeText(notice));
   };
 
   // What this session was already shown, and the notice naming a frame it could not be shown
@@ -2610,7 +2664,8 @@ export default function envoyExtension(hostApi: PiApi): void {
                 eventID: notice.eventId,
                 error: messageFor(error),
               });
-              activeSessionContext?.ui.notify(
+              notify(
+                activeSessionContext,
                 `envoy: message ${notice.eventId} from ${notice.sender} was not shown, nor was the notice naming it (${messageFor(error)})`,
                 "warning"
               );
@@ -2629,9 +2684,9 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // The ledger's followed topics are written once a pass has opened the session's inbound: before
   // that, a topic restored from the transcript is not followed again yet, and the write would
-  // drop it.
+  // drop it. A stopping session writes none (the write gate).
   const ledgerOpen = (): boolean =>
-    !shuttingDown && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
+    stopGates.writes() && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
   const ledgerFollowedChanged = async (): Promise<void> => {
     if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged();
   };
@@ -3315,7 +3370,8 @@ export default function envoyExtension(hostApi: PiApi): void {
     }
     if (!sessionRoleNotified.has(id)) {
       sessionRoleNotified.add(id);
-      activeSessionContext?.ui.notify(
+      notify(
+        activeSessionContext,
         sessionRoleSession === undefined
           ? `envoy: role ${sessionRole} is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here`
           : `envoy: role ${sessionRole} stays with the pod's session ${sessionRoleSession}; messages to the role are not delivered here. /resume ${sessionRoleSession} takes it back`,
@@ -3346,7 +3402,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     sessionOpen,
     stopping: () => shuttingDown,
     deadlineMs: passDeadlineMs,
-    notify: (message, level) => activeSessionContext?.ui.notify(message, level),
+    notify: (message, level) => notify(activeSessionContext, message, level),
     log: logger,
     appendRoleClaimEntry: ({ role, sessionID: claimedFor, clientInstanceID }) => {
       // The transcript is the one thing `omp --resume` guarantees, so it is the durable record
@@ -3359,7 +3415,8 @@ export default function envoyExtension(hostApi: PiApi): void {
       // transcript — a continuation that resumed a live session's id — tells its own records
       // from this one's. The launch's role is claimed again at every pass, so a claim of it that
       // the newest record on the branch already names — that role, for that session, by this
-      // process — writes nothing.
+      // process — writes nothing. A stopping session writes no record at all (the write gate).
+      if (!stopGates.writes()) return;
       const newest =
         role === sessionRole
           ? transcriptRoleRecord(activeSessionContext?.sessionManager.getBranch?.() ?? [])
@@ -3502,37 +3559,41 @@ export default function envoyExtension(hostApi: PiApi): void {
   // once more.
   // An accepted registration after a told outage tells the session once, by the same path, worded
   // for the last `why` it was told. A session whose stop has begun is told neither (`stopping`):
-  // the stop closed the relay on purpose, and the record is deleted next.
+  // the stop closed the relay on purpose, and the record is deleted next. This report is the one
+  // choke point of those notices, and each of its tells goes through the tell gate as well.
   const inboundOutage = inboundUnavailable(
     (why) => {
       if (isUnrecordedRegistration(why)) {
         logger.warn(`envoy: this session's registration is not recorded for certain: ${why}`);
-        activeSessionContext?.ui.notify(
+        notify(
+          activeSessionContext,
           `envoy: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat`,
           "warning"
         );
       } else {
         logger.warn(`envoy: this session receives nothing: ${why}`);
-        activeSessionContext?.ui.notify(
+        notify(
+          activeSessionContext,
           `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
           "warning"
         );
       }
-      unwritten.sendNotice(inboundUnavailableNoticeText(why));
+      sendNotice(inboundUnavailableNoticeText(why));
     },
     {
       restored: (toldWhy) => {
         if (isUnrecordedRegistration(toldWhy)) {
           logger.info("envoy: the listener recorded a registration of this session");
-          activeSessionContext?.ui.notify(
+          notify(
+            activeSessionContext,
             "envoy: the listener recorded a registration of this session",
             "info"
           );
         } else {
           logger.info("envoy: this session receives again: a registration was accepted");
-          activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
+          notify(activeSessionContext, "envoy: inbound messages are back", "info");
         }
-        unwritten.sendNotice(inboundRestoredNoticeText(toldWhy));
+        sendNotice(inboundRestoredNoticeText(toldWhy));
       },
       held: (relayMissing) => {
         logger.warn(
@@ -3665,11 +3726,12 @@ export default function envoyExtension(hostApi: PiApi): void {
             }
           );
         });
-        activeSessionContext?.ui.notify(
+        notify(
+          activeSessionContext,
           `envoy: the listener refused ${stillFollowed.join(", ")} for this session's projects (${reason}); the session no longer follows them`,
           "warning"
         );
-        unwritten.sendNotice(refusedTopicsNoticeText(stillFollowed, reason));
+        sendNotice(refusedTopicsNoticeText(stillFollowed, reason));
       },
       log: (line) => logger.warn(`envoy: ${line}`),
       stopping: () => shuttingDown,
@@ -3766,16 +3828,18 @@ export default function envoyExtension(hostApi: PiApi): void {
     const writeHeartbeatTitle = dispatchTitleWriter();
     // The pane hears about a stall as it hears about a registry outage, and for the same reason:
     // the session is at risk of being reaped by the listener while the pane runs on. A session
-    // whose stop has begun hears of none (R24 of dispatch://INFRA-3589): a pass abandoned at its
-    // deadline after that point leaves nothing to recover, since the DELETE follows it.
+    // whose stop has begun hears of none (R24 of dispatch://INFRA-3589, the tell gate): a pass
+    // abandoned at its deadline after that point leaves nothing to recover, since the DELETE
+    // follows it.
     const noteStall = (detail: string): void => {
-      if (stallNotified || shuttingDown) return;
+      if (stallNotified) return;
       stallNotified = true;
       logger.warn("envoy: reconcile pass stalled; registration refreshed on its own", {
         detail,
         sessionID: context.sessionManager.getSessionId(),
       });
-      context.ui.notify(
+      notify(
+        context,
         `envoy: a reconcile pass has stalled (${detail}); the session registration is being refreshed on its own, and recovers once the pass settles`,
         "warning"
       );
@@ -3849,7 +3913,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         .catch((error) => {
           // A tick that fails once the stop has begun is no outage: no heartbeat follows it, and
           // the DELETE does, so the line would promise a retry that never comes. Nothing is
-          // armed and nothing is said (R24 of dispatch://INFRA-3589).
+          // armed, and the tell gate drops what would be said (R24 of dispatch://INFRA-3589).
           if (shuttingDown) return;
           // The extra call this failure buys, armed only from an interval tick: a retry that
           // fails is followed by the next tick, not by a second retry, so a listener that keeps
@@ -3861,7 +3925,8 @@ export default function envoyExtension(hostApi: PiApi): void {
             retryIn === undefined
               ? "retrying at the next heartbeat"
               : `retrying once in ${Math.round(retryIn / 1000)} s, then every heartbeat`;
-          context.ui.notify(
+          notify(
+            context,
             `envoy: registry heartbeat failed (${messageFor(error)}); ${retrying}`,
             "warning"
           );
@@ -4025,18 +4090,21 @@ export default function envoyExtension(hostApi: PiApi): void {
     const previous = continues.get(current);
     if (previous === undefined || previous === current || notifiedSessions.has(current)) return;
     notifiedSessions.add(current);
+    const content = encode({
+      envoy: {
+        notice: "session id changed",
+        previous_session_id: previous,
+        session_id: current,
+        detail:
+          "This conversation now lives under a new session id. Any identity you shared earlier (envoy_whoami output, session ids named in messages) is stale, and peers using the old id cannot reach you. Re-run envoy_whoami before identifying yourself and re-announce the new id to peers you already introduced yourself to.",
+      },
+    });
+    // A notice to the model, through the tell gate.
+    if (!stopGates.tells(content)) return;
     pi.sendMessage(
       {
         customType: "envoy-message",
-        content: encode({
-          envoy: {
-            notice: "session id changed",
-            previous_session_id: previous,
-            session_id: current,
-            detail:
-              "This conversation now lives under a new session id. Any identity you shared earlier (envoy_whoami output, session ids named in messages) is stale, and peers using the old id cannot reach you. Re-run envoy_whoami before identifying yourself and re-announce the new id to peers you already introduced yourself to.",
-          },
-        }),
+        content,
         display: true,
         details: LOCAL_ENVOY_NOTICE,
       },
@@ -4111,6 +4179,11 @@ export default function envoyExtension(hostApi: PiApi): void {
     cause: PassCause,
     handle: TaskHandle
   ): Promise<boolean> => {
+    // A pass that starts once the stop has begun does nothing (R24 of dispatch://INFRA-3589): its
+    // first steps would deregister a session the host left, tell the agent of a new id, dial the
+    // inbound and read the registry, and the stop deletes the record next. A pass the stop
+    // overtakes ends at the read after its registration, below.
+    if (shuttingDown) return false;
     const host = context.sessionManager.getSessionId();
     // Every write, listener call, dial and subscribe below is a step of this pass's handle, which
     // refuses it once the pass was abandoned at its deadline or the host moved out from under it:
@@ -4440,11 +4513,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       await establishForBridge(context);
     }
     // The listener rejects a claim from a session it does not currently know
-    // (its registration may have expired), so register before claiming. Each wait is read for
-    // the stop: a registration the listener accepted after the stop began claims nothing.
+    // (its registration may have expired), so register before claiming. A stop that began before
+    // it is refused here in the claim's own words; one that begins while it is on the wire
+    // refuses the move's first step, and the claim is refused below in the same words.
     refuseClaimWhileStopping(role);
     await registerSession();
-    refuseClaimWhileStopping(role);
     let claimAdopted = false;
     const claimed = await registrationState.roleMoves.run(
       async (handle) => {
@@ -4570,9 +4643,9 @@ export default function envoyExtension(hostApi: PiApi): void {
     bindDispatchSession(context.sessionManager.getSessionId());
     restoreLocalSessionState(context);
     lastHeard = context.sessionManager.getSessionId();
-    if (startNotice !== "") context.ui.notify(`envoy: ${startNotice}`, "warning");
+    if (startNotice !== "") notify(context, `envoy: ${startNotice}`, "warning");
     await askgateLoad;
-    for (const notice of askgateNotices) context.ui.notify(`envoy: ${notice}`, "warning");
+    for (const notice of askgateNotices) notify(context, `envoy: ${notice}`, "warning");
     if (!inbound) return;
     let established = false;
     const establish = async (): Promise<void> => {
@@ -4582,26 +4655,29 @@ export default function envoyExtension(hostApi: PiApi): void {
     try {
       await establish();
     } catch (error) {
+      // A pass that fails once the stop has begun is no outage: the stop deletes the record next,
+      // so the pane is told nothing and no retry is armed (R24 of dispatch://INFRA-3589).
+      if (shuttingDown) return;
       // Whatever the pass failed at: the NATS connection it dials, the relay subject it opens
       // for the session's consumer, or the registration the listener refused or may not have
       // recorded. The session runs either way. Until a pass gets through, a message reaches it
       // only from a consumer a registration already made whose relay subject is still open: the
       // consumer of an accepted registration, or the one the listener made before it answered a
       // bus-outage 503 (`isBusUnanswered`).
-      context.ui.notify(
+      notify(
+        context,
         `envoy: this session is not registered (${messageFor(error)}); retrying in the background`,
         "warning"
       );
       let attempting = false;
       context.setInterval(() => {
-        if (established || attempting) return;
+        // A tick once the stop has begun starts no pass: the stop deletes the record next.
+        if (established || attempting || shuttingDown) return;
         attempting = true;
         void establish()
-          // A pass that ends once the stop began says nothing: it registered nothing
-          // (`sendRegistration`), or the stop deletes the record it wrote.
-          .then(() => {
-            if (!shuttingDown) context.ui.notify("envoy: this session is registered", "warning");
-          })
+          // A pass that ends once the stop began says nothing (the tell gate): it registered
+          // nothing, or the stop deletes the record it wrote.
+          .then(() => notify(context, "envoy: this session is registered", "warning"))
           // Quiet on purpose: the initial warning disclosed the outage, and a
           // fresh warning every retry tick would spam the session.
           .catch(() => undefined)
@@ -4626,7 +4702,10 @@ export default function envoyExtension(hostApi: PiApi): void {
   ): Promise<void> => {
     // The cards a check was armed for belong to the session the host left.
     cardWake.cancel();
-    if (await isSubagent(context)) return;
+    // A session event once the stop has begun moves nothing (R24 of dispatch://INFRA-3589): it
+    // would deregister the session the host left, end a role and run a pass, and the stop hands
+    // the roles back and deletes the record next.
+    if ((await isSubagent(context)) || shuttingDown) return;
     const host = context.sessionManager.getSessionId();
     noteMove(host, { kind: reason });
     lastHeard = host;
@@ -4654,7 +4733,8 @@ export default function envoyExtension(hostApi: PiApi): void {
     } catch (error) {
       // A switch during a network outage must degrade, not fail the handler; the heartbeat's next
       // pass or the NATS client's own reconnect converges.
-      context.ui.notify(
+      notify(
+        context,
         `envoy: rebind failed (${messageFor(error)}); will recover on reconnect`,
         "warning"
       );
@@ -4669,7 +4749,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     reason: SessionSwitchReason | undefined,
     context: SessionContext
   ): Promise<void> => {
-    if (!(await isSubagent(context))) {
+    if (!(await isSubagent(context)) && !shuttingDown) {
       bindDispatchSession(context.sessionManager.getSessionId(), context.ui);
     }
     await rebind(reason, context);
@@ -4712,7 +4792,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         "the release of this session's role claims"
       );
     } catch (error) {
-      logger.warn("envoy: the listener did not answer the release of the role claims in time", {
+      logger.warn(STOP_RELEASE_UNANSWERED, {
         sessionID,
         error: messageFor(error),
       });
@@ -5527,6 +5607,10 @@ export default function envoyExtension(hostApi: PiApi): void {
           });
         }
         case EnvoyToolOperation.unsubscribe: {
+          // A stopping session drops no topic (R24 of dispatch://INFRA-3589): the stop deletes
+          // the session's record next, so the tool is refused before it changes anything, as the
+          // client would refuse the removal and the ledger would take no write.
+          if (shuttingDown) throw new Error(STOPPING_UNSUBSCRIBES_NOTHING);
           // The session's own inbox is not a subscription the tool manages.
           // A role topic is followed through the independently-held role claim: drop the local
           // follow without unregistering that interest.

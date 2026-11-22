@@ -356,6 +356,13 @@ export interface ListenerRelayOptions {
   readonly outage: RelayOutage;
   /** Where a line about the socket goes: a close, a refusal, a socket that stopped answering. */
   readonly log: (line: string) => void;
+  /**
+   * The host's reading that its session's stop has begun (R24 of dispatch://INFRA-3589). Once it
+   * answers true, no socket is opened again: an open the connection would make (after a close,
+   * or a follow) closes the connection for good instead. Unset, the session never reads as
+   * stopping.
+   */
+  readonly stopping?: () => boolean;
 }
 
 /** A pending round trip: the ping it sent, and its answer. */
@@ -641,6 +648,13 @@ export class ListenerRelay implements InboundConnection {
    *  every flush waiting on it, which no later socket can answer. */
   #open(): void {
     if (this.#closedForGood) return;
+    // A session whose stop has begun opens no socket again: the stop drains the connection after
+    // its hand-back, and a socket opened meanwhile would be an upgrade under the stopping
+    // session's token.
+    if (this.#options.stopping?.() === true) {
+      void this.close();
+      return;
+    }
     clearTimeout(this.#reopenTimer);
     this.#reopenTimer = undefined;
     this.#generation += 1;

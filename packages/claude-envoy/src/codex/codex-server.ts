@@ -44,6 +44,7 @@ import { inboundOffChannelSession } from "../envoy-off"
 import { installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
+import { createStopGates } from "../stop-gates"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
 import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
@@ -263,13 +264,17 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const endedNow = (sessionId: string): Promise<boolean> =>
     sessionEnded(codexEndedFile(stateDirectory, codexPid, sessionId))
   const configFile = sessionConfigFile("codex", process.env)
-  const warn = (text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`)
   const bundlePath = resolve(pluginRoot, process.argv[1] ?? "")
 
   let record: CodexSessionRecord | undefined
   let runtime: ChannelToolRuntime | undefined
   let notReady = "this session's Envoy side starts at its first prompt"
   const stopping = new AbortController()
+  // The server's tell gate over its stop (`stop`, R24 of dispatch://INFRA-3589): once the stop
+  // has begun, a warning of its own is written nowhere. The session reads the same stop from
+  // `startSignal`, and the client's stop gate from `stopping.signal` too.
+  const serverGates = createStopGates(() => stopping.signal.aborted)
+  const warn = (text: string): void => serverGates.stderr(`envoy-channel: ${text}\n`)
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
@@ -486,6 +491,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
     baseUrl: envoy.url,
     credential: envoy.credential,
     fetch: globalThis.fetch,
+    // The stop gate: once `stop` has begun, no call of the session's registration or role
+    // state is sent, the DELETE of the stop apart.
+    stopping: () => stopping.signal.aborted,
   })
   const clientInstanceID = newClientInstanceID()
   /** The session the `codex` process runs now, as its record names it: what `codex queue` and the
