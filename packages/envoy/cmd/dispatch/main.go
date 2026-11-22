@@ -1553,7 +1553,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
+		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", redact.URL(envoyURL))
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1635,7 +1635,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.EnvoyURL))
 	}
 	return nil
 }

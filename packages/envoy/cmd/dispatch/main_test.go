@@ -612,6 +612,34 @@ func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t
 	}
 }
 
+// Dispatch's refusals of a URL setting print the value through redact.URL, so a credential written
+// into one prints in none: ENVOY_URL with no http scheme and a made-up password, a remote ENVOY_URL
+// with one under the dev sign-in, and the embeddings and chat endpoints refused for a made-up key in
+// the query. Each still names its setting.
+func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
+	const secret = "madeUpEndpointSecret0123"
+	at := "@"
+	_, envoyErr := resolveBootConfig(envGetter(map[string]string{
+		"DATABASE_URL":                     "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":             "agent-token",
+		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
+		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
+		"ENVOY_URL":                        "dispatch:" + secret + at + "envoy.invalid:9020",
+	}))
+	_, devErr := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_URL": "http://dispatch:" + secret + at + "envoy.example:9020"}))
+	_, embedErr := resolveAzureEmbedder(envGetter(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "https://resource.openai.azure.com/?api-key=" + secret}))
+	_, chatErr := chatEndpoint(envGetter(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1?key=" + secret}), "DISPATCH_CHAT_ENDPOINT", "endpoint")
+	for setting, err := range map[string]error{"ENVOY_URL=": envoyErr, "ENVOY_URL=\"": devErr, "DISPATCH_AZURE_EMBED_ENDPOINT=": embedErr, "DISPATCH_CHAT_ENDPOINT=": chatErr} {
+		if err == nil || !strings.Contains(err.Error(), setting) {
+			t.Errorf("the refusal = %v, want one naming %s", err, setting)
+			continue
+		}
+		if strings.Contains(err.Error(), secret[:10]) {
+			t.Errorf("the refusal %q holds part of the secret", err)
+		}
+	}
+}
+
 // A broker URL with no token file must refuse to boot rather than construct a client that
 // authenticates with an empty bearer.
 func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *testing.T) {

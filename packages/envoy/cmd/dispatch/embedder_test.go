@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // testAzureKey is the API key azureEmbedEnvironment sets, which no log line or refusal may carry.
@@ -84,6 +85,9 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 		return azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE": value})
 	}
 	const endpointShape = "(expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)"
+	// withheld is how a refusal quotes an endpoint redact.URL does not print: one with no scheme,
+	// no host, a query or a fragment, since such a value could hold a credential no check can find.
+	const withheld = `="` + redact.NotPrinted + `" ` + endpointShape
 	const quotaShape = "(expected a positive integer, the deployment's tokens-per-minute quota)"
 	type refusal struct {
 		name   string
@@ -100,15 +104,15 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 		{"a plain-http endpoint", endpoint("http://embed.example/models"),
 			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="http://embed.example/models" ` + endpointShape}},
 		{"a relative endpoint", endpoint("embed.example/models"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="embed.example/models" ` + endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"an endpoint with no host", endpoint("https:///models"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="https:///models" ` + endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"an endpoint with a query", endpoint("https://embed.example/models?api-version=2024-05-01-preview"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT=", endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"an endpoint with an empty query", endpoint("https://embed.example/models?"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="https://embed.example/models?" ` + endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"an endpoint with a fragment", endpoint("https://embed.example/models#embeddings"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="https://embed.example/models#embeddings" ` + endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"azure without a quota", quota(""),
 			[]string{"DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE is required when DISPATCH_EMBEDDER is azure"}},
 		{"a zero quota", quota("0"), []string{`DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE="0" ` + quotaShape}},
