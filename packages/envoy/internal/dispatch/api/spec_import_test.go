@@ -233,8 +233,9 @@ func (r *levelRig) requireOneRepairChild(t *testing.T, ids []string) string {
 			t.Errorf("the hold of %s names the repair issue %q, want %s", hold.ID, hold.RepairIssue, child.Key)
 		}
 	}
-	if want := slices.Sorted(slices.Values(ids)); !slices.Equal(held, want) {
-		t.Errorf("the open holds of %s are %v, want %v", specRepo, held, want)
+	// Holds lists them in the database's collation order; compare them in Go's.
+	if slices.Sort(held); !slices.Equal(held, slices.Sorted(slices.Values(ids))) {
+		t.Errorf("the open holds of %s are %v, want %v", specRepo, held, slices.Sorted(slices.Values(ids)))
 	}
 	return child.Key
 }
