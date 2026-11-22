@@ -196,18 +196,23 @@ export class TradeRetryingError extends Error {
 
 /**
  * A call that stopped waiting, its signal ended, while the client's first trade since its last
- * token was still out, so no trade had ended yet to say what it came to: a broker that does not
- * answer, named as that rather than as the signal's bare "The operation timed out.". The trade
- * goes on, so it is not final ({@link isFinalRefusal}). Its message names the identity traded and
- * nothing a peer wrote, and its `code` is ETIMEDOUT, as a request's that got no answer in its time
- * (`failureCode` of `@legion/contracts/log-text`).
+ * token was still out, so no trade had ended yet to say what it came to, named as that rather than
+ * as the signal's bare "The operation timed out.". `sent` says how far the trade got: its request
+ * sent to the broker and not answered yet, or not sent yet, its identity's source still waiting (a
+ * lock another process of this machine holds, a read of its own); the message names which, and
+ * nothing a peer wrote. The trade goes on, so it is not final ({@link isFinalRefusal}). Its `code`
+ * is ETIMEDOUT either way: the code of a wait whose time ended with no answer (`failureCode` of
+ * `@legion/contracts/log-text` gives the same for a deadline's `TimeoutError`, wherever the request
+ * waited), which is no broker's answer.
  */
 export class TradeUnansweredError extends Error {
   readonly code = "ETIMEDOUT";
 
-  constructor(identity: string) {
+  constructor(identity: string, sent = true) {
     super(
-      `the secrets broker has not yet answered the trade of ${identity}, and the trade goes on in the background`
+      sent
+        ? `the secrets broker has not yet answered the trade of ${identity}, and the trade goes on in the background`
+        : `the trade of ${identity} has not yet been sent to the secrets broker: its identity's source still waits (for a lock another process of this machine holds, or for its own read), and the trade goes on in the background`
     );
     this.name = "TradeUnansweredError";
   }

@@ -3349,6 +3349,12 @@ GATES = [
         ("packages/envoy-client/test/subscribe-answer.ts",
          f"{at_browser(BROWSER_MP_OUTSIDE, BROWSER_MP)} runs packages/dispatch/e2e/__tests__/"
          "outside-edge.test.ts, whose e2e/__tests__/outside-edge-stand-in.ts imports it"),
+        # The same test's stand-ins load the shared test fixtures, which are no envoy-client source.
+        (TEST_FIXTURES_SRC,
+         f"{at_browser(BROWSER_MP_OUTSIDE, BROWSER_MP)} runs packages/dispatch/e2e/__tests__/"
+         "outside-edge.test.ts, whose e2e/__tests__/outside-edge-credentials.ts and "
+         "@legion/envoy-client/test/relay-socket-stand-in import @legion/test-fixtures/fixture-secret "
+         "(through @legion/cipher-client/test/sign-ins)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)

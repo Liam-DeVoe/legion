@@ -138,8 +138,9 @@
  * `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names
  * either. `outside-edge.test.ts`'s stack rows skip on the same rule there, and run in
  * `.github/workflows/dispatch-browser.yaml`'s two-process job, which names the image: that step's
- * 16-minute budget is set above their 780 000 ms row limit, so a stuck stack fails there by its
- * own name before the step is killed.
+ * 18-minute budget is set above their 780 000 ms row limit and the file's other rows (149.2 s in
+ * the full lane's run 45008694182, its step 186 s), so a stuck stack fails there by its own name
+ * before the step is killed.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";

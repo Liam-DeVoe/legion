@@ -447,6 +447,9 @@ export class BrokerTokenClient {
   #nextAt = 0;
   #pendingWait = PENDING_FIRST_WAIT_MS;
   #retryWait = RETRY_FIRST_WAIT_MS;
+  /** Whether the trade out now has sent its request to the broker (`#send`); false from each
+   *  trade's start while its identity's source still reads or waits for its lock. */
+  #tradeSent = false;
   /** Ended by {@link close}, which stops the retry loop. */
   readonly #closed = new AbortController();
 
@@ -541,12 +544,15 @@ export class BrokerTokenClient {
 
   /** What a caller whose wait ended before the loop's answer is told: the loop's last failure,
    *  as {@link token} says; where no trade has ended yet, that the trade still out has not been
-   *  answered (`TradeUnansweredError`), the caller's deadline being no answer about the trade;
-   *  or `reason` where no trade is out at all. */
+   *  answered or, where its request has not gone out, not sent (`TradeUnansweredError`), the
+   *  caller's deadline being no answer about the trade; or `reason` where no trade is out at all. */
   #stopped(reason: unknown): unknown {
     const last = this.#last;
-    if (last === null)
-      return this.#loop === null ? reason : new TradeUnansweredError(this.describe());
+    if (last === null) {
+      return this.#loop === null
+        ? reason
+        : new TradeUnansweredError(this.describe(), this.#tradeSent);
+    }
     return last.kind === "pending"
       ? new RegistrationPendingError(this.#session, last.refusal)
       : retrying(last);
@@ -665,6 +671,7 @@ export class BrokerTokenClient {
       const attempt = AbortSignal.timeout(this.#attemptMs);
       let token: BrokerToken;
       try {
+        this.#tradeSent = false;
         token = await this.#trade(AbortSignal.any([closed, attempt]));
       } catch (error) {
         if (closed.aborted) throw closed.reason;
@@ -903,6 +910,7 @@ export class BrokerTokenClient {
     signal: AbortSignal | undefined,
     raw: { body: unknown }
   ): Promise<Response> {
+    this.#tradeSent = true;
     const answer = await sendWithProof(
       { key: this.#key, fetch: this.#fetch, nonce: this.#nonce },
       url,

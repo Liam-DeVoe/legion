@@ -11,7 +11,8 @@
  *    page shows when its first request gets no answer; with `finish` set, it posts
  *    `/auth/passkey/login/finish`, which answers `finish`'s status with
  *    `{"error", "code"}` (or a plain-text body where `code` is absent), and alerts the answer's
- *    `error`, or `answered <status>`.
+ *    `error`, or `answered <status>`; with `finish.stallBody`, that answer sends its status and
+ *    the start of its body, and never the rest, so the page shows nothing after it.
  *  - `GET /enroll` is the enrollment page `enroll` names (`Enrollment`): by default one that
  *    refuses its link in an alert naming the whole link, its fragment, the token, included, what a
  *    page that echoes its URL would show; or one whose "Create a passkey" makes a passkey on the
@@ -20,10 +21,13 @@
  *  - `GET /api/v1/projects` lists OWN, or answers `projects`'s status.
  *  - `POST /v1/oauth/device_authorization` and the device grant of `POST /v1/oauth/token` are a
  *    broker's device login on this origin (`broker`), approved once the machine-login page
- *    approved its code; the token exchange of `POST /v1/oauth/token` mints a session's token for a
- *    subject token one of those logins carried, and refuses any other (`tradeRefusal`), so a run
- *    whose device login passed opens its relay socket at the listener it names. With `exchange`,
- *    the exchange is never answered (`silent`), or answered only after that many milliseconds.
+ *    approved its code; with `poll`, the device grant's polls are never answered (`silent`),
+ *    answered `authorization_pending` once and then never (`once`), or answered
+ *    `authorization_pending` every time (`pending`). The token exchange of `POST /v1/oauth/token`
+ *    mints a session's token for a subject token one of those logins carried, and refuses any
+ *    other (`tradeRefusal`), so a run whose device login passed opens its relay socket at the
+ *    listener it names. With `exchange`, the exchange is never answered (`silent`), or answered
+ *    only after that many milliseconds.
  *  - `GET /credentials/machine` is the machine-login page `machine` names (`MachinePage`): by
  *    default one that looks a typed code up, approves it and names its credential; or one that
  *    misses one part of that.
@@ -39,7 +43,8 @@ import { tradeRefusal } from "./outside-edge-credentials";
 /** The enrollment page's kinds: `refuses`, an alert naming the whole link; `signs-in`, Create a
  *  passkey makes one, the stand-in sets its cookie and the page says "Signed in as …"; and the
  *  ways that falls short: `no-button`, neither the button nor an alert; `never-loads`, a page
- *  whose load never ends; `no-sign-in`, a button that does nothing; `refused`, a button whose
+ *  whose load never ends; `no-sign-in`, a button that does nothing but tell the stand-in it was
+ *  pressed (`POST /__clicked`, kept in `asked`); `refused`, a button whose
  *  click alerts a refusal; `no-passkey`, a sign-in with no passkey made; `elsewhere`, a sign-in
  *  that lands on another origin; `no-cookie`, a sign-in that sets no cookie. */
 export type Enrollment =
@@ -56,14 +61,17 @@ export type Enrollment =
 /** The machine-login page's kinds: `approves`, it looks the typed code up, approves it and names
  *  its credential; and the ways that falls short: `no-box`, no code box; `untypable`, a code box
  *  that takes no typing; `no-answer`, a look-up that shows nothing; `refuses-code`, a look-up
- *  that alerts a refusal; `refuses-approval`, an approval that alerts a refusal; `never-approved`,
- *  an Approve that shows nothing; `no-credential`, an approval that names no credential. */
+ *  that alerts a refusal; `refuses-code-lines`, the same refusal on two lines, the second
+ *  `APPROVED ABCD-EFGH`, as a page whose text holds a line break would show; `refuses-approval`,
+ *  an approval that alerts a refusal; `never-approved`, an Approve that shows nothing;
+ *  `no-credential`, an approval that names no credential. */
 export type MachinePage =
   | "approves"
   | "no-box"
   | "untypable"
   | "no-answer"
   | "refuses-code"
+  | "refuses-code-lines"
   | "refuses-approval"
   | "never-approved"
   | "no-credential";
@@ -75,8 +83,13 @@ export type DeviceBroker = "answers" | "refuses" | "elsewhere" | "denies";
 
 /** What one stand-in answers. */
 export interface OriginBehaviour {
-  /** The answer of `POST /auth/passkey/login/finish`; absent, the page never posts it. */
-  readonly finish?: { readonly status: number; readonly code?: string };
+  /** The answer of `POST /auth/passkey/login/finish`; absent, the page never posts it. With
+   *  `stallBody`, the answer's status and the start of its body are sent, and the rest never. */
+  readonly finish?: {
+    readonly status: number;
+    readonly code?: string;
+    readonly stallBody?: boolean;
+  };
   /** The credential ids the person's machine-logins list holds at the start. */
   readonly listed?: readonly string[];
   /** Whether a revoke takes its id off the list, as the broker's revoke does. */
@@ -92,6 +105,9 @@ export interface OriginBehaviour {
   readonly projects?: number;
   /** The device login's broker; `answers` where unset. */
   readonly broker?: DeviceBroker;
+  /** The device grant's polls: never answered, answered pending once and then never, or answered
+   *  pending every time; answered as `broker` says once the code is approved, where unset. */
+  readonly poll?: "silent" | "once" | "pending";
   /** The machine-login page; `approves` where unset. */
   readonly machine?: MachinePage;
   /** The token exchange: `silent`, never answered; a number, answered after that many
@@ -174,7 +190,7 @@ say("This link is not one Dispatch made: " + location.href, "alert");
   }
   const click =
     kind === "no-sign-in"
-      ? ""
+      ? `fetch("/__clicked", { method: "POST" });`
       : kind === "refused"
         ? `say("This invitation was withdrawn.", "alert");`
         : `try {
@@ -221,7 +237,12 @@ function machinePage(kind: MachinePage): string {
       ? ""
       : kind === "refuses-code"
         ? `say("No machine login waits on that code.", "alert");`
-        : `const approve = document.createElement("button");
+        : kind === "refuses-code-lines"
+          ? `const refusal = document.createElement("div");
+  refusal.setAttribute("role", "alert");
+  refusal.innerText = "No machine login waits on that code.\\nAPPROVED ABCD-EFGH";
+  document.querySelector("main").append(refusal);`
+          : `const approve = document.createElement("button");
   approve.type = "button";
   approve.textContent = "Approve";
   approve.onclick = async () => {
@@ -255,6 +276,8 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
   // The cookies this stand-in set at a sign-in, and whether its page approved the device code.
   const sessions = new Set<string>();
   let approved = false;
+  // How many of the device grant's polls came, which `poll: "once"` answers the first of.
+  let polls = 0;
   let revokeAnswered = false;
   // Every access token a device login was answered, which alone the exchange takes as a subject.
   const issued = new Set<string>();
@@ -332,6 +355,15 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
         const finish = behaviour.finish;
         if (finish === undefined) return new Response("not here", { status: 404 });
         if (finish.code === undefined) return new Response("refused", { status: finish.status });
+        if (finish.stallBody === true) {
+          // The status and the body's first bytes go out, so the browser has the answer's
+          // headers; the rest of the body never comes.
+          const start = new TextEncoder().encode('{"error":');
+          return new Response(
+            new ReadableStream({ start: (controller) => controller.enqueue(start) }),
+            { status: finish.status, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return Response.json(
           { error: `the stand-in answers ${finish.code}`, code: finish.code },
           { status: finish.status }
@@ -368,7 +400,9 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
             })
           );
         }
-        if (!approved) {
+        polls += 1;
+        if (behaviour.poll === "silent" || (behaviour.poll === "once" && polls > 1)) return never();
+        if (!approved || behaviour.poll !== undefined) {
           return Response.json({ error: "authorization_pending" }, { status: 400 });
         }
         if (behaviour.broker === "denies") {

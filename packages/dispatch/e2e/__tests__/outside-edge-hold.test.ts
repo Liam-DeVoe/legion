@@ -17,9 +17,13 @@
  *  at each lapse, and one whose registrations lapse after 5 s unrenewed, as the real listener's
  *  last at most 300 s and 5 minutes: two token lapses and the listener's own stop (1012), each
  *  registered again on the new socket, and a hold renewed past the lapse; a renewal the listener
- *  refuses ends it, a SIGTERM while a closed socket opens again sends no registration after it,
- *  and a SIGTERM while a renewal the listener does not answer is on the wire sends no second
- *  attempt of it. So is each way a hold ends before it holds anything: a flush the listener never
+ *  refuses ends it, a socket that does not open again within 30 s of a routine close ends it, a
+ *  SIGTERM while a closed socket opens again sends no registration after it, and a SIGTERM while
+ *  a renewal the listener does not answer is on the wire sends no second attempt of it. An ended
+ *  hold leaves no `held`, and a release spends the `holder` it ended, so a release after it reads
+ *  no hold; once the next hold of a directory has started, a release reads its end, never that of
+ *  a hold that ended by itself unreleased, and a third hold leaves a live hold's records to it.
+ *  So is each way a hold ends before it holds anything: a flush the listener never
  *  answers, which fails at its bound; a SIGTERM while the socket opens, which ends the hold well
  *  inside the open's 30 s, while the flush waits, and while the listener answers the
  *  registration, after which no registration stands; a `release` that
@@ -32,8 +36,8 @@
  *  none.
  *
  *  The rows that wait out a span of real time - the 60 s hold, the 15 s release, the 10 s flush,
- *  a renewal's 5 s attempt, and the rows on short tokens and a short lapse, each some seconds -
- *  skip under
+ *  a renewal's 5 s attempt, the 30 s for a socket to open again, and the rows on short tokens and
+ *  a short lapse, each some seconds - skip under
  *  DISPATCH_UNIT_REPEAT, which `bun run test:repeat` (`e2e/tools/unit-repeat.ts`) sets: its
  *  harness lane runs this directory 20 times under a 30-minute step, and these rows would spend
  *  minutes of it each run waiting, finding no fault a single run does not. Each `hold` is a
@@ -574,6 +578,101 @@ describe.skipIf(!existsSync("/proc/self/stat"))(
         }
       },
       rowLimit("outsideEdgeHold", "short", "short")
+    );
+
+    test(
+      "an ended hold leaves no held, and release spends its holder, so a release after it, as one before a later hold of the directory starts, reads no hold",
+      async () => {
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        try {
+          const first = hold(edge, state);
+          await heldBy(state, first);
+          expect((await release(state)).stdout).toBe(`RELEASED ${session}\n`);
+          expect((await first).code).toBe(0);
+          // What it left: how it ended, and nothing a later check reads as a hold.
+          expect(existsSync(join(state, "held"))).toBe(false);
+          expect(existsSync(join(state, "holder"))).toBe(false);
+          expect(readFileSync(join(state, "released"), "utf8")).toBe("unregistered");
+          const again = await release(state);
+          expect(again.stdout).toBe("UNKNOWN: no session is held\n");
+          expect(again.code).toBe(2);
+          // A later hold of the same directory, which ends by itself at the listener's close for
+          // good: it leaves no held either, and release reads its end once, then no hold.
+          const second = hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "60" });
+          await heldBy(state, second);
+          edge.relay.close(4403, "the token was revoked", session);
+          expect((await second).code).toBe(2);
+          expect(existsSync(join(state, "held"))).toBe(false);
+          expect((await release(state)).stdout).toBe(
+            `UNKNOWN: ${session} was not released: the listener closed the held socket (4403 the token was revoked); unregistered\n`
+          );
+          expect((await release(state)).stdout).toBe("UNKNOWN: no session is held\n");
+          expect(edge.unregisters).toEqual([session, session]);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit(
+        "outsideEdgeHold",
+        "short",
+        "short",
+        "short",
+        "outsideEdgeHold",
+        "short",
+        "short",
+        "short"
+      )
+    );
+
+    test(
+      "once the next hold of a directory has started, release reads its end, never that of a hold that ended by itself unreleased, and a third hold leaves a live one's records",
+      async () => {
+        const edge = startHoldEdge();
+        // A listener that never opens the socket: the next hold stays in its start, not held.
+        const mute = await startMuteListener(false);
+        const { state, session } = await keptState(edge);
+        let next: DrivenHold | undefined;
+        try {
+          // The first hold ends by itself, at the listener's close for good, and is never released.
+          const first = hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "60" });
+          await heldBy(state, first);
+          edge.relay.close(4403, "the token was revoked", session);
+          expect((await first).code).toBe(2);
+          const ended = readFileSync(join(state, "holder"), "utf8");
+          expect(readFileSync(join(state, "released"), "utf8")).toStartWith(
+            "the listener closed the held socket (4403"
+          );
+          next = driveHold(edge.relay.url, mute.url, state);
+          const started = next;
+          await eventually("the next hold's holder", () => {
+            const now = namedBy(join(state, "holder"));
+            return now !== undefined && now.pid === started.pid;
+          });
+          expect(readFileSync(join(state, "holder"), "utf8")).not.toBe(ended);
+          // A third hold while that one runs holds nothing and leaves its records.
+          const third = await hold(edge, state);
+          expect(third.stdout).toBe(
+            `UNKNOWN: no session held: the hold ${started.pid} still holds OUTSIDE_EDGE_STATE; release it first\n`
+          );
+          expect(third.code).toBe(2);
+          expect(namedBy(join(state, "holder"))?.pid).toBe(started.pid);
+          // The release ends the hold that is starting and reads its end, not the first one's.
+          const why = `no session held: SIGTERM came before ${session} was registered, and no registration was sent`;
+          const released = await release(state);
+          expect(released.stdout).toBe(`UNKNOWN: ${session} was not released: ${why}\n`);
+          expect(released.code).toBe(2);
+          expect(await started.ended()).toBe(2);
+          expect(started.stdout()).toBe(`UNKNOWN: ${why}\n`);
+        } finally {
+          next?.kill();
+          mute.stop();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short", "short", "outsideEdgeHold", "short", "outsideEdgeHold")
     );
 
     realTimeRow(
@@ -1270,6 +1369,43 @@ describe.skipIf(!existsSync("/proc/self/stat"))(
         }
       },
       rowLimit("short", "short", "outsideEdgeHold")
+    );
+
+    realTimeRow(
+      "a held socket that does not open again within 30 s of a routine close ends the hold UNKNOWN, unregistered, and never RELEASED",
+      async () => {
+        // The socket closes as at its token's lapse (4401), and the listener refuses every open
+        // from then on, so the hold waits out its 30 s for the socket to open again and then ends
+        // lost. Its time is the least, 60 s: a hold that went on past the 30 s would end at it
+        // RELEASED, exit 0, holding a registration on no socket.
+        const edge = startHoldEdge();
+        const { state, session } = await keptState(edge);
+        try {
+          const held = hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "60" });
+          await heldBy(state, held);
+          edge.relay.refuseUpgrades = 503;
+          const closedAt = Date.now();
+          edge.relay.close(4401, "the token lapsed", session);
+          const ran = await held;
+          const endedAfter = Date.now() - closedAt;
+          const why = `the hold of ${session} lost its registration: its relay socket did not open again within 30 s of the close (4401 the token lapsed); unregistered`;
+          expect(ran.stdout, ran.stderr).toBe(`HELD ${session}\nUNKNOWN: ${why}\n`);
+          expect(ran.code).toBe(2);
+          // At that bound, and well before the hold's own 60 s.
+          expect(endedAfter).toBeGreaterThanOrEqual(30_000);
+          expect(endedAfter).toBeLessThan(55_000);
+          expect(edge.relay.upgrades.some((one) => one.status === 503)).toBe(true);
+          expect(edge.unregisters).toEqual([session]);
+          expect(readFileSync(join(state, "released"), "utf8")).toBe(why);
+          const released = await release(state);
+          expect(released.stdout).toBe(`UNKNOWN: ${session} was not released: ${why}\n`);
+          expect(released.code).toBe(2);
+        } finally {
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "short", "short")
     );
 
     realTimeRow(

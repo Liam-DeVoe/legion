@@ -914,12 +914,16 @@ e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts` 30
 1.15 = 347 s would give 6 min, but packages/dispatch/e2e/__tests__/bounded-subprocess.ts bounds
 the stack child at three times its largest reading, 750 s, and the rows wait 780 s for it, so a
 6-minute step would kill a stuck stack before the bound names it. The file's other rows run one
-after another beside that row: the input rows and the control rows took 188 s together at a load
-average of 720 to 840 on 2026-11-22 (about 100 s before the sign-in and device-login control rows
-were added), and the relay control row added after them, which waits out the relay socket's 30 s,
-took 33.70 s more alone at a load average of about 845 the same day: 222 s. The longest control
-row's own limit is 200 s (a short wait, four page waits at once and 30 s), less than the stack's
-780 s. 780 s and 222 s -> 17 min, and one more for the step's own start: 18 min.
+after another beside that row. The full lane at e775e0d892 measured them: run 45008694182, job
+137165937837, step 186 s (`Ran 38 tests across 1 file. [186.00s]`), of which the stack child took
+36.8 s and the other rows 149.2 s. The rows added since then (an input row, the `t5` row whose
+answer holds its body back, the device login's deadline row, a refused registration naming a
+no-answer code, an approved code the driver cannot record, a browser that ends mid-wait, a second
+`approve` case) took about 65 s more, measured alone on a developer box at a load average of
+about 1100 on 2026-11-22 (72.92 s for those rows and the two they sit beside): about 214 s in
+all. The longest control row's own limit is 200 s (a short wait, four page waits at once and
+30 s), less than the stack's 780 s. 780 s and 214 s -> 17 min, and one more for the step's own
+start: 18 min.
 It costs nothing on a green run, which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone

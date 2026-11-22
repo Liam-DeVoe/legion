@@ -87,11 +87,12 @@ const lanes: Readonly<Record<Lane, LaneScript>> = {
 
 /** What the tool sets for the Bun run of every lane, so a row can tell it runs many times over.
  *  Rows that wait out a span of real time skip under it: e2e/__tests__/outside-edge-hold.test.ts's
- *  60 s hold, 15 s release, 10 s flush and its rows on short tokens and a short lapse, each a
- *  process of its own on the real clock. Twenty reruns of them would spend about half an hour of
- *  a harness leg waiting, past the 30-minute step dispatch-unit-repeat.yaml gives it, and the
- *  waits find no fault a single run does not; each runs once a run in ci.yaml's dispatch-ui job,
- *  with the rest of e2e/__tests__. */
+ *  60 s hold, 15 s release, 10 s flush, 30 s reopen and its rows on short tokens and a short
+ *  lapse, each a process of its own on the real clock, and e2e/__tests__/outside-edge.test.ts's
+ *  rows that wait out one of the outside driver's own bounds (a page's 30 s, a revoke's list read,
+ *  a device login's deadline). Twenty reruns of them would spend about half an hour of a harness
+ *  leg waiting, past the 30-minute step dispatch-unit-repeat.yaml gives it, and the waits find no
+ *  fault a single run does not; each runs once a run where the rest of its file runs. */
 const repeatMarker = { DISPATCH_UNIT_REPEAT: "1" } as const;
 
 const laneNames = Object.keys(lanes);

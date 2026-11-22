@@ -13,14 +13,20 @@
  *                 OUTSIDE_BROKER_URL for a device login of this machine for the signed-in person,
  *                 whose page must be on the outside origin; the browser types the code on that
  *                 page and approves it, and the poll must answer a DPoP-bound pair (row
- *                 `device-login`): a broker nothing answers, at the start or at every poll until
- *                 the 5-minute deadline, is UNKNOWN, read by the code the broker client keeps of a
- *                 request that got no answer (refused, a name that did not resolve, its deadline
- *                 passed); a refusal, expiry or denial it answered is FAIL; and an approved login
- *                 the driver could not keep in OUTSIDE_EDGE_STATE is UNKNOWN, an error of its
- *                 own. With OUTSIDE_TAILNET_USER_CODE set, the same page then
- *                 approves that code too, in the same browser session, and prints
- *                 `APPROVED <code>` (row `tailnet-code`), else fails naming the code.
+ *                 `device-login`): a broker nothing answers at the start, or whose last poll got
+ *                 no answer at the 5-minute deadline (it answered none, or answered and then fell
+ *                 silent), is UNKNOWN, read by the code the broker client keeps of a request that
+ *                 got no answer (refused, a name that did not resolve, its deadline passed); a
+ *                 refusal, expiry or denial it answered is FAIL, and so is a broker that answered
+ *                 every poll to the deadline with no approval; and an approved login the driver
+ *                 could not keep in OUTSIDE_EDGE_STATE's `device-login.json` is UNKNOWN, an error
+ *                 of its own, with any copy of the login the broker client kept beside that file
+ *                 removed. Each approved code's credential is printed on stderr
+ *                 (`outside-edge: <code> approved as credential <id>`) before it is written
+ *                 down, so one the driver could not record is still named, for a person to end.
+ *                 With OUTSIDE_TAILNET_USER_CODE set, the same page then approves that code too,
+ *                 in the same browser session, and prints `APPROVED <code>` (row
+ *                 `tailnet-code`), else fails naming the code.
  *    3. relay     the device login is traded for the session's broker credential, the session
  *                 opens its relay socket at OUTSIDE_LISTENER_URL and registers there
  *                 (`@legion/envoy-client/listener-relay`, `relay-registration`), keeps the session
@@ -75,14 +81,18 @@
  *  Optional: OUTSIDE_TAILNET_USER_CODE (above); OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to
  *  600); OUTSIDE_EDGE_TSV, the file the rows are also written to (`<state>/outside-edge.tsv` when
  *  unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each origin be http://127.0.0.1 or http://localhost,
- *  and nothing else, for this driver's own test. Chromium is started with none of the OUTSIDE_*
- *  variables, and every registration at the listener names the machine `outside-edge-e2e`.
+ *  and nothing else, for this driver's own test, and only with it OUTSIDE_EDGE_LOGIN_SECONDS (1
+ *  to 300) shortens the device login's 5-minute deadline, which that test waits out; without it
+ *  that variable is refused. Chromium is started with none of the OUTSIDE_* variables, and every
+ *  registration at the listener names the machine `outside-edge-e2e`.
  *
  *  `approve <code>` approves one more device-login code on the outside origin's machine-login
- *  page, in the browser state `run` kept in OUTSIDE_EDGE_STATE, and records its credential; it
- *  prints `APPROVED <code>` and exits 0, or `FAIL: <code> ...` (1) where the page answered short
- *  of an approval, or `UNKNOWN: <code> ...` (2) where the page did not load or could not be driven.
- *  Another check that starts a device login of its own calls it with the code it was given.
+ *  page, in the browser state `run` kept in OUTSIDE_EDGE_STATE, and records its credential, named
+ *  on stderr first as `run` names it; it prints `APPROVED <code>` and exits 0, or
+ *  `FAIL: <code> ...` (1) where the page answered short of an approval, or `UNKNOWN: <code> ...`
+ *  (2) where the page did not load or could not be driven, each on one line, a line break of the
+ *  page's text made a space. Another check that starts a device login of its own calls it with
+ *  the code it was given.
  *
  *  `revoke` lists the person's machine logins (`GET /api/v1/machine-logins`) with the kept cookie
  *  and revokes each credential `approved.tsv` holds (`POST /api/v1/machine-logins/{id}/revoke`),
@@ -98,7 +108,9 @@
  *  `t5` is the browser's half of a delisting window: with OUTSIDE_T5_DEADLINE (Unix seconds) and
  *  OUTSIDE_T5_TSV, it asks `/auth/whoami` with the kept cookie at most every 5 s until it is
  *  answered 401, then tries the kept passkey in a fresh browser; rows `T5-cookie` and
- *  `T5-passkey`, each naming `at=<Unix seconds>` (its own doc says each verdict).
+ *  `T5-passkey`, each naming `at=<Unix seconds>`, both written before the deadline, since every
+ *  wait of the sign-in, the read of an answer's body among them, ends 2 s before it (its own doc
+ *  says each verdict).
  *
  *  `hold` registers the session `run` kept (`session`) at OUTSIDE_LISTENER_URL again, as step 3
  *  did, with that session's broker credential traded for with the kept device login, and holds
@@ -121,8 +133,9 @@
  *  with the session unregistered and registered no more. A SIGTERM before `held` is written
  *  holds nothing: before the registration is sent, none is sent; while the listener answers it,
  *  the session is unregistered once answered; either way `UNKNOWN: no session held: …` (2). Every
- *  end after `holder` is written writes `released` naming it, but an error of the hold's own (an
- *  OUTSIDE_EDGE_STATE it cannot write among them), which judged nothing of the edge: that is
+ *  end after `holder` is written writes `released` naming it, and removes `held`, so no later
+ *  check reads a hold that ended as one that holds; but an error of the hold's own (an
+ *  OUTSIDE_EDGE_STATE it cannot write among them), which judged nothing of the edge, is
  *  `UNKNOWN: the hold failed on an error of its own: <its class>` (2), naming the state's file
  *  where the error names one, never exit 1, a FAIL, and a session it registered is unregistered
  *  first.
@@ -132,8 +145,16 @@
  *  when `released` says `unregistered`, else `UNKNOWN: <why>` (2). No `holder` is
  *  `UNKNOWN: no session is held`; a pid whose process did not start when `holder` says is
  *  `UNKNOWN: the held process is gone`, and is not signalled; and a holder still running after
- *  the 15 s is sent SIGKILL. A hold refused at its inputs leaves none of `holder`, `held` and
- *  `released` an earlier hold wrote.
+ *  the 15 s is sent SIGKILL. Once the hold `holder` names has ended, `release` removes `holder`
+ *  (and a `held` a killed hold left), so a release after it, as one before a later hold of the
+ *  same directory has started, reads no hold rather than this hold's end; `released` stays, for a
+ *  check to read. A hold removes the `holder`, `held` and `released` an earlier hold wrote as it
+ *  starts, before any other input is read, so a hold refused at its inputs leaves none of them;
+ *  but where `holder` names a hold still running, it leaves them to that hold and holds nothing:
+ *  `UNKNOWN: no session held: the hold <pid> still holds OUTSIDE_EDGE_STATE; release it first`
+ *  (2). So once a later hold of the directory has started, a release reads that hold's end, never
+ *  an earlier one's; only before it has written its `holder` can a release still read the end of
+ *  a hold that ended by itself and was never released.
  *
  *  Output: each row as `row<TAB>want<TAB>got<TAB>PASS|FAIL|UNKNOWN` on stdout and in the TSV
  *  file, then the verdict: `PASS` (exit 0) when every row passed, `FAIL: <rows>` (exit 1) when
@@ -154,7 +175,9 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -181,7 +204,7 @@ import {
 import { DEFAULT_HEARTBEAT_MS } from "@legion/envoy-client/envoy-settings";
 import { connectListenerRelay, type ListenerRelay } from "@legion/envoy-client/listener-relay";
 import { registerWithRelay } from "@legion/envoy-client/relay-registration";
-import { createEnvoyClient, type EnvoyClient } from "@legion/envoy-client/transport";
+import { createEnvoyClient, EnvoyApiError, type EnvoyClient } from "@legion/envoy-client/transport";
 import {
   type Browser,
   type BrowserContext,
@@ -209,9 +232,11 @@ import {
 const DEVICE_HOST = deviceLoginHost("outside-edge-e2e");
 /** How long one page step waits for what it waits on. */
 const PAGE_MS = 30_000;
-/** How long the relay socket's first open and the device login's poll may take at most. */
+/** How long the relay socket's first open may take at most, and a held socket's open again. */
 const OPEN_MS = 30_000;
-const LOGIN_MS = 5 * 60_000;
+/** How long the device login's poll may wait for an approval at most, where
+ *  OUTSIDE_EDGE_LOGIN_SECONDS, which the driver's own test alone may set, names no shorter time. */
+const LOGIN_SECONDS = 300;
 
 /** Starts Chromium with this process's environment but the driver's own inputs (`OUTSIDE_*`),
  *  which name the link, the state directory and the edge's origins: the browser has no use for
@@ -273,13 +298,15 @@ class Rows {
   }
 }
 
-/** The names and codes of a request the far end gave no answer at all: no connection, no route,
- *  no name, a reset or a deadline, as an error's `name` or `code` holds them. Each client keeps the
- *  code of such a failure on its own error, which keeps no cause (`failureCode` of
- *  `@legion/contracts/log-text`): the broker client's request and trade (`BrokerTradeFailedError`,
- *  `TradeRetryingError`, `TradeUnansweredError`, ETIMEDOUT for one its deadline ended), the relay
- *  client's socket that did not open (`RelayNotOpenedError`, ETIMEDOUT for an upgrade, a trade or
- *  an open still unanswered at its bound) and the Envoy client's call that got no answer. */
+/** The names and codes of a request the far end gave no whole answer: no connection, no route, no
+ *  name, a reset or a deadline, as an error's `name` or `code` holds them. Each client keeps the
+ *  runtime's code of such a failure on its own error, which keeps no cause (`failureCode` of
+ *  `@legion/contracts/log-text`), and this allowlist is what the driver reads of it: the broker
+ *  client's request and trade (`BrokerTradeFailedError`, `TradeRetryingError`,
+ *  `TradeUnansweredError`, ETIMEDOUT for one its deadline ended), the relay client's socket that
+ *  did not open (`RelayNotOpenedError`, ETIMEDOUT for an upgrade, a trade or an open still
+ *  unanswered at its bound) and the Envoy client's call that got no answer, or whose answer's
+ *  body did not arrive. */
 const UNREACHED: Readonly<Record<string, true>> = {
   TimeoutError: true,
   ECONNREFUSED: true,
@@ -295,9 +322,12 @@ const UNREACHED: Readonly<Record<string, true>> = {
 
 /** Whether `error`, or an error it was caused by, is a request the far end gave no answer, by the
  *  name or the code the client kept, never by its text. Such a step proved nothing, so it is
- *  UNKNOWN; any answer at all is evidence, so every other error is a FAIL. */
+ *  UNKNOWN; any answer at all is evidence, so every other error is a FAIL. The listener's own
+ *  refusal (`EnvoyApiError`) is an answer whatever its body says: its `code` is text the listener
+ *  wrote, never the runtime's, so a refusal that names a code of the list is still a FAIL. */
 function unreached(error: unknown): boolean {
   for (let at: unknown = error; at instanceof Error; at = at.cause) {
+    if (at instanceof EnvoyApiError) return false;
     const code = "code" in at ? at.code : undefined;
     if (Object.hasOwn(UNREACHED, at.name)) return true;
     if (typeof code === "string" && Object.hasOwn(UNREACHED, code)) return true;
@@ -372,6 +402,8 @@ interface RunInputs {
   readonly state: string;
   readonly tailnetCode: string | undefined;
   readonly replySeconds: number;
+  /** How long the device login's poll waits for an approval (LOGIN_SECONDS, or the test's own). */
+  readonly loginMs: number;
   readonly tsv: string;
 }
 
@@ -412,6 +444,21 @@ function runInputs(env: NodeJS.ProcessEnv): RunInputs {
   if (!/^[0-9]+$/.test(reply) || replySeconds < 1 || replySeconds > 600) {
     throw new Refused("OUTSIDE_EDGE_REPLY_SECONDS must be a whole number of seconds from 1 to 600");
   }
+  // The driver's own test waits out the poll's deadline, which at 5 minutes a row cannot afford;
+  // a run against a real edge never shortens it, so the variable is refused without that test's
+  // OUTSIDE_EDGE_ALLOW_HTTP=1.
+  const login = (env.OUTSIDE_EDGE_LOGIN_SECONDS ?? "").trim();
+  if (login !== "" && !allowHttp) {
+    throw new Refused(
+      "OUTSIDE_EDGE_LOGIN_SECONDS is the driver's own test's, taken only with OUTSIDE_EDGE_ALLOW_HTTP=1"
+    );
+  }
+  const loginSeconds = login === "" ? LOGIN_SECONDS : Number(login);
+  if (!/^[0-9]*$/.test(login) || loginSeconds < 1 || loginSeconds > LOGIN_SECONDS) {
+    throw new Refused(
+      `OUTSIDE_EDGE_LOGIN_SECONDS must be a whole number of seconds from 1 to ${LOGIN_SECONDS}`
+    );
+  }
   return {
     invite,
     origin: invite.origin,
@@ -423,6 +470,7 @@ function runInputs(env: NodeJS.ProcessEnv): RunInputs {
     state,
     tailnetCode,
     replySeconds,
+    loginMs: loginSeconds * 1000,
     tsv: (env.OUTSIDE_EDGE_TSV ?? "").trim() || join(state, "outside-edge.tsv"),
   };
 }
@@ -494,18 +542,46 @@ async function approveOnPage(page: Page, origin: string, code: string): Promise<
   }
 }
 
+/** A page or its browser that closed while a page step waited on it: the driver's own instrument
+ *  gone, which judged nothing of the edge. It is thrown, never read as a state the page did not
+ *  show, so the step's caller reads it as it reads a page it could not drive: UNKNOWN (`run`'s
+ *  catch, `approveOnPage`'s, `t5`'s). */
+class PageGone extends Error {}
+
 /** Which of `states` the page settled on within `ms` (`settledState` of `e2e/settled.ts`, which
  *  reads them again until one shows, the first that does winning), or undefined where none showed
- *  by then: a page step branches on what the page settled on, never on one instant's answer. */
+ *  by then: a page step branches on what the page settled on, never on one instant's answer. A
+ *  page or a browser that closed first throws `PageGone` at once: the poll would read its closed
+ *  locators as failed reads until its time ran out, and so as a page that showed none of them. */
 async function settledWithin<Name extends string>(
   what: string,
   states: readonly (readonly [Name, Locator])[],
   ms: number
 ): Promise<Name | undefined> {
+  const page = states[0]?.[1].page();
+  const browser = page?.context().browser();
+  const pageClosed = () => new PageGone(`the page closed while the driver read ${what}`);
+  const browserEnded = () => new PageGone(`the browser ended while the driver read ${what}`);
+  const gone = Promise.withResolvers<never>();
+  const onClose = () => gone.reject(pageClosed());
+  const onDisconnect = () => gone.reject(browserEnded());
+  page?.once("close", onClose);
+  browser?.once("disconnected", onDisconnect);
+  const settled = settledState(what, states, ms);
+  // The poll a closed page ended goes on until its time, and nothing reads its end.
+  settled.catch(() => undefined);
   try {
-    return await settledState(what, states, ms);
-  } catch {
+    return await Promise.race([settled, gone.promise]);
+  } catch (error) {
+    if (error instanceof PageGone) throw error;
+    // The poll has ended: a browser gone by now is the driver's failure, not the page's.
+    if (browser?.isConnected() === false) throw browserEnded();
+    // Likewise a page closed by now: no later read of it would show a state.
+    if (page?.isClosed() === true) throw pageClosed();
     return undefined;
+  } finally {
+    page?.off("close", onClose);
+    browser?.off("disconnected", onDisconnect);
   }
 }
 
@@ -572,8 +648,11 @@ async function approveSteps(page: Page, origin: string, code: string): Promise<A
   return { credential };
 }
 
-/** Records an approved code and its credential, for `revoke`. */
+/** Records an approved code and its credential, for `revoke`, naming the credential on stderr
+ *  first: one approved and not recorded (a state the driver cannot write) is live, and no
+ *  `approved.tsv` holds it for `revoke`, so the output is where a person reads which to end. */
 function recordApproval(state: string, code: string, credential: string): void {
+  log(`${code} approved as credential ${credential}`);
   appendFileSync(join(state, "approved.tsv"), `${code}\t${credential}\n`, { mode: 0o600 });
   chmodSync(join(state, "approved.tsv"), 0o600);
 }
@@ -781,6 +860,18 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   return promise;
 }
 
+/** Removes each whole copy of a device login the broker client kept beside OUTSIDE_EDGE_STATE's
+ *  `device-login.json` where it could not save the login there (`device-login.json.kept-<uuid>`,
+ *  `KeptCopyError` of `@legion/cipher-client`), which holds the login's key and refresh token;
+ *  answers how many it removed. */
+function removeKeptCopies(state: string): number {
+  const copies = readdirSync(state).filter((name) =>
+    /^device-login\.json\.kept-[0-9a-f-]{36}$/.test(name)
+  );
+  for (const name of copies) rmSync(join(state, name));
+  return copies.length;
+}
+
 /** Step 2: a device login of this machine, approved on the page; then the tailnet code. Answers
  *  the login, or undefined when it was not made. */
 async function deviceLogin(
@@ -813,21 +904,33 @@ async function deviceLogin(
     return undefined;
   }
   const stop = new AbortController();
-  const late = new Error("the poll got no approval within 5 minutes");
-  const deadline = setTimeout(() => stop.abort(late), LOGIN_MS);
-  // Whether the broker answered any poll, and how the last poll it did not answer failed: the
-  // poll is sent again after every request that got no answer (`finishDeviceLogin`), so a
-  // deadline that came with no answer at all is a broker the run never reached, UNKNOWN, not a
-  // refusal.
-  let brokerAnswered = false;
+  // The poll's deadline as a reader says it: 5 minutes, or the driver's own test's seconds.
+  const deadlineSaid =
+    inputs.loginMs % 60_000 === 0
+      ? `${inputs.loginMs / 60_000} minutes`
+      : `${inputs.loginMs / 1000} s`;
+  const late = new Error(`the poll got no approval within ${deadlineSaid}`);
+  const deadline = setTimeout(() => stop.abort(late), inputs.loginMs);
+  // How the polls fared: how many were sent and how many the broker answered, whether it answered
+  // the last, and how the last it did not answer failed. The poll is sent again after every
+  // request that got no answer (`finishDeviceLogin`), so a deadline whose last poll got no answer
+  // is a broker the run did not reach at the end, UNKNOWN, whether it answered no poll at all or
+  // answered and then fell silent; one that answered the last poll (`authorization_pending` to
+  // the end, say) answered short of an approval, a FAIL.
+  let polls = 0;
+  let answered = 0;
+  let lastAnswered = false;
   let lastUnanswered = "no poll was sent";
   const pollFetch = Object.assign(
     async (input: string | URL | Request, init?: RequestInit) => {
+      polls += 1;
       try {
         const answer = await fetch(input, init);
-        brokerAnswered = true;
+        answered += 1;
+        lastAnswered = true;
         return answer;
       } catch (error) {
+        lastAnswered = false;
         lastUnanswered = messageOf(error);
         throw error;
       }
@@ -853,7 +956,15 @@ async function deviceLogin(
     });
     return undefined;
   }
-  recordApproval(inputs.state, started.userCode, approval.credential);
+  try {
+    recordApproval(inputs.state, started.userCode, approval.credential);
+  } catch (error) {
+    // Named on stderr already, the credential is left for a person to end; the poll for its login
+    // stops here, and `run` reads the error as one of its own.
+    stop.abort(error);
+    clearTimeout(deadline);
+    throw error;
+  }
   let login: KeptDeviceLogin;
   try {
     login = await polled;
@@ -861,22 +972,33 @@ async function deviceLogin(
     if (error instanceof DeviceLoginNotKeptError) {
       // The broker answered the approval, and this machine could not keep the login in
       // OUTSIDE_EDGE_STATE: an error of the driver's own, which judged nothing of the edge. The
-      // save's own words name the file by its setting and the failure by its code.
+      // broker client's words name the file by its own setting, which the driver does not set, so
+      // the row names the state's file instead. Where a save kept a whole copy of a login beside
+      // that file (this one's, or an earlier run's in the same state), the driver, which uses no
+      // copy, removes it: each credential is in approved.tsv, recorded before its poll, for
+      // `revoke` to end, and a copy would keep its login's key and refresh token.
+      const copies = removeKeptCopies(inputs.state);
+      const removed =
+        copies === 0
+          ? ""
+          : `; it removed ${copies === 1 ? "the copy of a login" : `${copies} copies of logins`} the broker client kept beside that file`;
       rows.add({
         row: "device-login",
         want,
-        got: `approved on the page as credential ${approval.credential}, and the poll answered, but the driver could not keep the login, an error of its own: ${messageOf(error.cause)}`,
+        got: `approved on the page as credential ${approval.credential}, and the poll answered, but the driver could not keep the login in OUTSIDE_EDGE_STATE's device-login.json, an error of its own${removed}; revoke ends credential ${approval.credential}`,
         verdict: "UNKNOWN",
       });
       return undefined;
     }
-    const unanswered = error === late && !brokerAnswered;
+    const unanswered = error === late && !lastAnswered;
     rows.add({
       row: "device-login",
       want,
-      got: unanswered
-        ? `approved on the page, then the broker answered no poll within 5 minutes: ${lastUnanswered}`
-        : `approved on the page, then the poll: ${messageOf(error)}`,
+      got: !unanswered
+        ? `approved on the page, then the poll: ${messageOf(error)}`
+        : answered === 0
+          ? `approved on the page, then the broker answered no poll within ${deadlineSaid}: ${lastUnanswered}`
+          : `approved on the page, then the broker answered ${answered} of the ${polls} polls, but not the last before the ${deadlineSaid} deadline: ${lastUnanswered}`,
       verdict: unanswered || unreached(error) ? "UNKNOWN" : "FAIL",
     });
     return undefined;
@@ -1317,9 +1439,12 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
       else await relay(inputs, rows);
     }
   } catch (error) {
-    // An error no step read, such as a page closed under a step or a browser that did not start:
-    // the run judged nothing more, and its text goes through the rows, which withhold the token.
-    cut = `the run stopped: ${messageOf(error)}`;
+    // An error no step read, such as a page closed under a step, a browser that did not start, or
+    // a file of OUTSIDE_EDGE_STATE the run could not write: the run judged nothing more, and its
+    // text goes through the rows, which withhold the token. A file's error is named by its class
+    // and the state's file (`ownError`), never by its message, which repeats the whole path.
+    const own = error instanceof Error && typeof Reflect.get(error, "syscall") === "string";
+    cut = `the run stopped: ${own ? ownError(error, inputs.state) : messageOf(error)}`;
     rows.add({
       row: "stopped",
       want: "every step judged",
@@ -1371,7 +1496,14 @@ async function approve(env: NodeJS.ProcessEnv, code: string | undefined): Promis
     console.log(`APPROVED ${code}`);
     return 0;
   }
-  console.log(`${approval.unread ? "UNKNOWN" : "FAIL"}: ${code} not approved: ${approval.refused}`);
+  // One line, as every row is (`Rows`): the page's text may hold a line break, and a line it adds
+  // could read as another answer, `APPROVED <code>` among them.
+  console.log(
+    `${approval.unread ? "UNKNOWN" : "FAIL"}: ${code} not approved: ${approval.refused}`.replaceAll(
+      /[\t\r\n]+/g,
+      " "
+    )
+  );
   return approval.unread ? 2 : 1;
 }
 
@@ -1578,7 +1710,9 @@ const PASSKEY_REFUSED: Readonly<Record<string, number>> = {
  * `T5-cookie`, PASS on the 401 and UNKNOWN when the deadline came first; and `T5-passkey`, PASS
  * only when `POST /auth/passkey/login/finish` answered one of PASSKEY_REFUSED, FAIL when the
  * page signed the person in again or that request answered 2xx, and UNKNOWN otherwise: not tried,
- * an alert with no answer to that request, or any other answer.
+ * an alert with no answer to that request, an answer whose body did not come in before the
+ * window's end (every wait of the sign-in, that read among them, ends 2 s before the deadline),
+ * or any other answer.
  */
 async function t5(env: NodeJS.ProcessEnv): Promise<number> {
   const tsv = (env.OUTSIDE_T5_TSV ?? "").trim();
@@ -1667,24 +1801,26 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
       authenticatorId: passkey.authenticatorId,
       credential,
     });
-    // Each answer of the sign-in's last request, read as it comes: the page shows its alert only
-    // after it, so one the page asked is in by the time the alert is read.
-    const finishes: Promise<{ readonly status: number; readonly code: unknown }>[] = [];
+    // Each answer of the sign-in's last request as it comes: its status at once, and the code its
+    // body names once the body is in, a read the window's end bounds below. The page shows its
+    // alert only after that answer, so one the page asked is in by the time the alert is read.
+    const finishes: { readonly status: number; readonly code: Promise<unknown> }[] = [];
     page.on("response", (response) => {
       if (response.request().method() !== "POST") return;
       if (new URL(response.url()).pathname !== PASSKEY_FINISH) return;
-      finishes.push(
-        response.json().then(
-          (body: unknown) => ({ status: response.status(), code: member(body, "code") }),
-          () => ({ status: response.status(), code: undefined })
-        )
-      );
+      finishes.push({
+        status: response.status(),
+        code: response.json().then(
+          (body: unknown) => member(body, "code"),
+          () => undefined
+        ),
+      });
     });
     const bound = () => Math.max(1_000, Math.min(PAGE_MS, left()));
     await page.goto(`${origin}/`, { timeout: bound() });
     const button = page.getByRole("button", { name: "Sign in with a passkey" });
     await button.waitFor({ timeout: bound() });
-    await button.click();
+    await button.click({ timeout: bound() });
     const alert = page.getByRole("alert").first();
     const waited = bound();
     const shown = await settledWithin(
@@ -1696,27 +1832,48 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
       waited
     );
     const at = seconds();
-    const answer = (await Promise.all(finishes)).at(-1);
+    // The last answer's body, read for what is left of the window at most: Playwright reads a
+    // response's body with no deadline of its own, so an edge that sends the status and then
+    // holds the body back would hold the run past the deadline with no row written.
+    const last = finishes.at(-1);
+    const rest = Math.max(0, left());
+    const timeUp = Symbol("the window's end");
+    const ended = Promise.withResolvers<typeof timeUp>();
+    const timer = setTimeout(() => ended.resolve(timeUp), rest);
+    const code =
+      last === undefined || shown === "signed-in"
+        ? undefined
+        : await Promise.race([last.code, ended.promise]);
+    clearTimeout(timer);
+    const answer =
+      last === undefined || code === timeUp ? undefined : { status: last.status, code };
     const answered =
       answer === undefined
         ? ""
         : `POST ${PASSKEY_FINISH} answered ${answer.status} ${typeof answer.code === "string" ? answer.code : "with no code"}`;
-    if (shown === undefined) {
-      rows.add({
-        row: "T5-passkey",
-        want: wantPasskey,
-        got: `the sign-in showed neither a sign-in nor a refusal within ${Math.round(waited / 1000)} s`,
-        verdict: "UNKNOWN",
-      });
-    } else if (shown === "signed-in") {
+    if (shown === "signed-in") {
       rows.add({
         row: "T5-passkey",
         want: wantPasskey,
         got: `the passkey signed the person in again at=${at}, after the cookie's 401`,
         verdict: "FAIL",
       });
+    } else if (last !== undefined && code === timeUp) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `POST ${PASSKEY_FINISH} answered ${last.status} at=${at}, and its body did not come in the ${Math.round(rest / 1000)} s left before the deadline, so no refusal of the passkey was read`,
+        verdict: "UNKNOWN",
+      });
+    } else if (shown === undefined) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `the sign-in showed neither a sign-in nor a refusal within ${Math.round(waited / 1000)} s`,
+        verdict: "UNKNOWN",
+      });
     } else {
-      const said = (await alert.innerText()).trim();
+      const said = (await alert.innerText({ timeout: bound() })).trim();
       if (answer === undefined) {
         rows.add({
           row: "T5-passkey",
@@ -1797,11 +1954,20 @@ const RELEASE_MS = 15_000;
  *  the close code and reason. */
 const CLOSED_LINE = / closed \((.+)\); it opens again in [0-9]+ ms$/;
 /** What a hold keeps in OUTSIDE_EDGE_STATE: `holder`, its pid and start, from its start, which
- *  `release` signals; `held`, the same, once the listener took the registration, which a check
- *  waits for; and `released`, how the hold ended. */
+ *  `release` signals and, once that hold has ended, removes; `held`, the same, once the listener
+ *  took the registration, which a check waits for, until the hold ends; and `released`, how the
+ *  hold ended. */
 const HOLDER = "holder";
 const HELD = "held";
 const RELEASED = "released";
+
+/** Removes `held` from `state` once no hold holds: one an ended hold left would read, to a check
+ *  that waits on a later hold of the directory, as that hold's. A `held` that is no file is none a
+ *  hold wrote (it could not write it), and is left as it is. */
+function dropHeld(state: string): void {
+  const path = join(state, HELD);
+  if (lstatSync(path, { throwIfNoEntry: false })?.isFile() === true) rmSync(path);
+}
 
 function holdInputs(env: NodeJS.ProcessEnv): HoldInputs {
   const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
@@ -1878,7 +2044,8 @@ type HoldEnd =
  * `RELEASED <session>`. `released` says `unregistered` only where the session was held registered
  * to the end, its last registration the listener took within the listener's window
  * (SESSION_LIVE_WINDOW_MS), and the listener answered the unregister: exit 0. A failed unregister
- * is `released` naming it, exit 2; a registration that lapsed is `UNKNOWN: …`, exit 2.
+ * is `released` naming it, exit 2; a registration that lapsed is `UNKNOWN: …`, exit 2. Every end
+ * of a hold that wrote `held` removes it as the end begins (`dropHeld`).
  *
  * A SIGTERM before the session is held holds nothing, so a holder its caller gives up on ends
  * before its caller sends SIGKILL: while the socket opens or its flush waits, the hold sends no
@@ -1914,9 +2081,24 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
   // took, from then until the hold's end unregisters it, which would otherwise outlive the hold.
   let leaveOnError: (() => Promise<string>) | undefined;
   try {
-    // A hold before this one wrote these, and they say nothing of this one: gone before any other
-    // input is read, so a hold refused below leaves none that `release` would read as its own.
     if (named !== "") {
+      // A hold of this directory that still runs keeps its records: this one would take its place
+      // in them, and a `release` would then end this one and leave that one holding. So this one
+      // holds nothing, and leaves them.
+      const holderFile = join(named, HOLDER);
+      const earlier =
+        lstatSync(holderFile, { throwIfNoEntry: false })?.isFile() === true
+          ? /^([1-9][0-9]*) ([0-9]+)$/.exec(readFileSync(holderFile, "utf8").trim())
+          : null;
+      if (earlier !== null && holderRuns(Number(earlier[1]), earlier[2] ?? "")) {
+        console.log(
+          `UNKNOWN: no session held: the hold ${earlier[1]} still holds OUTSIDE_EDGE_STATE; release it first`
+        );
+        return 2;
+      }
+      // Any other hold before this one ended, released or not, and what it wrote says nothing of
+      // this one: gone before any other input is read, so a `release` once this one has started
+      // reads this one's end, never that one's, and a hold refused below leaves none of them.
       for (const file of [HOLDER, HELD, RELEASED]) rmSync(join(named, file), { force: true });
     }
     let inputs: HoldInputs;
@@ -2105,6 +2287,8 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     })();
     const timer = setTimeout(() => finish({ by: "time" }), inputs.seconds * 1000);
     const how = await ended.promise;
+    // No longer held from here, however the end goes on.
+    dropHeld(state);
     clearTimeout(timer);
     clearTimeout(renewal);
     clearTimeout(reopening?.timer);
@@ -2149,6 +2333,7 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     // write, say): the hold judged nothing of the edge, so it is UNKNOWN, exit 2, never a FAIL,
     // and a session it registered is unregistered first.
     const left = leaveOnError === undefined ? "" : `; ${await leaveOnError()}`;
+    if (leaveOnError !== undefined) dropHeld(named);
     console.log(
       `UNKNOWN: the hold failed on an error of its own: ${ownError(error, named)}${left}`
     );
@@ -2204,7 +2389,10 @@ function holderRuns(pid: number, start: string): boolean {
  * `holder` at all, `released` naming why, or a holder still running at the end of the wait, which
  * is sent SIGKILL. A pid whose process did not start when `holder` says is no holder's any more,
  * and is not signalled: the held process is gone. A hold that ended wrote `released`, and its pid
- * is not signalled either.
+ * is not signalled either. Once the hold has ended, however it ended, `holder` is spent: release
+ * removes it, and a `held` a killed hold left, so a release after this one, as one before a later
+ * hold of the directory has started, reads no hold rather than this hold's end. `released` stays,
+ * for a check to read.
  */
 async function release(env: NodeJS.ProcessEnv): Promise<number> {
   let state: string;
@@ -2230,13 +2418,18 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
     return 2;
   }
   const released = join(state, RELEASED);
+  // Prints `line` once the hold has ended, and spends its record first: `holder`, and a `held` a
+  // killed hold left. Every end below that read the hold ended goes through it.
+  const spent = (line: string, code: number): number => {
+    rmSync(join(state, HOLDER), { force: true });
+    dropHeld(state);
+    console.log(line);
+    return code;
+  };
   if (!existsSync(released)) {
     if (!holderRuns(pid, start)) {
       // The hold may have ended, writing `released`, since the read above.
-      if (!existsSync(released)) {
-        console.log("UNKNOWN: the held process is gone");
-        return 2;
-      }
+      if (!existsSync(released)) return spent("UNKNOWN: the held process is gone", 2);
     } else {
       try {
         process.kill(pid, "SIGTERM");
@@ -2254,24 +2447,19 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
         } catch {
           // It ended between the read and the kill.
         }
-        console.log(
-          `UNKNOWN: the holder ${pid} of ${session} still ran ${RELEASE_MS / 1000} s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered`
+        return spent(
+          `UNKNOWN: the holder ${pid} of ${session} still ran ${RELEASE_MS / 1000} s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered`,
+          2
         );
-        return 2;
       }
     }
   }
   if (!existsSync(released)) {
-    console.log(`UNKNOWN: the holder ${pid} of ${session} ended and wrote no released`);
-    return 2;
+    return spent(`UNKNOWN: the holder ${pid} of ${session} ended and wrote no released`, 2);
   }
   const said = kept(state, RELEASED);
-  if (said !== "unregistered") {
-    console.log(`UNKNOWN: ${session} was not released: ${said}`);
-    return 2;
-  }
-  console.log(`RELEASED ${session}`);
-  return 0;
+  if (said !== "unregistered") return spent(`UNKNOWN: ${session} was not released: ${said}`, 2);
+  return spent(`RELEASED ${session}`, 0);
 }
 
 if (import.meta.main) {
