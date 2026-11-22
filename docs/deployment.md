@@ -359,10 +359,14 @@ operation; a role's own `--ignore-working-copy` goes to the real push alone.
 Otherwise it first takes the one snapshot of the working copy that the push would take itself,
 with the push's own `-R`, `--config` and `--quiet` arguments, and passes on what that snapshot
 prints, then reads what the push sends again and acts on no commit id it read before the
-snapshot: every id it reads then, `@` and each descendant of `@` included, stays valid through
-the push, whose own snapshot finds nothing new unless another process wrote the working copy in
-between.
-Each of its other commands runs with `--ignore-working-copy`.
+snapshot.
+Each of its other commands runs with `--ignore-working-copy`, and so does the real push, which
+then takes no second snapshot: every id the step reads after its snapshot, `@` and each
+descendant of `@` included, stays valid through the push, a warning that a snapshot prints, such
+as jj's `Refused to snapshot some files`, is printed once, and a write that another process makes
+after the step's snapshot stays in the working copy for the next jj command.
+Those ids stay valid unless another jj command, such as a `jj st` in the same workspace, rewrites
+those commits between the step's read and the real push.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
 role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 212).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
@@ -371,7 +375,8 @@ Where a commit's author is not the identity that the table gives the trailer's r
 runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
-own arguments, but for a revision argument whose meaning the rewrite changed.
+own arguments, but for a revision argument whose meaning the rewrite changed, and with
+`--ignore-working-copy` in front of them where the step took its snapshot.
 Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
 `--revisions` to the whole set of commits it names, and reads which of its mutable commits that no
 remote bookmark holds are hidden and which is the working-copy commit; a hidden commit whose change
@@ -406,7 +411,7 @@ author that a dry run refused, and, where no such fill ran, before its snapshot,
 author:
 it prints one `legion jj: could not set the author:` line that names the argument, the count and
 the limit, and the push runs as written, but where that fill ran, after which each revision
-argument is held to its set as above.
+argument is held to its set as above and the push carries `--ignore-working-copy`.
 The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
 naming its commits by the ids the step followed them to after the part before it.
 Each of the step's reads of a list of commit or change ids runs once for each part of the list
@@ -421,7 +426,8 @@ too, and `jj git push` still refuses one with no such trailer.
 The step adds no refusal.
 Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
-argument is held to its set as above.
+argument is held to its set as above, and with `--ignore-working-copy` where the step took its
+snapshot.
 A push that names a commit that no jj command has imported yet, such as one that a `git commit`
 made, has a dry run that the step cannot read: the step decides from reads that import nothing
 from git, so the dry run cannot find the commit, the step takes no snapshot, and the push imports
