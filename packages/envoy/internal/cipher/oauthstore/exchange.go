@@ -803,6 +803,20 @@ func (s *Store) SetTokenExchangeCustomJWT(ctx context.Context, jti string, exp t
 	return nil
 }
 
+// TokenExchangeJTISpent reports whether jti is the jti of a subject token the exchange has already
+// accepted, as SetTokenExchangeCustomJWT would find it: remembered, and not yet past its expiry.
+// It writes nothing, so asking about a token nobody has verified spends no jti. The exchange asks
+// it of a subject token whose key it could not read (oauth's unjudgedSubject), to refuse a spent
+// one as the library refuses it once it can read the key.
+func (s *Store) TokenExchangeJTISpent(ctx context.Context, jti string) (bool, error) {
+	var spent bool
+	err := s.db(ctx).QueryRow(ctx, `select exists (select 1 from oauth_exchange_jtis where jti = $1 and expires_at > now())`, jti).Scan(&spent)
+	if err != nil {
+		return false, fmt.Errorf("read exchanged subject token: %w", err)
+	}
+	return spent, nil
+}
+
 // GetSubjectForTokenExchange answers who the holder of a verified subject token is, for the token
 // types whose subject the library cannot read off the token itself. The store decides nothing
 // here: it calls ExchangeSubject, which the provider wiring sets to the exchange's own decision,
