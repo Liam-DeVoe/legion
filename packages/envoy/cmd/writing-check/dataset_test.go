@@ -1660,6 +1660,81 @@ func TestDatasetBuildFromADirectoryReadsOnePackOrRefusesTheMix(t *testing.T) {
 	}
 }
 
+// build --from a directory finds a whole bundle by what it is, a gzipped tarball, whatever its
+// name: two packed whole under names other than *.tar.gz are two bundles, refused, naming both,
+// and one beside a gzipped file that is no tarball (a snapshot) is read. A pack whose name holds
+// ".part-" is one bundle, its manifest and parts read as one; and pack refuses an --out named as a
+// manifest or a part, which build --from the directory would read as that and not as a bundle.
+func TestDatasetBuildFromADirectoryFindsBundlesOfAnyName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	pack := func(seed uint64, bundle string, partSize int64) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(bundle), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: seed}, bundle, partSize); err != nil {
+			t.Fatalf("pack %s: %v", bundle, err)
+		}
+	}
+	build := func(from string) (int, string, string) {
+		t.Helper()
+		out := filepath.Join(t.TempDir(), "out")
+		var stdout, stderr bytes.Buffer
+		code := run(t.Context(), []string{"dataset", "build", "--from", from, "--out", out}, &stdout, &stderr)
+		return code, stderr.String(), out
+	}
+	seedOf := func(out string) uint64 {
+		t.Helper()
+		var counts dsCounts
+		if data, err := os.ReadFile(filepath.Join(out, "counts.json")); err != nil || json.Unmarshal(data, &counts) != nil {
+			t.Fatalf("the build wrote no counts (%v)", err)
+		}
+		return counts.Seed
+	}
+
+	two := filepath.Join(dir, "two")
+	pack(fixtureSeed, filepath.Join(two, "data.tgz"), dsPartSize)
+	pack(fixtureSeed+1, filepath.Join(two, "dataset.bin"), dsPartSize)
+	if code, stderr, out := build(two); code == 0 || !strings.Contains(stderr, "data.tgz and dataset.bin, 2 bundles: name one") {
+		t.Errorf("build --from a directory of data.tgz and dataset.bin: exit %d: %s; want the refusal that names both", code, stderr)
+	} else if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused build made %s (%v)", out, err)
+	}
+
+	beside := filepath.Join(dir, "beside")
+	pack(fixtureSeed+1, filepath.Join(beside, "data.tgz"), dsPartSize)
+	data, err := os.ReadFile(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beside, filepath.Base(snapshot)), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, stderr, out := build(beside); code != 0 || seedOf(out) != fixtureSeed+1 {
+		t.Errorf("build --from a directory of data.tgz and %s: exit %d: %s; want data.tgz read", filepath.Base(snapshot), code, stderr)
+	}
+
+	named := filepath.Join(dir, "named")
+	pack(fixtureSeed+1, filepath.Join(named, "data.part-x.tgz"), 4096)
+	if code, stderr, out := build(named); code != 0 || seedOf(out) != fixtureSeed+1 {
+		t.Errorf("build --from the directory of a split data.part-x.tgz: exit %d: %s; want the pack read", code, stderr)
+	}
+
+	for _, name := range []string{"data.tgz.manifest.json", "data.tgz.part-000"} {
+		bundle := filepath.Join(dir, "refused", name)
+		var stdout, stderr bytes.Buffer
+		code := run(t.Context(), []string{"dataset", "pack", "--snapshot", snapshot, "--verdicts", verdicts, "--seed", "1", "--out", bundle}, &stdout, &stderr)
+		if code != 2 || !strings.Contains(stderr.String(), "is named as a bundle's manifest or part") {
+			t.Errorf("pack --out %s: exit %d: %s; want 2 and the refusal", name, code, stderr.String())
+		}
+		if _, err := os.Stat(bundle); !os.IsNotExist(err) {
+			t.Errorf("the refused pack wrote %s (%v)", bundle, err)
+		}
+	}
+}
+
 // Every dataset step refuses an --out inside a repository, as the harness does, and makes no
 // directory there: each writes Dispatch or session text. fetch and named need --owner: they
 // hold no default owner.

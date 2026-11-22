@@ -357,6 +357,23 @@ func TestEveryHarnessCommandRefusesAnOutputThatIsAnInput(t *testing.T) {
 	}
 }
 
+// A held-out score writes two outputs, its run directory and the exposure log, and refuses, with
+// exit 2 and before it writes or claims anything, an exposure log that is a file of its run
+// directory, also where neither exists yet: the run's write would replace its claim.
+func TestAHeldOutScoreRefusesAnExposureLogInItsRunDirectory(t *testing.T) {
+	build, sessions := writeFixture(t)
+	out := filepath.Join(t.TempDir(), "held")
+	gateway := []string{"--gateway", "http://127.0.0.1:1", "--gateway-key-file", keyFile(t)}
+	code, _, stderr := runHarness(append([]string{"score", "--part", PartHeldOut, "--commit", "c0ffee", "--cases", build, "--sessions", sessions,
+		"--out", out, "--exposure-log", filepath.Join(out, "run.json")}, gateway...)...)
+	if want := "--exposure-log names run.json of --out, which this command also writes"; code != 2 || !strings.Contains(stderr, want) {
+		t.Errorf("a held-out score whose exposure log is its run.json = %d:\n%s\nwant 2 and %q", code, stderr, want)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused score made %s (%v)", out, err)
+	}
+}
+
 // writeJSON, and each write ReplaceFile makes, goes through a file of a name of its own beside its
 // output: another run's file under the name the temporary file had before (<path>.tmp) is left
 // as it was, and a write that fails leaves no file of its own behind.

@@ -62,9 +62,13 @@ func (rig *reviewRig) waitDecided(id string) heldRow {
 // awaiting its writer for an hour, with no request a post could run: a text a write may name.
 func holdFixture(t *testing.T, database *store.Store, id, kind, project string) {
 	t.Helper()
+	// A held issue's request names its project and title, as every issue create's does: a write
+	// held beside it reads them (heldBeside).
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, state, deadline)
-		values ($1, $2, 'POST /fixture', '{}', '{}', '{"kind":"session","id":"s-writer"}', 's-writer', 'alice', $3,
+		values ($1, $2, 'POST /fixture',
+			case when $2 = 'issue' then jsonb_build_object('project', $3::text, 'title', 'A held fixture') else '{}'::jsonb end,
+			'{}', '{"kind":"session","id":"s-writer"}', 's-writer', 'alice', $3,
 			'awaiting_writer', now() + interval '1 hour')`, id, kind, project); err != nil {
 		t.Fatalf("hold the fixture %s: %v", id, err)
 	}

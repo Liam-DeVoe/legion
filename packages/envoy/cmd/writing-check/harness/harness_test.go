@@ -435,6 +435,36 @@ func TestAHeldOutRunRefusedOnItsOwnFilesClaimsNothing(t *testing.T) {
 	}
 }
 
+// A held-out run whose candidate is a Foundry deployment reads the federated token file before its
+// claim, as it reads the gateway's key: the Entra sign-in reads the file on the candidate's first
+// call alone, so a run refused on a token file it cannot read, or on one that holds nothing, which
+// the sign-in refuses, has read no case, and the exposure log holds no line of it.
+func TestAHeldOutRunReadsAFoundryCandidatesTokenFileBeforeItsClaim(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, lockstepRules(t, nil)...)
+	empty := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	noToken := filepath.Join(t.TempDir(), "no-token")
+	for _, c := range []struct{ name, token, want string }{
+		{"a token file it cannot read", noToken, "the federated token file: open " + noToken},
+		{"a token file that holds nothing", empty, "the federated token file " + empty + " holds no credential"},
+	} {
+		exposure := filepath.Join(t.TempDir(), "exposure.log")
+		code, _, stderr := runHarness("score", "--change", "7a", "--model", foreignGrader, "--part", PartHeldOut, "--commit", "c0ffee",
+			"--cases", build, "--sessions", sessions, "--out", t.TempDir(), "--gateway", stand.URL, "--gateway-key-file", keyFile(t),
+			"--foundry-endpoint", stand.URL+"/models", "--azure-tenant", "tenant", "--azure-client-id", "client", "--federated-token-file", c.token,
+			"--draws", "50", "--exposure-log", exposure)
+		if code != 1 || !strings.Contains(stderr, c.want) || len(stand.Requests()) != 0 {
+			t.Errorf("a held-out run of a Foundry candidate with %s = %d after %d calls:\n%s\nwant 1 and %q", c.name, code, len(stand.Requests()), stderr, c.want)
+		}
+		if logged, err := ReadExposures(exposure); err != nil || len(logged) != 0 {
+			t.Errorf("the held-out run with %s, which read no case, wrote the exposure log: %+v (%v)", c.name, logged, err)
+		}
+	}
+}
+
 // Only a held-out run reads the gateway's key before it scores, so that its claim follows the
 // read. A development run reads the key on each model call alone: one whose answers and grades
 // all come from --grades-from calls no model, and scores with a key file it cannot read. A

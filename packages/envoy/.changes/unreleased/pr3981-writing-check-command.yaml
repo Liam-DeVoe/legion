@@ -23,14 +23,20 @@ body: |-
   command sends a key or a token over http only to a host inside the
   machine or the cluster. Every command refuses, with exit 2 and before it writes anything, an
   output that is one of its inputs by one path or another (`probe-model --bodies`, `label
-  --definition`, a key or token file, a file of an input directory). A file a command renames over
+  --definition`, a key or token file, a file of an input directory), two of its outputs that are
+  one file, whether or not it exists yet (`readers --out X --state X`), and `dataset fetch` an
+  output inside its work directory. A file a command renames over
   its output is written first to a file of a name of its own beside it, and a failed write removes
   that file alone; `fetch`, `dataset fetch` and `label`, whose files keep their names for the next
   run, hold a lock on them until they end, so a second run on the same files is refused. `harness score`
-  opens each lane's `cases.jsonl` and reads the gateway's key before it records a held-out run in
-  the exposure log, and `score --final-test` reads the reader's key before it claims the set.
-  `dataset build --from` a directory refuses a tarball, manifest and parts of one name that are
-  not one bundle, and `harness score --texts-from` a directory of a run and a lockstep's runs.
+  opens each lane's `cases.jsonl` and reads each credential file its models' calls read (the
+  gateway's key, a Foundry candidate's federated token) before it records a held-out run in the
+  exposure log, and `score --final-test` reads the reader's key and token files before it claims
+  the set; each refuses a credential file it cannot read or that holds nothing.
+  `dataset build --from` a directory finds a bundle of any name, and refuses two bundles, or a
+  tarball, manifest and parts of one name that are not one bundle; `dataset pack` refuses an
+  `--out` named as a manifest or a part; and `harness score --texts-from` refuses a directory of a
+  run and a lockstep's runs.
   `harness local` stopped before its instance is up exits 1. The harness's model calls escape
   each tag of their message that a text holds, as the reviewer does, and read the words a reply
   copies with the escape undone. `dataset fetch` and `dataset named` take the owner as a required

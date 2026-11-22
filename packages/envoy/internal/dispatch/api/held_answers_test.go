@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,24 +41,31 @@ var heldAnswerOwn = []string{"created_at", "updated_at", "number"}
 // postedIDs map, each read as the name it maps to: the write's own id, the text it answers.
 func requireHeldAnswerAsPosted(t *testing.T, what string, held, posted *httptest.ResponseRecorder, heldIDs, postedIDs map[string]string) {
 	t.Helper()
+	requireHeldAnswerAsPostedLess(t, what, held, posted, heldIDs, postedIDs, nil)
+}
+
+// requireHeldAnswerAsPostedLess is requireHeldAnswerAsPosted with postOnly, more dotted paths that
+// only this write's post makes, left out of both answers.
+func requireHeldAnswerAsPostedLess(t *testing.T, what string, held, posted *httptest.ResponseRecorder, heldIDs, postedIDs map[string]string, postOnly []string) {
+	t.Helper()
 	if strings.Contains(posted.Body.String(), `"held"`) {
 		t.Fatalf("%s, posted at once: %d %s, want no held object", what, posted.Code, posted.Body.String())
 	}
-	heldAnswer, postedAnswer := comparedAnswer(t, held, heldIDs), comparedAnswer(t, posted, postedIDs)
+	heldAnswer, postedAnswer := comparedAnswer(t, held, heldIDs, postOnly), comparedAnswer(t, posted, postedIDs, postOnly)
 	if held.Code != posted.Code || heldAnswer != postedAnswer {
 		t.Errorf("%s: the held answer is not the posted one:\nheld   %d %s\nposted %d %s", what, held.Code, heldAnswer, posted.Code, postedAnswer)
 	}
 }
 
-// comparedAnswer is response's answer as requireHeldAnswerAsPosted compares it.
-func comparedAnswer(t *testing.T, response *httptest.ResponseRecorder, ids map[string]string) string {
+// comparedAnswer is response's answer as requireHeldAnswerAsPosted compares it, less postOnly.
+func comparedAnswer(t *testing.T, response *httptest.ResponseRecorder, ids map[string]string, postOnly []string) string {
 	t.Helper()
 	var answer map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", response.Body.String(), err)
 	}
 	delete(answer, "held")
-	for _, path := range heldAnswerPostOnly {
+	for _, path := range append(slices.Clone(heldAnswerPostOnly), postOnly...) {
 		withoutField(answer, strings.Split(path, "."))
 	}
 	for _, field := range heldAnswerOwn {
@@ -148,6 +156,10 @@ func TestAHeldCommentsWholeAnswerIsItsPostsAnswer(t *testing.T) {
 		rig.waitHeld(id, heldAwaitingWriter)
 		posted := rig.asWriterTyped(http.MethodPost, comments, comment.body)
 		requireHeldAnswerAsPosted(t, "the comment "+comment.name, held, posted, map[string]string{id: "the comment"}, map[string]string{postedID(t, posted): "the comment"})
+		// The next comment would wait for its turn behind this one and count it in its advice, as
+		// its post finds it posted (TestAHeldTextWaitingForItsTurnAnswersAsItsPost): posted now, it
+		// is counted by the held answer and its typed copy alike.
+		rig.postedAsWritten(id)
 	}
 }
 
@@ -251,4 +263,185 @@ func TestAHeldMessageRepliesWholeAnswerIsItsPostsAnswer(t *testing.T) {
 	postedFollowUp := rig.asWriterTyped(http.MethodPost, "/api/v1/messages/"+second+"/reply?follow_up=true", followUp)
 	postedIDs[postedID(t, postedFollowUp)] = "the follow-up"
 	requireHeldAnswerAsPosted(t, "the follow-up", heldFollowUp, postedFollowUp, heldIDs, postedIDs)
+}
+
+// A held write beside a held parent runs no dry run before that parent posts, and its answer is
+// still its post's answer, whole, as each test below holds it: the parent is held, the write is
+// held beside it, the parent posts and the write waits on its writer, and the writer's typed copy
+// of the write, which posts at once once the parent is posted, gets the answer the held one must
+// equal. Whom it waits on, its thread and its advice are read off the held texts it waits on, as
+// its post will find them once they have posted (heldBeside).
+
+// A held ask on a held issue answers as its post's answer does: whom it waits on, the assignee
+// the issue's post writes, and the advice of the issue the issue's post files, in triage.
+func TestAHeldAskOnAHeldIssueAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	asks := "/api/v1/issues/" + issue + "/asks"
+	ask := map[string]any{
+		"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase,
+		"options":  []map[string]string{{"label": "Reseat it", "description": "Reseat it today."}, {"label": "Wait", "description": "Read first."}},
+		"urgency":  "high",
+	}
+	held := rig.asWriter(http.MethodPost, asks, ask)
+	id := rig.held(held, "the held ask on the held issue").ID
+	rig.postedAsWritten(issue)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, asks, ask)
+	requireHeldAnswerAsPosted(t, "the ask on the held issue", held, posted, map[string]string{id: "the ask"}, map[string]string{postedID(t, posted): "the ask"})
+}
+
+// A held comment that answers a held ask answers as its post's answer does: the ask it joins, its
+// turn, whom the ask waits on once it posts (ask_waiting_on), and the advice of its issue once the
+// ask has posted, the ask among the session's open asks and counted among its writes.
+func TestAHeldCommentOnAHeldAskAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Which port should the node use?\n" + vacuousPhrase,
+	}), "the held ask").ID
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	comment := map[string]any{"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "ask_id": ask}
+	held := rig.asWriter(http.MethodPost, comments, comment)
+	id := rig.held(held, "the held comment on the held ask").ID
+	rig.postedAsWritten(ask)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, comments, comment)
+	requireHeldAnswerAsPosted(t, "the comment on the held ask", held, posted, map[string]string{id: "the comment"}, map[string]string{postedID(t, posted): "the comment"})
+}
+
+// A held reply to a held comment answers as its post's answer does: the comment it answers, the
+// head of that comment's thread as its reply_to, and the advice of its issue once that comment
+// has posted, counted among the session's writes.
+func TestAHeldReplyToAHeldCommentAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, holdComments(), nil)
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	root := rig.held(rig.asWriter(http.MethodPost, comments, map[string]any{"body": "Status\nWe spin up the node. " + vacuousPhrase}), "the held comment").ID
+	reply := map[string]any{"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "reply_to": root}
+	held := rig.asWriter(http.MethodPost, comments, reply)
+	id := rig.held(held, "the held reply to the held comment").ID
+	rig.postedAsWritten(root)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, comments, reply)
+	requireHeldAnswerAsPosted(t, "the reply to the held comment", held, posted, map[string]string{id: "the reply"}, map[string]string{postedID(t, posted): "the reply"})
+}
+
+// A held message on a held issue answers as its post's answer does, with the advice of the issue
+// the issue's post files, in triage.
+func TestAHeldMessageOnAHeldIssueAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	messages := "/api/v1/issues/" + issue + "/messages"
+	message := map[string]any{"body": "Status\nWe reseat the gnomon. " + vacuousPhrase}
+	held := rig.asWriter(http.MethodPost, messages, message)
+	id := rig.held(held, "the held message on the held issue").ID
+	rig.postedAsWritten(issue)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, messages, message)
+	requireHeldAnswerAsPosted(t, "the message on the held issue", held, posted, map[string]string{id: "the message"}, map[string]string{postedID(t, posted): "the message"})
+}
+
+// A held issue whose parent is a held issue answers the advice its post answers, a new issue's in
+// triage: no writes and no open asks of the session on it yet, the blocks of its spec as its post
+// reads them (decision_blocks), and Legion owning its status where the held parent carries the
+// legion label, which the label walk reads off the parent's record while no issues row holds it.
+func TestAHeldIssueUnderAHeldIssueAnswersItsPostsAdvice(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	parent := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets", "labels": []string{"legion"},
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held parent").ID
+	child := rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Bellows valve chatter at idle", "parent": parent,
+		"spec": "The bellows valve chatters while the pump idles.\n\n" + vacuousPhrase,
+	})
+	rig.held(child, "the held child of the held issue")
+	var answer struct {
+		Parent *string `json:"parent"`
+		Advice struct {
+			IssueStatus             string      `json:"issue_status"`
+			SessionWritesSinceHuman int         `json:"session_writes_since_human"`
+			YourOpenAsks            []adviceAsk `json:"your_open_asks"`
+			LegionManagedStatus     *bool       `json:"legion_managed_status"`
+			DecisionBlocks          *int        `json:"decision_blocks"`
+		} `json:"advice"`
+	}
+	if err := json.Unmarshal(child.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the held child's answer %s: %v", child.Body.String(), err)
+	}
+	advice := answer.Advice
+	if answer.Parent == nil || *answer.Parent != parent || advice.IssueStatus != model.IssueStatusTriage || advice.SessionWritesSinceHuman != 0 ||
+		advice.YourOpenAsks == nil || len(advice.YourOpenAsks) != 0 || advice.LegionManagedStatus == nil || !*advice.LegionManagedStatus ||
+		advice.DecisionBlocks == nil || *advice.DecisionBlocks != 0 {
+		t.Errorf("the held child of a held legion issue answers %s, want its parent, and the advice of a new issue in triage that Legion owns, with its spec's blocks", child.Body.String())
+	}
+}
+
+// A held text that waits only for its turn behind its writer's earlier held text at its place
+// answers as its post's answer does: its post finds that text posted, counted among the session's
+// writes in its advice.
+func TestAHeldTextWaitingForItsTurnAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, holdComments(), nil)
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	first := rig.held(rig.asWriter(http.MethodPost, comments, map[string]any{"body": "Status\nWe spin up the node. " + vacuousPhrase}), "the first held comment").ID
+	comment := map[string]any{"body": "Status\nThe node answers on 8080. " + vacuousPhrase}
+	held := rig.asWriter(http.MethodPost, comments, comment)
+	answer := rig.held(held, "the comment held behind it")
+	if answer.Held.WaitsOn != first {
+		t.Fatalf("the second comment waits on %q, want its turn behind %s", answer.Held.WaitsOn, first)
+	}
+	rig.waitHeld(answer.ID, heldAwaitingWriter)
+	rig.postedAsWritten(first)
+	posted := rig.asWriterTyped(http.MethodPost, comments, comment)
+	requireHeldAnswerAsPosted(t, "the comment behind the held one", held, posted, map[string]string{answer.ID: "the comment"}, map[string]string{postedID(t, posted): "the comment"})
+}
+
+// A held ask on a held issue whose anchor quotes that issue's spec answers as its post's answer
+// does: the quote and the document it quotes (anchor_artifact), less what that issue's post makes,
+// the document's id, the block and the version.
+func TestAHeldAnchoredAskOnAHeldIssueAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	asks := "/api/v1/issues/" + issue + "/asks"
+	ask := map[string]any{
+		"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase,
+		"anchor":   map[string]any{"artifact": "spec", "quote": "constant offset"},
+	}
+	held := rig.asWriter(http.MethodPost, asks, ask)
+	id := rig.held(held, "the held anchored ask on the held issue").ID
+	rig.postedAsWritten(issue)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, asks, ask)
+	requireHeldAnswerAsPostedLess(t, "the anchored ask on the held issue", held, posted, map[string]string{id: "the ask"}, map[string]string{postedID(t, posted): "the ask"},
+		[]string{"anchor.artifact_id", "anchor.block_id", "anchor.version"})
+}
+
+// A held follow-up that waits on its writer's held reply to the same delivery answers as its
+// post's answer does: filed under that reply, on the delivery's issue and to its target.
+func TestAHeldFollowUpBesideAHeldReplyAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	first, second := rig.messageToWriter("Is the first node up?"), rig.messageToWriter("Is the second node up?")
+	reply := map[string]any{"body": "Status\nWe spin up the node. " + vacuousPhrase, "attempt": 1}
+	followUp := map[string]any{"body": "Status\nWe spin up the second node. " + vacuousPhrase, "attempt": 1}
+	heldReply := rig.held(rig.asWriter(http.MethodPost, "/api/v1/messages/"+first+"/reply", reply), "the held reply").ID
+	held := rig.asWriter(http.MethodPost, "/api/v1/messages/"+first+"/reply?follow_up=true", followUp)
+	answer := rig.held(held, "the held follow-up beside the held reply")
+	if answer.Held.WaitsOn != heldReply {
+		t.Fatalf("the held follow-up waits on %q, want the held reply %s", answer.Held.WaitsOn, heldReply)
+	}
+	postedReply := rig.asWriterTyped(http.MethodPost, "/api/v1/messages/"+second+"/reply", reply)
+	posted := rig.asWriterTyped(http.MethodPost, "/api/v1/messages/"+second+"/reply?follow_up=true", followUp)
+	requireHeldAnswerAsPosted(t, "the follow-up beside the held reply", held, posted,
+		map[string]string{answer.ID: "the follow-up", heldReply: "the reply", first: "the message"},
+		map[string]string{postedID(t, posted): "the follow-up", postedID(t, postedReply): "the reply", second: "the message"})
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -101,6 +102,46 @@ func TestAFinalTestWhoseKeyCannotBeReadSpendsNoSet(t *testing.T) {
 	}
 	if stub.calls.Load() != 0 {
 		t.Error("the refused run called the model")
+	}
+}
+
+// A final-test score whose reader key file or federated token file holds nothing fails before it
+// claims the set, as one it cannot read does: the Entra sign-in refuses an empty token file on the
+// first call alone, and no call signs in with an empty key, so every call would fail with no write
+// read. The exposure log holds no run, and no --out is made.
+func TestAFinalTestWhoseCredentialFileIsEmptySpendsNoSet(t *testing.T) {
+	dir := t.TempDir()
+	labels, manifest := fixtureLabels(t, dir)
+	stub := newStubModel(t, containsAny("names the"), nil)
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, []byte(" \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := []string{"--kind", "openai-chat", "--endpoint", stub.server.URL + "/", "--deployment", "stub-deployment", "--deadline", "10s",
+		"--model-id", stubModelID, "--concurrency", "2"}
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"key file", []string{"--key-file", empty}, "--key-file " + empty + " holds no credential"},
+		{"federated token file", []string{"--azure-tenant", "tenant", "--azure-client-id", "client", "--federated-token-file", empty},
+			"--federated-token-file " + empty + " holds no credential"},
+	} {
+		log, out := filepath.Join(dir, c.name+".jsonl"), filepath.Join(dir, c.name)
+		args := slices.Concat([]string{"score", "--labels", labels, "--planted", manifest, "--stratum", stratumReal, "--out", out, "--root", "../..",
+			"--final-test", "--set-digest", strings.Repeat("ab", 32), "--seed", "42", "--exposure-log", log}, reader, c.args)
+		if code, _, stderr := runCmd(t, args...); code != 1 || !strings.Contains(stderr, c.want) {
+			t.Errorf("a final test whose %s is empty = %d:\n%s\nwant 1 and %q", c.name, code, stderr, c.want)
+		}
+		for _, made := range []string{log, out} {
+			if _, err := os.Stat(made); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the final test refused on its empty %s made %s (%v)", c.name, made, err)
+			}
+		}
+	}
+	if stub.calls.Load() != 0 {
+		t.Error("a refused run called the model")
 	}
 }
 
@@ -471,6 +512,47 @@ func TestEveryCommandRefusesAnOutputThatIsAnInput(t *testing.T) {
 		}
 		if data, err := os.ReadFile(c.input); err != nil || string(data) != "keep\n" {
 			t.Errorf("%v changed its input %s to %q (%v)", c.args[:2], c.input, data, err)
+		}
+	}
+}
+
+// A command that writes more than one output refuses, with exit 2 and before it writes anything,
+// two of them that are one file, also where the file does not exist yet: score --final-test's
+// exposure log named as its figures.json, whose write would replace the claim; and dataset fetch's
+// snapshot named inside its work directory, whose every page file the fetch reads, as a page of
+// the directory or as a file of any other name (readers' --out and --state:
+// TestReadersRefusesOnePathForItsTwoOutputs).
+func TestEveryCommandRefusesTwoOutputsOnOnePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", filepath.Join(dir, "token"))
+	labels, key := filepath.Join(dir, "labels.jsonl"), filepath.Join(dir, "key")
+	for _, path := range []string{labels, key} {
+		if err := os.WriteFile(path, []byte("keep\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := []string{"--kind", "openai-chat", "--endpoint", "http://127.0.0.1:1/", "--deployment", "stub", "--key-file", key}
+	score, pages, named := filepath.Join(dir, "score"), filepath.Join(dir, "pages"), filepath.Join(dir, "named")
+	for _, c := range []struct {
+		args  []string
+		made  string
+		wants string
+	}{
+		{append([]string{"score", "--labels", labels, "--stratum", stratumReal, "--out", score, "--final-test", "--set-digest", "ab", "--seed", "1",
+			"--exposure-log", filepath.Join(score, "figures.json"), "--model-id", "stub"}, reader...), score,
+			"--exposure-log names figures.json of --out, which this command also writes"},
+		{[]string{"dataset", "fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", filepath.Join(pages, "events-0-10.jsonl.gz"), "--work", pages}, pages,
+			"the --out file lies in the --work directory, which this command reads whole"},
+		{[]string{"dataset", "fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", filepath.Join(named, "snapshot.jsonl.gz"), "--work", named}, named,
+			"the --out file lies in the --work directory, which this command reads whole"},
+	} {
+		code, _, stderr := runCmd(t, c.args...)
+		if code != 2 || !strings.Contains(stderr, c.wants) {
+			t.Errorf("%v = %d:\n%s\nwant 2 and %q", c.args, code, stderr, c.wants)
+		}
+		if _, err := os.Stat(c.made); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused %s made %s (%v)", c.args[0], c.made, err)
 		}
 	}
 }

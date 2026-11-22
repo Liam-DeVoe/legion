@@ -49,21 +49,24 @@ func Files(flag, path string, names ...string) []File {
 
 // NoOutputIsAnInput refuses a file a command writes that is a file another of its flags names as
 // an input, by one path or two (a link, or another name of one file); a directory it replaces
-// whole that holds such an input; and a file it writes in a directory it reads whole: the write
-// would empty or replace what the command reads, or write into it. A file one flag both reads
-// and writes, such as the output a run continues, is that flag's own. A command calls it before
-// it writes anything, and refuses with exit 2.
+// whole that holds such an input; a file it writes in a directory it reads whole; and two files it
+// writes that are one file, or one inside a directory it replaces whole: the write would empty or
+// replace what the command reads, or write into it, or the later of two writes would replace the
+// earlier. A path that does not exist yet is compared by where a write to it lands (realPath), so
+// two flags that name one new file are refused before either is written. A file one flag both
+// reads and writes, such as the output a run continues, is that flag's own. A command calls it
+// before it writes anything, and refuses with exit 2.
 func NoOutputIsAnInput(writes, reads []File) error {
-	written, read := statFiles(writes), statFiles(reads)
+	written, read := locate(writes), locate(reads)
 	for i, w := range writes {
 		for j, r := range reads {
 			switch {
 			case w.Flag == r.Flag:
-			case w.Tree && underDir(r.Path, written[i]):
+			case w.Tree && written[i].holds(read[j]):
 				return fmt.Errorf("%s, which this command replaces whole, holds %s: give another %s", w, r, w.Flag)
-			case r.Tree && underDir(w.Path, read[j]):
+			case r.Tree && read[j].holds(written[i]):
 				return fmt.Errorf("%s lies in %s, which this command reads whole: give another %s", w, r, w.Flag)
-			case !sameFile(written[i], read[j]):
+			case !written[i].same(read[j]):
 			case w.Name == "":
 				return fmt.Errorf("%s names %s: give another %s", w.Flag, r, w.Flag)
 			default:
@@ -71,24 +74,74 @@ func NoOutputIsAnInput(writes, reads []File) error {
 			}
 		}
 	}
+	for i, w := range writes {
+		for j := i + 1; j < len(writes); j++ {
+			switch v := writes[j]; {
+			case w.Tree && written[i].holds(written[j]):
+				return fmt.Errorf("%s, which this command replaces whole, holds %s, which it also writes: give another %s", w, v, v.Flag)
+			case v.Tree && written[j].holds(written[i]):
+				return fmt.Errorf("%s, which this command replaces whole, holds %s, which it also writes: give another %s", v, w, v.Flag)
+			case !written[i].same(written[j]):
+			case v.Name == "":
+				return fmt.Errorf("%s names %s, which this command also writes: give another %s", v.Flag, w, v.Flag)
+			default:
+				return fmt.Errorf("%s is %s, which this command also writes: give another %s", v, w, v.Flag)
+			}
+		}
+	}
 	return nil
 }
 
-// statFiles looks up each of files once: its os.Stat, nil for one that does not exist or cannot
-// be looked up.
-func statFiles(files []File) []os.FileInfo {
-	infos := make([]os.FileInfo, len(files))
-	for i, f := range files {
-		if info, err := os.Stat(f.Path); err == nil {
-			infos[i] = info
-		}
-	}
-	return infos
+// located is a file looked up once (locate): its path, its os.Stat (nil where it does not exist
+// or cannot be looked up) and its realPath.
+type located struct {
+	path string
+	info os.FileInfo
+	real string
 }
 
-// sameFile is whether a and b, each an os.Stat or nil, are one file or directory that exists.
-func sameFile(a, b os.FileInfo) bool {
-	return a != nil && b != nil && os.SameFile(a, b)
+func locate(files []File) []located {
+	found := make([]located, len(files))
+	for i, f := range files {
+		found[i] = located{path: f.Path, real: realPath(f.Path)}
+		if info, err := os.Stat(f.Path); err == nil {
+			found[i].info = info
+		}
+	}
+	return found
+}
+
+// same is whether a and b are one file: one that exists, by any two names (os.SameFile), or one
+// path that may not exist yet.
+func (a located) same(b located) bool {
+	return a.info != nil && b.info != nil && os.SameFile(a.info, b.info) || a.real == b.real
+}
+
+// holds is whether dir, a directory a command replaces or reads whole, is f or lies above it,
+// whether or not either exists.
+func (dir located) holds(f located) bool {
+	rel, err := filepath.Rel(dir.real, f.real)
+	return err == nil && filepath.IsLocal(rel) || underDir(f.path, dir.info)
+}
+
+// realPath is where a write to path lands: path made absolute, its longest leading part that
+// exists with its links resolved, and the rest as written. Two names of one file that does not
+// exist yet, as through a link to its directory, give one realPath.
+func realPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	for dir, rest := abs, ""; ; {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		rest, dir = filepath.Join(filepath.Base(dir), rest), parent
+	}
 }
 
 // underDir is whether path is the directory dir, of the os.Stat given (nil where it does not

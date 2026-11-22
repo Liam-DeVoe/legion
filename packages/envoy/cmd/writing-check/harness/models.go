@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"net/url"
@@ -53,6 +54,9 @@ type modelFlags struct {
 	tenant, clientID, tokenFile, scope string
 	concurrency                        int
 	uncachedPerMinute                  int
+	// claudeBuilt and foundryBuilt say a client of the family was built (claudeClient,
+	// foundryClient), whose calls read the gateway's key or the federated token (readCredentials).
+	claudeBuilt, foundryBuilt bool
 }
 
 func addModelFlags(fs *flag.FlagSet) *modelFlags {
@@ -100,6 +104,37 @@ func (m *modelFlags) files() []File {
 	return append(Files("--gateway-key-file", m.keyFile), Files("--federated-token-file", m.tokenFile)...)
 }
 
+// ReadCredential reads the credential file path, which name names, and refuses one it cannot read
+// or that holds nothing but white space, which no call signs in with. A run that must not start
+// on a credential its calls could not send, a held-out run or a final test before its claim,
+// reads each of its credential files so, rather than meet the refusal on its first call.
+func ReadCredential(name, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return fmt.Errorf("%s %s holds no credential", name, path)
+	}
+	return nil
+}
+
+// readCredentials reads each credential file a client built so far reads on its calls
+// (ReadCredential): the gateway's key, which a Claude model's client reads on each call, and the
+// federated token, which a Foundry model's Entra sign-in reads on its first call alone. A held-out
+// run reads them before its claim, so a run refused on either has read no case.
+func (m *modelFlags) readCredentials() error {
+	if m.claudeBuilt {
+		if err := ReadCredential("the gateway key file", m.keyFile); err != nil {
+			return err
+		}
+	}
+	if m.foundryBuilt {
+		return ReadCredential("the federated token file", m.tokenFile)
+	}
+	return nil
+}
+
 // claudeClient is the client of a Claude model of the config, at a gateway the key may be sent to
 // (CredentialURL).
 func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runner) (*claude.Client, error) {
@@ -110,7 +145,9 @@ func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runn
 	if err := CredentialURL("--gateway", m.gateway); err != nil {
 		return nil, err
 	}
-	return claude.New(m.gateway, m.keyFile, model.ID, model.Effort, price.agentloop(), runner)
+	client, err := claude.New(m.gateway, m.keyFile, model.ID, model.Effort, price.agentloop(), runner)
+	m.claudeBuilt = m.claudeBuilt || err == nil
+	return client, err
 }
 
 // foundryTokens is the Entra token source of a Foundry account; a test replaces it with a
@@ -128,6 +165,7 @@ func (m *modelFlags) foundryClient(cfg Config, model ModelEntry, runner *llm.Run
 	if err != nil {
 		return nil, err
 	}
+	m.foundryBuilt = true
 	return llm.NewFoundry(account, tokens, model.ID, model.Effort, cfg.Prices.Prices[model.ID].agentloop(), runner), nil
 }
 

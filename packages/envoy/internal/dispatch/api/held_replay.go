@@ -449,21 +449,29 @@ func replyAttemptOf(body []byte) replyAttempt {
 // reply under row's id as its post writes it, read off a dry run of replay as row's hold read it
 // (heldAnswerOf), with its `held` object as it now stands, and a message marked duplicate as that
 // route marks one. As that route's repeat, it names no ask_waiting_on: whom the ask waits on once
-// a reply is its newest, which a repeated reply need no longer be. A row that waits on its
-// writer's earlier reply to the delivery (heldReplay.EarlierReply) ran no dry run at its hold and
-// runs none here. A dry run its route answers otherwise - a refusal, or the stored reply of row,
-// which posted meanwhile - is the repeat's answer, as with the reviewer off. Nothing is held, and
-// the writing check records nothing: the reply writes none of its words.
+// a reply is its newest, which a repeated reply need no longer be. A row that is a follow-up and
+// waits on its writer's earlier reply to the delivery (heldReplay.EarlierReply) ran no dry run at
+// its hold and runs none here: what it states of its post is read off the held replies it waits on
+// again (heldFollowUpBeside). A dry run its route answers otherwise - a refusal, or the stored
+// reply of row, which posted meanwhile - is the repeat's answer, as with the reviewer off. Nothing
+// is held, and the writing check records nothing: the reply writes none of its words.
 func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, row heldRow, replay heldReplay) {
 	write := replay.reviewed(reviewer.Kind(row.kind))
 	var dry *heldDryRun
-	if replay.EarlierReply == "" {
-		ran, done := s.heldDryRunOrAnswer(w, write, row.actor, row.id)
-		if done {
+	if replay.EarlierReply == "" || dryRunsBeside(write) {
+		if dry = s.heldDryRunOrAnswer(w, write, row.actor, row.id); dry == nil {
 			return
 		}
-		ran.askWaitingOn = ""
-		dry = ran
+		dry.askWaitingOn = ""
+	} else {
+		waited, err := s.heldWaitedOn(r.Context(), replay.EarlierReply)
+		if err == nil {
+			dry, err = s.heldFollowUpBeside(r.Context(), write.kind, replay, waited)
+		}
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	answer := heldAnswerOf(write, row.id, row.actor, row.writtenAt,
 		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, dry, wantsDisplayTrees(r), nil)
@@ -792,13 +800,17 @@ func markKeptWritePosted(id string, marked *atomic.Bool) store.BeforeCommit {
 }
 
 // replayAnswerOf is the answer a held reply's write gets: the reply route's own shape, built
-// from what the hold stored under the reserved id, and, where the hold's dry run ran the route
-// (dry, never nil), from the reply it wrote: a comment reply's issue or document, what a held
+// from what the hold stored under the reserved id, and from dry, never nil: where the hold's dry
+// run ran the route, the reply it wrote - a comment reply's issue or document, what a held
 // comment states of its dry run (heldCommentWrites) and whom the ask of its thread waits on once
 // it posts (ask_waiting_on); a message reply's issue, target and the message it answers, a
 // follow-up's being the first reply it is filed under, and what a held message states of its dry
-// run (heldMessageWrites). A reply that waits on a held text, which runs no dry run, states what
-// the hold stored alone.
+// run (heldMessageWrites). Every held reply runs its dry run but one: a follow-up that waits on
+// its writer's earlier held reply to the same delivery (heldReplay.EarlierReply), whose dry
+// carries what heldFollowUpBeside read off the held replies it waits on - the reply it is filed
+// under, the delivery's issue and target - or nothing, where those hold no reply to its attempt.
+// A reply that waits only for its turn at its place (heldWriteOf.before), or on an earlier held
+// reply to another attempt (dryRunsBeside), runs its dry run.
 func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
 	parent := replay.Subject.InReplyTo
 	if kind == reviewer.KindComment {

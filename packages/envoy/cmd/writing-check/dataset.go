@@ -1697,15 +1697,16 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 	}
 	// The snapshot and the work directory's files are written; the labelled sets, the token and
-	// the work directory's files are read. readLabelled reads every labels.jsonl in a directory of
-	// the sets, so nothing is written in one.
-	workFiles := []string{"fetch.json", "bodies.jsonl", "versions.jsonl", "events.done"}
+	// the work directory are read. readLabelled reads every labels.jsonl in a directory of the
+	// sets, and the fetch every page file in its work directory (dsPages), whatever pages it holds
+	// or will hold, so nothing else is written in either. The lock file is the work directory's.
+	workFiles := []string{"fetch.json", "bodies.jsonl", "versions.jsonl", "events.done", "fetch.lock"}
 	labelledSets := harness.Files("--labelled", *labelled)
 	if info, err := os.Stat(*labelled); err == nil && info.IsDir() {
 		labelledSets[0].Tree = true
 	}
 	if err := harness.NoOutputIsAnInput(append(harness.Files("--out", *out), harness.Files("--work", *work, workFiles...)...),
-		slices.Concat(labelledSets, harness.Files("DISPATCH_TOKEN_FILE", tokenFile), harness.Files("--work", *work, workFiles...))); err != nil {
+		slices.Concat(labelledSets, harness.Files("DISPATCH_TOKEN_FILE", tokenFile), []harness.File{{Flag: "--work", Path: *work, Tree: true}})); err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset fetch: %v\n", err)
 		return 2
 	}
@@ -3801,8 +3802,14 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset pack: %v\n", err)
 		return 2
 	}
-	// pack writes the bundle and its manifest, and removes and writes the parts of its name.
+	// build --from a directory reads a file named as a manifest or a part as that, never as a
+	// bundle (openBundle), so pack takes no such name.
 	dir, base := filepath.Dir(*out), filepath.Base(*out)
+	if strings.HasSuffix(base, ".manifest.json") || dsPartName.MatchString(base) {
+		fmt.Fprintf(stderr, "writing-check dataset pack: --out %s is named as a bundle's manifest or part, which build --from reads as one: name the bundle otherwise\n", *out)
+		return 2
+	}
+	// pack writes the bundle and its manifest, and removes and writes the parts of its name.
 	writes := append(harness.Files("--out", *out), harness.File{Flag: "--out", Path: *out + ".manifest.json", Name: base + ".manifest.json"})
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -3897,10 +3904,31 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	return sum, parts, err
 }
 
-// isBundlePart is whether name is the name of a part of the bundle base, <base>.part-NNN
-// (splitBundle).
+// dsPartName is the name of a part of a bundle, <bundle>.part-NNN (splitBundle): the bundle's
+// name, which may hold ".part-" itself, and the part's number.
+var dsPartName = regexp.MustCompile(`^(.+)\.part-(\d{3,})$`)
+
+// isBundlePart is whether name is the name of a part of the bundle base (dsPartName).
 func isBundlePart(base, name string) bool {
-	return strings.HasPrefix(name, base+".part-")
+	m := dsPartName.FindStringSubmatch(name)
+	return m != nil && m[1] == base
+}
+
+// isGzipTarball is whether the file at path reads as a gzipped tarball, as pack writes a bundle:
+// a gzip stream whose first tar header reads.
+func isGzipTarball(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return false
+	}
+	defer gz.Close()
+	_, err = tar.NewReader(gz).Next()
+	return err == nil
 }
 
 // removeParts removes <bundle>.manifest.json and each <bundle>.part-NNN beside bundle.
@@ -3960,11 +3988,13 @@ func splitBundle(bundle, sum string, size, partSize int64) ([]string, error) {
 // openBundle unpacks a bundle into dir and answers the build's inputs in it. from is the bundle,
 // its manifest (each part checked against its SHA-256, and the whole against the bundle's), or a
 // directory that holds one bundle: its manifest, read in place of the bundle where there is one,
-// or the bundle. A directory with parts, a manifest or a tarball of more than one bundle (an
-// earlier pack's beside a newer one) is refused, naming each, since it does not say which one
-// is meant. So is one whose files of one name are not one bundle: parts with no manifest, a part
-// the manifest does not name, or a bundle whose SHA-256 is not the one the manifest gives (an
-// earlier pack's manifest and parts beside a newer bundle of the same name, or the other way).
+// or the bundle. A bundle in a directory is a file of any name, as pack --out takes one: a
+// gzipped tarball, a file named *.tar.gz, or the file a manifest or a part beside it names. A
+// directory with parts, a manifest or a bundle of more than one bundle (an earlier pack's beside a
+// newer one) is refused, naming each, since it does not say which one is meant. So is one whose
+// files of one name are not one bundle: parts with no manifest, a part the manifest does not
+// name, or a bundle whose SHA-256 is not the one the manifest gives (an earlier pack's manifest
+// and parts beside a newer bundle of the same name, or the other way).
 func openBundle(from, dir string) (dsInputs, error) {
 	var in dsInputs
 	info, err := os.Stat(from)
@@ -3972,25 +4002,39 @@ func openBundle(from, dir string) (dsInputs, error) {
 		return in, err
 	}
 	// packDir is the directory from names, where it names one that holds a manifest; bundles and
-	// parts are its tarballs and its parts, which must be that manifest's bundle's (onePack).
+	// parts are its bundles and its parts, which must be that manifest's bundle's (onePack).
 	var packDir string
 	var bundles, parts []string
 	if info.IsDir() {
-		manifests, _ := filepath.Glob(filepath.Join(from, "*.manifest.json"))
-		bundles, _ = filepath.Glob(filepath.Join(from, "*.tar.gz"))
-		parts, _ = filepath.Glob(filepath.Join(from, "*.part-*"))
+		entries, err := os.ReadDir(from)
+		if err != nil {
+			return in, err
+		}
 		// Each file is one of a bundle's, by the bundle's name: <bundle>.manifest.json,
-		// <bundle>.part-NNN (splitBundle) or the bundle itself.
+		// <bundle>.part-NNN (dsPartName) or the bundle itself.
+		var manifests, others []string
 		names := map[string]bool{}
-		for _, m := range manifests {
-			names[strings.TrimSuffix(filepath.Base(m), ".manifest.json")] = true
+		for _, e := range entries {
+			name := e.Name()
+			if bundle, isManifest := strings.CutSuffix(name, ".manifest.json"); isManifest {
+				manifests = append(manifests, filepath.Join(from, name))
+				names[bundle] = true
+			} else if part := dsPartName.FindStringSubmatch(name); part != nil {
+				parts = append(parts, filepath.Join(from, name))
+				names[part[1]] = true
+			} else {
+				others = append(others, name)
+			}
 		}
-		for _, p := range parts {
-			name, _, _ := strings.Cut(filepath.Base(p), ".part-")
-			names[name] = true
-		}
-		for _, b := range bundles {
-			names[filepath.Base(b)] = true
+		for _, name := range others {
+			path := filepath.Join(from, name)
+			if file, err := os.Stat(path); err != nil || !file.Mode().IsRegular() {
+				continue
+			}
+			if names[name] || strings.HasSuffix(name, ".tar.gz") || isGzipTarball(path) {
+				bundles = append(bundles, path)
+				names[name] = true
+			}
 		}
 		switch {
 		case len(names) == 0:

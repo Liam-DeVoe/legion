@@ -1247,19 +1247,19 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				l.change = runs[i]
 			}
 		}
-		// Each lane's cases.jsonl is opened, and a held-out run reads the gateway's key, before the
-		// held-out claim: a run refused on either has read no case, so the exposure log holds no
+		// Each lane's cases.jsonl is opened, and a held-out run reads each credential file the
+		// clients built above read on their calls (the gateway's key for the grader, the reader,
+		// the writer and a Claude candidate; the federated token for a Foundry candidate), before
+		// the held-out claim: a run refused on any has read no case, so the exposure log holds no
 		// line of it. A development run reads the key on each model call alone, so one that calls
 		// none, its grades all taken from --grades-from, scores with no key.
 		if err := openLanes(lanes); err != nil {
 			return fail(err)
 		}
 		if heldOut != nil {
-			if !foreign {
-				if _, err := os.ReadFile(mf.keyFile); err != nil {
-					closeLanes(lanes)
-					return fail(fmt.Errorf("the gateway key file: %w", err))
-				}
+			if err := mf.readCredentials(); err != nil {
+				closeLanes(lanes)
+				return fail(err)
 			}
 			e, err := ClaimHeldOut(*exposureLog, *heldOut, finished)
 			if err != nil {

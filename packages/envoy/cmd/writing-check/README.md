@@ -15,9 +15,14 @@ name of the same file): a file it writes, or one it writes in its output directo
 of its flags reads, the key and token files and `DISPATCH_TOKEN_FILE` among them. So
 `probe-model --bodies X --out X` and `label --definition X --out X --resume` are refused, and so is
 `split --in <dir>/counts.json --out <dir>`. A file one flag both reads and writes, such as the
-output a run continues, `readers --state` or `calibrate --measured`, is that flag's own.
+output a run continues, `readers --state` or `calibrate --measured`, is that flag's own. A command
+that writes more than one output refuses two of them that are one file, whether or not it exists
+yet, so `readers --out X --state X` is refused rather than write the cases over the state, and so
+is `score --final-test --exposure-log <out>/figures.json`. A path that does not exist yet is
+compared by the directory it lands in, its links resolved.
 `dataset followups` also refuses an input inside the `explanations/` it replaces whole, and
-`dataset fetch` an output inside a `--labelled` directory, whose every `labels.jsonl` it reads.
+`dataset fetch` an output inside a `--labelled` directory, whose every `labels.jsonl` it reads, or
+inside its `--work` directory, whose every page file it reads.
 
 A file a command writes whole and renames over its output is written first to a file of a name of
 its own beside the output (`<name>.<random>.tmp`), and a write that fails removes that file
@@ -733,12 +738,12 @@ resamples, and `decimals`, 4), and the figures. `figures.md` is the same as tabl
 
 With `--final-test` (which needs `--set-digest`, `--seed`, `--exposure-log` and a `--model-id`),
 the command refuses a set whose digest the exposure log already holds a final-test run for. It
-reads the reader's `--key-file` and `--federated-token-file` and makes `--out` first, so a key the
-calls could not send or an `--out` that cannot be made spends no set, then appends one line to
-the log (`run_id`, `kind: final_test`, `time`, `set_digest`, `bundle_digest`, `seed`,
-`model_id`, `stratum`) before it reads any write, so a run that stops part way still spends the
-set. It computes the figures before it writes any file, so a run whose figures are refused
-leaves `--out` as it was.
+reads the reader's `--key-file` and `--federated-token-file`, refusing one it cannot read or that
+holds nothing, and makes `--out` first, so a key the calls could not send or an `--out` that cannot
+be made spends no set, then appends one line to the log (`run_id`, `kind: final_test`, `time`,
+`set_digest`, `bundle_digest`, `seed`, `model_id`, `stratum`) before it reads any write, so a run
+that stops part way still spends the set. It computes the figures before it writes any file, so a
+run whose figures are refused leaves `--out` as it was.
 
 A run in which a reader call failed (any outcome but `read`, `candidate_cap` or `not_called`: a
 timeout, a provider error, a malformed reply, a model mismatch) still writes its files, whose
@@ -1008,7 +1013,7 @@ reads them. An agent's text is a text that `writingcheck.Checks` checks.
 | --- | --- |
 | `--snapshot`, `--verdicts`, `--seed` | The three inputs. |
 | `--confirmed`, `--confirmed-seed` | Optional, together: the result of a fresh reader's read of a sample of question cases (`{"reader", "confirmed", "total", "items": [{"case_id", "about_words"}]}`), and the seed of its draw. |
-| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. A directory that holds the files (tarball, manifest or parts) of more than one bundle, such as an earlier pack's beside a newer one, is refused, naming each. So is a directory whose files of one name are not one bundle: parts with no manifest, a part the manifest does not name, a manifest whose parts are not all there, or a tarball whose SHA-256 is not the one its manifest gives (an earlier pack's manifest and parts beside a newer tarball of the same name, or the other way). The tarball, manifest and parts one `pack` wrote are read as one bundle. |
+| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. In a directory, a tarball is a file of any name, as `pack --out` takes one: a gzipped tarball, a file named `*.tar.gz`, or the file a manifest or a part beside it names. A directory that holds the files (tarball, manifest or parts) of more than one bundle, such as an earlier pack's beside a newer one, is refused, naming each. So is a directory whose files of one name are not one bundle: parts with no manifest, a part the manifest does not name, a manifest whose parts are not all there, or a tarball whose SHA-256 is not the one its manifest gives (an earlier pack's manifest and parts beside a newer tarball of the same name, or the other way). The tarball, manifest and parts one `pack` wrote are read as one bundle. |
 | `--to-development` | Optional: the split groups whose cases go to the development part whatever the split says, one key a line. A blank line and a line that opens with `#` are skipped. See below the split. |
 | `--out` | The directory for the output files. |
 
@@ -1141,7 +1146,9 @@ removes the manifest and the parts that an earlier pack to the same `--out` left
 `build --from` the directory never joins an earlier bundle's parts; `build --from` a directory
 also refuses one whose tarball, manifest and parts of one name are not one bundle (see `--from`
 above). The bundle goes to a file of a name of its own beside `--out`, renamed over it once
-whole. `pack` refuses an `--out` whose bundle, manifest or parts would be one of its inputs.
+whole. `pack` refuses an `--out` whose bundle, manifest or parts would be one of its inputs, and
+one named as a manifest (`*.manifest.json`) or a part (`*.part-NNN`), which `build --from` a
+directory reads as that and not as a bundle.
 
 `TestDatasetFlippedVerdictChangesTheDigest` is the negative control of
 `TestDatasetBuildIsDeterministic`: the same inputs build the same SHA-256, and one changed verdict
@@ -1863,8 +1870,11 @@ A run of the held-out part appends one line to the exposure log before it scores
 commit, the time, the changes, the models by role and the output directory, as an absolute path.
 It checks the log first, and appends the line just before it scores, after every refusal of its
 own that needs no model call (the session parts, the gateway, the key, the prices, the local
-instance), after it opens each lane's `cases.jsonl` to append its results and after it reads the
-gateway's key file: a run refused there read no text of the part and writes no line.
+instance), after it opens each lane's `cases.jsonl` to append its results and after it reads each
+credential file its models' calls read, refusing one it cannot read or that holds nothing: the
+gateway's key file (the grader, the reader, the writer, a Claude candidate) and the
+`--federated-token-file` (a Foundry candidate, whose sign-in reads it on its first call alone). A
+run refused there read no text of the part and writes no line.
 The held-out part is scored once at a commit for each cell of the grid: a change with one
 candidate, or a change that calls none. A line's cells are its changes with each candidate that
 its `models.candidate` names. A lockstep run (see "Lockstep") names all its models there,

@@ -11,7 +11,13 @@ body: |-
   usual shape, under an id kept for the text, with an added `held` object. That answer carries the
   advice the write gets with the reviewer off, the nearest existing issues and answered questions
   and the near-copy check included, and a near copy the check refuses is refused at once, with
-  nothing held. A review that finds nothing posts the text. Otherwise the findings and the
+  nothing held. A write beside a held text it names (an ask, a comment or a message on a held
+  issue, a reply to a held comment or ask, a child of a held issue, a follow-up to a held reply)
+  answers what its post will write, read off the held texts it waits on: whom an ask waits on and
+  the quote its anchor names, a comment's thread, turn and `ask_waiting_on`, the reply a follow-up
+  is filed under, and the advice of its issue as that post will find it; and a held text that
+  waits only for its turn counts the held texts before it in its advice. A review that finds
+  nothing posts the text. Otherwise the findings and the
   reviewer's rewrite go to the writer session as a turn of their own, and the writer edits the text
   or posts it as written.
   A held issue writes its `near_copy_checks` row when it posts, under its key, with the title and
