@@ -71,3 +71,34 @@ func TestRunRefusesAnArgumentWithoutQuotingIt(t *testing.T) {
 		t.Errorf("stderr = %q, which quotes the argument", stderr.String())
 	}
 }
+
+// A database URL Go's flag package refuses is named by the flag, never quoted: one given -scale as
+// its value (`--scale --database-url=<dsn>`), one behind three dashes, one behind a dash alone,
+// whose flag name is the URL, and one given a boolean flag as its value. Go's own output, which
+// quotes the argument, is discarded.
+func TestRunNamesAFlagItRefusesWithoutItsValue(t *testing.T) {
+	at := "@"
+	dsn := "postgres://dispatch:zqsecret0123" + at + "db.test/dispatch?sslmode=disable"
+	for name, row := range map[string]struct {
+		args []string
+		want string
+	}{
+		"a DSN given -scale as its value": {[]string{"--scale", "--database-url=" + dsn}, "dispatch-seed: -scale was given a value it cannot read"},
+		"three dashes":                    {[]string{"---database-url=" + dsn}, `dispatch-seed: "---database-url" has no flag's syntax`},
+		"a DSN as a flag's name":          {[]string{"-" + dsn}, `dispatch-seed: an argument beginning with "-" is no flag dispatch-seed takes`},
+		"a DSN given -no-migrate":         {[]string{"-no-migrate=" + dsn}, "dispatch-seed: -no-migrate was given a value it cannot read"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(t.Context(), row.args, &stdout, &stderr); code != 2 {
+				t.Fatalf("run = %d, want 2; stderr %q", code, stderr.String())
+			}
+			if !strings.HasPrefix(stderr.String(), row.want) {
+				t.Errorf("stderr = %q, want %q", stderr.String(), row.want)
+			}
+			if strings.Contains(stderr.String(), "zqsecret") || strings.Contains(stderr.String(), "db.test") {
+				t.Errorf("stderr = %q, which quotes the argument", stderr.String())
+			}
+		})
+	}
+}
