@@ -366,3 +366,53 @@ func TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied(t *testi
 			history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), cursorOf(t, rig.database, "INFRA"))
 	}
 }
+
+// TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesIt: R3 reads a project
+// whole when a boot event names a run whose first sequence does not follow the last one applied,
+// and a message of another store calls for a read, so that a daemon whose store was replaced is
+// found again. A mark that a store is no daemon of the project (foreign_state_ids, read-rule-cases
+// rows 3.1 and 3.4) does not stop that once the daemon behind the setting's URL serves the marked
+// store.
+//
+// INFRA's setting names A, read well, then B, whose starting read fails, then C, read well in a
+// store of its own. B still publishes: its first message makes one store read of C, which finds
+// C's store unchanged and marks B's store. Then B takes C's place behind C's URL with no write of
+// the setting, as a redeploy that starts B where C ran does: the URL now serves B's store at 40.
+// B boots under a new run at 41 and publishes 42. Within about a minute, INFRA follows B's store
+// and 42's testing is applied.
+//
+// At 107f6a10 every message of a marked store is finished unapplied as one of a store that is no
+// daemon of the project (cursor.forgets), the boot included, and none calls for a read while the
+// cursor holds a store. Only a write of the setting clears the mark, so INFRA stays on C's store
+// at 5 and drops each of the daemon's messages.
+func TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T) {
+	const bootRun = "5d2e8a1c-7b3f-4e9a-a6c0-1f8b4d2e7c93"
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	b := newFakeDaemon(t, "")
+	b.refuses(http.StatusServiceUnavailable)
+	rig.pointAt(b, 2)
+	c := newFakeDaemon(t, daemonStateIn("INFRA", 5, inPhase("implementing"), cStore, cRun))
+	rig.pointAt(c, 3)
+	rig.publishIn("INFRA", bRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, change(20, "INFRA-1", moved("phase", "merging")))
+	rig.settled()
+	rig.waitFor(20*time.Second, func() bool { return slices.Equal(cursorOf(t, rig.database, "INFRA").foreignStateIDs, []string{bStore}) }, func() string {
+		return fmt.Sprintf("control: B's store is not marked as no daemon of INFRA after B's message: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+
+	// B takes C's place behind C's URL, with no write of the setting, and boots there.
+	c.serves(daemonStateIn("INFRA", 40, inPhase("reviewing"), bStore, bootRun))
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	rig.publishIn("INFRA", bootRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
+	rig.publishIn("INFRA", bootRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, change(42, "INFRA-1", moved("phase", "testing")))
+	if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.stateID != nil && *c.stateID == bStore && slices.Contains(history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), `"testing"`)
+	}) {
+		t.Errorf("75 s after the daemon behind the setting's URL came to serve B's store and booted there, INFRA's cursor is %s and INFRA-1's phase history is %v; C's URL served %d reads: the boot and the event of the store marked as no daemon of INFRA were dropped, and nothing read the setting's daemon to find its store again",
+			cursorOf(t, rig.database, "INFRA"), history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), c.served())
+	}
+}
