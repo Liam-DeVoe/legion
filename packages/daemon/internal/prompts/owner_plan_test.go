@@ -140,6 +140,53 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	}
 }
 
+// A merge of the base forward reaches the merge only once the reviewer approved the new head, and
+// only where the merger's task has a reviewer step: a task with none stands on no review, so the
+// daemon asks no reviewer (workflow's mergeForwardLanded) and the merger goes on at the new head.
+// One composed prompt serves the merger of a task with a reviewer step and of one with none, so
+// each block of it - a paragraph, or an item of a list - that has the reviewer approve the new head
+// names the reviewer step it holds for, and the prompt tells the merger of a task with none to go
+// on at the new head. This shows the text is loaded, never that a merger follows it.
+func TestTheMergerWaitsForTheApprovalOfAMergeOnlyOnATaskWithAReviewerStep(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	composed := composedText(t, composer, claim.RoleMerger, false)
+	var blocks []string
+	for _, paragraph := range strings.Split(composed, "\n\n") {
+		block := ""
+		for _, line := range strings.Split(paragraph, "\n") {
+			if item := strings.TrimLeft(line, " "); block != "" && (strings.HasPrefix(item, "- ") || len(item) > 2 && item[0] >= '1' && item[0] <= '9' && strings.HasPrefix(item[1:], ". ")) {
+				blocks, block = append(blocks, foldWhitespace(block)), ""
+			}
+			block += line + "\n"
+		}
+		blocks = append(blocks, foldWhitespace(block))
+	}
+	approving := 0
+	for _, block := range blocks {
+		if !strings.Contains(block, "approve the new head") && !strings.Contains(block, "reviewer's approval of it") {
+			continue
+		}
+		approving++
+		if !strings.Contains(block, "reviewer step") {
+			t.Errorf("the composed merger prompt has the reviewer approve the new head with no reviewer step named: %q", block)
+		}
+	}
+	if approving == 0 {
+		t.Fatal("no block of the composed merger prompt has the reviewer approve the new head: the needles match nothing")
+	}
+	for _, phrase := range []string{
+		"Where it has none, no approval holds the new head",
+		"where it has none, go on at the new head",
+	} {
+		if !strings.Contains(foldWhitespace(composed), phrase) {
+			t.Errorf("the composed merger prompt omits %q", phrase)
+		}
+	}
+}
+
 // On a task whose `Steps:` line names no reviewer, the implementer writes the two lines of the PR
 // body's brief the reviewer writes on any other task. What it writes there is stated once, in *The
 // brief for the human* of `skill://legion-worker/references/pr-body.md`, so the implementer's
