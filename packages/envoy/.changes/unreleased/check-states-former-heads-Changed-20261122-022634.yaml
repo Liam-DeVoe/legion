@@ -1,18 +1,21 @@
 kind: Changed
 body: |-
     The check states settler keeps computing and publishing the state of each `before_merge`
-    check at each former head of an open pull request, a head it published states at while the
-    pull request was there, which the pull request has since left: a result recorded or retracted
-    there, a change of a check's words or a settled CI run there publishes the new state there,
-    with the event naming that head and that pull request, as at an open head. Before, a head the
-    pull request left had its rows deleted with no event, so a tester's results at the head it
-    tested, recorded after a push moved the pull request on, published nothing, and Legion moved
-    the issue on the states from before the push. A former head's rows go once every pull request
-    that is or was at it is closed or merged. The head's set row in `check_states` names every pull
-    request the settler computed the head for, which is the record of a pull request's former
-    heads; no table and no migration is added. `GET /api/v1/issues/{key}/results` answers as
-    before. `TestAFormerHeadOfAnOpenPullRequestKeepsItsStates` writes the events of its two cases
-    to `packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json`
+    check at each former head of an open pull request, a head the pull request left while it is
+    open: a result recorded or retracted there, a change of a check's words or a settled CI run
+    there publishes the new state there, with the event naming that head and that pull request, as
+    at an open head. Before, a head the pull request left had its rows deleted with no event, so a
+    tester's results at the head it tested, recorded after a push moved the pull request on,
+    published nothing, and Legion moved the issue on the states from before the push. New table
+    `pull_request_former_heads` (migration `20261122042244`) keeps each head an open pull request
+    left, written by a trigger on `pull_request_heads` (migration `20261122042245`) in the
+    transaction of the write that moved the row, whichever build wrote it, so a head is kept
+    whether or not a settle ran while the pull request was there; a close, a merge or a delete of
+    the row drops its former heads, and a re-key of a row stored under a repository's old name
+    carries them to the canonical name. A former head's rows in `check_states` go once no open pull
+    request is or was at it. `GET /api/v1/issues/{key}/results` answers as before.
+    `TestAFormerHeadOfAnOpenPullRequestKeepsItsStates` writes the events of its two cases to
+    `packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json`
     (`UPDATE_GOLDEN=1`), which the Legion daemon's testing move replays.
 time: 2026-11-22T02:26:34Z
 custom:
