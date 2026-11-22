@@ -112,9 +112,10 @@ type CutoverRow struct {
 
 // RouteError is a route's coded refusal: a hold route's `bad_request`, `too_large`,
 // `bad_signature`, `bad_transition`, `not_operator`, `no_row`, `gen_mismatch`, `hold_mismatch`,
-// `row_exists`, `below_floor` or `clock_skew` (a row signed further than the five-minute allowance
-// from the broker's clock, or before the latest row the broker took: nothing was stored), or the
-// broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is the verified current row a 409 carries.
+// `row_exists`, `below_floor` or `clock_skew` (a row signed more than five minutes from the broker's
+// clock, or more than five minutes before the latest row the broker or its log took: nothing was
+// stored), or the broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is the verified current row
+// a 409 carries.
 // HoldID is, on a `hold_mismatch`, the hold id the broker's row or log names, which the refused
 // call must name instead (a restore after a prepare entry names that entry's hold): no route lists
 // the log, so this field is where the operator learns it. It is not in Error's text.
@@ -269,10 +270,10 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // another or none: a released row under another id leaves the prepared hold where no command
 // reaches it), since a prepare row refuses no client, or after a held one whose hold's signed
 // journal shows it ended, and refuses it 400 `bad_transition` after any other held entry, so a
-// released row never lands mid-hold. Whatever the log shows, the route refuses a released row while
-// any hold's signed journal shows `hold set` done and no end (400 `bad_transition`, naming that
-// hold), unless the log's latest entry is that hold's released row (a release or abort cut before
-// its done entry), and one naming a hold whose journal does not verify (409 `below_floor`).
+// released row never lands mid-hold. Whatever the latest entry, the route refuses a released row
+// while a hold the verified log does not show ended (a released entry naming it, or a later hold's
+// prepare) has a signed journal showing `hold set` done and no end (400 `bad_transition`), or one
+// below the broker's record floor or that does not verify (409 `below_floor`).
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err

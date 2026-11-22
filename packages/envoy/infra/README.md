@@ -4148,14 +4148,15 @@ deletes, goes with the operator's signed delete kept beside the records in the s
 (`nats_hold_record_deletes`), so every replica reads it as deleted, refuses a write of its key
 again, and the abort's rerun passes on whichever replica serves it. A cohort gone with no delete
 that verifies, or with one signed over an earlier gen than a replica saw, reads as unknown on each
-replica that saw it, and so does a hold's journal gone: the cohort delete on a released row reads
-a missing journal as no journal only on a replica whose floor never saw that hold's done record.
-The residual: every floor is per replica and lasts as long as its process, so a replica that starts
-again, or one that has not served the row or a record since its newer gen, serves an older signed
-one put back as it would the genuine one; production runs two replicas. Records carry no history
-of their own, unlike the row's signed log: after a database restore, a replica that starts again
-reads the records as the restore left them, an older signed journal or a journal gone included. A
-floor both replicas share, kept outside the database, is the fix if that acceptance changes.
+replica that saw it, and so does a hold's journal gone or older: the cohort delete on a released
+row reads a missing journal as no journal only on a replica whose floor never saw that hold's done
+record, and refuses a journal older than one its floor saw. The residual: every floor is per
+replica and lasts as long as its process, so a replica that starts again, or one that has not
+served the row or a record since its newer gen, serves an older signed one put back as it would
+the genuine one; production runs two replicas. Records carry no history of their own, unlike the
+row's signed log: after a database restore, a replica that starts again reads the records as the
+restore left them, an older signed journal or a journal gone included. A floor both replicas share,
+kept outside the database, is the fix if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
@@ -4189,15 +4190,17 @@ none, would leave the prepared hold's cohort and journal where no command reache
 operator's client: name it and restore again); or after a `held` one whose hold's signed journal
 shows `hold release` or `hold abort` done. After any other `held` entry it refuses
 `bad_transition`, so no restore frees every client while a command of a hold may run. Whatever the
-log shows, it refuses a `released` row, naming a hold or none, while any hold's signed journal
-shows `hold set` done and no end: that hold is held by its own record. It refuses a `released` row
-naming a hold whose journal does not verify (409 `below_floor`). A hold whose release or abort moved
-the row to `released` before its done entry was written (the log's latest entry is that hold's
-`released`) is not held by its record: restore `released` with its id, or with none. The log and
-the floors are per database and per process: a database writer who empties the log, or cuts it
-back to an earlier entry, lets `Bootstrap` or a restore at the gen it names write a row again on a
-replica that has served no row since it started, sent by a client that has seen no row; the
-journals stop a `released` row then only while a hold's journal shows it held.
+latest entry, it refuses a `released` row, naming a hold or none, while a hold the verified log
+does not show ended has a signed journal showing `hold set` done and no end: that hold is held by
+its own record. The log shows a hold ended by a verified `released` entry naming it, at any gen (a
+release or abort cut before its done entry included), or by a later hold's `prepare` after its own
+entries. A journal of a hold the log does not show ended is read against the broker's record floor
+and its signature: an older version than one the broker wrote or served, or one that does not
+verify, is unknown (409 `below_floor`). The log and the floors are per database and per process: a
+database writer who empties the log, or cuts it back to an earlier entry, lets `Bootstrap` or a
+restore at the gen it names write a row again on a replica that has served no row since it
+started, sent by a client that has seen no row; the journals stop a `released` row then only while
+a hold's journal shows it held.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

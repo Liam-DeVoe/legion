@@ -615,25 +615,27 @@ func routes() []apiRoute {
 		// below the log), 409 below_floor with no row; a gen the row no longer holds is 409
 		// gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row, and any
 		// other move 400 bad_transition. A row signed more than five minutes from the broker's
-		// clock, or before the latest row the floor took, is 409 clock_skew, judged before the
-		// write, storing nothing. The move commits before it answers, so every decision of the
-		// auth service that starts after the answer reads the new phase.
+		// clock, or more than five minutes before the latest signing time the floor took or the
+		// log's verified entries hold, is 409 clock_skew, judged before the write, storing
+		// nothing. The move commits before it answers, so every decision of the auth service that
+		// starts after the answer reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
-		// deleted, signed within five minutes of the broker's clock and the floor's latest row (409
-		// clock_skew otherwise, storing nothing), judged by the log's latest entry, which must
-		// verify (409 below_floor otherwise, storing nothing): held with a hold id, only after a
-		// prepare or held entry of that hold id, or released, only after a released entry, a
-		// prepare entry of the hold id it names (409 hold_mismatch otherwise, no hold id included,
+		// deleted, signed within five minutes of the broker's clock, the floor's latest time and
+		// the log's (409 clock_skew otherwise, storing nothing), judged by the log's latest entry,
+		// which must verify (409 below_floor otherwise, storing nothing): held with a hold id, only
+		// after a prepare or held entry of that hold id, or released, only after a released entry,
+		// a prepare entry of the hold id it names (409 hold_mismatch otherwise, naming that hold,
 		// so the prepared hold is not left where no command reaches it), or a held one whose hold's
 		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
-		// clients mid-hold, and a hold the log shows ended is not held again), and, whatever the
-		// log shows, never while any hold's signed journal shows hold set done and no end (400
-		// bad_transition) or while the named hold's journal does not verify (409 below_floor), but
-		// for a hold the log's latest entry shows released already; at one above the highest gen
-		// nats_hold_log holds (1 for an empty log), signed over that gen. Another gen is 409
-		// gen_mismatch naming restore_gen, the gen to sign afresh, since the operator's commands
-		// cannot read the log; a row that is there is 409 row_exists.
+		// clients mid-hold, and a hold the log shows ended is not held again); and, whatever the
+		// latest entry, never while a hold the verified log does not show ended (by a released
+		// entry naming it, or a later hold's prepare) has a journal that shows hold set done and no
+		// end (400 bad_transition), or one below the record floor or that does not verify (409
+		// below_floor); at one above the highest gen nats_hold_log holds (1 for an empty log),
+		// signed over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
+		// afresh, since the operator's commands cannot read the log; a row that is there is 409
+		// row_exists.
 		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
 		// Write one record of the hold the row names, whatever its phase: its cohort, its
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the

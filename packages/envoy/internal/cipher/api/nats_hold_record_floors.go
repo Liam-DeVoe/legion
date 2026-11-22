@@ -93,6 +93,14 @@ func (f *recordFloors) gone(k recordFloorKey) bool {
 	return seen && !floor.deleted
 }
 
+// below reports whether gen, a gen a read found, is below the record's floor: an older signed
+// version a database writer put back.
+func (f *recordFloors) below(k recordFloorKey, gen uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return gen < f.gens[k].gen
+}
+
 // serve checks the records one read of holdID's kind answered against their floors, and answers
 // why the read reads as unknown, or "" and raises the floor of every record verified accepts to
 // its gen. A delete among deletions that deletedByRoutes verifies, at or above its record's floor,

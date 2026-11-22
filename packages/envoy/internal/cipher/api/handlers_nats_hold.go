@@ -171,12 +171,19 @@ func writeHoldRefusal(w http.ResponseWriter, status int, code, message string, c
 // writeHoldConflict is writeHoldRefusal for a refusal that carries the row a write read
 // (conflict.Current). That row goes through this broker's floor of the row first (acceptRow), as
 // GET's does, so no route hands out a row the floor reads as a replay or a fork: the answer is then
-// 409 below_floor with no row, which the operator's client reads as unknown.
+// 409 below_floor with no row, which the operator's client reads as unknown. A hold_mismatch names
+// the hold the row names (conflict.HoldID) only when that row verifies: a hold id from an unsigned
+// row is a database writer's choice, so the refusal then names none.
 func (s *server) writeHoldConflict(w http.ResponseWriter, status int, code, message string, conflict *natshold.Conflict) {
 	if conflict != nil && conflict.Current != nil {
 		if err := s.acceptRow(*conflict.Current); err != nil {
 			writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("refused %s against a hold row that reads as unknown: %v: an older row put back, or another row at the gen this broker served or wrote", code, err), nil)
 			return
+		}
+		if conflict.HoldID != "" && signedrecord.Verify(s.deps.NATSHold.Keys, conflict.Current.Sig, holdRowLines(*conflict.Current)) != nil {
+			named := *conflict
+			named.HoldID = ""
+			conflict = &named
 		}
 	}
 	writeHoldRefusal(w, status, code, message, conflict)
@@ -600,9 +607,11 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// errJournalGone is a cohort delete on a released row whose hold has no done record, where this
-// broker's floor of that record saw it: a journal a database writer deleted, not one never written.
-var errJournalGone = errors.New("the hold's done record is gone, which this broker wrote or served")
+// errJournalUnknown is a cohort delete on a released row whose hold's done record this broker's
+// floor of that record reads as unknown: gone, where the floor saw it present (a journal a database
+// writer deleted, not one never written), or at a gen below the floor (an older signed version put
+// back).
+var errJournalUnknown = errors.New("the hold's done record is gone, or older than one this broker wrote or served")
 
 // holdJournalKey is the done record's one key (natshold's journalKey, internal/holdrecord's
 // journal).
@@ -614,9 +623,9 @@ const holdJournalKey = "hold"
 // (signedrecord.RecordDelete), only while the row is prepare with that hold id, or released with
 // it while the table admits hold abort on the released row (holdrecord.Request.RowReleased): the
 // hold's done record verifies and shows prepare, or the hold has no done record, which the table
-// reads as the zero Done, and this broker's floor of that record never saw it (409 below_floor
-// otherwise: a journal a writer deleted); and only the record at that gen, so neither the
-// operator's token alone nor an old signature deletes a record.
+// reads as the zero Done; in either case read against this broker's floor of that record, so a
+// journal it saw present and is now gone, or one below its gen, is 409 below_floor; and only the
+// record at that gen, so neither the operator's token alone nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
 	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
@@ -630,18 +639,22 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	released := func(journal *natshold.Record) error {
-		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
-		if journal == nil && s.holdFloors.gone(recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}) {
-			return fmt.Errorf("%w: hold %s", errJournalGone, holdID)
+		floorKey := recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}
+		switch {
+		case journal == nil && s.holdFloors.gone(floorKey):
+			return fmt.Errorf("%w: hold %s's done record is gone", errJournalUnknown, holdID)
+		case journal != nil && s.holdFloors.below(floorKey, journal.Gen):
+			return fmt.Errorf("%w: hold %s's done record is at gen %d", errJournalUnknown, holdID, journal.Gen)
 		}
+		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
 		if journal != nil {
 			var ok bool
 			if d, ok = s.verifiedJournal(holdID, journal); !ok {
-				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID), HoldID: holdID}
+				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID)}
 			}
 		}
 		if err := holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandAbort, RowReleased: true}); err != nil {
-			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID), HoldID: holdID}
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID)}
 		}
 		return nil
 	}
@@ -649,7 +662,7 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
-	case errors.Is(err, errJournalGone):
+	case errors.Is(err, errJournalUnknown):
 		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the cohort is not deleted: "+err.Error(), nil)
 		return
 	case !errors.As(err, &conflict):
