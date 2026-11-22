@@ -28,7 +28,8 @@ import (
 //     it has today or one it was renamed away from, whatever repository the issue resolves to;
 //  2. the issue whose external link is a GitHub issue the body cites, a full
 //     github.com/<owner>/<repo>/issues/<n> URL or a bare #N in the pull request's own repository,
-//     the first such citation in body order;
+//     the first such citation in body order, where <n> is no pull request Dispatch holds
+//     (citedPullRequest);
 //  3. a key in its head branch name, whatever its case;
 //  4. a key in its title or body, title first;
 //  5. a key in its commit messages, in commit order.
@@ -191,6 +192,26 @@ const attributionSubjects = `subjects as (
 	select distinct key from candidates where key is not null
 )`
 
+// citedPullRequest is the condition that url, an expression of a URL of the cited list
+// (https://github.com/<owner>/<repo>/issues/<n>), names a pull request Dispatch holds: a results
+// row (pull_request_heads) with that number, stored under any name whose canonical name is the
+// cited repository's, read through the statement's renames. GitHub numbers a repository's issues
+// and pull requests in one sequence and answers /issues/<n> for a pull request too, so `#<n>` in a
+// body, and the .../issues/<n> link Dispatch stores for the reference owner/repo#<n>, name pull
+// request #<n> where it is one. A body that names another pull request mentions that pull
+// request's work and cites no issue whose work it does: without this condition, a pull request
+// whose body said "#<n> renamed the helper" went to the issue that links #<n>, above the issue its
+// own branch names. A number Dispatch holds no results row of reads as an issue, so the answer
+// changes at the next read once Dispatch stores that pull request. The URL is read by the link
+// rule (LinkedPullRequestSQL), which bounds its number, so no citation casts past int's bound.
+func citedPullRequest(url string) string {
+	return `exists (select 1 from ` + LinkedPullRequestSQL(url) + ` cited
+		` + renameJoin("cited_rename", "cited.repo") + `
+		join pull_request_heads cited_pr on cited_pr.number = cited.number
+		` + renameJoin("cited_pr_rename", "cited_pr.repo") + `
+		where lower(` + canonicalOver("cited_pr_rename", "cited_pr.repo") + `) = lower(` + canonicalOver("cited_rename", "cited.repo") + `))`
+}
+
 // One statement gives the issue of a pull request at read time, from its stored facts alone: the
 // results row (pull_request_heads), the timeline row (delivery_pull_requests) and the texts of one
 // read of GitHub (pull_request_texts), with the keys the database reads from those texts
@@ -249,7 +270,8 @@ const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 //     by the one rule of the link write (linkedPullRequest): its /pull/ or its /issues/ URL, in
 //     any letter case, under any name whose canonical name is the pull request's repository, so a
 //     link written before a rename names it too (linkFormsOf over held_names, as
-//     PullRequestLinksSQL gives them for one pull request, and LinkedPullRequestSQL). A tie
+//     PullRequestLinksSQL gives them for one pull request, and LinkedPullRequestSQL). A citation
+//     of a number that is a pull request Dispatch holds names no issue (citedPullRequest). A tie
 //     of rank and place, two links of one pull request in two spellings, is ended by the key in
 //     byte order, so no collation, plan or row order picks the issue.
 //   - attributed: one of three states. The rule's answer where the pull request has facts: its
@@ -330,7 +352,7 @@ func attributedTermsOver(schema, judged, texts string) string {
 		from batch src cross join lateral unnest(src.cited_issues) with ordinality u(url, n)
 			cross join lateral (select l.issue_key from issue_external_links l
 				where lower(l.url) = lower(u.url) and ` + linkURLAsCited + ` = u.url offset 0) l
-		where src.texts_current and src.own_head
+		where src.texts_current and src.own_head and not ` + citedPullRequest("u.url") + `
 		union all
 		select src.repo, src.number, src.held_as, u.key, '` + string(sourceBranch) + `', 2, u.n
 		from batch src cross join lateral unnest(src.branch_keys) with ordinality u(key, n) join issues i on i.key = u.key
