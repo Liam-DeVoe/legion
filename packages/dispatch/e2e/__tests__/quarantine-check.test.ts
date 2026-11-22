@@ -8,9 +8,12 @@
  *  API on a local port: what `readHistory` reads of the answers GitHub gave for eleven runs
  *  (`fixtures/quarantine-answers.fixture.json`) and what `decide` and `report` say of it, what
  *  the reading costs, its pages, and the client's waits for GitHub's rate limit, which read the
- *  clock and wait a few real seconds. Nothing here reads GitHub itself. */
+ *  clock and wait a few real seconds. The deadline those waits are held to is read off a stand-in
+ *  `/proc` (`readDeadline`). Nothing here reads GitHub itself. */
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { entryLines } from "../quarantine";
 import {
@@ -24,6 +27,7 @@ import {
   lastChange,
   type RowChange,
   type RunReading,
+  readDeadline,
   readHistory,
   report,
   rowLines,
@@ -694,6 +698,9 @@ const listingPath =
   "&created=2026-11-21T00:00:00Z..2026-11-22T00:00:00Z";
 const emptyListing = { total_count: 0, workflow_runs: [] };
 
+/** A step's limit five minutes off, which every wait below fits in with its 30 s margin. */
+const fiveMinutesOff = () => ({ at: Date.now() + 300_000, of: "step" }) as const;
+
 test("GitHub's rate limit, its reset 2 s ahead, is waited out, and the call then answers", async () => {
   const reset = Math.floor(Date.now() / 1000) + 2;
   const server = gitHubStandIn([], {
@@ -710,20 +717,18 @@ test("GitHub's rate limit, its reset 2 s ahead, is waited out, and the call then
     ],
   });
   const lines: string[] = [];
+  const deadline = fiveMinutesOff();
   try {
-    const github = gitHub(server.url, "t", { log: (line) => lines.push(line), waitCapSeconds: 60 });
+    const github = gitHub(server.url, "t", { deadline, log: (line) => lines.push(line) });
     expect(await github.one(listingPath)).toEqual(emptyListing);
     expect(server.seen).toHaveLength(2);
     expect(server.seen[1].at).toBeGreaterThanOrEqual(reset * 1000);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toStartWith(
+    expect(lines).toEqual([
       `quarantine-check: GitHub refused ${server.url}${listingPath} with HTTP 403, so it waits ` +
         `until ${new Date((reset + 3) * 1000).toISOString()}, by its x-ratelimit-reset: ${reset} ` +
-        "(x-ratelimit-remaining: 0, x-ratelimit-resource: core), plus 3 s, and asks again. The " +
-        "cap on this reading's waits is 60 s, "
-    );
-    // The wait is the 2 s to the reset and the 3 s past it, less what the refusal took.
-    expect(lines[0]).toMatch(/, [3-5] s of it spent with this wait\.$/u);
+        "(x-ratelimit-remaining: 0, x-ratelimit-resource: core), plus 3 s, within this step's " +
+        `limit at ${new Date(deadline.at).toISOString()}, and asks again.`,
+    ]);
   } finally {
     server.stop();
   }
@@ -747,7 +752,10 @@ test("GraphQL's own rate limit, its RATE_LIMITED answer, is waited out the same 
   });
   const lines: string[] = [];
   try {
-    const github = gitHub(server.url, "t", { log: (line) => lines.push(line), waitCapSeconds: 60 });
+    const github = gitHub(server.url, "t", {
+      deadline: fiveMinutesOff(),
+      log: (line) => lines.push(line),
+    });
     const answer = await github.graphql("query { rateLimit { cost remaining resetAt } }", {});
     expect(answer).toEqual({
       data: { rateLimit: { cost: 1, remaining: 4999, resetAt: "2026-11-22T03:00:00Z" } },
@@ -777,39 +785,44 @@ test("a secondary rate limit's retry-after is waited out", async () => {
   });
   const lines: string[] = [];
   try {
-    const github = gitHub(server.url, "t", { log: (line) => lines.push(line), waitCapSeconds: 60 });
+    const github = gitHub(server.url, "t", {
+      deadline: fiveMinutesOff(),
+      log: (line) => lines.push(line),
+    });
     await github.graphql("query { rateLimit { cost remaining resetAt } }", {});
     expect(server.seen[1].at - server.seen[0].at).toBeGreaterThanOrEqual(1000);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("with HTTP 403, so it waits until ");
-    expect(lines[0]).toContain(", by its retry-after: 1, and asks again.");
+    expect(lines[0]).toContain(", by its retry-after: 1, within this step's limit at ");
+    expect(lines[0]).toEndWith(", and asks again.");
   } finally {
     server.stop();
   }
 });
 
-test("GitHub's rate limit whose reset is past the cap fails at once, naming the refusal", async () => {
+/** A REST answer refusing the call for its spent budget until `reset`, with no resource named. */
+const spentUntil = (reset: number): Refusal => ({
+  body: { message: "API rate limit exceeded for installation." },
+  headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) },
+  status: 403,
+});
+
+test("GitHub's rate limit whose reset falls past the step's limit fails at once, naming both", async () => {
   const reset = Math.floor(Date.now() / 1000) + 600;
-  const server = gitHubStandIn([], {
-    rest: [
-      {
-        body: { message: "API rate limit exceeded for installation." },
-        headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) },
-        status: 403,
-      },
-    ],
-  });
+  const server = gitHubStandIn([], { rest: [spentUntil(reset)] });
   const lines: string[] = [];
+  const deadline = { at: Date.now() + 60_000, of: "step" } as const;
   try {
-    const github = gitHub(server.url, "t", { log: (line) => lines.push(line), waitCapSeconds: 60 });
+    const github = gitHub(server.url, "t", { deadline, log: (line) => lines.push(line) });
     const started = Date.now();
     await expect(github.one(listingPath)).rejects.toThrow(
       `GitHub refused ${server.url}${listingPath} with HTTP 403: ` +
         '{"message":"API rate limit exceeded for installation."}, and the time its rate limit ' +
         `names, ${new Date((reset + 3) * 1000).toISOString()} by its x-ratelimit-reset: ${reset} ` +
-        "(x-ratelimit-remaining: 0), plus 3 s, is past the cap of 60 s on this reading's waits " +
-        "(0 s of it spent), so it was not waited for. This is a failed read of the runs and not " +
-        "a finding: the quarantine was not checked."
+        `(x-ratelimit-remaining: 0), plus 3 s, falls past this step's limit at ` +
+        `${new Date(deadline.at).toISOString()} less the 30 s the call after the wait needs, so ` +
+        "it was not waited for. This is a failed read of the runs and not a finding: the " +
+        "quarantine was not checked."
     );
     // At once: the ladder's first wait for a refusal it asks again is 10 s.
     expect(Date.now() - started).toBeLessThan(9000);
@@ -820,10 +833,45 @@ test("GitHub's rate limit whose reset is past the cap fails at once, naming the 
   }
 });
 
+// gh-read.sh's GH_WAIT_MARGIN: the call after the wait, and the reading's work after it, need
+// time inside the limit, so a wait that would end 29 s before it is not made. Without the margin
+// this row waits the 5 s and reads on.
+test("a wait that would end inside the 30 s margin before the job's limit is not made", async () => {
+  const reset = Math.floor(Date.now() / 1000) + 2;
+  const server = gitHubStandIn([], { rest: [spentUntil(reset)] });
+  const deadline = { at: (reset + 3 + 29) * 1000, of: "job" } as const;
+  try {
+    const github = gitHub(server.url, "t", { deadline, log: () => {} });
+    await expect(github.one(listingPath)).rejects.toThrow(
+      `falls past this job's limit at ${new Date(deadline.at).toISOString()} less the 30 s the ` +
+        "call after the wait needs, so it was not waited for."
+    );
+    expect(server.seen).toHaveLength(1);
+  } finally {
+    server.stop();
+  }
+});
+
+test("with no limit to wait within, the wait is not made, and the refusal says why", async () => {
+  const reset = Math.floor(Date.now() / 1000) + 2;
+  const server = gitHubStandIn([], { rest: [spentUntil(reset)] });
+  try {
+    const github = gitHub(server.url, "t", { deadline: readDeadline({}), log: () => {} });
+    await expect(github.one(listingPath)).rejects.toThrow(
+      `by its x-ratelimit-reset: ${reset} (x-ratelimit-remaining: 0), plus 3 s, was not waited ` +
+        "for: this step names no time limit to wait within (JOB_TIMEOUT_MINUTES is not set). " +
+        "This is a failed read of the runs and not a finding"
+    );
+    expect(server.seen).toHaveLength(1);
+  } finally {
+    server.stop();
+  }
+});
+
 // A reset whose 3 s past it have gone by names no time to wait for. The client once read it as a
-// second from now and asked again once a second until the cap, so the stand-in refuses more calls
+// second from now and asked again once a second until its cap, so the stand-in refuses more calls
 // than the ladder's three attempts: a client that spun would ask a fourth time and a fifth, 1 s
-// apart, and fail on the cap. `retrySeconds: 1` makes the ladder's 10 s and 20 s 1 s and 2 s.
+// apart. `retrySeconds: 1` makes the ladder's 10 s and 20 s 1 s and 2 s.
 test("GitHub's rate limit whose reset is already past takes the ladder's three attempts, without a wait loop", async () => {
   const reset = Math.floor(Date.now() / 1000) - 60;
   const limited: Refusal = {
@@ -839,9 +887,9 @@ test("GitHub's rate limit whose reset is already past takes the ladder's three a
   const lines: string[] = [];
   try {
     const github = gitHub(server.url, "t", {
+      deadline: fiveMinutesOff(),
       log: (line) => lines.push(line),
       retrySeconds: 1,
-      waitCapSeconds: 5,
     });
     await expect(github.one(listingPath)).rejects.toThrow(
       `GitHub refused ${server.url}${listingPath} three times, the last with HTTP 403: ` +
@@ -880,9 +928,9 @@ test("GraphQL's RATE_LIMITED answer whose reset is already past takes the ladder
   const lines: string[] = [];
   try {
     const github = gitHub(server.url, "t", {
+      deadline: fiveMinutesOff(),
       log: (line) => lines.push(line),
       retrySeconds: 1,
-      waitCapSeconds: 5,
     });
     await expect(
       github.graphql("query { rateLimit { cost remaining resetAt } }", {})
@@ -913,7 +961,10 @@ test("a 403 that names no rate limit fails at once, without a wait", async () =>
   });
   const lines: string[] = [];
   try {
-    const github = gitHub(server.url, "t", { log: (line) => lines.push(line), waitCapSeconds: 60 });
+    const github = gitHub(server.url, "t", {
+      deadline: fiveMinutesOff(),
+      log: (line) => lines.push(line),
+    });
     const started = Date.now();
     await expect(github.one(listingPath)).rejects.toThrow(
       `GitHub refused ${server.url}${listingPath} with HTTP 403: ` +
@@ -941,5 +992,93 @@ test("a GraphQL read GitHub refuses fails the reading, naming the refusal", asyn
     );
   } finally {
     server.stop();
+  }
+});
+
+// `readDeadline` reads the job's start and the step's off the process tree, as gh-read.sh's
+// `_gh_read_deadline` does: the Runner.Worker process GitHub's runner starts for each job, and
+// that process's child, the step's shell. These rows read a stand-in `/proc`: the boot time, and
+// each process's stat line with its start 20 fields after its comm, in clock ticks since boot.
+const boot = 1_800_000_000;
+
+/** A stand-in `/proc` holding each process of `processes`, `[pid, comm, ppid, start in ticks]`;
+ *  the row removes it. */
+function standInProc(processes: readonly (readonly [number, string, number, number])[]): string {
+  const proc = mkdtempSync(join(tmpdir(), "quarantine-check-proc-"));
+  writeFileSync(join(proc, "stat"), `cpu  1 2 3 4\nbtime ${boot}\nprocesses 900\n`);
+  for (const [pid, comm, ppid, start] of processes) {
+    mkdirSync(join(proc, String(pid)));
+    // state, ppid, pgrp, session, tty_nr, tpgid, flags, twelve counters, start, vsize, rss
+    const fields = ["S", ppid, pid, pid, 0, -1, 4194560, ...Array(12).fill(0), start, 0, 0];
+    writeFileSync(join(proc, String(pid), "stat"), `${pid} (${comm}) ${fields.join(" ")}\n`);
+  }
+  return proc;
+}
+
+/** A step's process tree: the runner's listener, the job's Runner.Worker started 10 s after boot,
+ *  the step's shell 46 s after it, and this process under that shell, with a comm that holds a
+ *  space and both parentheses, as a comm may. */
+const stepTree = [
+  [200, "Runner.Listener", 1, 100],
+  [300, "Runner.Worker", 200, 1000],
+  [400, "bash", 300, 4600],
+  [500, "bun (a) b", 400, 4700],
+] as const;
+
+test("the deadline is the earlier of the job's limit from its start and the step's from its own", () => {
+  const proc = standInProc(stepTree);
+  const at = { pid: 500, proc, ticksPerSecond: 100 };
+  try {
+    expect(readDeadline({ JOB_TIMEOUT_MINUTES: "6", STEP_TIMEOUT_MINUTES: "5" }, at)).toEqual({
+      at: (boot + 46 + 300) * 1000,
+      of: "step",
+    });
+    expect(readDeadline({ JOB_TIMEOUT_MINUTES: "1", STEP_TIMEOUT_MINUTES: "5" }, at)).toEqual({
+      at: (boot + 10 + 60) * 1000,
+      of: "job",
+    });
+  } finally {
+    rmSync(proc, { force: true, recursive: true });
+  }
+});
+
+test("one limit alone is the deadline, and a step's shell that ran this process with exec is the step", () => {
+  const proc = standInProc(stepTree);
+  const exec = standInProc([
+    [300, "Runner.Worker", 200, 1000],
+    [500, "bun", 300, 4600],
+  ]);
+  try {
+    expect(
+      readDeadline({ JOB_TIMEOUT_MINUTES: "6" }, { pid: 500, proc, ticksPerSecond: 100 })
+    ).toEqual({ at: (boot + 10 + 360) * 1000, of: "job" });
+    expect(
+      readDeadline({ STEP_TIMEOUT_MINUTES: "5" }, { pid: 500, proc: exec, ticksPerSecond: 100 })
+    ).toEqual({ at: (boot + 46 + 300) * 1000, of: "step" });
+  } finally {
+    rmSync(proc, { force: true, recursive: true });
+    rmSync(exec, { force: true, recursive: true });
+  }
+});
+
+test("no limit set, a limit that is no whole number of minutes, or no Runner.Worker is no deadline", () => {
+  const proc = standInProc(stepTree);
+  const bare = standInProc([
+    [400, "bash", 1, 4600],
+    [500, "bun", 400, 4700],
+  ]);
+  try {
+    expect(readDeadline({}, { pid: 500, proc, ticksPerSecond: 100 })).toEqual({
+      none: "this step names no time limit to wait within (JOB_TIMEOUT_MINUTES is not set)",
+    });
+    expect(readDeadline({ JOB_TIMEOUT_MINUTES: "ten" }, { pid: 500, proc })).toEqual({
+      none: "JOB_TIMEOUT_MINUTES is 'ten', not a whole number of minutes",
+    });
+    expect(readDeadline({ JOB_TIMEOUT_MINUTES: "6" }, { pid: 500, proc: bare })).toEqual({
+      none: "this step's start cannot be read: no Runner.Worker process is among its parents",
+    });
+  } finally {
+    rmSync(proc, { force: true, recursive: true });
+    rmSync(bare, { force: true, recursive: true });
   }
 });

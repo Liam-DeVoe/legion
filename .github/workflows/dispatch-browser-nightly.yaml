@@ -95,6 +95,8 @@ jobs:
     # why: .github/ci-notes/dispatch-browser-nightly.md#the-quarantine-checks-measured-steps-and-its-budget
     # 300 + 33 = 333 s -> 6 min.
     timeout-minutes: 6
+    env:
+      JOB_TIMEOUT_MINUTES: 6 # this job's timeout-minutes, for quarantine-check.ts's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,15 +109,14 @@ jobs:
         working-directory: packages/contracts
       - name: Check the quarantine against 14 days of flaky rows
         # 104 x 1.15 = 120 s of work, the longest check of 2026-11-21 and 22 (job 137021330193
-        # of run 44961580846), and 180 s for GitHub's rate limit -> 5 min.
+        # of run 44961580846), and 180 s for GitHub's rate limit -> 5 min. The tool's wait for
+        # that limit ends at least 30 s before this one; the job's `# why:` section says why.
         timeout-minutes: 5
         run: bun e2e/tools/quarantine-check.ts
         working-directory: packages/dispatch
         env:
           GH_TOKEN: ${{ github.token }}
-          # 300 - 104 x 1.15 = 180 s: the step's limit less its work, all of which may follow a
-          # refusal of its first read. The derivation is in the job's `# why:` section.
-          GH_READ_WAIT_CAP_SECONDS: 180
+          STEP_TIMEOUT_MINUTES: 5 # this step's timeout-minutes, which quarantine-check.ts's wait stays within as it does the job's
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
   # harness and fails when a route no longer answers as its recording holds.

@@ -35,19 +35,21 @@
  *  Those reads are the adapter's, below `report`, and they decide nothing; `flakyRows`,
  *  `rowLines`, `lastChange`, `decide` and `report` are pure over what was read and the moment
  *  given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them. It drives
- *  `blame` against a stand-in for GitHub's answer, and `gitHub` and `readHistory` against a local
- *  stand-in for GitHub's API. Only the command line, and `gitHub`'s wait for a rate limit, read
- *  the clock.
+ *  `blame` against a stand-in for GitHub's answer, `readDeadline` against a stand-in for `/proc`,
+ *  and `gitHub` and `readHistory` against a local stand-in for GitHub's API. Only the command
+ *  line, `readDeadline` and `gitHub`'s wait for a rate limit read the clock or the processes.
  *
  *  Environment: GITHUB_REPOSITORY (`owner/name`), GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA (the
  *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset),
- *  GH_READ_WAIT_CAP_SECONDS (0 when unset: how long, all its waits together, the reading may wait
- *  for GitHub's rate limit, which the nightly's step sets from its own budget) and, where it is
- *  set, GITHUB_STEP_SUMMARY, which the summary is appended to as well as printed. It writes
- *  nothing to GitHub. A read GitHub refuses - three times, or once with a 403 that names no rate
- *  limit, or with a rate limit whose time is past that cap - exits 1 too, and says it is a failed
- *  read rather than a finding. Its last line on stderr gives the REST and GraphQL calls it made,
- *  the GraphQL points they cost, and what the token has left of each budget. Usage errors exit 2.
+ *  JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES (the job's and the step's timeout-minutes, which
+ *  the nightly's job and step set: the reading waits for GitHub's rate limit only where the wait
+ *  ends `waitMarginSeconds` before the earlier of the two limits, as `readDeadline` reads them,
+ *  and with neither set it waits for nothing) and, where it is set, GITHUB_STEP_SUMMARY, which
+ *  the summary is appended to as well as printed. It writes nothing to GitHub. A read GitHub
+ *  refuses - three times, or once with a 403 that names no rate limit, or with a rate limit whose
+ *  time falls past that deadline - exits 1 too, and says it is a failed read rather than a
+ *  finding. Its last line on stderr gives the REST and GraphQL calls it made, the GraphQL points
+ *  they cost, and what the token has left of each budget. Usage errors exit 2.
  *  From a workstation, with gh signed in, in a checkout of the commit GITHUB_SHA names:
  *
  *    GITHUB_REPOSITORY=cybermonklabs/legion GH_TOKEN="$(gh auth token)" GITHUB_SHA=<sha> \
@@ -454,13 +456,113 @@ const resetMarginSeconds = 3;
 const failedRead =
   "This is a failed read of the runs and not a finding: the quarantine was not checked.";
 
+/** Seconds the deadline must leave after the time GitHub names: GH_WAIT_MARGIN of
+ *  `.github/scripts/gh-read.sh`, whose gh_wait_reset holds the scripts' waits to the same rule.
+ *  The call after the wait, and the reading's work after it, run in that time. */
+export const waitMarginSeconds = 30;
+
+/** The latest moment a wait may end (`at`, epoch milliseconds) and the limit it is (`of`), or why
+ *  there is none (`none`), in which case `gitHub` waits for nothing. */
+export type Deadline =
+  | { readonly at: number; readonly of: "job" | "step" }
+  | { readonly none: string };
+
+/** The fields of a `/proc/<pid>/stat` line after its comm, and the comm: the comm can hold spaces
+ *  and parentheses, so the fields are read after its last `)`. `undefined` where the file cannot
+ *  be read. */
+function procStat(proc: string, pid: number): { comm: string; fields: string[] } | undefined {
+  let line: string;
+  try {
+    line = readFileSync(`${proc}/${pid}/stat`, "utf8");
+  } catch {
+    return undefined;
+  }
+  const close = line.lastIndexOf(")");
+  return {
+    comm: line.slice(line.indexOf("(") + 1, close),
+    fields: line
+      .slice(close + 2)
+      .trim()
+      .split(/\s+/u),
+  };
+}
+
+/** The deadline gh-read.sh's `_gh_read_deadline` reads, read the same way: the earlier of
+ *  JOB_TIMEOUT_MINUTES after the job's start and STEP_TIMEOUT_MINUTES after the step's, of those
+ *  `env` sets. GitHub enforces a job's timeout-minutes from the job's start and a step's from the
+ *  step's, and the runner exposes neither start to a step, so both are read off the process tree
+ *  under `proc`: the runner starts one Runner.Worker process for each job, before its first step,
+ *  and each step's shell is that process's child. The nearest Runner.Worker among the parents of
+ *  `pid` is the job's start, and its child on the way down is the step's (this process itself,
+ *  where the step's shell ran it with `exec`, which keeps the start). The start times are clock
+ *  ticks since boot, `btime` of `proc`'s `stat`, at `ticksPerSecond` (`getconf CLK_TCK` where it
+ *  is not given). With neither limit set, a limit that is no whole number of minutes, or no
+ *  Runner.Worker among the parents (a container job, a workstation), there is no deadline.
+ *
+ *  Read here rather than passed in by the step: the step could only read the same tree in shell,
+ *  and node:fs reads `/proc` in Bun as it reads any file. */
+export function readDeadline(
+  env: Readonly<Record<string, string | undefined>>,
+  {
+    pid = process.pid,
+    proc = "/proc",
+    ticksPerSecond,
+  }: { pid?: number; proc?: string; ticksPerSecond?: number } = {}
+): Deadline {
+  const job = env.JOB_TIMEOUT_MINUTES ?? "";
+  const step = env.STEP_TIMEOUT_MINUTES ?? "";
+  if (job === "" && step === "") {
+    return {
+      none: "this step names no time limit to wait within (JOB_TIMEOUT_MINUTES is not set)",
+    };
+  }
+  for (const [name, value] of [
+    ["JOB_TIMEOUT_MINUTES", job],
+    ["STEP_TIMEOUT_MINUTES", step],
+  ]) {
+    if (value !== "" && !/^\d+$/u.test(value)) {
+      return { none: `${name} is '${value}', not a whole number of minutes` };
+    }
+  }
+  let worker: { comm: string; fields: string[] } | undefined;
+  let child: { comm: string; fields: string[] } | undefined;
+  for (let at = pid; at > 1; ) {
+    const stat = procStat(proc, at);
+    if (stat === undefined) break;
+    if (stat.comm === "Runner.Worker") {
+      worker = stat;
+      break;
+    }
+    child = stat;
+    at = Number(stat.fields[1]);
+  }
+  if (worker === undefined || child === undefined) {
+    return {
+      none: "this step's start cannot be read: no Runner.Worker process is among its parents",
+    };
+  }
+  const boot = Number(/^btime (\d+)$/mu.exec(readFileSync(`${proc}/stat`, "utf8"))?.[1]);
+  const ticks =
+    ticksPerSecond ?? Number(Bun.spawnSync(["getconf", "CLK_TCK"]).stdout.toString().trim());
+  if (!Number.isInteger(boot) || !Number.isInteger(ticks) || ticks <= 0) {
+    return { none: "this step's start cannot be read: no boot time or clock tick to read it in" };
+  }
+  const end = (stat: { fields: string[] }, minutes: string) =>
+    boot + Math.floor(Number(stat.fields[19]) / ticks) + Number(minutes || "0") * 60;
+  const jobEnd = end(worker, job);
+  const stepEnd = end(child, step);
+  return job !== "" && (step === "" || jobEnd <= stepEnd)
+    ? { at: jobEnd * 1000, of: "job" }
+    : { at: stepEnd * 1000, of: "step" };
+}
+
 /** The time GitHub's answer says it may be asked again, and the header that says it: `retry-after`
  *  seconds from now where it is present (a secondary limit's), never sooner than a second from
  *  now, so a `retry-after: 0` is not asked again in a tight loop; or else `resetMarginSeconds`
  *  past `x-ratelimit-reset` where `x-ratelimit-remaining` is 0 (a primary limit's, REST's or
  *  GraphQL's, which `x-ratelimit-resource` names). That second time is already past where the
  *  reset, plus the margin, has gone by: such an answer names no time to wait for, and `gitHub`'s
- *  ladder takes its own attempts for it rather than ask again once a second until the cap.
+ *  ladder takes its own attempts for it rather than ask again once a second until the deadline.
  *  `undefined` where the answer says neither. */
 function rateLimitWait(headers: Headers): { at: number; header: string } | undefined {
   const retryAfter = headers.get("retry-after");
@@ -508,15 +610,16 @@ type Attempt =
  *    is GitHub's rate limit, secondary or primary, REST's or GraphQL's; so is GraphQL's primary
  *    limit, which answers 200 with a `RATE_LIMITED` error and those two headers. The call waits
  *    for the time GitHub names (`rateLimitWait`), printing one line through `log` before it, and
- *    asks again; that wait takes none of the three attempts. `waitCapSeconds` bounds this
- *    client's waits together, time two calls spend waiting at once counted once: a wait that
- *    would pass it is not made, and the call throws, naming the refusal and the reset past the
- *    cap. Its default, 0, waits for nothing.
+ *    asks again; that wait takes none of the three attempts. `deadline` bounds each wait by the
+ *    rule gh-read.sh's gh_wait_reset holds the scripts' waits to: a wait is made only when the
+ *    time GitHub names falls at least `waitMarginSeconds` before the deadline, and otherwise the
+ *    call throws, naming the refusal, that time and the limit. Its default, no deadline, waits for
+ *    nothing.
  *  - A primary limit whose reset, plus `resetMarginSeconds`, has already passed names no time to
  *    wait for. The call prints one line through `log` that says so and takes the ladder's three
- *    attempts, `retrySeconds` and then twice that apart, as `gh_read_waiting` does: a wait of a
- *    second for it would ask again once a second until the cap. Such a 403 or `RATE_LIMITED`
- *    error does not throw at once.
+ *    attempts, `retrySeconds` and then twice that apart: a wait of a second for it would ask
+ *    again once a second until the deadline. Such a 403 or `RATE_LIMITED` error does not throw
+ *    at once.
  *  - A 403 that carries neither header, such as a permission refusal, and a `RATE_LIMITED` error
  *    that names no time, throw at once: asking again is refused the same way.
  *
@@ -525,19 +628,16 @@ export function gitHub(
   api: string,
   token: string,
   {
-    waitCapSeconds = 0,
+    deadline = { none: "no time limit was given to wait within" },
     retrySeconds = 10,
     log = (line: string) => console.error(line),
-  }: { waitCapSeconds?: number; retrySeconds?: number; log?: (line: string) => void } = {}
+  }: { deadline?: Deadline; retrySeconds?: number; log?: (line: string) => void } = {}
 ): GitHub {
   let calls = 0;
   let graphqlCalls = 0;
   let graphqlCost = 0;
   let graphqlRemaining: number | null = null;
   let remaining: string | null = null;
-  // The time spent waiting for the rate limit so far, and when the latest of those waits ends.
-  let waited = 0;
-  let waitedUntil = 0;
   async function attempt(url: string, post: unknown): Promise<Attempt> {
     let response: Response;
     let body: unknown;
@@ -609,22 +709,23 @@ export function gitHub(
       const answer = await attempt(url, post);
       if (!("refusal" in answer)) return answer;
       if (answer.wait !== undefined && answer.wait.at > Date.now()) {
-        const added = Math.max(0, answer.wait.at - Math.max(Date.now(), waitedUntil));
         const until = new Date(answer.wait.at).toISOString();
-        if (waited + added > waitCapSeconds * 1000) {
+        const named =
+          `GitHub refused ${url} with ${answer.refusal}, and the time its rate limit names, ` +
+          `${until} by its ${answer.wait.header}`;
+        if ("none" in deadline) {
+          throw new Error(`${named}, was not waited for: ${deadline.none}. ${failedRead}`);
+        }
+        const limit = `this ${deadline.of}'s limit at ${new Date(deadline.at).toISOString()}`;
+        if (answer.wait.at + waitMarginSeconds * 1000 > deadline.at) {
           throw new Error(
-            `GitHub refused ${url} with ${answer.refusal}, and the time its rate limit names, ` +
-              `${until} by its ${answer.wait.header}, is past the cap of ${waitCapSeconds} s on ` +
-              `this reading's waits (${Math.round(waited / 1000)} s of it spent), so it was not ` +
-              `waited for. ${failedRead}`
+            `${named}, falls past ${limit} less the ${waitMarginSeconds} s the call after the ` +
+              `wait needs, so it was not waited for. ${failedRead}`
           );
         }
-        waited += added;
-        waitedUntil = Math.max(waitedUntil, answer.wait.at);
         log(
           `quarantine-check: GitHub refused ${url} with ${answer.what}, so it waits until ` +
-            `${until}, by its ${answer.wait.header}, and asks again. The cap on this reading's ` +
-            `waits is ${waitCapSeconds} s, ${Math.round(waited / 1000)} s of it spent with this wait.`
+            `${until}, by its ${answer.wait.header}, within ${limit}, and asks again.`
         );
         await Bun.sleep(Math.max(0, answer.wait.at - Date.now()));
         continue;
@@ -1108,16 +1209,10 @@ async function readFixes(
 if (import.meta.main) {
   const repository = process.env.GITHUB_REPOSITORY ?? "";
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
-  const cap = process.env.GH_READ_WAIT_CAP_SECONDS || "0";
-  if (
-    process.argv.length > 2 ||
-    !/^[^/\s]+\/[^/\s]+$/.test(repository) ||
-    token === "" ||
-    !/^\d+$/.test(cap)
-  ) {
+  if (process.argv.length > 2 || !/^[^/\s]+\/[^/\s]+$/.test(repository) || token === "") {
     console.error(
-      "usage: GITHUB_REPOSITORY=<owner>/<name> GH_TOKEN=<token> [GH_READ_WAIT_CAP_SECONDS=<s>] " +
-        "bun e2e/tools/quarantine-check.ts\n" +
+      "usage: GITHUB_REPOSITORY=<owner>/<name> GH_TOKEN=<token> [JOB_TIMEOUT_MINUTES=<m>] " +
+        "[STEP_TIMEOUT_MINUTES=<m>] bun e2e/tools/quarantine-check.ts\n" +
         "  reads the merge jobs' flaky-row notices of the last 14 days and the quarantine's dates"
     );
     process.exit(2);
@@ -1126,7 +1221,7 @@ if (import.meta.main) {
   const started = performance.now();
   const expression = process.env.GITHUB_SHA || "main";
   const github = gitHub(process.env.GITHUB_API_URL ?? "https://api.github.com", token, {
-    waitCapSeconds: Number(cap),
+    deadline: readDeadline(process.env),
   });
   let decision: Decision;
   try {
