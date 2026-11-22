@@ -1,0 +1,5 @@
+kind: Fixed
+body: The CI store's and the sign-in code flow's own tests no longer fail when a loaded machine answers them slower than a product time limit. A test may now set the wait of the CI store's record (4 s in production) and the code flow's read of its discovery document (10 s in production) in place of the product's, as it already could the code flow's token timeout; the tests set each to their own deadline. Production sets neither and keeps its limits.
+time: 2026-11-22T15:44:40.574924611Z
+custom:
+    Issue: pr5021
