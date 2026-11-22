@@ -83,10 +83,11 @@ func (r *writeProtocolRig) edit(t *testing.T, number int) int64 {
 // placement and deciding again, writes nothing over it. The fence holds for the block index writer
 // alone: a sibling order, a retraction and a value written by a transaction that read version 7
 // are each accepted. Two concurrent moves of one block commit one and refuse the other, and no
-// block holds two parents. An import against a block whose node already holds a placement is
-// refused. A transaction whose commit is held shows a second connection no event and no node for
-// its write, nor the event to a subscriber, until the commit; a rolled-back one shows neither,
-// ever.
+// block holds two parents. A historical writer - the backfill, an importer - asserts only on a node
+// that holds no current placement: run over a block that holds one, no part_of such a writer wrote
+// lands on a node that held a current part_of at that tuple's seq. A transaction whose commit is
+// held shows a second connection no event and no node for its write, nor the event to a
+// subscriber, until the commit; a rolled-back one shows neither, ever.
 //
 // Each clause is a step of its own, so a clause this tree does not hold yet fails by name and the
 // clauses after it still run.
@@ -111,7 +112,7 @@ func TestAStaleWriterNeverReplacesANewerPlacement(t *testing.T) {
 		{"two numbers with two names, and no third: no revision column on graph_nodes, and a query, a census and an approval record the read sequence", writeProtocolStepTwoNumbers},
 		{"a held pass over version 7 is refused once a person's edit commits version 8, and point facts at a stale version are accepted", writeProtocolStepStalePass},
 		{"two concurrent moves of one block commit one and refuse the other", writeProtocolStepConcurrentMoves},
-		{"an import against a block whose node already holds a placement is refused", writeProtocolStepImport},
+		{"no part_of a historical writer wrote lands on a node that already held a placement", writeProtocolStepImport},
 		{"a held commit shows no event and no node; a rollback shows neither, ever", writeProtocolStepHeldCommit},
 	} {
 		t.Run(step.name, func(t *testing.T) { step.run(t, rig) })
@@ -586,69 +587,99 @@ func newestStoredVersion(t *testing.T, rig *writeProtocolRig) (int, string) {
 	return number, markdown
 }
 
+// historicalWriters are the writers that state what was true before the store, or what another
+// system holds, rather than a change of the document they write: the backfill of the graph store
+// (graphcensus/backfill.go, backfillActor), the backfill of comments' anchor blocks
+// (AnchorBlockBackfillActor), the architecture importer (architecture/importer.go, SystemActor)
+// and the pre-mortem conversion (api/premortem_convert.go, PremortemConverter), which states a
+// pre-mortem's risks and their preventions from a document written before them. Each is named by
+// its actor's id, the one thing its tuples carry that tells them apart; all but the anchor
+// backfill's are spelled here because none of them is reachable from this package, and api imports
+// this package. An issue's cutover conversion is no historical writer and stays off the list.
+var historicalWriters = []string{"dispatch-backfill-graph-store", AnchorBlockBackfillActor.ID, "architecture-importer", "premortem-convert"}
+
+// historicalPlacement is one tuple a historical writer wrote, as the clause examines it: the node
+// it runs out of, its kind, the tuple written whole, and whether it is a part_of that landed on a
+// node already holding a current part_of at its seq.
+type historicalPlacement struct {
+	from, kind, tuple string
+	landed            bool
+}
+
+// historicalPlacementsStatement reads every tuple a historical writer ($1, their actor ids) wrote,
+// in seq order, each with whether it is an asserted part_of whose node held a current part_of at
+// its seq: some far end whose newest part_of tuple before it - by time, then seq, as a current read
+// orders them (refs' treeRelationsStatement) - asserts.
+const historicalPlacementsStatement = `
+	select t.from_kind || ':' || t.from_id, t.kind,
+		format('seq=%s from=%s:%s kind=%s to=%s:%s asserted=%s at=%s who=%s source_event=%s',
+			t.seq, t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted, t.at, t.who, t.source_event),
+		t.kind = 'part_of' and t.asserted and exists (
+			select 1 from (
+				select distinct on (held.to_kind, held.to_id) held.asserted
+				from graph_tuples held
+				where held.from_kind = t.from_kind and held.from_id = t.from_id and held.kind = 'part_of' and held.seq < t.seq
+				order by held.to_kind, held.to_id, held.at desc, held.seq desc
+			) placement
+			where placement.asserted
+		)
+	from graph_tuples t
+	where t.who->>'kind' = 'system' and t.who->>'id' = any($1)
+	order by t.seq`
+
+// historicalPlacements is every tuple a historical writer wrote, read through q, as
+// historicalPlacementsStatement reads it.
+func historicalPlacements(t *testing.T, q Queryer) []historicalPlacement {
+	t.Helper()
+	rows, err := q.Query(context.Background(), historicalPlacementsStatement, historicalWriters)
+	if err != nil {
+		t.Fatalf("read the tuples the historical writers wrote: %v", err)
+	}
+	examined, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (historicalPlacement, error) {
+		var placement historicalPlacement
+		err := row.Scan(&placement.from, &placement.kind, &placement.tuple, &placement.landed)
+		return placement, err
+	})
+	if err != nil {
+		t.Fatalf("read the tuples the historical writers wrote: %v", err)
+	}
+	return examined
+}
+
 func writeProtocolStepImport(t *testing.T, rig *writeProtocolRig) {
 	ctx := context.Background()
 	placed := currentPartOf(t, rig.database, rig.mover)
-	// The release before rewrites the block's row naming no node, so the import reads it as one
+	// The release before rewrites the block's row naming no node, so the backfill reads it as one
 	// of the rows written before the store, while the node it names holds a placement.
 	if _, err := rig.database.Pool.Exec(ctx, `
 		update document_blocks set node_kind = null, node_address = null where artifact_id = $1 and block_id = 'mover'
 	`, rig.document); err != nil {
 		t.Fatalf("leave block mover's row naming no node: %v", err)
 	}
-	before := highestTuple(t, rig.database)
-	report, err := graphcensus.Backfill(ctx, rig.database, io.Discard)
-	if err != nil {
-		t.Fatalf("run the import (graphcensus.Backfill): %v", err)
+	if _, err := graphcensus.Backfill(ctx, rig.database, io.Discard); err != nil {
+		t.Fatalf("run the backfill (graphcensus.Backfill): %v", err)
 	}
-	var blocks graphcensus.KindBackfill
-	for _, kind := range report.Kinds {
-		if kind.Kind == refs.BlockNodeKind {
-			blocks = kind
+	examined := historicalPlacements(t, rig.database.Pool)
+	placements, nodes := 0, map[string]bool{}
+	for _, tuple := range examined {
+		nodes[tuple.from] = true
+		if tuple.kind == graphstore.TuplePartOf {
+			placements++
+		}
+		if tuple.from == refs.BlockNodeKind+":"+rig.mover {
+			t.Logf("a historical writer wrote out of block %s, which held part_of %s/%s (tuple %d): %s", rig.mover, placed.ToKind, placed.ToID, placed.Seq, tuple.tuple)
 		}
 	}
-	appended := storedTuples(t, rig, `seq > $3`, before)
-	partOf := storedTuples(t, rig, `kind = $3`, graphstore.TuplePartOf)
-	for _, tuple := range partOf {
-		t.Logf("part_of out of block %s: %s", rig.mover, tuple)
+	t.Logf("examined %d tuples the historical writers %v wrote, out of %d nodes, %d of them part_of", len(examined), historicalWriters, len(nodes), placements)
+	if len(examined) == 0 {
+		t.Errorf("the clause examined no tuple a historical writer wrote, so it proves nothing: the backfill over block %s wrote none", rig.mover)
 	}
-	var appendedPartOf []string
-	for _, tuple := range appended {
-		t.Logf("the import appended out of block %s: %s", rig.mover, tuple)
-		if strings.Contains(tuple, " kind="+graphstore.TuplePartOf+" ") {
-			appendedPartOf = append(appendedPartOf, tuple)
+	for _, tuple := range examined {
+		if tuple.landed {
+			t.Errorf("a historical writer's part_of lands on %s, which already held a current part_of at its seq: %s; a historical writer asserts only on a node that holds no current placement",
+				tuple.from, tuple.tuple)
 		}
 	}
-	if now := currentPartOf(t, rig.database, rig.mover); now.Seq != placed.Seq || now.ToKind != placed.ToKind || now.ToID != placed.ToID {
-		t.Errorf("the import moved block %s from %s/%s (tuple %d) to %s/%s (tuple %d), over the placement its node held", rig.mover, placed.ToKind, placed.ToID, placed.Seq, now.ToKind, now.ToID, now.Seq)
-	}
-	if len(appendedPartOf) > 0 {
-		t.Errorf("the import (graphcensus.Backfill) appended a second part_of on block %s, which already held one (tuple %d): %v", rig.mover, placed.Seq, appendedPartOf)
-	}
-	if blocks.Rows != 0 || len(appended) != 0 {
-		t.Errorf("the import (graphcensus.Backfill, its block pass writeBlockBatch) took block %s, whose node already held a placement (part_of %s/%s, tuple %d): it gave %d block rows a node and appended %d tuples out of it, %d of them part_of, "+
-			"want it refused: an import asserts only on a node that holds no current placement", rig.mover, placed.ToKind, placed.ToID, placed.Seq, blocks.Rows, len(appended), len(appendedPartOf))
-	}
-}
-
-// storedTuples is every tuple out of the rig's block mover that where, a condition on graph_tuples
-// whose one parameter is $3, holds of, in seq order, each written whole: its seq, both ends, its
-// kind, whether it asserts, when, by whom and its event.
-func storedTuples(t *testing.T, rig *writeProtocolRig, where string, value any) []string {
-	t.Helper()
-	rows, err := rig.database.Pool.Query(context.Background(), `
-		select format('seq=%s from=%s:%s kind=%s to=%s:%s asserted=%s at=%s who=%s source_event=%s',
-			seq, from_kind, from_id, kind, to_kind, to_id, asserted, at, who, source_event)
-		from graph_tuples where from_kind = $1 and from_id = $2 and `+where+` order by seq
-	`, refs.BlockNodeKind, rig.mover, value)
-	if err != nil {
-		t.Fatalf("read the tuples out of %s: %v", rig.mover, err)
-	}
-	tuples, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read the tuples out of %s: %v", rig.mover, err)
-	}
-	return tuples
 }
 
 // heldCommitLock is the advisory lock a held commit waits on: the deferred trigger
