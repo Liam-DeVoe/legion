@@ -163,17 +163,21 @@ func TestTheGuardKeepsTheRecordOffAClaimThatHeldASessionInTheRefusedPod(t *testi
 // A machine built over a stored claim has no memory of a session the claim held and lost before
 // the restart, so it reads the guard off the stored claim (bootSessionPod), and where it cannot
 // place a session the claim held, the guard is unknown and names every pod (SessionPod.Names):
-// a stored session whose process is in no pod, and an abandoned session (Claim.Abandoned), which
+// a stored session with no process, and an abandoned session (Claim.Abandoned), which
 // forgetSession writes with the forget and the store keeps. A stored session whose process is in
-// a pod is placed there. A claim that records neither has held no session.
+// a pod is placed there, and one whose process is in no pod (a tmux pane) names no pod, by the
+// rule a registration reads (sessionPodAt). A claim that records neither has held no session.
 //
-// The last case drives it through a restart: a claim that held its session in a pod and lost it,
-// whose fresh agent started in that same pod, is refused for that pod after the restart with no
-// session, and nothing is recorded, as before the restart. Registering again places the guard.
+// The last two cases drive it on. A claim that held its session in a pod and lost it, whose fresh
+// agent started in that same pod, is refused for that pod after a restart with no session, and
+// nothing is recorded, as before the restart. Registering again places the guard. And a claim
+// built over an abandoned session that registers through a process in no pod holds a guard that
+// names no pod: that session's worker ran on no pod's disk.
 //
-// The negative control (the pull request records the run): bootSessionPod answering
+// The negative controls (the pull request records the runs): bootSessionPod answering
 // SessionPod{} for every claim, where the abandoned row reads a known guard and the restart's
-// refusal is recorded.
+// refusal is recorded; and sessionPodAt answering unknown for a process in no pod, where both
+// rows of a process in no pod read an unknown guard.
 func TestAMachineBuiltOverAStoredClaimReadsTheGuardOffIt(t *testing.T) {
 	inPod := podProcess(refusedPod, 4)
 	pane := runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: testToken, Incarnation: "4242:1",
@@ -192,7 +196,7 @@ func TestAMachineBuiltOverAStoredClaimReadsTheGuardOffIt(t *testing.T) {
 			c := queuedClaim()
 			c.State, c.Session, c.SessionFile, c.Locator = StateReady, session, sessionFile, &pane
 			return c
-		}(), want: SessionPod{Unknown: true}},
+		}(), want: SessionPod{}},
 		"a session and no process": {claim: func() Claim {
 			c := queuedClaim()
 			c.State, c.SuspendedBy, c.Session, c.SessionFile = StateSuspended, SuspendedByOperator, session, sessionFile
@@ -239,5 +243,17 @@ func TestAMachineBuiltOverAStoredClaimReadsTheGuardOffIt(t *testing.T) {
 		h.connect()
 		h.register()
 		h.wantRefused("", SessionPod{Pod: replacedPod}, "once a session registered again,")
+	})
+
+	t.Run("a registration through a process in no pod", func(t *testing.T) {
+		c := queuedClaim()
+		c.Abandoned = AbandonedSession{Session: "ses_before", Why: "no store holds it", At: epoch}
+		h := newHarnessOf(t, c)
+		h.wantRefused("", SessionPod{Unknown: true}, "built over a claim that abandoned a session,")
+		h.reach(StateRegistered)
+		if loc := h.claim().Locator; loc == nil || loc.Sandbox != nil {
+			t.Fatalf("the claim registered through %+v, want a process in no pod", loc)
+		}
+		h.wantRefused("", SessionPod{}, "once a session registered through a process in no pod,")
 	})
 }

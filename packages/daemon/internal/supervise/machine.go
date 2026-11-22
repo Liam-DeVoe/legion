@@ -481,9 +481,10 @@ type Claim struct {
 	// forgets it and the ends then name such a claim as any other.
 	RefusedWithNoSession *runtime.Locator
 	// SessionPod is the pod this claim last held a session in, as its machine knows it: the pod of
-	// the process that registered the session (register), kept through a forget of the session, a
-	// fresh start, the let-gos and the later launches, since a session lost does not undo that the
-	// claim held one there. A registration in another pod moves it there. A machine built over a
+	// the process that registered the session (register), or no pod where that process runs in
+	// none (a tmux pane), kept through a forget of the session, a fresh start, the let-gos and the
+	// later launches, since a session lost does not undo that the claim held one there. A later
+	// registration moves it to the pod of its own process, or to none. A machine built over a
 	// stored claim has no memory of a session the claim held and lost before (bootSessionPod), so
 	// it reads the guard off what the store holds, and where it cannot place a session the claim
 	// held, the guard is unknown and names every pod until the claim registers again. It is the
@@ -3192,7 +3193,8 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 
 // SessionPod is the pod a claim last held a session in, as its machine knows it
 // (Claim.SessionPod): Pod, the uid of the pod whose process registered the session, "" for a
-// claim that has held none, or Unknown, where the machine cannot place a session the claim held.
+// claim that has held none or held its last in no pod (a tmux pane), or Unknown, where the
+// machine cannot place a session the claim held.
 type SessionPod struct {
 	Pod     string
 	Unknown bool
@@ -3205,11 +3207,17 @@ func (p SessionPod) Names(pod string) bool {
 	return p.Unknown || (pod != "" && p.Pod == pod)
 }
 
-// sessionPodAt is the guard a session registered by the process at loc leaves: that process's
-// pod, or unknown where loc names no pod, since such a session is one the guard cannot place.
+// sessionPodAt is the guard a session held by the process at loc leaves, the one rule register
+// and bootSessionPod read: that process's pod; no pod where loc is a process in none (a tmux
+// pane), since that session's worker ran on no pod's disk; and unknown where the session cannot
+// be placed: no locator, as a stored session with no process has, and a process in a pod whose
+// uid loc does not record.
 func sessionPodAt(loc *runtime.Locator) SessionPod {
 	if pod := locatorPod(loc); pod != "" {
 		return SessionPod{Pod: pod}
+	}
+	if loc != nil && loc.Sandbox == nil {
+		return SessionPod{}
 	}
 	return SessionPod{Unknown: true}
 }
@@ -3223,7 +3231,8 @@ func sessionPodAt(loc *runtime.Locator) SessionPod {
 //     it, the store keeps it, and nothing clears it: the next abandonment replaces it. The record
 //     names no pod, so the guard is unknown.
 //   - A claim that records a session holds it where its process runs: the guard is that process's
-//     pod, or unknown where it records no process in a pod (sessionPodAt).
+//     pod, no pod where that process runs in none, and unknown where the claim records no
+//     process, or one in a pod whose uid it does not record (sessionPodAt).
 //   - A claim that records neither has held no session: the guard names no pod.
 func bootSessionPod(c Claim) SessionPod {
 	switch {
@@ -4564,9 +4573,13 @@ func (m *Machine) stored() Claim {
 }
 
 // StoredClaim is c in the form a claim write hands the store: a pending delivery has a table of
-// its own. Call NormalizeClaim before this when c will also construct a machine.
+// its own, and the store holds none of the pod the launch waits on, the refusal with no session
+// and its guard (Claim.AwaitsPod, Claim.RefusedWithNoSession, Claim.SessionPod), which only the
+// machine holds, in memory, and overlays on the claim it reports (current), so no stored claim,
+// and no claim compared with one, carries any of them. Call NormalizeClaim before this when c will
+// also construct a machine.
 func StoredClaim(c Claim) Claim {
-	c.Pending = nil
+	c.Pending, c.AwaitsPod, c.RefusedWithNoSession, c.SessionPod = nil, nil, nil, SessionPod{}
 	return c
 }
 

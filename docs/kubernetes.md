@@ -8935,7 +8935,7 @@ A member that registers a session in the refused pod itself after its refusal is
 The machine records no such refusal for a claim that held a session in the pod (`supervise.Claim.SessionPod`): a relaunch that finds the claim's session in no store forgets the session and starts a fresh agent, which the runtime then refuses with no session, and the worker of the session it lost can have left work on the disk.
 Such a member is named at every end, also while its launch waits on the pod (`lostClaim`).
 The record is in memory only, so after a daemon restart the ends name each member refused with no session before the restart that records a process by then.
-The machine that the restart builds reads where the claim held a session from the stored claim; where the stored claim shows a session it cannot place, a session it abandoned (`supervise.Claim.Abandoned`) or a session with no process in a pod, the machine records no refusal and the ends name the claim, until the claim registers a session again.
+The machine that the restart builds reads where the claim held a session from the stored claim; where the stored claim shows a session it cannot place, a session it abandoned (`supervise.Claim.Abandoned`) or a session with no process, the machine records no refusal and the ends name the claim, until the claim registers a session again.
 So the daemon errs towards naming a role, never towards hiding a loss.
 
 The daemon keeps the waiting pod in memory only.

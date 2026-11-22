@@ -33,7 +33,7 @@ body: |-
   whose relaunch found its session in no store and started a fresh agent, and every end names
   that claim. After a daemon restart, the ends name each member refused before the restart that
   has started in the new pod, and the restarted daemon records no refusal for a claim whose
-  stored record shows a session it abandoned or a session with no process in a pod, so the
+  stored record shows a session it abandoned or a session with no process, so the
   daemon errs towards naming a role, never towards hiding a loss. When no member is left to
   name, the daemon writes no message.
   Where the process of another claim runs in the pod, the claim's next try cannot replace the
