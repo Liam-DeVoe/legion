@@ -2,6 +2,7 @@ package leakguard
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -333,16 +334,29 @@ exit 0
 }
 
 // stopsAfterItsInput is a stand-in shared check that reads its standard input, as the real one
-// does, and then sleeps far past any bound these tests give it: a check whose git waits on a
-// remote that never answers, as the guard sees one.
-const stopsAfterItsInput = "cat >/dev/null\nsleep 30\n"
+// does, and then sleeps far past any bound these tests give it, and past hangGuard: a check whose
+// git waits on a remote that never answers, as the guard sees one. The sleep runs in the
+// background of the check's bash, in its process group, and its process id goes to the file
+// STANDIN_SLEEP names, so a test can see that the stop ended it (sleepEnded). The check then makes
+// the file STANDIN_STARTED names, where that is set, to say it is running.
+const stopsAfterItsInput = "cat >/dev/null\nsleep 300 &\necho $! > \"$STANDIN_SLEEP\"\n" +
+	"[ -z \"${STANDIN_STARTED:-}\" ] || : > \"$STANDIN_STARTED\"\nwait\n"
 
-// stoppedPush is a push under ctx through a guard whose shared check is stopsAfterItsInput, as
-// the setup failure it must be. The shared check runs before a push reads anything of its
-// repository, so the push needs none.
-func stoppedPush(t *testing.T, ctx context.Context) *SetupFailure {
+// stopsAfterItsInputSleeps is how long stopsAfterItsInput sleeps.
+const stopsAfterItsInputSleeps = 300 * time.Second
+
+// standInSleeps is how long the other stand-ins these stop tests meet sleep: `sleep 30`.
+const standInSleeps = 30 * time.Second
+
+// stoppedPush is a push under ctx through a guard whose shared check is stopsAfterItsInput, with
+// env in the check's environment, as the setup failure it must be. The shared check runs before a
+// push reads anything of its repository, so the push needs none. It also fails the test where the
+// stop did not end the check's sleep, which the check's bash started in the check's own process
+// group: the stop is the group's.
+func stoppedPush(t *testing.T, ctx context.Context, env ...string) *SetupFailure {
 	t.Helper()
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput), Public)
+	sleep := filepath.Join(t.TempDir(), "sleep")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput), Public, append(env, "STANDIN_SLEEP="+sleep)...)
 	started := time.Now()
 	err := guard.Push(ctx, PushRequest{
 		Dir:     t.TempDir(),
@@ -350,17 +364,59 @@ func stoppedPush(t *testing.T, ctx context.Context) *SetupFailure {
 		URL:     "https://github.com/invented-org/invented-repo.git",
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 	})
-	answeredWithin10s(t, started)
+	answeredBefore(t, started, stopsAfterItsInputSleeps)
+	sleepEnded(t, sleep)
 	return setupFailure(t, err)
 }
 
-// answeredWithin10s fails the test where the call that began at started took 10 s or more: the
-// stop has to end the call, well before the stand-in's own 30 s sleep would.
-func answeredWithin10s(t *testing.T, started time.Time) {
+// answeredBefore fails the test where the call that began at started took sleep or more, sleep
+// being how long the stand-in the call meets sleeps: a stop ends the call before then, and a call
+// no stop ended answers only once that sleep has run, so the bound tells the two apart however
+// loaded the machine is, short of one that takes the whole sleep to stop a child.
+func answeredBefore(t *testing.T, started time.Time, sleep time.Duration) {
 	t.Helper()
-	if took := time.Since(started); took >= 10*time.Second {
-		t.Fatalf("the call answered after %s, want under 10 s: the stop did not end it", took.Round(time.Second))
+	if took := time.Since(started); took >= sleep {
+		t.Fatalf("the call answered after %s, want under the stand-in's %s sleep: the stop did not end it", took.Round(time.Second), sleep)
 	}
+}
+
+// sleepEnded fails the test unless the process whose id the file pidFile holds has ended within
+// hangGuard: it is gone, or a zombie its new parent has yet to reap. The stand-in's sleep lasts
+// longer than hangGuard, so only a stop that reached it ends it in time. A sleep still running is
+// killed when the test ends.
+func sleepEnded(t *testing.T, pidFile string) {
+	t.Helper()
+	read, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("the stand-in wrote no process id of its sleep: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(read)))
+	if err != nil {
+		t.Fatalf("the stand-in's sleep has the process id %q: %v", read, err)
+	}
+	deadline := time.Now().Add(hangGuard)
+	for !processEnded(pid) {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("the stand-in's sleep, process %d, still ran %s after the call answered: the stop did not reach it", pid, hangGuard)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// processEnded is whether the process pid has ended: there is no such process, or, where /proc
+// says so, it is a zombie, which has ended and only waits for its parent to reap it.
+func processEnded(pid int) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// The state is the field after the command, which ends at the last closing parenthesis.
+	end := strings.LastIndexByte(string(stat), ')')
+	return end >= 0 && end+2 < len(stat) && stat[end+2] == 'Z'
 }
 
 // says fails the test for each of wants that the setup failure's line does not hold.
@@ -375,28 +431,47 @@ func says(t *testing.T, failed *SetupFailure, wants ...string) {
 
 // A shared check its bound stops is a setup failure that names the check, the time it ran and
 // the bound it had, once, so a person reading the line can tell a check given too little time
-// from one that hung. The time it ran also shows that the kill reached the sleep, which bash
-// started in the check's own process group: a sleep the kill missed would hold the output pipe
-// open, and exec would wait its WaitDelay of a second more for it, which the time would show as
-// 3 s.
+// from one that hung. The bound is what was left of the caller's 2 s when the check started, and
+// the time it ran is measured, so both are read as stoppedByItsBound reads them: a bound no
+// longer than 2 s and a run no shorter than it, never exact seconds a loaded machine would not
+// keep. That the stop reached the sleep bash started in the check's process group is seen in the
+// sleep itself (stoppedPush).
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	failed := stoppedPush(t, ctx)
-	says(t, failed, "the shared public leak check", "ran 2 s", "bound of 2 s")
+	stoppedByItsBound(t, failed, 2*time.Second)
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
 	}
 }
 
 // A shared check that a cancel stops, under a context with no deadline, says that a cancel
-// stopped it and how long it ran: there is no bound to name.
+// stopped it and how long it ran: there is no bound to name. The cancel comes 2 s after the check
+// says it is running, so it has run at least that long however late it started; the time is
+// measured, and on a loaded machine the stop after the cancel takes longer, so it is read as a
+// floor (stoppedByACancel), never as exact seconds.
 func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
+	const after = 2 * time.Second
+	running := filepath.Join(t.TempDir(), "running")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer time.AfterFunc(2*time.Second, cancel).Stop()
-	failed := stoppedPush(t, ctx)
-	says(t, failed, "the shared public leak check", "ran 2 s", "stopped by a cancel")
+	go func() {
+		deadline := time.Now().Add(hangGuard)
+		for ctx.Err() == nil && time.Now().Before(deadline) {
+			if _, err := os.Stat(running); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		select {
+		case <-time.After(after):
+		case <-ctx.Done():
+		}
+		cancel()
+	}()
+	failed := stoppedPush(t, ctx, "STANDIN_STARTED="+running)
+	stoppedByACancel(t, failed, after)
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
 	}
@@ -466,6 +541,8 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
+// The bound is read against the caller's 2 s (stopBound), never for its exact seconds, nor is the
+// time the program ran, which a loaded machine stretches.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	// sleeps is the PATH entry of a directory whose one program is name, which sleeps far past
 	// the bound, in front of the test's own PATH: the guard's lookup finds it before the real
@@ -486,8 +563,11 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		defer cancel()
 		started := time.Now()
 		err := guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
-		answeredWithin10s(t, started)
-		says(t, setupFailure(t, err), "could not be read: gh ran 2 s and was stopped by its bound of 2 s")
+		answeredBefore(t, started, standInSleeps)
+		says(t, setupFailure(t, err), "could not be read: gh ran ", " s and was stopped by its bound of ")
+		if got := stopBound(t, err); got > 2 {
+			t.Errorf("gh was stopped by a bound of %d s, want the caller's deadline of 2 s", got)
+		}
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, sleeps(t, "git"))
@@ -502,7 +582,10 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 			URL:     "https://github.com/invented-org/invented-repo.git",
 			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 		})
-		answeredWithin10s(t, started)
-		says(t, setupFailure(t, err), "the push's commits could not be read: git ran 2 s and was stopped by its bound of 2 s")
+		answeredBefore(t, started, standInSleeps)
+		says(t, setupFailure(t, err), "the push's commits could not be read: git ran ", " s and was stopped by its bound of ")
+		if got := stopBound(t, err); got > 2 {
+			t.Errorf("git was stopped by a bound of %d s, want the caller's deadline of 2 s", got)
+		}
 	})
 }

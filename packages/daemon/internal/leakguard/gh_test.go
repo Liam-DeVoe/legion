@@ -72,7 +72,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		defer cancel()
 		started := time.Now()
 		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
-		answeredWithin10s(t, started)
+		answeredBefore(t, started, standInSleeps)
 		// The stop is the caller's own deadline, not a bound of the guard's shorter than it: a
 		// bound the guard set itself would end the check, and the call, while ctx is still alive,
 		// and stoppedByItsBound would read its shorter seconds as a late start.
@@ -134,6 +134,30 @@ func stoppedByItsBound(t *testing.T, failed *SetupFailure, ceiling time.Duration
 	if bound > wholeSeconds(ceiling) || ran < bound {
 		t.Fatalf("the setup failure says %q: a bound of %d s and a run of %d s, want a bound no longer than the caller's %d s and a run no shorter than its bound",
 			failed.Error(), bound, ran, wholeSeconds(ceiling))
+	}
+}
+
+// theCancel is the sentence a setup failure says of a shared check a cancel stopped
+// (stoppedError.said): the whole seconds the check ran.
+var theCancel = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by a cancel$`)
+
+// stoppedByACancel fails t unless failed is the shared check stopped by a cancel, said with a run
+// no shorter than atLeast, the time the check had run when the cancel came. The run is measured
+// from the check's start to the end of its stop, and on a loaded machine the stop takes longer
+// after the cancel, so it is read against that floor and never for its exact seconds.
+func stoppedByACancel(t *testing.T, failed *SetupFailure, atLeast time.Duration) {
+	t.Helper()
+	said := theCancel.FindStringSubmatch(failed.Why)
+	if said == nil {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by a cancel", failed.Error())
+	}
+	ran, err := strconv.ParseInt(said[1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran < wholeSeconds(atLeast) {
+		t.Fatalf("the setup failure says %q: a run of %d s, want one no shorter than the %d s the check had run when the cancel came",
+			failed.Error(), ran, wholeSeconds(atLeast))
 	}
 }
 
