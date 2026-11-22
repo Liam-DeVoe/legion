@@ -3932,10 +3932,13 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 // entry its role has left"): for a start of a claim stored suspended by the project release
 // (supervise.Claim.ProjectReleased) it answers that claim's start (record.ReleaseStoppedStart)
 // and true, and for every other row the row's own payload and false, which the fence finishes
-// without acting. It logs which of the two it answered at Info, with fields.
+// without acting. A start queued for news alone (record.SuperviseRequest.News) is such another
+// row: it never counts as the claim's start, so the boot writes the released claim's own start
+// beside it, and answering it here would start that claim a second time. It logs which of the
+// two it answered at Info, with fields.
 func (r *outbox) releaseStoppedStart(row record.OutboxRow, payload record.SuperviseRequest, serves string, fields ...any) (record.SuperviseRequest, bool) {
 	stopped := false
-	if payload.Op == "start" {
+	if payload.Op == "start" && !payload.News {
 		token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 		if err == nil {
 			machine, found := r.supervisor.Machine(token)
