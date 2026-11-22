@@ -86,3 +86,24 @@ func TestARefusalCodeNamesDispatchsWordsAsTheRuleReadsThem(t *testing.T) {
 		})
 	}
 }
+
+// TestAnUnknownVisibilityPrintsNoneOfDispatchsWords: Dispatch, or whatever answers in its place,
+// answers a project's visibility with words that echo the broker's account token the question
+// carried and quote a credential's URL. Access refuses the answer as ErrUnknownVisibility naming
+// the field and the project, and none of the words. Captures projectaccess.answer-words/visibility.
+func TestAnUnknownVisibilityPrintsNoneOfDispatchsWords(t *testing.T) {
+	account := githubtest.InstallationToken(t.Name())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		echoed := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"project": "PRIV", "visibility": "token " + echoed + " " + redacttest.Words, "owner": "alice@example.com"})
+	}))
+	t.Cleanup(server.Close)
+	_, err := projectaccess.New(server.URL, projectaccesstest.StaticAccount(account), nil).Access(t.Context(), "PRIV", "")
+	// Control: the refusal is the unknown visibility's, naming the field and the project.
+	if !errors.Is(err, projectaccess.ErrUnknownVisibility) || !strings.Contains(err.Error(), "(visibility) for PRIV") {
+		t.Fatalf("Access = %v, want ErrUnknownVisibility naming the visibility field and PRIV", err)
+	}
+	redacttest.RequireNone(t, "projectaccess.answer-words/visibility", err.Error())
+	redacttest.RequireNoPiece(t, "projectaccess.answer-words/visibility", err.Error(), account)
+}

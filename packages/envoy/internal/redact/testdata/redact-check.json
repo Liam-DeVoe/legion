@@ -5061,6 +5061,20 @@
       "production": "projectaccess Client.get: a refusal's code is decided on as it came and named as the rule reads it (dispatchread.RefusalCode, read through redact.ReadAnswer)"
     },
     {
+      "id": "projectaccess-visibility-words",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/projectaccess",
+      "test": "TestAnUnknownVisibilityPrintsNoneOfDispatchsWords",
+      "production": "projectaccess Client.Access: an unknown visibility is refused naming the field and the project, and none of Dispatch's value"
+    },
+    {
+      "id": "requests-visibility-words",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/requests",
+      "test": "TestAVisibilityTheMachineDoesNotKnowPrintsNoneOfIt",
+      "production": "requests collectProjectFacts: a visibility the machine does not know is refused naming the field and the project, and none of its value"
+    },
+    {
       "id": "projectrepos-answer-words",
       "requirement": "r3-each-site",
       "package": "./internal/cipher/projectrepos",
@@ -8814,6 +8828,11 @@
       "site": "main's dispatchread reader: Dispatch's body read raw, its code and the repository answer's keys and values printed as they came, the member kind decoded with no record",
       "source": "the merge of main into the pull request",
       "guard": "projectrepos-answer-words"
+    },
+    {
+      "site": "main's visibility check: projectaccess Access and the request machine printed Dispatch's visibility word as it came",
+      "source": "the class scans at the merge of main",
+      "guard": "projectaccess-visibility-words"
     }
   ]
 }

@@ -483,8 +483,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	answer := wire.Answer
 	// A visibility that is neither of the two is no answer: it is never kept, and no caller can
 	// read it as public, which is what a missing field would otherwise decode to beside Private.
+	// The refusal names the field and none of its value, which is Dispatch's words.
 	if !answer.Public() && !answer.Private() {
-		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
+		return Answer{}, fmt.Errorf("%w (visibility) for %s", ErrUnknownVisibility, project)
 	}
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
