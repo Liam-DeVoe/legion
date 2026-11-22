@@ -17,9 +17,10 @@
  *  never opened. It prints no token, no proof and no secret value.
  *
  *  A Dispatch call takes its URL from Dispatch's generated contract (`routePath` in
- *  web/src/api/paths.ts) and reads its answer's fields as that contract types the route's answer
- *  (`Result`) and its refusal (`Refusal`), so a route or a field the contract renames is a type
- *  error here; a body of another shape is read field by field all the same.
+ *  web/src/api/paths.ts), sends its request body as that contract types the route's body
+ *  (`Body`), and reads its answer's fields as it types the route's answer (`Result`) and its
+ *  refusal (`Refusal`), so a route or a field the contract renames is a type error here; a body
+ *  of another shape is read field by field all the same.
  *
  *  Commands:
  *    whoami                  GET /api/v1/whoami at Dispatch, with its kind, owner, project and
@@ -45,7 +46,10 @@
  *                            it reports without waiting.
  *    send <session> <text>   POST /v1/messages/send to <session>.
  *    agent-token             POST /api/v1/me/agent-tokens; a token it was given is revoked again
- *                            at once, and its plaintext is never printed.
+ *                            at once, and its plaintext is never printed. `revoked` is true only
+ *                            when Dispatch answered the revoke 2xx; it is false, with a `detail`
+ *                            saying why, when the mint named no token id, or when the revoke was
+ *                            refused or gave no answer.
  *    approve                 POST /api/v1/credential-requests/<a fresh id>/approve.
  *    trade                   one fresh trade: {traded: true, expires_at}, or {traded: false,
  *                            status, detail} when the broker refused it (row T5).
@@ -68,7 +72,7 @@
 import { randomUUID } from "node:crypto";
 import { type Envelope, EnvelopeSchema } from "@legion/contracts";
 import { brokerTokenFor, type TradedToken } from "@legion/envoy-client/broker-credential";
-import { type Refusal, type Result, routePath } from "../../web/src/api/paths";
+import { type Body, type Refusal, type Result, routePath } from "../../web/src/api/paths";
 
 // Bun's WebSocket client accepts request headers and a subprotocol; the repository's DOM
 // WebSocket type does not.
@@ -784,21 +788,34 @@ async function main(): Promise<void> {
     }
     case "agent-token": {
       const mint = routePath("post", "/api/v1/me/agent-tokens", {});
-      const answer = await call("POST", dispatch(mint), {
+      const asked: Body<"/api/v1/me/agent-tokens", "post"> = {
         name: `outside-e2e-probe-${randomUUID().slice(0, 8)}`,
-      });
-      const id: unknown = fieldsOf<Result<"/api/v1/me/agent-tokens", "post">>(answer.body).id;
-      if (answer.status < 300) {
-        // A token the agent should never have been given is ended at once, and never printed. An
-        // empty id names no token, and routePath builds no URL for it.
-        if (typeof id === "string" && id !== "") {
-          const revoke = routePath("delete", "/api/v1/me/agent-tokens/{id}", { id });
-          await call("DELETE", dispatch(revoke)).catch(() => undefined);
-        }
-        print({ status: answer.status, code: null, detail: null, revoked: typeof id === "string" });
+      };
+      const answer = await call("POST", dispatch(mint), asked);
+      if (answer.status >= 300) {
+        print(flat(answer, fieldsOf<Refusal<"/api/v1/me/agent-tokens", "post">>(answer.body)));
         return;
       }
-      print(flat(answer, fieldsOf<Refusal<"/api/v1/me/agent-tokens", "post">>(answer.body)));
+      // A token the agent should never have been given is ended at once, and never printed; the
+      // detail names the revoke by its route, never by the token's id. An empty id names no token,
+      // and routePath builds no URL for it.
+      const id: unknown = fieldsOf<Result<"/api/v1/me/agent-tokens", "post">>(answer.body).id;
+      let revoked = false;
+      let detail: string | null = "the mint answered no token id, so nothing was revoked";
+      if (typeof id === "string" && id !== "") {
+        const revoke = routePath("delete", "/api/v1/me/agent-tokens/{id}", { id });
+        const ended = await call("DELETE", dispatch(revoke)).catch(() => undefined);
+        if (ended === undefined) {
+          detail =
+            "the revoke DELETE /api/v1/me/agent-tokens/{id} gave no answer, so the token is not known to be revoked";
+        } else if (ended.status >= 200 && ended.status < 300) {
+          revoked = true;
+          detail = null;
+        } else {
+          detail = `the revoke DELETE /api/v1/me/agent-tokens/{id} answered ${ended.status}, so the token is not revoked`;
+        }
+      }
+      print({ status: answer.status, code: null, detail, revoked });
       return;
     }
     case "trade": {
@@ -844,7 +861,10 @@ async function main(): Promise<void> {
       const approve = routePath("post", "/api/v1/credential-requests/{id}/approve", {
         id: "0".repeat(64),
       });
-      const answer = await call("POST", dispatch(approve), { code: "ABCD-EFGH" });
+      const decision: Body<"/api/v1/credential-requests/{id}/approve", "post"> = {
+        code: "ABCD-EFGH",
+      };
+      const answer = await call("POST", dispatch(approve), decision);
       print(
         flat(
           answer,
