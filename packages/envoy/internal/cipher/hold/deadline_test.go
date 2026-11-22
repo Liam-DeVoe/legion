@@ -184,7 +184,7 @@ func TestHoldGateKeepsAHeldAnswerPastItsDeadline(t *testing.T) {
 	wire := newRig(answering(t, http.StatusOK, `{"person":"`+carol+`","member_kind":"full","held":true,"as_of":"2026-11-15T00:00:00Z","not_held_until":"2026-11-15T00:00:01Z"}`),
 		projectaccesstest.StaticAccount("token"), st)
 	held(wire.gate, carol, "from a held answer carrying a not_held_until already past")
-	if err := st.KeepPersonStanding(ctx, dave, true, time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC), new(time.Date(2026, 11, 15, 0, 0, 1, 0, time.UTC)), ""); err != nil {
+	if err := st.KeepPersonStanding(ctx, dave, true, time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC), new(time.Date(2026, 11, 15, 0, 0, 1, 0, time.UTC))); err != nil {
 		t.Fatal(err)
 	}
 	stopped := newRig(answering(t, http.StatusServiceUnavailable, `{"code":"UNAVAILABLE","error":"down"}`), projectaccesstest.StaticAccount("token"), st)

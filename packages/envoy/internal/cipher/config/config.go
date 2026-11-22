@@ -441,7 +441,7 @@ type Config struct {
 	// every enrollment under that person's login and every secret request and release of their
 	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
 	// (the approval page says it could not decide the request). The broker keeps the kind
-	// Dispatch last answered for each person in person_standing (projectaccess.Client.Keep), so
+	// Dispatch last answered for each person in person_member_kind (projectaccess.Client.Keep), so
 	// while Dispatch does not answer a person it last answered a full member is served as one,
 	// and only a person it last answered a restricted member, or of whom it keeps no kind, is
 	// refused so. Set with

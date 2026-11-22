@@ -656,17 +656,6 @@ type PersonAnswer struct {
 	AskedAt time.Time
 }
 
-// KeptDeadline is the deadline kept beside a in person_standing (Keeper.KeepPersonStanding): its
-// NotHeldUntil when it is not held and names one, and none otherwise, so a held answer keeps no
-// deadline whatever it carried. The client and the hold gate both write by it.
-func (a PersonAnswer) KeptDeadline() *time.Time {
-	if a.Held || a.NotHeldUntil.IsZero() {
-		return nil
-	}
-	until := a.NotHeldUntil
-	return &until
-}
-
 // noHeldRetry is how long Person answers ErrNoHeldField from a cached answer with no held before
 // it asks Dispatch again, while MemberKind goes on reading that answer for its CacheTTL. It is the
 // hold gate's memory of a failure to ask (internal/cipher/hold), so a Dispatch that starts
@@ -704,12 +693,7 @@ func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error
 	case answer.asOf.IsZero():
 		return PersonAnswer{}, fmt.Errorf("projectaccess: dispatch's answer for %s names held and no as_of", person)
 	}
-	return answer.answer(), nil
-}
-
-// answer is p as Person answers it, for an answer whose held is set (not held where it is not).
-func (p cachedPerson) answer() PersonAnswer {
-	return PersonAnswer{MemberKind: p.kind, Held: p.held != nil && *p.held, AsOf: p.asOf, NotHeldUntil: p.until, AskedAt: p.at}
+	return PersonAnswer{MemberKind: answer.kind, Held: *answer.held, AsOf: answer.asOf, NotHeldUntil: answer.until, AskedAt: answer.at}, nil
 }
 
 // personAnswer is the cached answer for person, a canonical login, while it is younger than keep

@@ -1,6 +1,6 @@
 // kept.go is what a Client keeps of Dispatch's answers in the broker's database (Keep), and how it
 // answers from them while Dispatch cannot be asked: a person's member kind (MemberKind, from
-// person_standing) and whether a person may see a project (Access under OrKept, from
+// person_member_kind) and whether a person may see a project (Access under OrKept, from
 // project_standing).
 package projectaccess
 
@@ -39,18 +39,17 @@ const keepFailedMessage = "broker: Dispatch's answer of what kind of member a pe
 
 // Keeper is where a Client keeps each answer of Dispatch it fetches, and reads back the last one,
 // so that while Dispatch cannot be asked it answers from what Dispatch last gave (Keep): the
-// broker's person_standing, where the hold gate keeps the same person answers
-// (internal/cipher/hold), and its project_standing (internal/cipher/store). A write keeps its
-// answer unless the row holds a later one: a person answer later by Dispatch's own clock (as_of),
-// a project answer asked later, since Dispatch's project answer names no time of its own. So every
-// broker process and a restart read the same answer.
+// broker's person_member_kind and project_standing (internal/cipher/store). A write keeps its
+// answer unless the row holds a later one: a person answer's kind later by Dispatch's own clock
+// (as_of), a project answer asked later, since Dispatch's project answer names no time of its own.
+// So every broker process and a restart read the same answer.
 type Keeper interface {
-	// KeepPersonStanding writes Dispatch's answer for person: held as of asOf, with the deadline
-	// notHeldUntil (nil for none) and the member kind memberKind ("" for none), unless the row
-	// holds an answer Dispatch gave later.
-	KeepPersonStanding(ctx context.Context, person string, held bool, asOf time.Time, notHeldUntil *time.Time, memberKind string) error
-	// KeptMemberKind is the member kind of the last answer kept for person, "" for one that named
-	// none, and the as_of it rests on; found is false when no answer is kept.
+	// KeepMemberKind writes the member kind memberKind ("" for none) that Dispatch's answer for
+	// person named as of asOf, unless the row holds one Dispatch gave later.
+	KeepMemberKind(ctx context.Context, person, memberKind string, asOf time.Time) error
+	// KeptMemberKind is the member kind kept for person and the as_of it rests on: "" for an
+	// answer that named none, and for one older than the answer of the hold the hold gate keeps
+	// for person (person_standing); found is false when no kind is kept.
 	KeptMemberKind(ctx context.Context, person string) (kind string, asOf time.Time, found bool, err error)
 	// KeepProjectStanding writes Dispatch's answer for person ("" for none) and project, asked at
 	// askedAt, unless the row holds one asked later: its visibility and whether person may see
@@ -109,8 +108,9 @@ const (
 // where the last answer kept for them is full, and cause otherwise, wrapped with what was kept, so
 // the caller refuses as it refuses with no Keeper (Restricted's *MemberKindUncheckable, in
 // uncheckableReason's words). The last answer is the later, by as_of, of the one the Keeper holds
-// and one this process read and could not keep (unkept), which is never full; the Keeper is read
-// apart from ctx, bounded by keptReadTimeout. Each read is counted in
+// and one this process read and could not keep (unkept), which is never full; a kept kind older
+// than the answer of the hold the Keeper keeps for them reads as none (Keeper.KeptMemberKind). The
+// Keeper is read apart from ctx, bounded by keptReadTimeout. Each read is counted in
 // broker_member_kind_unchecked_total by its label (keptFull, keptRestricted, keptNone or
 // keptUnreadable), and a served one logged at WARN (KeptFullMessage), at most once a minute per
 // person.
@@ -182,32 +182,32 @@ func (c *Client) noteKept(person, kept string, asOf time.Time, cause error) {
 	}
 }
 
-// keepPerson writes answer, the person route's answer for person, to c's Keeper (Keep), apart from
-// ctx and bounded by keepTimeout, whichever read fetched it, with the deadline the hold gate writes
-// beside it (PersonAnswer.KeptDeadline). An answer with no held or no as_of, from a Dispatch older
-// than the hold, cannot be ordered against a kept one, and is not written. A write that fails is
-// logged at WARN, and an answer naming a kind other than full that no write took is remembered
+// keepPerson writes the member kind of answer, the person route's answer for person, to c's
+// Keeper (Keep), apart from ctx and bounded by keepTimeout, whichever read fetched it. An answer
+// whose held Dispatch left out, as it does while its own read of the hold fails, is written as any
+// other: its kind is Dispatch's answer whatever the hold. An answer with no as_of, from a Dispatch
+// older than the hold, cannot be ordered against a kept one, and is not written. A write that fails
+// is logged at WARN, and an answer naming a kind other than full that no write took is remembered
 // (unkept) until a write keeps it or a later answer, so a later outage answers that person from it
 // rather than from an older kept full. A write that takes forgets an unkept answer no later than
 // its own.
 func (c *Client) keepPerson(ctx context.Context, person string, answer cachedPerson) {
-	if c.keeper == nil || answer.held == nil || answer.asOf.IsZero() {
+	if c.keeper == nil || answer.asOf.IsZero() {
 		return
 	}
-	kept := answer.answer()
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keepTimeout)
-	err := c.keeper.KeepPersonStanding(writeCtx, person, kept.Held, kept.AsOf, kept.KeptDeadline(), kept.MemberKind)
+	err := c.keeper.KeepMemberKind(writeCtx, person, answer.kind, answer.asOf)
 	cancel()
 	c.mu.Lock()
 	switch remembered, ok := c.unkept[person]; {
-	case err == nil && ok && !remembered.asOf.After(kept.AsOf):
+	case err == nil && ok && !remembered.asOf.After(answer.asOf):
 		delete(c.unkept, person)
-	case err != nil && kept.MemberKind != MemberFull && (!ok || kept.AsOf.After(remembered.asOf)):
-		c.unkept[person] = unkeptKind{kind: kept.MemberKind, asOf: kept.AsOf}
+	case err != nil && answer.kind != MemberFull && (!ok || answer.asOf.After(remembered.asOf)):
+		c.unkept[person] = unkeptKind{kind: answer.kind, asOf: answer.asOf}
 	}
 	c.mu.Unlock()
 	if err != nil {
-		c.keepLog.Warn(keepFailedMessage, "person", person, "member_kind", kept.MemberKind, "as_of", kept.AsOf.UTC().Format(time.RFC3339Nano), "error", err)
+		c.keepLog.Warn(keepFailedMessage, "person", person, "member_kind", answer.kind, "as_of", answer.asOf.UTC().Format(time.RFC3339Nano), "error", err)
 	}
 }
 

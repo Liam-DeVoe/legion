@@ -358,7 +358,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	for i, c := range failures {
 		t.Run(c.name, func(t *testing.T) {
 			person := "held" + strconv.Itoa(i) + "@example.com"
-			if err := st.KeepPersonStanding(ctx, person, true, kept, nil, ""); err != nil {
+			if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
 				t.Fatal(err)
 			}
 			r := newRig(c.dispatch(t), projectaccesstest.StaticAccount("token"), st)
@@ -375,7 +375,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 
 	t.Run("an answer naming a member kind the broker does not know", func(t *testing.T) {
 		const person = "guest@example.com"
-		if err := st.KeepPersonStanding(ctx, person, true, kept, nil, ""); err != nil {
+		if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
 			t.Fatal(err)
 		}
 		r := newRig(answering(t, http.StatusOK, `{"person":"`+person+`","member_kind":"guest","held":false,"as_of":"`+asOf.Format(time.RFC3339Nano)+`"}`),
@@ -391,7 +391,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("a %d refusing the broker's own account", status), func(t *testing.T) {
 			person := "refused" + strconv.Itoa(status) + "@example.com"
-			if err := st.KeepPersonStanding(ctx, person, true, kept, nil, ""); err != nil {
+			if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
 				t.Fatal(err)
 			}
 			r := newRig(answering(t, status, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not listed"}`), projectaccesstest.StaticAccount("token"), st)
@@ -623,57 +623,43 @@ func TestHoldGateKeepsTheLatestAnswer(t *testing.T) {
 	}
 }
 
-// TestHoldGateKeepsTheMemberKindWithItsAnswer: the gate writes the member kind of each answer it
-// keeps beside it, on a client that keeps nothing itself (no projectaccess.Client.Keep), so the
-// row it writes never pairs a later as_of with the kind of an earlier answer: ada answered full,
-// then restricted, reads back restricted as of the later answer. A held answer the gate writes
-// again from its memory (writeUnwritten) keeps no kind, since a held person is refused whatever
-// their kind; that row's kind is read as none.
+// TestTheHoldGatesAnswerLeavesItsKeptKindServed: on a broker whose Dispatch client keeps the
+// member kind of each answer it fetches (projectaccess.Client.Keep) beside the gate's own
+// person_standing, as cmd/cipherd builds one, the gate writes the hold of the very answer whose
+// kind the client keeps, at the same as_of, and that kind stands: once Dispatch is down ada,
+// answered full and not held, is served full by the client and not held by the gate. A later
+// answer the gate keeps whose kind no write kept leaves no kind served.
 //
-// Control: the gate's write passing no kind; ada's row reads back with no kind, and the test fails
-// naming the full answer.
-func TestHoldGateKeepsTheMemberKindWithItsAnswer(t *testing.T) {
+// The fault: store.KeptMemberKind reading a kind no later than the hold's answer as none, not only
+// an earlier one; ada is refused once Dispatch is down.
+func TestTheHoldGatesAnswerLeavesItsKeptKindServed(t *testing.T) {
 	ctx := t.Context()
 	st := storetest.Open(t)
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberFull})
 	r := newRig(dispatch.URL, dispatch.Account, st)
-	kept := func(want, after string) time.Time {
-		t.Helper()
-		kind, asOf, found, err := st.KeptMemberKind(ctx, ada)
-		if err != nil || !found || kind != want {
-			t.Fatalf("KeptMemberKind(%s) after %s = %q (found %t), %v; want %q", ada, after, kind, found, err, want)
-		}
-		return asOf
-	}
+	r.client.Keep(st, slog.New(&logs{}), metrics.New())
 	if err := r.gate.Check(ctx, ada); err != nil {
-		t.Fatalf("Check(%s) answered full = %v, want nil", ada, err)
+		t.Fatalf("Check(%s) answered full, not held = %v, want nil", ada, err)
 	}
-	fullAsOf := kept(projectaccess.MemberFull, "the gate checked the full answer")
-	dispatch.SetMemberKind(ada, projectaccess.MemberRestricted)
-	r.clock.advance(projectaccess.CacheTTL)
-	if err := r.gate.Check(ctx, ada); err != nil {
-		t.Fatalf("Check(%s) answered restricted = %v, want nil", ada, err)
+	_, heldAsOf, found := standing(t, st, ada)
+	kind, kindAsOf, kept, err := st.KeptMemberKind(ctx, ada)
+	if !found || err != nil || !kept || kind != projectaccess.MemberFull || !kindAsOf.Equal(heldAsOf) {
+		t.Fatalf("after the gate checked ada: hold kept %t as of %v; kind %q kept %t as of %v, %v; want both kept, full, at one as_of", found, heldAsOf, kind, kept, kindAsOf, err)
 	}
-	if asOf := kept(projectaccess.MemberRestricted, "the gate checked the restricted answer"); !asOf.After(fullAsOf) {
-		t.Fatalf("the restricted answer is kept as of %v; want later than the full one's %v", asOf, fullAsOf)
-	}
-
-	refuseWrites(t, st)
-	dispatch.SetHeld(ada, true)
-	r.clock.advance(projectaccess.CacheTTL)
-	if err := r.gate.Check(ctx, ada); !errors.Is(err, hold.ErrUncheckable) || !errors.Is(err, hold.ErrHeld) {
-		t.Fatalf("Check(%s) answered held while the store refuses writes = %v, want ErrUncheckable and ErrHeld", ada, err)
-	}
-	allowWrites(t, st)
 	dispatch.SetDown(true)
 	r.clock.advance(projectaccess.CacheTTL)
-	if err := r.gate.Check(ctx, ada); !isHeld(err) {
-		t.Fatalf("Check(%s) once the store takes writes, Dispatch down = %v, want hold.ErrHeld", ada, err)
+	if kind, err := r.client.MemberKind(ctx, ada); err != nil || kind != projectaccess.MemberFull {
+		t.Fatalf("MemberKind(%s) while Dispatch is down = %q, %v; want full, the kept kind beside the gate's hold", ada, kind, err)
 	}
-	if held, _, found := standing(t, st, ada); !found || !held {
-		t.Fatalf("person_standing for %s = held %t (found %t), want the held answer written from the gate's memory", ada, held, found)
+	if err := r.gate.Check(ctx, ada); err != nil {
+		t.Fatalf("Check(%s) while Dispatch is down = %v, want nil: kept not held", ada, err)
 	}
-	kept("", "the gate wrote the held answer from its memory")
+	if err := st.KeepPersonStanding(ctx, ada, false, heldAsOf.Add(time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	if kind, err := r.client.MemberKind(ctx, ada); err == nil {
+		t.Fatalf("MemberKind(%s) while Dispatch is down, a later hold kept with no kind = %q; want refused", ada, kind)
+	}
 }
 
 // TestHoldGateKeepsTheHeldAnswerAgainstAnOlderNotHeld: a held answer as of t2 is written; a

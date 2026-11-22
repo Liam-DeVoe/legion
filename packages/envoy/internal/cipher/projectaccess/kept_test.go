@@ -255,8 +255,8 @@ func TestTheKeptKindSurvivesARestart(t *testing.T) {
 // answers her restricted, at a later as_of, and that answer is written over the full one; once
 // Dispatch stops answering she is refused, counted restricted, and not served on the earlier full.
 //
-// The fault: KeepPersonStanding's update leaving member_kind out of what it sets; the demotion's
-// answer is written with the full kind kept, and her read once Dispatch is down answers full.
+// The fault: KeepMemberKind's update leaving member_kind out of what it sets; the demotion's
+// as_of is written with the full kind kept, and her read once Dispatch is down answers full.
 func TestADemotionDispatchAnswersIsKeptAndRefusedOnceItIsDown(t *testing.T) {
 	st := storetest.Open(t)
 	dispatch := projectaccesstest.NewServer(t, nil, keptKinds())
@@ -297,8 +297,8 @@ func personDispatch(t *testing.T, kind string, asOf time.Time) string {
 // Each answers its own read as Dispatch answered it, and the database keeps the later answer,
 // restricted, so a process whose Dispatch is down refuses her.
 //
-// The fault: KeepPersonStanding writing every answer whatever the row holds (its where clause
-// gone); the older full answer replaces the newer restricted one, and the down process serves her.
+// The fault: KeepMemberKind writing every answer whatever the row holds (its where clause gone);
+// the older full answer replaces the newer restricted one, and the down process serves her.
 func TestAnOlderAnswerDoesNotReplaceTheKeptKind(t *testing.T) {
 	url := storetest.URL(t)
 	t1 := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
@@ -316,15 +316,15 @@ func TestAnOlderAnswerDoesNotReplaceTheKeptKind(t *testing.T) {
 	keepingClientOf(down, st).refused(t, keptAda, "at a process whose Dispatch is down")
 }
 
-// refuseKeeps makes person_standing refuse every insert and update until the returned func runs,
-// as a database that takes reads and no writes.
+// refuseKeeps makes person_member_kind refuse every insert and update until the returned func
+// runs, as a database that takes reads and no writes.
 func refuseKeeps(t *testing.T, st *store.Store) (allow func()) {
 	t.Helper()
 	for _, statement := range []string{
-		`create or replace function refuse_person_standing_writes() returns trigger language plpgsql as $$
-			begin raise exception 'this test refuses every write to person_standing'; end $$`,
-		`create trigger person_standing_refused before insert or update on person_standing
-			for each row execute function refuse_person_standing_writes()`,
+		`create or replace function refuse_person_member_kind_writes() returns trigger language plpgsql as $$
+			begin raise exception 'this test refuses every write to person_member_kind'; end $$`,
+		`create trigger person_member_kind_refused before insert or update on person_member_kind
+			for each row execute function refuse_person_member_kind_writes()`,
 	} {
 		if _, err := st.Pool.Exec(context.Background(), statement); err != nil {
 			t.Fatal(err)
@@ -332,7 +332,7 @@ func refuseKeeps(t *testing.T, st *store.Store) (allow func()) {
 	}
 	return func() {
 		t.Helper()
-		if _, err := st.Pool.Exec(context.Background(), `drop trigger person_standing_refused on person_standing`); err != nil {
+		if _, err := st.Pool.Exec(context.Background(), `drop trigger person_member_kind_refused on person_member_kind`); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -376,6 +376,76 @@ func TestADemotionNoWriteKeptStandsOverTheKeptFull(t *testing.T) {
 	dispatch.SetDown(true)
 	r.clock.advance(projectaccess.CacheTTL)
 	r.kindOf(t, keptAda, projectaccess.MemberFull, "while Dispatch is down after the kept promotion")
+}
+
+// TestADemotionAnsweredWithHeldLeftOutIsKeptAndRefusedOnceItIsDown: ada is kept full as of t1.
+// Dispatch's own read of the hold then fails, so its person answer leaves held out while it names
+// her restricted as of t2 (dispatch/api personStanding). The read answers restricted, and that
+// answer's kind is kept as any other's, so once Dispatch is down she is refused, at this process
+// and at a second one over the same database, which never read the demotion.
+//
+// The fault: keepPerson writing no answer whose held Dispatch left out; this process serves her
+// full. Remembering such an answer in this process alone; the second process serves her full.
+func TestADemotionAnsweredWithHeldLeftOutIsKeptAndRefusedOnceItIsDown(t *testing.T) {
+	url := storetest.URL(t)
+	st := openStore(t, url)
+	t1 := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Minute)
+	var phase atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch phase.Load() {
+		case 0:
+			_, _ = w.Write([]byte(`{"person":"` + keptAda + `","member_kind":"full","held":false,"as_of":"` + t1.Format(time.RFC3339Nano) + `"}`))
+		case 1:
+			_, _ = w.Write([]byte(`{"person":"` + keptAda + `","member_kind":"restricted","as_of":"` + t2.Format(time.RFC3339Nano) + `"}`))
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"down"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	r := newKeptRig(server.URL, "token", st)
+	r.kindOf(t, keptAda, projectaccess.MemberFull, "before the demotion")
+	keptKind(t, st, keptAda, projectaccess.MemberFull, "the full answer")
+	phase.Store(1)
+	r.clock.advance(projectaccess.CacheTTL)
+	r.kindOf(t, keptAda, projectaccess.MemberRestricted, "once Dispatch answers the demotion with held left out")
+	phase.Store(2)
+	r.clock.advance(projectaccess.CacheTTL)
+	r.refused(t, keptAda, "while Dispatch is down after a demotion it answered with held left out")
+	newKeptRig(server.URL, "token", openStore(t, url)).refused(t, keptAda,
+		"at a second process while Dispatch is down after a demotion the first answered with held left out")
+}
+
+// TestAKeptKindAnOlderReleaseAnswersPastIsNotServed: ada is read full while Dispatch answers, and
+// her kind is kept. A broker process of a release that keeps no kind, running beside this one
+// while it rolls out, then writes a later answer for her to person_standing, by that release's
+// upsert word for word: a demotion it read, for all this release can tell. Once Dispatch is down
+// she is refused, counted none, rather than served on the earlier full.
+//
+// Control: before the older release's write, a read while Dispatch is down serves her full, so
+// her refusal rests on that write. The fault: KeptMemberKind answering the kind whatever hold
+// person_standing keeps; she is served full.
+func TestAKeptKindAnOlderReleaseAnswersPastIsNotServed(t *testing.T) {
+	st := storetest.Open(t)
+	dispatch := projectaccesstest.NewServer(t, nil, keptKinds())
+	r := keepingClientOf(dispatch, st)
+	r.kindOf(t, keptAda, projectaccess.MemberFull, "while Dispatch answers")
+	asOf := keptKind(t, st, keptAda, projectaccess.MemberFull, "the read while Dispatch answers")
+	dispatch.SetDown(true)
+	r.clock.advance(projectaccess.CacheTTL)
+	r.kindOf(t, keptAda, projectaccess.MemberFull, "while Dispatch is down, before the older release's write")
+
+	if _, err := st.Pool.Exec(t.Context(), `insert into person_standing (person, held, answered_at, not_held_until) values ($1, $2, $3, $4)
+		on conflict (person) do update set held = excluded.held, answered_at = excluded.answered_at, not_held_until = excluded.not_held_until
+		where person_standing.answered_at < excluded.answered_at`, keptAda, false, asOf.Add(time.Second), nil); err != nil {
+		t.Fatalf("the older release's write of a later answer: %v", err)
+	}
+	r.refused(t, keptAda, "while Dispatch is down, after the older release's later answer")
+	if none := r.unchecked(t, "none"); none != 1 {
+		t.Fatalf(`broker_member_kind_unchecked_total{kept="none"} after the older release's later answer = %d; want 1`, none)
+	}
 }
 
 // stalledDispatch is a Dispatch that answers nothing until the caller hangs up or t ends, and the
