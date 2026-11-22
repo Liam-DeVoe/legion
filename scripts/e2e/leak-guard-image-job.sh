@@ -48,6 +48,17 @@
 #     TOML. Each must refuse every one of `git push` and `jj git push` as a setup failure
 #     (`LEAK CHECK SETUP ERROR`) and name the failure it met.
 #
+#   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
+#     on the head's image alone, which jj would upload through that git, with no wrapper and so no
+#     pre-push hook: the image's jj wrapper refuses it before the upload starts, with exit 2 and its
+#     `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote is
+#     unchanged.
+#
+#   - On each arm, a negative control in the same Job: a `jj git push` of the message case with
+#     /opt/legion/bin taken off PATH, so jj is the real /usr/local/bin/jj and the git it runs the
+#     real /usr/bin/git, with no wrapper and no hook. The probe expects it to land on the scratch
+#     remote, which shows it tells a push the guard checked from one the guard never saw.
+#
 # The negative control is the base branch's published image from before the `legion` binary
 # stopped carrying a rule file of its own, driven by the same Job with the same probe. Pass it as
 # `--control`. It carries the same wrappers and hook, and its `legion` runs the rules embedded in
@@ -93,14 +104,17 @@
 #   0  every check of every arm held: on the head's image the four refusable cases were refused
 #      under the Job's rule file, each naming its class and what matched, the clean case landed,
 #      the refusable push landed with no rule file named and no command printed a `LEAK CHECK`
-#      line, and all four setup failures refused under both commands; on the control's image, if
+#      line, all four setup failures refused under both commands, the gerrit upload was refused
+#      and the push outside the guard landed; on the control's image, if
 #      one was given, the refusable cases were refused under the Job's file and under none, each
 #      naming its class alone, the clean case landed under the Job's file and under a missing or
 #      an unparseable one, and both shared-check failures refused under both commands.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
-#      log with no `JOB-RESULT` line in it. Nothing is proved either way.
+#      log with no `JOB-RESULT` line in it. Nothing is proved either way. A run whose Job's delete
+#      failed exits 2 as well, whatever its checks found: it left a Job behind, and the verdict
+#      printed above the exit line says what its checks found.
 #   3  the Job did not reach a verdict inside its deadline. Nothing is proved either way.
 #
 # This script is synchronous and its clean-up is a trap, so a role that runs it from its own bash
@@ -109,7 +123,7 @@
 #
 #   log=$(mktemp "${TMPDIR:-/tmp}/leak-guard.XXXXXX")
 #   flock "$log" setsid -f bash scripts/e2e/leak-guard-image-job.sh \
-#     --image <head digest> --control <base digest> --node-selector <key=value> \
+#     --image <head digest> --node-selector <key=value> \
 #     > "$log" 2>&1 < /dev/null
 #   flock "$log" cat "$log"     # waits for the run to end, then prints everything it printed
 #
@@ -168,7 +182,8 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
   --dry-run       render the manifest, validate it with kubectl, create nothing, and exit.
 
 exit statuses: 0 every check held; 1 the Job ran and a check did not hold; 2 the harness could not
-run and nothing is proved; 3 the Job reached no verdict inside its deadline.
+run and nothing is proved, or a Job's delete failed; 3 the Job reached no verdict inside its
+deadline.
 USAGE
 }
 
@@ -213,7 +228,7 @@ digest_shape='^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$'
 [[ $image =~ $digest_shape ]] || refuse "the image $image is not a digest reference <ref>@sha256:<64 hex>"
 if [ -n "$control" ]; then
   [[ $control =~ $digest_shape ]] || refuse "the control $control is not a digest reference <ref>@sha256:<64 hex>"
-  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is the base branch's image"
+  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is the base branch's image from before the change"
 fi
 [ -n "$node_selector" ] || refuse "no --node-selector: the namespace's admission requires the deployment's compute class, which is in the deployment's own declaration"
 case "$prefix" in
@@ -263,6 +278,7 @@ workload=""
 run_label=""
 cleanup_status=0
 
+# shellcheck disable=SC2317 # the EXIT trap below is what runs it
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP
@@ -273,12 +289,12 @@ cleanup() {
   if [ -n "$workload" ]; then
     echo "== cleanup: deleting Job $workload"
     setsid -w kubectl -n "$namespace" delete job "$workload" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=1; }
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
     setsid -w kubectl -n "$namespace" get job "$workload" --ignore-not-found
   elif [ -n "$run_label" ]; then
     echo "== cleanup: no Job name was read; deleting by label leak-guard-run=$run_label"
     setsid -w kubectl -n "$namespace" delete job -l "leak-guard-run=$run_label" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=1; }
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
     # An empty listing is no proof that none is left: a create the API server stored after this
     # listing leaves a Job this never saw. List it again once this script has ended, and delete it
     # with `kubectl -n <namespace> delete job -l leak-guard-run=<the printed value>
@@ -387,7 +403,7 @@ run_id() { od -An -N4 -tx1 /dev/urandom | tr -d ' \n'; }
 echo "== leak-guard-image-job"
 echo "namespace: $namespace"
 echo "image:     $image"
-echo "control:   ${control:-none — this run proves only the head}"
+echo "control:   ${control:-none — the head arm runs its own negative control, the push outside the guard}"
 echo "selector:"
 printf '%s' "$selector_yaml"
 
@@ -584,7 +600,7 @@ echo "head ($image): $head_verdict"
 if [ -n "$control" ]; then
   echo "control ($control): $control_verdict"
 else
-  echo "control: none was given, so this run proves only what the head's image does"
+  echo "control: none was given, so this run proves only what the head's image does; its Job carries its own negative control, the push outside the guard"
 fi
 
 verdict_status() { # verdict_status <word>

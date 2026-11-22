@@ -4,7 +4,8 @@
 # rule file LEGION_PRIVATE_NAME_RULES_FILE names and no rule of its own, `control` for the base
 # branch's published image, built before that change, which carries the same wrappers and runs the
 # rule file embedded in its `legion` whatever that variable names — so one probe serves both and
-# the expectations are stated once. Every check prints `CHECK <name>: got [x] want [y]`, and the
+# the expectations are stated once. Either arm ends with its own negative control, a push the guard
+# never sees, which must land. Every check prints `CHECK <name>: got [x] want [y]`, and the
 # last line is `JOB-RESULT pass` or `JOB-RESULT fail`, which is the verdict the harness reads; a
 # Job's own phase says only that the container exited 0 (skills/legion-worker/references/tools.md).
 #
@@ -286,8 +287,8 @@ failure_of() {
 
 remote_state() { "$real_git" ls-remote "$1" 2> /dev/null | sort; }
 
-ref_word() { # ref_word <ls-remote output> <branch>
-  printf '%s\n' "$1" | awk -v want="refs/heads/$2" '$2 == want { seen = 1 } END { print seen ? "present" : "absent" }'
+ref_word() { # ref_word <ls-remote output> <ref>
+  printf '%s\n' "$1" | awk -v want="$2" '$2 == want { seen = 1 } END { print seen ? "present" : "absent" }'
 }
 
 # A git clone with one clean commit holding the tracked file every case appends to.
@@ -364,6 +365,8 @@ seed_remote_bookmark() { # seed_remote_bookmark <bare> <branch> <seed dir>
 
 # The measured push itself, one shape at a time. push_env is the environment the push is made in,
 # which run_case sets from the case's variant.
+# jj-gerrit and jj-unwrapped are the two pushes outside the git push shapes, run_outside_case's,
+# and are described above it.
 #
 # --change names the bookmark itself, from the change id, so the branch-name case reaches it only
 # through jj's own setting for that name. The value is a TOML string holding a template, and the
@@ -381,8 +384,19 @@ push_in_shape() { # push_in_shape <shape> <workspace> <bare> <branch>
     jj-change) env "${push_env[@]}" jj -R "$2" git push --remote origin --change @- --config "$(push_bookmark_config "$4")" ;;
     jj-named) env "${push_env[@]}" jj -R "$2" git push --remote origin --named "$4=@-" ;;
     jj-deleted) env "${push_env[@]}" jj -R "$2" git push --remote origin --deleted ;;
+    jj-gerrit) env "${push_env[@]}" jj -R "$2" gerrit upload --remote origin --remote-branch main -r @- --config "git.executable-path=$real_git" ;;
+    jj-unwrapped) env "${push_env[@]}" PATH="$unwrapped_path" jj -R "$2" git push --remote origin --named "$4=@-" ;;
     *) die "no such shape: $1" ;;
   esac
+}
+
+# show_push <output> <status> <remote before> <remote after>: what a measured push printed, its exit
+# status, and the remote's refs before it and after it.
+show_push() {
+  printf '%s\n' "$1" | sed 's/^/      push | /'
+  echo "      push exited $2"
+  printf '%s\n' "${3:-(no ref)}" | sed 's/^/      ls-remote before | /'
+  printf '%s\n' "${4:-(no ref)}" | sed 's/^/      ls-remote after  | /'
 }
 
 # What jj itself says the shape would change, read before the measured push. This is the shapes
@@ -478,11 +492,8 @@ run_case() { # run_case <shape> <case> <variant>
   before=$(remote_state "$bare")
   out=$(push_in_shape "$shape" "$workspace" "$bare" "$branch" 2>&1)
   status=$?
-  printf '%s\n' "$out" | sed 's/^/      push | /'
-  echo "      push exited $status"
-  printf '%s\n' "${before:-(no ref)}" | sed 's/^/      ls-remote before | /'
   after=$(remote_state "$bare")
-  printf '%s\n' "${after:-(no ref)}" | sed 's/^/      ls-remote after  | /'
+  show_push "$out" "$status" "$before" "$after"
 
   local status_word remote_word
   if [ "$status" -eq 0 ]; then status_word=zero; else status_word=non-zero; fi
@@ -526,9 +537,9 @@ run_case() { # run_case <shape> <case> <variant>
       check "$id the push" "$status_word" zero
       check "$id the remote" "$remote_word" changed
       if [ "$shape" = jj-deleted ]; then
-        check "$id the ref" "$(ref_word "$after" "$branch")" absent
+        check "$id the ref" "$(ref_word "$after" "refs/heads/$branch")" absent
       else
-        check "$id the ref" "$(ref_word "$after" "$branch")" present
+        check "$id the ref" "$(ref_word "$after" "refs/heads/$branch")" present
       fi
       ;;
   esac
@@ -585,6 +596,86 @@ for variant in no-check internal-error rules-missing rules-unparseable; do
     run_case "$shape" clean "$variant"
   done
 done
+
+# A push outside the git push shapes above, one case at a time: the message case, built as the
+# jj shapes build it, and pushed by the shape named here.
+#
+#   jj-gerrit     a `jj gerrit upload` that names its git on the command line,
+#                 `--config git.executable-path=/usr/bin/git`. jj uploads through that git, which
+#                 has no wrapper and so no pre-push hook, so on the head's image the jj wrapper
+#                 refuses the upload before it starts: exit 2, its `LEAK CHECK SETUP ERROR` line
+#                 saying `git.executable-path is /usr/bin/git`, and the remote unchanged. It runs
+#                 on the head's arm alone: the control is the base branch's image from before
+#                 the rule-file change, which holds the jj wrapper's gerrit check or not
+#                 according to when it was built, so a verdict there would prove nothing.
+#   jj-unwrapped  the negative control: a `jj git push --named` with /opt/legion/bin taken off
+#                 PATH, so jj is the real /usr/local/bin/jj and the git it runs the real
+#                 /usr/bin/git, with no wrapper and no hook. It lands on either arm, which shows
+#                 that this probe tells a push the guard checked from one the guard never saw: the
+#                 refusals above are the wrappers', not the fixtures'.
+unwrapped_path=""
+IFS=: read -ra path_entries <<< "$PATH"
+for entry in "${path_entries[@]}"; do
+  [ "$entry" = /opt/legion/bin ] || unwrapped_path=${unwrapped_path:+$unwrapped_path:}$entry
+done
+
+run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
+  local shape=$1
+  local id="$shape/message/clears"
+  local dir=$scratch/runs/$shape-message-clears
+  local bare=$dir/origin.git workspace=$dir/work
+  local branch ref before after out status
+  branch=$(branch_of message)
+
+  must mkdir -p "$dir"
+  must "$real_git" init -q --bare "$bare"
+  jj_init "$workspace" "$bare"
+  jj_base "$workspace"
+  jj_case_commit "$workspace" message
+
+  echo
+  echo "---- $id (branch $branch)"
+  before=$(remote_state "$bare")
+  case "$shape" in
+    jj-gerrit) ref=refs/for/main ;;
+    jj-unwrapped)
+      ref=refs/heads/$branch
+      # In a subshell of its own, so the lookup reads the changed PATH and not this shell's hash.
+      check "$id the jj off the wrappers' PATH" "$(PATH=$unwrapped_path; command -v jj || echo 'no jj at all')" /usr/local/bin/jj
+      check "$id the git off the wrappers' PATH" "$(PATH=$unwrapped_path; command -v git || echo 'no git at all')" "$real_git"
+      ;;
+    *) die "no such shape: $shape" ;;
+  esac
+  # The Job's rule file is named, as for k1's cases, so the message case is one the head's guard
+  # would refuse: the push outside the guard then lands only because no guard saw it.
+  push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$rule_file")
+  out=$(push_in_shape "$shape" "$workspace" "$bare" "$branch" 2>&1)
+  status=$?
+  after=$(remote_state "$bare")
+  show_push "$out" "$status" "$before" "$after"
+
+  local remote_word=changed
+  [ "$before" != "$after" ] || remote_word=unchanged
+  if [ "$shape" = jj-gerrit ]; then
+    check "$id the push" "exit $status" "exit 2"
+    check "$id the remote" "$remote_word" unchanged
+    check "$id names the failure" "$(says "$out" 'LEAK CHECK SETUP ERROR')" yes
+    check "$id names the git.executable-path it refuses" "$(says "$out" "git.executable-path is $real_git")" yes
+  else
+    check "$id the push" "exit $status" "exit 0"
+    check "$id the remote" "$remote_word" changed
+    check "$id the ref" "$(ref_word "$after" "$ref")" present
+  fi
+}
+
+echo
+echo "======== the gerrit upload, and the negative control: a push the guard never sees"
+if [ "$arm" = head ]; then
+  run_outside_case jj-gerrit
+else
+  echo "the gerrit upload is the head's case alone; see run_outside_case"
+fi
+run_outside_case jj-unwrapped
 
 echo
 echo "======== summary"
