@@ -40,7 +40,7 @@ export const readyLine = "visual-relay: ready";
 /** Joins two sockets into one stream, each way. An error or a close on either side destroys the
  *  other, so a connection the far end refused or reset ends the near one too, rather than
  *  leaving a reader that waits for bytes that cannot come. */
-function pipeBoth(near: Socket, far: Socket): void {
+export function pipeBoth(near: Socket, far: Socket): void {
   near.pipe(far);
   far.pipe(near);
   const end = () => {
