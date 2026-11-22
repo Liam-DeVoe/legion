@@ -859,8 +859,9 @@ export function foldedCounts(page: Page): Promise<FoldedCount[]> {
  *  caller reads it inside `expect.poll`, which reads it again until the count holds. */
 export async function filterCount(page: Page, preset: Preset): Promise<number> {
   const count = presetCount(page, preset);
+  // Every caller polls this, so a count read before the page draws it is read again.
   if ((await count.count()) === 0) return Number.NaN;
-  return Number((await count.first().textContent())?.trim());
+  return Number(String(await count.first().textContent()).trim());
 }
 
 /** How many nodes a filter's flag says ask something of the reader: the checks that fail, the
@@ -870,10 +871,12 @@ export async function filterCount(page: Page, preset: Preset): Promise<number> {
  *  count holds. */
 export async function flagCount(page: Page, word: "failing" | "to_review"): Promise<number> {
   const row = presetRow(page);
+  // Every caller polls this, so a read made before the page draws the row is read again.
   if ((await row.count()) === 0) return Number.NaN;
   const flag = row.locator(`[data-preset-flag="${word}"] [data-author-text]`);
+  // Every caller polls this, so a flag read before the page draws it is read again.
   if ((await flag.count()) === 0) return 0;
-  return Number((await flag.first().textContent())?.trim());
+  return Number(String(await flag.first().textContent()).trim());
 }
 
 /** The Verification summary's "N of M covered": how many statements carry a check, of how many
@@ -883,9 +886,10 @@ export async function coveredCount(
   page: Page
 ): Promise<{ readonly covered: number; readonly of: number } | null> {
   const line = issuePage(page).locator("[data-verification-covered]");
+  // Every caller polls this, so a summary read before the page draws it is read again.
   if ((await line.count()) === 0) return null;
   const [covered, of] = await line.locator("[data-author-text]").allTextContents();
-  return { covered: Number(covered?.trim()), of: Number(of?.trim()) };
+  return { covered: Number(String(covered).trim()), of: Number(String(of).trim()) };
 }
 
 /** Details' "Referenced by" list of the focused row (`node-references/NodeReferences.tsx`):
