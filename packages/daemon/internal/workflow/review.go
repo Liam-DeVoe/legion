@@ -1311,15 +1311,15 @@ type reviewStep struct {
 }
 
 // reviewSteps is each review step of w's task, the walk of issue's run, in the task's order, with
-// its agent (stepAgent).
-func (e *Engine) reviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) ([]reviewStep, error) {
+// its agent as store holds it in tx (stepAgentOf).
+func reviewSteps(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, w Walk) ([]reviewStep, error) {
 	var steps []reviewStep
 	for i, step := range w.Steps {
 		if step.Type != plan.TypeReview || i >= len(w.Line) {
 			continue
 		}
 		place := record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}.StepPlace(w.Task)
-		agent, err := e.stepAgent(ctx, tx, issue, place, w.Line[i])
+		agent, err := stepAgentOf(ctx, store, tx, issue, place, w.Line[i])
 		if err != nil {
 			return nil, err
 		}
@@ -1328,15 +1328,21 @@ func (e *Engine) reviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return steps, nil
 }
 
-// stepAgent is the agent of the review step at place of issue's task, which runs as at: the claim
-// the latest start of that place records (record.StepStart.Agent: the start writes the phase
-// worker's claim, stepClaim, and for the owner's acceptance the architect that owns the issue,
-// acceptingAgent). A reviewer's step no start recorded an agent of started under the release
-// before the daemon recorded each step's start, and can still be at work when this release
-// deploys, so its agent is the issue's reviewer claim, the claim that step's role runs under. Any
-// other step no start recorded has no agent, "".
+// stepAgent is the agent of the step at place of issue's task, which runs as at, on e's store
+// (stepAgentOf).
 func (e *Engine) stepAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, at phase.Phase) (claim.Token, error) {
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	return stepAgentOf(ctx, e.store, tx, issue, place, at)
+}
+
+// stepAgentOf is the agent of the review step at place of issue's task, which runs as at, as store
+// holds it in tx: the claim the latest start of that place records (record.StepStart.Agent: the
+// start writes the phase worker's claim, stepClaim, and for the owner's acceptance the architect
+// that owns the issue, acceptingAgent). A reviewer's step no start recorded an agent of started
+// under the release before the daemon recorded each step's start, and can still be at work when
+// this release deploys, so its agent is the issue's reviewer claim, the claim that step's role runs
+// under. Any other step no start recorded has no agent, "".
+func stepAgentOf(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, place record.StepPlace, at phase.Phase) (claim.Token, error) {
+	start, err := store.StepStarts(ctx, tx, issue.Key, place)
 	if err != nil || start.Agent != "" || at != phase.Reviewing {
 		return claim.Token(start.Agent), err
 	}

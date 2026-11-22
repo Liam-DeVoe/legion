@@ -2108,10 +2108,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // supervises, while that claim is the agent of a review step of the row's issue that owes its
 // verdict past review (workflow.VerdictAskStands, read in one transaction at each attempt), and nil
 // otherwise: the row then takes roleMessage's own path. A claim this daemon does not supervise has
-// the zero view and is read as before, with no read of the record, and so is every claim of an
-// outbox with no database (a test's), as an outbox with no supervisor is.
+// the zero view and is read as before, with no read of the record.
 func (r *outbox) verdictAskHeld(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (*heldMessage, error) {
-	if held.Issue == "" || r.pool == nil {
+	if held.Issue == "" {
 		return nil, nil
 	}
 	agent := claim.Token(payload.Role)

@@ -64,12 +64,18 @@ var todaysSteps = planSteps("", 0, defaultTask, config.Project{}.RunsByDefault()
 // today's line, phase.Order, with Stored false.
 func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order} }
 
-// walk is the walk of issue's run: its plan rows, or today's line with Stored false
-// (todaysWalk). A run whose rows hold no task or more than one (record.StoredPlan.Task, the one
-// rule for the task a run is on), or a step whose role runs as no phase, is an error: no plan
-// this release takes writes one (plan.Validate, plan.Supported).
+// walk is the walk of issue's run on e's store (readWalk).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	return readWalk(ctx, e.store, tx, issue)
+}
+
+// readWalk is the walk of issue's run as store holds it in tx: its plan rows, or today's line with
+// Stored false (todaysWalk). A run whose rows hold no task or more than one
+// (record.StoredPlan.Task, the one rule for the task a run is on), or a step whose role runs as no
+// phase, is an error: no plan this release takes writes one (plan.Validate, plan.Supported). It
+// reads the store alone, so a reader outside an engine reads it too (VerdictAskStands).
+func readWalk(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (Walk, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return todaysWalk(), err
 	}

@@ -46,7 +46,7 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 	if err != nil {
 		return intake.Result{}, err
 	}
-	steps, err := e.reviewSteps(ctx, tx, *issue, w)
+	steps, err := reviewSteps(ctx, e.store, tx, *issue, w)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -146,7 +146,7 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return false, err
 	}
-	steps, err := e.reviewSteps(ctx, tx, issue, w)
+	steps, err := reviewSteps(ctx, e.store, tx, issue, w)
 	if err != nil {
 		return false, err
 	}
@@ -192,7 +192,7 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 // request the record holds for it is open, the issue stands past its review (record.PastReview),
 // and agent is the agent the record names of a review step of the issue's task that has passed,
 // the reviewer's aside, whose last verdict on the pull request names no head or another head than
-// the pull request's current one (stepVerdictSince). It also returns the issue the record holds,
+// the pull request's current one (storedVerdictSince). It also returns the issue the record holds,
 // nil where it holds none. The reviewer is left out because its ask is the merge-forward review,
 // held by a rule of its own (leftMergeForwardAt).
 //
@@ -203,30 +203,25 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 // current head, the issue's move out of the phases past review or out of the workflow, and the pull
 // request's close each end the hold. Every role message of the issue to that agent is held while
 // the ask stands, the ask and a CI settlement's message alike, since the claim is woken for the ask
-// and reads both. The reading uses the engine's store alone, so the engine it reads through is a
-// default one (New).
-func VerdictAskStands(ctx context.Context, store record.Store, tx pgx.Tx, key string, agent claim.Token) (*record.Issue, bool, error) {
-	return New(store, Config{}, nil).verdictAskStands(ctx, tx, key, agent)
-}
-
-// verdictAskStands is VerdictAskStands on e's store.
-func (e *Engine) verdictAskStands(ctx context.Context, tx pgx.Tx, key string, agent claim.Token) (*record.Issue, bool, error) {
-	issue, err := e.store.Issue(ctx, tx, key)
+// and reads both. It reads records alone, through the readers an engine reads with (readWalk,
+// reviewSteps), and builds no engine.
+func VerdictAskStands(ctx context.Context, records record.Store, tx pgx.Tx, key string, agent claim.Token) (*record.Issue, bool, error) {
+	issue, err := records.Issue(ctx, tx, key)
 	if err != nil || issue == nil || agent == "" || !record.InWorkflow(*issue) || !record.PastReview(*issue) {
 		return issue, false, err
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+	if lingers, err := record.TreeLingers(ctx, records, tx, issue.Tree); err != nil || lingers {
 		return issue, false, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, key)
+	pr, err := records.PullRequest(ctx, tx, key)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return issue, false, err
 	}
-	w, err := e.walk(ctx, tx, *issue)
+	w, err := readWalk(ctx, records, tx, *issue)
 	if err != nil {
 		return issue, false, err
 	}
-	steps, err := e.reviewSteps(ctx, tx, *issue, w)
+	steps, err := reviewSteps(ctx, records, tx, *issue, w)
 	if err != nil {
 		return issue, false, err
 	}
@@ -234,7 +229,7 @@ func (e *Engine) verdictAskStands(ctx context.Context, tx pgx.Tx, key string, ag
 		if step.at == phase.Reviewing || step.agent != agent || !step.passed(w, *issue) {
 			continue
 		}
-		since, err := e.stepVerdictSince(ctx, tx, *issue, pr, step, pr.HeadSHA)
+		since, err := storedVerdictSince(ctx, tx, *issue, pr, step, pr.HeadSHA)
 		return issue, since != "", err
 	}
 	return issue, false, nil
@@ -243,12 +238,19 @@ func (e *Engine) verdictAskStands(ctx context.Context, tx pgx.Tx, key string, ag
 // stepVerdictSince is the head of step's last verdict on pr, "" where it names pr's head, so no
 // verdict of that step is owed there, and otherwise where none is recorded: the reviewer's row's
 // decision for the reviewer's step (verdictSince), and the store's last verdict of the step for
-// every other (store.LastStepVerdictTx).
+// every other (storedVerdictSince).
 func (e *Engine) stepVerdictSince(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, step reviewStep, otherwise string) (string, error) {
 	if step.at == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		return verdictSince(reviewer, pr.HeadSHA, otherwise), err
 	}
+	return storedVerdictSince(ctx, tx, issue, pr, step, otherwise)
+}
+
+// storedVerdictSince is the head of the last verdict of step, a review step other than the
+// reviewer's, that the store records on pr (store.LastStepVerdictTx), "" where it names pr's head,
+// and otherwise where none of issue's is recorded.
+func storedVerdictSince(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, step reviewStep, otherwise string) (string, error) {
 	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
 	if err != nil {
 		return "", err
