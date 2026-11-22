@@ -117,8 +117,8 @@ import (
 // after all of these and touch no outbox_kind_check: the migration creates check_states,
 // check_state_sets and check_state_serials, empty, and adds issues.check_states_seq at 0.
 // The phase verdict's removal (20261121074614) is applied after it and touches no
-// outbox_kind_check: it drops phases.verdict, adds phases.states_serial at 0, and takes the key
-// verdict out of each queued notice.
+// outbox_kind_check: it gives phases.verdict, kept for the release before, the empty string for a
+// default, adds phases.states_serial at 0, and takes the key verdict out of each queued notice.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
