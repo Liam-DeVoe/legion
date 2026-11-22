@@ -108,7 +108,7 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # against a virtual merge base, as git does, if that conflict is between text files, and gives a
 # conflict if it is not. A later pin must carry both patches, or one jj command on a large pack
 # fills an issue pod again, or a role's merge silently reverts work.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261122-210352
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261122-214331
 ARG GH_TOOL=gh@2.98.0
 # The SHA-256 of the release archive the tools stage fetches for each of its three tools, which it
 # checks before it unpacks anything, as the toolchain stage does its downloads: the linux-x64
@@ -119,7 +119,7 @@ ARG GH_TOOL=gh@2.98.0
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
 # Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
-# 0.46.0-sami.20261122-210352 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
+# 0.46.0-sami.20261122-214331 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
 # asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
 # sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
 # in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
@@ -127,7 +127,7 @@ ARG GH_TOOL=gh@2.98.0
 # releases carry no attestation (the same command answers 404 for both). A bump repeats those
 # reads.
 ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
-ARG JJ_SHA256=c9b269c9f1c761ff2043328ce5afd332d3df52517da1db6983579bc37c3125ca
+ARG JJ_SHA256=18c5c7c085b2f1051f7572775447d4153519dc5b75ab6cbda57be395dc05679a
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
