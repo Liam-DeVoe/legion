@@ -265,6 +265,11 @@ repo_snapshot() {
 # in the shared /tmp), and each batch's heads carry its own start time.
 # The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
 # holds the check that the implementer's seeded result and the tester's own run are against.
+# The change tests what it adds: greet.test.ts covers greet() and its CLI path, `bun greet.ts`
+# with no name or a blank one printing `usage: greet.ts <name>` on stderr and exiting 2. With that
+# path untested, ten head reviewers of the batch at 58bc6a5b named the gap, a clear fix in a file
+# the pull request touches, which roles/core/reviewer.md has a reviewer request changes for
+# whatever the world's red.
 # The world's repository and the branch the pull request merges into are world_repository's, read
 # from $R/world.json, and the pull request body's line for each check of the Verification document
 # is written from that check as seed.ts tester-proof wrote it to $R/fixture.json (checks_lines).
@@ -330,6 +335,16 @@ test("greets by name", () => {
 
 test("trims the name", () => {
   expect(greet("  Ada  ")).toBe("Hello, Ada!");
+});
+
+test("prints its usage on stderr and exits 2 with no name or a blank one", () => {
+  const cli = (...args: string[]) => {
+    const run = Bun.spawnSync([process.execPath, "greet.ts", ...args], { cwd: import.meta.dir });
+    return [run.exitCode, run.stderr.toString()];
+  };
+  const usage = [2, "usage: greet.ts <name>\n"];
+  expect(cli()).toEqual(usage);
+  expect(cli("   ")).toEqual(usage);
 });
 EOF
   g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
@@ -517,7 +532,8 @@ red_workflows() {
 # rewrites the reads of the head worker_fixture marked, and required_set_fixture puts the reads of
 # the base's required set ahead of every route. The model and the routes go through files of the
 # run, which red_fixture removes once it has written the world: a world's routes are more than
-# one argument can carry (fixtures.json is 195 to 233 KB; Linux takes 128 KB in one argument).
+# one argument can carry (fixtures.json is 0.6 to 1.6 MB, measured over the 152 runs of the batch
+# at 58bc6a5b; Linux takes 128 KB in one argument).
 red_fixture() {
   local world=$1 model=$R/red-model.json routes=$R/red-routes.json required base base_sha
   local -a red_args

@@ -2239,6 +2239,38 @@ describe("the reads of the repository and the pull request", () => {
     });
   });
 
+  // Catches: a change whose tests leave greet's CLI path untested, the usage line on stderr and
+  // exit 2 for no name or a blank one: with that path untested, ten head reviewers of the batch at
+  // 58bc6a5b named the gap, a clear fix in a file the pull request touches, which
+  // roles/core/reviewer.md has a reviewer request changes for whatever the world's red. The head's
+  // greet.test.ts, run by `bun test`, must pass beside the head's greet.ts and fail beside each
+  // greet.ts that breaks one part of that path, so a test of the change covers each part, whatever
+  // its name or its words.
+  test("the change's tests cover greet's CLI path: usage on stderr, exit 2, no name or a blank one", () => {
+    const run = redFixture("a");
+    const { head } = shasOf(run);
+    const greet = git(run, "show", `${head}:greet.ts`);
+    const tests = git(run, "show", `${head}:greet.test.ts`);
+    /** `bun test` over the head's greet.test.ts beside `source` as greet.ts. */
+    const verdict = (source: string) => {
+      const dir = freshDir("greet");
+      writeFileSync(path.join(dir, "greet.ts"), source);
+      writeFileSync(path.join(dir, "greet.test.ts"), tests);
+      const code = Bun.spawnSync([process.execPath, "test"], { cwd: dir, env: childEnv }).exitCode;
+      return code === 0 ? "pass" : "fail";
+    };
+    /** The head's greet.ts, and that file with each part of the CLI path broken by one edit. */
+    const sources: Record<string, string> = {
+      head: greet,
+      exit: greet.replace("process.exit(2)", "process.exit(1)"),
+      stream: greet.replace('console.error("usage', 'console.log("usage'),
+      blank: greet.replace('name.trim() === ""', 'name === ""'),
+    };
+    expect(
+      Object.fromEntries(Object.entries(sources).map(([part, source]) => [part, verdict(source)]))
+    ).toEqual({ head: "pass", exit: "fail", stream: "fail", blank: "fail" });
+  });
+
   // Catches: a job log through the API that names another failure than the world's, a log for a
   // job the world has none of, and a passing job whose log claims a failure.
   test("the job log through the API holds the failing line of a failed job, and 404s another id", async () => {
