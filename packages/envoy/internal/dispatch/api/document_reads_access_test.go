@@ -54,6 +54,9 @@ var documentReads = []documentRead{
 	// a hidden document must name no blocks to match among.
 	{http.MethodGet, func(o documentObjects) string { return "/api/v1/artifacts/" + o.document + "/blocks/abcdef12" }, nil},
 	{http.MethodGet, func(o documentObjects) string { return "/api/v1/artifacts/" + o.document + "/versions/1" }, nil},
+	// What changed between two versions is read from both versions' stored text, so a hidden
+	// document must answer as missing before either version is read.
+	{http.MethodGet, func(o documentObjects) string { return "/api/v1/artifacts/" + o.document + "/changes?from=1&to=2" }, nil},
 	{http.MethodGet, func(o documentObjects) string { return "/api/v1/artifacts/" + o.document + "/reviews" }, nil},
 	{http.MethodGet, func(o documentObjects) string { return "/api/v1/artifacts/" + o.document + "/asks" }, nil},
 	{http.MethodGet, func(o documentObjects) string { return "/api/v1/artifacts/" + o.document + "/comments" }, nil},
