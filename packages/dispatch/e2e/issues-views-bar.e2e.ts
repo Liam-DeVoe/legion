@@ -1010,3 +1010,75 @@ test("under a sort by Created a drop within Todo is refused naming the sort and 
     await daemon.close();
   }
 });
+
+// The Design's moves by Status and by Legion phase, found by INFRA-3221's tester: the daemon
+// gives Places in an order of its own, so two cards next to each other by Place need not be in
+// rank order (ACME-4 has Place 1 and rank X, ACME-3 Place 2 and rank W). A move between them
+// either writes a rank the server takes, or is refused with a text that names why; it never
+// sends a rank the server refuses and reads that refusal as a board that changed.
+// SLOW(>=2s): ACME seeded with three placed cards, and one card dropped between two others on
+// the Board by Legion phase and by Status.
+test("a drop between two placed cards whose ranks run against their Places sends no rank the server refuses", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    await pushLegionObservation(
+      "",
+      "admission",
+      JSON.stringify({
+        cap: 4,
+        active: ["ACME-1", "ACME-2"],
+        waiting: ["ACME-4", "ACME-3", "ACME-5"],
+        trees: ["ACME-1", "ACME-2"],
+        blocked: [],
+      })
+    );
+    const ranks = async () =>
+      Promise.all(["ACME-3", "ACME-4"].map(async (key) => (await getIssue(key)).rank));
+    const [rank3, rank4] = await ranks();
+    expect((rank3 ?? "") < (rank4 ?? ""), "ACME-3 is ranked before ACME-4, against its Place").toBe(
+      true
+    );
+    const page = await context.newPage();
+    const refused: string[] = [];
+    page.on("response", (response) => {
+      if (response.request().method() === "PATCH" && response.status() >= 400)
+        refused.push(`${response.status()} ${response.url()} ${response.request().postData()}`);
+    });
+    await page.setViewportSize({ height: 1200, width: 1920 });
+    const card = (key: string) => page.locator(`[data-board-card="${key}"]`);
+    const changed = page.getByText("The board changed while you were moving this card", {
+      exact: false,
+    });
+    for (const address of ["group=legion_phase&layout=board", "layout=board"]) {
+      await page.goto(`/projects/${ACME}/issues?${address}`);
+      const queue = page.locator(
+        address.includes("legion_phase")
+          ? 'section[data-board-column="queue"]'
+          : 'section[data-board-column="todo"]'
+      );
+      await expect
+        .poll(() =>
+          queue
+            .locator("[data-board-card]")
+            .evaluateAll((cards) => cards.map((one) => one.getAttribute("data-board-card")))
+        )
+        .toEqual(["ACME-4", "ACME-3", "ACME-5"]);
+      // ACME-5 dropped above ACME-3: between Place 1 and Place 2. A move refused in the page
+      // sends no write, so the wait for one ends at its timeout, which is no failure.
+      const written = page
+        .waitForResponse((response) => response.request().method() === "PATCH", { timeout: 10_000 })
+        .catch(() => undefined);
+      await mouseDrag(page, card("ACME-5"), card("ACME-3"), 4);
+      await written;
+      expect(refused, address).toEqual([]);
+      await expect(changed, address).toHaveCount(0);
+    }
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
