@@ -1260,14 +1260,15 @@ func refuseLegionGhAsRealGh(gh string) error {
 // that never returns. A test shortens it to read that the stop comes.
 var ghHelpTimeout = 30 * time.Second
 
-// The bounds legion sets on a program it starts and waits for, which this package's tests give
-// their own deadline through programbound: the git reads of `legion gh` (ghGitReadBound), its read
-// of gh's help (ghHelpTimeout), its answer to the shared check's own visibility read
-// (visibilityAnswerBound), the credential helper's fork read (forkReadBound), and the worker shim's
-// grace for its agent (workerShimGrace). Each wait reads its bound through programbound.Of.
+// The bounds `legion gh` and the credential helper set on a program they start and wait for,
+// which this package's tests give their own deadline through programbound: the git reads of
+// `legion gh` (ghGitReadBound), its read of gh's help (ghHelpTimeout), its answer to the shared
+// check's own visibility read (visibilityAnswerBound), the credential helper's fork read
+// (forkReadBound), and the worker shim's grace for its agent (workerShimGrace). Each wait reads its
+// bound through programbound.Of. The other bounds of this package are registered beside their own
+// declarations.
 func init() {
-	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace,
-		&requestTimeout, &controllerDispatchTradeWait, &modelTokenTimeout)
+	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace)
 }
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for

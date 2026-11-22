@@ -25,6 +25,10 @@ import (
 // the start.
 var controllerDispatchTradeWait = 60 * time.Second
 
+func init() {
+	programbound.Register(&controllerDispatchTradeWait)
+}
+
 // controllerCheckSession is the session name this start's own trade writes under: a name of its
 // own, new on every start, as the controller session's own id is. It is never a name a session
 // writes under, so the claim it takes at the broker takes nothing from the controller, and it is

@@ -45,7 +45,7 @@ const WaitDelay = time.Second
 // the command's exit loses what the command printed.
 var WaitDelayBound = WaitDelay
 
-// StopGraceBound is StopGrace as the grace reads it, through programbound (groupOutlivedGrace): a
+// StopGraceBound is StopGrace as the grace reads it, through programbound (StopGraceNow): a
 // variable so that cmd/legion's tests, whose stand-ins answer a stop's SIGTERM on a loaded machine,
 // can give it their own deadline, since a stand-in a loaded machine left unscheduled past StopGrace
 // after its SIGTERM is SIGKILLed and its own answer lost. StopGrace stays the constant the rows of
@@ -59,6 +59,11 @@ func init() {
 // WaitDelayNow is the WaitDelay a command configured now gets: WaitDelay in a legion binary, and in
 // cmd/legion's tests what is left of the test binary's deadline (programbound).
 func WaitDelayNow() time.Duration { return programbound.Of(&WaitDelayBound) }
+
+// StopGraceNow is the grace a group stopped now gets between its SIGTERM and its SIGKILL:
+// StopGrace in a legion binary, and in cmd/legion's tests what is left of the test binary's
+// deadline (programbound).
+func StopGraceNow() time.Duration { return programbound.Of(&StopGraceBound) }
 
 // StopGrace is how long Cancel gives the group between its SIGTERM and its SIGKILL: the time a
 // command that handles SIGTERM has to clean up after itself. git removes its own lock files from
@@ -155,7 +160,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 // last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
 // so the poll can only send fewer signals than the kill alone did.
 func groupOutlivedGrace(group int) bool {
-	for deadline := time.Now().Add(programbound.Of(&StopGraceBound)); ; time.Sleep(stopPoll) {
+	for deadline := time.Now().Add(StopGraceNow()); ; time.Sleep(stopPoll) {
 		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
 			return false
 		}

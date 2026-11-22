@@ -17,6 +17,10 @@ import (
 // stand-in Cognito a loaded machine made slower than 8 s would fail the sign-in.
 var modelTokenTimeout = 8 * time.Second
 
+func init() {
+	programbound.Register(&modelTokenTimeout)
+}
+
 // newModelTokenCommand is `legion model-token` (internal/modeltoken): it prints the access token
 // alone on stdout, or exits 1 with the reason on stderr and nothing on stdout.
 func newModelTokenCommand(stdout, stderr io.Writer) *cobra.Command {

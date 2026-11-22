@@ -74,6 +74,10 @@ const (
 // the minute would be given up on, and the row would read the refusal.
 var requestTimeout = 60 * time.Second
 
+func init() {
+	programbound.Register(&requestTimeout)
+}
+
 // revision is the commit the binary was built from, linked in by the worker image's build
 // (packages/daemon/docker/worker.Dockerfile) and the legion release (.github/workflows/release.yaml)
 // with `-ldflags "-X main.revision=<commit>"`; empty otherwise.

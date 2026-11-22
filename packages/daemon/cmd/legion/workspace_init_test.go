@@ -568,8 +568,9 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // on a killed checkout and spending one of the claim's launches (INFRA-1265). The case reads the
 // bound each command of the provisioning was given (newProvisionRunner): the checkout's is
 // CheckoutTimeout, and every other command's is the runner's budget or, for a step of the shared
-// clone's own clone, what remains of workspace.CloneTimeout. The budget is what is left of the test
-// binary's deadline less 30 s, so no command a loaded machine makes slow is stopped by it.
+// clone's own clone, what remains of the shared clone's bound (workspace.CloneBound, read through
+// programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
+// a loaded machine makes slow is stopped by it.
 func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
