@@ -2,11 +2,9 @@ package evals
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -415,113 +413,6 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if err != nil || !found || age != time.Minute {
 		t.Errorf("RefresherAge a minute after the last pass answers %s, found %t, %v; want a minute", age, found, err)
 	}
-}
-
-// TestANewBuildRewritesEveryRowOfAFamily: once a build has walked every family, a pass of another
-// build walks them all again and rewrites every computed row with its own build, although no value
-// moved; then, while the two builds run in turn, neither begins again the walk the other recorded,
-// so a turn of each walks no day.
-func TestANewBuildRewritesEveryRowOfAFamily(t *testing.T) {
-	r := newRefresherRig(t)
-	r.seedHistories(t)
-	r.settle(t)
-	computed := `select count(*) from eval_days where built_by <> $1 and split_part(eval_id, '/', 2) = any($2)`
-	families := slices.Concat(deliveryDaySlugs, legionDaySlugs, []string{SlugUnownedP0})
-	total := r.count(t, `select count(*) from eval_days where split_part(eval_id, '/', 2) = any($1)`, families)
-	if stale := r.count(t, computed, testBuild, families); stale != 0 || total == 0 {
-		t.Fatalf("after the first build's walk %d of %d computed rows hold another build", stale, total)
-	}
-
-	r.build = "another-build"
-	_, walked := r.settle(t)
-	if stale := r.count(t, computed, r.build, families); stale != 0 {
-		t.Errorf("after the new build's walk %d of %d computed rows still hold another build than %s", stale, total, r.build)
-	}
-	if got := r.count(t, `select count(*) from eval_days where split_part(eval_id, '/', 2) = any($1)`, families); got != total {
-		t.Errorf("the new build's walk left %d computed rows, want the %d the first left", got, total)
-	}
-	t.Logf("the new build rewrote %d computed rows over %d project days", total, len(walked.days))
-
-	for _, build := range []string{testBuild, "another-build"} {
-		r.build = build
-		if _, again := r.settle(t); len(again.days) != 0 {
-			t.Errorf("build %s's turn after both walks reached today walked %d project days, want none", build, len(again.days))
-		}
-	}
-}
-
-// TestANewBuildsRewriteKeepsTheUpdatedAtOfEveryRowWhoseValuesStood: a live evals view hears of a
-// day row's write only through its eval_days change row, which the trigger logs for no rewrite
-// that moves only built_by and updated_at (migration 20261117100014), and the evals list answers
-// the oldest updated_at of the rows it folds (api/evals.go's freshness). So a new build's walk,
-// which rewrites every computed row with its own build, keeps the updated_at of each row whose
-// values it left as they were: moved, the read would answer the walk's moment while a live view
-// kept the one it read before, and no change row would ever tell it otherwise.
-func TestANewBuildsRewriteKeepsTheUpdatedAtOfEveryRowWhoseValuesStood(t *testing.T) {
-	r := newRefresherRig(t)
-	r.seedHistories(t)
-	r.settle(t)
-	before := r.dayRows(t)
-	seq := r.latestSeq(t)
-
-	r.build = "another-build"
-	r.settle(t)
-	after := r.dayRows(t)
-	values := func(row DayRow) DayRow {
-		row.BuiltBy, row.UpdatedAt = "", time.Time{}
-		return row
-	}
-	stood, moved := 0, 0
-	for key, row := range after {
-		old, held := before[key]
-		switch {
-		case !held || row.BuiltBy != r.build:
-			// A row the new walk made, or one it did not write (a readings write's row).
-		case !reflect.DeepEqual(values(row), values(old)):
-			moved++
-		case !row.UpdatedAt.Equal(old.UpdatedAt):
-			t.Errorf("%s: the new build's rewrite moved its updated_at from %s to %s and none of its values",
-				key, old.UpdatedAt.Format(time.RFC3339Nano), row.UpdatedAt.Format(time.RFC3339Nano))
-		default:
-			stood++
-		}
-	}
-	if stood == 0 {
-		t.Fatalf("the new build rewrote no row whose values stood (%d of %d rows moved a value)", moved, len(after))
-	}
-	t.Logf("the new build rewrote %d rows whose values stood, each keeping its updated_at, and %d whose values moved; eval_days changes of its walk: %v",
-		stood, moved, r.evalDayChanges(t, seq))
-}
-
-// TestTwoBuildsOnOneDatabaseEachFinishTheirOwnWalk: while two builds' refreshers share a database
-// (a rolling deploy), each pass continues its own build's walks rather than beginning again the
-// ones the other build recorded. Passes taken in turn by the two builds, two days of each walk a
-// pass, bring both builds' walks to today; begun again at each turn, neither walk would get past
-// its first two days.
-func TestTwoBuildsOnOneDatabaseEachFinishTheirOwnWalk(t *testing.T) {
-	r := newRefresherRig(t)
-	r.batch = 2
-	r.seedHistories(t)
-	other := *r
-	other.build, other.seeds = "other-build", &seeding{}
-	done := map[string]bool{}
-	passes := 0
-	for passes < 80 && !(done[r.build] && done[other.build]) {
-		passes++
-		rig := r
-		if passes%2 == 0 {
-			rig = &other
-		}
-		report, _ := rig.pass(t)
-		done[rig.build] = !report.walksLeft
-	}
-	if !done[r.build] || !done[other.build] {
-		t.Fatalf("after %d passes taken in turn, %s's walks reached today %t and %s's %t, want both", passes, r.build, done[r.build], other.build, done[other.build])
-	}
-	if walks := r.count(t, `select count(distinct built_by) from eval_days_walks`); walks != 2 {
-		t.Errorf("the walks are recorded under %d builds, want the two that run", walks)
-	}
-	t.Logf("both builds' walks reached today after %d passes taken in turn", passes)
 }
 
 // TestTheTickPrunesChangesOlderThanTheirRetention: a pass deletes every delivery change older
@@ -945,30 +836,30 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 
 // TestTheWalkKeepsItsGapWhileChangesRunAtOnce: a pass that begins a batch of the walks keeps the
 // gap from the one before it, while the changes that arrive meanwhile run at once. Over the
-// settled Legion history of EVAL, a new build's loop walks it again, a day a batch at a gap of 2 s,
-// woken by hand, while EVAL-3's close moves between the 3rd and the 5th day every 300 ms. Each
-// move reaches the day rows within factsLatencyBound of its commit, and the walk's record moves
-// once per gap: each move after the boot pass's at least the gap less 50 ms after the one before
-// it (the boot pass's own work comes before its day), and as many as the gaps the window holds, so
-// no change waits for the walk's gap and the walk does not run at the changes' pace. Before, each
-// change waited for the gap.
+// settled Legion history of EVAL, a new build's loop rebuilds it (a release, rebuild.go), a day a
+// batch at a gap of 2 s, woken by hand, while EVAL-3's close moves between the 3rd and the 5th day
+// every 300 ms. Each move reaches the day rows within factsLatencyBound of its commit, and the
+// rebuild's walk moves once per gap: no gap since the loop started holds two of its moves (a
+// batch's day lands after its pass's own changes' work, or in the pass that continues a batch an
+// owed wake stopped, so a move can come late in its gap), and the walk moves as many times as the
+// gaps the window holds; the close moves at least half as often as one each 300 ms, each waiting
+// for the one before it to land, so no change waits for the walk's gap and the walk does not run
+// at the changes' pace. Before, each change waited for the gap.
 func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
 	const gap, window, every = 2 * time.Second, 7 * time.Second, 300 * time.Millisecond
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
 	head := int64(r.count(t, `select coalesce(max(id), 0) from events`))
-	r.build, r.batch = "walk-gap-build", 1
+	r.release("walk-gap-build")
+	r.batch = 1
 	d2, d4 := legionHistoryDay(3).Format(time.DateOnly), legionHistoryDay(5).Format(time.DateOnly)
+	// walkNext is where the release's rebuild's walk of EVAL stands: "" until the rebuild has
+	// staged a batch, the stored rows' own walk standing where the settled history left it.
 	walkNext := func() string {
-		var next *time.Time
-		err := r.database.Pool.QueryRow(t.Context(), `select next_day from eval_days_walks where family = $1 and project_key = 'EVAL' and built_by = $2`,
-			walkLegion, r.build).Scan(&next)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows), err == nil && next == nil:
+		next, rebuilding := r.rebuildNext(t, walkLegion, "EVAL")
+		if !rebuilding || next == nil {
 			return ""
-		case err != nil:
-			t.Fatalf("read the new build's Legion walk of EVAL: %v", err)
 		}
 		return next.Format(time.DateOnly)
 	}
@@ -1017,17 +908,21 @@ func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
 	for i, a := range advances {
 		moved[i] = fmt.Sprintf("to %s at %s", a.next, a.at.Sub(loop.started).Round(time.Millisecond))
 	}
-	for i := 2; i < len(advances); i++ {
-		if apart := advances[i].at.Sub(advances[i-1].at); apart < gap-50*time.Millisecond {
-			t.Errorf("the walk moved to %s %s after it moved to %s, want at least the gap of %s less 50 ms",
-				advances[i].next, apart, advances[i-1].next, gap)
+	perGap := map[int][]string{}
+	for i, a := range advances {
+		gapOf := int(a.at.Sub(loop.started) / gap)
+		perGap[gapOf] = append(perGap[gapOf], moved[i])
+	}
+	for gapOf, in := range perGap {
+		if len(in) > 1 {
+			t.Errorf("the walk moved %d times in gap %d (%v), want at most once a gap of %s", len(in), gapOf+1, in, gap)
 		}
 	}
 	if want := int(window / gap); len(advances) < want || len(advances) > want+1 {
 		t.Errorf("the walk moved %d times in %s at a gap of %s, want %d or %d: %v", len(advances), window, gap, want, want+1, moved)
 	}
-	if moves < int(window/every)-2 {
-		t.Errorf("%d moves of EVAL-3's close were made in %s, want about one each %s", moves, window, every)
+	if moves < int(window/every)/2 {
+		t.Errorf("%d moves of EVAL-3's close were made in %s, want at least half of one each %s", moves, window, every)
 	}
 	slices.Sort(latencies)
 	var worst, median time.Duration
@@ -1127,14 +1022,9 @@ func TestAWalkBatchThatStopsForAWakeKeepsItsDaysForTheNextPass(t *testing.T) {
 		t.Fatalf("EVAL's walk from %s holds %d days, too few for the test's three batches and its held day", start.Format(time.DateOnly), days)
 	}
 	built := func() int {
-		var next *time.Time
-		err := r.database.Pool.QueryRow(t.Context(), `select next_day from eval_days_walks where family = $1 and project_key = 'EVAL' and built_by = $2`,
-			walkLegion, r.build).Scan(&next)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows), err == nil && next == nil:
+		next, _ := r.rebuildNext(t, walkLegion, "EVAL")
+		if next == nil {
 			return 0
-		case err != nil:
-			t.Fatalf("read EVAL's Legion walk: %v", err)
 		}
 		return int(measures.Midnight(*next).Sub(start) / (24 * time.Hour))
 	}

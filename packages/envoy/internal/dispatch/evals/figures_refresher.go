@@ -17,25 +17,25 @@ import (
 
 // The refresher's part of the stored figures (figures.go): the change log's read that folds again
 // the figures of the days whose rows a write left unfolded, and the figures walk, which builds a
-// build's figures whole and then each new end day.
+// project's figures whole once and then each new end day.
 //
 // Every build that holds this code writes the figures, in the transaction of each write of day
 // rows, and keeps them as the day rows are kept (eval_days.built_by, migration 20261117100006): a
-// read serves a stored figure whichever build folded it (eval_range_figures.built_by), and each
-// build makes a figures walk of its own (eval_days_walks, family `figures`, keyed by the build),
-// which refolds every figure of each project and upserts the ones whose figures moved. So a release
-// whose folds agree with the build before it writes next to nothing, one whose folds differ
-// rewrites what they move, and the stored figures stay in use through a deploy, a roll of two
-// builds and a rollback alike. A project's figures are built once the first whole walk of them, by
-// any build, is done (eval_figures_built), and a read of an offered range folds the stored figures
-// from then on (FiguresThrough).
+// read serves a stored figure whichever build folded it (eval_range_figures.built_by). A project's
+// figures are first folded whole by its figures walk (eval_days_walks, family `figures`), one walk
+// whichever build's process runs it, and are built once that first walk is done
+// (eval_figures_built), from which a read of an offered range folds the stored figures
+// (FiguresThrough); the walk then folds each end day a new UTC day adds. A release, a lost cursor
+// of the figures or of the refresher refold every built figure aside, in a rebuild (rebuild.go),
+// and stage only the figures that move: so a release whose folds agree with the build before it
+// writes nothing, and one whose folds differ lands what they move in its flip, which logs an
+// eval_days change of each eval whose figures it moved, so the views read them. The stored figures
+// stay in use through a deploy, a roll of two builds and a rollback alike.
 //
-// While two builds whose folds differ roll, each figure is the fold of the build that last wrote
-// it, as each day row is: a read serves the old build's fold of a range or the new build's,
-// whichever folded it last, the fold its built_by names. That lasts for the roll, and past it for a
-// figure the old build folded after the new build's walk had folded it, until a day it holds moves
-// again, which every build then folds, or a later build's walk refolds it: the bound a day row the
-// old build wrote during the roll has.
+// While two builds whose folds differ roll, a figure a page's write folds is the fold of the
+// build whose process made the write, as each day row is, until the release's rebuild flips: it
+// folds again, before its flip, every end day a statement wrote figures of, and the ranges of every
+// day a statement wrote rows of, while it ran.
 //
 // A write that leaves its fold to the next pass is logged like any other: a register write, which
 // moves an eval's fold key or listing and folds nothing, logs its eval_versions change, and a write
@@ -53,9 +53,9 @@ import (
 const figuresCursor = "figures"
 
 // figuresPass is the stored figures' part of a pass, after the feeds' pages and the walks of the
-// day rows: the read of the change log (figureChanges), then, where no walk of the day rows has days
-// left, a batch of each figures walk (walkFigures), which waits for those walks so a new build's
-// walk of every day folds each range once, from the rows as its own walks leave them, rather than
+// day rows: the read of the change log (figureChanges), then, where no walk of the day rows in the
+// open has days left, a batch of each figures walk (walkFigures), which waits for those walks (a
+// walk begun again) so each range is folded once, from the rows as they leave them, rather than
 // once more for each batch of days they move under it. It answers whether a figures walk has end
 // days left.
 func (r *refresh) figuresPass(ctx context.Context, walksPending bool, page int) (bool, error) {
@@ -94,7 +94,8 @@ func addSpan(spans map[string]daySpan, evalID string, first, last time.Time) {
 // cursor, so a pass that fails reads the same changes again. The cursor is the change log's as the
 // refresher's own is (delivery.ChangeCursor): it starts at the log's head, the walks folding every
 // figure before it; and one that may have passed over changes it never read (delivery.CursorLost)
-// moves to the log's head and begins every build's figures walk again, which folds every figure.
+// moves to the log's head and begins a rebuild of the built projects' figures (rebuild.go), which
+// folds every one again aside and flips those that moved: the day rows' own cursor lost nothing.
 func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 	pool := r.store.database.Pool
 	for {
@@ -123,7 +124,7 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 				return fmt.Errorf("read the head of the delivery changes: %w", err)
 			}
 			head.ReadAt = checked
-			slog.Warn("dispatch: the stored figures' change cursor may have passed changes it never read; every figures walk begins again",
+			slog.Warn("dispatch: the stored figures' change cursor may have passed changes it never read; a rebuild of the built figures begins",
 				"cursor", cursor.Seq, "head", head.Seq)
 			return r.moveFigureCursor(ctx, head, true)
 		}
@@ -162,9 +163,9 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 }
 
 // moveFigureCursor moves the figures' change cursor to cursor (its ReadAt stamping the row, as the
-// refresher's change cursor is stamped, commitPage), and, where restart is set, begins every
-// build's figures walk again, in one transaction: a change the lost cursor passed is read by no
-// other pass, whichever build's process runs it.
+// refresher's change cursor is stamped, commitPage), and, where restart is set, begins a rebuild
+// of the figures of every project whose figures are built (replaceRebuild), in one transaction: a
+// change the lost cursor passed is read by no other pass, whichever build's process runs it.
 func (r *refresh) moveFigureCursor(ctx context.Context, cursor delivery.ChangeCursor, restart bool) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
@@ -178,8 +179,13 @@ func (r *refresh) moveFigureCursor(ctx context.Context, cursor delivery.ChangeCu
 		return fmt.Errorf("move the stored figures' change cursor: %w", err)
 	}
 	if restart {
-		if _, err := tx.Exec(ctx, `update eval_days_walks set next_day = null, updated_at = $2 where family = $1`, walkFigures, r.now); err != nil {
-			return fmt.Errorf("begin every figures walk again: %w", err)
+		walks, err := r.servedWalks(ctx)
+		if err != nil {
+			return err
+		}
+		walks = slices.DeleteFunc(walks, func(key walkKey) bool { return key.family != walkFigures })
+		if err := replaceRebuild(ctx, tx, rebuildCursor, r.build, walks); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -329,22 +335,23 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 	return nil
 }
 
-// walkFigures builds what the pass's batch (gapBatch) has left of each project's figures walk under
-// the pass's build: from the first end day it has not built, or, where it is to begin (no record
-// of the build's, which is how each build makes its own walk, or one begun again), from the day
-// after the project's first listed day row, it folds up to the batch's end days left of the walk
-// through FigureLead days after today (buildFigureEnds), and records where it stands in the same
-// transaction, so the figures and the walk that says how far they are folded commit together. It
-// stops between two projects for an owed wake (yields), each project's part being one
-// transaction. The part that reaches the last end day records the project's figures built through
-// it (eval_figures_built), which the first whole walk of any build sets and every later one moves
-// on; so once a walk has built the last end day, each later UTC day's first walking pass builds
-// the end day that day adds, two days after the new today. A project with no listed day row stands
-// past the last end day, and one whose first row is later than that stands at the day after it,
-// built: no range before holds a row, and the write of its first rows folds them. It answers
-// whether end days before the last are left, which asks for the pass that builds them.
+// walkFigures builds what the pass's batch (gapBatch) has left of each project's figures walk,
+// whichever build's process runs it: from the first end day it has not built, or, where it is to
+// begin (no record, a project's first), from the day after the project's first listed day row, it
+// folds up to the batch's end days left of the walk through FigureLead days after today
+// (buildFigureEnds), and records where it stands in the same transaction, so the figures and the
+// walk that says how far they are folded commit together. It stops between two projects for an
+// owed wake (yields), each project's part being one transaction. The part that reaches the last end
+// day records the project's figures built through it (eval_figures_built), which the first whole
+// walk sets and every later day moves on; so once a walk has built the last end day, each later UTC
+// day's first walking pass builds the end day that day adds, two days after the new today. A
+// project with no listed day row stands past the last end day, and one whose first row is later
+// than that stands at the day after it, built: no range before holds a row, and the write of its
+// first rows folds them. A release folds built figures again aside, in its rebuild (rebuild.go),
+// not here. It answers whether end days before the last are left, which asks for the pass that
+// builds them.
 func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
-	walks, err := r.store.readWalks(ctx, r.build)
+	walks, err := r.store.readWalks(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -355,9 +362,8 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 			return true, nil
 		}
 		key := walkKey{family: walkFigures, project: project}
-		state, found := walks[key]
-		next := state.next
-		begun := !found || next == nil
+		next := walks[key].next
+		begun := next == nil
 		if begun {
 			start, err := r.store.figuresStart(ctx, project)
 			if err != nil {

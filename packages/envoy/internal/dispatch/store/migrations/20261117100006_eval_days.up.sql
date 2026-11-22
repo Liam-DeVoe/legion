@@ -59,8 +59,9 @@
 --                   holds. Both are null where the row records no write.
 --   via_repository  how many of the row's inputs reached the project through a repository
 --                   rather than through an issue.
---   built_by        the build that wrote the row, so a build whose rules differ rewrites rows an
---                   older build wrote.
+--   built_by        the build that last moved the row's values: a write that moves no value
+--                   rewrites no row, so a release whose rules agree leaves it, and one whose
+--                   rules differ rewrites what they move in its rebuild's flip (evals/rebuild.go).
 --   updated_at      when the row was last written.
 -- eval_days_window, (project_key, repo, day) over the listed rows, is the list read's window: one
 -- index range per project, repository and range of days, measured on 1,533,000 rows (712 MB) as

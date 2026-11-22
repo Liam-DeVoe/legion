@@ -287,5 +287,5 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 // A row of another project, another day or an eval that is not a Legion one, and an item of
 // another family, is refused before anything is written.
 func (s *Store) writeLegionDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, legionFamily.what, day, legionDaySlugs, legionDayFamilies, builtBy, figures)
+	return s.writeProjectDay(ctx, legionFamily, day, builtBy, figures)
 }

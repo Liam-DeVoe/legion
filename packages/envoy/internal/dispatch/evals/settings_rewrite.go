@@ -233,9 +233,11 @@ func recordBuiltUnder(ctx context.Context, q pgx.Tx, settings delivery.DeliveryS
 //     move (settingsMoves, rewriteSettings), which records the settings in its own transaction,
 //     or, where the difference moves no eval, has the page record them with its cursors (w.built);
 //   - where none are recorded (a database no pass of this release has brought to its settings, or
-//     one a bench reset), the rows' settings are unknown, so it begins the delivery walk again,
-//     which builds every day under the settings it reads, and has the page record them with the
-//     walk it begins, in one transaction.
+//     one a bench reset), the rows' settings are unknown, so it has the page record them with its
+//     cursors and, in the same transaction, begin a rebuild of every served family (rebuild.go),
+//     which verifies every day under the settings it reads aside while the stored rows keep
+//     serving, or, where no delivery rows are served yet, begin the delivery walk again, which
+//     builds every day under them in the open.
 //
 // A move of the deploy repository alone moves no eval, so it writes no row: the page records the
 // new repository with its cursors, in the commit that says the rows stand at the settings
@@ -253,8 +255,17 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 	}
 	next := *r.settings
 	if r.builtUnder == nil {
-		w.restart[walkDelivery], w.built = true, &next
-		r.builtUnder = &next
+		served, err := r.servingNext(ctx, walkDelivery, "")
+		if err != nil {
+			return err
+		}
+		switch {
+		case served == nil:
+			w.restart[walkDelivery] = true
+		case w.rebuild == "":
+			w.rebuild = rebuildSettings
+		}
+		w.built, r.builtUnder = &next, &next
 		return nil
 	}
 	if sameBuiltSettings(*r.builtUnder, next) {
@@ -275,7 +286,7 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 // has read its changes) with those the delivery and CI rows stand built for (keptUnder, recorded
 // beside the settings they stand built under), after syncSettings, so the record exists or the
 // page's commit makes it. Where they differ the page records the new set with its cursors
-// (w.kept), and, unless the running build's delivery walk has computed no day or begins again,
+// (w.kept), and, where the stored delivery rows are whole through a day (eval_days_serving),
 // builds in the same transaction the days of each repository that differs (w.keptWas,
 // refresh.writeNamed): a new repository's from its start on, the days between a moved one's two
 // starts, and none of a gone one's, whose rows and members go. Those are the rows and members a
@@ -393,23 +404,23 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     change can move (movedDeliveryDays), none for a change that moves no verdict and no card's
 //     part, and every day after one of them that was a moved eval's first input day and holds no
 //     input of it under the new settings (lostFirstDays); or every day, where the rows may not
-//     stand built under prev: the running build's delivery walk is to begin or has days left, and
-//     a day it has not reached holds the rows another build wrote, or rows of the settings or
-//     repository mappings before those its walk began under (a walk begins again for a database
-//     whose rows' settings are not recorded, a mapping's change and a lost change cursor), which
-//     no comparison of prev with the new settings finds;
+//     stand built under prev: no delivery rows are served yet (eval_days_serving), or the delivery
+//     walk is to begin or has days left (a family's first walk, or a mapping's change, begins it),
+//     and a day it has not reached holds rows of the settings or repository mappings before those
+//     its walk began under, which no comparison of prev with the new settings finds;
 //   - those days in day order a chunk at a time (rewriteDays), each chunk's days built side by
 //     side, each repository's DeliveryDay as readDeliveryDay builds it from those rows and each
 //     project's rows of the day (deliveryRead.Rows); then, in day order, each project's day as the
 //     walk writes it (writeDelivery, dropUnshipped, zerosFrom and noteBuilt), by the first input
 //     days the walk builds by: those the build itself finds, day by day from the first, where it
 //     builds every day, and otherwise the store's, which the walk built, but those lostFirstDays
-//     drops; with the zero rows of each series from its first input day on where the walk has
-//     computed the day, and with none where it has not (writeNamed's rule); and of the days written,
-//     those holding a row or that can hold a stored row of a moved eval (on or after its first
-//     stored first input day), the rows of the evals slugs names and the members of families, held
-//     until the last chunk is built; and beside that build, the stored members of families of the
-//     repositories rewritten on those days (readMembers), none where it builds none;
+//     drops; with the zero rows of each series from its first input day on where the stored
+//     delivery rows are whole through the day (servingNext), and with none where they are not
+//     (writeNamed's rule); and of the days written, those holding a row or that can hold a stored
+//     row of a moved eval (on or after its first stored first input day), the rows of the evals
+//     slugs names and the members of families, held until the last chunk is built; and beside that
+//     build, the stored members of families of the repositories rewritten on those days
+//     (readMembers), none where it builds none;
 //   - then, in one transaction: those rows upserted where a value moved (upsertDays, which cuts
 //     them into statements of at most statementBytes of parameters); once, over every day
 //     written, those evals' stored rows of the repositories rewritten that the days no longer hold
@@ -501,7 +512,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			walks, err = r.store.readWalks(ctx, r.build)
+			walks, err = r.store.readWalks(ctx)
 			return err
 		},
 	); err != nil {
@@ -544,10 +555,15 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 	}
 	start := earliestOf(input, earliest)
+	served, err := r.servingNext(ctx, walkDelivery, "")
+	if err != nil {
+		return err
+	}
 	walk, found := walks[walkKey{family: walkDelivery}]
-	// The days the change can move alone are built where the running build's delivery walk has
-	// written today, and they need the old rule's verdict beside the new one's.
-	movedOnly := start != nil && found && walk.next != nil && walk.next.After(r.today)
+	// The days the change can move alone are built where the stored delivery rows are whole and the
+	// delivery walk has written today (no walk begun again rebuilds them), and they need the old
+	// rule's verdict beside the new one's.
+	movedOnly := start != nil && served != nil && found && walk.next != nil && walk.next.After(r.today)
 	// The first input days the rows are built by are the whole walk's. Where every day is built,
 	// they are those the build itself finds, day by day from the first (noteBuilt): a series begins
 	// on the first day it holds input under the new settings, whatever rows the store held of it.
@@ -561,10 +577,11 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 		r.first[walkKey{family: walkDelivery, project: project}] = first
 	}
-	// computed reports whether the running build's delivery walk has computed day: a day it has
-	// not holds the rows with input alone, as any write outside the walk leaves it (writeNamed).
+	// computed reports whether the stored delivery rows are whole through day (servingNext): a day
+	// they are not holds the rows with input alone, as any write outside the walk leaves it
+	// (writeNamed).
 	computed := func(day time.Time) bool {
-		return found && walk.next != nil && day.Before(*walk.next) && !r.begun[walkDelivery]
+		return served != nil && day.Before(*served)
 	}
 	// The old rule is the new one where its names (in their order) and its step are the same, as
 	// for a staging job renamed, and containmentOf reads the settings' production rule alone, so
@@ -764,6 +781,11 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := recordBuiltUnder(ctx, tx, next); err != nil {
 		return err
 	}
+	// A rebuild that is building may have staged rows the new settings move: it begins again,
+	// under them (rebuild.go).
+	if err := replaceRebuild(ctx, tx, "", "", nil); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the rewrite of a settings change: %w", err)
 	}
@@ -925,7 +947,7 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 // lostFirstDays is days, the days a change of the delivery settings can move (movedDeliveryDays),
 // with every day after the first of them that was a series' first input day and holds no input of
 // it under the new settings, through today. firsts is each project's stored first input days,
-// which the running build's walk built (the walk has written today), r.first holding the same; ids
+// which the delivery walk built (the walk has written today), r.first holding the same; ids
 // the moved evals and names the repositories rewritten; dayOf builds each project's rows of a day
 // under the new settings. Such a day is one the change can move, and building it alone would keep
 // the series' zero rows from it on, or a lead time that ships no pull request (dropUnshipped), where

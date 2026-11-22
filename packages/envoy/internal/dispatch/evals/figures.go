@@ -1258,34 +1258,14 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // batch of the figures walk, and the whole of a new end day's ranges once the walk stands at
 // today.
 //
-// The repositories are read as readDeployRepos reads delivery_runs': one statement walks
-// eval_days_window from one of the project's repositories to the next, one probe each, and reads
-// each one's deploy repositories from its rows of the days the ranges span, one range of the index
-// each, rather than every listed row of the project. The stored day rows are read through
+// The repositories are read by readFigureCuts. The stored day rows are read through
 // eval_day_figures_eval_day, one range of the days for each eval.
 func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, first, last time.Time) error {
 	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
-	cutRows, err := tx.Query(ctx, `
-		with recursive held as (
-			(select repo from eval_days where project_key = $1 and listed order by repo limit 1)
-			union all
-			select (select d.repo from eval_days d where d.project_key = $1 and d.listed and d.repo > held.repo order by d.repo limit 1)
-			from held where held.repo is not null
-		)
-		select distinct held.repo, d.deploy_repo
-		from held join eval_days d on d.project_key = $1 and d.listed and d.repo = held.repo and d.day >= $2 and d.day < $3
-	`, scope.project, read.From, read.To)
+	cuts, err := readFigureCuts(ctx, tx, scope.project, read)
 	if err != nil {
-		return fmt.Errorf("read the repositories of %s's day rows: %w", scope.project, err)
+		return err
 	}
-	cuts, err := pgx.CollectRows(cutRows, func(row pgx.CollectableRow) (figureCut, error) {
-		var cut figureCut
-		return cut, row.Scan(&cut.repo, &cut.deployRepo)
-	})
-	if err != nil {
-		return fmt.Errorf("read the repositories of %s's day rows: %w", scope.project, err)
-	}
-	slices.SortFunc(cuts, compareFigureCuts)
 	evalIDs := slices.Sorted(maps.Keys(entries))
 	var writes figureWrites
 	built := map[rangeFigureKey]bool{}
@@ -1347,4 +1327,35 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 		return fmt.Errorf("read %s's stored day figures: %w", scope.project, err)
 	}
 	return writeFigures(ctx, tx, scope, writes)
+}
+
+// readFigureCuts reads, in q, each repository and deploy repository project's listed day rows of
+// the days of r hold, in the byte order of their repositories and then of their deploy
+// repositories, as readDeployRepos reads delivery_runs': one statement walks eval_days_window from
+// one of the project's repositories to the next, one probe each, and reads each one's deploy
+// repositories from its rows of the days the ranges span, one range of the index each, rather than
+// every listed row of the project.
+func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r Range) ([]figureCut, error) {
+	rows, err := q.Query(ctx, `
+		with recursive held as (
+			(select repo from eval_days where project_key = $1 and listed order by repo limit 1)
+			union all
+			select (select d.repo from eval_days d where d.project_key = $1 and d.listed and d.repo > held.repo order by d.repo limit 1)
+			from held where held.repo is not null
+		)
+		select distinct held.repo, d.deploy_repo
+		from held join eval_days d on d.project_key = $1 and d.listed and d.repo = held.repo and d.day >= $2 and d.day < $3
+	`, project, r.From, r.To)
+	if err != nil {
+		return nil, fmt.Errorf("read the repositories of %s's day rows: %w", project, err)
+	}
+	cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (figureCut, error) {
+		var cut figureCut
+		return cut, row.Scan(&cut.repo, &cut.deployRepo)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the repositories of %s's day rows: %w", project, err)
+	}
+	slices.SortFunc(cuts, compareFigureCuts)
+	return cuts, nil
 }

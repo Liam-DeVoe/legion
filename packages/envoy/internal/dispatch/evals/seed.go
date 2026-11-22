@@ -147,11 +147,14 @@ func (s *Store) UnseededProjects(ctx context.Context) ([]string, error) {
 // seeding is what the refresher's loop keeps of its seeds from one pass to the next
 // (refresh.load): whether a pass of this process has seeded every project yet, the projects
 // whose seed failed, which the next pass seeds again, and those whose seed was refused for their
-// `evals-md` (seedRefusals). One goroutine runs the loop's passes, so it takes no lock.
+// `evals-md` (seedRefusals); and, beside them, the process's watch of the release rule
+// (releaseWatch, rebuild.go), which its first pass decides. One goroutine runs the loop's passes,
+// so it takes no lock.
 type seeding struct {
 	everyProject bool
 	failed       map[string]bool
 	refused      seedRefusals
+	release      releaseWatch
 }
 
 // owed is the projects a pass seeds besides those it reads to seed: every one whose seed failed,

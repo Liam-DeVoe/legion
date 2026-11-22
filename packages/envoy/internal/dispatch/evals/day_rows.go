@@ -65,23 +65,24 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 	return p
 }
 
-// writeProjectDay is the write of one project's computed rows of one day: day's rows of the evals
-// slugs names, of every deploy repository the day holds rows of, and its members of families,
-// written as writeDeliveryDay says. The stale rows it deletes are those of slugs alone and the
-// stale members it deletes those of families alone, so the delivery and the Legion writes of one
-// day leave each other's rows and members as they are. A row of an eval keyed by the deploy
+// writeProjectDay is the write of one project's computed rows of one day: day's rows of family's
+// evals, of every deploy repository the day holds rows of, and its members of family's families,
+// written as writeDeliveryDay says. The stale rows it deletes are those of family's evals alone and
+// the stale members it deletes those of its families alone, so the delivery and the Legion writes
+// of one day leave each other's rows and members as they are. A row of an eval keyed by the deploy
 // repository names the repository it is computed as if it were it, and every other row none
-// (deploy_repos.go). what names the rows in a refusal. Its change rows wait in the change log's
-// outbox (migration 20261117100014), so the transaction takes no change log lock, and they are
-// moved into the log once it has committed (drainChanges). Where figures is set, the same
+// (deploy_repos.go). family.what names the rows in a refusal. Its change rows wait in the change
+// log's outbox (migration 20261117100014), so the transaction takes no change log lock, and they
+// are moved into the log once it has committed (drainChanges). Where figures is set, the same
 // transaction folds again the stored figures of the day whose rows it moved (foldFiguresInTx); a
 // walk's day leaves them to the end of its batch (refresh.foldWalked). It writes the rows, then
 // the members, then the figures, the order every writer of the three takes (checkProjectDay,
 // writeDayRowsIn, writeDayMembersIn), which a page that writes several days in its one commit
-// takes over all of them (rebuild).
-func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string, figures bool) error {
+// takes over all of them (rebuild). Where a rebuild is building, the triggers of eval_days and
+// eval_day_members queue the day for it to build again (migration 20261117100021).
+func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day ProjectDay, builtBy string, figures bool) error {
 	date := measures.Midnight(day.Day)
-	if err := checkProjectDay(what, day, slugs, families); err != nil {
+	if err := checkProjectDay(family.what, day, family.slugs, family.families); err != nil {
 		return err
 	}
 	tx, err := s.database.Pool.Begin(ctx)
@@ -89,15 +90,15 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 		return fmt.Errorf("begin the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	defer tx.Rollback(ctx)
-	if err := writeDayRowsIn(ctx, tx, day, slugs, builtBy); err != nil {
+	if err := writeDayRowsIn(ctx, tx, day, family.slugs, builtBy); err != nil {
 		return err
 	}
-	if err := writeDayMembersIn(ctx, tx, day, families); err != nil {
+	if err := writeDayMembersIn(ctx, tx, day, family.families); err != nil {
 		return err
 	}
 	if figures {
-		spans := make(map[string]daySpan, len(slugs))
-		for _, slug := range slugs {
+		spans := make(map[string]daySpan, len(family.slugs))
+		for _, slug := range family.slugs {
 			spans[EvalID(day.Project, slug)] = daySpan{first: date, last: date}
 		}
 		if err := foldFiguresInTx(ctx, tx, builtBy, day.Project, spans); err != nil {
@@ -364,34 +365,26 @@ const goneMembersDeleteStatement = `
 `
 
 // upsertDays writes rows in key order, in one statement where they fit and otherwise in several
-// (writeDayRows), each the computation's (writer `computation`) with built_by builtBy: a new row
-// is inserted, and a stored one rewritten only where a value differs (built_by included, so a new
-// build's rebuild marks every row it rebuilt). updated_at moves only with a value: the trigger of
-// eval_days (migration 20261117100014) logs no change for a rewrite that moves built_by and
-// updated_at alone, and the evals list answers the oldest updated_at of the rows it folds
-// (api/evals.go's freshness), so a rebuild that moved it would leave a live evals view answering
-// the old one while the read answered the new.
+// (writeDayRows), each the computation's (writer `computation`): a new row is inserted, and a
+// stored one rewritten only where a value differs, recording builtBy as the build that wrote its
+// values and the moment it did (updated_at). A row whose values stand is left as it is, its build
+// and its moment with it, whichever build's process writes it: so a write that moves no value
+// writes no row, a release among them, the eval_days trigger (migration 20261117100014) logs
+// nothing, and the evals list's freshness, the oldest updated_at of the rows it folds
+// (api/evals.go), stays the one a live evals view answers.
 func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) error {
 	return writeDayRows(ctx, tx, rows, builtBy, true, `
 		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den,
 			max = excluded.max, samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
 			last_recorded_at = excluded.last_recorded_at, last_reading = excluded.last_reading,
-			counts = excluded.counts, via_repository = excluded.via_repository, built_by = excluded.built_by,
-			updated_at = case
-				when (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max,
-						eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at,
-						eval_days.last_reading, eval_days.counts, eval_days.via_repository)
-					is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max,
-						excluded.samples, excluded.last_value, excluded.last_at, excluded.last_recorded_at,
-						excluded.last_reading, excluded.counts, excluded.via_repository)
-				then now() else eval_days.updated_at end
+			counts = excluded.counts, via_repository = excluded.via_repository, built_by = excluded.built_by, updated_at = now()
 		where (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max,
 				eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at,
-				eval_days.last_reading, eval_days.counts, eval_days.via_repository, eval_days.built_by)
+				eval_days.last_reading, eval_days.counts, eval_days.via_repository)
 			is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max,
 				excluded.samples, excluded.last_value, excluded.last_at, excluded.last_recorded_at,
-				excluded.last_reading, excluded.counts, excluded.via_repository, excluded.built_by)`)
+				excluded.last_reading, excluded.counts, excluded.via_repository)`)
 }
 
 // deleteStaleDays deletes each of the computation's stored rows of project's day of the evals
@@ -565,6 +558,12 @@ const dayRowArrays = 19
 // so an upsert writes a row once), are two rows of one key: those of one key on one UTC day are
 // next to each other in that order, since a row between them by instant falls on that day.
 func dayRowStatements(rows []DayRow, builtBy string, updates bool) (iter.Seq[[]any], error) {
+	return dayRowRuns(rows, builtBy, updates, paramBytes(dayRowArrays, builtBy, writerComputation))
+}
+
+// dayRowRuns is dayRowStatements with base the most bytes the statement's own parameters take, a
+// statement that sends other scalars beside the arrays (stageRowsStatement) bounding its own.
+func dayRowRuns(rows []DayRow, builtBy string, updates bool, base int) (iter.Seq[[]any], error) {
 	count := len(rows)
 	// Their indexes are sorted rather than the rows, so the caller's rows keep their order.
 	order := make([]int, count)
@@ -601,7 +600,7 @@ func dayRowStatements(rows []DayRow, builtBy string, updates bool) (iter.Seq[[]a
 	}
 	return func(yield func([]any) bool) {
 		from := 0
-		for run := range statementChunks(sizes, paramBytes(dayRowArrays, builtBy, writerComputation), func(size *int) int { return *size }) {
+		for run := range statementChunks(sizes, base, func(size *int) int { return *size }) {
 			to := from + len(run)
 			if !yield([]any{projects[from:to], evals[from:to], series[from:to], repos[from:to], days[from:to], listed[from:to], ns[from:to],
 				sums[from:to], nums[from:to], dens[from:to], maxes[from:to], samples[from:to], lastValues[from:to], lastAts[from:to],

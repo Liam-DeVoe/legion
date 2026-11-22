@@ -565,41 +565,41 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	})
 	r.expectBuilt(t, "after the daily tick", refresherToday.AddDate(0, 0, 1))
 
-	// A new build whose folds agree with the build before it: its first pass still reads the
-	// stored figures as built, and its whole walk of them writes none.
+	// A release whose folds agree with the build before it: its first pass still reads the stored
+	// figures as built, and its rebuild, which folds them all aside, writes none.
 	first := r.build
-	r.build = "another-build"
+	r.release("another-build")
 	r.pass(t)
-	r.expectBuilt(t, "a new build's first pass", refresherToday.AddDate(0, 0, 1))
+	r.expectBuilt(t, "a release's first pass", refresherToday.AddDate(0, 0, 1))
 	r.settle(t)
 	after := r.figureState(t)
-	expectTruth(t, "a new build's whole walk", after.figures, r.truthFigures(t))
+	expectTruth(t, "a release's rebuild", after.figures, r.truthFigures(t))
 	if written := writtenFigures(state.figures, after.figures); len(written) != 0 {
-		t.Errorf("the whole walk of a new build whose folds agree wrote %d stored rows, first %v", len(written), written[:min(len(written), 5)])
+		t.Errorf("the rebuild of a release whose folds agree wrote %d stored rows, first %v", len(written), written[:min(len(written), 5)])
 	}
 	state = after
 
 	// Figures another build folded otherwise (the stored rows of one eval, as a build of other
-	// folds leaves them): the next build's whole walk rewrites exactly those.
+	// folds leaves them): the next release's rebuild rewrites exactly those, in its flip.
 	other := EvalID(deliveries.Project, SlugDeployFrequency)
 	r.exec(t, "fold one eval's figures otherwise", `
 		update eval_range_figures set figures = '\x00'::bytea, built_by = 'other-folds' where eval_id = $1`, other)
 	state = r.figureState(t)
-	r.build = "third-build"
+	r.release("third-build")
 	r.settle(t)
 	after = r.figureState(t)
-	expectTruth(t, "a build's walk over figures another build folded otherwise", after.figures, r.truthFigures(t))
+	expectTruth(t, "a release's rebuild over figures another build folded otherwise", after.figures, r.truthFigures(t))
 	for _, line := range writtenFigures(state.figures, after.figures) {
 		if !strings.HasPrefix(line, "range ") || !strings.HasSuffix(line, " "+other) {
-			t.Errorf("a build's walk over %s's figures folded otherwise wrote %s too", other, line)
+			t.Errorf("a release's rebuild over %s's figures folded otherwise wrote %s too", other, line)
 		}
 	}
 	for line, row := range after.figures {
 		if strings.HasPrefix(line, "range ") && strings.HasSuffix(line, " "+other) && row.builtBy != r.build {
-			t.Errorf("the walk left %s recorded as %s's fold", line, row.builtBy)
+			t.Errorf("the rebuild left %s recorded as %s's fold", line, row.builtBy)
 		}
 	}
-	t.Logf("after %s and %s, the third build's walk rewrote the %d stored rows another build had folded otherwise",
+	t.Logf("after %s and %s, the third build's rebuild rewrote the %d stored rows another build had folded otherwise",
 		first, "another-build", len(writtenFigures(state.figures, after.figures)))
 }
 
@@ -649,8 +649,9 @@ func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 // a batch of end days a pass, what it has folded is at every pass the fold of the rows that stand,
 // and a project stands built only once its walk has folded every end day through today+2, which no
 // project with rows does while its walk has batches left. A project made later is built at the next
-// pass, holding no row. The marker then holds whichever build serves: a new build's first pass, a
-// roll of the two, and a rollback to the first all read the figures as built.
+// pass, holding no row. The marker then holds whichever build serves: a release's passes, which
+// rebuild aside (rebuild.go), a pass of the build before it in the roll, the release's flip, and a
+// rollback to the first build all read the figures as built.
 func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 	r := newRefresherRig(t)
 	r.batch = 2
@@ -664,7 +665,7 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 			t.Errorf("the first pass, whose walks of the day rows have days left, left figures built: %v", built)
 		}
 		expectTruth(t, fmt.Sprintf("pass %d", passes), r.storedFigures(t), r.truthFigures(t))
-		walks, err := r.registry.readWalks(t.Context(), r.build)
+		walks, err := r.registry.readWalks(t.Context())
 		if err != nil {
 			t.Fatalf("read the walks: %v", err)
 		}
@@ -692,18 +693,17 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 	r.pass(t)
 	r.expectBuilt(t, "a pass after a project is made", refresherToday)
 
-	first := r.build
-	r.build = "another-build"
+	old := *r
+	r.release("another-build")
 	r.pass(t)
-	r.expectBuilt(t, "a new build's first pass", refresherToday)
-	r.build = first
-	r.pass(t)
-	r.expectBuilt(t, "a pass of the build before it, as in a roll or a rollback", refresherToday)
-	r.build = "another-build"
+	r.expectBuilt(t, "a release's first pass", refresherToday)
+	old.pass(t)
+	r.expectBuilt(t, "a pass of the build before it, as in a roll", refresherToday)
 	r.settle(t)
-	r.build = first
-	r.pass(t)
-	r.expectBuilt(t, "a rollback once the new build's walk is done", refresherToday)
+	r.expectBuilt(t, "the release's flip", refresherToday)
+	old.release(old.build)
+	old.settle(t)
+	r.expectBuilt(t, "a rollback once the release has flipped", refresherToday)
 	expectTruth(t, "after the roll and the rollback", r.storedFigures(t), r.truthFigures(t))
 }
 

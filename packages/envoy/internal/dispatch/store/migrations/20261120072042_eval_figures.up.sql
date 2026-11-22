@@ -31,9 +31,9 @@
 --   oldest_updated_at
 --               the oldest updated_at of the rows folded, which the read's freshness answers.
 --   built_by    the build that folded the figures, as eval_days.built_by is the build that built a
---               day row: every build writes the figures of the rows it writes, and a build whose
---               folds differ rewrites the figures an older build folded once its whole walk of
---               them reaches them, writing only those that move.
+--               day row: every build writes the figures of the rows it writes, and a release whose
+--               folds differ rewrites, in its rebuild's flip (evals/rebuild.go), the figures an
+--               older build folded that its folds move, and no other.
 -- A range that holds no listed row of the eval has no row: its fold is the fold of no parts.
 --
 -- eval_day_figures holds one row per project, repository, day, eval and deploy repository that
@@ -55,16 +55,23 @@
 -- eval_figures_built holds one row per project whose figures are built: the first whole walk of
 -- them, by any build, sets it, and a read of an offered range folds the stored figures from then
 -- on, whichever build serves it.
---   through     the last end day the figures are built through, which each build's figures walk
---               moves on as a new UTC day adds one, and never back.
+--   through     the last end day the figures are built through, which the figures walk moves on as
+--               a new UTC day adds one, and never back.
 --   built_by    the build whose walk first built them.
 --   updated_at  when through last moved.
 --
--- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
--- one neither reads nor writes any, so the two builds roll together (cmd/dispatch/README.md,
--- "Database migrations"). The foreign keys to projects take SHARE ROW EXCLUSIVE on projects for
--- the length of this transaction, which holds a project write and no project read, as
--- 20261117100006's do. The census answers 0, and rolling back past it is an image rollback alone.
+-- Six statement-level triggers, three on each figures table, record the end days a statement wrote
+-- or deleted figures of (a range's end day, the day after a day's) for the figures walk of the
+-- building rebuild that has folded them (eval_rebuild_reverify, migration 20261117100021), whatever
+-- process's statement it was: the flip's pass folds those end days again before the flip. They
+-- write nothing while no rebuild is building.
+--
+-- Three new tables, all empty, and the triggers: nothing existing is read or rewritten, and the
+-- release before this one neither reads nor writes any, so the two builds roll together
+-- (cmd/dispatch/README.md, "Database migrations"). The foreign keys to projects take SHARE ROW
+-- EXCLUSIVE on projects for the length of this transaction, which holds a project write and no
+-- project read, as 20261117100006's do. The census answers 0, and rolling back past it is an
+-- image rollback alone.
 create table eval_range_figures (
     project_key text not null references projects (key) on delete cascade,
     repo text not null,
@@ -118,3 +125,49 @@ create table eval_figures_built (
     built_by text not null,
     updated_at timestamptz not null default now()
 );
+
+-- eval_rebuild_queue_range_figures and eval_rebuild_queue_day_figures record, for each project a
+-- statement wrote or deleted figures of (touched), each end day they fold: a range's end day, and
+-- the day after a day's.
+create function eval_rebuild_queue_range_figures() returns trigger language plpgsql as $$
+begin
+  if not exists (select 1 from eval_rebuilds where state = 'building') then
+    return null;
+  end if;
+  insert into eval_rebuild_reverify (rebuild_id, project_key, family, day)
+  select distinct walk.rebuild_id, touched.project_key, 'figures', touched.end_day
+  from touched
+  join eval_rebuilds rebuild on rebuild.state = 'building'
+  join eval_rebuild_walks walk on walk.rebuild_id = rebuild.id and walk.family = 'figures' and walk.project_key = touched.project_key
+  where walk.next_day > touched.end_day
+  on conflict do nothing;
+  return null;
+end $$;
+
+create function eval_rebuild_queue_day_figures() returns trigger language plpgsql as $$
+begin
+  if not exists (select 1 from eval_rebuilds where state = 'building') then
+    return null;
+  end if;
+  insert into eval_rebuild_reverify (rebuild_id, project_key, family, day)
+  select distinct walk.rebuild_id, touched.project_key, 'figures', touched.day + 1
+  from touched
+  join eval_rebuilds rebuild on rebuild.state = 'building'
+  join eval_rebuild_walks walk on walk.rebuild_id = rebuild.id and walk.family = 'figures' and walk.project_key = touched.project_key
+  where walk.next_day > touched.day + 1
+  on conflict do nothing;
+  return null;
+end $$;
+
+create trigger eval_range_figures_rebuild_inserted after insert on eval_range_figures
+  referencing new table as touched for each statement execute function eval_rebuild_queue_range_figures();
+create trigger eval_range_figures_rebuild_updated after update on eval_range_figures
+  referencing new table as touched for each statement execute function eval_rebuild_queue_range_figures();
+create trigger eval_range_figures_rebuild_deleted after delete on eval_range_figures
+  referencing old table as touched for each statement execute function eval_rebuild_queue_range_figures();
+create trigger eval_day_figures_rebuild_inserted after insert on eval_day_figures
+  referencing new table as touched for each statement execute function eval_rebuild_queue_day_figures();
+create trigger eval_day_figures_rebuild_updated after update on eval_day_figures
+  referencing new table as touched for each statement execute function eval_rebuild_queue_day_figures();
+create trigger eval_day_figures_rebuild_deleted after delete on eval_day_figures
+  referencing old table as touched for each statement execute function eval_rebuild_queue_day_figures();

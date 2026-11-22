@@ -85,10 +85,11 @@ var buildCommit string
 
 // processBuild names the build this process is, for the Legion facts consumer's record of the
 // build that last read each project whole (legionfacts.Deps.Build) and for the eval day-row
-// refresher's record of the build each walk was made under (evals.RefresherDeps.Build).
+// refresher's record of the build that serves the day rows (evals.RefresherDeps.Build).
 // legionfacts/scope.go's legionProjects says why a pass under a build that record does not name
-// reads the project whole again; a walk recorded under another build is begun again, so every day
-// row of each family is rebuilt under this one (evals/refresher.go).
+// reads the project whole again; a process whose first pass finds the day rows served by another
+// build rebuilds them aside and flips what its rules move, and nothing where they move nothing
+// (evals/rebuild.go).
 //
 // It is buildCommit where the image build stamped one. Every process of one release then
 // answers that one commit, so the fleet reads each project whole once per release and after that
@@ -103,8 +104,8 @@ var buildCommit string
 // (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
 // under the edited rule, where the record the run before it left would say each was read whole
 // already. What that read costs is in legionfacts/scope.go's legionProjects. The same suffix has
-// the eval day-row refresher rebuild every day row of every family at each start of an unstamped
-// binary, since every walk it finds was recorded under another build.
+// the eval day-row refresher rebuild every served family aside at each start of an unstamped
+// binary, since the rows it finds are served by another build.
 //
 // It answers one string for as long as the process runs: the loop compares the string it
 // recorded, and a process that answered two would read every project whole on every pass.

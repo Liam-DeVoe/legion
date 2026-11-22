@@ -20,18 +20,19 @@ import (
 // and R14's 2 s for every change kind): each day whole, from its own input, and, where the changes
 // move what days they do not name hold, those days too, in the page's one commit.
 //
-// The stored rows of a day the running build's walk has computed are a function of the inputs and
-// the settings alone: the rows the day's input builds, less each lead time to production that
-// counts no pull request before its series' first input day (dropUnshipped), and the zero row of
-// every series the day has no input of from that series' first input day on (zerosFrom). So a
-// change moves the rows of a day it does not name only through a first input day or through the
-// repositories the rows are kept for (the day of a deploy that comes to ship, or ships no more, a
-// pull request no item records the deploy of is one the page names, refresh.shippedNeighbours):
+// The stored rows of a day the stored rows are whole through (eval_days_serving) are a function
+// of the inputs and the settings alone: the rows the day's input builds, less each lead time to
+// production that counts no pull request before its series' first input day (dropUnshipped), and
+// the zero row of every series the day has no input of from that series' first input day on
+// (zerosFrom). So a change moves the rows of a day it does not name only through a first input day
+// or through the repositories the rows are kept for (the day of a deploy that comes to ship, or
+// ships no more, a pull request no item records the deploy of is one the page names,
+// refresh.shippedNeighbours):
 //
 //   - B: a day the page names holds input of a series before the series' first input day, or of a
 //     series that had none. The days between the new first day and the old one (through the last
-//     day the walk has computed, where it had none) gain the series' zero rows, and each lead time
-//     dropUnshipped dropped of them.
+//     day the stored rows are whole through, where it had none) gain the series' zero rows, and
+//     each lead time dropUnshipped dropped of them.
 //   - E: the page names a series' first input day, and the day holds no input of the series any
 //     more. The days from it up to the series' next day with input lose its rows.
 //   - C: the repositories that hold a delivery run changed (syncKept). A new repository's rows and
@@ -47,13 +48,16 @@ import (
 // its cursors (rebuild, commitPage): one commit, whose eval_days changes are one per eval and
 // carry the rebuild's mark (MarkRebuild), so an evals view is recomputed for them at once and no
 // reader sees a state between the one before the change and the one after it. It moves no walk:
-// the span ends at the last day the running build's walk has computed, and the walk builds each
-// later day from the first input days of the days before it, the span's among them.
+// the span ends at the last day the stored rows are whole through (eval_days_serving), and the walk
+// builds each later day from the first input days of the days before it, the span's among them.
 //
-// What still begins a walk again, which then rebuilds its days a batch a pass, each day a commit
-// of its own: a change of a repository's mapping in repo_projects, a release (a build has no walk
-// record until its own walk makes one), a lost change cursor, a database whose rows' settings are
-// not recorded, and a project first seen. Those are walk restarts, and no span.
+// What else rebuilds many days is no span. A change of a repository's mapping in repo_projects
+// begins the walks again, which rebuild their days in the open a batch a pass, each day a commit
+// of its own: a walk restart, as a database or a project first seen is walked. A release, a lost
+// change cursor and a database whose rows' settings are not recorded rebuild the served rows aside
+// and flip what moved in one commit (rebuild.go); a page that writes days while one runs keeps
+// their zero rows (servingNext), and the triggers of the day rows queue them, a span's among them,
+// for the rebuild to build again before its flip.
 
 // dayFamily is one family of computed day rows a page writes whole days of: the walk that builds
 // its days, the name its rows carry in a refusal, its evals and its families of eval_day_members.
@@ -186,9 +190,9 @@ func (r *refresh) nameLeft(ctx context.Context, days *pageDays) error {
 }
 
 // finalize is day as its project's day holds it by the first input days first: the rows its input
-// builds less the lead times dropUnshipped drops, and, where the running build's walk has
-// computed the day, the zero row of each series it has no input of whose first input day is on or
-// before it.
+// builds less the lead times dropUnshipped drops, and, where the stored rows are whole through the
+// day (computed, eval_days_serving), the zero row of each series it has no input of whose first
+// input day is on or before it.
 func (n *namedDay) finalize(first map[evalKey]time.Time, computed bool) ProjectDay {
 	day := n.raw
 	day.Rows = dropUnshipped(day.Rows, first, n.day)
@@ -273,9 +277,9 @@ func trackMoves(days *pageDays, firsts map[string]map[evalKey]time.Time) map[str
 
 // keptSpans is, of the repositories that hold a delivery run now (is) against those the rows stand
 // built for (was), each one whose days are built whole, with those days, through reach, the last
-// day the running build's delivery walk has computed: a new repository's from its start on, and
-// one whose start moved the days between its two starts; and gone, each repository of was that
-// holds no run any more.
+// day the stored delivery rows are whole through: a new repository's from its start on, and one
+// whose start moved the days between its two starts; and gone, each repository of was that holds
+// no run any more.
 func keptSpans(was, is []keptRepo, reach time.Time) (covered map[string]daySpan, gone []string) {
 	covered = map[string]daySpan{}
 	before := make(map[string]time.Time, len(was))
@@ -559,7 +563,9 @@ func MarkRebuild(ctx context.Context, tx pgx.Tx) error {
 
 // writeRebuilds writes rebuilds in tx, a page's commit, before the page's cursors: marked a
 // rebuild's (MarkRebuild), every one's rows, then every one's members, then the stored figures,
-// the order every writer of the three takes them in.
+// the order every writer of the three takes them in. A span that finds a repository's runs gone
+// begins the rebuild that is building again (replaceRebuild): every day of the repository goes, and
+// building them all again before the flip would be a whole rebuild in the flip's pass.
 func writeRebuilds(ctx context.Context, tx pgx.Tx, rebuilds []*rebuild) error {
 	if len(rebuilds) == 0 {
 		return nil
@@ -576,15 +582,20 @@ func writeRebuilds(ctx context.Context, tx pgx.Tx, rebuilds []*rebuild) error {
 			return err
 		}
 	}
+	gone := false
 	for _, one := range rebuilds {
 		if err := one.writeMembers(ctx, tx); err != nil {
 			return err
 		}
+		gone = gone || len(one.goneRepos) > 0
 	}
 	for _, one := range rebuilds {
 		if err := one.fold(ctx, tx); err != nil {
 			return err
 		}
+	}
+	if gone {
+		return replaceRebuild(ctx, tx, "", "", nil)
 	}
 	return nil
 }
@@ -650,11 +661,11 @@ type keptMove struct {
 
 // writeNamed writes the days of one family a page names (days), and with them each day an item of
 // theirs left (nameLeft). Where the days move no series' first input day and kept names no change
-// the walk has computed a day of, or the running build's walk has computed no day at all (it then
-// builds every day itself), it writes each day in a transaction of its own (writeProjectDay), by
-// the stored first input days, with its zero rows where the walk has computed it, and answers
-// nil. Otherwise it builds the span (span.go's rules) and answers the rebuild the caller commits
-// with its cursors, having written nothing.
+// of a day the stored rows are whole through, or no rebuild has flipped the family's rows yet (its
+// rebuild then builds every day itself), it writes each day in a transaction of its own
+// (writeProjectDay), by the stored first input days, with its zero rows where the stored rows are
+// whole through it (servingNext), and answers nil. Otherwise it builds the span (span.go's rules)
+// and answers the rebuild the caller commits with its cursors, having written nothing.
 func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove) (*rebuild, error) {
 	if err := r.nameLeft(ctx, days); err != nil {
 		return nil, err
@@ -673,7 +684,7 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 			return nil, err
 		}
 		firsts[project] = first
-		if nexts[project], err = r.walkNext(ctx, family.walk, project); err != nil {
+		if nexts[project], err = r.servingNext(ctx, family.walk, project); err != nil {
 			return nil, err
 		}
 	}
@@ -683,8 +694,8 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 	tracked := trackMoves(days, firsts)
 	for project := range tracked {
 		if nexts[project] == nil {
-			// The walk has computed no day of the project's: it builds every day, by the first input
-			// days it finds, and the page's days hold their input's rows alone until then.
+			// No rows of the project are served yet: its first walk builds every day, by the first
+			// input days it finds, and the page's days hold their input's rows alone until then.
 			delete(tracked, project)
 		}
 	}
@@ -710,13 +721,14 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 			if len(day.Rows) == 0 && !named.explicit {
 				continue
 			}
-			if err := r.store.writeProjectDay(ctx, family.what, day, family.slugs, family.families, r.build, true); err != nil {
+			if err := r.store.writeProjectDay(ctx, family, day, r.build, true); err != nil {
 				return nil, err
 			}
 			r.report.days[builtDay{family: family.walk, project: key.project, day: key.day}] = true
 		}
 		if len(trackMoves(days, firsts)) > 0 {
-			// A first input day moved on a day the walk has not computed: the pass reads them again.
+			// A first input day moved on a day the stored rows are not whole through: the pass reads
+			// them again.
 			for _, project := range projects {
 				delete(r.first, walkKey{family: family.walk, project: project})
 			}

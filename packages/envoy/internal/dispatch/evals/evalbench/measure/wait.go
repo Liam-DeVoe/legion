@@ -34,10 +34,11 @@ type heads struct {
 }
 
 // consumerState is what one poll read of the consumers and their feeds: at this head, the
-// refresher's cursors (its two feeds' and the stored figures' own, by name), its walks, its day
-// rows' builds, the projects that hold day rows, how far each project's stored figures are built
-// (eval_figures_built) and the keyword fill's cursor (search_text_versions_fill.event_id, 0 before
-// the fill writes its row), which is nil at the base head, which has no keyword fill.
+// refresher's cursors (its two feeds' and the stored figures' own, by name), its walks, the
+// serving records of its day rows (eval_days_serving), how many of its rebuilds are building, its
+// day rows' builds, the projects that hold day rows, how far each project's stored figures are
+// built (eval_figures_built) and the keyword fill's cursor (search_text_versions_fill.event_id, 0
+// before the fill writes its row), which is nil at the base head, which has no keyword fill.
 type consumerState struct {
 	heads       heads
 	facts       map[string]int64
@@ -45,13 +46,15 @@ type consumerState struct {
 	computed    map[string]string
 	days        map[string]int64
 	walks       []walk
+	serving     map[string]string
+	rebuilding  int64
 	builtBy     map[string]int64
 	dayProjects []string
 	built       map[string]time.Time
 	fill        *int64
 }
 
-// walk is one row of eval_days_walks.
+// walk is one row of eval_days_walks: builtBy is the build whose process last moved it.
 type walk struct {
 	family, project, builtBy string
 	next                     *time.Time
@@ -186,6 +189,21 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}); err != nil {
 		return consumerState{}, fmt.Errorf("read the refresher's walks: %w", err)
 	}
+	serving, err := pool.Query(ctx, `select family || '/' || project_key, built_by from eval_days_serving`)
+	if err != nil {
+		return consumerState{}, fmt.Errorf("read what the day rows are served by: %w", err)
+	}
+	state.serving = map[string]string{}
+	var family string
+	if _, err := pgx.ForEachRow(serving, []any{&family, &build}, func() error {
+		state.serving[family] = build
+		return nil
+	}); err != nil {
+		return consumerState{}, fmt.Errorf("read what the day rows are served by: %w", err)
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from eval_rebuilds where state = 'building'`).Scan(&state.rebuilding); err != nil {
+		return consumerState{}, fmt.Errorf("read the refresher's building rebuilds: %w", err)
+	}
 	counts, err := pool.Query(ctx, `select built_by, count(*) from eval_days group by built_by`)
 	if err != nil {
 		return consumerState{}, fmt.Errorf("read the day rows' builds: %w", err)
@@ -240,14 +258,18 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 // works read whole under build; each cursor at or past previous, where its feed stood lagPolls
 // polls before (a feed the server's own sweeps keep writing is never still, so a cursor is held
 // to a head it has had a whole sweep to reach), the stored figures' own cursor among them; and at
-// this head every walk done under build (walkDone), every day row written by build, every
+// this head every walk done (walkDone), whichever build's process last moved it, the delivery rows
+// and the Legion rows of every project Legion works served by build (eval_days_serving: its walk
+// built them, or its rebuild's flip made them its own), no rebuild building, a day row, every
 // project that holds day rows with its stored figures built through the last end day of today
 // (evals.FiguresThrough's mark), since a first paint measured before that would read the day
 // rows, which the stored figures are there to spare it; and the keyword fill's cursor at the
-// newest event this poll read (filled). Production serves with the fill caught up once its one
-// backfill, at the deploy, is done, so evalbench's load writes the cursor as caught up with the
-// loaded log, and this waits for the fill to follow the events the server wrote after the load: a
-// paint measured while the fill still writes its batches would share the database with them.
+// newest event this poll read (filled). A day row keeps the build that last moved its values, so a
+// release whose rules move no value leaves them as they were. Production serves with the fill
+// caught up once its one backfill, at the deploy, is done, so evalbench's load writes the cursor as
+// caught up with the loaded log, and this waits for the fill to follow the events the server wrote
+// after the load: a paint measured while the fill still writes its batches would share the
+// database with them.
 func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	var missing []string
 	if previous == nil {
@@ -287,19 +309,20 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	families := map[string]bool{}
 	for _, one := range s.walks {
 		families[one.family+"/"+one.project] = true
-		if want := walkDone(one.family, today); one.builtBy != build || one.next == nil || !one.next.Equal(want) {
+		if want := walkDone(one.family, today); one.next == nil || !one.next.Equal(want) {
 			next := "none"
 			if one.next != nil {
 				next = one.next.Format(time.DateOnly)
 			}
-			missing = append(missing, fmt.Sprintf("the %s walk of %q under %s through %s (it is %q at %s)", one.family, one.project, build,
-				want.AddDate(0, 0, -1).Format(time.DateOnly), one.builtBy, next))
+			missing = append(missing, fmt.Sprintf("the %s walk of %q through %s (it is at %s, last moved by %q)", one.family, one.project,
+				want.AddDate(0, 0, -1).Format(time.DateOnly), next, one.builtBy))
 		}
 	}
-	want := []string{"delivery/"}
+	served := []string{"delivery/"}
 	for _, project := range s.projects {
-		want = append(want, "legion/"+project)
+		served = append(served, "legion/"+project)
 	}
+	want := slices.Clone(served)
 	for _, project := range s.dayProjects {
 		want = append(want, "figures/"+project)
 	}
@@ -308,6 +331,14 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 			missing = append(missing, "the "+family+" walk")
 		}
 	}
+	for _, family := range served {
+		if by, held := s.serving[family]; !held || by != build {
+			missing = append(missing, fmt.Sprintf("the %s rows served by %s (served %t by %q)", family, build, held, by))
+		}
+	}
+	if s.rebuilding > 0 {
+		missing = append(missing, fmt.Sprintf("%d rebuilds building", s.rebuilding))
+	}
 	last := today.AddDate(0, 0, evals.FigureLead)
 	for _, project := range s.dayProjects {
 		if through, held := s.built[project]; !held || through.Before(last) {
@@ -315,12 +346,11 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 				last.Format(time.DateOnly), held, through.Format(time.DateOnly)))
 		}
 	}
-	for other, count := range s.builtBy {
-		if other != build {
-			missing = append(missing, fmt.Sprintf("%d day rows built by %q", count, other))
-		}
+	rows := int64(0)
+	for _, count := range s.builtBy {
+		rows += count
 	}
-	if s.builtBy[build] == 0 {
+	if rows == 0 {
 		missing = append(missing, "a day row")
 	}
 	return missing
@@ -362,8 +392,14 @@ func (s consumerState) summary(build string) string {
 	done := 0
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, one := range s.walks {
-		if one.builtBy == build && one.next != nil && one.next.Equal(walkDone(one.family, today)) {
+		if one.next != nil && one.next.Equal(walkDone(one.family, today)) {
 			done++
+		}
+	}
+	served := 0
+	for _, by := range s.serving {
+		if by == build {
+			served++
 		}
 	}
 	var builds []string
@@ -371,6 +407,6 @@ func (s consumerState) summary(build string) string {
 		builds = append(builds, fmt.Sprintf("%s=%d", other, count))
 	}
 	slices.Sort(builds)
-	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d figures_built=%d of %d day_rows_by_build=[%s]", s.days, len(s.walks), done,
-		len(s.built), len(s.dayProjects), strings.Join(builds, " "))
+	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d served=%d of %d rebuilding=%d figures_built=%d of %d day_rows_by_build=[%s]",
+		s.days, len(s.walks), done, served, len(s.serving), s.rebuilding, len(s.built), len(s.dayProjects), strings.Join(builds, " "))
 }

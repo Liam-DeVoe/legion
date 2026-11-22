@@ -790,7 +790,7 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // (span.go). A row of another project, another day or another eval, and an item of another
 // family, is refused before anything is written.
 func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, deliveryFamily.what, day, deliveryDaySlugs, deliveryDayFamilies, builtBy, figures)
+	return s.writeProjectDay(ctx, deliveryFamily, day, builtBy, figures)
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its

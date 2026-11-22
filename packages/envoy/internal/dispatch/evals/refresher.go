@@ -52,10 +52,14 @@ import (
 // alone and so is written whether or not delivery settings exist. A walk builds every day from the
 // first input day of what it walks to today, a batch of days each RefresherGap (walkBatch), then
 // the day of each new UTC day as it comes, which is what writes the zero rows of a day nothing
-// happened on. Each build makes walks of its own (eval_days_walks is keyed by the build), so a
-// release rebuilds every row of each family the build before it wrote, as issue_facts_computed
-// makes the Legion facts consumer read each project whole again, and while two builds run each
-// continues its own walk.
+// happened on. There is one walk of each family and project, whichever build's process moves it.
+// A family's first walk, over a database or a project no rows are served of, builds its days in
+// the open, a day a commit, and its serving record (eval_days_serving) follows it. Where rows are
+// served, nothing that changed no input begins a walk again: a release (a process whose build is
+// not the one that serves the rows), a lost change cursor and delivery settings the rows stand
+// built under that are not recorded each rebuild the served families aside, in short transactions,
+// and make what moved visible in one short commit, so a rebuild whose rules move nothing writes
+// nothing (rebuild.go). While two builds roll, the release's rebuild flips once.
 //
 // The stored rows are a function of the inputs and the settings alone (dispatch://INFRA-2916, item
 // 8): two databases loaded with the same inputs and settings hold the same rows, whichever order
@@ -63,14 +67,15 @@ import (
 // upserted where a value moved (upsertDays), the rows the day no longer builds deleted
 // (deleteStaleDays), which the eval_days trigger logs, so a view of them wakes; and a zero row of
 // every series whose first input day is on or before it and that the day has no input of, written
-// on a day the running build's walk has computed. A series' first input day is the first day the
-// walk built holding input of it: the builders write a row of a series only on a day with its
-// input, the walk writes a zero row only on a day at or after that first day, and it takes each
-// series' first day from the days it built (refresh.firstOf), so a missing row is a day before it,
-// or a day the walk has not computed yet, which reads "no data" until the walk computes it (item
-// 5). A day a change names is written from its own input; every day after a first input day it
-// moves earlier, or from one that lost its input, and every day of a repository whose first runs
-// arrived, is written with it, in the page's one commit, as a whole walk builds it (span.go).
+// on a day the stored rows are whole through (eval_days_serving, servingNext), whatever walk or
+// rebuild runs. A series' first input day is the first day the walk built holding input of it: the
+// builders write a row of a series only on a day with its input, the walk writes a zero row only
+// on a day at or after that first day, and it takes each series' first day from the days it built
+// (refresh.firstOf), so a missing row is a day before it, or a day no walk has computed yet, which
+// reads "no data" until a walk computes it (item 5). A day a change names is written from its own
+// input; every day after a first input day it moves earlier, or from one that lost its input, and
+// every day of a repository whose first runs arrived, is written with it, in the page's one
+// commit, as a whole walk builds it (span.go).
 //
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // changes again; every write is safe to make twice.
@@ -149,10 +154,11 @@ type RefresherDeps struct {
 	// is not commit order, so a page stops at its safe horizon.
 	Horizon *events.Horizon
 	// Build names the build this process is, which every row the refresher writes records
-	// (built_by) and every walk is recorded under: cmd/dispatch's processBuild, the commit the
-	// image build stamped, as the Legion facts consumer reads it (legionfacts.Deps.Build). The
-	// empty string is no build, and RunRefresher refuses it: a walk recorded under it would be
-	// found its own by the next process that carried none.
+	// (built_by), and which a release's rebuild compares with the build that serves the rows
+	// (eval_days_serving): cmd/dispatch's processBuild, the commit the image build stamped, as the
+	// Legion facts consumer reads it (legionfacts.Deps.Build). The empty string is no build, and
+	// RunRefresher refuses it: rows served under it would be found its own by the next process
+	// that carried none.
 	Build string
 	// Leases is the pool a pass takes its lease connection from (duty.Exclusive).
 	Leases duty.Leases
@@ -400,15 +406,19 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 		return r.report, time.Time{}, nil
 	}
 	r.batched = batch
-	pending, err := r.walk(ctx)
+	live, rebuilding, err := r.walk(ctx)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
-	building, err := r.figuresPass(ctx, pending, sched.page)
+	building, err := r.figuresPass(ctx, live, sched.page)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
-	r.report.walksLeft = pending || building
+	finishing, err := r.finishRebuild(ctx, rebuilding)
+	if err != nil {
+		return r.report, time.Time{}, err
+	}
+	r.report.walksLeft = live || rebuilding || building || finishing
 	// The log keeps a day (delivery.ChangeRetention). A failed prune leaves the rows for the next
 	// pass and fails nothing else, as the reconcile's does.
 	if _, err := delivery.PruneChanges(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
@@ -502,22 +512,39 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 }
 
 // commitPage moves the two cursors to the positions a page read, begins again each walk the page's
-// changes call for, records work.built, where it is set, as the delivery settings the delivery and
+// changes call for, begins the rebuild they call for (work.rebuild: of every served family,
+// replaceRebuild), records work.built, where it is set, as the delivery settings the delivery and
 // CI rows stand built under (eval_days_settings), and work.kept, where it is set, as the
 // repositories they stand built for (syncKept), in one transaction, which first writes rebuilds:
 // the days of each family whose days the page writes in its commit, with every other day they
 // move (writeRebuilds: the rows, then the members, then the stored figures, ahead of the cursors,
 // the walks and the settings). The days the page named that move no other day are written before
-// it, so a crash between the two reads the same changes again, and a walk the changes begin again
-// is recorded with the cursor that passed them, and with the settings the walk builds under where
-// none were recorded (syncSettings). Where one of the page's changes is of the delivery settings
-// row and no rewrite of the page said so already, the commit says that the day rows stand at the
-// settings (markSettingsApplied). The event cursor is stamped with the moment the pass ran as
-// of, and the change cursor with its ReadAt, when a page last read the change log to its end
-// (page), which the lost-cursor rule reads and which a full page leaves where it stood. Once the
-// transaction commits, the pass records what the rebuilds wrote (committed), and moves a batch of
-// the change log's outbox into the log where the commit logged a change.
+// it, so a crash between the two reads the same changes again, and a walk or a rebuild the changes
+// begin is recorded with the cursor that passed them, and with the settings it builds under where
+// none were recorded (syncSettings). A walk a lost cursor begins again is one of a family no rows
+// are served of, which a walk builds in the open; a served family's is the rebuild's. Where one of
+// the page's changes is of the delivery settings row and no rewrite of the page said so already,
+// the commit says that the day rows stand at the settings (markSettingsApplied). The event cursor
+// is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
+// page last read the change log to its end (page), which the lost-cursor rule reads and which a
+// full page leaves where it stood. Once the transaction commits, the pass records what the
+// rebuilds wrote (committed), and moves a batch of the change log's outbox into the log where the
+// commit logged a change.
 func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, rebuilds []*rebuild) error {
+	var rebuildWalks []walkKey
+	if work.rebuild != "" {
+		var err error
+		if rebuildWalks, err = r.servedWalks(ctx); err != nil {
+			return err
+		}
+		if !work.mapping {
+			served := map[walkKey]bool{}
+			for _, key := range rebuildWalks {
+				served[key] = true
+			}
+			restarts = slices.DeleteFunc(slices.Clone(restarts), func(key walkKey) bool { return served[key] })
+		}
+	}
 	began := time.Now()
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
@@ -549,22 +576,26 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		for i, key := range restarts {
 			families[i], projects[i] = key.family, key.project
 		}
-		// Every build's walk begins again: a change this page passed is read by no other pass,
-		// whichever build's process runs it.
+		// The walk begins again whichever build's process runs it next: a change this page passed
+		// is read by no other pass.
 		if _, err := tx.Exec(ctx, `
-			update eval_days_walks walk set next_day = null, updated_at = $3
+			update eval_days_walks walk set next_day = null, built_by = $3, updated_at = $4
 			from unnest($1::text[], $2::text[]) as given(family, project)
 			where walk.family = given.family and walk.project_key = given.project
-		`, families, projects, r.now); err != nil {
-			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into eval_days_walks (family, project_key, built_by, next_day, updated_at)
-			select family, project, $3, null, $4 from unnest($1::text[], $2::text[]) as given(family, project)
-			order by family, project
-			on conflict (family, project_key, built_by) do nothing
 		`, families, projects, r.build, r.now); err != nil {
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
+		}
+	}
+	switch {
+	case work.rebuild != "":
+		if err := replaceRebuild(ctx, tx, work.rebuild, r.build, rebuildWalks); err != nil {
+			return err
+		}
+	case work.mapping:
+		// The rebuild building may have staged what the mapping moved: it begins again, its build's
+		// still, once the walks begun again have rebuilt the families in the open.
+		if err := replaceRebuild(ctx, tx, "", "", nil); err != nil {
+			return err
 		}
 	}
 	if work.built != nil {
@@ -597,20 +628,20 @@ type walkKey struct {
 	project string
 }
 
-// walkState is one walk's record under the running build: the first day it has not built, nil
-// while it is to begin at its first input day.
+// walkState is one walk's record: the first day it has not built, nil while it is to begin at its
+// first input day.
 type walkState struct {
 	next *time.Time
 }
 
-// staleWalk is how long another build's record of a walk stands unmoved before a build whose own
-// walk reached today drops it: a running build's walk that reached today moves at least once a UTC
-// day, so a record two days still is one no running process holds.
+// staleWalk is how long a rebuild stands unmoved before another build's refresher abandons it
+// (rebuildDays): a rebuild its build's process runs moves with each batch it stages, so one two
+// days still is one no running process holds.
 const staleWalk = 48 * time.Hour
 
-// readWalks is every record of a walk under build.
-func (s *Store) readWalks(ctx context.Context, build string) (map[walkKey]walkState, error) {
-	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day from eval_days_walks where built_by = $1`, build)
+// readWalks is every record of a walk, whichever build's process last moved it.
+func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
+	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day from eval_days_walks`)
 	if err != nil {
 		return nil, fmt.Errorf("read the walks of the day rows: %w", err)
 	}
@@ -631,9 +662,7 @@ func (s *Store) readWalks(ctx context.Context, build string) (map[walkKey]walkSt
 	return walks, nil
 }
 
-// recordWalk records that the walk key under the pass's build has built every day before next,
-// and, where that is past today, drops another build's record of the walk that has not moved for
-// staleWalk.
+// recordWalk records that the walk key has built every day before next, under the pass's build.
 func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) error {
 	return r.recordWalkIn(ctx, r.store.database.Pool, key, next)
 }
@@ -644,23 +673,29 @@ type executor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// recordWalkIn is recordWalk's write in q.
+// recordWalkIn is recordWalk's write in q. A walk of the delivery or the Legion rows that builds
+// a day the stored rows were not whole through moves their serving record on with it
+// (eval_days_serving), and makes it, under the walk's build, where none is: a family's first walk,
+// whose days are served from the first it writes. It never moves the record back: a walk begun
+// again stands behind it.
 func (r *refresh) recordWalkIn(ctx context.Context, q executor, key walkKey, next time.Time) error {
 	if _, err := q.Exec(ctx, `
 		insert into eval_days_walks (family, project_key, built_by, next_day, updated_at)
 		values ($1, $2, $3, $4, $5)
-		on conflict (family, project_key, built_by) do update
-		set next_day = excluded.next_day, updated_at = excluded.updated_at
+		on conflict (family, project_key) do update
+		set next_day = excluded.next_day, built_by = excluded.built_by, updated_at = excluded.updated_at
 	`, key.family, key.project, r.build, next, r.now); err != nil {
 		return fmt.Errorf("record the %s walk of %q through %s: %w", key.family, key.project, next.Format(time.DateOnly), err)
 	}
-	if !next.After(r.today) {
+	if key.family != walkDelivery && key.family != walkLegion {
 		return nil
 	}
 	if _, err := q.Exec(ctx, `
-		delete from eval_days_walks where family = $1 and project_key = $2 and built_by <> $3 and updated_at < $4
-	`, key.family, key.project, r.build, r.now.Add(-staleWalk)); err != nil {
-		return fmt.Errorf("drop the stale %s walks of %q: %w", key.family, key.project, err)
+		insert into eval_days_serving (family, project_key, built_by, next_day, updated_at) values ($1, $2, $3, $4, $5)
+		on conflict (family, project_key) do update set next_day = excluded.next_day, updated_at = excluded.updated_at
+		where eval_days_serving.next_day < excluded.next_day
+	`, key.family, key.project, r.build, next, r.now); err != nil {
+		return fmt.Errorf("move the serving record of the %s rows of %q to %s: %w", key.family, key.project, next.Format(time.DateOnly), err)
 	}
 	return nil
 }

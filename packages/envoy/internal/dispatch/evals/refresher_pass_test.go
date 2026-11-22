@@ -88,12 +88,12 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 
 // TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs: once every walk is done, the change the
 // changes cursor rests on passes its 24 hours and is pruned, as the refresher's own prune takes it
-// on a day with no newer change, and the next pass begins no walk again and writes no day. The
-// change the cursor rests on leaving the log younger than its retention, as a reset log or a
-// delete by hand takes it, is a loss no one can name, and the pass after it begins every walk
-// again, which writes the days of each. So is the change it rests on pruned after its retention
-// when no pass had committed for longer than the retention: while the refresher stood still the
-// prune may have taken changes after the cursor that no pass read.
+// on a day with no newer change, and the next pass begins no rebuild and writes no day. The change
+// the cursor rests on leaving the log younger than its retention, as a reset log or a delete by
+// hand takes it, is a loss no one can name, and the pass after it begins a rebuild of every family,
+// whose walk builds the days of each. So is the change it rests on pruned after its retention when
+// no pass had committed for longer than the retention: while the refresher stood still the prune
+// may have taken changes after the cursor that no pass read.
 func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedLegionEval(t)
@@ -116,7 +116,7 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 		t.Fatalf("prune the log: %v", err)
 	}
 	if report, _ := r.pass(t); len(report.days) != 0 {
-		t.Errorf("the pass after the cursor's change was pruned in its time wrote %v, want nothing: no walk begins again", report.sorted())
+		t.Errorf("the pass after the cursor's change was pruned in its time wrote %v, want nothing: no rebuild begins", report.sorted())
 	}
 
 	r.exec(t, "log a change", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'young')`)
@@ -126,7 +126,7 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	r.exec(t, "delete the young change", `delete from delivery_changes where ref = 'young'`)
 	lost, _ := r.pass(t)
 	if !slices.Contains(lost.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2))) {
-		t.Errorf("the pass after the cursor's young change vanished wrote %v, want every walk begun again, EVAL's Legion days among them", lost.sorted())
+		t.Errorf("the pass after the cursor's young change vanished built %v, want a rebuild of every family begun, EVAL's Legion days among them", lost.sorted())
 	}
 	t.Logf("pruned %d changes through the cursor's %d: the pass after wrote nothing; a young change vanished: the pass after wrote %d days",
 		pruned, resting.Seq, len(lost.days))
@@ -146,7 +146,7 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	r.exec(t, "stamp the last pass 25 hours before the next", `update eval_days_cursor set updated_at = $1`, r.now.Add(-25*time.Hour))
 	stalled, _ := r.pass(t)
 	if !slices.Contains(stalled.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2))) {
-		t.Errorf("the pass after 25 hours with no pass committed wrote %v, want every walk begun again, EVAL's Legion days among them", stalled.sorted())
+		t.Errorf("the pass after 25 hours with no pass committed built %v, want a rebuild of every family begun, EVAL's Legion days among them", stalled.sorted())
 	}
 	t.Logf("after a stall past the retention the pass wrote %d days", len(stalled.days))
 }
@@ -156,8 +156,8 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 // whole change log stands 23 hours before a pass that catches up a backlog a page at a time; the
 // first page reads one change of the backlog and carries that read's ReadAt forward, a prune takes
 // that change and EVAL-1's moved hours after it, and the page after the prune reads the clock two
-// hours on, past the retention since that read. It reads the cursor as lost and begins every walk
-// again, so the walk writes EVAL-1's close day with its new hours, which no page read.
+// hours on, past the retention since that read. It reads the cursor as lost and begins a rebuild of
+// every family, whose flip writes EVAL-1's close day with its new hours, which no page read.
 func TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost(t *testing.T) {
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
@@ -210,9 +210,7 @@ func TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := pass.walk(ctx); err != nil {
-		t.Fatalf("walk: %v", err)
-	}
+	r.settle(t)
 	samples := r.day(t, evalID, metrics.SeriesHours, "", history.d1).Samples
 	if !slices.Contains(samples, 7) {
 		t.Errorf("after the catch-up %s holds the hours %v, want EVAL-1's 7, which the prune took before a page read it", history.d1.Format(time.DateOnly), samples)
