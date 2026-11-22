@@ -109,6 +109,10 @@ type durableNames struct {
 	// generations is JetStream on each open connection, by the physical name the connection is
 	// named for; Conn is that connection.
 	generations map[string]jetstream.JetStream
+	// opening counts the opens in flight of each logical name (open), which a reader's close of
+	// retired names waits out (info): an open may still read on any of its name's connections,
+	// and its own keep or drop closes them when it ends.
+	opening map[string]int
 }
 
 // daemonNaming is the naming of project's daemon family (daemon/<project>) in the families' table,
@@ -136,7 +140,7 @@ func newDurableNames(own jetstream.JetStream, pool Pool, spec ConsumerSpec) (*du
 	if err != nil {
 		return nil, err
 	}
-	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, own: own, generations: map[string]jetstream.JetStream{}}
+	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, own: own, generations: map[string]jetstream.JetStream{}, opening: map[string]int{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:             store,
 		Server:            durableServer{d},
@@ -251,10 +255,44 @@ func (d *durableNames) drop(record consumernames.Record) {
 func (d *durableNames) closeNames(current string, names []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.closeNamesLocked(current, names)
+}
+
+// closeNamesLocked is closeNames, with d.mu held.
+func (d *durableNames) closeNamesLocked(current string, names []string) {
 	for _, physical := range names {
 		if open, ok := d.generations[physical]; ok && physical != current {
 			open.Conn().Close()
 			delete(d.generations, physical)
+		}
+	}
+}
+
+// closeRetired closes the connections of the names logical's record retired, as a reader's Select
+// leaves them (info), unless an open of logical is in flight: that open may still read on them,
+// its Step 0 reading a candidate the reader abandoned, or launch reading its own candidate again,
+// and a close would end that read on "nats: connection closed", which Ensure does not retry. The
+// count is read and the connections closed under one hold of d.mu, so an open that starts after
+// the check dials anew; the open in flight closes them itself when it ends (keep, drop).
+func (d *durableNames) closeRetired(logical, current string, retired []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.opening[logical] > 0 {
+		return
+	}
+	d.closeNamesLocked(current, retired)
+}
+
+// opened counts an open of logical in flight (opening) until the func it returns is called.
+func (d *durableNames) opened(logical string) (done func()) {
+	d.mu.Lock()
+	d.opening[logical]++
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.opening[logical]--; d.opening[logical] == 0 {
+			delete(d.opening, logical)
 		}
 	}
 }
@@ -285,6 +323,9 @@ func (d *durableNames) close() {
 // its caller retries it.
 func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	logical := config.Durable
+	// Counted first, so its keep or drop closes before the count falls: a reader's close waits
+	// for both (closeRetired).
+	defer d.opened(logical)()
 	sel, _, err := d.names.Ensure(ctx, logical, consumernames.CreateRequest{Create: d.create(config), First: d.first})
 	if err != nil {
 		d.drop(sel.Record)
@@ -330,15 +371,15 @@ func (d *durableNames) recordLastFloor(ctx context.Context, logical, current str
 // a reader: the boot's reconcile (Consumers.DispatchPosition) and the state route (Consumers.Lag).
 // It creates nothing. Its Step 0 may abandon a create left open, reading the candidate on the
 // candidate's own connection and retiring it, so it then closes the connections of the names the
-// record retired (closeNames), and no others: never the current's, nor the candidate of an open the
-// record still holds. A create of a repositories change beside it (open) that outlives the settle
-// age, 2 s, while a Lag read runs is abandoned and retired here too, so its connection closes as
-// well: that create ends on the closed connection, and its publish or reserve conflicts with the
-// abandon's write and Ensure tries again with a fresh candidate, the same end as before this
-// close, which then dials anew.
+// record retired, and no others, never the current's (closeRetired). It closes none while an open
+// of the same logical name is in flight, such as a repositories change: that open may still read
+// on the candidate's connection, its Step 0 reading the candidate this read abandoned, or launch
+// reading its own candidate again after a create that outlived the settle age, and a close would
+// end that read on "nats: connection closed", which Ensure does not retry. The open closes those
+// connections itself when it ends (keep, drop).
 func (d *durableNames) info(ctx context.Context, logical string) (*jetstream.ConsumerInfo, error) {
 	sel, err := d.names.Select(ctx, logical, nil)
-	d.closeNames(sel.Record.Current, sel.Record.Retired)
+	d.closeRetired(logical, sel.Record.Current, sel.Record.Retired)
 	switch {
 	case err != nil:
 		return nil, d.failed(logical, sel, consumernames.OperationSelect, err)
