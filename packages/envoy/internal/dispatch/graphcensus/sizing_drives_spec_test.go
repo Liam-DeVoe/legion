@@ -24,9 +24,9 @@ const (
 	specRepo          = "drive/spec"
 )
 
-// specNodeCounted is what a node's first version appends of its spec_node, which the term
-// spec_node counts: its visibility, its state and its project. Each version beside it is a value
-// the term spec_version counts.
+// specNodeCounted is what a statement's or a check's first version appends of its spec_node,
+// which the term spec_node counts: its visibility, its state and its project. Each version beside
+// it is a value the term spec_version counts.
 var specNodeCounted = map[StoredKind][]string{
 	{specstore.KindNode, graphstore.AttributeVisibility}: {"spec_node"},
 	{specstore.KindNode, graphstore.AttributeState}:      {"spec_node"},
@@ -34,11 +34,21 @@ var specNodeCounted = map[StoredKind][]string{
 	{specstore.KindNode, specstore.AttributeVersion}:     {"spec_version"},
 }
 
-// specCounted is specNodeCounted with the kinds a drive appends beyond a node's versions.
-func specCounted(beyond map[StoredKind][]string) map[StoredKind][]string {
-	counted := maps.Clone(specNodeCounted)
-	maps.Copy(counted, beyond)
-	return counted
+// specLevelCounted is what an import of a level appends of the first versions it writes: a
+// statement's, as specNodeCounted, and a component's or an interface's, its node's three base
+// attributes and its version, which the term spec_component counts.
+var specLevelCounted = map[StoredKind][]string{
+	{specstore.KindNode, graphstore.AttributeVisibility}: {"spec_node", "spec_component"},
+	{specstore.KindNode, graphstore.AttributeState}:      {"spec_node", "spec_component"},
+	{specstore.KindNode, graphstore.AttributeProject}:    {"spec_node", "spec_component"},
+	{specstore.KindNode, specstore.AttributeVersion}:     {"spec_version", "spec_component"},
+}
+
+// specCounted is counted, a drive's first versions, with the kinds it appends beyond them.
+func specCounted(counted, beyond map[StoredKind][]string) map[StoredKind][]string {
+	merged := maps.Clone(counted)
+	maps.Copy(merged, beyond)
+	return merged
 }
 
 // specRequestBlock is the requirement block id of a change request of issue, about billing, with
@@ -63,8 +73,9 @@ func specDrives(t *testing.T) []StoreDrive {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	return []StoreDrive{{
-		// The import: three nodes' first versions, and the hold's node with its visibility, state
-		// and project and its hold value, which the term spec_hold counts.
+		// The import: billing's first version, which the term spec_component counts, the two
+		// statements', which spec_node and spec_version count, and the hold's node with its
+		// visibility, state and project and its hold value, which the term spec_hold counts.
 		Name: specImportDrive, Database: database, Sites: []string{specImportDrive},
 		Drive: func(t *testing.T) {
 			drivenTx(t, database, "import the level of drive/spec", func(tx pgx.Tx) error {
@@ -91,7 +102,7 @@ func specDrives(t *testing.T) []StoreDrive {
 				return nil
 			})
 		},
-		Counts: specCounted(map[StoredKind][]string{
+		Counts: specCounted(specLevelCounted, map[StoredKind][]string{
 			{specstore.KindHold, graphstore.AttributeVisibility}: {"spec_hold"},
 			{specstore.KindHold, graphstore.AttributeState}:      {"spec_hold"},
 			{specstore.KindHold, graphstore.AttributeProject}:    {"spec_hold"},
@@ -123,7 +134,7 @@ func specDrives(t *testing.T) []StoreDrive {
 				return nil
 			})
 		},
-		Counts: specCounted(map[StoredKind][]string{
+		Counts: specCounted(specNodeCounted, map[StoredKind][]string{
 			{specstore.KindNode, specstore.AttributeRemoved}: {"spec_removal"},
 			{specstore.KindHold, graphstore.AttributeState}:  {"spec_hold_cleared"},
 		}),

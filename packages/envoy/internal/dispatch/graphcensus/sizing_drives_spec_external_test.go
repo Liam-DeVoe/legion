@@ -37,12 +37,12 @@ func specImportDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	var level string
 	return []graphcensus.StoreDrive{{
-		// The import's first versions of billing and a-bill-is-sent, which the terms spec_node and
-		// spec_version count, and its hold of a-bill-has-no-owner, which spec_hold counts; the
-		// child issue's create, as a create of an issue born converted, beside its child_of the
-		// level, which the term issue_relation counts, and the reference its spec and the block that
-		// names the level make to it, which document_ref and block_ref count; and the hook's
-		// repair_issue on the hold, which spec_repair_issue counts.
+		// The import's first versions: a-bill-is-sent's, which the terms spec_node and spec_version
+		// count, and billing's, which spec_component counts; its hold of a-bill-has-no-owner, which
+		// spec_hold counts; the child issue's create, as a create of an issue born converted, beside
+		// its child_of the level, which the term issue_relation counts, and the reference its spec
+		// and the block that names the level make to it, which document_ref and block_ref count; and
+		// the hook's repair_issue on the hold, which spec_repair_issue counts.
 		Name: "api/spec_import.go#repairIssueHook", Database: r.database,
 		Sites: []string{"api/spec_import.go#repairIssueHook", "specstore/import.go#Import", "api/issue_create.go#createIssueWith",
 			"api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery", "docs/mutation.go#WriteVersionNode",
@@ -84,10 +84,10 @@ func specImportDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				{graphstore.KindIssue, graphstore.TupleChildOf}:      {"issue_relation"},
 				{graphstore.KindArtifact, graphstore.TupleMentions}:  {"document_ref"},
 				{refs.BlockNodeKind, graphstore.TupleMentions}:       {"block_ref"},
-				{specstore.KindNode, graphstore.AttributeVisibility}: {"spec_node"},
-				{specstore.KindNode, graphstore.AttributeState}:      {"spec_node"},
-				{specstore.KindNode, graphstore.AttributeProject}:    {"spec_node"},
-				{specstore.KindNode, specstore.AttributeVersion}:     {"spec_version"},
+				{specstore.KindNode, graphstore.AttributeVisibility}: {"spec_node", "spec_component"},
+				{specstore.KindNode, graphstore.AttributeState}:      {"spec_node", "spec_component"},
+				{specstore.KindNode, graphstore.AttributeProject}:    {"spec_node", "spec_component"},
+				{specstore.KindNode, specstore.AttributeVersion}:     {"spec_version", "spec_component"},
 				{specstore.KindHold, graphstore.AttributeVisibility}: {"spec_hold"},
 				{specstore.KindHold, graphstore.AttributeState}:      {"spec_hold"},
 				{specstore.KindHold, graphstore.AttributeProject}:    {"spec_hold"},
