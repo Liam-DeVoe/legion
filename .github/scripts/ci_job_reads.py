@@ -2547,7 +2547,8 @@ SCRIPT_TEST_GATES = [
     ], lib=False),
     harness("red_at_base_test", "Test the red-at-base tool (a scratch repository)",
             "scripts/red-at-base.test.sh", [
-        ("scripts/red-at-base.sh", "the script under test (scripts/red-at-base.test.sh:33 names it)"),
+        ("scripts/red-at-base.sh", "the script under test (scripts/red-at-base.test.sh:41 names it)"),
+        ("scripts/red-at-base/**", "the Go programs the script under test builds (its build_program) and runs"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),

@@ -38,8 +38,8 @@
 #          go -C <dir> test -json -count=1 -run <regex> .
 #        and the tool reads go's stream of events, in which each result is an event of its own,
 #        apart from what a test prints: a test that prints "--- FAIL: X" and passes reads as passed.
-#        Its reader of the stream is a Go program of its own (go_reader_source, below), which it
-#        builds once, before the first line runs, when the list holds a go line.
+#        Its reader of the stream is a Go program of its own (scripts/red-at-base/go-verdict), which
+#        it builds once, before the first line runs, when the list holds a go line.
 #        Before it copies the files, the tool asks go list which Go files the base builds in <dir>.
 #        When the base builds one there, the tool builds the base package's test binary (go test
 #        -c), and a base that does not build there reads NO-TEST, so that a build that fails after
@@ -85,7 +85,7 @@
 #        nothing else. The command runs with no input and with TMPDIR set to an empty directory of
 #        its own under the tool's, removed with the worktree, so that what it writes there (a work
 #        directory a script defaults under TMPDIR, say) starts fresh for each line and is gone
-#        after. A small Go launcher (command_launcher_source, below) enters <dir> and starts the
+#        after. A small Go launcher (scripts/red-at-base/command-launch) enters <dir> and starts the
 #        command without a shell or shell options of its own. It preserves the caller's exported
 #        BASHOPTS and SHELLOPTS, sets PWD and OLDPWD as entering <dir> requires, and resolves PATH
 #        there, including relative entries. BUILD-FAILED means only that entering <dir> or starting
@@ -102,10 +102,12 @@
 # and GOFLAGS reach the test as the caller set them. The tool needs no network: go runs with
 # GOPROXY=off, so a module the module cache does not hold fails the run (NO-TEST) instead of a
 # download, and bun runs with --no-install. GOWORK is unset, so go reads the base's own go.work.
-# The reader of go's stream is built with the caller's GOCACHE, and with no GOFLAGS, no GOWORK and
-# no switch of toolchain (GOTOOLCHAIN=local). A worktree of the base holds no installed packages
-# (git ignores node_modules), so the tool mirrors each node_modules directory of the checkout into
-# the worktree. A symlink is copied as the link it is: a relative link to a workspace package of the
+# The tool's two Go programs, each a directory of scripts/red-at-base beside it (a module of their
+# own, which no Go workspace of the repository lists), are built from a copy in the tool's own
+# directory with the caller's GOCACHE, and with no GOFLAGS, no GOWORK and no switch of toolchain
+# (GOTOOLCHAIN=local). A worktree of the base holds no installed packages (git ignores
+# node_modules), so the tool mirrors each node_modules directory of the checkout into the worktree.
+# A symlink is copied as the link it is: a relative link to a workspace package of the
 # repository resolves to the base's copy of that package, and a link into an installed package
 # resolves to the checkout's install. A scope directory (@name) and .bin are mirrored entry by
 # entry. Any other directory, such as bun's store node_modules/.bun or a package a hoisted install
@@ -131,6 +133,10 @@ command_environment=()
 [[ ${SHELLOPTS@a} != *x* ]] || command_environment+=("SHELLOPTS=$SHELLOPTS")
 
 set -euo pipefail
+
+# The tool's Go programs, beside this script (the header's "What a run reads").
+programs_source="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/red-at-base"
+readonly programs_source
 
 usage() {
   cat <<'EOF'
@@ -409,297 +415,19 @@ first_error() {
     END { if (!found) print first }' "$log"
 }
 
-# go_reader_source: the Go program that reads one go test -json run, as the header says. It takes
-# the regex and the run's exit status, reads the stream on stdin, writes the run's text to stderr
-# and "<VERDICT><tab><what decided it>" to stdout.
-go_reader_source() {
-  cat <<'GO'
-package main
-
-import (
-	"bufio"
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-	"regexp"
-	"strconv"
-	"strings"
-)
-
-type event struct {
-	Action      string
-	Test        string
-	Output      string
-	FailedBuild string
-}
-
-// splitRegexp is testing/match.go's: the regex split at each / and | outside [] and (), into its
-// alternatives, each one pattern for each level of a test's name. Each pattern is then rewritten,
-// as the testing package's verify does (rewrite, below), before it is compiled.
-func splitRegexp(s string) [][]string {
-	var alternatives [][]string
-	var levels []string
-	cs, cp := 0, 0
-	for i := 0; i < len(s); {
-		switch s[i] {
-		case '[':
-			cs++
-		case ']':
-			if cs--; cs < 0 {
-				cs = 0
-			}
-		case '(':
-			if cs == 0 {
-				cp++
-			}
-		case ')':
-			if cs == 0 {
-				cp--
-			}
-		case '\\':
-			i++
-		case '/', '|':
-			if cs == 0 && cp == 0 {
-				levels = append(levels, s[:i])
-				if s[i] == '|' {
-					alternatives = append(alternatives, levels)
-					levels = nil
-				}
-				s = s[i+1:]
-				i = 0
-				continue
-			}
-		}
-		i++
-	}
-	return append(alternatives, append(levels, s))
-}
-
-// rewrite is testing/match.go's: each blank becomes _, and an unprintable character its Go escape,
-// as the testing package rewrites both a subtest's name and each pattern of -run.
-func rewrite(s string) string {
-	b := []byte{}
-	for _, r := range s {
-		switch {
-		case isSpace(r):
-			b = append(b, '_')
-		case !strconv.IsPrint(r):
-			s := strconv.QuoteRune(r)
-			b = append(b, s[1:len(s)-1]...)
-		default:
-			b = append(b, string(r)...)
-		}
-	}
-	return string(b)
-}
-
-// isSpace is testing/match.go's: not the same as Unicode's Z class.
-func isSpace(r rune) bool {
-	if r < 0x2000 {
-		switch r {
-		case '\t', '\n', '\v', '\f', '\r', ' ', 0x85, 0xA0, 0x1680:
-			return true
-		}
-	} else {
-		if r <= 0x200a {
-			return true
-		}
-		switch r {
-		case 0x2028, 0x2029, 0x202f, 0x205f, 0x3000:
-			return true
-		}
-	}
-	return false
-}
-
-type selector [][]*regexp.Regexp
-
-// selects: the name, split at each /, matches each pattern of one alternative.
-func (sel selector) selects(name string) bool {
-	levels := strings.Split(name, "/")
-	for _, alternative := range sel {
-		if len(levels) < len(alternative) {
-			continue
-		}
-		matched := true
-		for i, pattern := range alternative {
-			if !pattern.MatchString(levels[i]) {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
-}
-
-var compileError = regexp.MustCompile(`^[^ \t#].*:[0-9]+:[0-9]+: `)
-
-func verdict(regex string, status int, stream io.Reader, text io.Writer) string {
-	var sel selector
-	for _, alternative := range splitRegexp(regex) {
-		var patterns []*regexp.Regexp
-		for _, pattern := range alternative {
-			compiled, err := regexp.Compile(rewrite(pattern))
-			if err != nil {
-				return "NO-TEST\tgo test cannot read the regex: " + err.Error()
-			}
-			patterns = append(patterns, compiled)
-		}
-		sel = append(sel, patterns)
-	}
-	var (
-		built                                               = true
-		build                                               []string
-		first, panicked, offline, outside, fail, pass, skip string
-		noTests, noTestFiles                                bool
-		started                                             []string
-		ended                                               = map[string]bool{}
-	)
-	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64<<10), 64<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		var e event
-		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
-			// What go printed outside the stream, such as a refusal of its arguments.
-			fmt.Fprintln(text, line)
-			if first == "" && strings.TrimSpace(line) != "" {
-				first = line
-			}
-			if offline == "" && strings.Contains(line, "GOPROXY=off") {
-				offline = line
-			}
-			continue
-		}
-		switch e.Action {
-		case "build-output":
-			io.WriteString(text, e.Output)
-			out := strings.TrimRight(e.Output, "\n")
-			build = append(build, out)
-			if offline == "" && (strings.Contains(out, "GOPROXY=off") || strings.Contains(out, "toolchain not available")) {
-				offline = out
-			}
-		case "build-fail":
-			built = false
-		case "output":
-			io.WriteString(text, e.Output)
-			out := strings.TrimRight(e.Output, "\n")
-			if panicked == "" && strings.HasPrefix(out, "panic: ") {
-				panicked = out
-			}
-			if e.Test == "" && strings.Contains(out, "no tests to run") {
-				noTests = true
-			}
-			if first == "" && strings.TrimSpace(out) != "" && !strings.HasPrefix(out, "=== ") {
-				first = out
-			}
-		case "run":
-			if sel.selects(e.Test) {
-				started = append(started, e.Test)
-			}
-		case "pass", "fail", "skip":
-			if e.Test == "" {
-				built = built && e.FailedBuild == ""
-				noTestFiles = noTestFiles || e.Action == "skip"
-				continue
-			}
-			ended[e.Test] = true
-			result := "--- " + strings.ToUpper(e.Action) + ": " + e.Test
-			switch {
-			case !sel.selects(e.Test):
-				if e.Action == "fail" && outside == "" {
-					outside = result
-				}
-			case e.Action == "fail" && fail == "":
-				fail = result
-			case e.Action == "pass" && pass == "":
-				pass = result
-			case e.Action == "skip" && skip == "":
-				skip = result
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "NO-TEST\tthe tool could not read the run's stream: " + err.Error()
-	}
-	if offline != "" && fail == "" && pass == "" {
-		return "NO-TEST\tthe build needs what the module cache does not hold, and the tool reads no network: " + offline
-	}
-	if !built {
-		for _, out := range build {
-			if compileError.MatchString(out) {
-				return "BUILD-FAILED\t" + out
-			}
-		}
-		for _, out := range build {
-			if out != "" && !strings.HasPrefix(out, "#") {
-				return "BUILD-FAILED\t" + out
-			}
-		}
-		return "BUILD-FAILED\tthe test build failed"
-	}
-	if fail != "" {
-		return "RED\t" + fail
-	}
-	if status != 0 {
-		for _, name := range started {
-			if !ended[name] {
-				why := panicked
-				if why == "" {
-					why = "exit " + strconv.Itoa(status)
-				}
-				return "RED\t" + name + " started and did not end: " + why
-			}
-		}
-		if pass != "" {
-			return fmt.Sprintf("GREEN\t%s, and then the run failed outside the tests the regex names (exit %d)", pass, status)
-		}
-		why := outside
-		if why == "" {
-			why = first
-		}
-		return fmt.Sprintf("NO-TEST\tthe run failed (exit %d) before a test the regex names ran: %s", status, why)
-	}
-	switch {
-	case pass != "":
-		return "GREEN\t" + pass
-	case skip != "":
-		return "NO-TEST\tevery test the regex names skipped: " + skip
-	case noTestFiles:
-		return "NO-TEST\tthe package has no test files"
-	case noTests:
-		return "NO-TEST\tno tests to run"
-	}
-	return "NO-TEST\tno test the regex names ran; only tests it reaches as the parents of others ran"
-}
-
-func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: go-verdict <regex> <exit status of go test> < <its -json stream>")
-		os.Exit(2)
-	}
-	status, err := strconv.Atoi(os.Args[2])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "go-verdict: the exit status is no number:", os.Args[2])
-		os.Exit(2)
-	}
-	fmt.Println(verdict(os.Args[1], status, os.Stdin, os.Stderr))
-}
-GO
-}
-
-readonly go_reader="${tmp}/go-verdict/go-verdict"
-# build_go_reader: the reader of go's stream, built in the tool's own directory.
-build_go_reader() {
-  mkdir -- "${tmp}/go-verdict"
-  printf 'module redatbase/goverdict\n\ngo 1.21\n' >"${tmp}/go-verdict/go.mod"
-  go_reader_source >"${tmp}/go-verdict/main.go"
-  run_logged "${tmp}/go-verdict" env -u GOWORK -u GOFLAGS GOTOOLCHAIN=local GOPROXY=off go build -o "$go_reader" .
-  ((status == 0)) || refuse "the tool could not build its reader of go test's stream (its build is above)"
+# The tool's Go programs, each built the first time a line needs it, into the tool's own directory
+# from a copy of their module there: go-verdict, the reader of go's stream, and command-launch, the
+# launcher of a cmd line's command, as the header says.
+readonly programs="${tmp}/programs"
+readonly go_reader="${programs}/bin/go-verdict"
+readonly command_launcher="${programs}/bin/command-launch"
+# build_program <name> <what it is>: the program scripts/red-at-base/<name>, built as the header's
+# "What a run reads" says.
+build_program() {
+  [[ -d $programs ]] || cp -R -- "$programs_source" "$programs" ||
+    refuse "the tool could not copy its Go programs from $programs_source"
+  run_logged "$programs" env -u GOWORK -u GOFLAGS GOTOOLCHAIN=local GOPROXY=off go build -o "${programs}/bin/$1" "./$1"
+  ((status == 0)) || refuse "the tool could not build its $2 (its build is above)"
 }
 
 # check_base_package <dir>: result set to NO-TEST when the base's own package in dir builds a Go
@@ -817,77 +545,6 @@ remove_tree() {
 
 readonly command_tmp="${tmp}/cmd-tmp"
 readonly start_mark="${tmp}/cmd-start"
-# The launcher observes Start, not a command's exit status or an interpreter's arguments. It
-# changes directory before PATH lookup, and permits relative PATH entries as a direct exec does.
-command_launcher_source() {
-  cat <<'GO'
-package main
-
-import (
-	"errors"
-	"fmt"
-	"os"
-	"os/exec"
-	"syscall"
-)
-
-func recordStart(path, failure string) {
-	if err := os.WriteFile(path, []byte(failure), 0600); err != nil {
-		fmt.Fprintln(os.Stderr, "command-launch: recording process start:", err)
-		os.Exit(2)
-	}
-}
-
-func workingDirectory() string {
-	directory, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "command-launch: reading working directory:", err)
-		os.Exit(2)
-	}
-	return directory
-}
-
-func main() {
-	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: command-launch <start record> <directory> <command> [<argument>...]")
-		os.Exit(2)
-	}
-	mark, directory, name := os.Args[1], os.Args[2], os.Args[3]
-	previousDirectory := workingDirectory()
-	if err := os.Chdir(directory); err != nil {
-		recordStart(mark, fmt.Sprintf("could not enter %s: %v", directory, err))
-		os.Exit(127)
-	}
-	currentDirectory := workingDirectory()
-	command := exec.Command(name, os.Args[4:]...)
-	if errors.Is(command.Err, exec.ErrDot) {
-		command.Err = nil
-	}
-	command.Env = append(os.Environ(), "PWD="+currentDirectory, "OLDPWD="+previousDirectory)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := command.Start(); err != nil {
-		recordStart(mark, fmt.Sprintf("the exec of %s failed: %v", name, err))
-		os.Exit(127)
-	}
-	recordStart(mark, "")
-	if err := command.Wait(); err != nil {
-		if status, ok := command.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			os.Exit(128 + int(status.Signal()))
-		}
-		os.Exit(command.ProcessState.ExitCode())
-	}
-}
-GO
-}
-
-readonly command_launcher="${tmp}/command-launch/command-launch"
-build_command_launcher() {
-  mkdir -- "${tmp}/command-launch"
-  printf 'module redatbase/commandlaunch\n\ngo 1.21\n' >"${tmp}/command-launch/go.mod"
-  command_launcher_source >"${tmp}/command-launch/main.go"
-  run_logged "${tmp}/command-launch" env -u GOWORK -u GOFLAGS GOTOOLCHAIN=local GOPROXY=off go build -o "$command_launcher" .
-  ((status == 0)) || refuse "the tool could not build its command launcher (its build is above)"
-}
 
 start_failure=''
 # run_command <directory> <command>...: the command of a cmd line, its output in the run's log
@@ -936,8 +593,8 @@ command_verdict() {
 echo "red-at-base.sh: ${#kinds[@]} lines of $list, at the base $base ($base_commit), from the checkout $repo" >&2
 for kind in "${kinds[@]}"; do
   case $kind in
-  go) [[ -x $go_reader ]] || build_go_reader ;;
-  cmd) [[ -x $command_launcher ]] || build_command_launcher ;;
+  go) [[ -x $go_reader ]] || build_program go-verdict "reader of go test's stream" ;;
+  cmd) [[ -x $command_launcher ]] || build_program command-launch "command launcher" ;;
   esac
 done
 red=0

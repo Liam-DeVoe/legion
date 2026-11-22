@@ -134,10 +134,11 @@ jobs:
           cache: false
 
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
-      # inside packages/daemon), so it is formatted here with the daemon.
+      # inside packages/daemon), so it is formatted here with the daemon, and so are the two Go
+      # programs scripts/red-at-base.sh builds (scripts/red-at-base, a module no workspace lists).
       - name: Check the Go daemon's formatting
         run: |
-          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
+          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go scripts/red-at-base)
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
             echo "$unformatted"

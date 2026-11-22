@@ -952,6 +952,7 @@ red_at_base_test: &red_at_base_test
   - '.github/workflows/ci-job-test.yaml'
   - 'scripts/red-at-base.test.sh'
   - 'scripts/red-at-base.sh'
+  - 'scripts/red-at-base/**'
 check_ci_filters_test: &check_ci_filters_test
   - *ci_router
   - *ci_filters_data
