@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
+import { cutOrSet, loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
 
 // The one loader of `skill-cuts.json` (config.ts): every key is checked, and a missing or unknown
 // key is refused by name. Every value here is made up; testdata/F7-skill-cuts.json is the made-up
@@ -91,6 +91,22 @@ test("a set id may not equal a cut id", () => {
   expect(
     refusal({ ...valid(), ...SETS, sets: [{ id: "skills-1", repo: "acme/alpha-set" }] })
   ).toContain('sets[0].id: "skills-1" is the id of a cut; a set id may not equal a cut id');
+});
+
+test("the helper finds a cut or a set by id", () => {
+  const config = parseConfig({ ...valid(), ...SETS });
+  expect(cutOrSet(config, "skills-1")).toEqual({
+    kind: "cut",
+    id: "skills-1",
+    repo: "acme/skills",
+  });
+  expect(cutOrSet(config, "beta-set")).toEqual({
+    kind: "set",
+    id: "beta-set",
+    repo: "acme/beta-set-plugin",
+  });
+  expect(cutOrSet(config, "gamma-set")).toBeUndefined();
+  expect(cutOrSet(parseConfig(valid()), "alpha-set")).toBeUndefined();
 });
 
 test("a set id given twice, or one that cannot name a directory or a prefix, is refused", () => {

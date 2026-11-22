@@ -956,7 +956,9 @@ const SLOT_RULE =
  *  clones acme/pack into vendor/acme-pack at PACK_PIN, a pool its skills-sources.json feeds to Oh
  *  My Pi through its extension. acme/powers holds a package whose `pi` manifest declares its
  *  skills/ (power-one and power-two); acme/pack holds pack-one and pack-later at SHA, and pack-one
- *  and pack-two at PACK_PIN (PINNED). */
+ *  and pack-two at PACK_PIN (PINNED). acme/alpha-set is a skill set's repository: a package named
+ *  alpha-set whose `pi` manifest declares its skills/, which hold its own alpha beside acme/skills's
+ *  (setTarget). */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -1081,6 +1083,11 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   "acme/pack": {
     "skills/pack-one/SKILL.md": skillMd("pack-one"),
     "skills/pack-later/SKILL.md": skillMd("pack-later"),
+  },
+  "acme/alpha-set": {
+    "package.json": JSON.stringify({ name: "alpha-set", pi: { skills: ["./skills"] } }),
+    "skills/alpha/SKILL.md": skillMd("alpha"),
+    "skills/alpha/references/x.md": "Step notes.\n",
   },
 };
 
@@ -3013,6 +3020,204 @@ test("build-cases refuses an --out inside a git or jj checkout, its own and --re
   expect(logLength()).toBe(logged);
   expect(ghCalls.length).toBe(calls);
 });
+
+/** The made-up session that reads alpha from the skill set alpha-set: F1 with its reads of alpha
+ *  moved to a dev box's Oh My Pi plugins directory, which holds acme/alpha-set under its
+ *  dependency's name. setTarget's store holds it; SESSIONS does not. */
+const SET_SESSION = "set-read";
+const SET_ALPHA_DIR = "/srv/dev/.dotfiles/omp/plugins/node_modules/alpha-set/skills/alpha";
+
+/** The configuration and copies output of a build whose target is the skill set alpha-set
+ *  (acme/alpha-set), made once: the configuration names the set and reads the suite's store with
+ *  SET_SESSION added; the copies output is the suite's with the set's package added as copies.ts
+ *  gives a `github:` dependency's (its prefix row under the dependency's name, its installers row
+ *  and its copy, read at the tag a plugins list pins). */
+let setFiles: { config: string; copies: string } | undefined;
+function setTarget(): { config: string; copies: string } {
+  if (setFiles !== undefined) return setFiles;
+  const lines = f1Lines();
+  setText(lines, 5, () => `Step 3 (case ${SET_SESSION}).`);
+  readFrom(SET_ALPHA_DIR)(lines);
+  const store = changedStore("set-target", (files) => {
+    (files.store_a ?? {})[sessionPath(SET_SESSION)] = lines
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join("");
+  });
+  const setConfig = path.join(setupDir, "set-target", "skill-cuts-sets.json");
+  writeFileSync(
+    setConfig,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(store, "utf8")),
+      sets: [{ id: "alpha-set", repo: "acme/alpha-set" }],
+      dotfilesRepo: "acme/dots",
+    })
+  );
+  const copies = path.join(setupDir, "copies-set");
+  mkdirSync(copies, { recursive: true });
+  const added: Readonly<Record<string, readonly (readonly (string | number)[])[]>> = {
+    "prefix-table.tsv": [
+      [
+        "**/node_modules/alpha-set/skills/alpha/",
+        "acme/alpha-set",
+        "skills/alpha",
+        "alpha",
+        "package:alpha-set (acme/alpha-set:package.json)",
+      ],
+    ],
+    "installers.tsv": [
+      [
+        "acme/alpha-set",
+        "package.json",
+        "omp-package",
+        "ships",
+        "package:alpha-set",
+        "omp",
+        "alpha",
+        "acme/alpha-set",
+        "skills/alpha",
+        "",
+      ],
+    ],
+    "repositories.tsv": [["acme/alpha-set", "v1.0.0", SHA, "no", "no", "", 3, "whole", 1, ""]],
+    "skill-copies.tsv": [["acme/alpha-set", "skills/alpha", "alpha", 10, "no", "no", "", "", ""]],
+  };
+  for (const file of [
+    "installers.tsv",
+    "loaders.tsv",
+    "manifests.tsv",
+    "prefix-table.tsv",
+    "repositories.tsv",
+    "skill-copies.tsv",
+  ]) {
+    const rows = (added[file] ?? []).map((row) => `${row.join("\t")}\n`).join("");
+    writeFileSync(
+      path.join(copies, file),
+      `${readFileSync(path.join(copiesDir, file), "utf8")}${rows}`
+    );
+  }
+  setFiles = { config: setConfig, copies };
+  return setFiles;
+}
+
+/** The arguments of a build-cases run of `sessions` into `out` whose target is the set alpha-set
+ *  (setTarget), given as `--set`. */
+function setArgs(sessions: string, out: string): string[] {
+  const target = setTarget();
+  const swap: Readonly<Record<string, string>> = {
+    "--cut": "--set",
+    "skills-1": "alpha-set",
+    [config]: target.config,
+    [copiesDir]: target.copies,
+  };
+  return buildArgs(sessions, out, "1").map((arg) => swap[arg] ?? arg);
+}
+
+test("build-cases and --reprofile take a set where they take a cut", async () => {
+  const sessions = sessionsFile("set-cases.jsonl", [SET_SESSION]);
+  const out = path.join(scratch, "set-cases", "cases.jsonl");
+  const built: string[] = [];
+  expect(await main(setArgs(sessions, out), io(built))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  // The case's cut field holds the set's id, and so do the summary and its inputs.
+  expect(c?.cut).toBe("alpha-set");
+  expect(c?.id).toStartWith("alpha-set-");
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect([summary.cut, summary.inputs.cut]).toEqual(["alpha-set", "alpha-set"]);
+
+  // --reprofile finds the case's set by its cut field, and builds its profile again.
+  const target = setTarget();
+  const reprofile = [
+    "build-cases",
+    "--config",
+    target.config,
+    "--old",
+    old,
+    "--copies",
+    target.copies,
+    "--count",
+    countDir,
+    "--reprofile",
+    out,
+  ];
+  const fresh = path.join(scratch, "set-cases", "reprofiled.jsonl");
+  const said: string[] = [];
+  expect(await main([...reprofile, "--out", fresh], io(said))).toBe(EXIT.ok);
+  expect(said.join("")).not.toContain("left out");
+  const [again] = loadCases(fresh, old);
+  expect(again?.cut).toBe("alpha-set");
+  expect(again?.profile.skills).toEqual(c?.profile.skills ?? []);
+
+  // One of --cut and --set is taken: both, neither, an id of the other kind or of no set, and
+  // --set with --reprofile are refused before any read.
+  const from = recorder.requests.length;
+  const logged = psqlLogLength();
+  const calls = ghCalls.length;
+  const refused = path.join(scratch, "set-refused", "cases.jsonl");
+  const swapped = (args: string[], was: string, now: string) =>
+    args.map((arg) => (arg === was ? now : arg));
+  const rows: [string[], string][] = [
+    [
+      [...setArgs(sessions, refused), "--cut", "skills-1"],
+      "--cut skills-1 and --set alpha-set are both given: give one of the two",
+    ],
+    [
+      setArgs(sessions, refused).filter(
+        (arg, at, args) => arg !== "--set" && args[at - 1] !== "--set"
+      ),
+      "--cut or --set required",
+    ],
+    [
+      swapped(setArgs(sessions, refused), "alpha-set", "skills-1"),
+      "--set skills-1 is no set of the configuration (alpha-set)",
+    ],
+    [
+      swapped(setArgs(sessions, refused), "--set", "--cut"),
+      "--cut alpha-set is no cut of the configuration (skills-1)",
+    ],
+    [
+      swapped(
+        swapped(buildArgs(sessions, refused, "1"), "--cut", "--set"),
+        "skills-1",
+        "alpha-set"
+      ),
+      "--set alpha-set is no set of the configuration (none)",
+    ],
+    [[...reprofile, "--out", refused, "--set", "alpha-set"], "so it takes no --set"],
+  ];
+  for (const [args, why] of rows) {
+    const lines: string[] = [];
+    expect(await main(args, io(lines))).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain(why);
+  }
+  expect(existsSync(refused)).toBe(false);
+  expect(recorder.requests.length).toBe(from);
+  expect(psqlLogLength()).toBe(logged);
+  expect(ghCalls.length).toBe(calls);
+}, 60_000);
+
+test("a set target keeps a read placed at the set's copy and drops a Legion fork's read as not-cut-copy", async () => {
+  const sessions = sessionsFile("set-target.jsonl", [SET_SESSION, "legion"]);
+  const out = path.join(scratch, "set-target", "cases.jsonl");
+  const lines: string[] = [];
+  expect(await main(setArgs(sessions, out), io(lines))).toBe(EXIT.ok);
+  const cases = loadCases(out, old);
+  expect(cases.map((c) => c.source.pathHash)).toEqual([pathHash(sessionPath(SET_SESSION))]);
+  // The profile installs the copy the session read: the set's alpha, not acme/skills's.
+  expect(cases[0]?.profile.skills.filter((skill) => skill.name === "alpha")).toEqual([
+    { repo: "acme/alpha-set", commit: SHA, path: "skills/alpha", name: "alpha" },
+  ]);
+  // The legion session read alpha from the package the Legion image carries: acme/skills's fork
+  // of the skill, which the prefix table places at acme/skills's copy.
+  const record = summaryOf(out).sessions.find(
+    (each) => each.hash === fileHash(sessionPath("legion"))
+  );
+  expect(record).toMatchObject({
+    reason: "not-cut-copy",
+    detail:
+      "the prefix table rule places /opt/legion/pi-acme/dist/skills/alpha/SKILL.md at acme/skills skills/alpha",
+    readerUsd: 0,
+  });
+}, 60_000);
 
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
   const skillDir = path.join(setupDir, "old", "alpha");

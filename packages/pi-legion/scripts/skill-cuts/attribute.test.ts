@@ -21,6 +21,7 @@ import {
   parseModelOutput,
   parseQueryOutput,
   parseRunLog,
+  placer,
   type QueryOutput,
   queryIssues,
   type R4Tables,
@@ -1624,11 +1625,153 @@ test("the command refuses missing flags, an --out inside an input, an unknown cu
   expect(insideModels.err).toContain("is inside --models");
   const unknownCut = run(flags(path.join(root, "out"), "--changed", "no-such-cut=/dev/null"));
   expect(unknownCut.code).toBe(2);
-  expect(unknownCut.err).toContain('the cut "no-such-cut"');
+  expect(unknownCut.err).toContain(
+    '--changed names "no-such-cut", which is no cut or set of the configuration; it names the cuts skills-1 and no set'
+  );
   writeFileSync(path.join(copiesDir, "loaders.tsv"), "repository\tpath\tskill\n");
   const wrongColumns = run(flags(path.join(root, "out")));
   expect(wrongColumns.code).toBe(1);
   expect(wrongColumns.err).toContain(
     "loaders.tsv: its columns are repository, path, skill, not copies.ts's"
+  );
+});
+
+// A skill set beside our skills, made up: acme/dotfiles's Oh My Pi plugins list pins the set
+// alpha-set as a `github:` dependency on acme/alpha-set, whose package ships its own alpha, so
+// copies.ts gives that copy the prefix row `**/node_modules/alpha-set/skills/alpha/` (as the test
+// of a github: dependency above shows); acme/skills holds our alpha, which acme/dotfiles's
+// installer links into Oh My Pi's user skills.
+const SET_PACKAGE: Unit = {
+  unit: "package:alpha-set",
+  manifest_repository: "acme/alpha-set",
+  manifest_path: "package.json",
+  kind: "omp-package",
+  action: "ships",
+  host: "omp",
+};
+const SET_ALPHA = copyRow("acme/alpha-set", "skills/alpha", "alpha");
+const OUR_ALPHA = copyRow("acme/skills", "skills/alpha", "alpha");
+const SET_READ = "/srv/acme/.dotfiles/omp/plugins/node_modules/alpha-set/skills/alpha/SKILL.md";
+const OUR_READ = "/srv/acme/.omp/agent/skills/alpha/SKILL.md";
+/** F7's configuration with the set alpha-set. */
+const SET_CONFIG = {
+  ...(JSON.parse(readFileSync(CONFIG_FILE, "utf8")) as object),
+  sets: [{ id: "alpha-set", repo: "acme/alpha-set" }],
+  dotfilesRepo: "acme/dotfiles",
+};
+
+const SET_WORLD: R4Tables = {
+  copies: [SET_ALPHA, OUR_ALPHA],
+  installers: [installs(SET_PACKAGE, SET_ALPHA), installs(USER_SKILLS, OUR_ALPHA)],
+  prefixes: [
+    prefixRow("**/node_modules/alpha-set/skills/alpha/", SET_ALPHA, SET_PACKAGE),
+    prefixRow("**/.omp/agent/skills/alpha/", OUR_ALPHA, USER_SKILLS),
+  ],
+  loaders: [],
+  repositories: ["acme/alpha-set", "acme/skills"].map(repositoryRow),
+};
+
+/** A count.sql result of store_a for 2026-11-21: H4 reads the set's alpha, H2 ours. */
+const SET_READS = queryText("store_a", "2026-11-21", [
+  { skill: "alpha", copy: SET_READ, hashes: [H4] },
+  { skill: "alpha", copy: OUR_READ, hashes: [H2] },
+]);
+
+test("a node_modules/<package> read of a set's skill is placed at the set's copy, not at a same-named skill of ours", () => {
+  const reads = parseQueryOutput("store_a", "2026-11-21", SET_READS);
+  expect(placer([reads], SET_WORLD).place("store_a", SET_READ, "alpha")).toMatchObject({
+    copy: "acme/alpha-set\tskills/alpha",
+    rule: "prefix table",
+  });
+  const attribution = attribute(parseConfig(SET_CONFIG), [reads], SET_WORLD);
+  expect(countOf(attribution, SET_ALPHA).sessions).toBe(1);
+  // Our alpha counts the session that read it alone.
+  expect(countOf(attribution, OUR_ALPHA).sessions).toBe(1);
+  const ranking = rankChanged(attribution, "alpha-set", "acme/alpha-set", ["skills/alpha"]);
+  expect(sessionFiles(attribution, ranking).files).toEqual([
+    { name: "sessions/alpha.jsonl", text: `${JSON.stringify({ store: "store_a", hash: H4 })}\n` },
+  ]);
+});
+
+test("--changed <set> writes the set's sessions and models files", () => {
+  const root = path.join(dir, "set-command");
+  const runLog = [
+    "2026-11-21T20:00:01Z\tstore_a\t2026-11-20\trc=0\tseconds=1.0\t",
+    "2026-11-21T20:00:02Z\tstore_a\t2026-11-21\trc=0\tseconds=1.0\t",
+    "",
+  ].join("\n");
+  const sonnet = "anthropic/claude-sonnet-5-5";
+  const other = "openai/gpt-6.1-sol";
+  const countDir = tree(path.join(root, "count"), {
+    "store_a/2026-11-20.txt": queryText("store_a", "2026-11-20", []),
+    "store_a/2026-11-21.txt": SET_READS,
+    "run.log": runLog,
+  });
+  const modelsDir = tree(path.join(root, "models"), {
+    "store_a/2026-11-20.txt": modelsText("store_a", []),
+    "store_a/2026-11-21.txt": modelsText("store_a", [
+      [H4, sonnet, "model_change"],
+      [H2, other, "model_change"],
+    ]),
+    "run.log": runLog,
+  });
+  const files = tree(root, {
+    "skill-cuts.json": JSON.stringify(SET_CONFIG),
+    "spans.jsonl": `${JSON.stringify({ store: "store_a", earliest_mtime_ms: Date.parse("2026-11-20T00:00:00Z"), files: 2 })}\n`,
+    "alpha-set.txt": "skills/alpha\n",
+    "skills-1.txt": "skills/alpha\n",
+  });
+  const out = path.join(root, "out");
+  const result = run([
+    "--config",
+    path.join(files, "skill-cuts.json"),
+    "--count",
+    countDir,
+    "--copies",
+    r4Dir(path.join(root, "copies"), SET_WORLD),
+    "--spans",
+    path.join(files, "spans.jsonl"),
+    "--out",
+    out,
+    "--models",
+    modelsDir,
+    "--changed",
+    `alpha-set=${path.join(files, "alpha-set.txt")}`,
+    "--changed",
+    `skills-1=${path.join(files, "skills-1.txt")}`,
+  ]);
+  expect(result.err).toBe("");
+  expect(result.code).toBe(0);
+  const written = (...parts: string[]) => readFileSync(path.join(out, ...parts), "utf8");
+  // The set's files hold the session that read the set's copy, and the cut's the one that read
+  // ours: each ranked by the sessions the placer puts at its repository's copy.
+  expect(JSON.parse(written("alpha-set", "ranking.json"))).toEqual([
+    { skill: "alpha", sessions: 1 },
+  ]);
+  expect(written("alpha-set", "sessions", "alpha.jsonl")).toBe(
+    `${JSON.stringify({ store: "store_a", hash: H4 })}\n`
+  );
+  expect(written("skills-1", "sessions", "alpha.jsonl")).toBe(
+    `${JSON.stringify({ store: "store_a", hash: H2 })}\n`
+  );
+  expect(ModelCountFile.parse(JSON.parse(written("alpha-set", "models", "alpha.json")))).toEqual({
+    sessions: 1,
+    byModel: [{ model: sonnet, anthropic: true, served: true, sessions: 1 }],
+    noModel: 0,
+    notQueried: 0,
+    notAnthropic: 0,
+    served: 1,
+    withModel: 1,
+  });
+  expect(result.out).toContain(`${path.join(out, "alpha-set", "sessions")}/ (1 files)`);
+  expect(result.out).toContain(`${path.join(out, "alpha-set", "models")}/ (1 files)`);
+  expect(
+    parseTsv(written("models-by-cut.tsv")).map((row) => [row.cut, row.skill, row.sessions])
+  ).toEqual([
+    ["alpha-set", "alpha", "1"],
+    ["skills-1", "alpha", "1"],
+  ]);
+  expect(written("skill-read-count.md")).toContain(
+    "- alpha-set (acme/alpha-set): 1 changed skills, in `alpha-set/ranking.json`"
   );
 });
