@@ -145,7 +145,7 @@ func (c *OwnGoogleCredential) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	token, err := source.Token()
+	token, err := redact.OAuth2(source.Token())
 	if err != nil {
 		return nil, errors.New("the broker's own Google credentials gave no token")
 	}

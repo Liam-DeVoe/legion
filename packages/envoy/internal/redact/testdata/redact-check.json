@@ -253,12 +253,12 @@
         "test": "print-LibraryError"
       },
       {
-        "holder": "github.com/sjawhar/envoy/internal/cipher/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
-        "test": "print-projectaccess.refusalCode"
+        "holder": "github.com/sjawhar/envoy/internal/cipher/dispatchread.RefusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
+        "test": "print-dispatchread.RefusalCode.refusal"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/internal/cipher/projectaccess.Client).MemberKind struct{MemberKind redact.RemoteText \"json:\\\"member_kind\\\"\"}",
-        "test": "print-projectaccess.Client.MemberKind.answer"
+        "holder": "(*github.com/sjawhar/envoy/internal/cipher/projectaccess.Client).readKind struct{MemberKind redact.RemoteText \"json:\\\"member_kind\\\"\"}",
+        "test": "print-projectaccess.Client.readKind.answer"
       },
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}",
@@ -2197,7 +2197,7 @@
         "github.com/sjawhar/envoy/internal/redact.StreamAnswer"
       ],
       "answer": "github.com/sjawhar/envoy/internal/redact.Answer",
-      "methods": ["Decode", "Status", "StreamTo", "Words"],
+      "methods": ["Decode", "Said", "Status", "StreamTo", "Words"],
       "readers": ["(*net/http.Response).Write", "net/http/httputil.DumpResponse"],
       "makers": [
         "github.com/sjawhar/envoy/internal/redact.NewRemoteText",
@@ -5033,18 +5033,18 @@
       "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.StatusError: every printer at every placement"
     },
     {
-      "id": "print-projectaccess.refusalCode",
+      "id": "print-dispatchread.RefusalCode.refusal",
       "requirement": "r2-held",
-      "package": "./internal/cipher/projectaccess",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/projectaccess.refusalCode",
-      "production": "github.com/sjawhar/envoy/internal/cipher/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatchread.RefusalCode.refusal",
+      "production": "github.com/sjawhar/envoy/internal/cipher/dispatchread.RefusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
     },
     {
-      "id": "print-projectaccess.Client.MemberKind.answer",
+      "id": "print-projectaccess.Client.readKind.answer",
       "requirement": "r2-held",
       "package": "./internal/cipher/projectaccess",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/projectaccess.Client.MemberKind.answer",
-      "production": "(*github.com/sjawhar/envoy/internal/cipher/projectaccess.Client).MemberKind struct{MemberKind redact.RemoteText \"json:\\\"member_kind\\\"\"}: every printer at every placement"
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/projectaccess.Client.readKind.answer",
+      "production": "(*github.com/sjawhar/envoy/internal/cipher/projectaccess.Client).readKind struct{MemberKind redact.RemoteText \"json:\\\"member_kind\\\"\"}: every printer at every placement"
     },
     {
       "id": "projectaccess-answer-words-member-kind",

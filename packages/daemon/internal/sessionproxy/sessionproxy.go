@@ -658,7 +658,7 @@ func impersonationClient(ctx context.Context, signer Signer, endpoints googleEnd
 	}
 	// oauth2.Transport sends over http.DefaultTransport when Base is nil, which is a pod's case.
 	return oauth2call.RefusalClient(&http.Client{Timeout: writerCallTimeout, Transport: &oauth2.Transport{
-		Source: oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(federated), writerTokenEarlyRefresh),
+		Source: oauth2call.TokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(federated), writerTokenEarlyRefresh)),
 		Base:   oauth2call.RefusalClient(&http.Client{Transport: endpoints.iam}).Transport,
 	}}), nil
 }

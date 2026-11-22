@@ -67,22 +67,11 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client, t
 }
 
 // Answer is what Dispatch answered one call: its status, and its whole body, held with the record
-// of the call (redact.Answer): a caller decodes it (Answer.Decode) or reads its bytes to decide
-// (StreamTo), and names what it holds only through Said or a box it decoded.
+// of the call (redact.Answer): a caller decodes it (Answer.Decode), or reads its bytes to decide
+// (StreamTo) and names what it read only through the body's Said.
 type Answer struct {
 	Status int
 	Body   redact.Answer
-	said   func(text string) redact.RemoteText
-}
-
-// Said is text this answer holds, a key or a value a caller read from its bytes, as Dispatch's
-// words with the record of the call: it prints as the rule reads it, with the broker's account
-// token redacted, and compares as it came. The zero Answer says text with no record.
-func (a Answer) Said(text string) redact.RemoteText {
-	if a.said == nil {
-		return redact.NewRemoteText("")
-	}
-	return a.said(text)
 }
 
 // Get asks path, with query when it holds any, and answers Dispatch's status and body for the
@@ -130,8 +119,7 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	if err != nil {
 		return Answer{}, fmt.Errorf("%w to %s: read its body: %w", ErrNoAnswer, path, err)
 	}
-	said := func(text string) redact.RemoteText { return redact.NewRemoteText(text).WithoutTokens(bearer) }
-	return Answer{Status: response.StatusCode, Body: answer, said: said}, nil
+	return Answer{Status: response.StatusCode, Body: answer}, nil
 }
 
 // transportAnswers reports whether err, a call that failed before Dispatch's status arrived, is
