@@ -1,4 +1,4 @@
-import { IS_MAC, keyText } from "./key-text";
+import { IS_MAC, keyText, listed } from "./key-text";
 import { isStrictPrefix, type KeyCombo, parseChord, sameCombo } from "./keymap";
 import {
   catalogueEntry,
@@ -188,14 +188,6 @@ const MAC_FIELD_CONTROL_KEYS: Record<string, true> = {
   v: true,
   y: true,
 };
-
-/** `words` as a sentence lists them: a comma between two, and `conjunction` before the last
- *  (`B, D and E`). */
-function listed(words: readonly string[], conjunction: "and" | "or"): string {
-  return words.length < 2
-    ? words.join("")
-    : `${words.slice(0, -1).join(", ")} ${conjunction} ${words[words.length - 1]}`;
-}
 
 /** The keys of `FIELD_COMMAND_KEYS` as a refusal lists them, in the table's order: a letter in
  *  upper case, as the keycaps print it, another key by its name with a capital (`Backspace`),

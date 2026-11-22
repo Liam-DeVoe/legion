@@ -51,7 +51,7 @@ import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
-import { keyText } from "../shell/key-text";
+import { keyText, listed } from "../shell/key-text";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useActionKeys } from "../shell/keymap-keys";
 import { openLinkInNewTab } from "../shell/new-tab";
@@ -123,14 +123,10 @@ function dragInstructions(
   const named = shifted
     ? keys.map((key) => key.slice("Shift+".length).toUpperCase())
     : keys.map((key) => keyText(key));
-  const listed =
-    named.length < 2
-      ? named.join("")
-      : `${named.slice(0, -1).join(", ")} or ${named[named.length - 1]}`;
   const move =
     keys.length === 0
       ? "Focus a card"
-      : `Focus a card and press ${shifted ? `${keyText("Shift")} with ` : ""}${listed} to move it`;
+      : `Focus a card and press ${shifted ? `${keyText("Shift")} with ` : ""}${listed(named, "or")} to move it`;
   return helpKey === undefined
     ? `${move}.`
     : `${move}; press ${keyText(helpKey)} for every shortcut.`;

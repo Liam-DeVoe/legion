@@ -86,3 +86,12 @@ export function keyText(keys: string, isMac: boolean = IS_MAC): string {
     .map(({ token }) => token)
     .join(" ");
 }
+
+/** `words` as a sentence lists them: a comma between two, and `conjunction` before the last
+ *  (`B, D and E`). A refusal lists keys so (`keymap-refusal.ts`), and so does the board's word for
+ *  the keys that move a card (`IssueBoard.tsx`). */
+export function listed(words: readonly string[], conjunction: "and" | "or"): string {
+  return words.length < 2
+    ? words.join("")
+    : `${words.slice(0, -1).join(", ")} ${conjunction} ${words[words.length - 1]}`;
+}
