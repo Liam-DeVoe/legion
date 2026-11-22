@@ -1047,15 +1047,18 @@ test("keeps the session's own export when a later run of the same id has no jj t
   // waits for a jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps.
   // The row's own cost, read from bun's junit reporter on this two-CPU pod: 3.5 s idle (3.55 /
   // 3.58 / 3.62 s min / median / max over 5 runs), and 11195.06 / 26057.49 / 38409.39 ms over 20
-  // runs under
-  // 80 busy loops, 40 per CPU, this row's acceptance rung, so this 180_000 is 4.7 times that
-  // worst. The rung is 80 and not the 160 this file was calibrated at: there the same 20 runs cost
-  // 15480.51 to 147320.91 ms under a 600_000 provisional, 20 of 20 green, so the row is correct
-  // at that load and merely slow, and 180_000 is 1.2 times that worst — at that load it failed
-  // a correct run twice in 20 at the limit itself, charged 180003.42 ms and 180001.83 ms, and
-  // twice more on the hook's own 3 s `JJ_BASE_CHAIN_TIMEOUT_MS`, which left the env file without
-  // its `export JJ_CONFIG=` line, a production budget no per-test limit guards. It sits well
-  // inside the `claude-envoy` job's `timeout-minutes: 10`, so a hang reddens with this test
-  // named instead of cancelling the job, and is written here rather than left to the package's
-  // `bun test --timeout=60000`, so a run of this file without that flag gets the same guard.
-}, 180_000)
+  // runs under 80 busy loops, 40 per CPU, this row's acceptance rung; 37 499.75 ms over 20 runs at
+  // that rung in the Job infra-1580-krows-ko-b5pvr of the cluster's `builds` namespace, two CPUs
+  // and 8 GiB (101 busy loops, at which row A's runs took 31.7 s against the calibration's
+  // 31.2 s), 2026-11-22T20:27Z to 20:39Z. So this 240_000 is 6.2 times the worst. The rung is 80
+  // and not the 160 this file was calibrated at: there the same 20 runs cost 15480.51 to
+  // 147320.91 ms under a 600_000 provisional, 20 of 20 green, so the row is correct at that load
+  // and merely slow; at that load, under the 180_000 it had then, it failed a correct run twice in
+  // 20 at the limit itself, charged 180003.42 ms and 180001.83 ms, and twice more on the hook's
+  // own 3 s `JJ_BASE_CHAIN_TIMEOUT_MS`, which left the env file without its `export JJ_CONFIG=`
+  // line, a production budget no per-test limit guards. It sits inside the `claude-envoy` job's
+  // `timeout-minutes: 10`: its other steps took 56 s and its test step 194 s at b202d173, so a
+  // hang reddens with this test named instead of cancelling the job. It is written here rather
+  // than left to the package's `bun test --timeout=60000`, so a run of this file without that flag
+  // gets the same guard.
+}, 240_000)
