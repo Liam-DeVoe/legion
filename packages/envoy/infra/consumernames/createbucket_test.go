@@ -752,6 +752,77 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 	})
 }
 
+// createBucketStallAt pauses the restore run, once, at jsm.go's progress notice with chunks
+// chunks answered, for longer than the server's restore waits for its next chunk (5 s: nats-server
+// processStreamRestore's activityInterval), so the server ends the restore and drops its chunk
+// subscription, and jsm.go's next chunk meets no responders. It answers whether the pause ran.
+func createBucketStallAt(t *testing.T, chunks uint32) *atomic.Bool {
+	t.Helper()
+	paused := &atomic.Bool{}
+	createBucketRestoreProgress = func(sent uint32) {
+		if sent == chunks && paused.CompareAndSwap(false, true) {
+			time.Sleep(6 * time.Second)
+		}
+	}
+	t.Cleanup(func() { createBucketRestoreProgress = nil })
+	return paused
+}
+
+// A create-bucket --after-loss whose restore the server ended as stalled, before its first chunk
+// or after one, reruns the restore and completes: on a clustered hub the failed restore leaves its
+// stream assignment, which STREAM.INFO answers absent and which refuses the rerun's start (10130),
+// and the run's own delete of that name removes it. Control: 3780df9cc4's create-bucket, which
+// waits for a leftover STREAM.INFO never shows, stops UNKNOWN: "no leftover of the cut restore of
+// envoy_session_consumers appeared within 30s".
+func TestARestoreTheServerEndedAsStalledRerunsAndCompletes(t *testing.T) {
+	for _, chunks := range []uint32{0, 1} {
+		t.Run(fmt.Sprintf("stalled after %d chunks", chunks), func(t *testing.T) {
+			h := newStack(t)
+			createBucketNotifications(t, h, 3)
+			dir, msgs := createBucketBackupOf(t, 3, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1, Hold: "the-cutover"}, nil, 120)
+			id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+			paused := createBucketStallAt(t, chunks)
+			code, stdout, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+			require.True(t, paused.Load(), "the restore never reached its notice after %d chunks", chunks)
+			require.Equal(t, 0, code, "%s%s", stdout, stderr)
+			require.Contains(t, stdout, "restored and its sentinel written")
+			require.Contains(t, stdout, "postcheck passed")
+			info, present, sentinel, found := createBucketState(h)
+			require.True(t, present)
+			require.True(t, found)
+			require.Equal(t, msgs+1, info.State.Msgs, "the restored bucket: its archive's messages and this hold's barrier")
+			require.Equal(t, id, sentinel.state.Hold)
+			require.True(t, h.journal(id).Complete)
+		})
+	}
+}
+
+// The delete of a failed restore's stream assignment (createBucketDeleteFailedRestore) is sent
+// only when STREAM.INFO answers the selection bucket's stream absent or does not answer: a bucket
+// STREAM.INFO shows is never deleted by it, and keeps every message. It runs as create-bucket
+// --after-loss does, under a held selection-recovery hold whose grant lets the operator delete
+// the bucket, on the stack's clustered hub, where the delete is sent at all. Control: the same
+// call with its present check taken out (an -overlay, run once and named in the commit) deletes
+// the bucket.
+func TestTheFailedRestoreDeleteNeverDeletesAPresentBucket(t *testing.T) {
+	ctx := context.Background()
+	h := newStack(t)
+	createBucketBackedBucket(t, h)
+	h.heldHold(holdrecord.WorkflowSelectionRecovery)
+	nc, _ := h.operator()
+	require.NotEmpty(t, nc.ConnectedClusterName(), "the stack's hub is no cluster, where the delete is never sent")
+	before, present, err := createBucketStream(ctx, nc, false)
+	require.NoError(t, err)
+	require.True(t, present)
+	deleted, err := createBucketDeleteFailedRestore(ctx, nc)
+	require.NoError(t, err)
+	require.False(t, deleted, "the assignment delete deleted a bucket STREAM.INFO shows")
+	after, present, err := createBucketStream(ctx, nc, false)
+	require.NoError(t, err)
+	require.True(t, present, "the bucket is gone")
+	require.Equal(t, before.State.Msgs, after.State.Msgs)
+}
+
 // leftWith sets the stop rule's earlier rules (leftRuleSet) for the rest of the test: a control's.
 func leftWith(t *testing.T, rules leftRuleSet) {
 	t.Helper()

@@ -794,7 +794,7 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 				return "", made, err
 			}
 			left.deleted = true
-			if err := createBucketDeleteLeftover(ctx, nc); err != nil {
+			if err := createBucketDeleteLeftover(ctx, nc, false); err != nil {
 				return "", made, err
 			}
 			// The barrier this loop put went with the leftover; the next pass puts it again.
@@ -854,7 +854,7 @@ func (r *run) createBucketCheckRestored(ctx context.Context, a *admission, nc *n
 	if err := a.reread(ctx); err != nil {
 		return fmt.Errorf("%w; and the held re-read before the restored bucket's delete: %w", refused, err)
 	}
-	if err := createBucketDeleteLeftover(ctx, nc); err != nil {
+	if err := createBucketDeleteLeftover(ctx, nc, false); err != nil {
 		return fmt.Errorf("%w; and the delete of the restored bucket: %w", refused, err)
 	}
 	left.restored, left.unloaded = false, true
@@ -1143,17 +1143,18 @@ var (
 // createBucketRestore restores backup into the absent selection bucket through jsm.go on the
 // operator's own connection (jsm.Manager.RestoreSnapshotFromDirectory, plan §3a "The held restore
 // and backup"), with the one rerun: before each run it forces a reconnect and waits for it, so the
-// restore starts on a fresh decision with its user's whole 10 minutes; a run cut part way is
-// followed by the deletion of its leftover and one run more from the first chunk; a second cut
-// stops the command, naming the bucket and both runs' errors, with the leftover deleted. A
-// restored stream whose state is not the archive's stops it too.
+// restore starts on a fresh decision with its user's whole 10 minutes; a run cut part way, or one
+// the server ended as stalled, is followed by the deletion of what it left
+// (createBucketDeleteLeftover, this run's own restore having failed) and one run more from the
+// first chunk; a second failure stops the command, naming the bucket and both runs' errors, with
+// what it left deleted. A restored stream whose state is not the archive's stops it too.
 func createBucketRestore(ctx context.Context, nc *nats.Conn, backup *createBucketBackup) error {
 	var runs []error
 	for run := 1; run <= 2; run++ {
 		if err := createBucketReconnect(ctx, nc); err != nil {
 			return err
 		}
-		state, started, err := createBucketRestoreOnce(ctx, nc, backup)
+		state, started, err := createBucketRestoreOnce(ctx, nc, backup, run > 1)
 		if err == nil {
 			if state.LastSeq != backup.archive.LastSeq || state.Msgs != backup.archive.Msgs {
 				return unknownf(nil, "the restore of %s answered last_seq %d and %d messages, where its archive holds %d and %d", selection.SessionBucket, state.LastSeq, state.Msgs, backup.archive.LastSeq, backup.archive.Msgs)
@@ -1165,7 +1166,7 @@ func createBucketRestore(ctx context.Context, nc *nats.Conn, backup *createBucke
 			// The server refused the start, so it made no stream to leave behind.
 			break
 		}
-		if err := createBucketDeleteLeftover(ctx, nc); err != nil {
+		if err := createBucketDeleteLeftover(ctx, nc, true); err != nil {
 			return fmt.Errorf("%w (after %w)", err, errors.Join(runs...))
 		}
 	}
@@ -1177,17 +1178,25 @@ const createBucketRestoreSubject = "$JS.API.STREAM.RESTORE." + selectionStreamNa
 
 // createBucketRestoreOnce is one run of the restore, its start retried through its transients:
 // 10049 and "no responders" createBucketStartTries times, and 10130, a cut restore's leftover, once
-// that leftover is deleted. started reports whether the server may have made a stream: false only
-// for a start it refused, by a JetStream answer or under the connection's grant.
-func createBucketRestoreOnce(ctx context.Context, nc *nats.Conn, backup *createBucketBackup) (*api.StreamState, bool, error) {
+// that leftover is deleted (createBucketDeleteLeftover; earlierRunFailed, when an earlier run of
+// this command's restore failed, lets it delete the stream assignment that run left). started
+// reports whether the server may have made a stream: false only for a start it refused, by a
+// JetStream answer or under the connection's grant.
+func createBucketRestoreOnce(ctx context.Context, nc *nats.Conn, backup *createBucketBackup, earlierRunFailed bool) (*api.StreamState, bool, error) {
 	mgr, err := jsm.New(nc, jsm.WithTimeout(createBucketRestoreTimeout))
 	if err != nil {
 		return nil, false, err
 	}
 	for try := 1; ; try++ {
-		// jsm.go notifies once its start is answered, before the first chunk.
+		// jsm.go notifies once its start is answered, before the first chunk, and again after
+		// each chunk the server answered.
 		var started atomic.Bool
-		notify := jsm.RestoreNotify(func(jsm.RestoreProgress) { started.Store(true) })
+		notify := jsm.RestoreNotify(func(p jsm.RestoreProgress) {
+			started.Store(true)
+			if createBucketRestoreProgress != nil {
+				createBucketRestoreProgress(p.ChunksSent())
+			}
+		})
 		state, err := createBucketRestoreRun(ctx, mgr, backup.dir, notify)
 		if err == nil {
 			return state, true, nil
@@ -1204,7 +1213,7 @@ func createBucketRestoreOnce(ctx context.Context, nc *nats.Conn, backup *createB
 		}
 		switch {
 		case api.IsNatsError(err, errRestoreNameInUse):
-			if err := createBucketDeleteLeftover(ctx, nc); err != nil {
+			if err := createBucketDeleteLeftover(ctx, nc, earlierRunFailed); err != nil {
 				return nil, false, err
 			}
 		case api.IsNatsError(err, errCreatingStore) || errors.Is(err, nats.ErrNoResponders):
@@ -1220,6 +1229,11 @@ func createBucketRestoreOnce(ctx context.Context, nc *nats.Conn, backup *createB
 // createBucketRestoreBound bounds one restore run: the operator's user expires 10 minutes after
 // the decision the forced reconnect starts the run on, and the server closes the connection then.
 var createBucketRestoreBound = 10 * time.Minute
+
+// createBucketRestoreProgress, when set, runs at each of jsm.go's progress notices of a restore
+// run, with how many chunks the server has answered: once before the first chunk, and after each
+// chunk. Only a test sets it, to pause a run there until the server's restore stalls.
+var createBucketRestoreProgress func(chunksSent uint32)
 
 // createBucketRestoreRun is one jsm.go restore of dir, ended by ctx or createBucketRestoreBound.
 // jsm.go's last request, the empty one whose answer is the restored stream, waits up to an hour
@@ -1265,40 +1279,100 @@ func createBucketReconnect(ctx context.Context, nc *nats.Conn) error {
 	return nil
 }
 
-// createBucketDeleteLeftover deletes what a cut restore of the selection bucket left (plan §3a,
-// "One rerun"): on a clustered hub STREAM.INFO answers 10059 for about 10 s after the cut, then an
-// empty stream appears and stays, so it waits for the stream to appear, deletes it, and reads
-// STREAM.INFO 10059 after the delete. A read right after the delete that the hub does not answer,
-// or that still finds the stream while its meta group applies the removal, is read again within the
-// same wait (createBucketAwaitGone). A leftover that does not appear within the wait is UNKNOWN on
-// a clustered hub, naming the bucket; a lone server leaves none.
-func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
+// createBucketDeleteLeftover deletes what a cut or failed restore of the selection bucket left
+// (plan §3a, "One rerun"): on a clustered hub STREAM.INFO answers 10059 for about 10 s after a cut,
+// then an empty stream appears and stays, so it waits for the stream to appear, deletes it, and
+// reads STREAM.INFO 10059 after the delete. A read right after the delete that the hub does not
+// answer, or that still finds the stream while its meta group applies the removal, is read again
+// within the same wait (createBucketAwaitGone). A leftover that does not appear within the wait is
+// UNKNOWN on a clustered hub, naming the bucket; a lone server leaves none.
+//
+// ownRestoreFailed is true only after a restore this command's run itself started failed. Then a
+// clustered hub may hold that restore's stream assignment, which no read shows: the server ends a
+// restore no chunk reached for 5 s, and a clustered restore whose stream was not made leaves its
+// assignment for explicit cleanup, which refuses the rerun's start (10130) while STREAM.INFO
+// answers 10059 or does not answer at all. So on each pass it first deletes that assignment
+// (createBucketDeleteFailedRestore), and a read the hub does not answer is read again within the
+// wait.
+func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn, ownRestoreFailed bool) error {
 	clustered := nc.ConnectedClusterName() != ""
 	deadline := time.Now().Add(createBucketLeftoverWait)
-	for {
+	read := func(ctx context.Context) (bool, error) {
 		_, present, err := createBucketStream(ctx, nc, false)
-		if err != nil {
-			return err
+		return present, err
+	}
+	for {
+		if ownRestoreFailed {
+			deleted, err := createBucketDeleteFailedRestore(ctx, nc)
+			if err != nil {
+				return err
+			}
+			if deleted {
+				return createBucketAwaitGone(ctx, read, deadline)
+			}
 		}
-		if present {
+		present, err := read(ctx)
+		switch {
+		case err != nil && !(ownRestoreFailed && clustered && ctx.Err() == nil && createBucketUnanswered(err)):
+			return err
+		case err == nil && present:
 			if _, err := apiRequest(ctx, nc, "$JS.API.STREAM.DELETE."+selectionStreamName, nil); err != nil {
 				return unknownf(err, "the delete of %s's leftover", selection.SessionBucket)
 			}
-			return createBucketAwaitGone(ctx, func(ctx context.Context) (bool, error) {
-				_, present, err := createBucketStream(ctx, nc, false)
-				return present, err
-			}, deadline)
-		}
-		if !clustered {
+			return createBucketAwaitGone(ctx, read, deadline)
+		case !clustered:
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return unknownf(nil, "no leftover of the cut restore of %s appeared within %s", selection.SessionBucket, createBucketLeftoverWait)
+			return unknownf(err, "no leftover of the cut restore of %s appeared within %s", selection.SessionBucket, createBucketLeftoverWait)
 		}
 		if err := sleep(ctx, time.Second); err != nil {
 			return err
 		}
 	}
+}
+
+// createBucketDeleteFailedRestore deletes the stream assignment a failed restore of the selection
+// bucket left on a clustered hub, which no read shows, and reports whether a delete was answered.
+// Its caller is createBucketDeleteLeftover alone, under the hold, after a restore its own run
+// started failed. It deletes only the selection bucket's own stream, only on a clustered hub, and
+// only when STREAM.INFO answers that stream absent (10059) or gives no answer, so a stream
+// STREAM.INFO shows is never deleted here (createBucketDeleteLeftover deletes a present leftover
+// by its own rule). nats-server v2.15.1 ends a restore no chunk reached for 5 s
+// (jetstream_api.go processStreamRestore, activityInterval), whether before its first chunk or
+// between two, and a clustered restore proposes its stream assignment before any chunk and leaves
+// a failed one for explicit cleanup (jetstream_cluster.go jsClusteredStreamRestoreRequest,
+// processStreamAssignmentResults). A delete answered 10059 found no assignment: false, and no
+// error. Any other refused delete is UNKNOWN. Should the failed restore in fact have landed whole,
+// its answer lost, the delete loses nothing: the rerun restores again from the same backup, whose
+// sha256 the hold's selection record holds, and createBucketRestore checks the restored stream's
+// last sequence and message count against the archive's (backup.json) before
+// createBucketCheckRestored checks each of its values.
+func createBucketDeleteFailedRestore(ctx context.Context, nc *nats.Conn) (bool, error) {
+	if nc.ConnectedClusterName() == "" {
+		return false, nil
+	}
+	_, present, err := createBucketStream(ctx, nc, false)
+	switch {
+	case err == nil && present:
+		return false, nil
+	case err != nil && (ctx.Err() != nil || !createBucketUnanswered(err)):
+		return false, err
+	}
+	_, err = apiRequest(ctx, nc, "$JS.API.STREAM.DELETE."+selectionStreamName, nil)
+	switch {
+	case err == nil:
+		return true, nil
+	case apiErrorIs(err, jetstream.JSErrCodeStreamNotFound):
+		return false, nil
+	}
+	return false, unknownf(err, "the delete of the stream assignment the failed restore of %s left, which STREAM.INFO does not show", selection.SessionBucket)
+}
+
+// createBucketUnanswered reports whether err is a request the hub did not answer in time: a
+// timeout, or no responder.
+func createBucketUnanswered(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders)
 }
 
 // createBucketAwaitGone reads the selection bucket's stream (read) after its delete until STREAM.INFO
@@ -1316,7 +1390,7 @@ func createBucketAwaitGone(ctx context.Context, read func(context.Context) (bool
 		case err == nil && time.Now().After(deadline):
 			return unknownf(nil, "%s's leftover is still present after its delete", selection.SessionBucket)
 		case err == nil: // still present before deadline: read again
-		case !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrNoResponders):
+		case !createBucketUnanswered(err):
 			return err
 		case time.Now().After(deadline):
 			return unknownf(err, "read %s after the delete of its leftover", selection.SessionBucket)

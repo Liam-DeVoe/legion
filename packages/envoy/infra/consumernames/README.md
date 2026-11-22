@@ -490,6 +490,18 @@ starts there.
   restore run once more; a second cut stops it, leaving no partial stream), or creates the bucket
   and loads a walk's records, or creates it empty. Each value it loads is checked to be exactly a
   value of its key's kind; a restored snapshot that fails is deleted again and the command stops.
+- The server ends a restore that no chunk reaches for 5 seconds, before its first chunk or
+  between two. On a clustered hub such a failed restore leaves its stream assignment, which
+  STREAM.INFO does not show (it answers that the stream does not exist, or gives no answer) and
+  which refuses the next restore of that name. So after a restore that this run itself started
+  failed, and only then, it sends STREAM.DELETE for `KV_envoy_session_consumers` while STREAM.INFO
+  answers that stream absent or does not answer, and runs the restore once more. It sends this
+  delete only under the hold, only on a clustered hub, and only for that stream. A stream that
+  STREAM.INFO shows is never deleted by this rule: the leftover rules above decide it. If the
+  failed restore had in fact landed whole and only its answer was lost, the delete loses nothing:
+  the rerun restores again from the same backup, whose sha256 the selection record holds, and the
+  command checks the restored stream's last sequence and message count against the archive's
+  `backup.json`, then checks each value as above.
 - A bucket present is adopted only when it is this recovery's: its sentinel names these inputs; it
   holds all of the walk's records and no sentinel; it holds the snapshot's archive and since then
   only this hold's barrier; it is empty with no backup; or it holds another recovery's sentinel,
