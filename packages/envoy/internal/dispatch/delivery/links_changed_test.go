@@ -45,7 +45,7 @@ func TestALinkChangeHasTheReconcileJudgeTheRowAgain(t *testing.T) {
 		t.Fatalf("link #23: %v", err)
 	}
 
-	changed, err := LinksChanged(ctx, pool, linkedIssue, []string{linkedPullURL(21), "https://github.com/ACME/infra/pull/23"})
+	changed, err := unrenamed().LinksChanged(ctx, pool, linkedIssue, []string{linkedPullURL(21), "https://github.com/ACME/infra/pull/23"})
 	if err != nil {
 		t.Fatalf("judge again the pull requests whose links changed: %v", err)
 	}

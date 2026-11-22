@@ -236,6 +236,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/pods/**'
   - 'packages/daemon/internal/podsafety/**'
   - 'packages/daemon/internal/procgroup/*'
+  - 'packages/daemon/internal/programbound/*'
   - 'packages/daemon/internal/projection/*'
   - 'packages/daemon/internal/promptrefs/*'
   - 'packages/daemon/internal/prompts/**'
@@ -546,6 +547,7 @@ plugin_pack:
   - '!packages/daemon/internal/plan/**/*_test.go'
   - '!packages/daemon/internal/podsafety/**/*_test.go'
   - '!packages/daemon/internal/procgroup/**/*_test.go'
+  - '!packages/daemon/internal/programbound/**/*_test.go'
   - '!packages/daemon/internal/projection/**/*_test.go'
   - '!packages/daemon/internal/promptrefs/**/*_test.go'
   - '!packages/daemon/internal/prompts/**/*_test.go'
@@ -626,6 +628,7 @@ claude_envoy:
   - '.github/actions/private-names-packed-plugin/**'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/release-claude-envoy-check-packed.sh'
+  - '.github/scripts/release-codex-envoy-check-packed.sh'
   - '.github/scripts/release-claude-envoy-manifest-repository.sh'
   - '.github/scripts/release-claude-envoy-version.sh'
   - '.github/scripts/repo-paths.sh'
@@ -892,6 +895,13 @@ go_tagged_tests_test: &go_tagged_tests_test
   - '.github/scripts/go-tagged-tests.test.sh'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/cmd/listener/*_test.go'
+ci_router_outputs_test: &ci_router_outputs_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/ci-router-outputs.test.sh'
+  - '.github/scripts/ci_router_outputs.py'
 ci_ok_test: &ci_ok_test
   - *ci_router
   - *ci_filters_data
@@ -1092,6 +1102,7 @@ test:
   - *repo_paths_test
   - *select_e2e_proofs_test
   - *go_tagged_tests_test
+  - *ci_router_outputs_test
   - *ci_ok_test
   - *ci_ok_report_test
   - *ci_ok_reconcile_test
@@ -1479,6 +1490,7 @@ dispatch_ui:
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
+  - '.github/workflows/dispatch-unit-repeat.yaml'
   - 'packages/test-fixtures/src/**'
   # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
   # tsc programs compile. An edit by hand is refused by that check, which writes these.

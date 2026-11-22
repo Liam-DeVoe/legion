@@ -225,7 +225,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 	} else {
 		// Each mark read committed before this compute, in the transaction of its change, so the
 		// compute sees every change the marks record.
-		heads, err := delivery.HeadsAttributedTo(ctx, pool, issue)
+		heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, pool, issue)
 		if err != nil {
 			return false, err
 		}
