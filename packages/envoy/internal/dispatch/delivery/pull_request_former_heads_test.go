@@ -16,6 +16,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
+// foldedFormerHeadsOf is the former heads of repo#number, by commit, as the check states settler
+// reads them: once the records the writes of pull_request_heads appended are applied
+// (pull_request_former_heads_fold, migration 20261122071001), which each settle of an issue runs
+// first for the issue's open pull requests (pull_request_former_heads_drain).
+func foldedFormerHeadsOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) []string {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `select pull_request_former_heads_fold(pull_request_former_heads_key($1), $2)`, repo, number); err != nil {
+		t.Fatalf("apply the records of %s#%d: %v", repo, number, err)
+	}
+	rows, err := pool.Query(ctx, `select head_sha from pull_request_former_heads where repo = $1 and number = $2 order by head_sha`, repo, number)
+	if err != nil {
+		t.Fatalf("read the former heads of %s#%d: %v", repo, number, err)
+	}
+	shas, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the former heads of %s#%d: %v", repo, number, err)
+	}
+	return shas
+}
+
 // reKeyRig is a pull request of gadgetsRepo that arrived under both names: stored first under
 // gadgetsOldRepo, where it left the head left and stands at oldHead, then read through under
 // gadgetsRepo, where GitHub answers it at head, attributed to issue.
@@ -58,15 +78,7 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 	}
 	rig.formerHeadsOf = func(repo string) []string {
 		t.Helper()
-		rows, err := pool.Query(ctx, `select head_sha from pull_request_former_heads where repo = $1 and number = $2 order by head_sha`, repo, number)
-		if err != nil {
-			t.Fatalf("read the former heads of %s#%d: %v", repo, number, err)
-		}
-		shas, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			t.Fatalf("read the former heads of %s#%d: %v", repo, number, err)
-		}
-		return shas
+		return foldedFormerHeadsOf(t, ctx, pool, repo, number)
 	}
 	rig.canonicalStateAndHead = func() (string, string) {
 		t.Helper()

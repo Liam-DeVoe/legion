@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -1363,15 +1362,7 @@ func TestReKeyingAPullRequestCarriesTheHeadsItLeft(t *testing.T) {
 	}
 	formerHeads := func(repo string) []string {
 		t.Helper()
-		rows, err := pool.Query(ctx, `select head_sha from pull_request_former_heads where repo = $1 and number = 523 order by head_sha`, repo)
-		if err != nil {
-			t.Fatalf("read the former heads of %s#523: %v", repo, err)
-		}
-		shas, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			t.Fatalf("read the former heads of %s#523: %v", repo, err)
-		}
-		return shas
+		return foldedFormerHeadsOf(t, ctx, pool, repo, 523)
 	}
 	if got := formerHeads(gadgetsRepo); !slices.Equal(got, []string{left, oldHead}) {
 		t.Fatalf("#523 under %s left %v, want %v: the head it left and its head under the old name", gadgetsRepo, got, []string{left, oldHead})

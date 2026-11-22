@@ -31,22 +31,32 @@ func seedInstallCandidates(t *testing.T, rig *checkStatesRig, shas ...string) {
 }
 
 // forgetCandidates deletes every row pull_request_former_heads holds for #70 of the rig's
-// repository, so the database holds there what the release before the install left: that release
-// kept no former head. A test of the install's seed writes #70's row after its results, and this
-// release answers that write with candidates of its own (pull_request_former_heads_begin), which
-// the release before never wrote; the test calls this right after that write, before any settle,
-// and then writes the install's candidates with seedInstallCandidates.
+// repository, the records the writes of #70's row appended, and what the triggers left pending for
+// the rig's issue, so the database holds there what the release before the install left: that
+// release kept no former head and appended nothing. A test of the install's seed writes #70's row
+// after its results, and this release answers the results and that write with candidates owed to
+// the issue (pull_request_former_heads_of_result, pull_request_former_heads_begin), which the
+// release before never wrote; the test calls this right after that write, before any settle, and
+// then writes the install's candidates with seedInstallCandidates.
 func forgetCandidates(t *testing.T, rig *checkStatesRig) {
 	t.Helper()
 	if _, err := rig.database.Pool.Exec(context.Background(), `
-		delete from pull_request_former_heads where repo = $1 and number = 70`, ciJobRepository); err != nil {
-		t.Fatalf("delete #70's former heads: %v", err)
+		with former as (delete from pull_request_former_heads where repo = $1 and number = 70),
+			moves as (delete from pull_request_former_heads_moves where pull_repo = pull_request_former_heads_key($1) and number = 70)
+		delete from pull_request_former_heads_pending where issue_key = $2`, ciJobRepository, rig.issue); err != nil {
+		t.Fatalf("delete #70's former heads and what was left for %s: %v", rig.issue, err)
 	}
 }
 
-// candidatesOf is each former head the rig's #70 holds, by commit, and whether it is verified.
+// candidatesOf is each former head the rig's #70 holds, by commit, and whether it is verified,
+// read once the rig's issue is drained as each of its settles first drains it
+// (pull_request_former_heads_drain): the records of its open pull requests applied, and the
+// candidates the writes since its last settle owe it left.
 func candidatesOf(t *testing.T, rig *checkStatesRig) map[string]bool {
 	t.Helper()
+	if _, err := rig.database.Pool.Exec(context.Background(), `select pull_request_former_heads_drain($1)`, rig.issue); err != nil {
+		t.Fatalf("drain %s: %v", rig.issue, err)
+	}
 	rows, err := rig.database.Pool.Query(context.Background(), `
 		select head_sha, verified from pull_request_former_heads where repo = $1 and number = 70`, ciJobRepository)
 	if err != nil {

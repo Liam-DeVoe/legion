@@ -1,13 +1,17 @@
 // check_states_head_record_test.go holds the settler to the record its former heads come from
 // (formerHeadsOf, pull_request_former_heads): each head a pull request leaves while it is open is
-// kept in the transaction of the write that moved it, whether or not a settle ran while the pull
-// request was there, so the head stays a former head of that pull request until it closes, and a
-// pull request that closes keeps none. The rig is check_states_test.go's.
+// recorded in the transaction of the write that moved it, whether or not a settle ran while the
+// pull request was there, and applied by the settler before it reads former heads, so the head
+// stays a former head of that pull request until it closes, and a pull request that closes keeps
+// none. The rig is check_states_test.go's.
 package api
 
 import (
+	"context"
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // wantTestersPassAt records the tester's pass of k1 at head and fails the test unless the settle
@@ -110,4 +114,49 @@ func TestAClosedPullRequestKeepsNoFormerHead(t *testing.T) {
 		t.Fatalf("a fail at H2, which #70 left before it closed, after #70 reopened: the settler published %v, want nothing", eventLines(events))
 	}
 	wantNoRowAt(t, "#70 reopened", rig, eachHeadH2, "", "k2")
+}
+
+// TestThePassAppliesTheRecordsOfAPullRequestNoIssueHolds: #90 opens at H1, credited to no issue,
+// and moves to H2. The writes only append their records, and a settle applies those of the open
+// pull requests of its own issue, so no settle reaches #90's. One pass of the settler applies them
+// itself: H1 is #90's former head, verified, and no record of #90 is left to grow.
+func TestThePassAppliesTheRecordsOfAPullRequestNoIssueHolds(t *testing.T) {
+	rig := newCheckStatesRig(t, checkStatesTwoChecks)
+	writeHead(t, rig.database, ciJobRepository, 90, eachHeadH1, "open", "")
+	writeHead(t, rig.database, ciJobRepository, 90, eachHeadH2, "open", "")
+	records := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select count(*) from pull_request_former_heads_moves where number = 90`).Scan(&count); err != nil {
+			t.Fatalf("count #90's records: %v", err)
+		}
+		return count
+	}
+	if count := records(); count == 0 {
+		t.Fatal("#90's two writes appended no record, so this test holds nothing to the pass")
+	}
+	rig.settler.pass(store.WithTransactionTracking(t.Context()))
+	if count := records(); count != 0 {
+		t.Fatalf("one pass left %d records of #90, which no issue holds: they grow with each write and no settle applies them", count)
+	}
+	var former []string
+	rows, err := rig.database.Pool.Query(context.Background(),
+		`select head_sha || case when verified then '' else ' unverified' end from pull_request_former_heads where repo = $1 and number = 90`, ciJobRepository)
+	if err != nil {
+		t.Fatalf("read #90's former heads: %v", err)
+	}
+	for rows.Next() {
+		var head string
+		if err := rows.Scan(&head); err != nil {
+			t.Fatalf("read #90's former heads: %v", err)
+		}
+		former = append(former, head)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read #90's former heads: %v", err)
+	}
+	if want := []string{eachHeadH1}; !slices.Equal(former, want) {
+		t.Fatalf("#90 holds the former heads %v after the pass, want %v: the head it left, verified", former, want)
+	}
 }

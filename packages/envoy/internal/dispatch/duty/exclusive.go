@@ -34,11 +34,11 @@ type Leases interface {
 // (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
 // lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite),
-// the rename graph's own (api's refuseRepoRenameChain), one pull request's former heads under all
-// its names (the function pull_request_former_heads_lock, migration 20261122071001) and one
-// issue's candidate former heads (the function pull_request_former_heads_issue_lock, the same
-// migration), each a first key of its own, so a lease's second key, its name's hashtext,
-// separates the leases from each other and from nothing else.
+// the rename graph's own (api's refuseRepoRenameChain) and one pull request's former heads under
+// all its names (the functions pull_request_former_heads_lock and pull_request_former_heads_fold,
+// migration 20261122071001, which only the check states settler takes), each a first key of its
+// own, so a lease's second key, its name's hashtext, separates the leases from each other and from
+// nothing else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both

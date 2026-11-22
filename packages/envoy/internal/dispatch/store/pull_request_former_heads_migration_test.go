@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"io/fs"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -263,8 +264,9 @@ func TestTheFormerHeadsInstallSeedsTheResultsTheSettleOfTheIssueReads(t *testing
 // nothing there. The install is held after its statements, before it records its version and
 // commits, and meanwhile a tester records a result at 1111… and a CI job one at 2222…. Each writer
 // either committed before the install read the result tables or waits for the install's commit;
-// either way the installed database holds both commits as #70's candidates, unverified, and the
-// settle of CORE-1, which they owe, confirms them against #70's commits.
+// either way, once the settle of CORE-1, which they owe, drains what the triggers left it, the
+// installed database holds both commits as #70's candidates, unverified, which that settle then
+// confirms against #70's commits.
 func TestAResultCommittedWhileTheInstallRunsIsACandidate(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -354,6 +356,7 @@ func TestAResultCommittedWhileTheInstallRunsIsACandidate(t *testing.T) {
 			t.Fatalf("record the result in %s while the install runs: %v", w.table, err)
 		}
 	}
+	drainCandidates(t, store, "CORE-1")
 	heads, owed := formerHeadsAndOwed(t, store)
 	if want := []string{"acme/widgets#70@1111 unverified", "acme/widgets#70@2222 unverified"}; !slices.Equal(heads, want) {
 		t.Fatalf("the installed database holds the former heads %v, want %v: a result committed while the install ran leaves no candidate, so no settle publishes the head #70 left", heads, want)
@@ -366,8 +369,9 @@ func TestAResultCommittedWhileTheInstallRunsIsACandidate(t *testing.T) {
 // TestAResultAfterTheInstallAtAHeadLeftBeforeItIsACandidate: CORE-1's open #70 left 1111… and
 // 2222… for 3333… before the install, with no result at either, and the install seeds nothing. A
 // head move before the install is in no write a trigger saw, so a result recorded after it at a
-// commit that is no head of #70 Dispatch knows leaves that commit as a candidate, unverified, and
-// owes CORE-1 the settle that confirms it: a tester's at 1111… recorded on CORE-1 and a CI job's at
+// commit that is no head of #70 Dispatch knows leaves that commit as a candidate, unverified, once
+// the settle of CORE-1 that it owes drains it, and that settle then confirms it: a tester's at
+// 1111… recorded on CORE-1 and a CI job's at
 // 2222… recorded on its child CORE-3, each against CORE-1's check. A result at #70's head
 // leaves none, and one at that head against CORE-2's check leaves it to CORE-2's #71, not to #70.
 func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsACandidate(t *testing.T) {
@@ -390,6 +394,7 @@ func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsACandidate(t *testing.T) {
 			t.Fatalf("record a result at %s…: %v", result.sha[:4], err)
 		}
 	}
+	drainCandidates(t, store, "CORE-1", "CORE-2")
 	heads, owed := formerHeadsAndOwed(t, store)
 	if want := []string{"acme/widgets#70@1111 unverified", "acme/widgets#70@2222 unverified", "acme/widgets#71@3333 unverified"}; !slices.Equal(heads, want) {
 		t.Fatalf("after the results the former heads are %v, want %v: each result's commit a candidate of the open pull request of the issue whose settle reads it, but where it is that pull request's head", heads, want)
@@ -503,9 +508,10 @@ func TestTheFormerHeadsInstallWaitsOutABusyWriterAndGivesWayInACycle(t *testing.
 
 // TestAResultAndARowThatStartsAtItsIssueAtOnceLeaveTheCandidate: after the install, a tester's
 // result at 1111… against CORE-1's check and the first write of CORE-1's #72 at 2222… run in two
-// transactions at once. Each trigger reads what the other wrote only once the other committed, so
-// each reads under CORE-1's lock: whichever transaction comes second waits for the first's commit
-// and then reads its write. Either way #72 ends with 1111… as a candidate, unverified.
+// transactions at once. Neither trigger reads what the other wrote, and neither waits for the
+// other: each appends what it owes CORE-1, and the second commits while the first is still open.
+// The settle of CORE-1, which starts after both committed, drains both. Either way #72 ends with
+// 1111… as a candidate, unverified.
 func TestAResultAndARowThatStartsAtItsIssueAtOnceLeaveTheCandidate(t *testing.T) {
 	ctx := context.Background()
 	for _, resultFirst := range []bool{false, true} {
@@ -566,11 +572,10 @@ func TestAResultAndARowThatStartsAtItsIssueAtOnceLeaveTheCandidate(t *testing.T)
 					t.Fatalf("read the lock waits: %v", err)
 				}
 				if waits {
-					t.Log("the second write waits for a lock while the first is open")
-					break
+					t.Fatal("the second write waits for a lock while the first is open: a trigger makes one writer wait for the other")
 				}
 				if time.Now().After(deadline) {
-					t.Fatal("the second write neither committed nor waited for a lock")
+					t.Fatal("the second write did not commit within 10 s while the first was open")
 				}
 			}
 			if err := held.Commit(ctx); err != nil {
@@ -579,10 +584,180 @@ func TestAResultAndARowThatStartsAtItsIssueAtOnceLeaveTheCandidate(t *testing.T)
 			if err := <-done; err != nil {
 				t.Fatalf("the second write: %v", err)
 			}
+			drainCandidates(t, store, "CORE-1")
 			heads, _ := formerHeadsAndOwed(t, store)
 			if !slices.Contains(heads, "acme/widgets#72@1111 unverified") {
-				t.Fatalf("after a result at 1111… and #72's start at CORE-1, written at once, the former heads are %v, want #72@1111 unverified among them: each trigger read before the other's write committed", heads)
+				t.Fatalf("after a result at 1111… and #72's start at CORE-1, written at once, and CORE-1's drain, the former heads are %v, want #72@1111 unverified among them", heads)
 			}
 		})
+	}
+}
+
+// TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit: the two writers take CORE-1's owner lock
+// in opposite orders. A result write takes the owner locks first and then inserts its row
+// (api/results.go, recordResultUnderOwnerLocks). The head writer writes its row first and then
+// takes the owner locks of the issues the pull request left and reached
+// (delivery.UpsertPullRequestHead, appendAttributionChange). The head write moves #71 from CORE-2
+// to CORE-1 at the head it stands at, or, with #71 at CORE-1 before, moves it to CORE-2 at a new
+// head; a result against CORE-1's check is recorded between that row write and that owner lock.
+// No trigger of the former heads may make either writer wait for the other while it holds what
+// the other needs: both commit with no error, and where #71 moved to CORE-1, it holds the result's
+// commit as a candidate once CORE-1 settles.
+func TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit(t *testing.T) {
+	ctx := context.Background()
+	for _, leaves := range []bool{false, true} {
+		name := "the row moves to the issue"
+		if leaves {
+			name = "the row leaves the issue at a new head"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := openEmptyTestStore(t)
+			documents := installFixture(t, store)
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			begin := func(what string) pgx.Tx {
+				t.Helper()
+				conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
+				if err != nil {
+					t.Fatalf("connect %s: %v", what, err)
+				}
+				t.Cleanup(func() { conn.Close(context.Background()) })
+				tx, err := conn.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin %s: %v", what, err)
+				}
+				t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+				return tx
+			}
+			move := `update pull_request_heads set issue_key = 'CORE-1' where repo = 'acme/widgets' and number = 71`
+			if leaves {
+				if _, err := store.Pool.Exec(ctx, move); err != nil {
+					t.Fatalf("move #71 to CORE-1 before: %v", err)
+				}
+				move = `update pull_request_heads set issue_key = 'CORE-2', head_sha = '` + installH2 + `'
+					where repo = 'acme/widgets' and number = 71`
+			}
+			writer := begin("the head writer")
+			if _, err := writer.Exec(ctx, move); err != nil {
+				t.Fatalf("the head writer's row write: %v", err)
+			}
+			recorder := begin("the result writer")
+			if err := LockOwners(ctx, recorder, IssueOwner("CORE-1")); err != nil {
+				t.Fatalf("the result writer's owner lock: %v", err)
+			}
+			recorded := make(chan error, 1)
+			go func() {
+				_, err := recorder.Exec(ctx, installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], installH1)
+				recorded <- err
+			}()
+			owned := make(chan error, 1)
+			go func() { owned <- LockOwners(ctx, writer, IssueOwner("CORE-1"), IssueOwner("CORE-2")) }()
+			if err := <-recorded; err != nil {
+				t.Fatalf("the result writer's insert, between the head writer's row write and its owner lock: %v; want no wait for the head writer", err)
+			}
+			if err := recorder.Commit(ctx); err != nil {
+				t.Fatalf("commit the result writer: %v", err)
+			}
+			if err := <-owned; err != nil {
+				t.Fatalf("the head writer's owner lock after the result committed: %v", err)
+			}
+			if err := writer.Commit(ctx); err != nil {
+				t.Fatalf("commit the head writer: %v", err)
+			}
+			if leaves {
+				return
+			}
+			drainCandidates(t, store, "CORE-1")
+			if heads, _ := formerHeadsAndOwed(t, store); !slices.Contains(heads, "acme/widgets#71@1111 unverified") {
+				t.Fatalf("after both writers committed and CORE-1 settled, the former heads are %v, want #71@1111 unverified among them", heads)
+			}
+		})
+	}
+}
+
+// TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends: a trigger on a writer's table
+// runs in that writer's transaction, so a lock it takes is the writer's lock. A writer that holds
+// such a lock while another writer, holding a lock the first needs next, waits for it closes a
+// cycle with the owner locks and the rows the writers take in their own orders, and Postgres breaks
+// it by failing one writer (TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit is one such
+// pair). So each function a former heads trigger on pull_request_heads, check_results or
+// ci_check_results runs only reads and appends: its body names no row lock, no table lock and no
+// call of a function whose name holds "lock", updates and deletes nothing, inserts with no on
+// conflict, and calls none of the functions the settler folds, drains or leaves candidates with;
+// and each table it inserts into has no primary, unique, exclusion or foreign key, and no unique
+// index, so an insert there waits for no other transaction. The one function those bodies call
+// that writes, check_states_owe, inserts a mark whose key a sequence draws, and waits for nothing
+// either.
+func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	rows, err := store.Pool.Query(ctx, `
+		select distinct watched.relname::text, run.proname::text, run.prosrc
+		from pg_trigger fired
+		join pg_class watched on watched.oid = fired.tgrelid
+		join pg_proc run on run.oid = fired.tgfoid
+		where not fired.tgisinternal and watched.relname in ('pull_request_heads', 'check_results', 'ci_check_results')
+			and run.proname like 'pull\_request\_former\_heads\_%'
+		order by 1, 2`)
+	if err != nil {
+		t.Fatalf("read the former heads triggers: %v", err)
+	}
+	type triggerFunction struct{ table, name, body string }
+	functions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (triggerFunction, error) {
+		var f triggerFunction
+		return f, row.Scan(&f.table, &f.name, &f.body)
+	})
+	if err != nil {
+		t.Fatalf("read the former heads triggers: %v", err)
+	}
+	watched := map[string]bool{}
+	for _, f := range functions {
+		watched[f.table] = true
+	}
+	for _, table := range []string{"pull_request_heads", "check_results", "ci_check_results"} {
+		if !watched[table] {
+			t.Errorf("found no former heads trigger on %s, so this test holds nothing there to the rule", table)
+		}
+	}
+	waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave)\s*\(`)
+	inserts := regexp.MustCompile(`(?i)\binsert\s+into\s+([a-z_][a-z0-9_]*)`)
+	appended := map[string]bool{}
+	for _, f := range functions {
+		if found := waits.FindString(f.body); found != "" {
+			t.Errorf("%s, which a trigger on %s runs, holds %q: a writer that runs it can wait for a lock another writer holds", f.name, f.table, found)
+		}
+		for _, insert := range inserts.FindAllStringSubmatch(f.body, -1) {
+			appended[strings.ToLower(insert[1])] = true
+		}
+	}
+	if len(appended) == 0 {
+		t.Fatal("the former heads trigger functions insert into no table, so this test holds no table to the rule")
+	}
+	for table := range appended {
+		var keys int
+		if err := store.Pool.QueryRow(ctx, `
+			select (select count(*) from pg_constraint where conrelid = $1::regclass and contype in ('p', 'u', 'x', 'f'))
+				+ (select count(*) from pg_index where indrelid = $1::regclass and indisunique)`, table).Scan(&keys); err != nil {
+			t.Fatalf("read the keys of %s: %v", table, err)
+		}
+		if keys != 0 {
+			t.Errorf("a former heads trigger inserts into %s, which holds %d keys or unique indexes: an insert there can wait for another transaction's insert of the same key", table, keys)
+		}
+	}
+}
+
+// drainCandidates runs what a settle of each of issues runs first (pull_request_former_heads_drain):
+// it folds the records of each open pull request of the issue, and leaves the candidates the
+// writes since the last settle owe the issue's open rows.
+func drainCandidates(t *testing.T, store *Store, issues ...string) {
+	t.Helper()
+	for _, issue := range issues {
+		if _, err := store.Pool.Exec(context.Background(), `select pull_request_former_heads_drain($1)`, issue); err != nil {
+			t.Fatalf("drain the candidates of %s: %v", issue, err)
+		}
 	}
 }
