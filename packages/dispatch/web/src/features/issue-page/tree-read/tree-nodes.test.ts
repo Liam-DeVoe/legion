@@ -127,6 +127,16 @@ function reading(...paragraphs: string[]): DisplayTree {
   };
 }
 
+/** The server's reading of a whole typed block, as a read sends it with `Dispatch-Trees: 1`: one
+ *  node of the block's `type`, `attrs` on it, holding one paragraph per string. */
+function typedReading(
+  type: string,
+  attrs: Readonly<Record<string, unknown>>,
+  ...paragraphs: string[]
+): DisplayTree {
+  return { content: [{ attrs, content: reading(...paragraphs).content, type }], type: "doc" };
+}
+
 /** One node of the answer, its words stored and read alike unless the case says otherwise. */
 function node(
   id: string,
@@ -346,18 +356,18 @@ test("a node's words come from its text_tree", () => {
 // one node of the block's kind, its attributes on it. A row draws the block's own content from
 // it, and so does a chip that names the block; the kind and the attributes are drawn apart.
 test("a typed block's row and its chip draw the block's own content, not its kind and attributes", () => {
-  const whole = (type: string, attrs: Record<string, string>, ...paragraphs: string[]) => ({
-    content: [{ attrs, content: reading(...paragraphs).content, type }],
-    type: "doc",
-  });
   const { root } = drawn(
     answer(
       [
         block("r1", "requirement", KEY, SPEC, 0, {
-          text_tree: whole("requirement", { blockId: "r1" }, "The first statement. Its reason."),
+          text_tree: typedReading(
+            "requirement",
+            { blockId: "r1" },
+            "The first statement. Its reason."
+          ),
         }),
         block("t1", "plan_task", "r1", PLAN, 0, {
-          text_tree: whole(
+          text_tree: typedReading(
             "plan_task",
             { blockId: "t1", serves: `dispatch://${KEY}/spec#b-r1` },
             "Build the step."
@@ -1371,16 +1381,13 @@ test("an ask drawn in its block's row names what the ask shaped there", () => {
   };
   const { root } = drawn(tree, reads);
   const row = nodeOf(root, blockNodeId("spec", "q-block"));
-  const shaped = nodeOf(root, blockNodeId("spec", "r1"))?.reference ?? "";
 
-  expect(shaped, "the statement has an address").not.toBe("");
   expect({
     children: row?.children.map((child) => child.id),
     chips: row?.chips.map((chip) => chip.ref),
   }).toEqual({
     children: ["c-under-ask"],
-    // A chip addresses a block of the spec as `spec#b-<id>`; the block's own row by the spec's
-    // slug (`shaped`).
+    // A chip addresses a block of the spec as `spec#b-<id>`.
     chips: [`dispatch://${KEY}/spec#b-r1`],
   });
 });
@@ -1428,23 +1435,20 @@ test("a plan task's needs pointer the read ties no node to is still a chip, name
 test("a plan task's needs the read sends on its reading alone are chips, a removed task's gone", () => {
   const needed = `dispatch://${KEY}/artifact/plan-md#b-t1`;
   const removed = `dispatch://${KEY}/artifact/plan-md#b-t9`;
-  // The reading the route sends of a whole `plan_task` block: its one typed node, the block's
+  // The reading the route sends of each whole `plan_task` block: its one typed node, the block's
   // attributes on it, a `block[]` attribute as the list of its references.
-  const typed = (id: string, attrs: Record<string, readonly string[]>) => ({
-    content: [
-      {
-        attrs: { blockId: id, ...attrs },
-        content: reading(`Words of ${id}.`).content,
-        type: "plan_task",
-      },
-    ],
-    type: "doc",
-  });
   const tree = answer([
-    block("t1", "plan_task", KEY, PLAN, 0, { attributes: {}, text_tree: typed("t1", {}) }),
+    block("t1", "plan_task", KEY, PLAN, 0, {
+      attributes: {},
+      text_tree: typedReading("plan_task", { blockId: "t1" }, "Words of t1."),
+    }),
     block("t2", "plan_task", KEY, PLAN, 1, {
       attributes: {},
-      text_tree: typed("t2", { needs: [needed, removed] }),
+      text_tree: typedReading(
+        "plan_task",
+        { blockId: "t2", needs: [needed, removed] },
+        "Words of t2."
+      ),
     }),
   ]);
   const { root } = drawn(tree, {

@@ -12,7 +12,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { Comment, IssueAskRow, IssueDetails } from "../../../api/types";
+import type { Artifact, Comment, IssueAskRow, IssueDetails } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
@@ -29,8 +29,19 @@ import { EMPTY_STATE_LINES, type Preset, STATE_LINES } from "../page-words";
 import { FAILED_READ_RETRY } from "../slots/failed-read-line";
 import { AddressedStage, drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { commentNode, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswerNode, type TreeTuple } from "../tree-read/tree-read";
+import {
+  commentNode,
+  treeAnswer,
+  treeNode,
+  treeTuple,
+  wholeTreeOnly,
+} from "../tree-read/tree-fixtures";
+import {
+  issueTreeQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  type TreeTuple,
+} from "../tree-read/tree-read";
 import { issueAsksQuery } from "../useIssueTree";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
@@ -71,29 +82,24 @@ function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "getIssueTree").mockImplementation(treeReadOf([])),
+    spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
 }
 
-/** The tree read as it answers for the issue holding `nodes` under it, each named as a case names
- *  it (`tree-read/tree-fixtures.ts`), with `tuples` between them, and none where `nodes` is empty:
- *  the whole tree at once, and each view of it never, so a view is drawn off the whole tree, as
- *  before the page holds its view read (`presets.ts`'s `presetView`). */
-function treeReadOf(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[] = []) {
-  const answer = treeAnswer(
-    nodes.length === 0 ? [] : [treeNode(KEY, "issue", null), ...nodes],
-    tuples
-  );
-  return (_key: string, query: { view?: string } = {}) =>
-    query.view === undefined ? Promise.resolve(answer) : Promise.withResolvers<never>().promise;
+/** The tree read's answer for the issue holding `nodes` under it, each named as a case names it
+ *  (`tree-read/tree-fixtures.ts`), with `tuples` between them, and no node at all where `nodes`
+ *  is empty. */
+function treeOf(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[] = []): TreeAnswer {
+  return treeAnswer(nodes.length === 0 ? [] : [treeNode(KEY, "issue", null), ...nodes], tuples);
 }
 
-/** Answers the tree read with `nodes` and `tuples` (`treeReadOf`). The spy is the one `stubReads`
- *  set, which `spyOn` hands back, so the file's `afterEach` restores it. */
+/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree at once, and each
+ *  view of it never (`wholeTreeOnly`). The spy is the one `stubReads` set, which `spyOn` hands
+ *  back, so the file's `afterEach` restores it. */
 function answerTree(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[] = []): void {
-  spyOn(api, "getIssueTree").mockImplementation(treeReadOf(nodes, tuples));
+  spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf(nodes, tuples)));
 }
 
 /** Each of `comments` as the tree read answers it (`commentNode`). */
@@ -304,7 +310,7 @@ const QUESTION_ROW = '[data-decisions-body] [data-node-row][data-node-id="ask-an
 // names that ask, beside the view (`?ask=`). It keeps the view and lands on the question's row,
 // though a question still open stands first in the list and the stage would give its row the
 // focus.
-// Part Y re-points the five write-up cases to the write-up's reading once Y draws it.
+// The five write-up cases address the answered ask until the page draws the write-up itself.
 test("a person's write-up of an answered question, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
@@ -481,11 +487,7 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   // What the reader holds unread on the issue, which a thread's read mark reads.
   client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
   // The tree read: the issue's two threads, each comment a node of it.
-  client.setQueryData(
-    issueTreeQuery(KEY).queryKey,
-    treeAnswer([treeNode(KEY, "issue", null), ...commentNodes(TWO_THREADS)]),
-    answered
-  );
+  client.setQueryData(issueTreeQuery(KEY).queryKey, treeOf(commentNodes(TWO_THREADS)), answered);
   // The names of what the tree's rows name: the issue itself and each of its comments.
   const named = [
     buildDispatchReference({ key: KEY, kind: "issue" }),
@@ -624,21 +626,24 @@ const TASK_STEP = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(
 const TASK_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
 const STATEMENT_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
 
+/** Where a block written in `document` stands in the tree read's answer: in that document, at
+ *  `position` among its blocks. */
+function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0) {
+  return { document: { artifact_id: document.id, position, slug: document.slug } };
+}
+
 /** The tree read for `verifiedIssue`: the spec's statement under the issue, the plan's task and
  *  the Verification document's check each under the statement it serves (a `serves` tuple), each
  *  in its document, then `checks` more of the Verification document, and the issue's two threads
  *  where `threads` says so. */
 function verifiedTree(checks: readonly TreeAnswerNode[] = [], threads = true): TreeAnswerNode[] {
-  const inDocument = (artifact_id: string, slug: string) => ({
-    document: { artifact_id, position: 0, slug },
-  });
   return [
     treeNode(STATEMENT, "requirement", KEY, {
-      ...inDocument(SPEC_DOCUMENT.id, SPEC_SLUG),
+      ...inDocument(SPEC_DOCUMENT),
       text: "The page draws the plan.",
     }),
-    treeNode(PLAN_TASK, "plan_task", STATEMENT, inDocument(PLAN_DOCUMENT.id, PLAN_DOCUMENT.slug)),
-    treeNode(CHECK, "check", STATEMENT, inDocument(VERIFICATION_DOCUMENT.id, VERIFICATION_SLUG)),
+    treeNode(PLAN_TASK, "plan_task", STATEMENT, inDocument(PLAN_DOCUMENT)),
+    treeNode(CHECK, "check", STATEMENT, inDocument(VERIFICATION_DOCUMENT)),
     ...checks,
     ...(threads ? commentNodes(TWO_THREADS) : []),
   ];
@@ -907,16 +912,13 @@ test("under the Decisions view and words, a fragment the browser changes under o
       KEY
     )
   );
-  const inSpec = (position: number) => ({
-    document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
-  });
   answerWriteUpTree([
     treeNode("d1", "decision", KEY, {
       decision: { ref: specRef("d1") },
-      ...inSpec(0),
+      ...inDocument(SPEC_DOCUMENT),
       text: decision("d1").text,
     }),
-    treeNode(QUESTION_BLOCK, "ask", KEY, inSpec(1)),
+    treeNode(QUESTION_BLOCK, "ask", KEY, inDocument(SPEC_DOCUMENT, 1)),
   ]);
   // The decisions read the view's entries come from reads the comments, so the messages read is
   // the one held: it answers last, and with it every read the tree is built from is held.
@@ -987,37 +989,47 @@ test("the comments read refused, a comment named beside the Decisions view draws
   ).toBeNull();
 });
 
-// One read, the tree read, stands behind every document's blocks, the plan's among them, and the
-// Verification view draws its own line for that read's refusal, which says the Verification
-// document could not be loaded (decision 239). So with the plan's blocks refused the view keeps
-// its place (decision 375): a plan task named on its address draws the view's line, with the
-// focus on its Retry, and no outline in the view's place.
-test("the plan's blocks refused, a plan task named on the Verification view's address keeps the view, with the view's line and the focus on its Retry", async () => {
-  answerVerificationReads();
-  // The plan's blocks are the tree read's, so it is the tree read that is refused.
-  spyOn(api, "getIssueTree").mockRejectedValue(REFUSED);
-  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
+/** Waits for the Verification view to draw its line that the Verification document could not be
+ *  loaded, with the focus on its Retry, saying what `what` drew where it does not; then, once
+ *  every read has settled, checks that the stage still draws the view, with the focus on that
+ *  Retry. */
+async function viewKeepsItsLine(view: RenderResult, what: string): Promise<void> {
   await retryTakesFocus(
     view,
     STATE_LINES.verification_unreadable,
-    "the plan task's address",
+    what,
     "[data-verification-body]"
   );
-  // Every read has settled, and the stage has taken whatever the view said of the task.
+  // Every read has settled, and the stage has taken whatever the view said of the address's node.
   await waitInAct(20);
   expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
   expect(
     view.container.querySelector(`[data-verification-body] ${FAILED_READ_RETRY}`),
     `the focus left the view's Retry for ${focusedRow() ?? document.activeElement?.tagName}`
   ).toHaveFocus();
+}
+
+// One read, the tree read, stands behind every document's blocks, the plan's among them, and the
+// Verification view draws its own line for that read's refusal, which says the Verification
+// document could not be loaded. A view keeps its place where each refused read is one it draws
+// its own line for, so with the plan's blocks refused the view keeps its place: a plan task named
+// on its address draws the view's line, with the focus on its Retry, and no outline in the view's
+// place.
+test("the plan's blocks refused, a plan task named on the Verification view's address keeps the view, with the view's line and the focus on its Retry", async () => {
+  answerVerificationReads();
+  // The plan's blocks are the tree read's, so it is the tree read that is refused.
+  spyOn(api, "getIssueTree").mockRejectedValue(REFUSED);
+  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
+  await viewKeepsItsLine(view, "the plan task's address");
 });
 
 // The Verification view waits on the tree read whether or not the results read holds a check,
 // since that read holds the statements as well as its document's blocks (`useVerificationReads`),
-// and draws its own line for the read's refusal (decision 239). So with the results read holding
-// no check and those blocks refused the view keeps its place (decision 375): a check named on its
-// address draws the view's line that the Verification document could not be loaded, with the
-// focus on its Retry, and no outline in the view's place.
+// and draws its own line for the read's refusal. A view keeps its place where each refused read
+// is one it draws its own line for, so with the results read holding no check and those blocks
+// refused the view keeps its place: a check named on its address draws the view's line that the
+// Verification document could not be loaded, with the focus on its Retry, and no outline in the
+// view's place.
 test("the results read holding no check and the Verification document's blocks refused, a check named on the Verification view's address keeps the view, with the blocks' line and the focus on its Retry", async () => {
   answerVerificationReads();
   spyOn(api, "getIssueResults").mockResolvedValue({
@@ -1029,19 +1041,7 @@ test("the results read holding no check and the Verification document's blocks r
   // refused.
   spyOn(api, "getIssueTree").mockRejectedValue(REFUSED);
   const view = drawStage(`#b-${CHECK}`, { issue: verifiedIssue(), preset: "verification" });
-  await retryTakesFocus(
-    view,
-    STATE_LINES.verification_unreadable,
-    "the check's address",
-    "[data-verification-body]"
-  );
-  // Every read has settled, and the stage has taken whatever the view said of the check.
-  await waitInAct(20);
-  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
-  expect(
-    view.container.querySelector(`[data-verification-body] ${FAILED_READ_RETRY}`),
-    `the focus left the view's Retry for ${focusedRow() ?? document.activeElement?.tagName}`
-  ).toHaveFocus();
+  await viewKeepsItsLine(view, "the check's address");
 });
 
 // The Plan view draws a line for the plan's blocks and the spec's alone, so with the comments
@@ -1071,11 +1071,7 @@ const LOOSE_CHECK = "c2";
 // lands on the check's row.
 test("with a chip pressed, a check the chip leaves out, named on a new address under the Verification view, draws the outline in its place, with the focus on the check's row", async () => {
   answerVerificationReads();
-  answerVerifiedTree([
-    treeNode(LOOSE_CHECK, "check", KEY, {
-      document: { artifact_id: VERIFICATION_DOCUMENT.id, position: 1, slug: VERIFICATION_SLUG },
-    }),
-  ]);
+  answerVerifiedTree([treeNode(LOOSE_CHECK, "check", KEY, inDocument(VERIFICATION_DOCUMENT, 1))]);
   spyOn(api, "getIssueResults").mockResolvedValue({
     checks: [check({ block_id: CHECK }), check({ block_id: LOOSE_CHECK })],
     issue: KEY,

@@ -247,7 +247,7 @@ function changeOf(block: string, at: string, body: string): Comment {
  *  holding each agent's decision's own `decision` block as `made` orders them, a replaced one's
  *  included, where the server's quote rule finds each (`decision-review.ts`'s `changeAnchor`). A
  *  Change's send reads it to say which place of its quote is the decision's own
- *  (`DecisionActions.tsx`, decision 92). */
+ *  (`DecisionActions.tsx`). */
 function specText(made: readonly Decision[]): string {
   return [
     `# Spec of ${KEY}`,
