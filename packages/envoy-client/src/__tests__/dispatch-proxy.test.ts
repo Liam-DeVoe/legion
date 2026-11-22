@@ -1254,17 +1254,19 @@ interface Expected {
   readonly chunked: boolean;
   /** Headers it must carry as Dispatch sent them, by lower-case name. */
   readonly headers?: Readonly<Record<string, string>>;
-  /** Dispatch's body as it sent it, its chunks decoded; of a cut answer, the bytes Dispatch sent
-   *  before the cut. */
+  /** The body bytes the tool must read, its chunks decoded, as `cut` says it reads them. Of a
+   *  whole answer they are Dispatch's body; of a cut one they are not always the bytes Dispatch
+   *  sent before the cut: of a JSON 401 that breaks off after 10 bytes, the tool reads none. */
   readonly body: Buffer | string;
-  /** Whether the answer is cut, Dispatch's broken off or the tool's hung up on: the tool must read
-   *  exactly `body`, fewer bytes than its `Content-Length` or chunks with no last chunk, then the
-   *  close, and never the whole answer. */
-  readonly cut: boolean;
-  /** Whether the bytes of a cut answer came in the same read as Dispatch's close: Bun's fetch
-   *  most often yields none of the bytes in that read, so the tool may read any start of `body`,
-   *  the empty one included. */
-  readonly sameReadAsClose?: boolean;
+  /**
+   * Whether the answer is cut, Dispatch's broken off or the tool's hung up on, and how the tool
+   * must read its body. `false`: the answer is whole, its body exactly `body`. `"exact"`: the tool
+   * must read exactly `body`, fewer bytes than its `Content-Length` or chunks with no last chunk,
+   * then the close. `"anyStart"`: the tool must read any start of `body`, the empty one included,
+   * then the close; this is for bytes that came in the same read as Dispatch's close, of which
+   * Bun's fetch most often yields none. The tool never reads a cut answer whole.
+   */
+  readonly cut: false | "exact" | "anyStart";
 }
 
 /** One row of the framing table. */
@@ -1354,6 +1356,14 @@ function longSteps(fill: string): readonly Step[] {
 function cutBeforeBody(statusLine: string, length: number): readonly Step[] {
   return [onTheWire(statusLine, ["Content-Type: application/json", `Content-Length: ${length}`])];
 }
+
+/** Dispatch's JSON 401 of 100 bytes, cut after its first 10: they come in a write of their own
+ *  after the head, and the close 300 ms after them. */
+const JSON_401_CUT_AFTER_10: readonly Step[] = [
+  onTheWire("HTTP/1.1 401 Unauthorized", ["Content-Type: application/json", "Content-Length: 100"]),
+  TEN_OF_100,
+  300,
+];
 
 const SECOND_ANSWER: Expected = { status: 200, chunked: true, body: SECOND_BODY, cut: false };
 const SLOW_ANSWER: Expected = {
@@ -1492,7 +1502,7 @@ function framingRows(): readonly FramingRow[] {
       dispatch: { [FRAMED]: cutBeforeBody("HTTP/1.1 503 Service Unavailable", 64) },
       requests: [rawGet(FRAMED)],
       answers: [
-        { status: 503, length: "64", chunked: false, headers: JSON_TYPE, body: "", cut: true },
+        { status: 503, length: "64", chunked: false, headers: JSON_TYPE, body: "", cut: "exact" },
       ],
     },
     // The same, on a connection the tool keeps.
@@ -1501,7 +1511,7 @@ function framingRows(): readonly FramingRow[] {
       dispatch: { [FRAMED]: cutBeforeBody("HTTP/1.1 503 Service Unavailable", 64) },
       requests: [keptGet(FRAMED)],
       answers: [
-        { status: 503, length: "64", chunked: false, headers: JSON_TYPE, body: "", cut: true },
+        { status: 503, length: "64", chunked: false, headers: JSON_TYPE, body: "", cut: "exact" },
       ],
     },
     // The same for a JSON 401, whose body the proxy reads for BROKER_TOKEN_NOT_ACTIVE first.
@@ -1510,7 +1520,7 @@ function framingRows(): readonly FramingRow[] {
       dispatch: { [FRAMED]: cutBeforeBody("HTTP/1.1 401 Unauthorized", 100) },
       requests: [rawGet(FRAMED)],
       answers: [
-        { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: true },
+        { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: "exact" },
       ],
     },
     // The same, on a connection the tool keeps.
@@ -1519,7 +1529,29 @@ function framingRows(): readonly FramingRow[] {
       dispatch: { [FRAMED]: cutBeforeBody("HTTP/1.1 401 Unauthorized", 100) },
       requests: [keptGet(FRAMED)],
       answers: [
-        { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: true },
+        { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: "exact" },
+      ],
+    },
+    // A proxy that gives back a JSON 401 before it reads the 401's body for
+    // BROKER_TOKEN_NOT_ACTIVE. Where that body breaks off, the proxy's read of it reaches the
+    // break-off first, and on Bun 1.4.4 the body it then gives back yields none of the 10 bytes
+    // Dispatch sent: the tool reads the 401's status line and headers, no body byte, then the
+    // close.
+    {
+      name: "a JSON 401 cut after 10 of its 100 bytes, on a connection that asks for a close",
+      dispatch: { [FRAMED]: JSON_401_CUT_AFTER_10 },
+      requests: [rawGet(FRAMED)],
+      answers: [
+        { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: "exact" },
+      ],
+    },
+    // The same, on a connection the tool keeps.
+    {
+      name: "a JSON 401 cut after 10 of its 100 bytes, on a keep-alive connection",
+      dispatch: { [FRAMED]: JSON_401_CUT_AFTER_10 },
+      requests: [keptGet(FRAMED)],
+      answers: [
+        { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: "exact" },
       ],
     },
     // A catch that destroys only the response's socket, which a queued response does not have. The
@@ -1546,7 +1578,7 @@ function framingRows(): readonly FramingRow[] {
         ],
       },
       requests: [rawGet(FRAMED)],
-      answers: [{ status: 200, length: "100", chunked: false, body: TEN_OF_100, cut: true }],
+      answers: [{ status: 200, length: "100", chunked: false, body: TEN_OF_100, cut: "exact" }],
     },
     // A proxy that ends an answer whole where its last bytes come in the same read as Dispatch's
     // close. Bun's fetch most often yields none of the bytes in that read, so the tool may read
@@ -1569,8 +1601,7 @@ function framingRows(): readonly FramingRow[] {
           length: "100",
           chunked: false,
           body: TEN_OF_100,
-          cut: true,
-          sameReadAsClose: true,
+          cut: "anyStart",
         },
       ],
     },
@@ -1585,7 +1616,7 @@ function framingRows(): readonly FramingRow[] {
         ],
       },
       requests: [keptGet(FRAMED)],
-      answers: [{ status: 200, chunked: true, body: "hello ", cut: true }],
+      answers: [{ status: 200, chunked: true, body: "hello ", cut: "exact" }],
     },
     // A proxy that holds a body until it is whole.
     {
@@ -1612,7 +1643,7 @@ function framingRows(): readonly FramingRow[] {
           chunked: true,
           headers: { "content-type": "text/event-stream" },
           body: "data: one\n\ndata: two\n\ndata: three\n\n",
-          cut: true,
+          cut: "exact",
         },
       ],
       streamed: "data: one\n\n",
@@ -1633,7 +1664,7 @@ function framingRows(): readonly FramingRow[] {
       },
       requests: [keptGet(FRAMED)],
       answers: [
-        { status: 200, length: String(MIB), chunked: false, body: FIRST_64_KIB, cut: true },
+        { status: 200, length: String(MIB), chunked: false, body: FIRST_64_KIB, cut: "exact" },
       ],
     },
     // The same catch, for a queued response that took body bytes before its break-off. The tool
@@ -1659,7 +1690,7 @@ function framingRows(): readonly FramingRow[] {
       requests: [keptGet(FRAMED)],
       side: { hangUpAfter: 150 },
       answers: [
-        { status: 200, length: "100000", chunked: false, body: "x".repeat(200), cut: true },
+        { status: 200, length: "100000", chunked: false, body: "x".repeat(200), cut: "exact" },
       ],
       cutShort: [FRAMED],
     },
@@ -1671,7 +1702,7 @@ function framingRows(): readonly FramingRow[] {
       requests: [keptGet(FRAMED), keptGet(NEXT)],
       side: { pipelined: true, hangUpAfter: 150 },
       answers: [
-        { status: 200, length: "100000", chunked: false, body: "x".repeat(200), cut: true },
+        { status: 200, length: "100000", chunked: false, body: "x".repeat(200), cut: "exact" },
       ],
       cutShort: [FRAMED, NEXT],
     },
@@ -1685,8 +1716,8 @@ interface Seen {
   readonly chunked: boolean;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly whole: boolean;
-  /** Dispatch's body, the bytes it sent before a cut or a start of them, or the bytes the tool
-   *  read in their place. */
+  /** The name {@link readRule} gives the body the row expects, where the tool read that body; else
+   *  the bytes the tool read in its place. */
   readonly body: string;
 }
 
@@ -1695,12 +1726,8 @@ function seenAs(
   seen: { readonly answer: Answer; readonly whole: boolean },
   expected?: Expected
 ): Seen {
-  const sent = Buffer.from(expected?.body ?? "");
   const { answer, whole } = seen;
-  const anyStart = expected?.cut === true && expected.sameReadAsClose === true;
-  const matched = anyStart
-    ? sent.subarray(0, answer.body.length).equals(answer.body)
-    : answer.body.equals(sent);
+  const rule = readRule(expected);
   return {
     status: answer.status,
     length: answer.headers["content-length"],
@@ -1709,30 +1736,50 @@ function seenAs(
       Object.keys(expected?.headers ?? {}).map((name) => [name, answer.headers[name]])
     ),
     whole,
-    body: matched
-      ? bodyAs(expected)
+    body: rule.matches(answer.body)
+      ? rule.body
       : `${answer.body.length} other bytes: ${JSON.stringify(answer.body.toString("latin1").slice(0, 120))}`,
   };
 }
 
 /** {@link Seen} of the answer a framing row expects. */
 function expectedAs(expected: Expected): Seen {
+  const rule = readRule(expected);
   return {
     status: expected.status,
     length: expected.length,
     chunked: expected.chunked,
     headers: { ...expected.headers },
-    whole: !expected.cut,
-    body: bodyAs(expected),
+    whole: rule.whole,
+    body: rule.body,
   };
 }
 
-/** The body a framing row expects, as {@link Seen} names it. */
-function bodyAs(expected?: Expected): string {
-  if (expected?.cut !== true) return "Dispatch's body";
-  return expected.sameReadAsClose === true
-    ? "a start of the bytes Dispatch sent before the cut"
-    : "the bytes Dispatch sent before the cut";
+/** How the tool must read the answer a framing row expects, by its `cut`: whether whole, the name
+ *  {@link Seen} gives its body, and whether a body the tool read is that body. Where the row
+ *  expects no answer, the rule is a whole one's with an empty body. */
+function readRule(expected?: Expected): {
+  readonly whole: boolean;
+  readonly body: string;
+  readonly matches: (read: Buffer) => boolean;
+} {
+  const body = Buffer.from(expected?.body ?? "");
+  switch (expected?.cut ?? false) {
+    case false:
+      return { whole: true, body: "Dispatch's body", matches: (read) => read.equals(body) };
+    case "exact":
+      return {
+        whole: false,
+        body: "the bytes the row expects before the cut",
+        matches: (read) => read.equals(body),
+      };
+    case "anyStart":
+      return {
+        whole: false,
+        body: "a start of the bytes the row expects before the cut",
+        matches: (read) => body.subarray(0, read.length).equals(read),
+      };
+  }
 }
 
 // Each row reads the tool's side byte for byte up to the connection's close, then asks for a
