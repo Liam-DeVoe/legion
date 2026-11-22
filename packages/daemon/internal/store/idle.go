@@ -226,8 +226,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			return nil
 		}
 		var first, boundary, last int64
+		queued := s.stamp()
 		for _, row := range mark.Rows {
-			id, err := insertOutboxRow(ctx, tx, project, issue, row)
+			id, err := insertOutboxRow(ctx, tx, project, issue, row, queued)
 			if err != nil {
 				return err
 			}
@@ -299,11 +300,18 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 	return marked, nil
 }
 
-// insertOutboxRow queues one outbox row of project, encoded by the caller, and answers the id the
-// outbox gave it: the ids of a release's own rows are the range its mark is read against
-// (IssueReleaseStop), and a resume a cancel queues takes its id from the same sequence, above every
-// row of the release it ends. A pause's stop rows and its notices are queued through it too
-// (queuePauseStopRow, queuePauseNotice).
+// insertOutboxRow queues one outbox row of project, encoded by the caller, due and created at
+// at, and answers the id the outbox gave it: the ids of a release's own rows are the range its
+// mark is read against (IssueReleaseStop), and a resume a cancel queues takes its id from the same
+// sequence, above every row of the release it ends. A pause's stop rows and its notices are queued
+// through it too (queuePauseStopRow, queuePauseNotice).
+//
+// at is the store's clock as a statement's argument (Store.stamp): nil for the daemon's own store,
+// whose rows are due and created at Postgres's now(), as they always were, and a replay's simulated
+// moment for a store on a clock (UseClock), so a row a replay's pause queues comes due at the
+// window's moment the pause stands at, as the daemon's comes due at its own now, and not at the
+// moment the replay ran, after every window's end. created_at is named with next_at, since a
+// column default reads no clock but the database's.
 //
 // project is the caller's project, its Dispatch key or its claim token's spelling, and a row keyed
 // by an issue of another project is refused (claim.KeyOfProject): only that project's daemon runs
@@ -311,13 +319,14 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 // which rolls the caller's transaction back, since every caller writes the row together with what
 // names it — a release's mark, a cancel's end of one, a pause and its stops — and neither stands
 // without the other.
-func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row IdleReleaseRow) (int64, error) {
+func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row IdleReleaseRow, at *time.Time) (int64, error) {
 	if !claim.KeyOfProject(project, issue) {
 		return 0, fmt.Errorf("queue the %s row of %s for project %s: %w", row.Kind, issue, project, claim.ErrKeyOfAnotherProject)
 	}
 	var id int64
-	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
-		values ($1, $2, $3, 0, now(), '', '') returning id`, row.Kind, issue, string(row.Payload)).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, created_at)
+		values ($1, $2, $3, 0, coalesce($4::timestamptz, now()), '', '', coalesce($4::timestamptz, now())) returning id`,
+		row.Kind, issue, string(row.Payload), at).Scan(&id); err != nil {
 		return 0, fmt.Errorf("queue the %s row of %s: %w", row.Kind, issue, err)
 	}
 	return id, nil
@@ -455,12 +464,13 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 				return deleteIssueRelease(ctx, tx, project, issue)
 			}
 		}
+		queued := s.stamp()
 		for _, r := range roles {
 			row, err := resume(r.role, standing.generation)
 			if err != nil {
 				return err
 			}
-			if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
+			if _, err := insertOutboxRow(ctx, tx, project, issue, row, queued); err != nil {
 				return err
 			}
 			cancelled.Resumed = append(cancelled.Resumed, r.role)

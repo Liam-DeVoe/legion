@@ -161,8 +161,7 @@ func clockRows() []clockRow {
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "Open"}, check: checkTreeOpened},
 		{statement: nowStatement{"internal/store/idle.go", "(*Store).ReleaseIdleIssue"},
 			never: "the idle release's mark (internal/daemon's idle sweep), made outside every fact; a replay releases no pod"},
-		{statement: nowStatement{"internal/store/idle.go", "insertOutboxRow"},
-			never: "the rows of the idle release (ReleaseIdleIssue, CancelIssueRelease) and of the project pause (queuePauseStopRow, queuePauseNotice), written by the idle sweep and by the operator's pause and resume outside every fact; a replay releases no pod and pauses no project"},
+		{statement: nowStatement{"internal/store/idle.go", "insertOutboxRow"}, check: checkPauseRows},
 		{statement: nowStatement{"internal/store/tree_lifecycle.go", "(*Store).IssueSandboxHome"},
 			never: "the Sandbox runtime's orphan sweep (internal/runtime/sandbox); a replay runs no runtime"},
 		{statement: nowStatement{"internal/store/wake.go", "CloseOpenResumes"},
@@ -378,4 +377,83 @@ func checkTreeOpened(t *testing.T) {
 			wantClock(t, "the lifecycle's updated_at of "+tree, updated)
 		}
 	})
+}
+
+// clockPauseClaim is the idle implementer's claim of ACME-7, the one live claim the pause check's
+// pause stops.
+func clockPauseClaim() supervise.Claim {
+	return supervise.Claim{Token: claim.Token("legion-acme-acme-7-implementer"), Project: "acme", Tree: "ACME-7", Issue: "ACME-7",
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle}
+}
+
+// clockPauseStopRow is the pause service's stop row of stop (internal/pause's StopRow), keyed by
+// the claim's issue.
+func clockPauseStopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, error) {
+	row, err := NewOutboxRow(stop.Issue, SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
+		Generation: stop.Generation, Pause: pause.ID}, pause.Since)
+	if err != nil {
+		return store.PauseRow{}, err
+	}
+	return store.PauseRow{Issue: row.Issue, Kind: string(row.Kind), Payload: row.Payload}, nil
+}
+
+// clockPauseNotice is the controller's notice of a pause or, with resumed, of its resume, under
+// the project's key.
+func clockPauseNotice(resumed bool) func(store.Pause) (store.PauseRow, error) {
+	return func(p store.Pause) (store.PauseRow, error) {
+		notice := ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: p.ID, By: PauseActor{Kind: string(p.By.Kind)}, At: p.Since,
+			Reason: p.Reason}}
+		if resumed {
+			notice = ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: p.ID, By: PauseActor{Kind: string(p.EndedBy.Kind)},
+				At: p.EndedAt}}
+		}
+		row, err := NewOutboxRow(p.Project, notice, p.Since)
+		if err != nil {
+			return store.PauseRow{}, err
+		}
+		return store.PauseRow{Issue: row.Issue, Kind: string(row.Kind), Payload: row.Payload}, nil
+	}
+}
+
+// A project's pause queues its stop rows and its notice, and its resume its notice, due and
+// created at the store's clock, as a replay pauses the project its record shows paused
+// (internal/replay's driver.pause): a stop row due at the moment the replay ran would never come
+// due inside the window. The check pauses ACME, whose implementer of ACME-7 is live, reads the
+// stop row and the pause's notice, then resumes ACME and reads the resume's notice.
+func checkPauseRows(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	st.UseClock(clockAt)
+	must(t, st.PutClaim(ctx, clockPauseClaim()))
+	operator := store.PauseActor{Kind: store.PauseByOperator}
+	_, stops, err := st.Pause(ctx, store.PauseRequest{Project: "ACME", By: operator, Reason: "the operator moves the database",
+		At: clockTime, StopRow: clockPauseStopRow, Notice: clockPauseNotice(false)})
+	must(t, err)
+	if len(stops) != 1 {
+		t.Fatalf("the pause asked to stop %+v, want ACME-7's live implementer", stops)
+	}
+	queued := func(when string, want int) {
+		t.Helper()
+		rows, err := st.Pool().Query(ctx, `select kind || ' ' || issue, next_at, created_at from outbox order by id`)
+		must(t, err)
+		defer rows.Close()
+		read := 0
+		for rows.Next() {
+			var row string
+			var next, created time.Time
+			must(t, rows.Scan(&row, &next, &created))
+			wantClock(t, when+": the next_at of "+row, next)
+			wantClock(t, when+": the created_at of "+row, created)
+			read++
+		}
+		must(t, rows.Err())
+		if read != want {
+			t.Fatalf("%s the outbox holds %d rows, want %d", when, read, want)
+		}
+	}
+	queued("after the pause", 2)
+	_, err = st.Resume(ctx, store.ResumeRequest{Project: "ACME", By: operator, At: clockTime, Notice: clockPauseNotice(true)})
+	must(t, err)
+	// The resume deleted the stop row no lane ran, and queued its own notice beside the pause's.
+	queued("after the resume", 2)
 }

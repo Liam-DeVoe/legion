@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -782,23 +780,21 @@ func (s *seeder) owedStarts() error {
 }
 
 // pullRequests writes a synthetic open pull request for each placed issue in the workflow the trace
-// has seen one of before the start, on the issue's own branch against its default branch, numbered
-// as a line named it or by the issue's own number, its head arrived when the trace first saw the
-// pull request: the record the daemon's guards read (review Q2, item 1). An issue that stands at
-// the start in a visit to merging whose merge came before it, its close waiting for the issues
-// beneath it (Visit.Merge), holds its pull request merged, as the replay's own merge leaves it, so
-// the engine closes it at the last one's leave as it closed it in the record.
+// has seen one of before the start, on the issue's own repository and branch against its default
+// branch, at the number a run gives the issue's record in that repository (pullRequestNumbers),
+// its head arrived when the trace first saw the pull request: the record the daemon's guards read
+// (review Q2, item 1). An issue that stands at the start in a visit to merging whose merge came
+// before it, its close waiting for the issues beneath it (Visit.Merge), holds its pull request
+// merged, as the replay's own merge leaves it, so the engine closes it at the last one's leave as
+// it closed it in the record.
 func (s *seeder) pullRequests() error {
+	numbers := newPullRequestNumbers(s.t)
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
 		if !inWorkflow(issue) || iss.PullRequest.IsZero() || !iss.PullRequest.Before(s.at) {
 			continue
 		}
-		number := iss.PullRequestNumber
-		if number == 0 {
-			_, suffix, _ := strings.Cut(key, "-")
-			number, _ = strconv.Atoi(suffix)
-		}
+		number := numbers.of(key, issue.Repo)
 		pr := record.PullRequest{Issue: key, Repo: issue.Repo, Number: number, Branch: claim.IssueBranch(key), Base: issue.DefaultBranch,
 			HeadUpdatedAt: iss.PullRequest, State: record.PullRequestOpen}
 		_, visits := s.run(iss)

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -683,9 +684,9 @@ func (d *driver) readyMark(key string) error {
 }
 
 // ensurePullRequest writes the replay's own open pull request record of key where it holds none,
-// on the issue's branch against its default branch, numbered by the number a recorded line names
-// or by the issue's own, its head arriving now as a live webhook's would: the record the daemon's
-// guards read (review Q2, item 1).
+// on the issue's repository and branch against its default branch, at the number the run gives
+// key's record in that repository (pullRequestNumbers), its head arriving now as a live webhook's
+// would: the record the daemon's guards read (review Q2, item 1).
 func (d *driver) ensurePullRequest(key string) error {
 	pr, err := d.pullRequestOf(key)
 	if err != nil || pr != nil {
@@ -695,20 +696,86 @@ func (d *driver) ensurePullRequest(key string) error {
 	if err != nil || issue == nil {
 		return err
 	}
-	number := 0
-	if iss, ok := d.trace.Issues[key]; ok {
-		number = iss.PullRequestNumber
-	}
-	if number == 0 {
-		_, suffix, _ := cutKey(key)
-		number, _ = strconv.Atoi(suffix)
-	}
 	d.used[assumeNoGitHub] = true
 	arrived := d.now()
 	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		return d.records.PutPullRequest(d.ctx, tx, record.PullRequest{Issue: key, Repo: issue.Repo, Number: number, Branch: claim.IssueBranch(key),
-			Base: issue.DefaultBranch, HeadUpdatedAt: arrived, State: record.PullRequestOpen})
+		return d.records.PutPullRequest(d.ctx, tx, record.PullRequest{Issue: key, Repo: issue.Repo, Number: d.numbers.of(key, issue.Repo),
+			Branch: claim.IssueBranch(key), Base: issue.DefaultBranch, HeadUpdatedAt: arrived, State: record.PullRequestOpen})
 	})
+}
+
+// pullRequestNumbers is the number of the replay's own pull request record of each issue
+// (assumption 29), no two issues' alike in one repository. GitHub numbers a repository's pull
+// requests, and the daemon finds one by its repository and number, the repository compared
+// without case (record.Postgres.PullRequestByNumber's lower(repo)), so two records of one number
+// in one repository would leave which issue a merge, a merge-state read or a push of that number
+// reaches to the order the database answers the two rows in, which no statement fixes and which
+// differs from run to run; two in different repositories are each GitHub's own and meet nothing.
+type pullRequestNumbers struct {
+	numbered map[string]repositoryNumber
+	// top is the highest number given in each repository, by its name in lower case, above which
+	// a number is made there.
+	top map[string]int
+}
+
+// repositoryNumber is a pull request's number and its repository's name in lower case.
+type repositoryNumber struct {
+	repo   string
+	number int
+}
+
+// newPullRequestNumbers numbers the pull request record of each issue of t in the repository the
+// daemon records it on (IssueTrace.Repo, which the start state writes as the issue's Repo and the
+// engine records at its entry), in key order, so a run numbers them the same at every run of the
+// window: first the number a line of the record names for the issue's pull request
+// (IssueTrace.PullRequestNumber), where no issue before it in that order takes the same in that
+// repository; then, for each issue still unnumbered, the number of its own key, where no issue
+// takes it in that repository already (a key's number can be the recorded number of another
+// issue's pull request); and last, for each issue left, the next number above every number given
+// in its repository.
+func newPullRequestNumbers(t Trace) *pullRequestNumbers {
+	keys := sortedKeys(t.Issues)
+	n := &pullRequestNumbers{numbered: make(map[string]repositoryNumber, len(keys)), top: map[string]int{}}
+	taken := make(map[repositoryNumber]bool, len(keys))
+	give := func(key string, at repositoryNumber) {
+		n.numbered[key], taken[at], n.top[at.repo] = at, true, max(n.top[at.repo], at.number)
+	}
+	for _, key := range keys {
+		at := repositoryNumber{repo: strings.ToLower(t.Issues[key].Repo), number: t.Issues[key].PullRequestNumber}
+		if at.number > 0 && !taken[at] {
+			give(key, at)
+		}
+	}
+	var left []string
+	for _, key := range keys {
+		if _, numbered := n.numbered[key]; numbered {
+			continue
+		}
+		_, suffix, _ := cutKey(key)
+		number, err := strconv.Atoi(suffix)
+		if at := (repositoryNumber{repo: strings.ToLower(t.Issues[key].Repo), number: number}); err == nil && number > 0 && !taken[at] {
+			give(key, at)
+			continue
+		}
+		left = append(left, key)
+	}
+	for _, key := range left {
+		n.of(key, t.Issues[key].Repo)
+	}
+	return n
+}
+
+// of is the number of key's pull request record in repo: the number the run gave it there, or,
+// for an issue the window's trace does not hold or records on another repository, the next number
+// above every number given in repo, which it keeps.
+func (n *pullRequestNumbers) of(key, repo string) int {
+	repo = strings.ToLower(repo)
+	if given, numbered := n.numbered[key]; numbered && given.repo == repo {
+		return given.number
+	}
+	n.top[repo]++
+	n.numbered[key] = repositoryNumber{repo: repo, number: n.top[repo]}
+	return n.top[repo]
 }
 
 // pullRequestOf is the pull request record key holds in the replay's database, nil for none.

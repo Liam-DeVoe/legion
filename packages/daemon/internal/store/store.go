@@ -77,10 +77,12 @@ type Store struct {
 // now() and the wall clock: the updated_at of every claim write (upsertClaim, PutClaimActivity,
 // PutClaimStep), the bound a session's activity report is held to (PutClaimActivity), the moment
 // a claim write queues its role holders' publication (putClaim), the opening of a tree's
-// lifecycle (openTreeLifecycle) and the end of a tree's pod holds at its cleanup
-// (CleanupReservedTree). A replay of a recorded window sets its simulated clock on the store its
-// worker stub writes claims through, so every time it writes is the window's; the daemon sets
-// none and keeps the database's clock. It is a setter rather than a parameter of Open because
+// lifecycle (openTreeLifecycle), the end of a tree's pod holds at its cleanup
+// (CleanupReservedTree), and the moment the outbox rows the store queues itself are due and
+// created at (insertOutboxRow: a pause's stops and notices, an idle release's rows). A replay of a
+// recorded window sets its simulated clock on the store its worker stub writes claims and pauses
+// its project through, so every time it writes is the window's; the daemon sets none and keeps the
+// database's clock. It is a setter rather than a parameter of Open because
 // every caller but the replay opens the daemon's own store, and it is set before the store's
 // first write and never after.
 func (s *Store) UseClock(clock func() time.Time) {

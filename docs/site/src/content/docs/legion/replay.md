@@ -363,6 +363,13 @@ A line timeline reads a design gate from the daemon's lines of its openings and 
 An issue that waits for a slot at the window's start began that wait where the record shows, in both timelines, since the start state is the record's.
 The merge queue is GitHub's, so no code that the replay runs writes the line of a pull request that leaves it.
 Just before the replay enters a recorded move back out of merging that such a line came before in the record, it writes that line to `log.jsonl` itself, so both timelines name the loop `queue_drop`.
+The replay's own pull request record of an issue carries the number that a line of the record names for the issue's pull request, where no other issue's record takes that number in the same repository.
+An issue that no line gives such a number takes its key's number where no other issue's record takes it in that repository, and otherwise a number above every other there.
+GitHub numbers the pull requests of each repository, and the daemon finds a pull request by its repository, compared without case, and its number, so no two records of a run share a number in one repository.
+
+A run is a function of its window, its rule, its branch, its seed and f.
+Two runs of the same window, rule, branch, seed and f write the same `log.jsonl`, the same two scorecards and the same `run.json`, byte for byte.
+The one exception is the fields of `run.json` that measure or name the run itself: `wallSeconds`, `meanPassMillis`, `peakMemoryBytes` and `database`.
 
 ### `legion replay scorecard`
 
@@ -1627,6 +1634,7 @@ The slowdown factor f is the tool's reading of it.
 **Evidence in a recorded window.** _The pod and workspace rows that the replay finishes without acting._
 The replay finishes each release and each pause stop of a role, and each issue branch, issue suspend, bundle, issue release, workspace removal and claim release, without acting.
 `run.json` counts them under `divergence.finished`.
+The replay's pause queues its stop rows on the simulated clock, as the daemon queues them on its own, so each pause stop finishes at the moment the record shows the pause.
 A segment's recorded length runs from its worker start, so the launch of its pod is inside it.
 In the design's record, the median time from a wake to the role's first turn was 160 seconds.
 

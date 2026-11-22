@@ -217,13 +217,14 @@ type driver struct {
 	// stretch's M from, loops the recorded conflict loops a drawn conflict's work is drawn from,
 	// draws the run's seeded source of every conflict draw, and stretchFrom the replay's start of
 	// the stretch each issue stands in. heads counts the heads the replay's own pull request
-	// records moved to, which names each.
+	// records moved to, which names each, and numbers is the number of each of those records.
 	conflicts   ConflictModel
 	merges      baseMerges
 	loops       []conflictLoop
 	draws       *rand.Rand
 	stretchFrom map[string]time.Time
 	heads       int
+	numbers     *pullRequestNumbers
 	// timingWall and answerWall say the branch keeps the events that end a wait, and a person's
 	// answers, at their recorded times (Branch.Timing and Branch.Answer wall), not at their
 	// recorded offsets from their anchors.
