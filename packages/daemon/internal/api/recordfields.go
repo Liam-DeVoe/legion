@@ -125,7 +125,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "AwaitsPod", Column: ColumnWithheld,
 		Reason: "the update round's own reading of a claim that records no process, which the store never writes and a restart forgets; the claim's lastStartFailure names the same pod in the runtime's words"},
 	{Field: "RegisteredPods", Column: ColumnWithheld,
-		Reason: "the update round's own record of the pods an agent of the claim registered a session in, which only the claim's machine holds, in memory: the store never writes it, and a restart reads of it only the pod a registered agent of the stored claim runs in"},
+		Reason: "the update round's own record of the pods an agent of the claim registered a session in, which only the claim's machine holds, in memory: the store never writes it, and a restart reads no pod of it back, only whether the stored claim shows a session it held, which leaves the set unknown"},
 	{Field: "PluginContract", Column: ColumnAgents, Keys: []string{"pluginContract"},
 		Reason: "the contract the claim's registration declared, which says what shape its seat parses this body with"},
 	{Field: "PluginRelaunchFor", Column: ColumnWithheld, Reason: BookkeepingReason},

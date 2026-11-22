@@ -48,11 +48,12 @@ func (h *harness) wantRegistered(want RegisteredPods, when string) {
 }
 
 // A registration adds the pod of the process that registered to the claim's set
-// (Claim.RegisteredPods), and nothing else adds to it: not a refusal for a pod, and not a process
-// started in a pod before its agent registers. Nothing takes a pod out of it either: a relaunch
-// into another pod adds that pod beside the first once its agent registers, and a claim that lost
-// its session and started a fresh agent in a third pod still holds both, since an agent of it
-// registered in each, and what that agent's worker did not push was on that pod's disk.
+// (Claim.RegisteredPods), and for a claim no idle release suspended nothing else adds to it: not a
+// refusal for a pod, and not a process started in a pod before its agent registers. Nothing takes
+// a pod out of it either: a relaunch into another pod adds that pod beside the first once its agent
+// registers, and a claim that lost its session and started a fresh agent in a third pod still holds
+// both, since an agent of it registered in each, and what that agent's worker did not push was on
+// that pod's disk.
 func TestARegistrationAddsItsPodToTheSetAndNothingTakesItOut(t *testing.T) {
 	h := newHarness(t)
 	h.wantRegistered(RegisteredPods{}, "before any launch,")
@@ -87,15 +88,95 @@ func TestARegistrationAddsItsPodToTheSetAndNothingTakesItOut(t *testing.T) {
 	h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the claim lost its session and started fresh in a third pod,")
 }
 
+// The one pod that goes in the set with no registration is the pod of a claim's first launch
+// after an idle release (addRestoringPod): the release saved the unpushed work of the issue's
+// workspace and took the pod, and the issue's next pod restored that work before any role
+// started, so the claim's work is on that pod's disk before its agent registers there. A wake's
+// resume (resumeByRule) that comes up in the next pod puts that pod in the set while the claim is
+// still launching; the claim's later launches add their pods only once an agent registers, as
+// every launch does. A wake's resume that the runtime refuses for the next pod puts the pod the
+// refusal names in the set, and the retry that later comes up in another pod adds nothing before
+// its agent registers. A claim the daemon suspended for its own rule, which no release saved the
+// work of, puts no pod in the set at its resume.
+func TestTheFirstLaunchAfterAnIdleReleaseAddsItsPodToTheSet(t *testing.T) {
+	released := func(t *testing.T) *harness {
+		t.Helper()
+		h := newHarness(t)
+		h.inPod(refusedPod)
+		h.must(RequestSuspend{Claim: h.token, Reason: "the idle pod was released", By: SuspendedByReleased})
+		if c := h.claim(); !c.Released() {
+			t.Fatalf("the claim is %s by %q, want it released", c.State, c.SuspendedBy)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once released,")
+		return h
+	}
+
+	t.Run("a resume that comes up in the next pod", func(t *testing.T) {
+		h := released(t)
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(replacedPod, 2)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "a wake for a delivery"})
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != replacedPod {
+			t.Fatalf("the woken claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the wake's resume came up in the next pod, before its agent registered,")
+		h.connect()
+		h.register()
+		h.ready()
+
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(anotherPod, 3)})
+		h.observe(runtime.Gone)
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != anotherPod {
+			t.Fatalf("the relaunched claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, anotherPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once a later relaunch came up in a third pod, before its agent registered,")
+		h.connect()
+		h.register()
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod, anotherPod}}, "once that relaunch's agent registered,")
+	})
+
+	t.Run("a resume refused for the next pod", func(t *testing.T) {
+		h := released(t)
+		h.rt.OnResume = refusedFor(replacedPod)
+		if err := h.handle(RequestRuleResume{Claim: h.token, Reason: "a wake for a delivery"}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the wake's resume answered %v, want the runtime's wait for the pod's round", err)
+		}
+		if c := h.claim(); c.Locator != nil || locatorPod(c.AwaitsPod) != replacedPod {
+			t.Fatalf("the refused claim records %+v and waits on %+v, want no process and the wait on pod %s", c.Locator, c.AwaitsPod, replacedPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the wake's resume was refused for the next pod,")
+
+		h.rt.OnResume = nil
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(anotherPod, 3)})
+		h.advance(podRoundRetry)
+		if c := h.claim(); locatorPod(c.Locator) != anotherPod {
+			t.Fatalf("the retry that went through left the claim at %+v, want a process in pod %s", c.Locator, anotherPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the retry came up in another pod, before its agent registered,")
+	})
+
+	t.Run("a resume of a claim the daemon suspended", func(t *testing.T) {
+		h := newHarness(t)
+		h.inPod(refusedPod)
+		h.must(RequestSuspend{Claim: h.token, Reason: "its tree lingers", By: SuspendedByDaemon})
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(replacedPod, 2)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its phase"})
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != replacedPod {
+			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once its resume came up in another pod, before its agent registered,")
+	})
+}
+
 // A machine built over a stored claim does not know where the claim registered before, so it reads
-// the set off the stored claim (bootRegisteredPods). It knows one pod: the pod of the process that
-// a claim whose state holds a registered agent (HoldsCapability) records. Where the stored claim
-// shows a session it held, now or abandoned (Claim.Abandoned), the set is Unknown besides; where
-// it shows none, the set is known. A session whose agent has not registered since its launch, a
-// session with no process and an abandoned one place no pod, and a registered agent whose process
-// runs in no pod (a tmux pane) places none either.
+// the set off the stored claim (bootRegisteredPods), and the set it reads holds no pod. Where the
+// stored claim shows a session it held, now or abandoned (Claim.Abandoned), the set is Unknown;
+// where it shows none, the set is known and empty. A registered agent, whose process runs in a pod
+// or in no pod (a tmux pane), a session whose agent has not registered since its launch, a session
+// with no process and an abandoned one all read Unknown: a stored claim whose state holds a
+// registered agent always shows the session that agent registered, so the pod its process runs in
+// would decide nothing, and it is not read.
 //
-// The cases after the table drive it on. A registered agent's pod stays in the set through the
+// The cases after the table drive it on. A registered agent's claim reads Unknown through the
 // restart, and a relaunch's registration in another pod after the restart adds that pod and
 // leaves the set Unknown: where an earlier agent registered stays unknown. And a registration
 // through a process in no pod adds nothing.
@@ -112,7 +193,7 @@ func TestAMachineBuiltOverAStoredClaimReadsTheSetOffIt(t *testing.T) {
 			c := queuedClaim()
 			c.State, c.Session, c.SessionFile, c.Locator = StateReady, session, sessionFile, &inPod
 			return c
-		}(), want: RegisteredPods{Pods: []string{refusedPod}, Unknown: true}},
+		}(), want: RegisteredPods{Unknown: true}},
 		"a registered agent whose process is in no pod": {claim: func() Claim {
 			c := queuedClaim()
 			c.State, c.Session, c.SessionFile, c.Locator = StateReady, session, sessionFile, &pane
@@ -142,15 +223,15 @@ func TestAMachineBuiltOverAStoredClaimReadsTheSetOffIt(t *testing.T) {
 		})
 	}
 
-	t.Run("a registered agent's pod through a restart, and a registration after it", func(t *testing.T) {
+	t.Run("a registered agent's claim through a restart, and a registration after it", func(t *testing.T) {
 		h := newHarness(t)
 		h.inPod(refusedPod)
 		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once ready in the pod,")
 
 		h.restart()
-		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}, Unknown: true}, "after the restart,")
+		h.wantRegistered(RegisteredPods{Unknown: true}, "after the restart,")
 		h.diesIntoPod(replacedPod)
-		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}, Unknown: true}, "once a relaunch registered in another pod after the restart,")
+		h.wantRegistered(RegisteredPods{Pods: []string{replacedPod}, Unknown: true}, "once a relaunch registered in another pod after the restart,")
 	})
 
 	t.Run("a registration through a process in no pod", func(t *testing.T) {

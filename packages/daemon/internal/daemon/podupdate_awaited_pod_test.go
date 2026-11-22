@@ -463,55 +463,6 @@ func TestPodUpdateReadsTheWorkspaceForAWaitingMemberThatAnsweredWhileItsMachineD
 	}
 }
 
-// The implementer is a claim with no session, queued for its first launch, and the runtime refuses
-// that launch for want of the pod's round, so its launch waits on the pod the tester runs in. The
-// round is posted to it as a way to the pod (postedClaims) and waits on no answer of it. It never
-// had a worker, so nothing of it is on the pod's disk: no message names it (lostClaims,
-// lostWaitingClaims), and it makes no read of the workspace due. The replacement through the
-// tester's process makes no read, its line names no claim the round did not wait for, and the
-// issue is written nothing, though a read would have found work.
-//
-// The control is lostWaitingClaims taking every claim whose launch waits on the pod: the
-// replacement then reads the workspace through the tester for the implementer, and this test
-// fails on that read and on the line that names it.
-func TestPodUpdateMakesNoReadForAWaitingClaimWithNoSessionBesideAProcess(t *testing.T) {
-	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued}, readyWorker(claim.RoleTester))
-	tester := rig.tokens[claim.RoleTester]
-	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateExchangeDrift)
-	rig.refuseUntilReplaced(claim.RoleImplementer)
-	rig.refusedFirstLaunch(claim.RoleImplementer)
-	if c := rig.claimOf(claim.RoleImplementer); podOf(c.AwaitsPod) != podUpdatePod {
-		t.Fatalf("the refused implementer waits on %+v, want pod %s", c.AwaitsPod, podUpdatePod)
-	}
-
-	rig.tick()
-	rig.awaitAsked(claim.RoleTester, podUpdateRound)
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.signal(claim.RoleTester, "c0ffee")
-	replaced := rig.awaitReplacement(1, "once the tester answered")
-	if got := replaced[0].Pod; got.Claim != tester || podOf(got.Locator) != podUpdatePod {
-		t.Fatalf("ReplacePod was asked %+v, want the tester's process in pod %s", got, podUpdatePod)
-	}
-	rig.awaitClaim(claim.RoleTester, "the round's end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
-	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
-		t.Errorf("the workspace was read %+v, want no read: no claim left work that no role was asked to push", reads)
-	}
-	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
-	if len(lines) != 1 || lines[0]["atTheBound"] != false {
-		t.Fatalf("the replacement was logged %+v, want one line that no bound made", lines)
-	}
-	line := lines[0]
-	if line["workspaceRead"] != "not made" || line["workspaceNotReadBecause"] != nothingUnaskedRead {
-		t.Errorf("the replacement's line names the read %+v, want one not made because %q", line, nothingUnaskedRead)
-	}
-	wantField(t, line, "notWaitedFor")
-	wantField(t, line, "waitingOnThePodNotWaitedFor")
-	if messages := rig.messages(); len(messages) != 0 {
-		t.Errorf("the issue was written %q, want nothing: the read was not made", messages)
-	}
-}
-
 // The replacement's log line names each claim with a session that the round did not wait for
 // (replacePodForRound). The issue has two such claims. The implementer's process died and the
 // runtime refused its relaunch for want of the pod's round, so its launch waits on the pod and it
@@ -756,27 +707,27 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 }
 
 // The round's answer set, and whom it names, by the one fact that names a claim
-// (registeredInRoundPod): an agent of it registered a session in the round's pod. A claim whose
-// launch waits on the round's own pod is one the round is posted to — with a session or without,
-// since it may be the issue's only claim — and one the replacement waits on no answer of, since it
-// has no process in that pod. Where an agent of it registered in that pod and it has not answered,
-// the gone-pod report names it as having lost what it left unpushed, as any member (lostClaims),
-// as do the part of that report whose launch waits on the pod (lostWaitingClaims) and the message
-// of a replacement through a process in the pod (notAskedToPush): its process can have died in
-// that pod before its relaunch was refused, or it lost the session its agent registered there.
-// The replacement's line names it too (unwaitedOnThePod), and also where it does not record the
-// round yet, which no report names, since that claim is no member. With an answer to the round, it
+// (workOnRoundPod): its work may be on the round's pod's disk. A claim whose launch waits on the
+// round's own pod is one the round is posted to — with a session or without, since it may be the
+// issue's only claim — and one the replacement waits on no answer of, since it has no process in
+// that pod. Where an agent of it registered in that pod and it has not answered, the gone-pod
+// report names it as having lost what it left unpushed, as any member (lostClaims), as do the
+// part of that report whose launch waits on the pod (lostWaitingClaims) and the message of a
+// replacement through a process in the pod (notAskedToPush): its process can have died in that
+// pod before its relaunch was refused, or it lost the session its agent registered there. The
+// replacement's line names it too (unwaitedOnThePod), and also where it does not record the round
+// yet, which no report names, since that claim is no member. With an answer to the round, it
 // pushed its work before the pod went, and none names it. With a session registered in another
 // pod only, or no registration at all, its work is on no disk of this pod, and none names it.
 //
-// A set the machine cannot know whole, after a restart (supervise.RegisteredPods.Unknown), names
-// the claim as main names every member that had not answered, with a session or with none, and
-// whether or not its launch waits on the round's pod. A
-// claim with a session that waits on another pod, and every claim with no process that waits on
-// none, is weighed as any claim is: a claim the daemon suspended is passed over and waited for by
-// nobody (roundAsks, dispatch://INFRA-4109 R1), and named where an agent of it registered in the
-// pod. A claim with no session that waits on another pod is no way to this round's pod, so the
-// round is not posted to it.
+// An end names every member that had not answered whose set is unknown, as a restart leaves it
+// (supervise.RegisteredPods.Unknown), with a session or with none, and whether or not its launch
+// waits on the round's pod. A claim with a session that waits on another pod, and every claim
+// with no process that waits on none, is weighed as any claim is. A claim the daemon suspended is
+// passed over and waited for by nobody (roundAsks, dispatch://INFRA-4109 R1), and named wherever
+// its agents registered, since an idle release can have put its work on this pod's disk. A claim
+// with no session that waits on another pod is no way to this round's pod, so the round is not
+// posted to it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 	round := podUpdateRound
 	clock := roundClock{now: podUpdateStart, grace: podUpdateGrace}
@@ -828,8 +779,8 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, false), unknown), lost: true},
 		"it is suspended and waits on no pod, registered in the round's pod": {
 			claim: suspended(inPod), posted: true, lost: true, notAsked: true},
-		"it is suspended and waits on no pod, registered in another pod only": {
-			claim: suspended(elsewhere), posted: true},
+		"it is suspended and waits on no pod, registered in another pod only, as an idle release leaves it": {
+			claim: suspended(elsewhere), posted: true, lost: true, notAsked: true},
 		"it runs in the round's pod, registered there": {
 			claim:  registeredIn(runningIn(t, claim.RoleImplementer, podUpdatePod, round), inPod),
 			posted: true, waiting: true, lost: true},
@@ -918,11 +869,13 @@ func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
 // replaces the pod as the round's own replacement and starts the role in a new pod. The round then
 // ends as a launch's replacement (endRoundALaunchReplaced).
 //
-// The implementer never had a worker in the round's pod, so nothing of it was on that pod's disk,
-// and the issue is written nothing about it, as where the sweep replaces the pod through the same
-// claim (lostClaim; TestPodUpdateMakesNoReadForAWaitingClaimWithNoSessionBesideAProcess). The
-// end reads the claim after its launch, which gave it a process in the new pod and dropped the pod
-// it waited on, so it is no longer a claim whose launch waits on the round's pod (awaitsRoundPod).
+// The implementer never had a worker in the round's pod: no agent of it registered a session
+// there, so its machine's set of registered pods (supervise.Claim.RegisteredPods) does not hold
+// that pod and workOnRoundPod answers no. Nothing of it was on that pod's disk, and the issue
+// is written nothing about it, as where the sweep replaces the pod through the same claim
+// (TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember, its row where the sweep replaces
+// the pod through a waiting claim that never registered there). What it records at the
+// end, a process in the new pod and no wait on the round's pod, decides nothing.
 //
 // Red at fb1f87d34c (tester, INFRA-4425): the replacement's line names the implementer under
 // unansweredMembers, and the issue is written "These roles did not answer the update round before
@@ -1010,10 +963,9 @@ func TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod(
 // runs, before the sweep that ends the round: the round's pod is gone, so its launch comes up in
 // the pod that replaced it. The round ends as a launch's replacement (endRoundALaunchReplaced).
 //
-// Neither claim ever had a worker in the round's pod, so the issue is written nothing about either
-// (lostClaim's exception for a member with no session whose launch waits on the pod). At the
-// launch that replaced the pod, both claims stood so; by the end, both record a process in the new
-// pod.
+// Neither claim ever had a worker in the round's pod: no agent of either registered a session
+// there, so workOnRoundPod answers no for both, and the issue is written nothing about
+// either. By the end both record a process in the new pod, which decides nothing.
 //
 // Red at 571fbdce72 (tester, INFRA-4425): the launch's replacement keeps the exception for the
 // launching claim alone (launchRound's exempt), so the line names the tester under
@@ -1118,11 +1070,12 @@ func TestPodUpdateNamesNothingForAnotherClaimWithNoSessionWhoseRetryFollowsTheRe
 // up there too. The sweep ends the round as one whose pod went (endRoundWhosePodWent,
 // podWentWithoutItsRound).
 //
-// The tester's worker ran in the round's pod and had not answered, so the message names it. The
-// implementer never had a worker there: it was refused for the round's pod while it had no
-// session, so the message names it nothing (docs/kubernetes.md: the pod-went message names such a
-// claim "as in the first case", which names no member with no session whose launch waits on the
-// pod).
+// An agent of the tester registered a session in the round's pod and the tester had not
+// answered, so the message names it (workOnRoundPod). No agent of the implementer
+// registered there: it was refused for the round's pod while it had no session, so the message
+// names it nothing, although by the end it records a process in the pod that replaced the round's
+// (docs/kubernetes.md: every end of a round names a role that had not answered only where that
+// role's unpushed work may be on the round's pod's disk).
 //
 // Red at 7e90643972 (tester, INFRA-4425): the end reads the implementer after its retry, with a
 // process in the new pod, so lostClaim names it, and the issue is written "These roles did not

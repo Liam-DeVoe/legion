@@ -16,21 +16,13 @@ body: |-
   update round that replaces it. The claim is charged nothing, and the launch is tried again every
   minute. The update round opens over that pod even when no process of the issue runs in it, and
   it waits on no answer of the refused claim.
-  Every end of an update round names a role that had not answered only where an agent of that
-  role registered a session in the round's pod. Each claim's machine keeps, in memory, the pods
-  its agents registered in, and nothing takes a pod out. So a role that registered in the pod
-  and lost its session since is named, with no session or with a new one, and a role refused for
-  the pod with no session is named at no end: not the daemon's replacement, not a refused
-  claim's own next try that replaces the pod first, and not the message that the pod went, also
-  where the pod is recreated without the identity and refuses the retry again, although the role
-  has since started in a new pod and its agent may have registered there. A role whose session
-  came from another pod and that has not registered in the round's pod is not named for it,
-  since its work is on that other pod's disk; an earlier release named it. After a daemon
-  restart, a machine knows the pod a registered agent of the stored claim runs in. Where the
-  stored claim shows a session it held, now or abandoned, the rest is unknown, and the daemon
-  names that role where it had not answered, as an earlier release named every such member,
-  with a session or with none, so it errs towards naming a role. When no role is left to name,
-  the daemon writes no message.
+  Which roles each end of an update round names is a rule of every Kubernetes deployment, the
+  setting on or off, which this release's Changed entry on the update round states. By that
+  rule, a role refused for the pod with no session is named at no end: not the daemon's
+  replacement, not a refused claim's own next try that replaces the pod first, and not the
+  message that the pod went, also where the pod is recreated without the identity and refuses
+  the retry again, although the role has since started in a new pod and its agent may have
+  registered there.
   The replacement's log line (`waitingOnThePodNotWaitedFor`) names a refused claim that had not
   answered by the same rule, whether or not it records the round.
   Where no claim runs a process in the pod, the daemon replaces the pod through the refused claim,

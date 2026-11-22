@@ -469,21 +469,17 @@ type Claim struct {
 	// registered (register), and a process in no pod (a tmux pane, a locator with no pod) adds
 	// nothing. Nothing takes a pod out of it, not a session lost or forgotten, a let-go, or a
 	// relaunch into another pod, since an agent that registered in a pod had a worker there, and
-	// what that worker did not push was on that pod's disk. It is the one fact the daemon's update
-	// round names a member that lost work by (internal/daemon's ranInRoundPod): an end of a round
-	// over a pod names a member only where an agent of it registered a session in that pod.
+	// what that worker did not push was on that pod's disk. One pod goes in with no registration:
+	// the pod that the claim's first launch after an idle release went into or was refused for
+	// (addRestoringPod), whose disk holds the release's saved work before any agent of the claim
+	// registers there. The daemon's update round reads the set to name a member that lost work
+	// (internal/daemon's workOnRoundPod).
 	//
 	// A machine built over a stored claim does not know where the claim registered before it was
-	// built (bootRegisteredPods). It knows one pod from the store: the pod of the process that a
-	// claim whose state holds a registered agent (HoldsCapability) records, since that agent
-	// registered there. Where the stored claim shows a session it held, now or abandoned
-	// (Claim.Abandoned), the set is Unknown besides, since an earlier agent of it may have
-	// registered in another pod; where it shows none, the set is known and holds that one pod or
-	// none. A later registration adds its pod and leaves Unknown as it is: where an earlier agent
-	// registered stays unknown, and the update round names such a claim that had not answered for
-	// any pod, as main does. It is memory only, as AwaitsPod is: Machine.Claim and View report
-	// it, the daemon's pod-update sweep reads it off the machine of each claim it groups
-	// (Machine.RegisteredPods), and the store never writes or reads it (StoredClaim).
+	// built, so it reads the set off the stored claim (bootRegisteredPods). It is memory only, as
+	// AwaitsPod is: Machine.Claim and View report it, the daemon's pod-update sweep reads it off
+	// the machine of each claim it groups (Machine.RegisteredPods), and the store never writes or
+	// reads it (StoredClaim).
 	RegisteredPods RegisteredPods
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
@@ -1667,9 +1663,17 @@ type Machine struct {
 	awaitsPod *runtime.Locator
 	// registeredPods is the set of pods an agent of the claim registered a session in: what
 	// Claim.RegisteredPods reports (current). NewMachine reads it off the claim it is built over
-	// (bootRegisteredPods) and register adds to it; nothing else writes it, so neither letGo nor a
-	// launch takes a pod out of it. Memory only, as awaitsPod is.
+	// (bootRegisteredPods), register adds to it, and so does the first launch after an idle
+	// release (addRestoringPod); nothing else writes it, so neither letGo nor a launch takes a pod
+	// out of it. Memory only, as awaitsPod is.
 	registeredPods RegisteredPods
+	// restoringLaunch is whether the claim's next launch is its first since an idle release
+	// suspended it (Claim.Released): resume, resumeByRule and deliverResuming set it as they relaunch
+	// a released claim (markRestoringLaunch), and the pod that launch goes into or is refused for
+	// takes it off again (addRestoringPod). Memory only, as registeredPods is: a restarted daemon
+	// reads the set of a claim that shows a session as unknown (bootRegisteredPods), so the update
+	// round names such a claim for any pod.
+	restoringLaunch bool
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -3035,6 +3039,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// it names, so a claim that records that process always records the mark with it.
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
+			// The claim's first launch since an idle release came up in the pod that holds the
+			// release's work, before any agent of it registers there (addRestoringPod).
+			m.addRestoringPod(locatorPod(&loc))
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
 				"resumed", way != wayNone, "resumedBy", string(way))
@@ -3214,7 +3221,8 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // the pod the refusal names (awaitsPod, Claim.AwaitsPod): that is what the daemon's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
 // round would come, and this wait would never end. The write below publishes it, before the
-// retry is due.
+// retry is due. A refusal of the claim's first launch since an idle release puts that pod in the
+// claim's set (addRestoringPod).
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
@@ -3227,6 +3235,7 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 	if errors.As(cause, &refusal) {
 		pod := refusal.Pod
 		m.awaitsPod = &pod
+		m.addRestoringPod(locatorPod(&pod))
 	}
 	return errors.Join(err, m.persist(ctx))
 }
@@ -3234,8 +3243,9 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 // RegisteredPods is the set of pods in which an agent of a claim registered a session, as its
 // machine knows it (Claim.RegisteredPods).
 type RegisteredPods struct {
-	// Pods is the uid of each pod an agent of the claim registered a session in, each once, in the
-	// order of the first registration there.
+	// Pods is the uid of each pod an agent of the claim registered a session in, and of the pod its
+	// first launch after an idle release went into or was refused for (addRestoringPod), each once,
+	// in the order each went in.
 	Pods []string
 	// Unknown is whether an agent of the claim may have registered in a pod that Pods does not
 	// name: a machine built over a stored claim that shows a session it held cannot say where
@@ -3259,27 +3269,50 @@ func (s RegisteredPods) clone() RegisteredPods {
 
 // bootRegisteredPods is the set of a machine built over c (NewMachine). A claim the store read
 // back may have registered agents in pods before this machine was built, which no memory of it
-// records, so the set is read off the stored claim, and it knows one thing:
+// records, so the set is read off the stored claim, and it holds no pod:
 //
-//   - A claim whose state holds a registered agent (HoldsCapability) with a process in a pod
-//     registered in that pod: the agent registered through the process the claim records. That
-//     pod is in the set.
 //   - A claim that shows a session it held, now (Session) or abandoned (Claim.Abandoned), may have
-//     registered an earlier agent in another pod, which nothing stored names, so the set is
-//     Unknown besides. forgetSession writes the abandoned record whenever it drops a session, in
-//     the write that drops it, and nothing clears it: the next abandonment replaces it. The
-//     daemon's update round names a member whose set is unknown and that had not answered, for
-//     any pod, as main names every such member (internal/daemon's registeredInRoundPod): the rule
-//     errs towards naming a role that lost work.
-//   - A claim that shows neither has registered no agent anywhere else: the set is known, and
-//     holds the pod above or none.
+//     registered an agent in any pod, which nothing stored names, so the set is Unknown.
+//     forgetSession writes the abandoned record whenever it drops a session, in the write that
+//     drops it, and nothing clears it: the next abandonment replaces it. The daemon's update round
+//     names every member that had not answered whose set is unknown, for any pod
+//     (internal/daemon's workOnRoundPod): the rule errs towards naming a role that lost work.
+//   - A claim that shows neither has registered no agent anywhere: the set is known and empty.
+//
+// The pod of the process that a stored claim whose state holds a registered agent
+// (HoldsCapability) records is not put in the set, because it would decide nothing. Only register
+// brings a claim to such a state, and it records the session in the same write, which only
+// forgetSession clears and which forgetSession then records as abandoned. So such a stored claim
+// always shows a session it held, its set is Unknown, and the update round names it for every pod.
 func bootRegisteredPods(c Claim) RegisteredPods {
-	var set RegisteredPods
-	if HoldsCapability(c.State) {
-		set.add(locatorPod(c.Locator))
+	return RegisteredPods{Unknown: c.Session != "" || c.Abandoned.Session != ""}
+}
+
+// markRestoringLaunch marks the launch that resume, resumeByRule or deliverResuming is about to
+// raise as the claim's first since an idle release suspended it (restoringLaunch), where the
+// claim is released (Claim.Released). A claim suspended any other way is left unmarked.
+func (m *Machine) markRestoringLaunch() {
+	if m.claim.Released() {
+		m.restoringLaunch = true
 	}
-	set.Unknown = c.Session != "" || c.Abandoned.Session != ""
-	return set
+}
+
+// addRestoringPod puts pod in the claim's set (registeredPods) where the launch that went into pod,
+// or was refused for it, is the claim's first since an idle release suspended it
+// (restoringLaunch), and takes that mark off. The release saved the unpushed work of the
+// workspace every role of the issue shares as a bundle and took the pod, and the issue's next pod
+// restored that bundle before any role started in it, or mounts the kept volume that the work was
+// taken off. So the claim's work is on the disk of the pod its next launch goes into, or waits on,
+// before any agent of it registers there, and the daemon's update round names the claim for that
+// pod as it names one whose agent registered there (internal/daemon's workOnRoundPod). The pods
+// later launches go into wait for a registration, as every other pod does. pod is "" for a process
+// in no pod, which adds nothing.
+func (m *Machine) addRestoringPod(pod string) {
+	if !m.restoringLaunch {
+		return
+	}
+	m.restoringLaunch = false
+	m.registeredPods.add(pod)
 }
 
 // locatorPod is the uid of the pod loc names, and "" for none and for a process in no pod (a tmux
