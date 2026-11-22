@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -390,6 +391,12 @@ func says(t *testing.T, failed *SetupFailure, wants ...string) {
 // however long the check took, the whole bound is still ahead of that program. The guard reads a
 // caller's deadline only once the check has exited (Guard.run at a stop, ghReadContext before the
 // gh read); a read before that finds none, and stopSaid fails the test naming it.
+//
+// stepped is the guard's first step after the check that the test can see, read on the test's
+// clock: its first ask for the deadline after the release (ghReadContext, before it runs gh), or
+// its call of the visibility seam (scanThrough, between the check and a push's records). Both come
+// after the check has exited and before the program the case stops is started, so the start the
+// guard counts that program's time from cannot come before it.
 type boundAfterCheck struct {
 	bound time.Duration
 	// released is when the test let the check finish, written once before let is closed.
@@ -399,11 +406,37 @@ type boundAfterCheck struct {
 	done chan struct{}
 	// early is whether the guard asked for the deadline before the check was let finish.
 	early atomic.Bool
+	// mu guards stepped.
+	mu      sync.Mutex
+	stepped time.Time
+}
+
+// step records stepped, the first time the guard takes a step the test can see once the check has
+// been let finish.
+func (c *boundAfterCheck) step() {
+	select {
+	case <-c.let:
+	default:
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stepped.IsZero() {
+		c.stepped = time.Now()
+	}
+}
+
+// steppedAt is stepped, zero where the guard took no step the test can see after the release.
+func (c *boundAfterCheck) steppedAt() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stepped
 }
 
 func (c *boundAfterCheck) Deadline() (time.Time, bool) {
 	select {
 	case <-c.let:
+		c.step()
 		return c.released.Add(c.bound), true
 	default:
 		c.early.Store(true)
@@ -425,7 +458,8 @@ func (c *boundAfterCheck) Err() error {
 func (c *boundAfterCheck) Value(any) any { return nil }
 
 // holdCheck makes guard's shared check a held one, in place of the one guard was made with, and
-// answers the context to call guard with, whose bound starts when the check is let finish.
+// answers the context to call guard with, whose bound starts when the check is let finish. Where
+// guard has a visibility seam, each call of it is a step the context records.
 func holdCheck(t *testing.T, guard *Guard, bound time.Duration) *boundAfterCheck {
 	t.Helper()
 	dir := t.TempDir()
@@ -435,6 +469,12 @@ func holdCheck(t *testing.T, guard *Guard, bound time.Duration) *boundAfterCheck
 	}
 	guard.opts.Check = leakguardtest.Write(t, dir, "cat >/dev/null 2>&1\nread -r _ < "+shQuote(fifo)+"\nexit 0\n")
 	c := &boundAfterCheck{bound: bound, let: make(chan struct{}), done: make(chan struct{})}
+	if read := guard.opts.Visibility; read != nil {
+		guard.opts.Visibility = func(ctx context.Context, slug string) (Visibility, error) {
+			c.step()
+			return read(ctx, slug)
+		}
+	}
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
@@ -463,13 +503,15 @@ func holdCheck(t *testing.T, guard *Guard, bound time.Duration) *boundAfterCheck
 // them (spoken), once that stop is held to ctx, the call's context. The guard counts from the
 // moment it started program (Guard.run), so the start it counted from is the deadline less the
 // bound, and the moment of the stop is that start plus the run. The start must come no earlier
-// than the check's release, since the guard starts program only once the check has exited, and
-// before the deadline, which program ran until; the stop no earlier than the deadline, which is
-// what ended program, and no later than now, after the call answered. None of these comparisons
-// rounds, so how long the guard took before it started program does not change the verdict.
+// than the guard's first step after the check (ctx's stepped), since the guard starts program only
+// after that step, and before the deadline, which program ran until; the stop no earlier than the
+// deadline, which is what ended program, and no later than now, after the call answered. None of
+// these comparisons rounds, so how long the guard took before it started program does not change
+// the verdict.
 func stopSaid(t *testing.T, ctx *boundAfterCheck, err error, program string) string {
 	t.Helper()
 	answered := time.Now()
+	stepped := ctx.steppedAt()
 	var stopped *stoppedError
 	if !errors.As(err, &stopped) {
 		t.Fatalf("%v carries no stop of %s beneath it", err, program)
@@ -477,18 +519,23 @@ func stopSaid(t *testing.T, ctx *boundAfterCheck, err error, program string) str
 	if ctx.early.Load() {
 		t.Fatal("the guard asked for the caller's deadline before the shared check exited, which this test's context does not answer")
 	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
+	select {
+	case <-ctx.let:
+	default:
 		t.Fatal("the shared check was never let finish")
 	}
+	if stepped.IsZero() {
+		t.Fatal("the guard took no step the test can see between the shared check and the read")
+	}
+	deadline := ctx.released.Add(ctx.bound)
 	began := deadline.Add(-stopped.bound)
 	ended := began.Add(stopped.ran)
-	if stopped.program != program || stopped.cancelled || began.Before(ctx.released) || !began.Before(deadline) ||
+	if stopped.program != program || stopped.cancelled || began.Before(stepped) || !began.Before(deadline) ||
 		ended.Before(deadline) || ended.After(answered) {
-		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the check's release and %s before the deadline, "+
-			"ended %s after the deadline and %s before the call answered; want a stop of %s by the deadline, begun after the "+
-			"check's release and before the deadline, ended at or after the deadline and before the call answered",
-			err, stopped.program, stopped.cancelled, began.Sub(ctx.released), deadline.Sub(began), ended.Sub(deadline), answered.Sub(ended), program)
+		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the guard's first step after the check and %s before the deadline, "+
+			"ended %s after the deadline and %s before the call answered; want a stop of %s by the deadline, begun after that "+
+			"step and before the deadline, ended at or after the deadline and before the call answered",
+			err, stopped.program, stopped.cancelled, began.Sub(stepped), deadline.Sub(began), ended.Sub(deadline), answered.Sub(ended), program)
 	}
 	return fmt.Sprintf("%s ran %s and was stopped by its bound of %s", program, spoken(stopped.ran), spoken(stopped.bound))
 }
