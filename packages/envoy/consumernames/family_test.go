@@ -59,3 +59,29 @@ func TestCheckFamilyJudgesARecordAsItsFamilysCreator(t *testing.T) {
 		t.Errorf("durableOfKey(DurableKey(listener-m a/b)) = %q, %t", durable, ok)
 	}
 }
+
+// A durable's key is one DurableKey made, and only such a key: CheckDurableKey refuses a key whose
+// escapes durableOfKey cannot read back (durable.a=zz, a '=' with no two hex digits after it) or
+// that DurableKey would not write (a lowercase escape, an escape of a byte it writes as itself), so
+// CheckFamily never judges a record by an empty or wrong prefix. The control is DurableKey's own
+// keys, which pass. Before, CheckDurableKey took any '=' and CheckFamily served a record of
+// durable.a=zz naming ~X under the empty prefix.
+func TestCheckDurableKeyTakesOnlyAKeyDurableKeyMade(t *testing.T) {
+	for _, key := range []string{"durable.a=zz", "durable.a=", "durable.a=4", "durable.a=3d", "durable.=41", "durable."} {
+		if err := CheckDurableKey(key); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("CheckDurableKey(%q) = %v, want ErrInvalidKey", key, err)
+		}
+		if err := CheckFamily(SessionFamily, key, Record{Current: "~X", Start: 3}); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("CheckFamily(session, %q) = %v, want ErrInvalidKey", key, err)
+		}
+	}
+	for _, durable := range []string{"listener-m", "listener-m a", "a=b", "x/y.z"} {
+		key := DurableKey(durable)
+		if err := CheckDurableKey(key); err != nil {
+			t.Errorf("control: CheckDurableKey(DurableKey(%q)) = %v", durable, err)
+		}
+		if got, ok := durableOfKey(key); !ok || got != durable {
+			t.Errorf("control: durableOfKey(DurableKey(%q)) = %q, %t", durable, got, ok)
+		}
+	}
+}
