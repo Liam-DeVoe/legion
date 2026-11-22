@@ -29,6 +29,8 @@ import type {
   GraphReferences,
   InboxRow,
   IssueSummary,
+  IssueTreeNode,
+  IssueTreeRead,
   MyRepliesResponse,
   MyReplyRow,
 } from "./types";
@@ -48,9 +50,6 @@ import type {
 const inboxKey = inboxQuery().queryKey;
 const projectsKey = projectsQuery().queryKey;
 const pinnedKey = ["issues", "pinned"] as const;
-/** The slug of an issue's `decisions.md`, by which a server built before document roles names
- *  that document (`ownerTargets`). */
-const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 
 /** One untyped-payload read for the fields the rules take off an event. */
 function payloadValue(event: DispatchEvent, key: string): unknown {
@@ -328,6 +327,25 @@ function referencePanels(matches: (references: GraphReferences) => boolean): Ref
 /** The backlink panel of exactly one reference, as `ReferencedBy` keys it. */
 function referencePanel(reference: string): RefreshTarget {
   return { exact: true, queryKey: ["references", "to", reference] };
+}
+
+/** Every tree read and every view of one (`["issue-tree", key, view]`) whose answer holds a node
+ *  of issue `key`, whichever issue it is the tree of: a parent's outline holds an `issue` node for
+ *  each child and the child's nodes its walk places, and a descendant's view carries its
+ *  ancestors' requirements as context. A node of another issue than the tree's names it
+ *  (`issue`), a node standing under one names it as its parent's (`parent.issue`), and an issue's
+ *  own node is the `issue` node of its key. */
+function treesHolding(key: string): RefreshTarget {
+  return {
+    queryKey: ["issue-tree"],
+    when: (data) =>
+      rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes).some(
+        (node) =>
+          node.issue === key ||
+          node.parent?.issue === key ||
+          (node.kind === "issue" && node.id === key)
+      ),
+  };
 }
 
 // The document an ask or comment event touches: a block ask names the document that holds its
@@ -1173,6 +1191,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // where something draws it and marked stale where nothing does.
     { queryKey: issueTreeKey(key) },
   ];
+  // A tree holds nodes of other issues as well, and is told of their events the same way: each
+  // ancestor's tree the event names (`ancestors`), which a write can put a node of the issue in
+  // that its answer does not hold yet - a new child, a moved one - and every other tree or view
+  // whose answer holds a node of the issue (`treesHolding`).
+  for (const ancestor of payloadStrings(event, "ancestors") ?? []) {
+    targets.push({ queryKey: issueTreeKey(ancestor) });
+  }
+  targets.push(treesHolding(key));
   if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: myRepliesKey });
   }
