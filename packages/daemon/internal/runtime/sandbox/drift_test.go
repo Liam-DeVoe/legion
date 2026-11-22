@@ -1201,3 +1201,19 @@ func TestAPodThatLacksASlotOfItsPlanDrifts(t *testing.T) {
 		t.Errorf("PodDrift of a pod holding a slot its plan no longer names = %q, want no slots reason", drifted)
 	}
 }
+
+// A pod built while its plan names an agent no role has, `implementer-2` beside the six roles, holds
+// that agent's slot, so with the plan unchanged it does not drift on its slots: the pod an update
+// round builds after the plan named the slot is the pod the round was for, and it is not replaced
+// again. The fault: every sweep replaces a pod that holds every slot its plan names.
+func TestAPodBuiltWithTheSlotsOfItsPlanDoesNotDrift(t *testing.T) {
+	agents := map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer, "implementer-2": claim.RoleImplementer}
+	g := newRig(t, nil, withPlanAgents(agents))
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	for sweep := 1; sweep <= 2; sweep++ {
+		drifted := slices.DeleteFunc(driftOf(t, g.ctx, g.r, loc), func(reason string) bool { return !strings.HasPrefix(reason, "slots ") })
+		if len(drifted) > 0 {
+			t.Fatalf("PodDrift at sweep %d of a pod built while its plan names implementer-2, the plan unchanged = %q, want no slots reason", sweep, drifted)
+		}
+	}
+}
