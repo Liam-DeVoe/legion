@@ -406,7 +406,7 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
-  // The send refetches the issue, its inbox and its comments; each answers the seeded set, and
+  // The send refetches the issue, the open asks and its comments; each answers the seeded set, and
   // the refetch comes after the close, so the issue it answers is the closed one.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issue,
@@ -563,8 +563,8 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  // The answer refetches the issue, its asks and the inbox. The inbox lists open asks, and this
-  // one has just been answered, so it is no longer in it.
+  // The answer refetches the issue, its asks and the open asks. The read of the open asks lists
+  // open asks, and this one has just been answered, so it is no longer in it.
   const getAsk = answerAskThreads(unanchoredAsk);
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const listOpenAsks = answerOpenAsks([]);
@@ -643,7 +643,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   const refetched = Promise.withResolvers<IssueAskRow[]>();
   const getAsk = answerAskThreads(anchoredAsk);
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  // The inbox lists open asks, and this one has just been answered.
+  // The read of the open asks lists open asks, and this one has just been answered.
   const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockImplementation(() => refetched.promise);
   const view = render(
@@ -723,7 +723,7 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
     replies: [],
   });
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  // The inbox lists open asks, and this one has just been answered.
+  // The read of the open asks lists open asks, and this one has just been answered.
   const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([askRow(answeredAsk)]);
   const view = render(
@@ -988,7 +988,7 @@ test("composeForMark opens the composer with the mark anchor and resolves when i
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
-  // The send refetches the issue, its inbox and its comments; each answers the seeded set.
+  // The send refetches the issue, the open asks and its comments; each answers the seeded set.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const listOpenAsks = answerOpenAsks([]);
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
@@ -1150,7 +1150,7 @@ function renderMarginWithBridge(
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  // A send from this margin refetches the issue, its inbox and its comments; each answers the
+  // A send from this margin refetches the issue, the open asks and its comments; each answers the
   // seeded set, so the margin stays as the test set it up.
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
@@ -2428,7 +2428,7 @@ function renderDocumentMargin(comments: Comment[]) {
     indexed: false,
     item: graphNode({ id, kind: "comment" }),
   }));
-  // A save refetches the margin's own reads: the document's asks and the viewer's inbox, both
+  // A save refetches the margin's own reads: the document's asks and the open asks, both
   // empty here as the cache was seeded.
   const listOpenAsks = answerOpenAsks([]);
   const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);

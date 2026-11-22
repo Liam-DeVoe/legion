@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -29,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testbaseline"
 )
 
 // The base build every base-build check of this child boots beside this one: the
@@ -42,35 +42,9 @@ import (
 // It carries the basebuild tag, as cmd/dispatch's store_census_test.go does: it reads the
 // repository's history and builds a second server, which no CI suite pays for.
 
-// baselineSHAEnv names the commit the base build is built from: the release this branch lands
-// after. It has no default, as lib-baseline.sh's has none: main's merge base is older than any
-// sibling branch this one is stacked on, so a check built on it could pass without being able to
-// fail, and only the caller knows which release the branch lands after.
-const baselineSHAEnv = "BASELINE_SHA"
-
-// fullCommit is the only spelling of a commit the harness builds: a revision that resolves to
-// anything else is refused rather than built, so the stamp and the worktree always name one object.
-var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // baselineBoot is how long the base build gets to say it serves and answer /healthz: its first
 // boot migrates a whole schema from empty, which is the longest this wait covers.
 const baselineBoot = 3 * time.Minute
-
-// baselineCommit is the commit the base build is built from: BASELINE_SHA, resolved with `git
-// rev-parse --verify <rev>^{commit}` to a full sha. An unset or empty one fails the test, naming it.
-func baselineCommit(t *testing.T) string {
-	t.Helper()
-	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	revision := strings.TrimSpace(os.Getenv(baselineSHAEnv))
-	if revision == "" {
-		t.Fatalf("%s is unset: set it to the commit of the release this branch lands after; it has no default", baselineSHAEnv)
-	}
-	commit := gitOutput(t, root, "rev-parse", "--verify", revision+"^{commit}")
-	if !fullCommit.MatchString(commit) {
-		t.Fatalf("%s=%q resolves to %q, which is not a full commit sha", baselineSHAEnv, revision, commit)
-	}
-	return commit
-}
 
 // buildBaseline checks the base commit out as a worktree at worktree and builds its
 // ./cmd/dispatch stamped with that commit (-ldflags "-X main.buildCommit=<commit>", the flag
@@ -80,7 +54,7 @@ func baselineCommit(t *testing.T) string {
 // cmdtest's, in a directory of the test's own under TMPDIR, removed when the test ends.
 func buildBaseline(t *testing.T, worktree string) (binary, commit string) {
 	t.Helper()
-	commit = baselineCommit(t)
+	commit = testbaseline.Commit(t)
 	switch _, err := os.Lstat(worktree); {
 	case err == nil:
 		t.Fatalf("%s already exists, so the base build cannot be checked out there: clear it with\n\tgit worktree remove --force %s", worktree, worktree)
@@ -252,9 +226,9 @@ func startBuild(t *testing.T, name, binary, databaseURL, identityHeader string) 
 	} else {
 		cmd.Env = append(cmd.Env, "DISPATCH_IDENTITY=header:"+identityHeader, "DISPATCH_IDENTITY_HEADER_TRUSTED=1")
 	}
-	for _, name := range baselineRuntime {
-		if value, set := os.LookupEnv(name); set {
-			cmd.Env = append(cmd.Env, name+"="+value)
+	for _, setting := range baselineRuntime {
+		if value, set := os.LookupEnv(setting); set {
+			cmd.Env = append(cmd.Env, setting+"="+value)
 		}
 	}
 	held.Pass(cmd, "DISPATCH_LISTEN_FD")

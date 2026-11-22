@@ -38,15 +38,16 @@
 #   older_rows    one row per arm, and one citation of each item sort, written through psql as the
 #                 release before this one writes them, with no marker of this child's: each is
 #                 answered once, by its old arm, the store holding no tuple of it. A comment row
-#                 carries its node, as the node store's writer gives it one. The rows are
-#                 removed once read.
+#                 carries its node, as the node store's writer gives it one. The rows are read in
+#                 the transaction that writes them, which then rolls back, so they are gone once
+#                 read.
 #   backfill      one row per arm, and one citation of each item sort, written through psql as a
 #                 build before this child writes them, each comment and the message and the ask
-#                 naming no node yet: each is answered once, by its old arm, before
-#                 `envoy-dispatch backfill-graph-store` runs over the server's database, and once,
-#                 by the tuple arm, after it, which reports every kind complete=true, each comment
-#                 carrying the node the node store's backfill gave it. The rows are removed
-#                 once read.
+#                 naming no node yet: each is answered once, by its old arm, in the transaction that
+#                 writes them, and once, by the tuple arm, after
+#                 `envoy-dispatch backfill-graph-store` runs over the server's database, which
+#                 reports every kind complete=true, each comment carrying the node the node store's
+#                 backfill gave it. The rows are removed once read.
 #   artifact_citation
 #                 a document's citation, which another child moves and not this child, is
 #                 still answered by the refs arm.
@@ -57,12 +58,13 @@
 #                 adds, the server serves the schema the store holds, a document socket admits a
 #                 writer, and a write over it is accepted and reaches the document's text.
 #
-# One sentence of the check reads what this build cannot serve yet, and its section lands with
-# what it reads, where the call list at the end of this file says: the reads that address, list
-# and count a delivery_attempt, a person and a role. No address of those kinds exists at this
-# build (text.ParseRef reads none) and no route counts one's backlinks, so they come with the
-# addresses and the mention arm into a person, a session and a role
-# (the plan's T13).
+# One sentence of the check reads what no route of this build serves, and no section of this
+# driver reads it: that a delivery_attempt, a person and a role are each addressed, listed and
+# counted. text.ParseRef reads an address of a person (`dispatch://person/<login>`) and of a role
+# (`dispatch://role/<token>`) but none of a delivery attempt, and refs.BacklinkCounts declares an
+# arm for each of the three kinds, yet the only routes that answer a backlink count are an ask's
+# and an issue's: no route counts a node of these three. The kinds section reads what the store
+# and the web build hold of them instead.
 #
 # Which clause is read which way, and why: what the store holds - a node, a tuple, a row's marker,
 # the transaction that wrote a row (its xmin) - is served by no route, so it is read through psql on
@@ -142,13 +144,10 @@ readonly stamp
 readonly session="one-inbox-kinds-$stamp"
 readonly actor="{\"kind\": \"session\", \"id\": \"$session\"}"
 
-case "$database_url" in
-  *@127.0.0.1:* | *@localhost:* | *@\[::1\]:* | *@127.0.0.1/* | *@localhost/*) ;;
-  *)
-    printf 'one-inbox-kinds.sh: ISSUE_DATABASE_URL names no loopback host; this driver writes and removes rows and runs only against a test database on this machine\n' >&2
-    exit 2
-    ;;
-esac
+loopback_database_url "$database_url" || {
+  printf 'one-inbox-kinds.sh: ISSUE_DATABASE_URL names no single loopback host; this driver writes and removes rows and runs only against a test database on this machine\n' >&2
+  exit 2
+}
 
 work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
@@ -400,7 +399,9 @@ readonly socket_writer
 
 curl -sS -o /dev/null -D "$work/signin" -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$person")" \
   2>"$work/curl" || fail setup "sign $person in" "curl: $(<"$work/curl")"
-[[ -s "$work/jar" ]] || fail setup "sign $person in" "the dev sign-in route left no cookie"
+# curl writes a jar's header lines whatever the answer, so the jar holds a cookie only where it
+# holds a cookie's line, whose fields a tab parts.
+grep -q $'\t' "$work/jar" || fail setup "sign $person in" "the dev sign-in route left no cookie"
 # The document socket's writer reads the Cookie header itself, as e2e/acceptance/ci-check.sh writes it.
 sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' "$work/signin" | paste -sd ';' - >"$work/cookie"
 [[ -s "$work/cookie" ]] || fail setup "sign $person in" "the dev sign-in set no cookie"
@@ -915,39 +916,48 @@ blocks_as_the_release_before() {
   printf '%s\n' "delete from refs_grammar_owed where kind = '$kind' and id = '$id';"
 }
 
-# remove_older_rows: removes every row older_rows_section planted - the items, which take their
-# blocks, links, texts and block state with them, their citations, and their nodes and tuples -
-# so no census over this database later reads them as rows the backfill still owes, and no later
-# run reads them at all.
-remove_older_rows() {
-  local ids
-  [[ -n "$older_comment" ]] || return 0
-  ids="$(sql_list "$older_comment" "$older_ask_comment" "$older_message" "$older_ask")"
-  env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -c "
-    begin;
-    delete from comments where id in ('$older_comment', '$older_ask_comment');
-    delete from messages where id = '$older_message';
-    delete from asks where id = '$older_ask';
-    delete from refs where from_id in ($ids);
-    delete from graph_tuples where from_id in ($ids) or to_id in ($ids);
-    delete from graph_nodes where id in ($ids);
-    commit;" >/dev/null 2>"$work/remove" ||
-    printf 'one-inbox-kinds.sh: could not remove the rows the release before stood in for: %s\n' \
-      "$(<"$work/remove")" >&2
+# The server's ticks state what a build before this child wrote once they see it: an insert into
+# comments, asks or messages queues its item in refs_forms_owed (migrations 20261117025901-03),
+# and the refs forms drain re-indexes each queued item (docs' RunRefsFormsReconciliation), which
+# writes its blocks' nodes and tuples; and the block index's object pass gives an ask and a message
+# the node their row names none of. A row written as that build writes it is therefore read by its
+# old arm only before any other process sees it: older_rows_section and backfill_section read each
+# such row in the transaction that writes it (in_one_transaction).
+
+# in_one_transaction SECTION WHAT END WRITE READ...: runs WRITE and then each READ, a select of one
+# value, in one psql session and one transaction that ends with END (`commit` or `rollback`), each
+# read's value one line of $work/reads, in order. No other process sees what WRITE wrote before
+# every READ has read it.
+in_one_transaction() {
+  local section="$1" what="$2" end="$3" write="$4" read
+  shift 4
+  local -a commands=(-c begin -c "$write")
+  for read in "$@"; do
+    commands+=(-c "$read")
+  done
+  commands+=(-c "$end")
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 \
+    "${commands[@]}" >"$work/reads" 2>"$work/psql" || fail "$section" "$what" "psql: $(<"$work/psql")"
+  [[ "$(wc -l <"$work/reads")" == "$#" ]] ||
+    fail "$section" "$what" "read $(wc -l <"$work/reads") value(s), want $#: $(<"$work/reads")"
 }
 
-# older_arm NAME EDGE TUPLE MARKER-SQL MARKER: graph_edges answers the relation EDGE names once,
-# the store holds no tuple TUPLE names, and the row reads MARKER through MARKER-SQL: the row's old
-# arm is the one that answers it. One assertion.
-older_arm() {
-  want_value older_rows "$1: the row the release before wrote is answered once, by its old arm" "1|0|$5" "
-    select (select count(*) from graph_edges where $2) || '|' || (select count(*) from graph_tuples where $3)
-           || '|' || coalesce(($4), '(no row)')"
+# arm_sql EDGE TUPLE MARKER-SQL: the select of `<how often graph_edges answers the relation EDGE
+# names>|<how many tuples TUPLE names>|<what the row reads through MARKER-SQL>`.
+arm_sql() {
+  printf '%s' "select (select count(*) from graph_edges where $1) || '|' || (select count(*) from graph_tuples where $2)
+           || '|' || coalesce(($3), '(no row)')"
+}
+
+# read_arm SECTION WHAT WANT GOT: a value in_one_transaction read, GOT, is WANT. One assertion.
+read_arm() {
+  [[ "$4" == "$3" ]] || fail "$1" "$2" "read '$4', want '$3'"
+  pass "$1" "$2"
 }
 
 older_rows_section() {
-  local failed=0 arm
-  trap remove_older_rows EXIT
+  local failed=0 arm index=1 read
+  local -a fields reads planted
   query older_rows "draw the ids of the rows the release before writes" \
     "select gen_random_uuid() || ' ' || gen_random_uuid() || ' ' || gen_random_uuid() || ' ' || gen_random_uuid()"
   read -r older_comment older_ask_comment older_message older_ask <<<"$answer"
@@ -960,8 +970,7 @@ older_rows_section() {
   # its author's authored_by. The message and the ask as the release before writes them: a node of
   # the store (graphstore.MessageNode, graphstore.AskNode) that the row names nowhere, since that
   # release's rows carry no node pair, and no pointer as a tuple.
-  query older_rows "write two comments, a message and an ask as the release before writes them" "
-    begin;
+  local write="
     $(node_as_the_release_before comment "$older_comment" "$root" 'now()')
     insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
     values ('comment', '$older_comment', 'authored_by', 'session', '$session', now(), '$actor'::jsonb, 0, true);
@@ -984,18 +993,15 @@ older_rows_section() {
     $(node_as_the_release_before ask "$older_ask" "$ask" 'now()')
     insert into asks (id, issue_key, author, question, created_at)
     values ('$older_ask', '$issue', '$actor'::jsonb, '$ask_text', now());
-    $(blocks_as_the_release_before ask "$older_ask" "$ask_text" cites)
-    commit;"
-  pass older_rows "wrote comments $older_comment and $older_ask_comment, message $older_message and ask $older_ask as the release before writes them"
-  want_value older_rows "the comments carry their node and hold no tuples_stored; the message and the ask name no node" \
-    "comment:live:false|comment:live:false|(none)|(none):(none)" "
+    $(blocks_as_the_release_before ask "$older_ask" "$ask_text" cites)"
+  reads=("
     select (select string_agg(coalesce(c.node_kind, '(none)') || ':' || coalesce(n.state, '(no node)') || ':'
                               || c.tuples_stored::text, '|' order by c.body)
             from comments c left join graph_nodes n on n.kind = c.node_kind and n.id = c.node_address
             where c.id in ('$older_comment', '$older_ask_comment'))
            || '|' || (select coalesce(node_kind, '(none)') from messages where id = '$older_message')
            || '|' || (select coalesce(node_kind, '(none)') || ':' || coalesce(tuples_stored_at::text, '(none)')
-                      from asks where id = '$older_ask')"
+                      from asks where id = '$older_ask')")
 
   local -a arms=(
     "comment_blocks part_of|from_kind = 'comment_block' and from_id = 'comment/$older_comment#b1' and kind = 'part_of' and to_kind = 'comment' and to_id = '$older_comment'|from_kind = 'block' and from_id = 'comment/$older_comment#b1' and kind = 'part_of'|select coalesce(max(node_kind), 'unmarked') from comment_blocks where comment_id = '$older_comment'|unmarked"
@@ -1016,19 +1022,33 @@ older_rows_section() {
     "the ask's citation, by the refs arm|from_kind = 'ask' and from_id = '$older_ask' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'ask' and from_id = '$older_ask' and kind = 'mentions'|select tuples_stored::text from refs where from_kind = 'ask' and from_id = '$older_ask' and to_id = '$cited'|false"
   )
   for arm in "${arms[@]}"; do
-    local -a fields
     IFS='|' read -r -a fields <<<"$arm"
-    isolated older_arm "${fields[@]}"
+    reads+=("$(arm_sql "${fields[1]}" "${fields[2]}" "${fields[3]}")")
+  done
+  # Written and read in one transaction, which then rolls back: nothing of it outlives the read.
+  in_one_transaction older_rows "write two comments, a message and an ask as the release before writes them, and read them back" \
+    rollback "$write" "${reads[@]}"
+  pass older_rows "wrote comments $older_comment and $older_ask_comment, message $older_message and ask $older_ask as the release before writes them, and read them in the transaction that wrote them, which then rolled back"
+  read="$(sed -n 1p "$work/reads")"
+  isolated read_arm older_rows "the comments carry their node and hold no tuples_stored; the message and the ask name no node" \
+    "comment:live:false|comment:live:false|(none)|(none):(none)" "$read"
+  [[ "$isolated_status" == 0 ]] || failed=1
+  for arm in "${arms[@]}"; do
+    IFS='|' read -r -a fields <<<"$arm"
+    index=$((index + 1))
+    read="$(sed -n "${index}p" "$work/reads")"
+    isolated read_arm older_rows "${fields[0]}: the row the release before wrote is answered once, by its old arm" \
+      "1|0|${fields[4]}" "$read"
     [[ "$isolated_status" == 0 ]] || failed=1
   done
-  local -a planted=("$older_comment" "$older_ask_comment" "$older_message" "$older_ask")
-  remove_older_rows
-  older_comment=""
-  want_value older_rows "the rows the release before stood in for are removed" 0 "
+  planted=("$older_comment" "$older_ask_comment" "$older_message" "$older_ask")
+  want_value older_rows "the rows the release before stood in for are gone with the transaction that wrote them" 0 "
     select (select count(*) from graph_nodes where id in ($(sql_list "${planted[@]}")))
          + (select count(*) from graph_tuples where from_id in ($(sql_list "${planted[@]}")))
          + (select count(*) from refs where from_id in ($(sql_list "${planted[@]}")))
-         + (select count(*) from comments where id::text in ($(sql_list "${planted[@]}")))"
+         + (select count(*) from comments where id::text in ($(sql_list "${planted[@]}")))
+         + (select count(*) from messages where id::text in ($(sql_list "${planted[@]}")))
+         + (select count(*) from asks where id::text in ($(sql_list "${planted[@]}")))"
   return "$failed"
 }
 
@@ -1038,44 +1058,37 @@ before_comment="" before_ask_comment="" before_message="" before_ask=""
 
 # remove_backfilled_rows: removes every row backfill_section planted and what the backfill stated
 # of them - the items, which take their blocks, links, texts and block state with them, their
-# citations, their user_threads rows, the store's nodes of them and of their blocks and every tuple
-# out of or into either - so no later run reads them.
+# citations, the store's nodes of them and of their blocks and every tuple out of or into
+# either - so no later run reads them.
 remove_backfilled_rows() {
   local ids blocks
   [[ -n "$before_comment" ]] || return 0
   ids="$(sql_list "$before_comment" "$before_ask_comment" "$before_message" "$before_ask")"
   blocks="$(sql_list "comment/$before_comment#%" "comment/$before_ask_comment#%" "message/$before_message#%" "ask/$before_ask#%")"
-  env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -c "
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 -c "
     begin;
     delete from comments where id in ('$before_comment', '$before_ask_comment');
     delete from messages where id = '$before_message';
     delete from asks where id = '$before_ask';
     delete from refs where from_id in ($ids);
-    delete from user_threads where thread_id::text in ($ids);
     delete from graph_tuples where from_id in ($ids) or to_id in ($ids) or from_id like any (array[$blocks]);
     delete from graph_nodes where id in ($ids) or id like any (array[$blocks]);
     commit;" >/dev/null 2>"$work/remove" ||
     printf 'one-inbox-kinds.sh: could not remove the rows the backfill section planted: %s\n' "$(<"$work/remove")" >&2
 }
 
-# backfilled_arm NAME EDGE TUPLE MARKER-SQL BEFORE AFTER: before the backfill (when $backfilled is
-# 0), graph_edges answers the relation EDGE names once, the store holds no tuple TUPLE names and
-# the row reads BEFORE through MARKER-SQL, so its old arm answers it; after it, graph_edges answers
-# it once, the store holds the one tuple, and the row reads AFTER, so the tuple arm answers it and
-# the old arm answers it no more. One assertion.
-backfilled=0
+# backfilled_arm NAME EDGE TUPLE MARKER-SQL BEFORE AFTER: after this child's backfill, graph_edges
+# answers the relation EDGE names once, the store holds the one tuple TUPLE names, and the row reads
+# AFTER through MARKER-SQL, so the tuple arm answers it and the old arm answers it no more.
+# backfill_section reads BEFORE in the transaction that wrote the row. One assertion.
 backfilled_arm() {
-  local when="before this child's backfill, once, by its old arm" want="1|0|$5"
-  if [[ "$backfilled" == 1 ]]; then
-    when="after it, once, by the tuple arm" want="1|1|$6"
-  fi
-  want_value backfill "$1: the row written before this child is answered $when" "$want" "
-    select (select count(*) from graph_edges where $2) || '|' || (select count(*) from graph_tuples where $3 and asserted)
-           || '|' || coalesce(($4), '(no row)')"
+  want_value backfill "$1: the row written before this child is answered after it, once, by the tuple arm" "1|1|$6" \
+    "$(arm_sql "$2" "$3 and asserted" "$4")"
 }
 
 backfill_section() {
-  local failed=0 arm
+  local failed=0 arm index=0 read
+  local -a fields reads
   command -v envoy-dispatch >/dev/null ||
     fail backfill "find envoy-dispatch on PATH" "no envoy-dispatch: build packages/envoy/cmd/dispatch onto PATH, as the Verification preamble does"
   trap remove_backfilled_rows EXIT
@@ -1090,8 +1103,7 @@ backfill_section() {
   # the node store's backfill gives it, and a message and an ask with no node either, which
   # the object-node backfill gives them; none holds a marker of this child's, and their triggers
   # project them into user_threads as that build's do.
-  query backfill "write two comments, a message and an ask as a build before this child writes them" "
-    begin;
+  local write="
     insert into comments (id, issue_key, author, body, reply_to, answers, replies_to_block, created_at)
     values ('$before_comment', '$issue', '$actor'::jsonb, '$comment_text', '$root', '$reply', 'comment/$reply#b1', now());
     $(blocks_as_the_release_before comment "$before_comment" "$comment_text" cites)
@@ -1103,9 +1115,7 @@ backfill_section() {
     $(blocks_as_the_release_before message "$before_message" "$message_text" cites)
     insert into asks (id, issue_key, author, question, created_at)
     values ('$before_ask', '$issue', '$actor'::jsonb, '$ask_text', now());
-    $(blocks_as_the_release_before ask "$before_ask" "$ask_text" cites)
-    commit;"
-  pass backfill "wrote comments $before_comment and $before_ask_comment, message $before_message and ask $before_ask as a build before this child writes them"
+    $(blocks_as_the_release_before ask "$before_ask" "$ask_text" cites)"
 
   local -a arms=(
     "comment_blocks part_of|from_kind = 'comment_block' and from_id = 'comment/$before_comment#b1' and kind = 'part_of' and to_kind = 'comment' and to_id = '$before_comment'|from_kind = 'block' and from_id = 'comment/$before_comment#b1' and kind = 'part_of'|select coalesce(max(node_kind), 'unmarked') from comment_blocks where comment_id = '$before_comment'|unmarked|block"
@@ -1126,28 +1136,40 @@ backfill_section() {
     "the ask's refs row|from_kind = 'ask' and from_id = '$before_ask' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'ask' and from_id = '$before_ask' and kind = 'mentions'|select tuples_stored::text from refs where from_kind = 'ask' and from_id = '$before_ask' and to_id = '$cited'|false|true"
   )
   for arm in "${arms[@]}"; do
-    local -a fields
     IFS='|' read -r -a fields <<<"$arm"
-    isolated backfilled_arm "${fields[@]}"
+    reads+=("$(arm_sql "${fields[1]}" "${fields[2]} and asserted" "${fields[3]}")")
+  done
+  # Written and read in one transaction, which then commits for the backfill to read the rows.
+  in_one_transaction backfill "write two comments, a message and an ask as a build before this child writes them, and read them back" \
+    commit "$write" "${reads[@]}"
+  pass backfill "wrote comments $before_comment and $before_ask_comment, message $before_message and ask $before_ask as a build before this child writes them, and read them in the transaction that wrote them"
+  for arm in "${arms[@]}"; do
+    IFS='|' read -r -a fields <<<"$arm"
+    index=$((index + 1))
+    read="$(sed -n "${index}p" "$work/reads")"
+    isolated read_arm backfill "${fields[0]}: the row written before this child is answered before this child's backfill, once, by its old arm" \
+      "1|0|${fields[4]}" "$read"
     [[ "$isolated_status" == 0 ]] || failed=1
   done
 
   local backfill_status=0
   # shellcheck disable=SC2031 # lib.sh's `cli` exports its own PATH; this is the caller's
-  env -u PGHOSTADDR DATABASE_URL="$database_url" envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_status=$?
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE DATABASE_URL="$database_url" envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_status=$?
   [[ "$backfill_status" == 0 ]] ||
     fail backfill "envoy-dispatch backfill-graph-store over the server's database" "exit $backfill_status: $(<"$work/backfill")"
-  if grep -q 'complete=false' "$work/backfill"; then
-    fail backfill "envoy-dispatch backfill-graph-store reports every kind complete" "$(grep 'complete=false' "$work/backfill")"
-  fi
-  pass backfill "envoy-dispatch backfill-graph-store over the server's database reports $(grep -c 'complete=true' "$work/backfill") kinds complete=true"
+  # The command exits non-zero while any kind remains, so a zero exit is every kind complete; the
+  # kinds it reports are what shows it read any.
+  local complete
+  complete="$(grep -c 'complete=true' "$work/backfill" || true)"
+  [[ "$complete" -gt 0 ]] ||
+    fail backfill "envoy-dispatch backfill-graph-store reports the kinds it completed" "it reports none complete=true: $(<"$work/backfill")"
+  pass backfill "envoy-dispatch backfill-graph-store over the server's database reports $complete kinds complete=true"
   want_value backfill "the comments carry their node from the node store's backfill, and the message and the ask theirs" \
     "comment|comment|message|ask" "
     select (select string_agg(coalesce(c.node_kind, '(none)'), '|' order by c.body) from comments c
             where c.id in ('$before_comment', '$before_ask_comment'))
            || '|' || (select coalesce(node_kind, '(none)') from messages where id = '$before_message')
-           || '|' || (select coalesce(max(n.kind), '(none)') from graph_nodes n where n.kind = 'ask' and n.id = '$before_ask')"
-  backfilled=1
+           || '|' || (select coalesce(node_kind, '(none)') from asks where id = '$before_ask')"
   for arm in "${arms[@]}"; do
     local -a fields
     IFS='|' read -r -a fields <<<"$arm"
@@ -1158,10 +1180,14 @@ backfill_section() {
   remove_backfilled_rows
   before_comment=""
   want_value backfill "the rows planted before this child are removed" 0 "
-    select (select count(*) from graph_nodes where id in ($(sql_list "${planted[@]}")))
-         + (select count(*) from graph_tuples where from_id in ($(sql_list "${planted[@]}")))
+    select (select count(*) from graph_nodes where id in ($(sql_list "${planted[@]}"))
+                                                or id like any (array[$(sql_list "comment/${planted[0]}#%" "comment/${planted[1]}#%" "message/${planted[2]}#%" "ask/${planted[3]}#%")]))
+         + (select count(*) from graph_tuples where from_id in ($(sql_list "${planted[@]}")) or to_id in ($(sql_list "${planted[@]}"))
+                                                 or from_id like any (array[$(sql_list "comment/${planted[0]}#%" "comment/${planted[1]}#%" "message/${planted[2]}#%" "ask/${planted[3]}#%")]))
          + (select count(*) from refs where from_id in ($(sql_list "${planted[@]}")))
-         + (select count(*) from comments where id::text in ($(sql_list "${planted[@]}")))"
+         + (select count(*) from comments where id::text in ($(sql_list "${planted[@]}")))
+         + (select count(*) from messages where id::text in ($(sql_list "${planted[@]}")))
+         + (select count(*) from asks where id::text in ($(sql_list "${planted[@]}")))"
   return "$failed"
 }
 
@@ -1356,9 +1382,8 @@ run_section older_rows
 run_section backfill
 run_section artifact_citation
 run_section kinds
-# The section that addresses, lists and counts a delivery_attempt, a person and a role runs here
-# once the addresses of those kinds and the mention arm into a person, a session and a role exist
-# (the plan's T13).
+# No section addresses, lists and counts a delivery_attempt, a person and a role: no route of this
+# build counts one (the header says why).
 run_section editor
 
 if [[ "${#failed_sections[@]}" -gt 0 ]]; then

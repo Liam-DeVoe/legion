@@ -40,6 +40,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
+import { inboxRead } from "./pick-writes";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -317,12 +318,7 @@ test.describe("inbox selection", () => {
       // every snooze event of alice's its live feed carries: a snooze's event names no ask.
       const inboxReads: string[] = [];
       page.on("request", (request) => {
-        const url = new URL(request.url());
-        if (
-          request.method() === "GET" &&
-          url.pathname === "/api/v1/me/inbox" &&
-          url.searchParams.get("state") === "inbox"
-        ) {
+        if (request.method() === "GET" && inboxRead(new URL(request.url()))) {
           inboxReads.push(request.url());
         }
       });

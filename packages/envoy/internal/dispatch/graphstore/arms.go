@@ -197,13 +197,24 @@ func nodeArm(first int, states bool) string {
 	where not exists (select 1 from graph_nodes held where held.kind = node.kind and held.id = node.id offset 0)
 	order by kind, id
 	on conflict (kind, id) do nothing
-	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
+	returning ` + nodeWrittenColumns + `
 )`
 	if !states {
 		return written
 	}
 	return written + `,
-graph_node_attributes as (
+` + nodeAttributesArm
+}
+
+// nodeWrittenColumns is what the insert of graph_nodes_written answers of each node it made, which
+// nodeAttributesArm reads.
+const nodeWrittenColumns = `kind, id, visibility, state, project_key, parties, made_at, made_by, source_event`
+
+// nodeAttributesArm states the base attributes of each node graph_nodes_written made, read off the
+// rows its insert answered (nodeWrittenColumns), at the node's own made_at, made_by and
+// source_event: its visibility and state always, and its project and parties where it carries them.
+// nodeArm and ToPersonArms write it right after their insert of the nodes.
+const nodeAttributesArm = `graph_node_attributes as (
 	insert into graph_tuples (` + tupleWriteColumns + `)
 	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
 	       written.made_at, written.made_by, written.source_event, null, true
@@ -215,7 +226,6 @@ graph_node_attributes as (
 	where attribute.value is not null
 	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
 )`
-}
 
 // claimArms append what each claim changed. The far ends a node holds now are read the way
 // CurrentOut reads them (CurrentTupleRead), through graph_tuples_as_of_out: the kind each read

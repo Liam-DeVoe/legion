@@ -5,6 +5,7 @@ import type {
   IssueAskRow,
   MeInboxAgent,
   MeInboxEntry,
+  MeInboxResponse,
   MyReplyRow,
   MyReplySession,
   OpenAskRow,
@@ -58,12 +59,6 @@ export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgent
   return row.kind === "agent" ? (row as MyReplyAgentRow) : (row as MyReplyThreadRow);
 }
 
-/** The two ends of a relation an entry of `GET /api/v1/me/inbox` carries: `inbound`, a tuple into
- *  the person's own node - a delivery to them, a mention of them, their writing of the node - and
- *  `outbound`, one from that node - their taking part in a thread, a mark of theirs. */
-export const INBOX_RELATION_DIRECTIONS = ["inbound", "outbound"] as const;
-export type InboxRelationDirection = (typeof INBOX_RELATION_DIRECTIONS)[number];
-
 /** An Agent row of the one read, narrowed as `inboxThreadRow` narrows one of
  *  `GET /api/v1/me/replies`, with the conversation it draws beside it. */
 export type MeInboxAgentRow = MeInboxAgent & MyReplyAgentRow;
@@ -114,6 +109,30 @@ function entryRow(
   if (entry.agent !== undefined)
     return { kind: "agent", agent: gated(entry.agent as MeInboxAgentRow) };
   return { kind: "none" };
+}
+
+/** The ask rows an answer of `GET /api/v1/me/inbox` carries, in its own order: none for no
+ *  answer. */
+export function meInboxAsks(answer: Pick<MeInboxResponse, "entries"> | undefined): OpenAskRow[] {
+  return (answer?.entries ?? []).flatMap((entry) => {
+    const row = inboxEntryRow(entry);
+    return row.kind === "ask" ? [row.ask] : [];
+  });
+}
+
+/** The Reply or Agent row `entry` carries, or undefined for an entry with neither. */
+export function inboxEntryThread(entry: MeInboxEntry): MyReplyRow | undefined {
+  const row = inboxEntryRow(entry);
+  return row.kind === "thread" ? row.thread : row.kind === "agent" ? row.agent : undefined;
+}
+
+/** The Reply and Agent rows an answer of `GET /api/v1/me/inbox` carries, in its own order: none
+ *  for no answer. */
+export function meInboxThreads(answer: Pick<MeInboxResponse, "entries"> | undefined): MyReplyRow[] {
+  return (answer?.entries ?? []).flatMap((entry) => {
+    const thread = inboxEntryThread(entry);
+    return thread === undefined ? [] : [thread];
+  });
 }
 
 /** Whether a row of `GET /api/v1/credential-requests?approver=me` still waits on somebody's

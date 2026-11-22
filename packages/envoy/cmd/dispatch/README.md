@@ -969,9 +969,9 @@ Every other message whose body is such a line - an issue message, a mention, a b
 A tab opened before the deploy sends the switch without `connected_only`, and a new server holds it to a running session by that rule all the same, so that tab needs no reload for it.
 An earlier server that takes the same switch, until the update ends or for good after a rollback, sends it as that release always did:
 its registry read does not find a session the listener knows only by its record, so it fails that attempt `no live session`, and it sends the switch to a session whose registry entry still stands, for which the listener stores it if that session's process has gone, as it did before this release.
-A tab opened after the deploy sends `connected_only`, which an earlier server refuses as an unknown field (`400 INVALID_JSON`, from `decodeJSON`'s `DisallowUnknownFields`), and the page drops the switch, shows that refusal and sends nothing.
-The person presses again: a press that reaches a new server goes through, and every press does once the update ends.
-After a rollback no press goes through until the deployment moves forward again, and reloading the tab onto the earlier build's page sends the switch the earlier way.
+A tab opened after the deploy sends `connected_only`, which an earlier server ignores, as `decodeJSON` ignores every member a route does not declare (it logs the member and decodes the rest).
+So that earlier server sends the switch as that release always did (above), and the page shows no refusal.
+After a rollback every press is sent that way until the deployment moves forward again.
 An earlier server's delivery sweep resumes an attempt without the flag, since that build does not read the column, so it can send a switch attempt a new server left pending the way the earlier release sends one (above).
 That takes a new server killed mid-send, whose drain therefore never settles the attempt, while an earlier server still serves, in a rolling update or a rollback.
 The earlier server's sweep can then send that attempt once its claim lapses, one to two minutes after the kill (`model.DeliveryClaimLapse`, and the sweep's one pass a minute), unless a new server's sweep takes it first and sends it with the flag.
@@ -1664,6 +1664,14 @@ No route reads the table yet (Search, below), so search answers alike with the f
   `lock_timeout` is 5 s, and `statement_timeout` is 10 s plus 1 s for each MB the batch counts.
   `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
   After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
+
+- Each time it takes the hold, before its first pass, the fill walks its first-body repair once, the keyword table's second writer of an existing row beside the erase (`textversions`' `repairCutFirstBodies`).
+  A fill of the release before this one decides a long comment's `comment.created` by its own reader of revision 1, which takes a block as the comment's own only where the block's row holds the event's `created_at`; this release dates that row by the comment's own moment, so that fill, holding the hold during a roll or after a rollback, keeps the event's cut text of a long comment this release wrote and an edit changed before that fill reached it.
+  The repair reads only the comment versions marked cut, through the partial index `search_text_versions_cut_comments`, in `(id, event_seq)` order, at most 1,000 a batch, so a hold over a table that holds none costs one read of an empty index; each batch is one transaction under the fill's locks: the cursor row `for update`, the hold's check, and the log's check against the cursor, a reset ending the walk with nothing written.
+  Of each `comment.created` version marked cut in the window it decides the first body again by this release's reader, and where revision 1 holds a text in every block and proves, block by block, the comment's own transaction (`comment_block_texts.transaction_started_at`, or the block row's `created_at` for a text row written before that column), it writes revision 1's body, `body_from` `blocks`, and that body's vector; a version no source holds fails the same test and stays cut.
+  A batch ends early once it has rebuilt 2 MB of bodies, and the holder pauses before each batch and rests after it as after a pass's.
+  The walk is idempotent, logs each version it rebuilds, and a walk that fails is walked again before the next pass, which runs all the same.
+  `envoy-dispatch census --store` prints `keyword_cut_first_bodies`, the versions the repair rebuilds, which reads 0 once it has run.
 
 - The fill logs when it takes, loses or releases its hold, when it pauses and continues, when it finds a reset log, and when it keeps a cut body.
   While it catches up, it logs a progress line at most every 30 s.
@@ -2386,7 +2394,7 @@ The rows are literal because the census's bounded-write rule admits only literal
 It refuses and rewrites no existing row, and the runner applies it once: run again by hand, it would append every tuple a second time, since no unique key of `graph_tuples` covers a row at `source_event` 0.
 Its census answers `0`, and `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` holds its nodes to that test's own copy (`storeTypeAttributes`).
 
-Migration `20261116102800_delivery_attempts_node` adds `node_kind` and `node_address` to `comment_deliveries` and `message_deliveries`, nullable `text` with no default, and a foreign key over each pair to `graph_nodes (kind, id)`, added `not valid`: the node an attempt row projects, and the row's marker that its writer states the attempt in the store (`graphstore.Attempted`).
+Migration `20261116102800_delivery_attempts_node` adds `node_kind` and `node_address` to `comment_deliveries` and `message_deliveries`, nullable `text` with no default, and a foreign key over each pair to `graph_nodes (kind, id)`, added `not valid`: the node an attempt row projects, and the row's marker that its writer states the attempt in the store (`graphstore.QueueAttempted`).
 The writers of this release set both in the insert that writes the row, after writing the node (`graphstore.AttemptOpened`); a row the release before it inserts during the roll names no node, and is answered as it was until the backfill takes it.
 Each `alter table` holds its table `ACCESS EXCLUSIVE` and then takes `SHARE ROW EXCLUSIVE` on `graph_nodes` for its key, the other order from a comment write of the earlier release, which writes its comment's node before its mentions' attempts, so the migration sets `lock_timeout` to half a second, shorter than `deadlock_timeout`, and gives up first, as `20261109022248` does over `comments`: it fails with `55P03` having applied nothing, and the runner applies it again.
 It refuses and rewrites no row, since both columns are null in every row it finds and a `MATCH SIMPLE` key holds no row with a null column; its census answers `0`.
@@ -2781,7 +2789,7 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but for the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below).
+Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but by two writers: the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below), and the keyword fill's first-body repair, which rewrites the body, `body_from` and vector of a `comment.created` version a fill of the release before this one kept cut although revision 1 of the comment's blocks proves the comment's own transaction (Background loops, above).
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -2799,6 +2807,10 @@ The keyword fill takes a comment's whole first body from revision 1 of its block
 It read that from the block row's `created_at` while that column took its default; this release writes a block row's `created_at` as the moment of the write it indexes, the moment the store dates the block's `part_of` by, which for a comment is its clock-read `created_at` and tells no transaction, so the fill reads this column, and the block row's `created_at` for a row that holds null.
 Adding the column and then its default are each a catalog change that reads and rewrites no row, each holding `comment_block_texts` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
 The release before it names its columns in every statement on the table, so a row it inserts during a roll takes the default too.
+
+Migration `20261122100004_search_text_versions_cut_comments` builds `search_text_versions_cut_comments` on `search_text_versions (id, event_seq) where kind = 'comment' and body_from = 'cut'`, the comment versions that keep their event's cut text and nothing else, through which the keyword fill's first-body repair walks its candidates and the store census counts `keyword_cut_first_bodies`; without it both read every comment version of the table.
+The table records no event type, so the index holds a cut edit's or answer's version beside a cut `comment.created`'s, and both readers keep the `comment.created` ones by their event; each is a version the fill warned of when it kept the cut text, so the index stays small.
+The build is `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), and holds off no read or write of the table while it scans it, whatever the table's size, which is above the census's limit at production's counts; its census answers `0`, and it carries a `.down.sql` an operator runs by hand to drop the index.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
@@ -2941,6 +2953,15 @@ Its census answers `0`: `search` is a derived column no application code writes,
 A function and a trigger are its only two statements, which is what exempts it from the census's table-size limit, and the re-index is the other migration's for that reason: an update is not such a statement, and one in this file would cost the exemption and refuse every deploy carrying it.
 It is applied second so that a version an older build writes between the two commits meets no function the database does not have yet; such a version does not re-index its issue, which the next write of that document does.
 Its census answers `0`: the trigger runs only on versions written after it.
+
+Migration `20261121060636_search_document_text` creates `search_document_text(markdown)`, the one definition of a document's search text: its ask blocks removed, then `search_text` ([Search](#search)).
+It replaces the bodies of `artifact_versions_search` and `20261105145242`'s `issue_search_vector`, which removed the ask blocks after `search_text`, so a block between two underscore runs joined them into one that the parser read in time quadratic in its length.
+`create or replace` keeps each trigger bound to its function, so it takes no table lock, and the release before it still calls the functions it knows, whose answers keep their types.
+It writes no row.
+The two orders give a different text only where text the ask-block pattern matches has an underscore run's character on each side of it, which a real ask block, on a line of its own, never has: only `:::ask{…}:::` written inside a run, in a paragraph or a code block, is indexed differently.
+Where the parser reads the joined run as words, as it reads `a_a_…`, both texts give the same vector; where it reads the run as one host name, email address, path or URL, the vector differs in that run's lexemes and in the positions of the words after it, and such a row keeps its vector until its document's next version.
+While the release before this one still serves, its related-item check and duplicate check build that text in the old order, so for such a text they compare with a vector built in the other order.
+Its census answers `0`.
 
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
@@ -3409,6 +3430,7 @@ An argument `envoy-dispatch` does not know is refused with exit 2, never served,
 `envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
 It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
 It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+`--deadline <duration>` bounds that snapshot, on the census's context and as the transaction's `statement_timeout`, and the decisions census's snapshot on the same context; it is 30 minutes unless given (`graphcensus.DefaultStoreCensusDeadline`), it takes a positive duration, and without `--store` it is a usage error, as `--both-releases` is.
 
 For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
 a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with the state it is at (`a live node no row projects`).
@@ -3488,9 +3510,10 @@ The kinds are:
 - The kinds of the one inbox, the projections its one read uses, each held triple by triple but the two attempt tables, which are held digest against digest over the values and relations their `delivery_attempt` node states:
   `message` against `messages` (its pointers, its placement, who it was addressed to, who wrote it and its broadcast);
   `comment_pointers` against `comments.reply_to`, `ask_id`, `answers` and `replies_to_block`;
+  `comment_mentions`, each row whose `tuples_stored` is set as its comment's `mentions` of the session or the role its target routes to and of the session `resolved_session_id` names, and its `delivery` value, against the `mentions` a live comment node states under the event that caused it and its newest `delivery`;
   `comment_block`, `message_block` and `ask_block` against the item block tables, and `comment_block_ref`, `message_block_ref` and `ask_block_ref` against their link tables;
   `comment_deliveries` and `message_deliveries`;
-  `published_destinations`, the session and role topics of each event's `events.published_destinations` against the `delivered_to` tuples the outbox appended under that event;
+  `published_destinations`, the session and role topics of each event's `events.published_destinations` against the `delivered_to` tuples the outbox appended under that event, its unmarked class the events an older build's outbox recorded that the block-index tick has not stated yet (`events_published_owed`, below);
   `user_threads`, each marked row as the person's `participates_in` the thread's root, their `read_through` at its read mark and their `dismissed` at `dismissed_at`;
   `user_threads_version`, R6's equation on every marked row; and the five other read-state tables, each row as the mark it stands for at its own moment.
   Each kind counts the rows a build of the release before this one wrote that the backfill has not marked yet as its unmarked class, which reads zero once the backfill ends, and reports its marked rows as two populations on a `census: store kind=<kind> release_before_rows=<n> this_release_rows=<n>` line: the rows that release wrote, which the backfill marked, and the rows this release's writers wrote.
@@ -3505,8 +3528,6 @@ The kinds are:
     for `published_destinations`, an owner's topic, which names no node, the topics of an event about no comment or message the store holds, the topics of events appended before the store existed, the delivery of a mention attempt the listener took and a fallback copy, each projected by a row of its own.
     A mark whose row a build of the release before deleted - an unsnooze, a prune of a reply read, a restore of an Agent dismissal - is one such figure too (`left_by_an_older_delete`), told apart by the evidence that release leaves: the person's log holds the event that release's deleting route appends, after the event that stated the mark, with no tuple of this release under it, as the node store's backfill tells a document an older build re-indexed by two versions and no row.
     A mark with no row and no such event stays a difference, since no writer of this release can clear one: a writer that read the store's mark to retract it would be a reconcile, which R9 rules out.
-
-  - `comment_mentions` is no kind of this census yet: the `mentions` tuples it projects are written from the one inbox's mention writer on, which needs the person address of the identity-address grammar, and an entry before them would read every `comment_mentions` row as a row no tuple states.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks or a kind of the one inbox that holds no row, no node and no unmarked row.
@@ -3604,7 +3625,7 @@ The tick runs for as long as the process does.
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, and no table whole: the backfill's own probe of what it owes reads its tables to the end, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, and the count `/healthz` answers is read again only where it read something owed, another build was live, a phase ran, an event was appended since it was read, or a block index is owed.
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, under `DISPATCH_TEST_HOOKS=1`, keeps a process from running any phase, so a test driver runs this command or one of the two above first; `/healthz` answers `decisions_step_owed`, one number, the total the step's last count found owed, once a tick of the step has counted, and no such member before; each count logs the three parts beside it (`decisions step counted what it owes`, with `decisions_documents`, `answers_left_spec` and `gated_steps_lists`).
 
-Last it states every kind the one inbox moves into the store but the mention tuples, for the rows a build of the release before this one wrote during a roll or before it, which carry none of the one inbox's markers (`graphcensus/backfill_inbox.go`, `backfill_inbox_threads.go`).
+Last it states every kind the one inbox moves into the store but the identity mentions of a text, which no row of the release before holds, for the rows a build of the release before this one wrote during a roll or before it, which carry none of the one inbox's markers (`graphcensus/backfill_inbox.go`, `backfill_inbox_threads.go`, `backfill_published.go`).
 Each pass walks only the rows its marker test passes, writes what this release's writer of that row writes for it, dated by the row's own `created_at` (or by the moment of the mark the row stands for, where it holds none) and caused by the older write's own event, found in the log, or the sentinel where the log holds none, and sets the row's marker in the same transaction; each batch takes the writers' lock order: owner rows, then the project row an ask's waiting person is read under, then the item rows and an item's block state, then the item's own store writes, then the `user_threads` rows in ascending login, then the deliveries to them.
 Before its first pass it runs one `analyze` of every table those passes read or write: the migrations add the marker columns each pass tests, and a table holds no statistics of a column until something analyzes it, so a run straight after a deploy would plan every test at Postgres's defaults.
 The passes grow the store they probe, so the run analyzes `graph_tuples` and `graph_nodes` again whenever the store has grown by a tenth of what it held at the last analyze (and by at least a thousand rows), as autovacuum would but without waiting for its schedule.
@@ -3615,9 +3636,16 @@ The passes, each with its `kind=` line:
 
 - `comment_pointers`: each comment whose `tuples_stored` is false takes `replies_to`, `answers` and its `part_of`, and what it owed its thread, then `tuples_stored`.
 
+- `comment_mentions`: each row whose `tuples_stored` is false, of a comment whose node the store holds, takes its comment's `mentions` of the session or the role its target routes to and of the session `resolved_session_id` names, and the comment's `delivery` value once, under the event that caused the comment's node, then `tuples_stored`.
+
+- `comments_past_bound` and `messages_past_bound`: each row no pass above takes because the store keys no tuple of it - a comment left whole out of the store, or a comment or a message whose `replies_to_block` is past the store's address bound - states nothing, as this release's writer states nothing of one, and takes `threads_recorded` after its batch's owner rows, so the triggers' marker test passes it by.
+
 - `comment_blocks`, `message_blocks` and `ask_blocks`, then `comment_block_refs`, `message_block_refs` and `ask_block_refs`, then `comment_refs`, `message_refs` and `ask_refs`: each block row naming no node takes its block node, live or `gone` as the item still holds it or not, and its `part_of` to the item where the store does not place it there now; each link row its tuple out of the block's node; each item's `refs` row its `mentions` tuple and `tuples_stored`.
 
 - `comment_deliveries` and `message_deliveries`: each attempt row naming no node takes its `delivery_attempt` node and what the row holds, as the attempt's own writer states it.
+
+- `published_destinations`: each event about a comment or a message, recorded since the store existed, whose `published_destinations` name a session or a role no `delivered_to` from that comment or message states under the event takes that tuple, as this release's outbox states it when it records the event, at the moment the event was published; and its row of `events_published_owed`, if it holds one, goes.
+  The outbox of the store's own release states no such tuple for a message's event, and a build before it states none.
 
 - `ask_tuples`: an ask whose `tuples_stored_at` is null takes its asker's `participates_in` and, while it is open, the `participates_in` and `delivered_to` of the person it waits on, under its `ask.opened` at its `created_at`; each answer an older build wrote, read from its `ask.answered` event and never from `asks.answer`, takes its answerer's `participates_in` and the deliveries it owed; then the marker moves to the moment of the answer the ask holds, or to its `created_at`.
 
@@ -3628,6 +3656,12 @@ The passes, each with its `kind=` line:
 - `user_agent_read`, `user_agent_state`, `user_agent_reply_read`, `user_agent_thread_dismissed` and `user_ask_snooze`: each row whose `tuples_stored_at` is null takes its one tuple from its person's node, which every spelling of the login meets at, and its marker at that tuple's moment.
 
 What a comment, a message or an answer owed its thread is the rule of the old trigger that raised its readers' rows (`inboxwrite.RecordOlder`): one `delivered_to` to each person other than its writer who had written in the thread before it, read from the store's `authored_by` and head pointer tuples, the log's `ask.answered` events and the rows the marker test still passes, never from a marked row, each under the older write's own event, so the repeat key keeps one copy beside an answer's catch-up; and those people's rows are locked before the deliveries go in and marked after them, so each delivery lands at or below the row's `marked_seq`.
+
+A row a build of the release before writes after the backfill is no row the backfill read, and the block-index tick runs these same passes over it, with no second run (`graphcensus.CatchUpOwedRows`, on each tick that owes the object pass, below): one batch of each kind a tick, each kind read through an index that holds the rows it owes alone - `user_threads_unmarked`, `refs_item_tuples_unstored`, the five read-state tables' `*_unmarked`, and `comment_mentions_tuples_unstored` (migration `20261122100120`) and `comments_tuples_unstored` (`20261122100121`), each a concurrent build of a partial index over the rows whose `tuples_stored` is false - but the asks and the published fallback copies, which it reads whole; and the decline pass over the events it reads, once.
+Among them are the comment passes: the tick's read of `comment.created` and `comment.answered` (below) gives the rest of the backfill's write only to a comment whose row names no node, and the store's own release writes a comment's node itself, so the pointer pass, the pass past the store's bound and the mention pass reach such a comment, and the event that stores it makes the tick owe them.
+`published_destinations` is the one kind the tick does not read from the log: an older build's outbox adds the topics it published an event to after the event commits and appends no event, so a record that lands after the tick has read the event is never read again.
+Migration `20261122100122` creates `events_published_owed`, one row per event, and a trigger after each update of `events.published_destinations` that queues an event about a comment or a message whose array the update grew, gated as the marker triggers are on `dispatch.store_marker_writer` not being `on`, so this release's outbox, which states the tuples in the same statement, queues nothing; the tick's catch-up takes the queue one batch a tick, after each batch's events rows, which the outbox's record takes too, and its census counts the queue as `published_destinations`' unmarked rows.
+The migration's `create trigger` takes `SHARE ROW EXCLUSIVE` on `events`, which holds every writer of `events` and no reader, for its catalogue write alone, under a `lock_timeout` of 500 ms that the runner retries (`pgmigrate.LockTimeoutAttempts`); the table, the trigger and the queue's reads are kept for one release (`events-published-owed`).
 
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
@@ -3696,6 +3730,7 @@ What the run reads instead is the two versions the document's own row records: `
 A document whose `store_version` is below its `version` is one another release indexed after the store stated it, and the run marks it too.
 The reconciliation's index pass over its latest version finds the store last stated the document at a version other than the latest one any release indexed, so it reads what the store still asserts of the document beside the rows and decides from the version's render: a block the store holds live that the version does not hold is stated `gone`, as a block a version drops is, and a link the store asserts that no block of the version holds is retracted (`TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill`).
 A version of the document that this release writes before the run does the same, in its own index pass.
+Neither pass retracts a block's mention of a person, an agent's session or a role: no `block_refs` row holds a party, so only the store holds the mention, and the index never retracts one (`TestThePassOverAVersionThePreviousReleaseIndexedKeepsItsBlocksIdentityMentions`).
 No release deletes a comment's row: no route of either deletes one, and a document is removed only while no comment points at it, so a comment leaves nothing to state `gone`.
 
 It is no repair.
@@ -3710,7 +3745,7 @@ It migrates the database first, as the other backfills do, and exits 1 when it s
 
 `envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
 It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
-It reads the dashboard origin (`DISPATCH_SERVER_URL`, or `dispatch.serverUrl` from `envoy.json`) as the server does, since a block's excerpt it redacts is cut around that origin's dashboard URLs, as the server's writers cut it, and it refuses an empty one, as `rebuild-refs` does.
+It reads the dashboard origin (`DISPATCH_SERVER_URL`, or `dispatch.serverUrl` from `envoy.json`) as the server does, since a block's excerpt it redacts is cut around that origin's dashboard URLs, as the server's writers cut it, and it refuses an empty one, as `rebuild-refs` does; an `envoy.json` it cannot load is exit 2, before it reads its flags.
 It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
 It refuses a `role`, a `page` and a `session` the same way: a node of that kind holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close.
 It refuses an `issue`, an `artifact` and an `ask` while its row stands, read under the node's lock: a node of that kind holds its text in its own row - the issue's title, the document's name and versions, the ask's question - and in the events about it, which the erase does not reach, so erasing the node would report an erasure that left the text in place.
@@ -3951,7 +3986,7 @@ DATABASE_URL=postgres://... envoy-dispatch rebuild-refs
 ```
 
 reparses every source and reconciles the index with the text (surviving edges keep their provenance, edges of deleted sources are removed), marks every document owed a block index and every comment, message and ask owed a block index of its own blocks, an ask's parts included, which the server's block-index reconciliation then indexes, and prints `rebuild-refs: documents=N asks=N comments=N messages=N orphans=N edges=N blocks_owed=N items_owed=N`, `blocks_owed` being the documents it marked and `items_owed` the comments, messages and asks.
-It reads `dispatch.server_url` from the envoy config the same way the server does and refuses an empty value:
+It reads the dashboard origin (`DISPATCH_SERVER_URL`, or `dispatch.serverUrl` from `envoy.json`) the same way the server does and refuses an empty value:
 dashboard-URL mentions are recognised only against it, so an empty URL would drop them all.
 
 A picture in a message, comment, reply, ask question, answer or resolution reason is CommonMark's image syntax whose address is the picture's own Dispatch reference, versioned:
@@ -3977,7 +4012,10 @@ the version current when an unanchored comment or ask is written on a document, 
 
 Migration 0010 added stored generated `search` columns.
 Migrations `0057`–`0061` made them plain columns that a `BEFORE INSERT OR UPDATE` trigger per table fills (`issues_search`, `artifact_versions_search`, `comments_search`, `asks_search`, `messages_search`), so no application code writes or refreshes a search vector.
-Every indexed text, headline, and duplicate-title comparison first passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
+Every indexed text, headline, and duplicate-title comparison passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
+A document's markdown, and so an issue's spec, passes through `search_document_text` (`20261121060636`), which removes the ask blocks and then applies `search_text`:
+removed after it, a block between two runs joined them into one run that nothing broke, which the text-search parser read again from each letter, so 41,000 bytes of `a_` runs between ask blocks took 5 s per vector.
+The document and issue triggers, the related-item check and the duplicate check each call it, so the text each compares with a stored vector is built as every vector written since that migration was.
 A query is not normalised and is limited to 1,000 characters.
 `websearch_to_tsquery` ANDs a person's words, so a question of theirs answers nothing as soon as one of its words is in no item at all.
 That AND is what every search runs, whatever the question's length, and a question it answers is answered from it and nothing else.
@@ -4001,7 +4039,7 @@ It has a path of its own because a build released before those members answers i
 Search covers issue titles, the latest settled document text, comments, asks (questions, option labels and descriptions, free-text answers and the options an answer chose), and messages.
 An issue's own vector carries its key and its title at weight `A`, as `0088` left them, and the markdown of the latest version of its primary document at weight `C` (`20261105145242`), so an issue whose title holds none of its spec's words is still found by them, and below every issue whose key or title holds them:
 `ts_rank_cd`, which ranks every keyword arm, scores `A` at 1.0 and `C` at 0.2.
-The spec is read as the document arm reads that same document, through `search_text` with the ask blocks stripped, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
+The spec is read as the document arm reads that same document, through `search_document_text`, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
 An ask hit's excerpt is cut from that same indexed text (the question, then `ask_search_suffix`), never from the options' raw JSON, and the hit carries `ask`, where the ask stands when the search ran:
 `open`, `answered` with its latest answer, or `resolved` with its resolution and, when anyone answered it, the last answer it had, which for an ask that document settlement retracted while it was answered is read from its `ask.answered` events, since its row keeps none.
 Live document text takes up to the 2 s settle delay to appear in search results.

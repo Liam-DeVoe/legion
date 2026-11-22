@@ -19,35 +19,42 @@ import (
 )
 
 // writeMessageAsThisBuild writes message id on issue CORE-1, by author, answering inReplyTo where
-// it names a message, as this release's message write does: its node and the facts its row
-// projects (graphstore.MessageFacts), its row naming the node, and its authored_by.
+// it names a message, in a transaction of its own (writeMessage).
 func writeMessageAsThisBuild(t *testing.T, database *store.Store, id, inReplyTo, body string, author model.Actor) {
 	t.Helper()
 	ctx := context.Background()
-	writeAsThisBuild(t, database, "the message "+id, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		at := time.Now().UTC()
-		row := graphstore.MessageRow{ID: id, IssueKey: "CORE-1", InReplyTo: inReplyTo}
-		nodes, tuples, _ := graphstore.MessageFacts([]graphstore.Node{graphstore.MessageNode(id, "CORE", nil, author, at)}, nil, row, author, at, graphstore.NoEvent)
-		held := graphstore.PlanUncaused(nodes, tuples)
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			graphstore.QueueNodes(b, held)
-			return nil
-		}); err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into messages (id, issue_key, author, body, in_reply_to, created_at, node_kind, node_address)
-			values ($1::uuid, 'CORE-1', $2, $3, nullif($4, '')::uuid, $5, 'message', $1)
-		`, id, `{"kind":"user","id":"`+author.ID+`"}`, body, inReplyTo, at); err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			return graphstore.QueueAuthored(b, graphstore.KindMessage, id, author, at, graphstore.NoEvent)
-		}); err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		return held, nil
+	writeAsThisBuild(t, database, "the message "+id, func(tx pgx.Tx) ([]graphstore.Uncaused, error) {
+		held, err := writeMessage(ctx, tx, id, inReplyTo, "", body, author, time.Now().UTC())
+		return []graphstore.Uncaused{held}, err
 	})
+}
+
+// writeMessage writes message id on issue CORE-1 in tx, by author at at, answering inReplyTo and
+// sent to target where each names one, as this release's message write does: its node and the
+// facts its row projects (graphstore.MessageFacts), its row naming the node, and its authored_by.
+// It answers the node write, held for its cause.
+func writeMessage(ctx context.Context, tx pgx.Tx, id, inReplyTo, target, body string, author model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	row := graphstore.MessageRow{ID: id, IssueKey: "CORE-1", InReplyTo: inReplyTo, Target: target}
+	nodes, tuples, _ := graphstore.MessageFacts([]graphstore.Node{graphstore.MessageNode(id, "CORE", nil, author, at)}, nil, row, author, at, graphstore.NoEvent)
+	held := graphstore.PlanUncaused(nodes, tuples)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, held)
+		return nil
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into messages (id, issue_key, author, body, in_reply_to, target, created_at, node_kind, node_address)
+		values ($1::uuid, 'CORE-1', $2, $3, nullif($4, '')::uuid, nullif($5, ''), $6, 'message', $1)
+	`, id, `{"kind":"user","id":"`+author.ID+`"}`, body, inReplyTo, target, at); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindMessage, id, author, at, graphstore.NoEvent)
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return held, nil
 }
 
 // appendMessageEvent appends a message.created on issue CORE-1 carrying payload, the shape every

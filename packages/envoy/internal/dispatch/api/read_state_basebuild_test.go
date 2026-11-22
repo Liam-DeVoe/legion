@@ -9,7 +9,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,14 +22,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // c-read-state-tuples (the spec's R6) over marks the release before this branch wrote:
-// the build of BASELINE_SHA, checked out at $TMPDIR/base-read-state and booted over
-// $ISSUE_READ_STATE_DATABASE_URL, which it migrates, as the Verification preamble states (T1's
-// harness, one_inbox_basebuild_test.go). It boots a server of an earlier commit because what it
-// reads back - marks a release before this one stored, with no tuple beside them - this build
-// cannot write. It carries the basebuild tag, as the other base-build checks do.
+// the build of BASELINE_SHA, checked out as base-read-state under a directory of the test's own in
+// TMPDIR (testtmp.Dir) and booted over $ISSUE_READ_STATE_DATABASE_URL, which it migrates, as the
+// Verification preamble states (T1's harness, one_inbox_basebuild_test.go). It boots a server of
+// an earlier commit because what it reads back - marks a release before this one stored, with no
+// tuple beside them - this build cannot write. It carries the basebuild tag, as the other
+// base-build checks do.
 const (
 	readStateDatabaseEnv = "ISSUE_READ_STATE_DATABASE_URL"
 	readStateDatabase    = "dispatch_infra_1152_read_state"
@@ -84,7 +85,7 @@ type readStateMarks struct {
 func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, readStateDatabaseEnv, readStateDatabase)
-	binary, commit := buildBaseline(t, filepath.Join(os.TempDir(), readStateWorktree))
+	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, readStateWorktree), readStateWorktree))
 	base := bootBaseline(t, binary, databaseURL)
 	marks := writeMarksThroughTheBase(t, base, databaseURL)
 	captured := captureReadState(t, databaseURL)
@@ -122,7 +123,7 @@ func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
 		requireCapturedRowsAreTuples(t, database, captured)
 	})
 	t.Run("the two spellings of one login meet at one person node", func(t *testing.T) {
-		requireOneNodeForTwoSpellings(t, handler, database, captured, marks)
+		requireOneNodeForTwoSpellings(t, handler, database, captured)
 	})
 	t.Run("a reply retracts a dismissal and counts once, a move of who an ask waits on counts nothing", func(t *testing.T) {
 		requireAReplyRetractsTheDismissal(t, handler, database, marks)
@@ -352,7 +353,7 @@ func requireCapturedRowsAreTuples(t *testing.T, database *store.Store, captured 
 				if row["dismissed_at"] != nil {
 					requireMarkAt(t, database, what, login, graphstore.TupleDismissed, kind, thread, capturedTime(t, row, "dismissed_at"))
 				}
-				if _, asserted, found := currentParticipation(t, database, login, kind, thread); !found || !asserted {
+				if _, asserted, found := currentMark(t, database, login, graphstore.TupleParticipatesIn, kind, thread); !found || !asserted {
 					t.Errorf("%s: %s takes no part in %s/%s", what, login, kind, thread)
 				}
 			case "user_agent_read":
@@ -380,6 +381,9 @@ func requireCapturedRowsAreTuples(t *testing.T, database *store.Store, captured 
 			if err := database.Pool.QueryRow(ctx, `select to_jsonb(r) from `+table.table+` r where `+strings.Join(conditions, " and "), args...).Scan(&now); err != nil {
 				t.Fatalf("%s: read it back: %v", what, err)
 			}
+			// The row's marker is read before it is set aside: a row the backfill marked is marked at
+			// the version it holds.
+			markedVersion := now["marked_version"]
 			for _, marker := range table.markers {
 				if now[marker] == nil {
 					t.Errorf("%s: its %s is null after the backfill, want the row marked", what, marker)
@@ -389,44 +393,17 @@ func requireCapturedRowsAreTuples(t *testing.T, database *store.Store, captured 
 			if !maps.EqualFunc(now, row, func(a, b any) bool { return fmt.Sprint(a) == fmt.Sprint(b) }) {
 				t.Errorf("%s: the backfill changed it to %v; every captured column must read unchanged", what, now)
 			}
-			if table.table == "user_threads" {
-				var markedVersion, version int64
-				if err := database.Pool.QueryRow(ctx, `
-					select marked_version, version from user_threads where login = $1 and thread_id = $2::uuid
-				`, login, row["thread_id"]).Scan(&markedVersion, &version); err != nil {
-					t.Fatalf("%s: read its marker: %v", what, err)
-				}
-				if markedVersion != version || fmt.Sprint(row["version"]) != fmt.Sprint(version) {
-					t.Errorf("%s: marked_version %d over version %d, want the captured version %v", what, markedVersion, version, row["version"])
-				}
+			if table.table == "user_threads" && fmt.Sprint(markedVersion) != fmt.Sprint(now["version"]) {
+				t.Errorf("%s: marked_version %v over version %v, want the captured version %v", what, markedVersion, now["version"], row["version"])
 			}
 		}
 	}
 }
 
-// currentParticipation is the newest participates_in from login to kind/id.
-func currentParticipation(t *testing.T, database *store.Store, login, kind, id string) (time.Time, bool, bool) {
-	t.Helper()
-	var at time.Time
-	var asserted bool
-	err := database.Pool.QueryRow(context.Background(), `
-		select at, asserted from graph_tuples
-		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
-		order by seq desc limit 1
-	`, graphstore.KindPerson, model.CanonicalLogin(login), graphstore.TupleParticipatesIn, kind, id).Scan(&at, &asserted)
-	if err == pgx.ErrNoRows {
-		return time.Time{}, false, false
-	}
-	if err != nil {
-		t.Fatalf("read %s's participation in %s/%s: %v", login, kind, id, err)
-	}
-	return at, asserted, true
-}
-
 // requireOneNodeForTwoSpellings holds the read mark the base build keyed on the canonical login
 // and the Clear stored under the raw spelling to one person node, and the person's state of the
 // conversation to that Clear.
-func requireOneNodeForTwoSpellings(t *testing.T, handler http.Handler, database *store.Store, captured capturedRows, marks readStateMarks) {
+func requireOneNodeForTwoSpellings(t *testing.T, handler http.Handler, database *store.Store, captured capturedRows) {
 	t.Helper()
 	read, cleared := captured["user_agent_read"][0]["login"], captured["user_agent_state"][0]["login"]
 	if read == cleared {
@@ -458,7 +435,7 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 	t.Helper()
 	ctx := context.Background()
 	thread := marks.dismissedThread
-	before := threadRowVersion(t, database, "alice", thread)
+	before := readThreadRow(t, database, "alice", thread).version
 	reply := createThreadComment(t, handler, marks.issue, map[string]any{"body": "Final now.", "reply_to": thread}, "bob")
 
 	history, err := graphstore.History(ctx, database.Pool, graphstore.KindPerson, "alice", graphstore.TupleDismissed)
@@ -474,7 +451,7 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 	if !slices.Equal(trail, []bool{true, false}) {
 		t.Errorf("alice's dismissed tuples of thread %s read %v, want the dismissal and then its retraction", thread, trail)
 	}
-	after := threadRowVersion(t, database, "alice", thread)
+	after := readThreadRow(t, database, "alice", thread).version
 	if after != before+1 {
 		t.Errorf("alice's row of thread %s is at version %d after bob's reply, want %d", thread, after, before+1)
 	}
@@ -495,9 +472,9 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 	asked := createPersonAsk(t, handler, marks.issue, "bob", "Who signs off?")
 	handAskOn(t, handler, asked.ID, "bob", "bob")
 	createThreadComment(t, handler, marks.issue, map[string]any{"body": "I can look.", "ask_id": asked.ID}, "alice")
-	unanswered := threadRowVersion(t, database, "alice", asked.ID)
+	unanswered := readThreadRow(t, database, "alice", asked.ID).version
 	answer := createThreadComment(t, handler, marks.issue, map[string]any{"body": "Please do.", "ask_id": asked.ID}, "bob")
-	held := threadRowVersion(t, database, "alice", asked.ID)
+	held := readThreadRow(t, database, "alice", asked.ID).version
 	if held != unanswered+1 {
 		t.Errorf("alice's row of ask %s is at version %d after bob's answer in it, want %d", asked.ID, held, unanswered+1)
 	}
@@ -509,7 +486,7 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 	if !found || !asserted {
 		t.Errorf("handing ask %s to alice delivered it to her %t (asserting %t), want a delivered_to", asked.ID, found, asserted)
 	}
-	if moved := threadRowVersion(t, database, "alice", asked.ID); moved != held {
+	if moved := readThreadRow(t, database, "alice", asked.ID).version; moved != held {
 		t.Errorf("alice's row of ask %s moved to version %d when the ask was handed to her, want %d", asked.ID, moved, held)
 	}
 	requireVersionCountsReplies(t, database, "alice", graphstore.KindAsk, asked.ID)
@@ -570,12 +547,7 @@ func requireDismissalHeldTo(t *testing.T, handler http.Handler, database *store.
 		"threads":      []string{inboxDismissReplyPrefix + thread},
 		"seen_replies": map[string]any{inboxDismissReplyPrefix + thread: map[string]any{"version": version}},
 	})
-	var dismissedAt *time.Time
-	if err := database.Pool.QueryRow(context.Background(), `
-		select dismissed_at from user_threads where login = 'alice' and thread_id = $1::uuid
-	`, thread).Scan(&dismissedAt); err != nil {
-		t.Fatalf("read alice's dismissal of thread %s: %v", thread, err)
-	}
+	dismissedAt := threadDismissal(t, database, "alice", thread)
 	if response.Code != http.StatusOK || dismissedBy(t, response) != want || (dismissedAt != nil) != (want > 0) {
 		t.Errorf("a dismissal of thread %s held to version %d answered %d %s and left the row dismissed at %v, want 200 dismissing %d",
 			thread, version, response.Code, response.Body.String(), dismissedAt, want)
@@ -680,17 +652,6 @@ func requireThisBuildsHalfIsTuples(t *testing.T, handler http.Handler, database 
 	requireMarkMatchesRow(t, database, graphstore.TupleSnoozed, graphstore.KindAsk+":"+snoozed.ID,
 		newestEventOf(t, database, "user_state.updated", "alice"),
 		storedMarks(t, database, `select snoozed_until, tuples_stored_at from user_ask_snooze where login = 'alice' and ask_id = $1::uuid`, snoozed.ID))
-}
-
-func threadRowVersion(t *testing.T, database *store.Store, login, thread string) int64 {
-	t.Helper()
-	var version int64
-	if err := database.Pool.QueryRow(context.Background(), `
-		select version from user_threads where login = $1 and thread_id = $2::uuid
-	`, login, thread).Scan(&version); err != nil {
-		t.Fatalf("read %s's version of thread %s: %v", login, thread, err)
-	}
-	return version
 }
 
 // currentDelivery is the newest delivered_to from ask askID to login.

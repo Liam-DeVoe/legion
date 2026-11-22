@@ -1,3 +1,4 @@
+import { meInboxThreads } from "@legion/contracts";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type RefObject, useMemo } from "react";
 
@@ -6,7 +7,6 @@ import { useIsHuman } from "../../hooks/useIsHuman";
 import type { InboxShow } from "../refs/routes";
 import type { InboxListRow } from "./list-row";
 import { useMotionHold } from "./motion-hold";
-import { meInboxThreads } from "./one-read-rows";
 
 /** The thread side of the Inbox: the rows it lists, the mark a write over that list carries, and
  *  the page behind **Show more** where the list is paged. */
@@ -49,20 +49,20 @@ export function useInboxThreadRows({
   // made for the view that is not showing.
   const human = useIsHuman();
   const listing = human && !asksOnly;
-  const one = useQuery({ ...meInboxQuery(), enabled: listing && show === "inbox" });
-  const oneDismissed = useInfiniteQuery({
+  const inbox = useQuery({ ...meInboxQuery(), enabled: listing && show === "inbox" });
+  const dismissed = useInfiniteQuery({
     ...meInboxDismissedQuery(),
     enabled: listing && show === "dismissed",
   });
-  const onePages = oneDismissed.data?.pages;
-  const oneAnswer = one.data;
+  const pages = dismissed.data?.pages;
+  const answer = inbox.data;
   // One array per set of pages or per answer, and the same array until they change: the motion
   // hold adopts what it is given by identity (`motion-hold.ts`), so a fresh `flatMap` on every
   // render would have it adopt - and so re-render - for ever.
-  const paged = useMemo(() => onePages?.flatMap((page) => meInboxThreads(page)), [onePages]);
+  const paged = useMemo(() => pages?.flatMap((page) => meInboxThreads(page)), [pages]);
   const unpaged = useMemo(
-    () => (oneAnswer === undefined ? undefined : meInboxThreads(oneAnswer)),
-    [oneAnswer]
+    () => (answer === undefined ? undefined : meInboxThreads(answer)),
+    [answer]
   );
   const read = show === "dismissed" ? paged : unpaged;
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
@@ -71,12 +71,12 @@ export function useInboxThreadRows({
   return {
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
     // one snapshot its cursor walks on from.
-    asOf: show === "dismissed" ? onePages?.[0]?.as_of : oneAnswer?.as_of,
+    asOf: show === "dismissed" ? pages?.[0]?.as_of : answer?.as_of,
     rows: listed.map((thread): InboxListRow => ({ kind: "thread", thread })),
     showMore:
-      show === "dismissed" && oneDismissed.hasNextPage
-        ? () => void oneDismissed.fetchNextPage()
+      show === "dismissed" && dismissed.hasNextPage
+        ? () => void dismissed.fetchNextPage()
         : undefined,
-    showingMore: oneDismissed.isFetchingNextPage,
+    showingMore: dismissed.isFetchingNextPage,
   };
 }

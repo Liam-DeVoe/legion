@@ -31,13 +31,13 @@ type Pointer struct {
 	Targets                []string
 }
 
-// BlockNodeKind is what the node and tuple store calls one block of a document, and
-// BlockSupertag the supertag every one of them carries. A block's own type - paragraph,
-// decision, check - is the `type` column of its row and a supertag of the block schema
-// (migration 20261109051232); what makes the row a block is `block`, the supertag of the closed
-// list that names one.
+// BlockNodeKind is what the node and tuple store calls one block of a document
+// (graphstore.KindBlock), and BlockSupertag the supertag every one of them carries. A block's own
+// type - paragraph, decision, check - is the `type` column of its row and a supertag of the block
+// schema (migration 20261109051232); what makes the row a block is `block`, the supertag of the
+// closed list that names one.
 const (
-	BlockNodeKind = "block"
+	BlockNodeKind = graphstore.KindBlock
 	BlockSupertag = "block"
 )
 

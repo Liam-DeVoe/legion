@@ -149,8 +149,9 @@ type dismissedScaleShape struct {
 }
 
 // TestDismissedScaleHoldsTheInboxsReads is a14 itself: it seeds the three shapes, asserts each
-// one's counts before it times anything, measures the six operations 20 runs each, explains every
-// read at the pile's own size, and holds each operation to the two bounds above.
+// one's counts before it times anything, measures the six operations 20 runs each, explains the
+// writes' reads and the Dismissed pages at the pile's own size (explainDismissedScaleReads), and
+// holds each operation to the two bounds above.
 //
 // It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no

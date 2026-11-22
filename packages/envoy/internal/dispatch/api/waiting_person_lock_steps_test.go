@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -141,8 +139,8 @@ func (r *storeWriterRig) askHandOn() storeWriter {
 			ask := createIssueAsk(t, r.handler, r.issue, "Who takes it, "+r.fresh("hand-on")+"?")
 			to := r.signedIn(t, "lock-hand-on")
 			return storeWriterRun{ask: ask, write: func() error {
-				return okOrError(dispatchRequest(t, r.call, http.MethodPut, "/api/v1/asks/"+ask+"/asked-of",
-					map[string]any{"asked_of": to}, "alice"))
+				return statusOrError(dispatchRequest(t, r.call, http.MethodPut, "/api/v1/asks/"+ask+"/asked-of",
+					map[string]any{"asked_of": to}, "alice"), http.StatusOK)
 			}}
 		},
 	}
@@ -162,16 +160,7 @@ func (r *storeWriterRig) issueReassignment(cleared bool) storeWriter {
 	var issue, ask string
 	// The owner step holds the issue this writer made, which exists only once the first run is
 	// readied.
-	steps := []storeStep{{
-		name: "the owner lock", order: ownerStep,
-		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
-			t.Helper()
-			if err := store.LockOwner(ctx, holder, store.IssueOwner(issue)); err != nil {
-				t.Fatalf("hold issue %s's owner lock: %v", issue, err)
-			}
-		},
-		at: store.OwnerLockStatement,
-	}}
+	steps := []storeStep{runOwnerLockStep(&issue)}
 	if cleared {
 		name = "patchIssue clearing the assignee"
 		steps = append(steps, r.projectDefaultStep())
@@ -184,13 +173,9 @@ func (r *storeWriterRig) issueReassignment(cleared bool) storeWriter {
 		projectKeyShare: true,
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			if issue == "" {
-				created := dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+				issue = requireCreatedIssue(t, dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues", map[string]any{
 					"project": "LOCK", "title": "Who holds it, " + r.fresh("reassigned") + "?", "spec": r.fresh("spec") + "\n",
-				}, "alice")
-				if created.Code != http.StatusCreated {
-					t.Fatalf("create the reassigned issue: status=%d body=%s", created.Code, created.Body.String())
-				}
-				issue = decodeBody[model.Issue](t, created).Key
+				}, "alice")).Key
 				ask = createIssueAsk(t, r.handler, issue, "Who answers it?")
 			}
 			assignIssue(t, r.handler, issue, r.signedIn(t, "lock-assignee"))
@@ -199,8 +184,8 @@ func (r *storeWriterRig) issueReassignment(cleared bool) storeWriter {
 				to = r.signedIn(t, "lock-assignee")
 			}
 			return storeWriterRun{ask: ask, write: func() error {
-				return okOrError(dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/issues/"+issue,
-					map[string]any{"assignee": to}, "alice"))
+				return statusOrError(dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/issues/"+issue,
+					map[string]any{"assignee": to}, "alice"), http.StatusOK)
 			}}
 		},
 	}
@@ -237,17 +222,9 @@ func (r *storeWriterRig) projectDefaultMove() storeWriter {
 			}
 			to := r.signedIn(t, "lock-default")
 			return storeWriterRun{ask: ask, write: func() error {
-				return okOrError(dispatchRequest(t, r.call, http.MethodPut, "/api/v1/projects/LOCK/default-assignee",
-					map[string]any{"assignee": to}, "alice"))
+				return statusOrError(dispatchRequest(t, r.call, http.MethodPut, "/api/v1/projects/LOCK/default-assignee",
+					map[string]any{"assignee": to}, "alice"), http.StatusOK)
 			}}
 		},
 	}
-}
-
-// okOrError answers nil for a 200 and the response as an error for anything else.
-func okOrError(response *httptest.ResponseRecorder) error {
-	if response.Code != http.StatusOK {
-		return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	return nil
 }

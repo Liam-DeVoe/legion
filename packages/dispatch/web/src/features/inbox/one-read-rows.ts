@@ -37,18 +37,6 @@ export function meInboxListRows(
   return rows;
 }
 
-/** The open asks of one answer that wait on the reader: its ask rows. */
-export function meInboxAsks(answer: MeInboxResponse | undefined): OpenAskRow[] {
-  return meInboxListRows(answer?.entries).flatMap((row) => (row.kind === "ask" ? [row.ask] : []));
-}
-
-/** The reader's Reply and Agent rows of one answer: its thread rows. */
-export function meInboxThreads(answer: MeInboxResponse | undefined): MyReplyRow[] {
-  return meInboxListRows(answer?.entries).flatMap((row) =>
-    row.kind === "thread" ? [row.thread] : []
-  );
-}
-
 /** The rows a cached read of the one read holds, whichever of its reads it is: one answer, or
  *  the pages of the paged one (`meInboxDismissedQuery`). Anything else - a count, no data - holds
  *  none. */

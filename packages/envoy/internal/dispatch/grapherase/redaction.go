@@ -162,10 +162,8 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // payload so redacted and each value it rewrote as it stood before. A payload that quotes nothing
 // is answered as it is.
 func redactReplyQuote(payload []byte, marker string) ([]byte, []string, error) {
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
 	var value map[string]any
-	if err := decoder.Decode(&value); err != nil {
+	if err := decodePayload(payload, &value); err != nil {
 		return nil, nil, err
 	}
 	var originals []string
@@ -182,13 +180,31 @@ func redactReplyQuote(payload []byte, marker string) ([]byte, []string, error) {
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
+	written, err := encodePayload(value)
+	if err != nil {
+		return nil, nil, err
+	}
+	return written, originals, nil
+}
+
+// decodePayload decodes payload, a jsonb's text, into into, its numbers read as the literals they
+// are (json.Number).
+func decodePayload(payload []byte, into any) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	return decoder.Decode(into)
+}
+
+// encodePayload is value written back as a payload's JSON, HTML left unescaped and with no
+// trailing newline.
+func encodePayload(value any) ([]byte, error) {
 	var written bytes.Buffer
 	encoder := json.NewEncoder(&written)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return bytes.TrimSpace(written.Bytes()), originals, nil
+	return bytes.TrimSpace(written.Bytes()), nil
 }
 
 // redactPayload replaces each erased text with the marker inside every string value of a JSON
@@ -213,10 +229,8 @@ func redactReplyQuote(payload []byte, marker string) ([]byte, []string, error) {
 // part, which no erased text matches whole, and its bytes would stay. Every byte of that body is
 // the comment's own, so the whole value is replaced with the marker (ownCutBody).
 func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, error) {
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
 	var value any
-	if err := decoder.Decode(&value); err != nil {
+	if err := decodePayload(payload, &value); err != nil {
 		return nil, nil, err
 	}
 	var originals []string
@@ -265,13 +279,11 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool, c
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
-	var written bytes.Buffer
-	encoder := json.NewEncoder(&written)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
+	written, err := encodePayload(value)
+	if err != nil {
 		return nil, nil, err
 	}
-	return bytes.TrimSpace(written.Bytes()), originals, nil
+	return written, originals, nil
 }
 
 // ownCutBody answers the top-level `body` of value, a decoded payload, where the payload is the

@@ -59,17 +59,32 @@ begin
 end;
 $$;
 
+-- Each trigger's WHEN holds the function's own test, as 20261116150000's do and for the same
+-- reason: every update of this release passes it by, the backfill's and the tick's marking of
+-- thousands of rows in one statement among them, so the function is called only for an update it
+-- unmarks, one a build before this one makes. The function keeps its own test, so a trigger that
+-- calls it without the WHEN still unmarks only an older build's update.
 create trigger user_agent_read_store_marker before update on user_agent_read
-  for each row execute function read_state_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function read_state_unmarked_by_older_writer();
 
 create trigger user_agent_state_store_marker before update on user_agent_state
-  for each row execute function read_state_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function read_state_unmarked_by_older_writer();
 
 create trigger user_agent_reply_read_store_marker before update on user_agent_reply_read
-  for each row execute function read_state_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function read_state_unmarked_by_older_writer();
 
 create trigger user_agent_thread_dismissed_store_marker before update on user_agent_thread_dismissed
-  for each row execute function read_state_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function read_state_unmarked_by_older_writer();
 
 create trigger user_ask_snooze_store_marker before update on user_ask_snooze
-  for each row execute function read_state_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
+  execute function read_state_unmarked_by_older_writer();

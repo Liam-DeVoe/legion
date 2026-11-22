@@ -62,12 +62,14 @@ const storeStepWait = 20 * time.Second
 //     they create - the document's, and the issue's and its spec's - before the row that names
 //     it, and so before the version whose insert writes the fence row, which names that row.
 //
-// The comment path, the reply and the ask's create then run the one writer of a thread
-// (inboxwrite.PlanRecord and Recording.Queue, a site of graphstore.QueueToPerson) right after
-// their event, whose user_threads steps each path lists after it: every row of the thread in one
-// pass, before the delivered_to of anybody holding one, then the rows of the people the write
-// reached, then the writer's own row. A comment's or a reply's body is indexed as blocks of their
-// own (bodyBlockSteps), between the item's row and its event.
+// The comment path and the reply then run the one writer of a thread (inboxwrite.PlanRecord and
+// Recording.Queue, a site of graphstore.QueueToPerson) right after their event, whose user_threads
+// steps each lists after it: every row of the thread in one pass, before the delivered_to of
+// anybody holding one, then the rows of the people the write reached, then the writer's own row.
+// The ask's create here is a session's, which keeps no row, and lists no such step; a person's
+// ask, which keeps its asker's row, is objectCreate's (object_node_lock_steps_test.go). A
+// comment's or a reply's body is indexed as blocks of their own (bodyBlockSteps), between the
+// item's row and its event.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -132,8 +134,8 @@ const (
 	// node, event, tuple, asks row and thread row of the write.
 	projectStep
 	// askStep is an asks row a write that decides who an ask waits on locks `for no key update`
-	// (inboxwrite.QueueMoveWaiting): after the owner's lock and the project's, before every node
-	// and tuple of the write.
+	// (inboxwrite.QueueMoveWaiting): after the owner's lock and the project's, before every node,
+	// tuple and thread row of the write.
 	askStep
 )
 
@@ -1167,7 +1169,7 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 			case step.order == projectStep && earlier.order != ownerStep && earlier.order != projectionStep:
 				t.Errorf("%s takes %s, the project lock it reads the default under, after %s: that lock comes after the owner's and before every node, event, tuple, asks row and thread row", writer.name, step.name, earlier.name)
 			case step.order == askStep && (earlier.order == nodeStep || earlier.order == tupleStep || earlier.order == threadStep):
-				t.Errorf("%s takes %s, an asks row, after %s: an asks row comes before every node and tuple", writer.name, step.name, earlier.name)
+				t.Errorf("%s takes %s, an asks row, after %s: an asks row comes before every node, tuple and thread row", writer.name, step.name, earlier.name)
 			}
 		}
 	}

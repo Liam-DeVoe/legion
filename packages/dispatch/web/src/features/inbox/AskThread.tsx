@@ -36,7 +36,7 @@ import type { ThreadOrder } from "../threads/thread-order";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import type { AskPress } from "./ask-writes";
-import { meInboxReadsBack } from "./one-read-cache";
+import { invalidateMeInbox, meInboxReadsBack } from "./one-read-cache";
 import {
   AskReplyWritesContext,
   type OutstandingAnswerWrite,
@@ -213,8 +213,8 @@ export function replyRefusal(reply: {
  * typed Ctrl+Enter in keeps their focus through the hold. Inside an Inbox the hold goes on past
  * the landing: the reader's own reply takes the ask's thread out of their Inbox
  * (the own-answer rule, R1), and this form with it, so Reply stays held until the reads of the
- * Inbox out then have come back - the landing started that read (`outstanding-answers.ts`'
- * `onSettled`), and the hold waits on it and sends none (`meInboxReadsBack`) - and at the latest
+ * Inbox out then have come back - the landing started that read (its `onSuccess`), and the hold
+ * waits on it and sends none (`meInboxReadsBack`) - and at the latest
  * until the write deadline from the press (`SEND_DEADLINE_MS`); a refusal lands nothing and ends
  * the hold at once. The box is read-only then: Ctrl+Enter in it submits nothing, and a paste or a
  * drop into it uploads nothing. Reply is held the same way while it has nothing to send - nothing
@@ -252,7 +252,7 @@ export function AskReplyComposer({
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
   // host draws this composer for by then. A reply takes no row out of the Inbox's read as it
   // goes: Dispatch takes the ask's thread out of the reader's Inbox once it has taken the reply
-  // (the own-answer rule, R1), which the read after the landing shows.
+  // (the own-answer rule, R1), which the read of the one read its landing starts shows.
   const options: OutstandingAnswerWriteOptions<Comment, ReplyPress> = {
     // The question goes in as its plain-text projection, the words the card draws: the reading
     // list's `write-label` (`DISPATCH_READING_SURFACES`) says why. Each press carries the line as
@@ -274,6 +274,7 @@ export function AskReplyComposer({
     onSuccess: (_comment, press) => {
       clearReplyDraft(press.ask.id, press.text);
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
+      void invalidateMeInbox(queryClient);
     },
   };
   const own = useKeyedWrite({

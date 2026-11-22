@@ -1181,15 +1181,17 @@ func approvedVersion(ctx context.Context, q Queryer, artifactID string, number i
 // it, which set the request's edited_at (RewriteApprovalAsk). The approver took part in the
 // request's thread and the answer reached everyone else in it, which the one writer of that
 // thread records in the same step right after the event (inboxwrite.Recording.Queue), planned
-// here with what the request still owed the store, read before the answer's update marks it
-// (inboxwrite.ReadAsk); the event names the row the approver is about to hold.
+// here with what the request still owed the store, read before the answer's update marks it, and
+// the members of its thread, read in the same statement (inboxwrite.ReadAskAndMembers): nothing
+// between that read and the record's plan writes, so the record reads no members of its own; the
+// event names the row the approver is about to hold.
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
 		return err
 	}
 	answer := model.AskAnswer{User: actor.ID, Selected: []string{ApprovalOptionApprove}, Text: &reason, At: answeredAt.UTC()}
-	before, err := inboxwrite.ReadAsk(ctx, tx, ask.ID)
+	before, err := inboxwrite.ReadAskAndMembers(ctx, tx, ask.ID)
 	if err != nil {
 		return fmt.Errorf("answer approval ask: %w", err)
 	}
@@ -1258,4 +1260,29 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		ask.State, ask.Answer, ask.Resolution = answered.State, answered.Answer, answered.Resolution
 		return nil
 	})
+}
+
+// WithoutAskBlocks is a copy of node's tree with every ask block left out, wherever it stands, for
+// a reader that compares two versions apart from their ask blocks, as the change set of two
+// versions does (GET /api/v1/artifacts/{id}/changes). A container the cut empties - a blockquote
+// or a callout that held only ask blocks - is left holding one empty paragraph, which is what both
+// parsers read an empty container as. Each container on the way is a fresh node with its own
+// children; the nodes below the last container - text, inline nodes, leaves - are the parsed
+// tree's own, which nothing here changes.
+func WithoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
+	if node.Type == "text" || len(node.Children) == 0 {
+		return node
+	}
+	copied := *node
+	copied.Children = make([]*pmdoc.Node, 0, len(node.Children))
+	for _, child := range node.Children {
+		if child.Type == "ask" {
+			continue
+		}
+		copied.Children = append(copied.Children, WithoutAskBlocks(child))
+	}
+	if len(copied.Children) == 0 {
+		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
+	}
+	return &copied
 }

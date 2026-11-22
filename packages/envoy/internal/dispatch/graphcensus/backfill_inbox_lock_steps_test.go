@@ -322,6 +322,17 @@ func requireTheMessagesPastBoundBatchLockOrder(t *testing.T) {
 		returning id::text, created_at`, actorJSON(t, bob), root.id, block)
 	backfillBeforePass(t, database, "messages_past_bound")
 
+	// The pass reports only the rows it marked (pastBoundTable.markRecorded), so what it wrote of
+	// the store is read off the store: its newest tuple and its nodes, before and after.
+	storeFigures := func() (newest, nodes int64) {
+		if err := database.Pool.QueryRow(context.Background(),
+			`select (select coalesce(max(seq), 0) from graph_tuples), (select count(*) from graph_nodes)`).Scan(&newest, &nodes); err != nil {
+			t.Fatalf("read the store's newest tuple and its nodes: %v", err)
+		}
+		return newest, nodes
+	}
+	newestBefore, nodesBefore := storeFigures()
+
 	const mark = "with held as ( select m.id from messages m"
 	unlocked := []string{"graph_nodes", "graph_tuples", "user_threads"}
 	owner := ownerHold(t, database, unlocked...)
@@ -333,8 +344,12 @@ func requireTheMessagesPastBoundBatchLockOrder(t *testing.T) {
 
 	done, _ := followThePass(t, database, "messages_past_bound",
 		[]*lockstep.Hold{owner, project, rootRow, firstRow, secondRow, aliceRow})
-	if done.Rows != 2 || done.Tuples != 0 || done.Nodes != 0 || !done.Complete {
-		t.Errorf("the messages_past_bound pass reports %#v, want both replies marked, nothing of the store written, and nothing left", done)
+	if done.Rows != 2 || !done.Complete {
+		t.Errorf("the messages_past_bound pass reports %#v, want both replies marked and nothing left", done)
+	}
+	if newestAfter, nodesAfter := storeFigures(); newestAfter != newestBefore || nodesAfter != nodesBefore {
+		t.Errorf("the messages_past_bound pass moved the store from tuple %d and %d nodes to tuple %d and %d nodes, want nothing of the store written",
+			newestBefore, nodesBefore, newestAfter, nodesAfter)
 	}
 }
 

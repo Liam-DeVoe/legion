@@ -54,12 +54,16 @@ const poolSizeParam = "pool_max_conns"
 // markers this build sets on its projection rows: a row whose node pair says its writer stated
 // the row's facts in the node and tuple store (comment_deliveries, message_deliveries, the block
 // rows of a comment, a message and an ask, and their link rows; migrations 20261116102800 and
-// 20261116140000). An older build's connections never carry it, and an update one of them makes
-// to such a row is an update whose facts that build did not state, so a trigger on each of those
-// tables names no node in the row it updates where the setting is not `on` (migration
-// 20261116150000): the row returns to its old arm and the backfill takes it again, as it takes a
-// row an older build inserts. A process that updates those rows of this build's on a connection
-// of its own carries it too.
+// 20261116140000), user_threads' marked_version and marked_seq (migration 20261116160000), and
+// the tuples_stored_at of user_agent_read, user_agent_state, user_agent_reply_read,
+// user_agent_thread_dismissed and user_ask_snooze (migration 20261116170000). An older build's
+// connections never carry it, and an update one of them makes to such a row is an update whose
+// facts that build did not state, so a trigger on each of those tables takes the marker off the
+// row it updates where the setting is not `on` (migrations 20261116150000, 20261116160000 and
+// 20261116170000): the row returns to its old arm and the backfill takes it again, as it takes a
+// row an older build inserts. user_threads' trigger also takes the marker off an update made
+// inside another trigger, whichever connection runs it. A process that updates those rows of this
+// build's on a connection of its own carries the setting too.
 const StoreMarkerWriterSetting = "dispatch.store_marker_writer"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
@@ -83,9 +87,6 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
-	if config.ConnConfig.RuntimeParams == nil {
-		config.ConnConfig.RuntimeParams = make(map[string]string)
-	}
 	config.ConnConfig.RuntimeParams[StoreMarkerWriterSetting] = "on"
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

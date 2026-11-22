@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -357,13 +358,7 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 				}
 			}
 			t.Fatalf("after a %s tuple into alice, the read answers no entry for %s:%s; the kinds it knows are %v",
-				unheard, sixth.kind, sixth.id, slices.Sorted(func(yield func(string) bool) {
-					for kind := range known {
-						if !yield(kind) {
-							return
-						}
-					}
-				}))
+				unheard, sixth.kind, sixth.id, slices.Sorted(maps.Keys(known)))
 		}
 		if kinds := meInboxKinds(entry); !slices.Equal(kinds, []string{unheard + "/" + meInboxInbound}) {
 			t.Errorf("the sixth node carries %v, want %s", kinds, unheard)
@@ -375,13 +370,9 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read me_inbox.go: %v", err)
 		}
+		text := string(source)
 		for _, kind := range []string{meInboxDelivered, meInboxAuthored, meInboxParticipates, meInboxNamed} {
-			// The control: the same search over a planted copy finds the literal, so a clean
-			// answer below is a reading of the file and not of a search that finds nothing.
-			if planted := string(source) + "\n// '" + kind + "'\n"; !strings.Contains(planted, kind) {
-				t.Fatalf("the search for %q does not find it in a copy that plants it", kind)
-			}
-			if strings.Contains(string(source), kind) {
+			if strings.Contains(text, kind) {
 				t.Errorf("me_inbox.go names the relation kind %q: the read takes its kinds from the store", kind)
 			}
 		}
@@ -450,10 +441,10 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 }
 
 // The identity rule of the read (person_nodes in meInboxBuild): a session the server proved the
-// person's - the alias_of tuple from it to the person's node, which graphstore.Authored writes
-// beside a write the person's credential made from that session - is one of the person's own
-// nodes. So a relation into the session is the person's, while none of the person's own nodes is
-// an entry, and an identity tuple is no relation of any entry, whichever person it ends at.
+// person's - the alias_of tuple from it to the person's node, which graphstore.QueueAuthored
+// writes beside a write the person's credential made from that session - is one of the person's
+// own nodes. So a relation into the session is the person's, while none of the person's own nodes
+// is an entry, and an identity tuple is no relation of any entry, whichever person it ends at.
 func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	alice, bob := "alice", "bob"
@@ -570,7 +561,7 @@ func TestTheOneReadsSettingsEndWithItsTransaction(t *testing.T) {
 			assignment, _ = strings.CutPrefix(setting, "set ")
 		}
 		name, _, assigns := strings.Cut(assignment, " = ")
-		if !assigns || name == assignment || strings.ContainsAny(name, " ;") {
+		if !assigns || strings.ContainsAny(name, " ;") {
 			t.Fatalf("the read's setting %q names no one setting this test can read back", setting)
 		}
 		names = append(names, name)

@@ -2,13 +2,13 @@
 // and its projection write (the spec's R9, c-census). A server whose test hooks are on
 // carries one Armed set on every request it serves (With); PUT
 // /api/v1/writes/_test/fail-between/{writer} arms it for the next write of one writer; and each
-// writer below calls Between at the point between its two writes, which answers ErrInjected once
-// for an armed writer and nil for any other. The writer then fails as any failed statement fails
-// it: its transaction rolls back, both sides with it, and its event, appended in that
-// transaction, reaches nobody.
+// writer below calls Planned as it plans its write and queues Queue between its two statements,
+// whose statement answers ErrInjected once for an armed writer and is queued for no other. The
+// writer then fails as any failed statement fails it: its transaction rolls back, both sides with
+// it, and its event, appended in that transaction, reaches nobody.
 //
-// A request no Armed set rides on - every request of a server without test hooks - answers nil at
-// once, so a deployment pays one context lookup at each point and nothing else.
+// For a request no Armed set rides on - every request of a server without test hooks - Planned
+// answers false at once, so a deployment pays one context lookup at each point and nothing else.
 package failpoint
 
 import (
@@ -34,8 +34,9 @@ const (
 	// DirectReply is a session's direct reply (api's insertSessionReply): between the reply's node
 	// and its messages row.
 	DirectReply = "direct-reply"
-	// AskAnswer is an ask's answer (asks.Settle): between the answer's tuples and the update of
-	// the asks row that projects them.
+	// AskAnswer is an ask's answer (asks.Settled.Queue): between the node write of the answer and
+	// the update of the asks row. Every writer that stores an answer holds its tuples for the
+	// event it appends after that update (asks.Change.Held), so the failure falls before them.
 	AskAnswer = "ask-answer"
 	// InboxDismiss, InboxRead, ThreadRead, AgentState and AskSnooze are the five read-state
 	// routes (api/inbox_dismiss.go, api/inbox_read.go, putThreadRead in api/replies.go,
@@ -55,14 +56,14 @@ const (
 	AgentDismissalClear = "agent-dismissal-clear"
 )
 
-// Writers is every writer a failure can be injected into, in the order c-census runs them.
+// Writers is every writer a failure can be injected into.
 var Writers = []string{
 	Comment, Message, DirectReply, AskAnswer,
 	InboxDismiss, InboxRead, ThreadRead, AgentState, AskSnooze,
 	UserThreads, AgentDismissalClear,
 }
 
-// ErrInjected is the failure Between answers for an armed writer.
+// ErrInjected is the failure Queue's statement answers for an armed writer.
 var ErrInjected = errors.New("failure injected between the store write and the projection write (PUT /api/v1/writes/_test/fail-between)")
 
 // Armed is the set of writers whose next write fails, one failure each, shared by every request a
@@ -70,11 +71,10 @@ var ErrInjected = errors.New("failure injected between the store write and the p
 type Armed struct {
 	mu    sync.Mutex
 	armed map[string]bool
-	taken map[string]int
 }
 
 // NewArmed is an empty set.
-func NewArmed() *Armed { return &Armed{armed: map[string]bool{}, taken: map[string]int{}} }
+func NewArmed() *Armed { return &Armed{armed: map[string]bool{}} }
 
 // Known reports whether writer is one of Writers.
 func Known(writer string) bool { return slices.Contains(Writers, writer) }
@@ -86,13 +86,6 @@ func (a *Armed) Arm(writer string) {
 	a.armed[writer] = true
 }
 
-// Taken is how many failures writer's writes have taken since the set was made.
-func (a *Armed) Taken(writer string) int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.taken[writer]
-}
-
 // take disarms writer and reports whether it was armed.
 func (a *Armed) take(writer string) bool {
 	a.mu.Lock()
@@ -101,33 +94,23 @@ func (a *Armed) take(writer string) bool {
 		return false
 	}
 	delete(a.armed, writer)
-	a.taken[writer]++
 	return true
 }
 
 type armedKey struct{}
 
-// With is ctx carrying armed, which every Between under it reads.
+// With is ctx carrying armed, which every Planned under it reads.
 func With(ctx context.Context, armed *Armed) context.Context {
 	return context.WithValue(ctx, armedKey{}, armed)
 }
 
-// Between is the point between writer's store write and its projection write: ErrInjected where
-// the set ctx carries armed writer, which this disarms, and nil otherwise.
-func Between(ctx context.Context, writer string) error {
-	armed, carried := ctx.Value(armedKey{}).(*Armed)
-	if !carried || !armed.take(writer) {
-		return nil
-	}
-	return ErrInjected
-}
-
-// Planned is Between for a writer whose two writes are statements of one write phase, which runs
-// no Go between them: it decides, as the writer plans its write, whether the write fails - true
-// where the set ctx carries armed writer, which this disarms - and the writer then queues Queue
-// between the two statements, so the failure falls where Between would have answered it.
+// Planned decides, as a writer whose two writes are statements of one write phase plans its write,
+// whether the write fails: true where the set ctx carries armed writer, which this disarms, and
+// false otherwise. The writer then queues Queue between the two statements, so the failure falls
+// between its store write and its projection write.
 func Planned(ctx context.Context, writer string) bool {
-	return Between(ctx, writer) != nil
+	armed, carried := ctx.Value(armedKey{}).(*Armed)
+	return carried && armed.take(writer)
 }
 
 // Queue queues on b, between a writer's store write and its projection write, the statement a

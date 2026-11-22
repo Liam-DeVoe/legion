@@ -76,9 +76,10 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 // no later read of it adds a second. The comment.created payload is unchanged throughout.
 func TestAFailedMentionOfASessionNothingElseReachesGivesItOneCopy(t *testing.T) {
 	listener, state := newMentionListener(t)
-	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
+	// Never released: the send to s2 waits until its caller gives up, and the attempt fails. The
+	// wait is long enough for an outbox to read the comment's event while the send is still held.
 	_ = state.hold("s2")
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: 1500 * time.Millisecond})
 	issue := createInteractionIssue(t, handler, "TEST", "A failed mention", "before")
 	root := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{"body": "Where should this go?"}))
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -87,9 +88,11 @@ func TestAFailedMentionOfASessionNothingElseReachesGivesItOneCopy(t *testing.T) 
 	if session := state.awaitSend(t); session != "s2" {
 		t.Fatalf("the mention's send went to %s, want s2", session)
 	}
-	// The send is still held, so its attempt is pending: nothing the comment's event records names
-	// s2 yet.
+	// The send is still held, so its attempt is pending: an outbox that reads the comment's event
+	// then holds s2's copy back, and nothing the event records names s2 yet. The attempt is read
+	// after the outbox, so the outbox read it pending.
 	before := commentCreatedRow(t, database, created.ID)
+	runOutboxUntilItReads(t, database, "comment.created", created.ID)
 	if pending := commentDeliveryStates(t, database, created.ID); !slices.Equal(pending, []string{"pending"}) {
 		t.Fatalf("the mention whose send is held is %v, want its one attempt pending", pending)
 	}
@@ -114,7 +117,8 @@ func TestAFailedMentionOfASessionNothingElseReachesGivesItOneCopy(t *testing.T) 
 	}
 }
 
-// commentDeliveryStates is the state of each attempt of commentID's mentions, in attempt order.
+// commentDeliveryStates is the state of each attempt of commentID's mentions, by target and then
+// attempt.
 func commentDeliveryStates(t *testing.T, database *store.Store, commentID string) []string {
 	t.Helper()
 	states, err := readStrings(context.Background(), database.Pool,
@@ -136,6 +140,42 @@ func publishedDestinationsOf(t *testing.T, database *store.Store, eventType, id 
 		t.Fatalf("read the destinations of %s %s: %v", eventType, id, err)
 	}
 	return destinations
+}
+
+// runOutboxUntilItReads runs an outbox over database until it has read the one eventType event
+// about id - published it, or held it back to be read again (next_attempt_at) - and stops it.
+func runOutboxUntilItReads(t *testing.T, database *store.Store, eventType, id string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		outbox.New(outbox.Deps{
+			Store: database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+			Listen:     database.Pool.Listener,
+			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
+		}).Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var read bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select published_at is not null or next_attempt_at is not null from events where type = $1 and payload->>'id' = $2
+		`, eventType, id).Scan(&read); err != nil {
+			t.Fatalf("read whether the outbox read %s %s: %v", eventType, id, err)
+		}
+		if read {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the outbox did not read %s %s within 5 s", eventType, id)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // countOf is how many of values are value.

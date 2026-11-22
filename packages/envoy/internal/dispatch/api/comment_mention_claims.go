@@ -265,9 +265,9 @@ func mentionClaimArrays(claims []mentionClaim) (comments, targets []string, atte
 // in the same batch as the update, which names every attempt it was handed
 // (graphstore.QueueAttempted): the statement states what each row holds against its node, so a
 // row the update left alone moves nothing that its own writer did not already state. The batch
-// is one transaction of its own that commits at its end (store.RunCommitting), as the one
-// statement it replaces was, so an answer the network loses after that commit leaves the claims
-// unknown until read (rereadMentionClaims), and never unwritten.
+// is one transaction of its own that commits at its end (store.RunCommitting), as one statement
+// is, so an answer the network loses after that commit leaves the claims unknown until read
+// (rereadMentionClaims), and never unwritten.
 func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 	comments, targets, attempts, claimed := mentionClaimArrays(queued)
 	var refreshed []mentionClaim
@@ -360,7 +360,7 @@ func mentionAttemptKeys(claims []mentionClaim) []graphstore.AttemptKey {
 // lane (replayComment), so the delivery sweep leaves it to this process exactly as it leaves the
 // attempt a comment of this process's own queued. ok is false when another sender holds it: that
 // sender owns the send, and nothing is queued for it here. The claim and its statement in the
-// store go in one batch that commits at its end, as the one statement it replaces did. A claim
+// store go in one batch that commits at its end, as one statement does. A claim
 // another sender holds matches no row, and the statement in the store, which states only what the
 // row holds and its node does not, appends nothing: that sender's own write stated it.
 func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claimed time.Time, ok bool, err error) {
@@ -383,8 +383,5 @@ func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claime
 	}); err != nil {
 		return time.Time{}, false, err
 	}
-	if !ok {
-		return time.Time{}, false, nil
-	}
-	return claimed, true, nil
+	return claimed, ok, nil
 }

@@ -23,9 +23,10 @@
 --
 -- Here the view is 20261120090001's, and the tuple arm's sub-select carries 20261120122700's filter
 -- spelled over all ten `when` arms of its `projects` case, in the case's order: the three of
--- 20261109215947, the three of an ask (20261116094101), the message's reply (20261116114517), the
--- two of a comment's pointers (20261116124448) and the citation of an item (20261116140008). The
--- outer `edge.projects is not null` is gone. The kind filter and the ranges are both tests of the
+-- 20261109215947, the two of a comment's pointers (20261116124448), the three of an ask
+-- (20261116094101), the message's reply (20261116114517) and the citation of an item
+-- (20261116140008). The outer `edge.projects is not null` is gone. The kind filter and the ranges
+-- are both tests of the
 -- sub-select, and each does what the other cannot. The kind filter leaves out, as a read keyed
 -- out of a node reads them, the kinds the arm never renders - a comment's authored_by, a block's
 -- part_of its parent - but it binds nothing an index search into a person can take, so alone it
@@ -44,6 +45,7 @@
 -- one of them keeps the definition it wrote until a later version restates it; it must stay the
 -- last migration that restates the view, which docs'
 -- TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered holds.
+--
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short transaction,
 -- so a reference read waits behind it. Nothing here reads, refuses or rewrites a row.
 

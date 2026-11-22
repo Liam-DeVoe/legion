@@ -36,6 +36,7 @@ import type {
   DispatchEvent,
   EventType,
   MeInboxResponse,
+  MyReplyRow,
   OpenAskRow,
 } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
@@ -345,23 +346,8 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
       kind: "comment",
       reply: { created_at: "2026-10-26T00:00:00Z" },
       thread_id: "root-1",
-    };
-    return {
-      as_of: "2026-10-26T00:00:00Z",
-      entries: [
-        {
-          moment: "2026-10-26T00:00:00Z",
-          node: { id: "root-1", kind: "comment" },
-          relations: [],
-          thread,
-        },
-      ],
-      horizon: 1,
-      limit: 0,
-      offset: 0,
-      person: "alice",
-      total: 1,
-    };
+    } as unknown as MyReplyRow;
+    return oneReadAnswer([thread], { asOf: "2026-10-26T00:00:00Z" });
   }
   const read: { data?: unknown; key: QueryKey } = READS[name];
   return read.data ?? { loaded: name };

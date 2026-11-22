@@ -52,7 +52,10 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A row is never updated, a new version being a new row, but for the erase (`envoy-dispatch erase`): it deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted (`textversions.RestateIssueVectors`).
+A row is never updated, a new version being a new row, but by two writers.
+The erase (`envoy-dispatch erase`) deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted (`textversions.RestateIssueVectors`).
+The keyword fill's first-body repair (`textversions`' `repairCutFirstBodies`, `repairFirstBodyQuery`) rewrites the body, `body_from` and vector of a `comment.created` version a fill of the release before this one kept cut although revision 1 of the comment's blocks proves the comment's own transaction (`../../../cmd/dispatch/README.md`, "Background loops").
+Migration `20261122100004_search_text_versions_cut_comments` builds the partial index that holds the comment versions marked cut and nothing else, `search_text_versions_cut_comments`, through which that repair and the store census's `keyword_cut_first_bodies` read them, so neither reads every comment version of the table.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
 It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").

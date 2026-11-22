@@ -3,8 +3,6 @@ package api
 import (
 	"net/http"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The person kind of the store census names a person an ask waits on only while that ask is open
@@ -29,21 +27,14 @@ func TestTheCensusHoldsEveryPersonAWriteOfThisChildNamed(t *testing.T) {
 	handAskOn(t, handler, askID, "bob", "alice")
 	handAskOn(t, handler, askID, "alice", "alice")
 
-	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")
-	if read.Code != http.StatusOK {
-		t.Fatalf("read ask %s: status=%d body=%s", askID, read.Code, read.Body.String())
-	}
-	ask := decodeBody[model.Ask](t, read)
+	ask := singleAsk(t, handler, askID)
 	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"text":               "It ships.",
 		"expected_edited_at": ask.EditedAt,
 	}, "bob")
 	if answered.Code != http.StatusOK {
-		t.Fatalf("answer the ask as alice: status=%d body=%s", answered.Code, answered.Body.String())
+		t.Fatalf("answer the ask as bob: status=%d body=%s", answered.Code, answered.Body.String())
 	}
 
-	report := requireTheCensusAgreesOver(t, database, "over an ask moved to bob, moved back to alice and answered by bob", "person")
-	if report.Differences() != 0 {
-		t.Errorf("the census reads %d difference(s) after the move and the answer, want none", report.Differences())
-	}
+	requireTheCensusAgreesOver(t, database, "over an ask moved to bob, moved back to alice and answered by bob", "person")
 }

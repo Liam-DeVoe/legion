@@ -18,19 +18,19 @@ import (
 // comment or a message. Its kind is the kind a user_threads row of the thread names.
 type thread struct{ kind, id string }
 
-// maxThreadDepth bounds the walk up a message thread, as the trigger user_threads_message bounds
+// MaxThreadDepth bounds the walk up a message thread, as the trigger user_threads_message bounds
 // its walk up in_reply_to (0095): sixty-four steps, where production threads are seven deep at
 // most.
-const maxThreadDepth = 64
+const MaxThreadDepth = 64
 
-// threadOf is the root of the thread w is written in (decision 12), read from the write's head
+// threadOf is the root of the thread w is written in, read from the write's head
 // pointer tuples rather than from a projection's columns, as the triggers of 0095-0097 read it from
 // the row. An ask is its own thread. A comment's thread is one step away, as user_threads_comment
 // takes it (coalesce(ask_id, reply_to, id)): the ask its replies_to names, else the comment its
 // replies_to names, which is the root of its thread (api's threadHeadOf stores every reply against
 // its head), else the comment itself. comments.reply_to carries no acyclicity constraint, so the
 // step is never repeated. A message's replies_to names the message it answers, and the walk climbs
-// those to the root its in_reply_to chain reaches within maxThreadDepth steps, as
+// those to the root its in_reply_to chain reaches within MaxThreadDepth steps, as
 // user_threads_message walks it. A message on the way whose row names no node - an older build's,
 // which states no tuple - is climbed by its in_reply_to, which is the old arm answering a row the
 // marker test passes until the backfill gives it its tuples.
@@ -74,7 +74,7 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 	}
 	if err := tx.QueryRow(ctx, messageWalk+`
 		select id from walk order by depth desc limit 1
-	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth, depth).Scan(&root.id); err != nil {
+	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, MaxThreadDepth, depth).Scan(&root.id); err != nil {
 		return thread{}, fmt.Errorf("read the thread message %s is written in: %w", w.NodeID, err)
 	}
 	return root, nil
@@ -122,7 +122,7 @@ func threadAndMembers(ctx context.Context, tx pgx.Tx, w Write) (thread, []member
 		root as (select id from walk order by depth desc limit 1)
 		select root.id, `+membersColumn(`'`+graphstore.KindMessage+`'`, `root.id`)+`
 		from root
-	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth, depth).Scan(&root.id, &column); err != nil {
+	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, MaxThreadDepth, depth).Scan(&root.id, &column); err != nil {
 		return thread{}, nil, fmt.Errorf("read the thread message %s is written in and its members: %w", w.NodeID, err)
 	}
 	members, err := decodeMembers(column)
@@ -252,9 +252,9 @@ func decodeMembers(column []byte) ([]member, error) {
 // queueThreadLock is the write phase's lock of step 2: every user_threads row of the thread,
 // `for no key update` in ascending login order in one pass, the one order every writer of a
 // thread's rows and the backfill take them in, queued before the deliveries to the people holding
-// them, so the backfill, which marks a row under the same lock, marks it above each of them (D4's
-// lock rule), and the dismiss route, which takes the caller's rows first, ends no dismissal this
-// write does not see.
+// them, so the backfill, which marks a row under the same lock, marks it above each of them (the
+// lock rule Record's steps 2 to 4 hold), and the dismiss route, which takes the caller's rows
+// first, ends no dismissal this write does not see.
 func queueThreadLock(b *store.WriteBatch, thread thread) {
 	b.Queue(fmt.Sprintf("lock the rows of thread %s/%s", thread.kind, thread.id), `
 		select 1 from user_threads u

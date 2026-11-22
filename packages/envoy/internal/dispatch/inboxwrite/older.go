@@ -54,8 +54,7 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 	if err != nil {
 		return 0, err
 	}
-	authorKind, authorID, named := graphstore.AuthorOf(w.Author)
-	named = named && graphstore.AddressFits(authorID)
+	authorKind, authorID, named := storeAuthor(w.Author)
 	person := ""
 	if named && authorKind == graphstore.KindPerson {
 		person = authorID
@@ -100,11 +99,7 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 		return 0, err
 	}
 	for _, login := range reached {
-		people = append(people, graphstore.Tuple{
-			FromKind: w.NodeKind, FromID: w.NodeID, Kind: graphstore.TupleDeliveredTo,
-			ToKind: graphstore.KindPerson, ToID: login,
-			At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
-		})
+		people = append(people, deliveredTo(w.NodeKind, w.NodeID, login, w.At, w.Who, event))
 	}
 	if err := graphstore.ToPerson(ctx, tx, people); err != nil {
 		return 0, fmt.Errorf("deliver %s/%s to who wrote in %s/%s before it: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
@@ -124,9 +119,9 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 // in a snapshot of its own, so the read still runs once the lock is held.
 //
 // The lock takes the rows `for no key update` in ascending login order, before the deliveries to
-// those persons are appended (D4's lock rule): the row the backfill marks later is then marked
-// above each of those deliveries. A person who holds no row of the thread - one whose thread's
-// owner resolves to no project - locks nothing.
+// those persons are appended (the lock rule Record's steps 2 to 4 hold): the row the backfill
+// marks later is then marked above each of those deliveries. A person who holds no row of the
+// thread - one whose thread's owner resolves to no project - locks nothing.
 //
 // The read answers who the write ended a dismissal of, as the old triggers cleared it: each person
 // of reached, or each person at all where everyone is set (a session's reply to a message, whose
@@ -194,7 +189,7 @@ func lockReachedAndReadCleared(ctx context.Context, tx pgx.Tx, thread thread, at
 //     tuples_stored is false;
 //   - a message's thread: the authored_by of each message whose replies_to chain reaches the
 //     root, or a messages row on the way that names no node, read by its author and in_reply_to,
-//     down at most maxThreadDepth steps.
+//     down at most MaxThreadDepth steps.
 //
 // Only a person writes a row, so the set is of persons, by their canonical login, writer left
 // out. It reads no column of a marked row. The answer is sorted, each login once.
@@ -230,7 +225,7 @@ func reachedBefore(ctx context.Context, tx pgx.Tx, thread thread, at time.Time, 
 			union all
 			select user_threads_login(e.payload->'answer'->>'user')
 			from events e
-			where e.type in (` + askEventTypes + `) and e.type = 'ask.answered' and e.payload->>'id' = $1
+			where e.type in (` + AskEventTypes + `) and e.type = 'ask.answered' and e.payload->>'id' = $1
 			  and (e.payload->'answer'->>'at')::timestamptz < $2`
 	case graphstore.KindComment:
 		args = append(args, graphstore.KindComment, graphstore.KindAsk)
@@ -273,7 +268,7 @@ func reachedBefore(ctx context.Context, tx pgx.Tx, thread thread, at time.Time, 
 		// walked. So no plan over messages here hangs on its statistics; the probes of the store
 		// are planned on the store's, which the backfill takes again as it grows the store
 		// (graphcensus's storeGrowth).
-		args = append(args, graphstore.KindMessage, maxThreadDepth)
+		args = append(args, graphstore.KindMessage, MaxThreadDepth)
 		with = `
 			with recursive tree (id, depth, login) as (
 				select $1::text, 0, null::text

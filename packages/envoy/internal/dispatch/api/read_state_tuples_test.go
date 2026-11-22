@@ -110,7 +110,7 @@ func TestEveryReadStateWriteIsATupleFromThePerson(t *testing.T) {
 
 		// A dismissal through a moment the thread's read mark has passed marks nothing read, so it
 		// states the dismissal alone; and a write of alice's own whose moment her read mark has
-		// passed leaves her row's mark, and its tuple, as they were (inboxwrite.Record's keepRow).
+		// passed leaves her row's mark, and its tuple, as they were (inboxwrite.Record's queueKeepRow).
 		threads, threadsDatabase := newTestHandlerWithStore(t)
 		issue := createInteractionIssue(t, threads, "RSNM", "Marks that move nothing", "A spec")
 		thread := createThreadComment(t, threads, issue.Key, map[string]any{"body": "Ship on Friday?"}, "alice")
@@ -437,8 +437,7 @@ func storedMarks(t *testing.T, database *store.Store, sql string, args ...any) s
 // writer's (marked_seq), so the row's mark is held to the tuple alone.
 func threadRowMark(t *testing.T, database *store.Store, column, threadID string) storedMark {
 	t.Helper()
-	mark := storedMarks(t, database, `select `+column+`, `+column+` from user_threads where login = 'alice' and thread_id = $1::uuid`, threadID)
-	return mark
+	return storedMarks(t, database, `select `+column+`, `+column+` from user_threads where login = 'alice' and thread_id = $1::uuid`, threadID)
 }
 
 // requireMarkMatchesRow fails unless alice's newest tuple of kind to node asserts, was caused by
@@ -485,7 +484,7 @@ func requireMarkHistory(t *testing.T, database *store.Store, kind, node string, 
 		}
 		got = append(got, entry)
 	}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("alice's history of %s to %s is %v, want %v", kind, node, got, want)
 	}
 }

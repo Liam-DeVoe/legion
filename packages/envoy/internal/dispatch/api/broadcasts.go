@@ -292,7 +292,7 @@ func validateBroadcastInput(body, delivery string, sessionIDs []string) ([]strin
 }
 
 // broadcastRecovery is the recovery point a keyed broadcast commits with its broadcast
-// (bindRequestKeyRecovery): the broadcast, and the sessions the send left out and why, which a
+// (queueRequestKeyRecovery): the broadcast, and the sessions the send left out and why, which a
 // repeat answers as the send did.
 type broadcastRecovery struct {
 	BroadcastID string               `json:"broadcast_id"`
@@ -486,7 +486,7 @@ func (s *server) writeBroadcast(
 	}
 	copies := make([]broadcastCopy, len(recipients))
 	for position, recipient := range recipients {
-		if copies[position], err = s.planBroadcastCopy(ctx, tx, sent, actor, body, recipient, pages); err != nil {
+		if copies[position], err = s.planBroadcastCopy(ctx, tx, sent, recipient, pages); err != nil {
 			return broadcastRead{}, nil, err
 		}
 	}
@@ -504,7 +504,7 @@ func (s *server) writeBroadcast(
 		}
 		planned.queue(b)
 		for position := range copies {
-			if err := s.queueBroadcastCopy(b, copies[position], position, sent, author, delivery, actor, planned,
+			if err := s.queueBroadcastCopy(b, copies[position], position, sent, author, planned,
 				&events[position], &attempts[position]); err != nil {
 				return err
 			}
@@ -549,39 +549,39 @@ type broadcastCopy struct {
 	attemptOpened   graphstore.Uncaused
 }
 
-// planBroadcastCopy plans recipient's copy of the broadcast sent, written at the broadcast's own
-// time. Each copy's node goes in before its row, between the sender and the recipient, the parties
-// of the thread the copy opens, on the recipient's page and with its target and its broadcast
-// stated as facts that wait for its event; the row names the node in its insert. Each copy is a
-// direct message: its blocks are indexed, and it writes no mention, so its blocks hold none either
-// and the write moves nothing. Its insert is queued, so its body is planned before it, as every
-// other message write plans it (planPendingItem).
+// planBroadcastCopy plans recipient's copy of the broadcast sent, by its author with its body,
+// written at the broadcast's own time. Each copy's node goes in before its row, between the sender
+// and the recipient, the parties of the thread the copy opens, on the recipient's page and with
+// its target and its broadcast stated as facts that wait for its event; the row names the node in
+// its insert. Each copy is a direct message: its blocks are indexed, and it writes no mention, so
+// its blocks hold none either and the write moves nothing. Its insert is queued, so its body is
+// planned before it, as every other message write plans it (planPendingItem).
 func (s *server) planBroadcastCopy(
-	ctx context.Context, tx pgx.Tx, sent broadcastRead, actor model.Actor, body string, recipient broadcastTarget, pages map[string]string,
+	ctx context.Context, tx pgx.Tx, sent broadcastRead, recipient broadcastTarget, pages map[string]string,
 ) (broadcastCopy, error) {
 	target := "session:" + recipient.sessionID
 	messageID := uuid.NewString()
 	planned := broadcastCopy{
 		sessionID: recipient.sessionID, page: pages[target],
 		message: model.Message{
-			ID: messageID, Author: actor, Body: body, Target: &target, BroadcastID: &sent.ID,
+			ID: messageID, Author: sent.Author, Body: sent.Body, Target: &target, BroadcastID: &sent.ID,
 			CreatedAt: sent.CreatedAt, Deliveries: []model.MessageDelivery{},
 		},
 	}
 	var err error
-	if planned.stored, err = planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor, sent.CreatedAt, pages); err != nil {
+	if planned.stored, err = planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, sent.Author, sent.CreatedAt, pages); err != nil {
 		return broadcastCopy{}, err
 	}
-	if _, planned.index, planned.indexed, err = s.planPendingItem(ctx, tx, actor, refs.ItemMessage, messageID, body, refs.PendingSource{},
+	if _, planned.index, planned.indexed, err = s.planPendingItem(ctx, tx, sent.Author, refs.ItemMessage, messageID, sent.Body, refs.PendingSource{},
 		refs.WrittenItem(planned.stored.node), sent.CreatedAt, false); err != nil {
 		return broadcastCopy{}, err
 	}
 	// The sender takes part in the thread the copy opens (inboxwrite.PlanRecord): a copy is on no
-	// issue, so its thread keeps no user_threads row and names no one more.
-	if planned.stored.projected {
-		if planned.recording, err = inboxwrite.PlanRecord(ctx, tx, planned.stored.inbox(planned.message, actor)); err != nil {
-			return broadcastCopy{}, err
-		}
+	// issue, so its thread keeps no user_threads row and names no one more. A copy answers
+	// nothing, so the store keys every pointer of its row (graphstore.MessageFacts' projected) and
+	// its record always states its tuples.
+	if planned.recording, err = inboxwrite.PlanRecord(ctx, tx, planned.stored.inbox(planned.message, sent.Author)); err != nil {
+		return broadcastCopy{}, err
 	}
 	// thread_logins is the copy's author - the sender, the one person whose Inbox an Agent row of
 	// this conversation can sit in once the session replies (api/thread_logins.go,
@@ -592,15 +592,16 @@ func (s *server) planBroadcastCopy(
 		return broadcastCopy{}, err
 	}
 	planned.attemptKey = graphstore.MessageAttempt(messageID, 1)
-	planned.attemptKind, planned.attemptAddress, planned.attemptOpened = graphstore.AttemptOpened(planned.attemptKey, actor, sent.CreatedAt)
+	planned.attemptKind, planned.attemptAddress, planned.attemptOpened = graphstore.AttemptOpened(planned.attemptKey, sent.Author, sent.CreatedAt)
 	return planned, nil
 }
 
 // queueBroadcastCopy queues copied, the copy at position of the broadcast sent, on the broadcast's
 // write phase: its node, its row, its block index, its message.created, and under that event what
 // its node write stated, the page it is the first copy to hang from, what its index stated, who
-// wrote it and its record in its thread, then its first delivery attempt. event and attempt receive
-// the appended event and the attempt row once the batch has run.
+// wrote it and its record in its thread, then its first delivery attempt. author is the sender
+// as the rows store them, encoded once for every copy. event and attempt receive the appended
+// event and the attempt row once the batch has run.
 //
 // The recipient's first delivery attempt is opened here, unclaimed, rather than by the worker that
 // will send it. A recipient then always has an attempt to show - "Sending" while a worker holds
@@ -613,7 +614,7 @@ func (s *server) planBroadcastCopy(
 // that. The attempt's node goes in before its row, and it and what the row holds are caused by the
 // copy's message.created, as the copy's own node is.
 func (s *server) queueBroadcastCopy(
-	b *store.WriteBatch, copied broadcastCopy, position int, sent broadcastRead, author []byte, delivery string, actor model.Actor,
+	b *store.WriteBatch, copied broadcastCopy, position int, sent broadcastRead, author []byte,
 	pages broadcastPages, event *model.Event, attempt *model.MessageDelivery,
 ) error {
 	graphstore.QueueNodes(b, copied.stored.written)
@@ -629,7 +630,7 @@ func (s *server) queueBroadcastCopy(
 	// other root's does; the broadcast it belongs to is read from the message row.
 	payload := messageReplyThread{}.payload(copied.message, model.ReferenceChanges{})
 	payload.ThreadLogins = copied.logins
-	if err := s.deps.Events.QueueAppend(b, messageEvent(copied.message, "message.created", actor, payload), func(appended model.Event) {
+	if err := s.deps.Events.QueueAppend(b, messageEvent(copied.message, "message.created", sent.Author, payload), func(appended model.Event) {
 		*event = appended
 	}); err != nil {
 		return err
@@ -638,26 +639,24 @@ func (s *server) queueBroadcastCopy(
 	pages.queueCause(b, copied.page)
 	// What the copy's body is in the store, under the same event (planPendingItem).
 	graphstore.QueueCaused(b, copied.indexed, graphstore.LatestEvent)
-	if copied.stored.projected {
-		if err := graphstore.QueueAuthored(b, graphstore.KindMessage, copied.message.ID, actor, sent.CreatedAt, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		if err := copied.recording.Queue(b, graphstore.LatestEvent); err != nil {
-			return err
-		}
+	if err := graphstore.QueueAuthored(b, graphstore.KindMessage, copied.message.ID, sent.Author, sent.CreatedAt, graphstore.LatestEvent); err != nil {
+		return err
+	}
+	if err := copied.recording.Queue(b, graphstore.LatestEvent); err != nil {
+		return err
 	}
 	graphstore.QueueNodes(b, copied.attemptOpened)
 	b.Queue("", `
 		insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, node_kind, node_address)
 		values ($1, 1, $2, $3, 'pending', $4, $5, $6)
-		returning `+messageDeliveryColumns, copied.message.ID, delivery, copied.sessionID, author, copied.attemptKind, copied.attemptAddress,
+		returning `+messageDeliveryColumns, copied.message.ID, sent.Delivery, copied.sessionID, author, copied.attemptKind, copied.attemptAddress,
 	).QueryRow(func(row pgx.Row) error {
 		written, err := scanMessageDelivery(row)
 		*attempt = written
 		return err
 	})
 	graphstore.QueueCaused(b, copied.attemptOpened, graphstore.LatestEvent)
-	graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, copied.attemptKey)
+	graphstore.QueueAttempted(b, sent.Author, graphstore.LatestEvent, copied.attemptKey)
 	return nil
 }
 

@@ -69,10 +69,10 @@ type Rebuild struct {
 // has just re-read every comment, ask and issue message with this build's grammar itself.
 //
 // It clears the whole grammar's queue (refs_grammar_owed) for every source it re-indexes: each
-// source's own row goes in that source's transaction (replaceRefs), and the `scope` rows, which
-// owe a re-index of the sources around a document rather than one source, are deleted at the end
-// for every row enqueued before the rebuild started. A row a write enqueues while the rebuild runs
-// keeps its place: the rebuild may have read that source already. It settles nothing of the forms
+// source's own row goes in that source's transaction (Replacement.Queue), and the `scope` rows,
+// which owe a re-index of the sources around a document rather than one source, are deleted at
+// the end for every row enqueued before the rebuild started. A row a write enqueues while the
+// rebuild runs keeps its place: the rebuild may have read that source already. It settles nothing of the forms
 // queue (refs_forms_owed, RefsFormsOwed) for a source it re-indexes: it reads a source's own
 // references alone and leaves its blocks to the block index it marks owed, which a process of an
 // older build may take during a roll and write without those forms, so each source stays owed
@@ -232,9 +232,10 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 // read, losing the edit's own index until something re-indexes that source (INFRA-3285). The
 // lock is taken before the read and the read is a statement after it, so a write committed while
 // the rebuild waited is the text it indexes; it is an advisory lock, so it assigns no transaction
-// id, and the edges are planned under it and written last as one batch (replaceRefs). The
-// re-index paths beside this one take the same lock through the same read, for the same reason
-// (ReindexOwed and ReindexScopeSource below). The lock is one owner at a time, held for the
+// id, and the edges are planned under it and written last as one batch (planSourceReplace,
+// Replacement.Queue). The re-index paths beside this one take the same lock through the same
+// read, for the same reason (ReindexOwed and ReindexScopeSource below). The lock is one owner at
+// a time, held for the
 // length of that source's own transaction, so a rebuild still never holds every owner: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // owner for the length of the pass, which is minutes on a large database.
@@ -679,8 +680,12 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 	resolve := NewReader(ctx, tx, writer, kind, id, serverURL)
 	located := resolve.Mentions(body)
 	// scope is the item's, as the index of its blocks read it, for the reconciliation of its
-	// citations; nil where no index read it (planSourceReplace reads it then).
+	// citations; nil where no index read it (planSourceReplace reads it then). An indexed ask's
+	// index read its own refs rows too, so its reconciliation is planned against them
+	// (ItemIndex.PlanOwnRefs) rather than a read of its own.
 	var scope *ItemScope
+	var replacement Replacement
+	var planned bool
 	switch itemKind := ItemKind(kind); itemKind {
 	case ItemComment, ItemMessage:
 		index, err := ReadItemIndex(ctx, tx, itemKind, id)
@@ -711,11 +716,13 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 				return reindexPlan{}, err
 			}
 			plan.indexed = true
+			replacement, planned = index.PlanOwnRefs(text.Refs(located), writtenAt)
 		}
 	}
-	replacement, err := planSourceReplace(ctx, tx, kind, id, text.Refs(located), &writtenAt, scope)
-	if err != nil {
-		return reindexPlan{}, fmt.Errorf("index %s %s: %w", kind, id, err)
+	if !planned {
+		if replacement, err = planSourceReplace(ctx, tx, kind, id, text.Refs(located), &writtenAt, scope); err != nil {
+			return reindexPlan{}, fmt.Errorf("index %s %s: %w", kind, id, err)
+		}
 	}
 	if plan.indexed {
 		replacement = replacement.SettlingForms()
@@ -796,9 +803,9 @@ func (p reindexPlan) queue(b *store.WriteBatch) error {
 // statements go as one batch.
 //
 // A text that gains a `#id` between the two reads is indexed by the write that gave it one: a
-// write of this build re-indexes the text it wrote in its own transaction (replaceRefs), reading
-// the question map as it stands after the settlement this scope row was enqueued by, and a write
-// of an older build owes the source its own row (20261103205038-20261103205040), which the drain
+// write of this build re-indexes the text it wrote in its own transaction (Replacement.Queue),
+// reading the question map as it stands after the settlement this scope row was enqueued by, and a
+// write of an older build owes the source its own row (20261103205038-20261103205040), which the drain
 // takes in a later tick. One that loses its `#id` between them is left alone by the locked read,
 // which is what the write that removed it already indexed.
 func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL string) (bool, error) {

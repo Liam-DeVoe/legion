@@ -23,11 +23,10 @@
 #               escaped slashes, string pieces joined by `+`, or envoy-client's segment list. The
 #               e2e suite is read beyond the four trees the check names: its specs wait for, stub
 #               and hold the page's requests by their paths, and a wait on a path the page no
-#               longer reads fails only in a browser run, as two did in a browser lane of this
-#               branch. A few of its files read a kept route on purpose and are spared, each by
-#               its exact path (callers_spared says why), and its recorded HARs by their
-#               extension. A scratch copy of the five trees, with a planted read of each path in
-#               each of those forms and two planted sends, is searched first.
+#               longer reads fails only in a browser run. A few of its files read a kept route on
+#               purpose and are spared, each by its exact path (callers_spared says why), and its
+#               recorded HARs by their extension. A scratch tree holding a planted read in each of
+#               those forms, and two planted sends, is searched first.
 #   gone        no tracked file but frozen history names the comparison (its command
 #               `inbox-compare`, its package, its table, its route and page, its types) or the
 #               opt-in (its query key `one=1` and its browser preference `inbox.one_read`); a
@@ -42,13 +41,14 @@
 #               GET /api/v1/agents/{session_id}/conversation answers a person's message to that
 #               session, with the session's reply under it, and another session's does not.
 #   post_stays  POST /api/v1/agents/{session_id}/messages still takes a message.
-#   names       the paths, handlers, response shapes, contract types, client methods and query keys
-#               of the open-asks read and the session-conversation read carry no word `inbox`; a
-#               scratch copy of the files they are read from, with one such name planted for each,
-#               is read first.
+#   names       the paths, handlers, response shapes, operations, contract types, client methods,
+#               queries and query keys of the open-asks read and the session-conversation read
+#               carry no word `inbox`; a scratch copy of the files they are read from, with one such
+#               name planted for each kind but the path, which is this script's own, is read first.
 #
-# Every grep is shown able to fail before it is trusted: each runs over a scratch copy holding a
-# planted instance, and must find it, before it runs over the tree. The base build is sent reads
+# Every grep is shown able to fail before it is trusted: each runs first over a scratch tree
+# holding a planted instance of each form and alternative it searches for, and must find each,
+# before it runs over the tree. The base build is sent reads
 # only. While it serves it still runs its own background sweeps over ISSUE_DATABASE_URL, such as
 # the maintenance sweep (api.RunMaintenanceSweep), so "reads only" names what this script sends
 # it, and not all that build writes. The script stops it before it exits.
@@ -91,10 +91,10 @@ Usage: ISSUE_DATABASE_URL=postgres://user@127.0.0.1:5433/db \
 USAGE
 }
 
-# What lib.sh's functions set for this script: the bearer (read_bearer), the work directory
-# (work_dir) and each read's answer (query). They are named here so that shellcheck, which reads
-# one file at a time unless it is run with -x, sees them assigned.
-token="" work="" answer=""
+# What lib.sh's functions set for this script: the bearer (read_bearer) and the work directory
+# (work_dir). They are named here so that shellcheck, which reads one file at a time unless it is
+# run with -x, sees them assigned.
+token="" work=""
 # shellcheck source-path=SCRIPTDIR source=lib.sh disable=SC1091 # followed under shellcheck -x
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -110,15 +110,13 @@ readonly self="packages/dispatch/e2e/acceptance/one-inbox-callers.sh"
 readonly all_sections="setup callers gone old_routes isolation default open_asks conversation post_stays names"
 readonly offline_sections="callers gone names"
 sections="${ONE_INBOX_CALLERS_SECTIONS:-$all_sections}"
+online=0
 for chosen in $sections; do
   [[ " $all_sections " == *" $chosen "* ]] || {
     printf 'one-inbox-callers.sh: ONE_INBOX_CALLERS_SECTIONS names %s, which is none of: %s\n' "$chosen" "$all_sections" >&2
     usage
     exit 2
   }
-done
-online=0
-for chosen in $sections; do
   [[ " $offline_sections " == *" $chosen "* ]] || online=1
 done
 # A section that reads the server reads what setup wrote, so setup runs whenever one does.
@@ -127,7 +125,7 @@ if [[ "$online" == 1 && " $sections " != *" setup "* ]]; then
 fi
 readonly sections online
 
-require_commands awk cmp cp git grep jq sed sort tar tr wc
+require_commands awk cmp cp git grep jq sed sort tr wc
 if [[ "$online" == 1 ]]; then
   require_env DISPATCH_URL PROJECT ISSUE_DATABASE_URL FAKE_ENVOY_PORT
   [[ -n "${BASELINE_SHA:-}" || -n "${BASELINE_BINARY:-}" ]] || {
@@ -135,7 +133,7 @@ if [[ "$online" == 1 ]]; then
     usage
     exit 2
   }
-  require_commands bash curl env kill openssl psql sleep
+  require_commands bash curl env kill openssl sleep
   [[ -n "${BASELINE_BINARY:-}" ]] || require_commands flock go tar
   for variable in FAKE_ENVOY_PORT FAKE_GITHUB_PORT FAKE_BROKER_PORT; do
     [[ -z "${!variable:-}" || "${!variable}" =~ ^[0-9]+$ ]] || {
@@ -226,11 +224,15 @@ request() {
 }
 
 # sign_in SECTION LOGIN: has the head's dev sign-in route sign LOGIN in, keeping the cookie in
-# $work/jar.LOGIN.
+# $work/jar.LOGIN. The route answers its sign-in with a redirect, and curl writes a jar's header
+# lines whatever the answer, so the jar holds a cookie only where it holds a cookie's line, whose
+# fields a tab parts.
 sign_in() {
-  curl -sS -o /dev/null -c "$work/jar.$2" "$base/auth/_dev/signin?login=$(q "$2")" 2>"$work/curl" ||
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -c "$work/jar.$2" "$base/auth/_dev/signin?login=$(q "$2")" 2>"$work/curl")" ||
     fail "$1" "sign $2 in" "curl: $(<"$work/curl")"
-  [[ -s "$work/jar.$2" ]] || fail "$1" "sign $2 in" "the dev sign-in route left no cookie"
+  [[ "$code" == 302 ]] || fail "$1" "sign $2 in" "the dev sign-in route answered HTTP $code, want 302"
+  grep -q $'\t' "$work/jar.$2" || fail "$1" "sign $2 in" "the dev sign-in route left no cookie"
   pass "$1" "signed $2 in"
 }
 
@@ -302,7 +304,8 @@ setup_base() {
       set -euo pipefail
       binary="$1" commit="$2" repo="$3" tree="$4"
       [[ -x "$binary" ]] && exit 0
-      rm -rf "$tree" && mkdir -p "$tree"
+      rm -rf "$tree"
+      mkdir -p "$tree"
       git -C "$repo" archive "$commit" | tar -x -C "$tree"
       go -C "$tree/packages/envoy" build -ldflags "-X main.buildCommit=$commit" -o "$binary.partial" ./cmd/dispatch
       mv "$binary.partial" "$binary"
@@ -391,23 +394,25 @@ setup_seed() {
   pass "$section" "the head lists $(wc -l <"$work/seed.agents") sessions"
 }
 
+# setup_section: setup's two halves, each isolated, the section recorded as failed when either
+# fails. It is run as a command of its own, never under an `||`, which would turn errexit off in
+# both isolated halves (isolated).
 setup_section() {
   local failed=0
   isolated setup_base
   [[ "$isolated_status" == 0 ]] || failed=1
   isolated setup_seed
   [[ "$isolated_status" == 0 ]] || failed=1
-  return "$failed"
+  [[ "$failed" == 0 ]] || failed_sections+=(setup)
 }
 
 # --- callers: no read of the three paths in the four trees and the e2e suite ----------------------
 
-# The four trees the check names, and the e2e suite beside them. A spec of that suite reads no
-# route itself; it waits for, stubs or holds the page's own request by its path. A wait on a path
-# the page no longer reads compiles and lints clean, and fails only in a browser run, where it
-# times out. Two did, in a browser lane of this branch: heavy-bodies.e2e.ts and
-# refresh-freshness.e2e.ts each waited for GET /api/v1/inbox, written as a regex with escaped
-# slashes. So the search reads the suite too, beyond the four trees the check names.
+# The four trees the check names, and the e2e suite beside them. The suite's specs wait for, stub
+# or hold the page's own requests by their paths, and a wait on a path the page no longer reads
+# compiles and lints clean and fails only in a browser run, where it times out; such a wait is as
+# often a regex with escaped slashes as a literal. So the search reads the suite too, beyond the
+# four trees the check names, and spares by path the few of its files that read a route.
 readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packages/pi-envoy/src packages/claude-envoy/src packages/dispatch/e2e)
 # The files of the suite that name a read of the three on purpose, each by its exact path:
 # - inbox-unchanged.e2e.ts reads the base build's GET /api/v1/inbox?assignee= to compare the
@@ -490,16 +495,21 @@ callers_in() {
 
 callers_section() {
   local section=callers plant="$work/plant-callers" found
-  mkdir -p "$plant"
-  git -C "$repo" ls-files -z -- "${caller_trees[@]}" | tar -C "$repo" --null -T - -cf - | tar -C "$plant" -xf - ||
-    fail "$section" "copy the five trees" "tar failed"
-  # A read of each path, and a send far enough below them that no read is within its six lines.
+  # The scratch tree holds the five trees and what is planted in them alone: the run over the
+  # repository below reads the real trees, where a file no longer spared fails that run.
+  local tree
+  for tree in "${caller_trees[@]}" packages/dispatch/e2e/__recordings__; do
+    mkdir -p "$plant/$tree"
+  done
+  # A read of each path, in a template and in a segment list, and a send far enough below them
+  # that no read is within its six lines.
   cat >"$plant/packages/pi-envoy/src/planted-caller.ts" <<'TS'
 export async function planted(base: string, session: string, client: { json: Function }) {
   const replies = await fetch(`${base}/api/v1/me/replies?kind=reply`);
   const asks = await client.json("GET", ["api", "v1", "inbox"], undefined, { assignee: "me" });
   const thread = await fetch(`${base}/api/v1/agents/${session}/messages`);
-
+  const mine = await client.json("GET", ["api", "v1", "me", "replies"]);
+  const theirs = await client.json("GET", ["api", "v1", "agents", session, "messages"]);
 
 
 
@@ -507,12 +517,12 @@ export async function planted(base: string, session: string, client: { json: Fun
 
 
   await fetch(`${base}/api/v1/agents/${session}/messages`, { method: "POST", body: "{}" });
-  return [replies, asks, thread];
+  return [replies, asks, thread, mine, theirs];
 }
 TS
   # A spec's waits on each path as regexes with escaped slashes - in a literal, and in the string
-  # a RegExp is built from - and two reads of string pieces joined by `+`; then a send helper
-  # given an escaped regex, as far below them.
+  # a RegExp is built from - two reads of string pieces joined by `+`, a wait on a glob and a read
+  # of a route pattern; then a send helper given a glob, as far below them.
   cat >"$plant/packages/dispatch/e2e/planted-caller.e2e.ts" <<'TS'
 export async function planted(page: Page, base: string, session: string) {
   await page.waitForRequest(/\/api\/v1\/inbox(\?|$)/);
@@ -520,39 +530,46 @@ export async function planted(page: Page, base: string, session: string) {
   await page.waitForResponse(/\/api\/v1\/agents\/[^/]+\/messages$/);
   const split = await fetch(base + "/api/v1/" + "inbox");
   const joined = await fetch(base + "/api/v1/agents/" + session + "/messages");
-  return [split, joined];
+  await page.waitForResponse("**/api/v1/me/replies*");
+  const route = { method: "GET", path: "/api/v1/agents/{session_id}/messages" };
+  return [split, joined, route];
 }
+
 
 
 
 
 
 export async function plantedSend(page: Page) {
-  await refusePosts(page, /\/api\/v1\/agents\/[^/]+\/messages$/);
+  await refusePosts(page, "**/api/v1/agents/*/messages");
 }
 TS
   # A script beside the recordings, which their sparing by extension still reads.
   printf '%s\n' 'await fetch("/api/v1/inbox");' >"$plant/packages/dispatch/e2e/__recordings__/planted-caller.ts"
-  found="$(callers_in "$plant")" || fail "$section" "search the scratch copy" "git grep failed"
+  found="$(callers_in "$plant")" || fail "$section" "search the scratch tree" "git grep failed"
   local want
   local -a wants=(
     "packages/pi-envoy/src/planted-caller.ts:2: GET /api/v1/me/replies"
     "packages/pi-envoy/src/planted-caller.ts:3: GET /api/v1/inbox"
     "packages/pi-envoy/src/planted-caller.ts:4: GET /api/v1/agents/{session_id}/messages"
+    "packages/pi-envoy/src/planted-caller.ts:5: GET /api/v1/me/replies"
+    "packages/pi-envoy/src/planted-caller.ts:6: GET /api/v1/agents/{session_id}/messages"
     "packages/dispatch/e2e/planted-caller.e2e.ts:2: GET /api/v1/inbox"
     "packages/dispatch/e2e/planted-caller.e2e.ts:3: GET /api/v1/me/replies"
     "packages/dispatch/e2e/planted-caller.e2e.ts:4: GET /api/v1/agents/{session_id}/messages"
     "packages/dispatch/e2e/planted-caller.e2e.ts:5: GET /api/v1/inbox"
     "packages/dispatch/e2e/planted-caller.e2e.ts:6: GET /api/v1/agents/{session_id}/messages"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:7: GET /api/v1/me/replies"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:8: GET /api/v1/agents/{session_id}/messages"
     "packages/dispatch/e2e/__recordings__/planted-caller.ts:1: GET /api/v1/inbox"
   )
   for want in "${wants[@]}"; do
     [[ "$found" == *"$want:"* ]] ||
-      fail "$section" "the search finds a planted read ($want) in a scratch copy of the five trees" "it found: ${found:-nothing}"
+      fail "$section" "the search finds a planted read ($want) in a scratch tree of the five trees" "it found: ${found:-nothing}"
   done
   [[ "$(grep -c . <<<"$found")" == "${#wants[@]}" ]] ||
-    fail "$section" "the search finds the ${#wants[@]} planted reads in the scratch copy, and nothing else" "it found: $found"
-  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch copy of the five trees - plain, in a template, in a segment list, regex-escaped and joined by + - and not the two planted sends, the spared files or anything else"
+    fail "$section" "the search finds the ${#wants[@]} planted reads in the scratch tree, and nothing else" "it found: $found"
+  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch tree of the five trees - plain, in a template, in a segment list, regex-escaped, joined by +, as a glob and as a route pattern - and not the two planted sends or anything else"
 
   found="$(callers_in "$repo")" || fail "$section" "search the five trees" "git grep failed"
   [[ -z "$found" ]] || fail "$section" "no read of the three paths in ${caller_trees[*]}" "$found"
@@ -584,16 +601,22 @@ readonly gone_patterns=(
   '[?&]one=1([^0-9A-Za-z]|$)|\.set\("one", "1"\)|\.get\("one"\) === "1"|\b(filter|route)\.one\b|\bone\?: true\b'
   'inbox\.one_read'
 )
-# One line each pattern matches, planted in the scratch copy.
+# The lines planted in the scratch copy, each `<index of the pattern it is planted for>|<line>`:
+# one for each alternative of each pattern.
 readonly gone_planted=(
-  'envoy-dispatch inbox-compare --old-url http://127.0.0.1:8780'
-  'import "github.com/sjawhar/envoy/internal/dispatch/inboxcompare"'
-  'select count(*) from inbox_comparison_runs'
-  '<Route element={<Page />} path="/inbox/comparison" />'
-  'api.getInboxComparison(): Promise<InboxComparisonResponse>'
-  'const ComparisonPage = lazy(() => import("./Page"));'
-  'return buildInboxPath({ one: true }); // "/?one=1"'
-  'readPreference("inbox.one_read")'
+  '0|envoy-dispatch inbox-compare --old-url http://127.0.0.1:8780'
+  '1|import "github.com/sjawhar/envoy/internal/dispatch/inboxcompare"'
+  '2|select count(*) from inbox_comparison_runs'
+  '3|<Route element={<Page />} path="/inbox/comparison" />'
+  '4|api.getInboxComparison(): Promise<InboxComparisonResponse>'
+  '4|export const INBOX_COMPARISON = true;'
+  '5|const ComparisonPage = lazy(() => import("./Page"));'
+  '6|return buildInboxPath({ one: true }); // "/?one=1"'
+  '6|params.set("one", "1");'
+  '6|const opted = params.get("one") === "1";'
+  '6|if (filter.one) return true;'
+  '6|type InboxFilter = { one?: true };'
+  '7|readPreference("inbox.one_read")'
 )
 # Frozen history, and the two migrations whose text cannot change once applied: the one that made
 # the comparison's table and this branch's that drops it. And this file, which names them all.
@@ -620,28 +643,31 @@ gone_in() {
   [[ -n "$hits" ]] || return 0
   for index in "${!gone_patterns[@]}"; do
     while IFS= read -r hit; do
-      [[ -z "$hit" ]] || printf '%s: %s\n' "${gone_names[$index]}" "$(head -c 200 <<<"$hit")"
+      printf '%s: %s\n' "${gone_names[$index]}" "$(head -c 200 <<<"$hit")"
     done < <(grep -E "^[^:]+:[0-9]+:.*(${gone_patterns[$index]})" <<<"$hits" || true)
   done
 }
 
 gone_section() {
-  local section=gone plant="$work/plant-gone" found index
+  local section=gone plant="$work/plant-gone" found entry line=0 file
   # The planted lines stand in a file at a path the search reads (web/src/app.tsx), and one each
   # under the frozen history the search spares, so the planted run shows both that it finds a
   # line where it should and that it spares where it should.
   mkdir -p "$plant/packages/dispatch/web/src" "$plant/docs/plans" "$plant/packages/contracts"
-  printf '%s\n' "${gone_planted[@]}" >"$plant/packages/dispatch/web/src/app.tsx"
-  printf '%s\n' "${gone_planted[@]}" >"$plant/docs/plans/frozen.md"
-  printf '%s\n' "${gone_planted[@]}" >"$plant/packages/contracts/CHANGELOG.md"
+  for file in packages/dispatch/web/src/app.tsx docs/plans/frozen.md packages/contracts/CHANGELOG.md; do
+    for entry in "${gone_planted[@]}"; do
+      printf '%s\n' "${entry#*|}"
+    done >"$plant/$file"
+  done
   found="$(gone_in "$plant")" || fail "$section" "search the scratch copy" "git grep failed"
-  for index in "${!gone_patterns[@]}"; do
-    [[ "$found" == *"${gone_names[$index]}: packages/dispatch/web/src/app.tsx:$((index + 1)):"* ]] ||
-      fail "$section" "the search finds ${gone_names[$index]} planted in a scratch copy" "it found: ${found:-nothing}"
+  for entry in "${gone_planted[@]}"; do
+    line=$((line + 1))
+    [[ "$found" == *"${gone_names[${entry%%|*}]}: packages/dispatch/web/src/app.tsx:$line:"* ]] ||
+      fail "$section" "the search finds ${gone_names[${entry%%|*}]} planted in a scratch copy as ${entry#*|}" "it found: ${found:-nothing}"
   done
   [[ "$found" != *docs/plans/* && "$found" != *CHANGELOG.md* ]] ||
     fail "$section" "the search spares frozen history" "it found: $found"
-  pass "$section" "the search finds each of the ${#gone_patterns[@]} names planted in a scratch copy, and spares frozen history"
+  pass "$section" "the search finds each of the ${#gone_planted[@]} lines planted in a scratch copy, one for each alternative of the ${#gone_patterns[@]} names, and spares frozen history"
 
   found="$(gone_in "$repo")" || fail "$section" "search the tree" "git grep failed"
   [[ -z "$found" ]] || fail "$section" "no tracked file but frozen history names the comparison or the opt-in" "$found"
@@ -716,16 +742,23 @@ old_routes_section() {
 
 # --- isolation and default: the one read, a person's own ----------------------------------------
 
-# one_read_entry PERSON KIND ID: reads PERSON's one read with no query, and sets $entry to the
-# relations that tie KIND/ID to PERSON there, as `kind direction` sorted and space-separated, or
-# empty where the read holds no such entry, and $read_person to the person the read names.
-one_read_entry() {
-  request "$1" head GET /api/v1/me/inbox
-  want_status 200 "$section" "read $1's one read"
-  read_person="$(jq -r '.person' "$work/body")" || fail "$section" "read $1's one read" "$(body)"
+# one_read SECTION PERSON: reads PERSON's one read with no query into $work/one-read.json, and
+# sets $read_person to the person the read names.
+one_read() {
+  request "$2" head GET /api/v1/me/inbox
+  want_status 200 "$1" "read $2's one read"
+  cp "$work/body" "$work/one-read.json"
+  read_person="$(jq -r '.person' "$work/one-read.json")" || fail "$1" "read $2's one read" "$(body)"
+}
+
+# entry_of SECTION KIND ID: sets $entry to the relations that tie KIND/ID to the person in the one
+# read one_read read last, as `kind direction` sorted and space-separated, or empty where the read
+# holds no such entry.
+entry_of() {
   entry="$(jq -r --arg k "$2" --arg i "$3" '
     [.entries[]? | select(.node.kind == $k and .node.id == $i) | .relations[]? | .kind + " " + .direction]
-    | sort | join(" ")' "$work/body")" || fail "$section" "read $1's one read" "$(body)"
+    | sort | join(" ")' "$work/one-read.json")" ||
+    fail "$1" "read the one read's entry of $2 $3" "$(head -c 600 "$work/one-read.json")"
 }
 
 isolation_section() {
@@ -735,12 +768,13 @@ isolation_section() {
     [[ "$who" == first ]] || other=first
     mine="$(seeded "$section" "${who}_comment")"
     theirs="$(seeded "$section" "${other}_comment")"
-    one_read_entry "${!who}" comment "$mine"
+    one_read "$section" "${!who}"
+    entry_of "$section" comment "$mine"
     own="$entry"
     [[ "$read_person" == "${!who}" ]] || fail "$section" "${!who}'s one read is ${!who}'s" "it names $read_person"
     [[ "$own" == *"authored_by "* ]] ||
       fail "$section" "${!who}'s one read holds the comment ${!who} wrote" "its entry's relations: '${own:-no entry}'"
-    one_read_entry "${!who}" comment "$theirs"
+    entry_of "$section" comment "$theirs"
     foreign="$entry"
     [[ -z "$foreign" ]] ||
       fail "$section" "${!who}'s one read holds nothing of ${!other}'s comment" "it holds it, by: $foreign"
@@ -752,7 +786,8 @@ default_section() {
   local section=default comment entry
   comment="$(seeded "$section" first_comment)"
   # GET /api/v1/me/inbox with no query at all: no state, no limit and no opt-in.
-  one_read_entry "$first" comment "$comment"
+  one_read "$section" "$first"
+  entry_of "$section" comment "$comment"
   [[ "$entry" == *"authored_by "* ]] ||
     fail "$section" "the one read answers $first's unanswered comment by default" "its entry's relations: '${entry:-no entry}'"
   pass "$section" "the one read, read with no query and so with no opt-in, answers $first the comment nobody answered ($entry)"
@@ -829,7 +864,7 @@ readonly name_files=(
   packages/dispatch/web/src/api/client.ts
   packages/dispatch/web/src/api/queries.ts
 )
-readonly name_kinds="path handler shape operation contract-type client-method query query-key"
+readonly name_kinds="handler shape operation contract-type client-method query query-key"
 
 # names_of ROOT PATH: every name the read at PATH goes by under ROOT, one `<kind> <name>` each: its
 # path; its handler, from its row in api/routes_table.go; its response and parameter shapes, from
@@ -837,7 +872,7 @@ readonly name_kinds="path handler shape operation contract-type client-method qu
 # own, in the generated contract; the web client's method that reads it; and the query that calls
 # that method, with the words of its key.
 names_of() {
-  local root="$1" path="$2" api="$1/packages/envoy/internal/dispatch/api" contract operation type method
+  local path="$2" api="$1/packages/envoy/internal/dispatch/api" contract operation type method
   local generated="$1/packages/contracts/src/dispatch-api.generated.ts" web="$1/packages/dispatch/web/src/api"
   printf 'path %s\n' "$path"
   grep -F "{http.MethodGet, \"$path\"," "$api/routes_table.go" | sed -nE 's/.*s\.([A-Za-z0-9_]+)\},?[[:space:]]*$/handler \1/p'
@@ -875,16 +910,15 @@ names_of() {
 
 # named_inbox ROOT: the names of the open-asks read and the session-conversation read under ROOT
 # that hold the word inbox, any case, as `<path>: <kind> <name>`; a read for which a kind yields
-# no name fails, since a reading that found nothing would hold no inbox either.
+# no name fails, since a reading that found nothing would hold no inbox either. Every name it reads
+# is added to $work/names, one per line.
 named_inbox() {
   local root="$1" path kind names
   for path in /api/v1/asks/open "/api/v1/agents/{session_id}/conversation"; do
     names="$(names_of "$root" "$path")"
+    printf '%s\n' "$names" >>"$work/names"
     for kind in $name_kinds; do
-      grep -q "^$kind " <<<"$names" || {
-        printf 'MISSING %s: no %s read\n' "$path" "$kind"
-        continue
-      }
+      grep -q "^$kind " <<<"$names" || printf 'MISSING %s: no %s read\n' "$path" "$kind"
     done
     grep -i 'inbox' <<<"$names" | sed "s#^#$path: #" || true
   done
@@ -896,30 +930,32 @@ names_section() {
     mkdir -p "$plant/$(dirname "$file")"
     cp "$repo/$file" "$plant/$file" || fail "$section" "copy $file" "cp failed"
   done
-  # One name of each kind planted: a handler, a response shape, a contract type, a client method
-  # (and the query's call of it) and the words of two keys.
+  # One name of each kind but the path planted: a handler, a response shape, an operation, a
+  # contract type, a client method (and the query's call of it), a query and the words of two keys.
   sed -i 's/s\.listOpenAsks},/s.listInboxOpenAsks},/' "$plant/${name_files[0]}"
   sed -i 's/Response: openAsksResponse{}/Response: openAsksInboxResponse{}/' "$plant/${name_files[1]}"
-  sed -i 's/\["OpenAsksResponse"\]/["OpenAsksInboxResponse"]/' "$plant/${name_files[2]}"
+  sed -i -e 's/\["OpenAsksResponse"\]/["OpenAsksInboxResponse"]/' -e 's/getApiV1AsksOpen/getApiV1InboxAsksOpen/g' \
+    "$plant/${name_files[2]}"
   sed -i 's/^  getAgentConversation(/  getAgentInboxConversation(/' "$plant/${name_files[3]}"
   sed -i -e 's/api\.getAgentConversation(/api.getAgentInboxConversation(/' \
     -e 's/^export const openAsksKey = \["open-asks"\]/export const openAsksKey = ["open-asks-inbox"]/' \
     -e 's/queryKey: \["agents", sessionId, "conversation"\]/queryKey: ["agents", sessionId, "inbox-conversation"]/' \
+    -e 's/^export const agentConversationQuery = /export const agentInboxConversationQuery = /' \
     "$plant/${name_files[4]}"
   found="$(named_inbox "$plant")"
-  for want in "handler listInboxOpenAsks" "shape openAsksInboxResponse" "contract-type OpenAsksInboxResponse" \
-    "client-method getAgentInboxConversation" "query-key open-asks-inbox" "query-key inbox-conversation"; do
+  for want in "handler listInboxOpenAsks" "shape openAsksInboxResponse" "operation getApiV1InboxAsksOpen" \
+    "contract-type OpenAsksInboxResponse" "client-method getAgentInboxConversation" \
+    "query agentInboxConversationQuery" "query-key open-asks-inbox" "query-key inbox-conversation"; do
     [[ "$found" == *": $want"* ]] ||
       fail "$section" "the reading of the two reads' names finds the planted $want in a scratch copy" "it found: ${found:-nothing}"
   done
-  pass "$section" "the reading of the two reads' names finds the six names planted in a scratch copy"
+  pass "$section" "the reading of the two reads' names finds the eight names planted in a scratch copy"
 
+  : >"$work/names"
   found="$(named_inbox "$repo")"
   [[ -z "$found" ]] ||
-    fail "$section" "no path, handler, shape, contract type, client method or query key of the two reads is named inbox" "$found"
-  local count
-  count="$( (names_of "$repo" /api/v1/asks/open && names_of "$repo" "/api/v1/agents/{session_id}/conversation") | wc -l)"
-  pass "$section" "none of the $count names of GET /api/v1/asks/open and GET /api/v1/agents/{session_id}/conversation holds the word inbox"
+    fail "$section" "no path, handler, shape, operation, contract type, client method, query or query key of the two reads is named inbox" "$found"
+  pass "$section" "none of the $(wc -l <"$work/names") names of GET /api/v1/asks/open and GET /api/v1/agents/{session_id}/conversation holds the word inbox"
 }
 
 # --- the run -----------------------------------------------------------------------------------
@@ -929,7 +965,7 @@ names_section() {
 failed_sections=()
 run_section() {
   if [[ "$1" == setup ]]; then
-    setup_section || failed_sections+=(setup)
+    setup_section
     return 0
   fi
   isolated "$1_section"

@@ -205,7 +205,7 @@ export function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Lo
     }
     return looks;
   }
-  if (cache !== "inbox") return looks;
+  if (cache !== "openAsks") return looks;
   const rows = new Map<string, OpenAskRow[]>();
   for (const row of data as OpenAskRow[]) {
     if (row.issue_key === null) continue;
@@ -282,11 +282,13 @@ function defaultAssignee(client: QueryClient, issueKey: string): string | undefi
 /** Which of the caches a pick shows on the query under `queryKey` is: an issue's detail, a list
  *  of issues (`issueLists`), a read of the open asks (`openAsksKey`, which draws Inbox rows), or
  *  the one read's Inbox answer (`oneReadKey`); undefined for any other. */
-export function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | "oneRead" | undefined {
+export function cacheOf(
+  queryKey: QueryKey
+): "detail" | "list" | "oneRead" | "openAsks" | undefined {
   const [head, second] = queryKey;
   if (head === "issue" && queryKey.length === 2) return "detail";
   if (head === "issues" && issueLists.includes(second)) return "list";
-  if (head === openAsksKey[0]) return "inbox";
+  if (head === openAsksKey[0]) return "openAsks";
   const oneRead =
     queryKey.length === oneReadKey.length &&
     oneReadKey.every((part, index) => queryKey[index] === part);
@@ -332,7 +334,7 @@ function shownOnOneRead(
   let next: MeInboxEntry[] | undefined;
   for (const [index, entry] of entries.entries()) {
     const { ask } = entry;
-    if (ask === undefined || ask === null) {
+    if (ask === undefined) {
       next?.push(entry);
       continue;
     }
@@ -403,6 +405,6 @@ export function shownOn(
       )
     );
   }
-  if (cache === "inbox") return mapRows(data as OpenAskRow[], onInboxRow(client, showings));
+  if (cache === "openAsks") return mapRows(data as OpenAskRow[], onInboxRow(client, showings));
   return data;
 }

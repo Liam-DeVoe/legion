@@ -1,4 +1,4 @@
-import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
+import { INBOX_DISMISSED_PAGE, meInboxAsks } from "@legion/contracts";
 
 import {
   infiniteQueryOptions,
@@ -266,20 +266,16 @@ export const meInboxQuery = () =>
         answer = await api.getMeInbox({ state: "inbox" });
         return answer;
       } finally {
-        const asks =
-          answer === undefined
-            ? undefined
-            : (answer.entries ?? []).flatMap((entry) =>
-                entry.ask === undefined ? [] : [entry.ask]
-              );
-        finishInboxFetch(client, fetch, asks);
+        finishInboxFetch(client, fetch, answer === undefined ? undefined : meInboxAsks(answer));
       }
     },
   });
 
 /** The reader's count of unread threads, the `total` of the one read's `unread` state on a
  *  one-entry page: the sidebar's and the compact header's one Inbox number counts it beside the
- *  work waiting on them. One request per page load, never the unpaged read above. */
+ *  work waiting on them. A small read of its own rather than a count over the unpaged read above,
+ *  which every page makes as well (`useNeedsYouCount`): the number does not wait on that read to
+ *  show the unread threads. */
 export const meInboxCountQuery = () =>
   queryOptions({
     queryKey: [...meInboxKey, "count"],

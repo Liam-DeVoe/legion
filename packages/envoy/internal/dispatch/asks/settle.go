@@ -91,9 +91,10 @@ func Restored(state string, answer *model.AskAnswer) Change {
 	return Change{State: state, Answer: answer}
 }
 
-// Recorded is the whole answer state an event recorded - state, answer and resolution - as the
-// catch-up of the boot step reads it off an event a process of another build appended
-// (docs' decision step).
+// Recorded is the whole answer state an event or a row recorded - state, answer and resolution -
+// as the catch-up of the boot step reads it off an event a process of another build appended
+// (docs' decision step), and as the boot step's backfill reads it off an asks row written before
+// this release (AnswerFacts).
 func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolution) Change {
 	return Change{State: state, Answer: answer, Resolution: resolution}
 }
@@ -128,11 +129,10 @@ func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.
 	if change.From != "" && held.state != change.From {
 		return model.Ask{}, fmt.Errorf("settle ask %s from %s: it is %s: %w", askID, change.From, held.state, ErrStateMoved)
 	}
-	settled, err := planSettle(askID, change, held)
+	settled, err := planSettle(ctx, askID, change, held)
 	if err != nil {
 		return model.Ask{}, err
 	}
-	settled.fails = failsBetween(ctx, change)
 	if err := store.RunWrite(ctx, tx, settled.Queue); err != nil {
 		return model.Ask{}, err
 	}
@@ -164,8 +164,8 @@ type Settled struct {
 	// leaves is the row and the node as the change leaves them once written, which a later change
 	// of the same ask in the same transaction is planned from (PlanSettleAfter).
 	leaves heldAnswer
-	// fails is whether the write is the one a test armed a failure for between the answer's
-	// tuples and the asks row (failpoint.AskAnswer), decided as it was planned.
+	// fails is whether the write is the one a test armed a failure for between the node write of
+	// the answer and the asks row (failpoint.AskAnswer), decided as it was planned.
 	fails bool
 }
 
@@ -191,14 +191,12 @@ func PlanSettle(ctx context.Context, q RowQueryer, askID string, change Change) 
 	if err != nil {
 		return Settled{}, err
 	}
-	settled, err := planSettle(askID, change, held)
-	settled.fails = failsBetween(ctx, change)
-	return settled, err
+	return planSettle(ctx, askID, change, held)
 }
 
-// failsBetween is whether a test armed a failure for this change between the answer's tuples and
-// the asks row (failpoint.AskAnswer): only a change that writes an answer this release's writer
-// states in the store has that point, so no other change disarms it.
+// failsBetween is whether a test armed a failure for this change between the node write of the
+// answer and the asks row (failpoint.AskAnswer): only a change that writes an answer this
+// release's writer states in the store has that point, so no other change disarms it.
 func failsBetween(ctx context.Context, change Change) bool {
 	return change.storesAnswer() && failpoint.Planned(ctx, failpoint.AskAnswer)
 }
@@ -209,17 +207,16 @@ func failsBetween(ctx context.Context, change Change) bool {
 // returns. It reads nothing: what the second change keeps of the answer and the resolution, and
 // what it retracts on the node, is what the first leaves, which no read of the tables answers
 // before the write phase has run. It decides, as PlanSettle does, whether a test armed the failure
-// between the answer's tuples and the asks row for it (failpoint.AskAnswer), so every answer path
-// carries that point.
+// between the node write of the answer and the asks row for it (failpoint.AskAnswer), so every
+// answer path carries that point.
 func PlanSettleAfter(ctx context.Context, earlier Settled, change Change) (Settled, error) {
-	settled, err := planSettle(earlier.askID, change, earlier.leaves)
-	settled.fails = failsBetween(ctx, change)
-	return settled, err
+	return planSettle(ctx, earlier.askID, change, earlier.leaves)
 }
 
 // planSettle is PlanSettle over held, the row and the node as they were read, or as an earlier
-// change of this transaction leaves them.
-func planSettle(askID string, change Change, held heldAnswer) (Settled, error) {
+// change of this transaction leaves them. Once the change is planned it decides whether a test
+// armed the failure for it (failsBetween), so a change whose plan fails disarms nothing.
+func planSettle(ctx context.Context, askID string, change Change, held heldAnswer) (Settled, error) {
 	settled := Settled{
 		Ask:    model.Ask{ID: askID, State: change.State, Answer: change.Answer, Resolution: change.Resolution},
 		askID:  askID,
@@ -255,6 +252,7 @@ func planSettle(askID string, change Change, held heldAnswer) (Settled, error) {
 		}
 		settled.resolution = encoded
 	}
+	settled.fails = failsBetween(ctx, change)
 	return settled, nil
 }
 
@@ -302,8 +300,9 @@ func (s Settled) Queue(b *store.WriteBatch) error {
 	if s.change.Held == nil {
 		graphstore.QueueCaused(b, s.Held, s.change.Event)
 	}
-	// The point a test injects a failure through between the answer's tuples and the asks row
-	// that projects them (failpoint.AskAnswer), for an answer this release's writer writes.
+	// The point a test injects a failure through between the node write of the answer and the
+	// asks row (failpoint.AskAnswer), for an answer this release's writer writes: every such
+	// writer holds the answer's tuples for its later event (Change.Held), so they come after it.
 	failpoint.Queue(b, s.fails)
 	b.Queue("write the answer state of ask "+s.askID, `
 		update asks

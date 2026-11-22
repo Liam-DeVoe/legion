@@ -15,7 +15,7 @@ import type {
   Priorities,
   Project,
 } from "../api/types";
-import { answerOpenAsks, oneReadReply } from "../features/inbox/inbox-fixture";
+import { oneReadReply } from "../features/inbox/inbox-fixture";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { replyRow } from "../features/threads/replies-fixture";
 
@@ -90,17 +90,24 @@ function project(overrides: Partial<Project> = {}): Project {
 /** `pending` is the broker's list of credential requests waiting on the viewer; without it this
  *  Dispatch has no broker (the list answers `null`), and `"unreadable"` is a list whose first
  *  read failed. `priorities` is what the rail's summary call answers; by default this
- *  deployment has written none. `threads` are the reader's Reply rows. The reader's own asks and
- *  threads reach the Inbox count through the one read, which the Inbox draws them from; every
- *  ask is the server's open asks, a read the rail does not make. `unreadTotal` is the unread
- *  count's answer for a test that holds that read out itself: the one read's other reads answer
- *  at once. */
+ *  deployment has written none. `threads` are the reader's Reply rows. The reader's asks and
+ *  threads reach the Inbox count through the one read, which answers every ask below - one of
+ *  them waiting on an agent - so the count is the rail's own narrowing to the asks that wait on
+ *  the reader. `unreadTotal` is the unread count's answer for a test that holds that read out
+ *  itself: the one read's other reads answer at once. */
 function renderSidebar(
   pathname = "/",
-  pending?: CredentialPendingRow[] | "unreadable",
-  priorities: Priorities = summary(0, 0, false),
-  threads: readonly MyReplyRow[] = [],
-  unreadTotal?: Promise<number>
+  {
+    pending,
+    priorities = summary(0, 0, false),
+    threads = [],
+    unreadTotal,
+  }: {
+    pending?: CredentialPendingRow[] | "unreadable";
+    priorities?: Priorities;
+    threads?: readonly MyReplyRow[];
+    unreadTotal?: Promise<number>;
+  } = {}
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
   railSpies.push(listPriorities);
@@ -223,19 +230,17 @@ function renderSidebar(
       urgency: "med",
     },
   ];
-  const mine = asks.filter((ask) => ask.waiting_on_person === "alice");
   // The rail's one Inbox number adds the threads the reader has not read to the work waiting on
   // them, and draws no number at all until every read it adds up has answered, so the one read
   // is answered here for every test.
   railSpies.push(
     spyOn(api, "getMeInbox").mockImplementation(async (query = {}) => {
-      const answer = oneReadReply(query, { asks: mine, threads });
+      const answer = oneReadReply(query, { asks, threads });
       return query.state === "unread" && unreadTotal !== undefined
         ? { ...answer, total: await unreadTotal }
         : answer;
     })
   );
-  const listOpenAsks = answerOpenAsks(asks);
   const getCredentialPending = spyOn(api, "getCredentialPending");
   if (pending === "unreadable") {
     getCredentialPending.mockRejectedValue(new Error("the broker is unreachable"));
@@ -271,7 +276,6 @@ function renderSidebar(
   );
   return {
     getCredentialPending,
-    listOpenAsks,
     getIssue,
     listIssues,
     listPriorities,
@@ -295,7 +299,6 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -303,22 +306,23 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
 });
 
 test("sidebar counts a pending credential request in the Inbox count, beside the asks waiting on you", async () => {
-  const sidebar = renderSidebar("/", [
-    {
-      identifiers: ["DEMO_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-1",
-      requested_at: "2026-09-10T00:00:00Z",
-      session: { enrollment: null, request: null },
-    },
-  ]);
+  const sidebar = renderSidebar("/", {
+    pending: [
+      {
+        identifiers: ["DEMO_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-1",
+        requested_at: "2026-09-10T00:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+    ],
+  });
 
   try {
     expect(await screen.findByRole("link", { name: "Inbox 3" })).toBeTruthy();
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -329,25 +333,27 @@ test("sidebar counts a pending credential request in the Inbox count, beside the
 // can decide it any more, so the rail's count leaves it out: only the pending request is counted
 // beside the asks.
 test("sidebar leaves an expired credential request out of the Inbox count", async () => {
-  const sidebar = renderSidebar("/", [
-    {
-      identifiers: ["DEMO_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-1",
-      requested_at: "2026-09-10T00:00:00Z",
-      session: { enrollment: null, request: null },
-      state: "pending",
-    },
-    {
-      expires_at: "2026-09-10T01:00:00Z",
-      identifiers: ["DEEL_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-2",
-      requested_at: "2026-09-09T00:00:00Z",
-      session: { enrollment: null, request: null },
-      state: "expired",
-    },
-  ]);
+  const sidebar = renderSidebar("/", {
+    pending: [
+      {
+        identifiers: ["DEMO_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-1",
+        requested_at: "2026-09-10T00:00:00Z",
+        session: { enrollment: null, request: null },
+        state: "pending",
+      },
+      {
+        expires_at: "2026-09-10T01:00:00Z",
+        identifiers: ["DEEL_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-2",
+        requested_at: "2026-09-09T00:00:00Z",
+        session: { enrollment: null, request: null },
+        state: "expired",
+      },
+    ],
+  });
 
   try {
     expect(await screen.findByRole("link", { name: "Inbox 3" })).toBeTruthy();
@@ -355,7 +361,6 @@ test("sidebar leaves an expired credential request out of the Inbox count", asyn
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -371,7 +376,6 @@ test("sidebar marks the current project", async () => {
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -389,7 +393,6 @@ test("sidebar never requests the full issue list", async () => {
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -408,12 +411,9 @@ for (const [unread, name] of [
       kind: "user",
       login: "alice",
     });
-    const sidebar = renderSidebar(
-      "/",
-      undefined,
-      undefined,
-      Array.from({ length: unread }, (_, index) => replyRow(`c${index}`))
-    );
+    const sidebar = renderSidebar("/", {
+      threads: Array.from({ length: unread }, (_, index) => replyRow(`c${index}`)),
+    });
 
     try {
       await waitFor(() =>
@@ -426,7 +426,6 @@ for (const [unread, name] of [
     } finally {
       sidebar.view.unmount();
       sidebar.getCredentialPending.mockRestore();
-      sidebar.listOpenAsks.mockRestore();
       sidebar.getIssue.mockRestore();
       sidebar.listIssues.mockRestore();
       sidebar.listProjects.mockRestore();
@@ -445,7 +444,7 @@ test("the rail draws no Inbox number while a read it adds up is out, and the sum
     login: "alice",
   });
   const counted = Promise.withResolvers<number>();
-  const sidebar = renderSidebar("/", undefined, undefined, [], counted.promise);
+  const sidebar = renderSidebar("/", { unreadTotal: counted.promise });
 
   try {
     // Two asks wait on alice, so the old sum would have read `Inbox 2` here.
@@ -458,7 +457,6 @@ test("the rail draws no Inbox number while a read it adds up is out, and the sum
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -472,7 +470,7 @@ test("the rail draws no Inbox number after the credential list's first read fail
     kind: "user",
     login: "alice",
   });
-  const sidebar = renderSidebar("/", "unreadable");
+  const sidebar = renderSidebar("/", { pending: "unreadable" });
 
   try {
     const inbox = await screen.findByRole("link", { name: "Inbox" });
@@ -480,7 +478,6 @@ test("the rail draws no Inbox number after the credential list's first read fail
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -532,7 +529,7 @@ test("sidebar keeps its hide control available while navigation loads", async ()
 // The rail's Priorities entry (INFRA-2947, R8): the way to the page from every other page, with
 // the number of faults now beside it, which is the two fault counts added.
 test("the rail's Priorities entry opens the page and counts both faults as one number", async () => {
-  const sidebar = renderSidebar("/", undefined, summary(5, 7));
+  const sidebar = renderSidebar("/", { priorities: summary(5, 7) });
 
   try {
     const entry = await screen.findByRole("link", { name: /^Priorities/ });
@@ -541,7 +538,6 @@ test("the rail's Priorities entry opens the page and counts both faults as one n
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -560,7 +556,6 @@ test("the rail's Priorities entry carries no number where no priority exists", a
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();

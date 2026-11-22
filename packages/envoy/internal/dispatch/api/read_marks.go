@@ -29,10 +29,11 @@ import (
 //     deletes (removeArtifact, api/artifact_removal.go).
 //
 // The one writer of a thread states the rest: a person's own write moves their read mark
-// (inboxwrite.Record's queueKeepRow), and their own answer or reply also states their dismissal of
-// the thread - dismissed to its root, on their user_threads row or, under an Agent thread, on their
-// user_agent_thread_dismissed row at its root (the own-answer rule, R1); a write by somebody else
-// retracts their dismissal, of a Reply thread or of an Agent thread, as it clears the row.
+// (inboxwrite.Record's step 5, queueKeepRow), and their own answer or reply also states their
+// dismissal of the thread - dismissed to its root, on their user_threads row or, under an Agent
+// thread, on their user_agent_thread_dismissed row at its root (the own-answer rule, R1); a write
+// by somebody else retracts their dismissal, of a Reply thread or of an Agent thread, as it clears
+// the row.
 //
 // Each route's statement answers exactly what it stored - the rows it moved, at the moment each
 // now holds - and each tuple states that and nothing more: a mark only moves forward, a row a
@@ -48,7 +49,8 @@ import (
 
 // personMark is the tuple of one mark a route's write states from its caller's person node: kind
 // from the person to toKind/toID at the mark's own moment at, asserted for a mark the write made
-// and retracted for one it ended, made by actor and caused by event. The person is the actor's
+// and retracted for one it ended, made by actor and caused by event: graphstore.LatestEvent for
+// every route, which queues the mark right after the event it appends. The person is the actor's
 // login as the route read it, which graphstore.FromPerson canonicalises, so the raw actor id
 // user_agent_state keys its Clear on and the canonical login every other table keys on name one
 // node.

@@ -7,8 +7,9 @@ import type {
 } from "@legion/contracts";
 import {
   awaitsDecision,
-  inboxEntryRow,
   inboxThreadRow,
+  meInboxAsks,
+  meInboxThreads,
   serviceSubjectLabel,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -182,23 +183,6 @@ function inboxAskLine(row: OpenAskRow): string {
   return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
 }
 
-/** The open asks one answer of the one read carries, each as its ask row. */
-function meInboxAsks(answer: MeInboxResponse): OpenAskRow[] {
-  return (answer.entries ?? []).flatMap((entry) => {
-    const row = inboxEntryRow(entry);
-    return row.kind === "ask" ? [row.ask] : [];
-  });
-}
-
-/** The Reply and Agent rows one answer of the one read carries, in its order. */
-function meInboxThreads(answer: MeInboxResponse): MyReplyRow[] {
-  return (answer.entries ?? []).flatMap((entry): MyReplyRow[] => {
-    const row = inboxEntryRow(entry);
-    if (row.kind === "thread") return [row.thread];
-    return row.kind === "agent" ? [row.agent] : [];
-  });
-}
-
 /** A time as the server's `time.RFC3339Nano` writes it, as two parts that order it: its whole
  *  second in epoch milliseconds, then its fraction's digits padded to nanoseconds. `Date.parse`
  *  reads milliseconds alone, and the fraction is not fixed-width, so neither the parse nor the
@@ -209,21 +193,25 @@ function inboxInstant(at: string): readonly [number, string] {
   return [Date.parse(at.replace(/\.\d+/, "")), fraction.padEnd(9, "0")];
 }
 
-/** Which of two asks the summary prints first: the order the Inbox's read of every ask answered
- *  them in, which the command printed before it read the one read, whose entries are newest
- *  activity first. The issue's priority, none last; a person's turn before an agent's; the
- *  newest activity, the last reply else the ask's opening; then the greater id. */
-function inboxAskOrder(a: OpenAskRow, b: OpenAskRow): number {
+/** The asks in the order the summary prints them within a band: the issue's priority, none last;
+ *  a person's turn before an agent's; the newest activity, the last reply else the ask's opening;
+ *  then the greater id. Each ask's time is read once, not once per comparison. */
+function inboxAskOrder(rows: readonly OpenAskRow[]): OpenAskRow[] {
   const priority = (row: OpenAskRow) => row.priority ?? Number.POSITIVE_INFINITY;
-  if (priority(a) !== priority(b)) return priority(a) - priority(b);
   const turn = (row: OpenAskRow) => (row.waiting_on === "human" ? 0 : 1);
-  if (turn(a) !== turn(b)) return turn(a) - turn(b);
-  const [aSecond, aFraction] = inboxInstant(a.last_reply?.created_at ?? a.created_at);
-  const [bSecond, bFraction] = inboxInstant(b.last_reply?.created_at ?? b.created_at);
-  if (aSecond !== bSecond) return bSecond - aSecond;
-  if (aFraction !== bFraction) return aFraction > bFraction ? -1 : 1;
-  if (a.id === b.id) return 0;
-  return a.id > b.id ? -1 : 1;
+  const keyed = rows.map((row) => ({
+    at: inboxInstant(row.last_reply?.created_at ?? row.created_at),
+    row,
+  }));
+  keyed.sort(({ at: [aSecond, aFraction], row: a }, { at: [bSecond, bFraction], row: b }) => {
+    if (priority(a) !== priority(b)) return priority(a) - priority(b);
+    if (turn(a) !== turn(b)) return turn(a) - turn(b);
+    if (aSecond !== bSecond) return bSecond - aSecond;
+    if (aFraction !== bFraction) return aFraction > bFraction ? -1 : 1;
+    if (a.id === b.id) return 0;
+    return a.id > b.id ? -1 : 1;
+  });
+  return keyed.map(({ row }) => row);
 }
 
 /** What an unread thread's line is named by: the issue key of a thread on an issue, the slug of
@@ -325,8 +313,8 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
  * with its count, then the rows under it, in the order the page bands them. The asks within a
- * band are in the order the Inbox read answered them before the one read (`inboxAskOrder`), and
- * the threads in the one read's own order, which nothing re-sorts.
+ * band are in `inboxAskOrder`, and the threads in the one read's own order, which nothing
+ * re-sorts.
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
@@ -400,7 +388,7 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
     throw refusalWithCode(error);
   }
   const viewer = whoamiPerson(identity);
-  const rows = meInboxAsks(inbox).sort(inboxAskOrder);
+  const rows = inboxAskOrder(meInboxAsks(inbox));
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none.

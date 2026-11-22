@@ -217,9 +217,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	rowID := ask.ID
 	// The person this question reaches, read here in the read phase, under the owner's lock
-	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
-	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
-	// new ask is handed to nobody, so the rule is read over its owner alone
+	// requireOpenOwnerStatusHoldingDefault took, through the rule every read of that person
+	// shares, so the caller is told whose Inbox it just landed in rather than having to read the
+	// ask again. A new ask is handed to nobody, so the rule is read over its owner alone
 	// (askWaitingOnPerson): the row itself is only queued below.
 	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, owner, nil)
 	if err != nil {
@@ -786,10 +786,11 @@ func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (strin
 // leaves an ask open but makes the author responsible for the next reply. An ask is open as the
 // Inbox picks it: its row's state and its node's (askOpenOf).
 //
-// The read is two statements on the pool: what the scope holds as of now - the moment it answers
-// in as_of, and whether an ask of it, in any state, opened at or after ?since= - and then the
-// rows, each an open-ask row (scanOpenAskRow) with this read's own fields beside it, finished as
-// every read of open asks on the pool finishes them (finishOpenAskRows). The moment is taken
+// The read is two statements on the pool, sent as one batch, which runs them in order and each in
+// a snapshot and at a statement_timestamp() of its own: what the scope holds as of now - the moment
+// it answers in as_of, and whether an ask of it, in any state, opened at or after ?since= - and then
+// the rows, each an open-ask row (scanOpenAskRow) with this read's own fields beside it, finished
+// as every read of open asks on the pool finishes them (finishOpenAskRows). The moment is taken
 // first, so a caller that sends it back as its next ?since= is told of every ask opened after it.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
@@ -837,21 +838,21 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		  and ($3 = '' or ` + askedOfPersonExpression + ` = $3)
 		  and ` + refs.VisibleKind(graphstore.KindAsk, "a.id::text", "$4")
 	visibility := refs.VisibilityArg(who)
+	// The snooze a row carries is the caller's own: the person the credential acts for, and none
+	// for a credential that acts for nobody.
+	snoozer, _ := actorPerson(who)
+	response := openAsksResponse{SessionID: sessionID, Asks: []openAsk{}}
 	var asOf time.Time
-	var openedSince bool
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+	batch := &pgx.Batch{}
+	batch.Queue(`
 		select statement_timestamp(), $5::timestamptz is not null and exists (
 			select 1 from asks a`+askedOfPersonJoins+`
 			where `+scope+` and a.created_at >= $5
 		)
-	`, sessionID, project, waitingOn, visibility, since).Scan(&asOf, &openedSince); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The snooze a row carries is the caller's own: the person the credential acts for, and none
-	// for a credential that acts for nobody.
-	snoozer, _ := actorPerson(who)
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+	`, sessionID, project, waitingOn, visibility, since).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&asOf, &response.OpenedSince)
+	})
+	batch.Queue(`
 		select `+openAskRowColumns+`,
 		       `+askItemRefExpression+`,
 		       greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint,
@@ -860,34 +861,25 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
 		  and `+scope+`
 		order by i.priority asc nulls last, a.created_at asc, a.id
-	`, sessionID, project, waitingOn, visibility, snoozer)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	defer rows.Close()
-	response := openAsksResponse{
-		SessionID:   sessionID,
-		AsOf:        timestampValue(asOf),
-		OpenedSince: openedSince,
-		Asks:        []openAsk{},
-	}
-	for rows.Next() {
-		var ask openAsk
-		row, err := scanOpenAskRow(rows, &ask.Ref, &ask.AgeSeconds, &ask.HumanReplied)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+	`, sessionID, project, waitingOn, visibility, snoozer).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			var ask openAsk
+			row, err := scanOpenAskRow(rows, &ask.Ref, &ask.AgeSeconds, &ask.HumanReplied)
+			if err != nil {
+				return err
+			}
+			ask.openAskRow = row
+			ask.Owner = openAskOwner{Issue: row.Issue, Document: row.Document}
+			ask.WaitingOn, ask.WaitingOnPerson = row.WaitingOn, row.WaitingOnPerson
+			response.Asks = append(response.Asks, ask)
 		}
-		ask.openAskRow = row
-		ask.Owner = openAskOwner{Issue: row.Issue, Document: row.Document}
-		ask.WaitingOn, ask.WaitingOnPerson = row.WaitingOn, row.WaitingOnPerson
-		response.Asks = append(response.Asks, ask)
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err := s.deps.Store.Pool.SendBatch(r.Context(), batch).Close(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	response.AsOf = timestampValue(asOf)
 	for _, ask := range response.Asks {
 		switch ask.WaitingOn {
 		case "human":

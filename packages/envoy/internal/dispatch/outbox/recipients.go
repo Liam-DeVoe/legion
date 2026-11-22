@@ -40,21 +40,21 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // commentRecipientsQuery is walkCommentThreads' one statement. $1 is the comment ids, $2
 // maxCommentThreadDepth. The walk up (up) finds each comment's thread root, and the walk down
 // (thread) reads every comment under that root, for legacy nested rows. The walk stops at two
-// limits, each of which ends what the other cannot.
+// limits.
 //
-//   - The union on the visited row ends a cycle. comments.reply_to carries no acyclicity
-//     constraint, so the walk up carries the ids it has visited (visited) and never steps onto
-//     one again: each row also carries its depth, so a lap of a cycle would otherwise be a row
-//     the union has not seen, and the walk would go round until the depth bound stopped it. A
-//     cycle has no reply_to-is-null row and so gives no root. The walk down needs no such guard:
-//     it starts from a root, whose reply_to is null, and each row it reaches replies to the row
-//     it came from, so it reaches no row twice.
-//   - The depth bound holds a chain of replies that never repeats a row: neither walk takes more
+//   - The visited guard stops a cycle at its first repeat. comments.reply_to carries no
+//     acyclicity constraint, so the walk up carries the ids it has visited (visited) and never
+//     steps onto one again (c.id <> all(u.visited)): each row also carries its depth, so a lap of
+//     a cycle would otherwise be a row the union has not seen, and the walk would go round until
+//     the depth bound stopped it. A cycle has no reply_to-is-null row and so gives no root. The
+//     walk down needs no such guard: it starts from a root, whose reply_to is null, and each row
+//     it reaches replies to the row it came from, so it reaches no row twice.
+//   - The depth bound stops a chain of replies that never repeats a row: neither walk takes more
 //     than $2 steps, so a chain that deep is answered whole and a longer one is cut at the bound.
 //     A cut is a row of its own in the answer: the key, no session, and cut set. The walk up was
-//     cut when a row it reached at the bound still replies to a row it has not visited - one it
-//     has visited is the cycle the visited guard ended, which cuts nothing - and the walk down
-//     when a row it reached at the bound has a reply.
+//     cut when a row it reached at the bound still replies to a row it has not visited - a row
+//     that replies to one it has visited closes a cycle, which cuts nothing (reply_to <>
+//     all(visited)) - and the walk down when a row it reached at the bound has a reply.
 //
 // The thread's members are both walks' comments, so a cycle or a cut chain still reaches the
 // authors of the comments the walk up visited, the replied-to comment's among them. The thread's

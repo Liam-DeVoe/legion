@@ -1,3 +1,4 @@
+import { meInboxAsks } from "@legion/contracts";
 import { hashKey, partialMatchKey, type QueryKey } from "@tanstack/react-query";
 
 import { askProject, type InboxListRow, rowProject } from "../features/inbox/list-row";
@@ -32,6 +33,7 @@ import type {
   GraphReferences,
   IssueDetails,
   IssueSummary,
+  MeInboxResponse,
   MyReplyRow,
   OpenAskRow,
 } from "./types";
@@ -1590,12 +1592,6 @@ function reaches(target: RefreshTarget, key: QueryKey): boolean {
 /** The one read's Inbox answer, which holds the reader's own open asks beside their threads. */
 const ONE_READ_INBOX = meInboxQuery().queryKey;
 
-/** The open asks one cached Inbox answer of the one read holds: its ask rows, in the shape the
- *  reads of the open asks answer, which a target's test of those reads takes. */
-function oneReadAsks(data: unknown): OpenAskRow[] {
-  return meInboxCachedRows(data).flatMap((row) => (row.kind === "ask" ? [row.ask] : []));
-}
-
 /**
  * What else an event's targets refresh: the one read, which holds the reader's own open asks
  * and the conversation of each Agent row besides the reads those come from. A target that reaches
@@ -1617,7 +1613,8 @@ function oneReadTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
           : {
               exact: true,
               queryKey: ONE_READ_INBOX,
-              when: (data, query) => when(oneReadAsks(data), query),
+              // The answer's ask rows, in the shape the reads of the open asks answer.
+              when: (data, query) => when(meInboxAsks(data as MeInboxResponse | undefined), query),
             }
       );
     }

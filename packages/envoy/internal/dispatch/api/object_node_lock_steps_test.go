@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -294,12 +293,13 @@ func (r *storeWriterRig) documentRemoval() storeWriter {
 // finds none, since a copy on no issue keeps no row. A broadcast takes no owner row: its copies
 // stand on no issue, and their events name no owner (events.Broker's lockEventOwner).
 //
-// The pages are there before every run (writeRecipientPages), so the hold is a lock of a row the
-// store holds, as a node write locks a page another write made. Each run waits out its own copies'
-// deliveries, which run behind its answer on the rig's one connection, so none of them stands in
-// front of the next run's write.
+// The pages are written before the first run (writeRecipientPages) and stay, so the hold is a lock
+// of a row the store holds, as a node write locks a page another write made. Each run waits out
+// its own copies' deliveries, which run behind its answer on the rig's one connection, so none of
+// them stands in front of the next run's write.
 func (r *storeWriterRig) broadcastCreate() storeWriter {
 	first := graphstore.SessionPageID("s1")
+	pages := false
 	return storeWriter{
 		name: "writeBroadcast to s2 and s1",
 		steps: []storeStep{
@@ -321,11 +321,14 @@ func (r *storeWriterRig) broadcastCreate() storeWriter {
 			threadRowsStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
-			r.writeRecipientPages(t)
+			if !pages {
+				r.writeRecipientPages(t)
+				pages = true
+			}
 			return storeWriterRun{write: func() error {
-				response := keyedRequest(t, r.call, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+				response := postBroadcast(t, r.call, map[string]any{
 					"body": "A broadcast the lock steps hold.", "delivery": "steer", "session_ids": []string{"s2", "s1"},
-				}, "alice", uuid.NewString())
+				}, "alice")
 				if err := statusOrError(response, http.StatusCreated); err != nil {
 					return err
 				}
@@ -345,9 +348,9 @@ func (r *storeWriterRig) broadcastCreate() storeWriter {
 // leaves them: a broadcast to both, through the rig's own server, whose deliveries it waits out.
 func (r *storeWriterRig) writeRecipientPages(t *testing.T) {
 	t.Helper()
-	response := keyedRequest(t, r.handler, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+	response := postBroadcast(t, r.handler, map[string]any{
 		"body": "Pages for the lock steps.", "delivery": "steer", "session_ids": []string{"s1", "s2"},
-	}, "alice", uuid.NewString())
+	}, "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("broadcast to s1 and s2: status=%d body=%s", response.Code, response.Body.String())
 	}

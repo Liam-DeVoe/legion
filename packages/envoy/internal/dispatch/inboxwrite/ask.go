@@ -32,7 +32,7 @@ type Ask struct {
 	// waitingOn is the person an open ask waits on (asks.AskedOfPersonExpression).
 	waitingOn string
 	// node is who made the ask's node, nil where the store holds none: an item the store holds no
-	// node of states no citation (refs' replaceRefsOf).
+	// node of states no citation (refs.PlanItemReplace).
 	node *model.Actor
 	// opened is the ask's own create event, ask.opened, and answered the ask.answered event of the
 	// older answer it holds, each graphstore.NoEvent where it owes nothing or the log holds none.
@@ -43,16 +43,16 @@ type Ask struct {
 	membersRead bool
 }
 
-// askEventTypes is the type list of the partial index events_ask_payload_id (migration 0030),
+// AskEventTypes is the type list of the partial index events_ask_payload_id (migration 0030),
 // which a read of an ask's events by payload->>'id' repeats beside the one type it reads, so the
 // planner can prove the index's predicate and read it (0134's lookup takes it the same way).
-const askEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited'`
+const AskEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited'`
 
-// ReadAsk reads askID as an answer writer must before its answer's update moves the ask's marker
-// (decision 16): the marker test of the ask's create and of the answer it holds, read off the
-// ask's own row, which passes the test while the marker is null; the person an open ask waits on,
-// over the issue, document and project rows that rule reads, which carry no marker of this
-// child's; the ask's node; and the event each owed write was recorded under. It is one statement,
+// ReadAsk reads askID as an answer writer must before its answer's update moves the ask's marker:
+// the marker test of the ask's create and of the answer it holds, read off the ask's own row,
+// which passes the test while the marker is null; the person an open ask waits on, over the
+// issue, document and project rows that rule reads, which carry no marker of this release's; the
+// ask's node; and the event each owed write was recorded under. It is one statement,
 // made in the answer's read phase and taking no row lock: every answer writer holds the owner lock
 // every writer of the ask takes first (store.LockOwner), the approval carry's included, under which
 // nothing it reads moves before the answer is written, and the answer's own update takes the row
@@ -86,12 +86,12 @@ func readAsk(ctx context.Context, tx pgx.Tx, askID string, withMembers bool) (As
 		       n.made_by,
 		       case when a.tuples_stored_at is null then (
 		           select e.id from events e
-		           where e.type in (`+askEventTypes+`) and e.type = 'ask.opened' and e.payload->>'id' = a.id::text
+		           where e.type in (`+AskEventTypes+`) and e.type = 'ask.opened' and e.payload->>'id' = a.id::text
 		           order by e.id limit 1
 		       ) end,
 		       case when a.answer->>'user' is not null and a.tuples_stored_at is distinct from (a.answer->>'at')::timestamptz then (
 		           select e.id from events e
-		           where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = a.id::text
+		           where e.type in (`+AskEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = a.id::text
 		             and (e.payload->'answer'->>'at')::timestamptz = (a.answer->>'at')::timestamptz
 		           order by e.id limit 1
 		       ) end,
@@ -144,9 +144,9 @@ type owed struct {
 	cites                      bool
 }
 
-// owedBy is every tuple of ask that the marker test still owes (decision 16, P11), which the
-// answer written to it appends before its own, because the update that writes the answer marks
-// the ask and the backfill then passes it by. ask is nil for a write that answers nothing.
+// owedBy is every tuple of ask that the marker test still owes, which the answer written to it
+// appends before its own, because the update that writes the answer marks the ask and the
+// backfill then passes it by. ask is nil for a write that answers nothing.
 //
 // Where the marker is null the ask's create owes its tuples, all under the ask's own create event,
 // ask.opened, and dated at its created_at, as the backfill dates them: the asker's
@@ -184,15 +184,8 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 			tuples.others = append(tuples.others, tuple)
 		}
 	}
-	delivered := func(login string, at time.Time, who model.Actor, event int64) {
-		tuples.deliveries = append(tuples.deliveries, graphstore.Tuple{
-			FromKind: graphstore.KindAsk, FromID: ask.id, Kind: graphstore.TupleDeliveredTo,
-			ToKind: graphstore.KindPerson, ToID: login,
-			At: at, Who: who, SourceEvent: event, Asserted: true,
-		})
-	}
 	if ask.createOwed {
-		if kind, id, named := graphstore.AuthorOf(ask.author); named && graphstore.AddressFits(id) {
+		if kind, id, named := storeAuthor(ask.author); named {
 			takesPart(kind, id, ask.createdAt, ask.author, ask.opened)
 		}
 		if ask.state == asks.StateOpen {
@@ -228,7 +221,7 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 			return owed{}, err
 		}
 		for _, login := range reached {
-			delivered(login, ask.answer.At, who, ask.answered)
+			tuples.deliveries = append(tuples.deliveries, deliveredTo(graphstore.KindAsk, ask.id, login, ask.answer.At, who, ask.answered))
 		}
 	}
 	return tuples, nil

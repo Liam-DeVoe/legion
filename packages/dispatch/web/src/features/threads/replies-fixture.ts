@@ -9,6 +9,7 @@ import type {
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
+import { oneReadAnswer } from "../inbox/inbox-fixture";
 import type { RepliesOwner } from "./useMarkThreadRead";
 
 /** One unread thread row for `threadId`, as the one read answers a Reply row: read through a
@@ -87,24 +88,29 @@ export function withConversation(row: MyReplyAgentRow, conversation: MessageRead
   return { ...row, conversation };
 }
 
-/** The one read's `unread` answer narrowed to one owner, holding the Reply rows `rows`, each an
- *  entry of its thread at its newest reply: what every thread mounted on that owner reads to
- *  learn whether it is unread (`meInboxOwnerQuery`). */
+/** The conversation the one read carries for `agentRow("message-1")`: the reader's message to
+ *  session `s1`, which nobody has answered yet. */
+export const AGENT_CONVERSATION: MessageRead = {
+  message: {
+    author: { id: "alice", kind: "user" },
+    body: "Please check the staging gate.",
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    id: "message-1",
+    in_reply_to: null,
+    issue_key: null,
+    reply_block: null,
+    target: "session:s1",
+  },
+  replies: [],
+};
+
+/** The one read's `unread` answer narrowed to one owner, holding the rows `rows`, each an entry of
+ *  its thread at its newest reply: what every thread mounted on that owner reads to learn whether
+ *  it is unread (`meInboxOwnerQuery`). */
 export function unreadSetAnswer(rows: readonly MyReplyRow[]): MeInboxResponse {
-  return {
-    as_of: "2026-10-12T00:00:00Z",
-    entries: rows.map((row) => ({
-      moment: row.reply.created_at,
-      node: { id: row.thread_id, kind: row.kind },
-      relations: [],
-      thread: row,
-    })),
-    horizon: 1,
-    limit: 200,
-    offset: 0,
-    person: "alice",
-    total: rows.length,
-  };
+  return { ...oneReadAnswer(rows, { asOf: "2026-10-12T00:00:00Z" }), limit: 200 };
 }
 
 /** Seeds the signed-in viewer (alice) and `owner`'s unread threads, so every thread mounted on

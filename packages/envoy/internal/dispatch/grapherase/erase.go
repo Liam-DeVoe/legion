@@ -160,7 +160,7 @@ func Erase(ctx context.Context, databaseURL, serverURL, kind, id, confirm string
 			"and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close", kind, id, kind)
 	}
 	if strings.TrimSpace(serverURL) == "" {
-		return nil, errors.New("dispatch.server_url is required to cut a redacted excerpt as the server's writers cut it; refusing to store an excerpt no writer stored")
+		return nil, errors.New("DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json) is required to cut a redacted excerpt as the server's writers cut it; refusing to store an excerpt no writer stored")
 	}
 	confirm = strings.TrimPrefix(strings.TrimSpace(confirm), "sha256:")
 	conn, err := store.Connect(ctx, databaseURL, eraseApplicationName)

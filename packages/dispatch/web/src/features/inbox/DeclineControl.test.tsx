@@ -19,7 +19,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
-import { issueAsk, openAsksAnswer } from "./inbox-fixture";
+import { answerOpenAsks, issueAsk } from "./inbox-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -488,9 +488,7 @@ test("an Inbox read asked while a decline is out waits for its answer, and bring
   // a question asked since.
   let served: OpenAskRow[] = [issueAsk({ id: open.id }), other];
   const after = [other, issueAsk({ id: "ask-3" })];
-  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
-    openAsksAnswer(served)
-  );
+  const listOpenAsks = answerOpenAsks(() => served);
   // Dispatch's own client (`main.tsx`), whose reads a write's holds keep back.
   const queryClient = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -565,9 +563,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
   const out = Promise.withResolvers<Ask>();
   const other = issueAsk({ id: "ask-2" });
   let served: OpenAskRow[] = [issueAsk({ id: open.id }), other];
-  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
-    openAsksAnswer(served)
-  );
+  const listOpenAsks = answerOpenAsks(() => served);
   const queryClient = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });

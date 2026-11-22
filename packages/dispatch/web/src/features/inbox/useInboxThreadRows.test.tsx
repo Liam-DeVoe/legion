@@ -8,25 +8,21 @@
  * never settles - React ends that loop by throwing "Maximum update depth exceeded" and the page
  * draws its error boundary instead of the reader's dismissed threads.
  *
- * The Inbox draws these rows from the one read alone, and the read it replaced is not asked.
+ * The Inbox draws these rows from the one read alone.
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
-import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
 import { meInboxDismissedQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow } from "../../api/types";
 import type { InboxShow } from "../refs/routes";
 import { replyRow } from "../threads/replies-fixture";
-import { answerOneRead, oneReadAnswer } from "./inbox-fixture";
+import { answerOneRead, ONE_READ_AS_OF, oneReadDismissedPages } from "./inbox-fixture";
 import { rowId } from "./list-row";
 import { useInboxThreadRows } from "./useInboxThreadRows";
-
-const AS_OF = "2026-10-12T02:00:00Z";
 
 /** Every API mock a test installed, restored after it. */
 const restores: { mockRestore: () => void }[] = [];
@@ -39,15 +35,12 @@ afterEach(() => {
 /** A client holding the sign-in read and one settled page of the one read's Dismissed view, so
  *  the hook renders over pages it never has to fetch. */
 function seeded(rows: readonly MyReplyRow[]): QueryClient {
-  restores.push(answerOneRead({ dismissed: rows }, { asOf: AS_OF }));
+  restores.push(answerOneRead({ dismissed: rows }));
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(meInboxDismissedQuery().queryKey, {
-    pageParams: [undefined],
-    pages: [oneReadAnswer(rows, { asOf: AS_OF })],
-  });
+  client.setQueryData(meInboxDismissedQuery().queryKey, oneReadDismissedPages(rows));
   return client;
 }
 
@@ -68,13 +61,11 @@ function Harness({ show = "dismissed" }: { show?: InboxShow }): ReactNode {
   );
 }
 
-/** The harness under `client`, at the Inbox page's address `path`. */
-function page(client: QueryClient, path = "/", show?: InboxShow): ReactNode {
+/** The harness under `client`, showing `show`. */
+function page(client: QueryClient, show?: InboxShow): ReactNode {
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <Harness show={show} />
-      </MemoryRouter>
+      <Harness show={show} />
     </QueryClientProvider>
   );
 }
@@ -104,26 +95,20 @@ test("the Dismissed pages are flattened once, so a second render over them sets 
   }
 });
 
-/** One answer of the one read holding `rows` as its Reply rows, in that order. */
-function threadsAnswer(rows: readonly MyReplyRow[]) {
-  return oneReadAnswer(rows, { asOf: AS_OF });
-}
-
 test("the Inbox's threads and its dismissed ones are the one read's", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  // A read of any route no handler answers fails the test that sent it (`__tests__/network.ts`),
-  // and none answers the read the one read replaced, so the page reaching it fails this test.
-  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async (query = {}) =>
-    threadsAnswer(query.state === "dismissed" ? [replyRow("c7")] : [replyRow("c1"), replyRow("c9")])
-  );
+  const getMeInbox = answerOneRead({
+    dismissed: [replyRow("c7")],
+    threads: [replyRow("c1"), replyRow("c9")],
+  });
   restores.push(getMeInbox);
 
-  const view = render(page(client, "/", "inbox"));
+  const view = render(page(client, "inbox"));
   try {
     await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
-    expect(document.querySelector("ul")?.getAttribute("data-as-of")).toBe(AS_OF);
-    view.rerender(page(client, "/", "dismissed"));
+    expect(document.querySelector("ul")?.getAttribute("data-as-of")).toBe(ONE_READ_AS_OF);
+    view.rerender(page(client, "dismissed"));
     await waitFor(() => expect(rowIds()).toEqual(["reply:c7"]));
     expect(getMeInbox.mock.calls.map(([query]) => query)).toEqual([
       { state: "inbox" },

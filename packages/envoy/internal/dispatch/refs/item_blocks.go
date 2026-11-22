@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -350,8 +351,9 @@ type ItemIndex struct {
 	held   []itemBlockLink
 	scope  ItemScope
 	// firstRefs is the item's own refs rows by target, read at the first indexing of an item whose
-	// row is stored (an older build's, the owed index, a rebuild): a link that first indexing
-	// inserts takes the row's created_at and source_seq for its target (queueBlockRefs).
+	// row is stored (an older build's, the owed index, a rebuild): the tuple that first indexing
+	// states of a link it inserts is dated by the row's created_at and carries its source_seq for
+	// its target (planItemBlocks), from the same refs row queueBlockRefs's insert copies them from.
 	firstRefs map[Target]itemRefRow
 	// own is an indexed ask's own refs rows, each with its kind and tuples_stored, and ownRead
 	// whether the read of the index made them (PlanOwnRefs).
@@ -673,11 +675,8 @@ func planItemBlocks(
 			if stored {
 				placedAt = row.createdAt
 			}
-			indexing.stated.Tuples = append(indexing.stated.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-				FromKind: BlockNodeKind, FromID: itemBlockNodeAddress(kind, itemID, id), Kind: graphstore.TuplePartOf,
-				ToKind: string(kind), ToID: itemID,
-				At: placedAt, Who: scope.makerOf(indexing.makers, id), Asserted: true,
-			}})
+			indexing.stated.Tuples = append(indexing.stated.Tuples,
+				parentTuple(itemBlockNodeAddress(kind, itemID, id), string(kind), itemID, placedAt, scope.makerOf(indexing.makers, id), true))
 		}
 	} else {
 		for _, row := range indexing.kept {
@@ -693,9 +692,9 @@ func planItemBlocks(
 	// An item's links carry no block types, so a pair is its key (blockPairKey) and no link is
 	// kept while its types change, as a document's typed block attribute can be.
 	written := make(map[blockPairKey]struct{}, len(indexing.pairs))
-	for index, pair := range indexing.pairs {
+	for position, pair := range indexing.pairs {
 		written[pair.key()] = struct{}{}
-		indexing.linkNamed[index] = named[pair.blockID] && graphstore.AddressFits(pair.target.ID)
+		indexing.linkNamed[position] = named[pair.blockID] && graphstore.AddressFits(pair.target.ID)
 	}
 	stillHeld := make(map[blockPairKey]struct{}, len(index.held))
 	for _, link := range index.held {
@@ -798,15 +797,11 @@ func (i ItemIndexing) Held() ItemIndex {
 		scope:     i.index.scope,
 		mentioned: make(map[Target]struct{}, len(i.index.mentioned)+len(i.stated.People)),
 	}
-	for target := range i.index.mentioned {
-		held.mentioned[target] = struct{}{}
-	}
+	maps.Copy(held.mentioned, i.index.mentioned)
 	for _, tuple := range slices.Concat(i.stated.People, statedMentions(i.stated.Tuples)) {
 		held.mentioned[Target{Kind: tuple.ToKind, ID: tuple.ToID}] = struct{}{}
 	}
-	for id, row := range i.index.rows {
-		held.rows[id] = row
-	}
+	maps.Copy(held.rows, i.index.rows)
 	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
 		for _, row := range rows {
 			held.stored = append(held.stored, itemblocks.Stored{
@@ -877,7 +872,7 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	if !found {
 		return "", "", false
 	}
-	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
+	return itemBlockNodeAddress(i.kind, i.itemID, blockID), excerpt, true
 }
 
 // SettlingForms is the index settling what the forms queue holds for the item (RefsFormsOwed)
@@ -902,9 +897,7 @@ func (i ItemIndexing) SettlingForms() ItemIndexing {
 func (i ItemIndexing) Queue(b *store.WriteBatch) error {
 	i.queueStateLock(b)
 	if i.changed {
-		if len(i.stated.Nodes) > 0 {
-			graphstore.QueueNodes(b, i.stated)
-		}
+		graphstore.QueueNodes(b, i.stated)
 		if err := i.queueBlocks(b); err != nil {
 			return err
 		}
@@ -1127,7 +1120,7 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 }
 
 // itemRefRows is the item's own refs rows by target, each with its created_at and source_seq,
-// which the links an item's first indexing inserts are dated by (queueBlockRefs).
+// which date the tuples an item's first indexing states of the links it inserts (planItemBlocks).
 func itemRefRows(ctx context.Context, q Queryer, kind ItemKind, itemID string) (map[Target]itemRefRow, error) {
 	rows, err := q.Query(ctx, `
 		select to_kind, to_id, created_at, source_seq from refs where from_kind = $1 and from_id = $2

@@ -481,7 +481,7 @@ export function AskCard({
   // - its row as it lands, and the row of its thread once the Inbox is read again, since the
   // reader's own answer dismisses that thread (the own-answer rule, R1) - so the hold goes on
   // past the landing until the reads of the Inbox out then have come back (`meInboxReadsBack`):
-  // the landing started that read (`onSettled`), and the hold waits on it and sends none. The hold
+  // the landing started that read (`onSuccess`), and the hold waits on it and sends none. The hold
   // ends at the latest at the write deadline from the press (`SEND_DEADLINE_MS`), and at once on a
   // refusal, which gives Send back with its error. While it holds, the form refuses a submit, so a
   // second press of Send sends nothing, before the landing and after it. It is part of the

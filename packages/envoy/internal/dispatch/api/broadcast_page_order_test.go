@@ -46,17 +46,7 @@ func TestBroadcastsNamingTheirRecipientsInOppositeOrdersBothCommit(t *testing.T)
 
 	var answers []chan *httptest.ResponseRecorder
 	for _, order := range [][]string{{"planner", "tester"}, {"tester", "planner"}} {
-		one := storetest.SingleConnection(t, database)
-		sender := deps
-		sender.Store = one
-		mux := http.NewServeMux()
-		t.Cleanup(Register(mux, t.Context(), sender).Wait)
-		conn, err := one.Pool.Acquire(ctx)
-		if err != nil {
-			t.Fatalf("acquire the sender's connection: %v", err)
-		}
-		pid := conn.Conn().PgConn().PID()
-		conn.Release()
+		mux, pid := oneConnectionHandler(t, deps)
 		answered := make(chan *httptest.ResponseRecorder, 1)
 		answers = append(answers, answered)
 		go func() {

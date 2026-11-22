@@ -65,7 +65,6 @@ func graphEdgesRestatements(t *testing.T) []string {
 			restated = append(restated, name)
 		}
 	}
-	slices.Sort(restated)
 	return restated
 }
 
@@ -148,8 +147,11 @@ func TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered(t *testing.T) {
 			t.Fatalf("%s: graph_edges answers no row, so this test would prove nothing", reading.stage)
 		}
 		viewCounts := edgeCounts(view)
+		// Each head is one of the earlier restatements, so its counts are the ones read here.
+		perFile := make(map[string]map[string]int, len(earlier))
 		for _, file := range earlier {
-			for row, count := range edgeCounts(graphEdgeRows(t, database, restatedViewName(file))) {
+			perFile[file] = edgeCounts(graphEdgeRows(t, database, restatedViewName(file)))
+			for row, count := range perFile[file] {
 				if viewCounts[row] < count {
 					t.Errorf("%s: %q: %s answers it %d times, and graph_edges %d: a later restatement dropped what that one answers",
 						reading.stage, row, file, count, viewCounts[row])
@@ -158,7 +160,7 @@ func TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered(t *testing.T) {
 		}
 		heads := map[string]int{}
 		for _, head := range graphEdgesHeads {
-			for row, count := range edgeCounts(graphEdgeRows(t, database, restatedViewName(head))) {
+			for row, count := range perFile[head] {
 				heads[row] = max(heads[row], count)
 			}
 		}
@@ -173,8 +175,12 @@ func TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered(t *testing.T) {
 				t.Errorf("%s: %q: the heads answer it %d times at most, and graph_edges never", reading.stage, row, heads[row])
 			}
 		}
+		// An arm that has answered a row at an earlier reading is held already.
 		for _, view := range views {
 			for index, arm := range arms[view] {
+				if answered[view][index] > 0 {
+					continue
+				}
 				answered[view][index] += len(armAnswers(t, database, arm))
 			}
 		}
@@ -198,7 +204,7 @@ func seedIdentityMentions(t *testing.T, database *store.Store, service *Service)
 	const body = "Over to dispatch://person/person-1@example.com, dispatch://agent/session-1 and dispatch://role/reviewer.\n"
 	document := createOwedDocument(t, database, service, "CORE-1", "", "identities", "# Identities\n\n"+body, "")
 	settle(t, database, document)
-	if ticks := drainBlockIndex(t, service, "the document naming identities"); ticks == 0 {
+	if ticks := drainBlockIndex(t, service, "the document naming identities"); ticks < 2 {
 		t.Fatal("the fixture indexed no document naming identities")
 	}
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{}, body)

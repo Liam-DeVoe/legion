@@ -216,9 +216,8 @@ test("an unread reply is never folded: with 3 to 6 unread the fold holds only 1 
   const scene = await seedThreads();
   await readThrough(scene.commentIssue, scene.comment, 2);
   expect(
-    ((await meInboxThreads({ state: "unread" })).rows ?? []).find(
-      (row) => row.thread_id === scene.comment
-    )?.unread_count
+    (await meInboxThreads({ state: "unread" })).rows.find((row) => row.thread_id === scene.comment)
+      ?.unread_count
   ).toBe(4);
   const alice = await asUser(browser, "alice");
   try {

@@ -497,13 +497,13 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 }
 
 // blockNodeVisibleAs is the two tests a tuple arm makes of an item's block its edge comes from:
-// the view's, that the store holds the block's `block` node and its state is not gone, and the
-// registry's predicate of the address form the view renders the block under (viewKind:
-// comment_block, message_block or ask_block), which is the predicate the list of those edges
-// binds over the view's from_kind (readEdgeRows), so a count and its list cannot disagree.
+// the view's, that the store holds the block's `block` node and its state is not gone
+// (storeNodeStands), and the registry's predicate of the address form the view renders the block
+// under (viewKind: comment_block, message_block or ask_block), which is the predicate the list of
+// those edges binds over the view's from_kind (readEdgeRows), so a count and its list cannot
+// disagree.
 func blockNodeVisibleAs(viewKind, address string) string {
-	return `exists (select 1 from graph_nodes live
-		where live.kind = '` + BlockNodeKind + `' and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `')
+	return storeNodeStands(`'`+BlockNodeKind+`'`, address) + `
 		and ` + VisibleKind(viewKind, address, backlinkSeen)
 }
 
@@ -654,12 +654,12 @@ var backlinkArms = map[string][]backlinkArm{
 	"comment_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` not like 'ask/%'`, toID: `c.replies_to_block`,
 			fromKind: "comment", fromID: `c.id::text`,
-			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "comments", carried: pointersStored},
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, tupleToKind: BlockNodeKind, projectedIn: "comments", carried: pointersStored},
 	},
 	"ask_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` like 'ask/%'`, toID: `c.replies_to_block`,
 			fromKind: "comment", fromID: `c.id::text`,
-			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "comments", carried: pointersStored},
+			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, tupleToKind: BlockNodeKind, projectedIn: "comments", carried: pointersStored},
 	},
 	"message_block": {
 		// messages_replies_to_block, partial on replies_to_block is not null. The store states
@@ -667,7 +667,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// as this address form while the reply's row names its node.
 		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`,
 			fromKind: "message", fromID: `m.id::text`,
-			projected: rowNamesNoNode(`m.node_kind`), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "messages"},
+			projected: rowNamesNoNode(`m.node_kind`), tupleKind: graphstore.TupleRepliesTo, tupleToKind: BlockNodeKind, projectedIn: "messages"},
 	},
 }
 
@@ -697,7 +697,9 @@ func identityMentionArms() []backlinkArm {
 // rather than literals: refs; the block_refs rows naming no node and the store's links of a
 // document's blocks; the store's links of every item's blocks, in one arm; and for each item kind
 // its citations in the store and its blocks' link rows naming no node. Every node kind gets all
-// of them, since a mention can name any node; a document's block gets one more, an answered ask's
+// of them, since a mention can name any node, but a person's, a session's and a role's, which
+// take identityMentionArms in place of the item citations, since no refs row names a party
+// (TargetOf); a document's block gets one more, an answered ask's
 // shaped, which points at a block alone. The target kind is written as a literal (see
 // BacklinkCounts), and excludeKinds the caller's excluded edge kinds, bound as $4 - on these arms
 // the edge kind is a column, so an exclusion is a predicate and never drops an arm, and an empty
@@ -801,7 +803,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// view's identity arm answers it by its source's marker instead, whatever refs row names it
 		// (migration 20261120090001), and the count reads it there too (identityMentionArms).
 		if !slices.Contains(IdentityKinds, target.kind) {
-			arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = 'mentions' and `+currentTuple("r")+`
+			arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = '`+graphstore.TupleMentions+`' and `+currentTuple("r")+`
 				and `+citationCarries("r")+` and not `+heldByABlock("r"),
 				liveVisibleNode(string(item), `r.from_id`)))
 		}

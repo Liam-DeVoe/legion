@@ -26,6 +26,7 @@ import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
 import { defineNetwork, InterceptorSource } from "msw/experimental";
+import type { MeInboxResponse } from "../api/types";
 import { TEST_ORIGIN } from "./register-dom";
 
 /** Every request a test let reach the network since the last report, each `<METHOD> <path>`. */
@@ -75,7 +76,15 @@ const shellHandlers: RequestHandler[] = [
   // `meInboxCountQuery`), the sidebar's Needs-you count reads, and the Inbox and its drawer draw
   // the reader's own rows from: a reader nothing has reached.
   http.get("/api/v1/me/inbox", () =>
-    Response.json({ entries: [], horizon: 0, limit: 50, offset: 0, total: 0 })
+    Response.json({
+      as_of: "2026-10-12T02:00:00Z",
+      entries: [],
+      horizon: 0,
+      limit: 50,
+      offset: 0,
+      person: "alice",
+      total: 0,
+    } satisfies MeInboxResponse)
   ),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),

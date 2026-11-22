@@ -33,10 +33,10 @@ import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-ans
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
+import { agentConversationQuery } from "../../api/queries";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
-import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
@@ -177,7 +177,6 @@ function mockDispatch({
     listAgents,
     spyOn(api, "getAgentConversation").mockImplementation(async () => messages()),
     spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
-    answerOpenAsks([]),
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     putAgentState
@@ -306,7 +305,7 @@ function renderLiveView({
     storeThread: async (next: MessageRead[]) => {
       thread = next;
       await act(async () => {
-        await queryClient.invalidateQueries({ queryKey: ["agents", SESSION, "conversation"] });
+        await queryClient.invalidateQueries({ queryKey: agentConversationQuery(SESSION).queryKey });
       });
     },
   });

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -464,19 +465,30 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 			"cursor is a query parameter of state=%s alone; this state pages with limit and offset",
 			myRepliesStateDismissed)
 	}
+	if limit, offset, err = parseLimitOffset(query); err != nil {
+		return nil, 0, nil, err
+	}
+	return limit, offset, nil, nil
+}
+
+// parseLimitOffset reads ?limit= and ?offset=, the paging of GET /api/v1/me/replies' unread and
+// inbox states and of GET /api/v1/me/inbox: an absent limit is every row, a limit the caller names
+// keeps the rules GET /api/v1/me/answers has (1 to myAnswersMaxLimit, so limit=0 is refused), and
+// an offset is one non-negative integer, 0 when absent.
+func parseLimitOffset(query url.Values) (limit *int, offset int, err error) {
 	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
+			return nil, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
 		}
 		limit = &value
 	}
 	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
+			return nil, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
 		}
 		offset = value
 	}
-	return limit, offset, nil, nil
+	return limit, offset, nil
 }
 
 // listMyReplies answers GET /api/v1/me/replies: the caller's Inbox threads of the kinds ?kind=
@@ -549,10 +561,15 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	rows := []model.MyReplyRow{}
 	// How many rows a paged read asks each kind for: a row past offset+limit of its own order
 	// cannot be inside the merged page, so neither half reads one. An unpaged read asks for every
-	// row (null).
+	// row (null). The offset is the caller's, up to math.MaxInt (parseMyRepliesPage), so the sum
+	// stops at math.MaxInt rather than wrapping to a negative LIMIT: each half then reads every
+	// row, and the offset cut below answers an empty page, with the total counted as for any page.
 	var reach *int
 	if limit != nil {
-		through := offset + *limit
+		through := math.MaxInt
+		if offset <= math.MaxInt-*limit {
+			through = offset + *limit
+		}
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it

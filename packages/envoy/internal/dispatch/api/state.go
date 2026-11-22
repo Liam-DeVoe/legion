@@ -105,8 +105,11 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
 		return
 	}
-	if input.LastReadSeq != nil && *input.LastReadSeq < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "last_read_seq must be non-negative")
+	// last_read_seq is a position in the issue's event sequence, which user_issue_state keeps in
+	// an integer column, so one past that column (fitsIntegerColumn) is refused before any query
+	// is made with it.
+	if input.LastReadSeq != nil && (*input.LastReadSeq < 0 || !fitsIntegerColumn(*input.LastReadSeq)) {
+		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE", "last_read_seq must be from 0 to %d", maxIntegerColumn))
 		return
 	}
 	key := r.PathValue("key")
@@ -447,7 +450,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		marks = append(marks, personMark(actor, graphstore.TupleCleared, graphstore.KindSession, sessionID, cleared, true, graphstore.NoEvent))
+		marks = append(marks, personMark(actor, graphstore.TupleCleared, graphstore.KindSession, sessionID, cleared, true, graphstore.LatestEvent))
 	}
 	if readThrough != nil {
 		// The mark only moves forward, and its tuple is stated only where the upsert moved it: a
@@ -467,7 +470,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read, &at)
 		switch {
 		case err == nil:
-			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.NoEvent))
+			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.LatestEvent))
 		case !errors.Is(err, pgx.ErrNoRows):
 			s.writeHandlerError(w, err)
 			return
@@ -542,7 +545,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
 			var reply string
 			err := row.Scan(&reply, &at)
-			return personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.NoEvent), err
+			return personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.LatestEvent), err
 		})
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -588,9 +591,6 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// The event, then the marks it causes under it, in one batch, with the failure point
 		// between the rows written above and the marks (failpoint.AgentState).
-		for index := range marks {
-			marks[index].SourceEvent = graphstore.LatestEvent
-		}
 		fails := failpoint.Planned(r.Context(), failpoint.AgentState)
 		event, err := s.appendEventThen(r.Context(), tx, userAgentStateEvent(actor, sessionID), func(b *store.WriteBatch) error {
 			failpoint.Queue(b, fails)
@@ -666,7 +666,7 @@ func prunedAgentReplies(
 			return nil, err
 		}
 		pruned[session] = append(pruned[session],
-			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.NoEvent))
+			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.LatestEvent))
 	}
 	return pruned, rows.Err()
 }

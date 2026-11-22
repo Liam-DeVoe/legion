@@ -15,11 +15,12 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// What a14 holds the plans to: every statement its six operations run, the index each must read,
-// the table each may not scan and the sort no plan may make, the EXPLAIN runs themselves, and the
-// negative control - the shape this change replaced, run at the pile's own size and held to being
-// far outside the bound. The measurement and its time bounds are
-// api/inbox_dismissed_scale_test.go's, and the seed they run over
+// What a14 holds the plans to: every statement its two writes run and the one read's Dismissed
+// pages, the index each must read, the table each may not scan and the sort no plan may make, the
+// EXPLAIN runs themselves, and the negative control - the shape this change replaced, run at the
+// pile's own size and held to being far outside the bound. The Inbox's own two reads, state=inbox
+// and the unread count, are timed and explained nowhere here. The measurement and its time bounds
+// are api/inbox_dismissed_scale_test.go's, and the seed they run over
 // api/inbox_dismissed_scale_seed_test.go's.
 //
 // It is a file of its own because a plan is held to different things than a time is: a number out
@@ -27,14 +28,12 @@ import (
 // takes the readings stays short enough to read in one sitting.
 
 // dismissedScaleExplained is one statement an operation runs, with what its plan is held to: the
-// index it must read, the table it may not scan, and the column no Sort key may name. An empty
-// noSortOn holds the plan to no Sort node at all, which is the rule replies_plan_test.go holds
-// every Reply-half read to; an Agent-half read carries sorts of the list's own that are older
-// than the dismissal - the roots' newest reply, the lateral that reads it, the ordered array_agg -
-// so what it is held to is that no sort stands in for the dismissal, named by its column. The two
+// index it must read, the table it may not scan, and the column no Sort key may name. The two
 // write routes read their rows and then sort them by thread id to take their locks in one order
-// (markInboxReadThreads), which is the route's own sort and not the index's, so each is held the
-// same way, by the column its state is ordered by.
+// (markInboxReadThreads), which is the route's own sort and not the index's, and an Agent-half
+// read carries sorts of the list's own that are older than the dismissal - the roots' newest
+// reply, the lateral that reads it, the ordered array_agg - so what each is held to is that no
+// sort stands in for its state's own order, named by the column that state is ordered by.
 type dismissedScaleExplained struct {
 	operation string
 	half      string
@@ -43,19 +42,20 @@ type dismissedScaleExplained struct {
 	index     string
 	// relation is the table the plan may not scan, empty for a read whose cheapest way to take a
 	// whole set at this seed is a scan of it, and onceOver a table the plan must read once rather
-	// than once per row: the Inbox's own three reads take the person's dismissal marks as one set,
+	// than once per row: Mark all read's Agent read takes the person's dismissal marks as one set,
 	// and whether the planner takes that set off the index or off the table is its own business,
-	// while taking it one root at a time is what made those reads grow with the pile.
+	// while taking it one root at a time is what made such a read grow with the pile.
 	relation string
 	noSortOn string
 	onceOver string
 }
 
-// explainDismissedScaleReads explains every statement the six operations run, under
-// EXPLAIN (ANALYZE, BUFFERS) with enable_seqscan and enable_bitmapscan left on, so the plans are
-// what the planner really does at this size rather than what a pin makes it do. On the loaded
-// shape each plan is held to its index and its sort rule; on the baselines they are printed and
-// held to nothing, since a scan of an empty table is the right plan for an empty table.
+// explainDismissedScaleReads explains every statement the two writes run, and then the one read's
+// Dismissed pages (explainDismissedScaleOneRead), under EXPLAIN (ANALYZE, BUFFERS) with
+// enable_seqscan and enable_bitmapscan left on, so the plans are what the planner really does at
+// this size rather than what a pin makes it do. On the loaded shape each plan is held to its index
+// and its sort rule; on the baselines they are printed and held to nothing, since a scan of an
+// empty table is the right plan for an empty table.
 func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -79,15 +79,11 @@ func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold b
 		}
 		if explained.onceOver != "" {
 			if loops := planLoopsOver(t, plan, explained.onceOver); loops > 1 {
-				t.Errorf("%s reads %s %.0f times over, want once: the Inbox's own reads take the person's marks as one set rather than one read a root, which is what stops them growing with the pile:\n%s",
+				t.Errorf("%s reads %s %.0f times over, want once: the read takes the person's marks as one set rather than one read a root, which is what stops it growing with the pile:\n%s",
 					name, explained.onceOver, loops, text)
 			}
 		}
 		for _, key := range planSortKeys(t, plan) {
-			if explained.noSortOn == "" {
-				t.Errorf("%s sorts on %s, which its index already answers in:\n%s", name, key, text)
-				continue
-			}
 			if strings.Contains(key, explained.noSortOn) {
 				t.Errorf("%s sorts on %s, which %s already answers in:\n%s", name, key, explained.index, text)
 			}
@@ -208,16 +204,6 @@ func explainDismissedScaleGeneric(
 		}
 		placeholders[index] = fmt.Sprintf("$%d::%s", index+1, typed)
 	}
-	tx, err := connection.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the explain of %s: %v", name, err)
-	}
-	defer tx.Rollback(ctx)
-	for _, setting := range append([]string{"set local plan_cache_mode = force_generic_plan"}, settings...) {
-		if _, err := tx.Exec(ctx, setting); err != nil {
-			t.Fatalf("%s before the explain of %s: %v", setting, name, err)
-		}
-	}
 	execute := "execute " + prepared + "(" + strings.Join(placeholders, ", ") + ")"
 	// A []byte argument - the acting credential, JSON (refs.VisibilityArg) - goes as its text: pgx
 	// writes bytes as a bytea literal, which no json cast reads.
@@ -228,19 +214,8 @@ func explainDismissedScaleGeneric(
 		}
 		literals = append(literals, arg)
 	}
-	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+execute, literals...).Scan(&planJSON); err != nil {
-		t.Fatalf("explain %s: %v", name, err)
-	}
-	rows, err := tx.Query(ctx, "explain (analyze, buffers) "+execute, literals...)
-	if err != nil {
-		t.Fatalf("explain %s as text: %v", name, err)
-	}
-	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("explain %s as text: %v", name, err)
-	}
-	return explaintest.OnePlan(t, planJSON), strings.Join(lines, "\n")
+	return explainDismissedScale(t, connection, name, execute, literals,
+		append([]string{"set local plan_cache_mode = force_generic_plan"}, settings...)...)
 }
 
 // planLoopsOver is the greatest number of times any one node of an analysed plan read relation:

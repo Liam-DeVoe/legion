@@ -612,7 +612,7 @@ type server struct {
 	slowWriteRuns sync.Map
 	// failBetween is the set of writers whose next write the fail-between test hook armed
 	// (PUT /api/v1/writes/_test/fail-between/{writer}), which every request this server serves
-	// carries (routeHandler), so each writer's failpoint.Between finds it; nil on a server without
+	// carries (routeHandler), so each writer's failpoint.Planned finds it; nil on a server without
 	// TestHooksEnabled, whose requests carry none.
 	failBetween *failpoint.Armed
 	// newIssueOverride is what the new-issue test hook last set
@@ -975,6 +975,14 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
+	if s.failBetween != nil {
+		// Every request carries the fail-between set, so the writer it reaches finds whether a
+		// test armed it (failpoint.Planned); a server without test hooks carries none.
+		armed, inner := s.failBetween, handler
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))
+		}
+	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
 	// them resolved. Compression sits just inside it, with nothing between them but the answers
@@ -982,14 +990,6 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// gzip and the line counts the bytes that went on the wire. The two websockets register
 	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
 	// frames after it are the socket's (compressAnswers).
-	if s.failBetween != nil {
-		// Every request carries the fail-between set, so the writer it reaches finds whether a
-		// test armed it (failpoint.Between); a server without test hooks carries none.
-		armed, inner := s.failBetween, handler
-		handler = func(w http.ResponseWriter, r *http.Request) {
-			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))
-		}
-	}
 	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
@@ -1625,10 +1625,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // proven.
 //
 // Only those routes read it: decodeJSON ignores a member the route's input struct does not
-// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
-// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
-// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
-// ignored here as it always was.
+// declare (it logs the member at debug and decodes the rest), so a body actor on any other route
+// is dropped unread and the caller's credential alone decides the act, and four of the mutating
+// rows a person's scope opened are DELETEs with no body at all. A browser's actor names no agent
+// (act is nil), so there is nothing for a body to name, and its body actor is ignored here as it
+// always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {

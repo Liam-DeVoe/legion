@@ -15,6 +15,7 @@ import { boardMoveMutationKey, meInboxQuery, projectIssuesQuery } from "../../ap
 import { DispatchQueryClient } from "../../api/query-client";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
+import { oneReadAnswer } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -666,7 +667,7 @@ test("a refused bulk operation retries independently while the other operations 
 });
 
 // The Inbox draws the reader's own asks from the one read, and each carries its issue's fields,
-// so a bulk action reads it again once its writes settle, beside the Inbox's own read.
+// so a bulk action reads it again once its writes settle.
 test("a bulk action reads the one read again once its writes settle", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockImplementation(
@@ -674,15 +675,7 @@ test("a bulk action reads the one read again once its writes settle", async () =
   );
   restores.push(() => send.mockRestore());
   const { client } = table([issue("CORE-1")]);
-  client.setQueryData(meInboxQuery().queryKey, {
-    as_of: "2026-10-12T02:00:00Z",
-    entries: [],
-    horizon: 1,
-    limit: 0,
-    offset: 0,
-    person: "alice",
-    total: 0,
-  });
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([]));
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   expect(client.getQueryState(meInboxQuery().queryKey)?.isInvalidated).toBe(false);
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));

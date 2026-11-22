@@ -90,15 +90,11 @@ func joinLines(lines []string) string {
 	if len(lines) == 0 {
 		return "(none)"
 	}
-	joined := lines[0]
-	for _, line := range lines[1:] {
-		joined += "\n  " + line
-	}
-	return joined
+	return strings.Join(lines, "\n  ")
 }
 
-// backfillInboxOnce runs the backfill and fails unless every kind of this child's passes reports
-// complete, answering the report.
+// backfillInboxOnce runs the backfill and fails unless every kind the run reports is complete,
+// answering the report.
 func backfillInboxOnce(t *testing.T, database *store.Store) BackfillReport {
 	t.Helper()
 	report, err := Backfill(context.Background(), database, io.Discard)
@@ -181,8 +177,8 @@ func readThreadRow(t *testing.T, database *store.Store, login, thread string) th
 }
 
 // requireMarkedAtItsVersion fails unless login's row of thread is marked at the version it holds,
-// and marked above every delivery to login out of the thread, so R6's equation counts none of
-// them: they are in the version already.
+// and marked above every delivery to login the store holds, of this thread or any other, so R6's
+// equation counts none of this thread's: they are in the version already.
 func requireMarkedAtItsVersion(t *testing.T, database *store.Store, login, thread string, version int64) {
 	t.Helper()
 	row := readThreadRow(t, database, login, thread)
@@ -398,7 +394,7 @@ func TestTheBackfillStatesAnOlderBuildsItemBlocksLinksAndCitations(t *testing.T)
 		"ask": {from: refs.BlockNodeKind + ":ask/" + ask.id + "#b2", kind: graphstore.TuplePartOf,
 			to: "ask:" + ask.id, event: ask.event, at: partAt},
 	}
-	for _, held := range items {
+	for index, held := range items {
 		block := refs.BlockNodeKind + ":" + held.kind + "/" + held.written.id + "#b1"
 		node := held.kind + ":" + held.written.id
 		requireTuples(t, writes.database, "the "+held.kind+"'s block", []string{graphstore.TuplePartOf, graphstore.TupleMentions},
@@ -409,6 +405,8 @@ func TestTheBackfillStatesAnOlderBuildsItemBlocksLinksAndCitations(t *testing.T)
 			others[held.kind],
 		)
 		requireBlockNode(t, writes.database, held.kind+"/"+held.written.id+"#b1", graphstore.StateLive, "alice", blockAt[held.kind], held.written.event)
+		// Each tuple carries its row's source_seq: both rows of this item were written at 100+index.
+		want := int64(100 + index)
 		var seqs []*int64
 		rows, err := writes.database.Pool.Query(ctx, `
 			select legacy_source_seq from graph_tuples
@@ -417,8 +415,14 @@ func TestTheBackfillStatesAnOlderBuildsItemBlocksLinksAndCitations(t *testing.T)
 		if err == nil {
 			seqs, err = pgx.CollectRows(rows, pgx.RowTo[*int64])
 		}
-		if err != nil || len(seqs) != 2 || seqs[0] == nil || seqs[1] == nil {
-			t.Errorf("the %s's link and citation carry legacy_source_seq %v (%v), want their rows' source_seq each", held.kind, seqs, err)
+		carried := make([]any, len(seqs))
+		for at, seq := range seqs {
+			if carried[at] = "null"; seq != nil {
+				carried[at] = *seq
+			}
+		}
+		if err != nil || len(seqs) != 2 || seqs[0] == nil || *seqs[0] != want || seqs[1] == nil || *seqs[1] != want {
+			t.Errorf("the %s's link and citation carry legacy_source_seq %v (%v), want their rows' source_seq %d each", held.kind, carried, err, want)
 		}
 	}
 	requireBlockNode(t, writes.database, "comment/"+comment.id+"#b2", graphstore.StateGone, "alice", removedAt, comment.event)
@@ -457,8 +461,8 @@ func requireBlockNode(t *testing.T, database *store.Store, address, state, login
 // writes them: rows naming no node. The backfill writes each attempt's node, made at its row's
 // created_at - by the comment's or the message's author for a first attempt, which that write
 // opened under its event, and by the delivery machinery at the sentinel for a later one - names it
-// on the row, and states what the row holds as graphstore.Attempted does: its values, owed_to its
-// target while it is pending, and delivered_to the session that took it.
+// on the row, and states what the row holds as graphstore.QueueAttempted does: its values,
+// owed_to its target while it is pending, and delivered_to the session that took it.
 func TestTheBackfillStatesAnOlderBuildsDeliveryAttempts(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1050,11 +1054,12 @@ func TestTheThreadPassTakesTheIssueOfADocumentsCommentThread(t *testing.T) {
 
 // The thread pass's catch-up reads the comments of a batch's threads the pointer pass still owes
 // through the comments' indexes - the key, comments_reply_to and comments_ask_id, one for each
-// column a comment's thread is read from - and never the whole table, which it would read once a
-// batch of 200 rows. The statement explained is the one the batch sends (writeUserThreads,
-// recorded), over a comments table of 2,000 rows this release stated and analysed, as a
-// deployment's is: every row names its node, so naming a node narrows nothing, and only the
-// thread's own columns pick the few rows a batch owes.
+// column a comment's thread is read from, or comments_tuples_unstored (migration 20261122100121),
+// which holds the comments whose tuples_stored is false alone, the only rows the catch-up can owe -
+// and never the whole table, which it would read once a batch of 200 rows. The statement explained
+// is the one the batch sends (writeUserThreads, recorded), over a comments table of 2,000 rows this
+// release stated and analysed, as a deployment's is: every row names its node, so naming a node
+// narrows nothing, and only the thread's own columns, or the marker, pick the few rows a batch owes.
 func TestTheThreadCatchUpReadsCommentsThroughTheirIndexes(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1116,13 +1121,16 @@ func TestTheThreadCatchUpReadsCommentsThroughTheirIndexes(t *testing.T) {
 	}
 	read := map[string]bool{}
 	for _, scan := range explaintest.IndexScans(t, plan) {
-		if strings.HasPrefix(scan.Index, "comments") && strings.Contains(scan.Cond, "ANY") {
+		if scan.Index == "comments_tuples_unstored" || strings.HasPrefix(scan.Index, "comments") && strings.Contains(scan.Cond, "ANY") {
 			read[scan.Index] = true
 		}
 	}
+	if read["comments_tuples_unstored"] {
+		return
+	}
 	for _, index := range []string{"comments_pkey", "comments_reply_to", "comments_ask_id"} {
 		if !read[index] {
-			t.Errorf("the catch-up reads comments through no keyed scan of %s (it keys %v): %s", index, read, plan)
+			t.Errorf("the catch-up reads comments through no keyed scan of %s and not through comments_tuples_unstored (it reads %v): %s", index, read, plan)
 		}
 	}
 }
@@ -1175,10 +1183,9 @@ func (r *roundTrips) count() int {
 // reached and the read of the dismissals it ended in one round trip: the two hang on who it
 // reached and not on each other, so they go as one pgx batch, the lock first. bob's reply to
 // alice's comment reached alice: recording it again takes four round trips - its thread, who it
-// reached, that batch, and the deliveries' store write, whose read of the nodes a tuple may not
-// run from and whose append go as one batch of their own (graphstore.ToPerson, a write phase of
-// one call) - where it took six with the lock and the read sent one by one and the store write's
-// two statements sent apart.
+// reached, that batch, and the deliveries' store write, one statement whose query is its read of
+// the nodes reserved for their author, which a tuple to a person may not run from
+// (graphstore.QueueToPerson) - where the lock and the read sent one by one took five.
 func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1209,10 +1216,10 @@ func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 		switch {
 		case len(trip) == 2 && strings.Contains(trip[0], "for no key update") && strings.Contains(trip[1], "current.from_id"):
 			locks++
-		case len(trip) == 2 && strings.Contains(trip[0], "n.visibility") && strings.Contains(trip[1], "graph_nodes_written"):
+		case len(trip) == 1 && strings.Contains(trip[0], "graph_nodes_written") && strings.Contains(trip[0], "n.visibility"):
 			storeWrites++
 		case len(trip) != 1 || strings.Contains(trip[0], "for no key update"):
-			t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read, and one of the deliveries' store write", trip)
+			t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read, and one statement of the deliveries' store write", trip)
 		}
 	}
 	if locks != 1 || storeWrites != 1 || len(recorded) != 4 {

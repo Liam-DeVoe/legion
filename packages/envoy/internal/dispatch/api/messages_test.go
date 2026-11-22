@@ -1003,7 +1003,7 @@ func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
 // (expectSameCallersAsConversationRead), since it answers the same rows.
 func TestTheConversationReadAdmitsExactlyTheCallersTheMessagesReadAdmits(t *testing.T) {
 	rig := newBrokerTokenRig(t)
-	expectSameCallersAsConversationRead(t, rig, "the conversation read", "s1", "/api/v1/agents/s1/conversation")
+	expectSameCallersAsConversationRead(t, rig, "GET /api/v1/agents/s1/conversation", "s1", "/api/v1/agents/s1/conversation")
 }
 
 // deliveryFrame is the {event, delivery} frame a targeted send carries as its `payload`

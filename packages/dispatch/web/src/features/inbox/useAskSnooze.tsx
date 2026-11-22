@@ -2,7 +2,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useMemo, useState } from "react";
 
 import { api, askSnoozeRequest, type WriteMethod } from "../../api/client";
-import { meInboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { OpenAskRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
@@ -10,20 +9,16 @@ import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
 import { stoppedNote } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { useAskWrites, useInboxWrites } from "./ask-writes";
+import { invalidateMeInbox, patchMeInboxAsks } from "./one-read-cache";
 import {
-  cancelMeInbox,
-  invalidateMeInbox,
-  meInboxSnapshot,
-  patchMeInboxAsks,
-  restoreMeInbox,
-} from "./one-read-cache";
-import {
-  cancelOpenAsks,
+  cancelInboxAsks,
+  inboxAsksKeys,
+  inboxAsksSnapshot,
   invalidateOpenAsks,
-  openAsksKeys,
   openAsksSnapshot,
+  patchInboxAsks,
   patchOpenAsks,
-  restoreOpenAsks,
+  restoreInboxAsks,
 } from "./open-asks-cache";
 
 export interface AskSnoozeWrite {
@@ -119,7 +114,7 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
   const writes = useAskWrites(snoozeAsk, {
     holds: () => ({
       endsOn: snoozeWritten,
-      keys: [...openAsksKeys(queryClient), meInboxQuery().queryKey],
+      keys: inboxAsksKeys(queryClient),
     }),
     method: snoozeMethod,
     write: (press: AskSnoozePress, bounds) =>
@@ -130,22 +125,19 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
     inline: true,
     label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
     onMutate: async (press) => {
-      await Promise.all([cancelOpenAsks(queryClient), cancelMeInbox(queryClient)]);
-      const openAsks = openAsksSnapshot(queryClient);
-      const oneRead = meInboxSnapshot(queryClient);
-      const snoozed = (row: OpenAskRow): OpenAskRow =>
-        row.id === press.askId ? { ...row, snoozed_until: press.until } : row;
-      patchOpenAsks(queryClient, snoozed);
-      patchMeInboxAsks(queryClient, snoozed);
-      return { oneRead, openAsks };
+      await cancelInboxAsks(queryClient);
+      const previous = inboxAsksSnapshot(queryClient);
+      patchInboxAsks(queryClient, (row) =>
+        row.id === press.askId ? { ...row, snoozed_until: press.until } : row
+      );
+      return previous;
     },
     onError: (_error, _press, previous) => {
-      restoreOpenAsks(queryClient, previous?.openAsks);
-      restoreMeInbox(queryClient, previous?.oneRead);
+      restoreInboxAsks(queryClient, previous);
     },
     onSettled: () => {
       void invalidateOpenAsks(queryClient);
-      invalidateMeInbox(queryClient);
+      void invalidateMeInbox(queryClient);
     },
   });
   return useMemo(
@@ -226,14 +218,14 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       const release = holdBackReads(queryClient, {
         endsOn: snoozeWritten,
         events: ids.length,
-        keys: [...openAsksKeys(queryClient), meInboxQuery().queryKey],
+        keys: inboxAsksKeys(queryClient),
       });
       let failed: AskSnoozeFailure[];
       // How many of the asks Dispatch refused with no earlier attempt of their snooze that may
       // have landed unseen (`refusedByDispatch`), which publish no event.
       let refusals = 0;
       try {
-        await Promise.all([cancelOpenAsks(queryClient), cancelMeInbox(queryClient)]);
+        await cancelInboxAsks(queryClient);
         const previous = openAsksSnapshot(queryClient);
         // What each marked row of the one read held before, as each read of the open asks is kept.
         const oneReadBefore = new Map<string, string | null | undefined>();
@@ -294,7 +286,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         release(refusals);
       }
       void invalidateOpenAsks(queryClient);
-      invalidateMeInbox(queryClient);
+      void invalidateMeInbox(queryClient);
       setPending((count) => count - 1);
       return { failed };
     },

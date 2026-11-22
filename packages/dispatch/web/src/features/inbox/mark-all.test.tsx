@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, expect, jest, test } from "bun:test";
+import { meInboxThreads } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -19,7 +20,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import type { InboxFilters } from "./grouping";
-import { answerOneRead, oneReadAnswer, oneReadReply } from "./inbox-fixture";
+import { answerOneRead, ONE_READ_AS_OF, oneReadAnswer, oneReadReply } from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
 import {
   MARK_ALL_REFUSED_TEXT,
@@ -28,7 +29,6 @@ import {
   marksThread,
   useMarkAllRead,
 } from "./mark-all";
-import { meInboxThreads } from "./one-read-rows";
 import { useUnreadThreadCount } from "./useInboxCount";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -39,12 +39,7 @@ beforeAll(async () => {
 
 afterEach(cleanup);
 
-const AS_OF = "2026-10-12T02:00:00Z";
-
-/** The one read's answer of its Inbox while Dispatch holds `rows` as the reader's threads. */
-function threadsRead(rows: readonly MyReplyRow[]): MeInboxResponse {
-  return oneReadAnswer(rows, { asOf: AS_OF });
-}
+const AS_OF = ONE_READ_AS_OF;
 
 /**
  * The row the Inbox draws **Mark all read** in (`Inbox.tsx`), with the one number the sidebar's
@@ -103,7 +98,7 @@ function renderBar(
   client: QueryClient = new QueryClient(CLIENT_OPTIONS)
 ) {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(meInboxQuery().queryKey, threadsRead(rows));
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer(rows));
   client.setQueryData(meInboxCountQuery().queryKey, count);
   const tree = (narrowed: InboxFilters | undefined): ReactNode => (
     <MemoryRouter>
@@ -229,9 +224,7 @@ test("a read of the list asked before Mark all read does not put back the rows t
   const before = [replyRow("c1"), replyRow("c2")];
   const after = [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })];
   const asked = Promise.withResolvers<MeInboxResponse>();
-  const getMeInbox = answerOneRead({ threads: after }, { asOf: AS_OF }).mockImplementationOnce(
-    () => asked.promise
-  );
+  const getMeInbox = answerOneRead({ threads: after }).mockImplementationOnce(() => asked.promise);
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     let read = Promise.resolve();
@@ -244,7 +237,7 @@ test("a read of the list asked before Mark all read does not put back the rows t
     await waitFor(() => expect(unread()).toBe("0"));
     // The read answers as Dispatch held the rows when it was asked: both unread.
     await act(async () => {
-      asked.resolve(threadsRead(before));
+      asked.resolve(oneReadAnswer(before));
       await read;
     });
     expect(unread()).toBe("0");
@@ -277,9 +270,7 @@ test("a read of the unread count asked before Mark all read does not put back th
   const before = [replyRow("c1"), replyRow("c2")];
   const after = [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })];
   const asked = Promise.withResolvers<MeInboxResponse>();
-  const getMeInbox = answerOneRead({ threads: after }, { asOf: AS_OF }).mockImplementationOnce(
-    () => asked.promise
-  );
+  const getMeInbox = answerOneRead({ threads: after }).mockImplementationOnce(() => asked.promise);
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     let read = Promise.resolve();
@@ -292,7 +283,7 @@ test("a read of the unread count asked before Mark all read does not put back th
     await waitFor(() => expect(inboxCount()).toBe("0"));
     // The read answers as Dispatch held the count when it was asked: two unread.
     await act(async () => {
-      asked.resolve(oneReadReply({ state: "unread" }, { threads: before }, { asOf: AS_OF }));
+      asked.resolve(oneReadReply({ state: "unread" }, { threads: before }));
       await read;
     });
     expect(inboxCount()).toBe("0");
@@ -329,7 +320,7 @@ test("a read of the list or the count asked while Mark all read is out waits for
     replyRow("c3"),
   ];
   let served = before;
-  const getMeInbox = answerOneRead(() => ({ threads: served }), { asOf: AS_OF });
+  const getMeInbox = answerOneRead(() => ({ threads: served }));
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
@@ -404,7 +395,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
   marked.mockReturnValue(settled.promise);
   const before = [replyRow("c1"), replyRow("c2")];
   let served = before;
-  const getMeInbox = answerOneRead(() => ({ threads: served }), { asOf: AS_OF });
+  const getMeInbox = answerOneRead(() => ({ threads: served }));
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
@@ -482,10 +473,9 @@ test("a stopped press reads the list again rather than saying nothing was marked
   answerInboxReads().mockRejectedValue(
     new NetworkError("/api/v1/me/inbox/read", new TypeError("Failed to fetch"))
   );
-  const reread = answerOneRead(
-    { threads: [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })] },
-    { asOf: AS_OF }
-  );
+  const reread = answerOneRead({
+    threads: [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })],
+  });
   const { client } = renderBar([replyRow("c1"), replyRow("c2")], 2);
   try {
     await user.click(screen.getByRole("button", { name: "Mark all read" }));

@@ -185,7 +185,7 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
     );
   }
   const listed = await meInboxThreads({ state: "unread" });
-  const row = (listed.rows ?? []).find((candidate) => candidate.thread_id === root.id);
+  const row = listed.rows.find((candidate) => candidate.thread_id === root.id);
   expect(row?.unread).toBe(true);
   // Every reply read: the thread leaves the unread list and stays in the Inbox, drawn as read.
   await markThreadRead(root.id, row?.reply.created_at ?? "");
@@ -280,9 +280,9 @@ async function seedThreeShapes(): Promise<{
   });
 
   const listed = await meInboxThreads({ state: "unread" });
-  expect(
-    (listed.rows ?? []).map((row) => row.unread_count).sort((left, right) => left - right)
-  ).toEqual([2, 2, 2]);
+  expect(listed.rows.map((row) => row.unread_count).sort((left, right) => left - right)).toEqual([
+    2, 2, 2,
+  ]);
   return { agent, comment: comment.id, message: message.id };
 }
 

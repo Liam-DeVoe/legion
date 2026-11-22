@@ -393,33 +393,26 @@ func TestAnEventTwoProcessesRecordedKeepsItsArrayTheFarEndsOfItsTuples(t *testin
 		IssueKey: new("T-1"), Type: "comment.created", Actor: alice, Payload: map[string]any{"id": comment},
 	})
 	const owner = "notifications.dispatch.issue.T-1.comment.created"
-	record := func(holder uuid.UUID, session string) {
+	record := func(process uuid.UUID, session string) {
 		t.Helper()
 		sent := &batchEvent{pendingEvent: pendingEvent{event: event}, outcome: outcome{
 			id: event.ID, state: published, reached: []string{owner, contracts.LegacyAgentSubject(session)},
 		}}
-		if _, err := recordBatch(ctx, deps, []outcome{sent.outcome}, holder, deliveredGraph([]*batchEvent{sent}, nil, time.Now())); err != nil {
+		if _, err := recordBatch(ctx, deps, []outcome{sent.outcome}, process, deliveredGraph([]*batchEvent{sent}, nil, time.Now())); err != nil {
 			t.Fatalf("record the batch that reached %s: %v", session, err)
 		}
 	}
-	read := func() ([]string, *time.Time) {
-		t.Helper()
-		var destinations []string
-		var publishedAt *time.Time
-		if err := database.Pool.QueryRow(ctx, `select published_destinations, published_at from events where id = $1`, event.ID).
-			Scan(&destinations, &publishedAt); err != nil {
-			t.Fatalf("read event %d: %v", event.ID, err)
-		}
-		return destinations, publishedAt
-	}
-	record(uuid.New(), "s2")
-	_, publishedAt := read()
+	holder, lost := uuid.New(), uuid.New()
+	holdRow(t, database, holder)
+	record(holder, "s2")
+	publishedAt := readEventRow(t, database, event.ID).publishedAt
 	if publishedAt == nil {
 		t.Fatalf("the holder's record left event %d unpublished", event.ID)
 	}
-	record(uuid.New(), "s3")
+	record(lost, "s3")
 
-	destinations, after := read()
+	row := readEventRow(t, database, event.ID)
+	destinations, after := row.destinations, row.publishedAt
 	if want := []string{owner, contracts.LegacyAgentSubject("s2"), contracts.LegacyAgentSubject("s3")}; !slices.Equal(destinations, want) {
 		t.Errorf("event %d was published to %v, want %v: the second record reached s3", event.ID, destinations, want)
 	}

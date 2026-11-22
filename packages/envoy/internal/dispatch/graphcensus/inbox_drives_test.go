@@ -17,12 +17,10 @@ import (
 )
 
 // The drives of the inbox's writers that no site of a package importing this one runs: the
-// backfill's passes over the rows an older build wrote, a transition of a delivery attempt that
-// records no event, the outbox's settle of a mention attempt nobody will send, and the refs
-// grammar's re-index of an older build's text, owed and rebuilt.
+// backfill's passes over the rows an older build wrote, the outbox's settle of a mention attempt
+// nobody will send, and the refs grammar's re-index of an older build's text, owed and rebuilt.
 const (
 	inboxBackfillDrive    = "graphcensus/backfill_inbox.go#backfillInbox, over the rows an older build wrote"
-	attemptedDrive        = "graphstore/delivery_attempt.go#Attempted"
 	settleAbandonedDrive  = "outbox/mentions.go#settleAbandoned"
 	reindexOwedDrive      = "refs/rebuild.go#queue"
 	rebuildDrive          = "refs/rebuild.go#replaceInTx"
@@ -34,11 +32,9 @@ const (
 // comment and bob's reply, the comment's body block with its link and its citation, an attempt
 // of the comment's mention the listener took, an ask alice opened, and her read of a session's
 // conversation; every pass of the backfill before the inbox's has run (Backfill's order), so what
-// it reads off graph_tuples is the inbox's passes' own. The transition then moves an attempt this
-// build opened on that same database to sent, as a sender's claim transaction moves one. The
-// settle runs over a database of its own: the outbox publishing a comment whose mention's attempt
-// was opened past the sweep's window and never claimed. The re-index drives run over that same
-// database after it.
+// it reads off graph_tuples is the inbox's passes' own. The settle runs over a database of its own:
+// the outbox publishing a comment whose mention's attempt was opened past the sweep's window and
+// never claimed. The re-index drives run over that same database after it.
 func inboxDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -46,7 +42,6 @@ func inboxDrives(t *testing.T) []StoreDrive {
 	database := writes.database
 	var comment olderWrite
 	var owedComment string
-	opened := graphstore.CommentAttempt("", "session:ses_claimed", 1)
 	abandoned := storetest.Open(t)
 	return []StoreDrive{{
 		Name: inboxBackfillDrive, Database: database,
@@ -150,54 +145,6 @@ func inboxDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindDeliveryAttempt, graphstore.AttemptState}:        {"delivery_attempt"},
 			{graphstore.KindDeliveryAttempt, graphstore.AttemptDuplicate}:    {"delivery_attempt"},
 			{graphstore.KindDeliveryAttempt, graphstore.TupleDeliveredTo}:    {"delivery"},
-		},
-	}, {
-		Name: attemptedDrive, Database: database, Sites: []string{attemptedDrive},
-		Ready: func(t *testing.T) {
-			t.Helper()
-			opened.Comment = comment.id
-			var at time.Time
-			if err := database.Pool.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
-				t.Fatalf("read the time the attempt is opened at: %v", err)
-			}
-			kind, address, write := graphstore.AttemptOpened(opened, graphstore.AttemptWriter, at)
-			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-					graphstore.QueueNodes(b, write)
-					b.Queue("open the attempt", `
-						insert into comment_deliveries (comment_id, target, attempt, delivery, state, created_at, node_kind, node_address)
-						values ($1::uuid, $2, $3, 'aside', 'pending', $4, $5, $6)
-					`, opened.Comment, opened.Target, opened.Attempt, at, kind, address)
-					graphstore.QueueCaused(b, write, graphstore.NoEvent)
-					graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, opened)
-					return nil
-				})
-			}); err != nil {
-				t.Fatalf("open the attempt to ses_claimed as a sender opens one: %v", err)
-			}
-		},
-		// A sender's claim, which takes the send and records the session it reached in one
-		// transaction that appends no event: the attempt's state and claim, the retraction of the
-		// owed_to its pending state stated, and the delivered_to its session.
-		Drive: func(t *testing.T) {
-			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-				if _, err := tx.Exec(ctx, `
-					update comment_deliveries set state = 'sent', session_id = 'ses_claimed', claimed_at = now(), envelope_id = 'envelope-1'
-					where comment_id = $1::uuid and target = $2 and attempt = $3
-				`, opened.Comment, opened.Target, opened.Attempt); err != nil {
-					return err
-				}
-				return graphstore.Attempted(ctx, tx, opened)
-			}); err != nil {
-				t.Fatalf("move the attempt to sent: %v", err)
-			}
-		},
-		Counts: map[StoredKind][]string{
-			{graphstore.KindDeliveryAttempt, graphstore.AttemptState}:      {"delivery_attempt"},
-			{graphstore.KindDeliveryAttempt, graphstore.AttemptClaimedAt}:  {"delivery_attempt"},
-			{graphstore.KindDeliveryAttempt, graphstore.AttemptEnvelopeID}: {"delivery_attempt"},
-			{graphstore.KindDeliveryAttempt, graphstore.TupleOwedTo}:       {"delivery_attempt"},
-			{graphstore.KindDeliveryAttempt, graphstore.TupleDeliveredTo}:  {"delivery"},
 		},
 	}, {
 		Name: settleAbandonedDrive, Database: abandoned,
@@ -346,7 +293,10 @@ func seedAnAbandonedMention(t *testing.T, database *store.Store) {
 		`, comment, key.Target, created, graphstore.KindDeliveryAttempt, key.ID()); err != nil {
 			return err
 		}
-		return graphstore.Attempted(ctx, tx, key)
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+			return nil
+		})
 	}); err != nil {
 		t.Fatalf("open the mention's attempt and leave it unclaimed: %v", err)
 	}

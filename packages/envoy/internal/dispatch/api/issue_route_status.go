@@ -207,7 +207,7 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 // routeRosterAfterStored is readRouteRoster past its read of the route_roster row: the stored
 // roster while it is fresh, else this process's built roster or one fetch's answer, as
 // readRouteRoster says. A read that reads the row inside a statement of its own (GET
-// /api/v1/me/inbox, through routeRosterStored) answers its routes from here too.
+// /api/v1/me/inbox, through meInboxRoster) answers its routes from here too.
 func (s *server) routeRosterAfterStored(ctx context.Context, roster routeRoster, fresh bool, now, seen time.Time) routeRoster {
 	if fresh {
 		return roster

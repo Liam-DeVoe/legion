@@ -3,10 +3,12 @@ package grapherase
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 )
@@ -113,33 +115,24 @@ func (s readStateScope) where(table readStateTable) (string, []any, bool) {
 	return predicate, []any{s.id}, ok
 }
 
-// replyCaused is true of a delivered_to tuple d into a person that a reply caused - the deliveries
-// user_threads.version counts - by the rule graphcensus's user_threads_version kind holds every
-// marked row to (its replyCaused): a tuple whose event is a reply's write, and one with no event
-// that is out of a comment or a message, or out of an ask whose node states an answered_at at the
-// tuple's own moment.
-const replyCaused = `(case
-	when d.source_event <> 0
-		then exists (select 1 from events e where e.id = d.source_event
-		             and e.type in ('comment.created', 'comment.answered', 'message.created', 'message.answered', 'ask.answered'))
-	when d.from_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindMessage + `') then true
-	else exists (
-		select 1 from graph_tuples answered
-		where answered.from_kind = d.from_kind and answered.from_id = d.from_id and answered.to_kind = '` + graphstore.KindValue + `'
-		  and answered.kind = '` + graphstore.TupleAnsweredAt + `'
-		  and case when pg_input_is_valid(answered.to_id, 'timestamptz') then answered.to_id::timestamptz = d.at else false end)
-	end)`
+// deliveryInto is the predicate over graph_tuples d of an asserted delivered_to into the person of
+// user_threads u.
+const deliveryInto = `d.kind = '` + graphstore.TupleDeliveredTo + `' and d.to_kind = '` + graphstore.KindPerson + `'
+		  and d.to_id = user_threads_login(u.login) and d.asserted`
+
+// countedDelivery is the predicate over graph_tuples d of a delivery of the reply the erase
+// removes that the version of user_threads u counts: a reply-caused delivered_to into the row's
+// person above the row's marked_seq (R6's equation, D4), by the rule the census holds every marked
+// row to (graphcensus.ReplyCaused). It binds $1 the reply's id and $2 its kind.
+var countedDelivery = `d.from_kind = $2::text and d.from_id = $1::text and ` + deliveryInto + `
+		  and d.seq > u.marked_seq and ` + graphcensus.ReplyCaused
 
 // replied is the predicate over user_threads u that picks the rows of the thread a reply the erase
 // removes was written in that the reply's removal changes: each that names it as its last reply,
-// and each marked row whose version counts a delivery of it, a reply-caused delivered_to into the
-// row's person above the row's marked_seq (R6's equation, D4). It binds $1 the reply's id, $2 its
-// kind, $3 and $4 the thread root's kind and id.
+// and each marked row whose version counts a delivery of it (countedDelivery). It binds $1 the
+// reply's id, $2 its kind, $3 and $4 the thread root's kind and id.
 var replied = `u.thread_id = $4::uuid and u.kind = $3::text and (u.last_reply_id = $1::uuid or (u.marked_seq is not null and exists (
-		select 1 from graph_tuples d
-		where d.from_kind = $2::text and d.from_id = $1::text and d.kind = '` + graphstore.TupleDeliveredTo + `'
-		  and d.to_kind = '` + graphstore.KindPerson + `' and d.to_id = user_threads_login(u.login) and d.asserted
-		  and d.seq > u.marked_seq and ` + replyCaused + `)))`
+		select 1 from graph_tuples d where ` + countedDelivery + `)))`
 
 // repliedArgs are what replied binds, and false where the node is no reply in another thread.
 func (s readStateScope) repliedArgs() ([]any, bool) {
@@ -208,20 +201,12 @@ func (e *Erasure) readReadState(ctx context.Context, tx pgx.Tx, read *erasedRead
 		if !ok {
 			continue
 		}
-		rows, err := tx.Query(ctx, `select row(`+table.Key+`)::text from `+table.Table+` where `+where+
-			` order by `+table.Key, args...)
+		keys, err := e.listKeyedRows(ctx, tx, read, table.Table, table.Key, where, args...)
 		if err != nil {
-			return fmt.Errorf("read the %s rows of %s:%s: %w", table.Table, e.Kind, e.ID, err)
-		}
-		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return fmt.Errorf("read the %s rows of %s:%s: %w", table.Table, e.Kind, e.ID, err)
+			return err
 		}
 		if len(keys) == 0 {
 			continue
-		}
-		for _, key := range keys {
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", table.Table, table.Key, key))
 		}
 		read.readState = append(read.readState, readStateRows{table: table, keys: keys})
 	}
@@ -256,7 +241,7 @@ func (e *Erasure) readRepliedRows(ctx context.Context, tx pgx.Tx, read *erasedRe
 			join graph_tuples t
 			  on t.to_kind = '` + graphstore.KindMessage + `' and t.to_id = tree.id and t.kind = '` + graphstore.TupleRepliesTo + `'
 			 and t.from_kind = '` + graphstore.KindMessage + `' and t.asserted
-			where tree.depth < 64
+			where tree.depth < ` + strconv.Itoa(inboxwrite.MaxThreadDepth) + `
 		), nodes (kind, id) as (
 			select '` + graphstore.KindMessage + `', tree.id from tree
 		)`
@@ -284,10 +269,7 @@ func (e *Erasure) readRepliedRows(ctx context.Context, tx pgx.Tx, read *erasedRe
 		with recursive `+nodes+`
 		select row(u.login, u.thread_id)::text, u.login, u.thread_id::text,
 		       u.version - case when u.marked_seq is null then 0 else (
-		           select count(*) from graph_tuples d
-		           where d.from_kind = $2::text and d.from_id = $1::text and d.kind = '`+graphstore.TupleDeliveredTo+`'
-		             and d.to_kind = '`+graphstore.KindPerson+`' and d.to_id = user_threads_login(u.login) and d.asserted
-		             and d.seq > u.marked_seq and `+replyCaused+`) end,
+		           select count(*) from graph_tuples d where `+countedDelivery+`) end,
 		       case when u.last_reply_id = $1::uuid then left_newest.from_id else u.last_reply_id::text end,
 		       case when u.last_reply_id = $1::uuid then left_newest.at else u.replied_at end
 		from user_threads u
@@ -295,9 +277,8 @@ func (e *Erasure) readRepliedRows(ctx context.Context, tx pgx.Tx, read *erasedRe
 			select d.from_id, d.at
 			from graph_tuples d
 			join nodes on nodes.kind = d.from_kind and nodes.id = d.from_id
-			where d.kind = '`+graphstore.TupleDeliveredTo+`' and d.to_kind = '`+graphstore.KindPerson+`'
-			  and d.to_id = user_threads_login(u.login) and d.asserted
-			  and not (d.from_kind = $2::text and d.from_id = $1::text) and `+replyCaused+`
+			where `+deliveryInto+`
+			  and not (d.from_kind = $2::text and d.from_id = $1::text) and `+graphcensus.ReplyCaused+`
 			order by d.at desc, d.seq desc
 			limit 1
 		) left_newest on true

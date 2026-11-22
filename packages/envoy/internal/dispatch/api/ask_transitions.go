@@ -538,12 +538,10 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// which answers the open approval request through this transition (reviews.go). A decline
 	// dismisses nothing.
 	var recording *inboxwrite.Recording
-	var kept []string
 	var inbox inboxwrite.Write
 	switch {
 	case transition.Inbox == inboxwrite.Replies && ask.Answer != nil:
 		inbox = inboxwrite.Answered(before, *ask.Answer, actor).Own()
-		kept = inbox.KeptLogins()
 	case transition.Inbox == inboxwrite.TakesPart && ask.Resolution != nil:
 		inbox = inboxwrite.Declined(ask.ID, actor, ask.Resolution.At)
 	}
@@ -563,7 +561,7 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// do.
 	event, err := s.queueLoggedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		transition.EventType, actor, payload,
-	), events.ThreadLoginsOf(ask.ID, kept...), "ask", ask.ID)
+	), events.ThreadLoginsOf(ask.ID, inbox.KeptLogins()...), "ask", ask.ID)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}

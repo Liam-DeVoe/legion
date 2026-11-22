@@ -1,5 +1,5 @@
 // Package inboxwrite is the one writer of the threads a person takes part in and of what reaches
-// them there (this child's D3, R2, R4 and R9). Every write path that stores a comment, a
+// them there (the spec's R2, R4 and R9). Every write path that stores a comment, a
 // message, an ask or an answer records it after its event, in that write's own transaction, and
 // the record appends the participation and delivery tuples of the write through graphstore and
 // writes the user_threads projection of them. The triggers of migrations 0095-0097, which wrote
@@ -241,10 +241,7 @@ func mentionedLogins(indexed graphstore.Uncaused) []string {
 // - and never Record, which reads a write's author and its deliveries and appends no mention arm.
 // A person who takes part already states the same relation again, which reads as it stood.
 func MentionParticipation(rootKind, rootID string, indexed graphstore.Uncaused, who model.Actor, at time.Time, event int64) []graphstore.Tuple {
-	writer := ""
-	if kind, id, named := graphstore.AuthorOf(who); named && kind == graphstore.KindPerson {
-		writer = id
-	}
+	writer := personOf(who)
 	var taking []graphstore.Tuple
 	for _, login := range mentionedLogins(indexed) {
 		if login == writer {
@@ -307,8 +304,26 @@ func (w Write) keptLogin() (string, bool) {
 	if w.Arm == TakesPart || w.Project == "" {
 		return "", false
 	}
-	kind, id, named := graphstore.AuthorOf(w.Author)
-	return id, named && kind == graphstore.KindPerson && graphstore.AddressFits(id)
+	kind, id, named := storeAuthor(w.Author)
+	return id, named && kind == graphstore.KindPerson
+}
+
+// storeAuthor is who wrote a write as the store keys them: the kind and id of actor's node
+// (graphstore.AuthorOf), named where actor names one whose id fits the store's address bound
+// (graphstore.AddressFits).
+func storeAuthor(actor model.Actor) (kind, id string, named bool) {
+	kind, id, named = graphstore.AuthorOf(actor)
+	return kind, id, named && graphstore.AddressFits(id)
+}
+
+// deliveredTo is the delivered_to from fromKind/fromID to the person login, made by who at at,
+// under event.
+func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, event int64) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: fromKind, FromID: fromID, Kind: graphstore.TupleDeliveredTo,
+		ToKind: graphstore.KindPerson, ToID: login,
+		At: at, Who: who, SourceEvent: event, Asserted: true,
+	}
 }
 
 // Record records w, whose event is event (graphstore.NoEvent for a write no event records, the
@@ -318,14 +333,14 @@ func (w Write) keptLogin() (string, bool) {
 // by A into thread T, the thread its head pointer tuples name (threadOf), it takes these steps, in
 // this order:
 //
-//  0. an answer first appends every tuple of its ask the marker test still owes (decision 16,
-//     owedBy): the participation and the citations of the ask's create where the ask's marker
-//     is null, and the participation of an older build's answer the ask holds;
+//  0. an answer first appends every tuple of its ask the marker test still owes (owedBy): the
+//     participation and the citations of the ask's create where the ask's marker is null, and
+//     the participation of an older build's answer the ask holds;
 //  1. participates_in from A to T, whether A is a person or a session and whether or not T's
 //     owner resolves to a project; and, for an ask's create, the assignee arm: participates_in
 //     from the person the ask waits on - as the create read them (Write.WaitingOn), else read
 //     here (waitingOn) - to it and delivered_to from it to them (waitingOnTuples), which raises
-//     no version (P13);
+//     no version;
 //  2. for a reply, every user_threads row of T, `for no key update` in ascending login order, in
 //     one pass (queueThreadLock) - which takes the rows of the catch-up's persons with them, since
 //     each is a row of T - and the live participant set, read in the plan (readMembers): the
@@ -371,7 +386,7 @@ func (w Write) keptLogin() (string, bool) {
 // reading the rows as they stand once the root is held, as the trigger
 // user_agent_thread_dismissed_clear does for an older build's reply (migration 20261105093507).
 //
-// Steps 2 to 4 hold the lock rule of D4: the rows are locked before the delivered_to of the people
+// Steps 2 to 4 hold one lock rule: the rows are locked before the delivered_to of the people
 // holding them is appended, and the backfill marks a row under the same lock, so no delivery falls
 // on both sides of a mark. The owner lock every such write holds first (store.LockOwner) orders
 // two writes into one thread, and the lock order written on api/inbox_read.go's
@@ -475,8 +490,7 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 		return Recording{}, err
 	}
 	r := Recording{w: w, thread: thread}
-	r.authorKind, r.authorID, r.named = graphstore.AuthorOf(w.Author)
-	r.named = r.named && graphstore.AddressFits(r.authorID)
+	r.authorKind, r.authorID, r.named = storeAuthor(w.Author)
 	if r.named && r.authorKind == graphstore.KindPerson {
 		r.person = r.authorID
 	}
@@ -623,11 +637,7 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		// session's reply the person who started its direct conversation.
 		deliveries := r.owed.deliveries
 		delivered := func(login string) {
-			deliveries = append(deliveries, graphstore.Tuple{
-				FromKind: w.NodeKind, FromID: w.NodeID, Kind: graphstore.TupleDeliveredTo,
-				ToKind: graphstore.KindPerson, ToID: login,
-				At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
-			})
+			deliveries = append(deliveries, deliveredTo(w.NodeKind, w.NodeID, login, w.At, w.Who, event))
 		}
 		starterDelivered := false
 		for _, login := range r.delivered {

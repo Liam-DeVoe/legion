@@ -806,12 +806,11 @@ var indexPasses = map[string]string{
 	"refs/decision_nodes.go#Queue": "the version's render and the credential its write proved",
 	"refs/refs.go#queueStamp":      "the event that recorded the write",
 	// Every write of a delivery attempt's row states what that row now holds
-	// (graphstore.Attempted, graphstore.QueueAttempted), and an insert writes the attempt's node
-	// before it, planned with the row it names (graphstore.AttemptOpened) and caused by the
-	// insert's event. Each reads the attempt row its own statement wrote, under the lock that
-	// statement holds, and what the store holds of that one node to append only what moved, the
-	// way a node write reads the row it moves (queueNodes): it never reads one side of a projection
-	// to mend the other.
+	// (graphstore.QueueAttempted), and an insert writes the attempt's node before it, planned with
+	// the row it names (graphstore.AttemptOpened) and caused by the insert's event. Each reads the
+	// attempt row its own statement wrote, under the lock that statement holds, and what the store
+	// holds of that one node to append only what moved, the way a node write reads the row it
+	// moves (queueNodes): it never reads one side of a projection to mend the other.
 	"api/comment_delivery.go#openCommentDeliveryAttempt":      "the attempt the retry opens",
 	"api/comment_delivery.go#take":                            "the attempt the claim takes",
 	"api/comment_delivery.go#standDown":                       "the attempt whose claim the sender gives back",
@@ -829,9 +828,9 @@ var indexPasses = map[string]string{
 	"outbox/mentions.go#settleAbandoned":                      "the abandoned attempts the outbox settles",
 	"graphstore/delivery_attempt.go#QueueAttempted":           "the attempt rows its caller names, as its own statement reads them, and what the store holds of each one's node",
 	// The backfill of every kind the child that moves the inbox, the messages and the read state
-	// moves but the mention tuples. Each batch reads the rows of its own kind that its marker test
-	// passes - the rows an older build wrote, which name no node, hold no tuples_stored or no
-	// tuples_stored_at, or carry no marked_seq - and writes into the store what each such row's own
+	// moves but the identity mentions of a text. Each batch reads the rows of its own kind that its
+	// marker test passes - the rows an older build wrote, which name no node, hold no tuples_stored
+	// or no tuples_stored_at, or carry no marked_seq - and writes into the store what each such row's own
 	// content says, under the event that recorded the write, then sets the row's marker. It reads
 	// no marked row: an item's block node, which a link and its maker hang from, and the placement
 	// a block's part_of would repeat, are read off the store, and a row's marker only ever as the
@@ -840,7 +839,7 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill_inbox.go#writeCommentPointers":     "each comments row whose tuples_stored is false",
 	"graphcensus/backfill_inbox.go#writeBlocks":              "each item block row that names no node, its item's node, and where the store places that block now",
 	"graphcensus/backfill_inbox.go#writeLinks":               "each item link row that names no node out of a block whose node the store holds, that node's maker, and the event that recorded the row's item",
-	"graphcensus/backfill_inbox.go#writeRelations":           "the citations its caller read off refs rows that hold no tuples_stored",
+	"graphcensus/backfill_inbox.go#writeRelations":           "the citations its caller read off refs rows that hold no tuples_stored, the delivery routes it read off comment_mentions rows that hold none, and the sessions and roles it read off the published_destinations of events that hold no delivered_to to them",
 	"graphcensus/backfill_inbox.go#writeAttempts":            "each attempt row that names no node, and what the store holds of the node it writes for it",
 	"graphcensus/backfill_inbox_threads.go#writeUserThreads": "each user_threads row that carries no marked_seq, the event of its last reply, and whether its person's participates_in and dismissed into its thread stand, so it states what the row says and retracts a dismissal the row no longer holds",
 	"graphcensus/backfill_inbox_threads.go#writeMarks":       "each read-state row whose tuples_stored_at is null",

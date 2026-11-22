@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { meInboxThreads } from "@legion/contracts";
 import {
   QueryClient,
   QueryClientProvider,
@@ -36,9 +37,14 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
-import { answerOneRead, issueAsk, mockInboxReads, oneReadAnswer } from "./inbox-fixture";
+import {
+  answerOneRead,
+  issueAsk,
+  ONE_READ_AS_OF,
+  oneReadAnswer,
+  oneReadDismissedPages,
+} from "./inbox-fixture";
 import { askWaitingOnPerson } from "./list-row";
-import { meInboxThreads } from "./one-read-rows";
 import {
   dismissesThread,
   dismissRefusalText,
@@ -58,7 +64,7 @@ beforeAll(async () => {
  *  at, which every row of it shares. */
 const SEEN = { version: replyRow("c1").version };
 
-const AS_OF = "2026-10-12T02:00:00Z";
+const AS_OF = ONE_READ_AS_OF;
 
 /** Every API mock a test installed, restored after it. */
 const restores: { mockRestore: () => void }[] = [];
@@ -74,7 +80,7 @@ afterEach(() => {
 function seeded(rows: readonly MyReplyRow[], asks: readonly OpenAskRow[] = []): QueryClient {
   const mine = asks.filter((ask) => askWaitingOnPerson(ask) === "alice");
   restores.push(spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }));
-  restores.push(answerOneRead({ asks: mine, threads: rows }, { asOf: AS_OF }));
+  restores.push(answerOneRead({ asks: mine, threads: rows }));
   // The unread set of the issue a thread row is on, which the reading column reads, is the one
   // read's `unread` state narrowed to that issue, which `answerOneRead` answers from `rows`.
   restores.push(spyOn(api, "getMyAgentState").mockResolvedValue({}));
@@ -93,14 +99,9 @@ function seeded(rows: readonly MyReplyRow[], asks: readonly OpenAskRow[] = []): 
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(openAsksQuery().queryKey, [...asks]);
-  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([...mine, ...rows], { asOf: AS_OF }));
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([...mine, ...rows]));
   client.setQueryData(meInboxCountQuery().queryKey, rows.length);
   return client;
-}
-
-/** The Dismissed view's one page of the one read, holding `rows`. */
-function dismissedPages(rows: readonly MyReplyRow[]) {
-  return { pageParams: [undefined], pages: [oneReadAnswer(rows, { asOf: AS_OF })] };
 }
 
 function renderInbox(client: QueryClient, address = "/"): void {
@@ -219,7 +220,7 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
   const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c1"]');
   act(() => row?.focus());
   act(() => {
-    client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([replyRow("c9")], { asOf: AS_OF }));
+    client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([replyRow("c9")]));
   });
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
@@ -489,7 +490,7 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
   const client = seeded([]);
   client.setQueryData(
     meInboxDismissedQuery().queryKey,
-    dismissedPages([replyRow("c1"), replyRow("c9")])
+    oneReadDismissedPages([replyRow("c1"), replyRow("c9")])
   );
   renderInbox(client, "/?show=dismissed");
 
@@ -549,7 +550,7 @@ test("a move back to the Inbox the reader stopped says it may have been made", a
   const client = seeded([]);
   client.setQueryData(
     meInboxDismissedQuery().queryKey,
-    dismissedPages([replyRow("c1"), replyRow("c9")])
+    oneReadDismissedPages([replyRow("c1"), replyRow("c9")])
   );
   renderInbox(client, "/?show=dismissed");
   try {
@@ -576,8 +577,6 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
   );
   restores.push(snoozes);
   const ask = issueAsk({ id: "ask-1", question: "Which approach?" });
-  // The pick reads the Inbox again once its writes settle.
-  restores.push(mockInboxReads([ask]));
   const client = seeded([], [ask]);
   renderInbox(client);
   try {

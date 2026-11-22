@@ -231,7 +231,6 @@ const agentReply = sentRequest(
 );
 
 interface Column {
-  readonly client: QueryClient;
   readonly createAgentMessage: Mock<typeof api.createAgentMessage>;
   readonly createComment: Mock<typeof api.createComment>;
   /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
@@ -284,9 +283,6 @@ async function openColumn(
   createAgentMessage.mockRejectedValue(REFUSAL);
   const column = drawInboxColumn(client, row, commentsClient);
   return {
-    get client() {
-      return column.client;
-    },
     createAgentMessage,
     createComment,
     move: column.move,

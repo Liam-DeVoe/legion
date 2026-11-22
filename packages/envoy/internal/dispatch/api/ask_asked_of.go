@@ -146,9 +146,10 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// The ask now reaches the person it was handed to, who takes part in its thread, and whoever
 	// its delivery stood to loses it - and their part in the thread, where nothing of their own
 	// holds them there - under this write's event, in that event's batch right after it
-	// (inboxwrite.QueueMoveWaiting), dated at the hand-on's own moment. The owner's lock is held
-	// since before the person the ask waited on was read, so a move of the project's default
-	// waits for this write.
+	// (inboxwrite.QueueMoveWaiting), dated at the hand-on's own moment. What orders this write
+	// against a move of the project's default is the ask's row: the update above holds it until
+	// this transaction ends, and that move locks the asks rows it moves `for no key update` first
+	// (QueueMoveWaiting's moveLock), so whichever reaches the row second waits for the other.
 	event, err := s.appendEventThen(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.asked_of", actor, payload,
 	), func(b *store.WriteBatch) error {

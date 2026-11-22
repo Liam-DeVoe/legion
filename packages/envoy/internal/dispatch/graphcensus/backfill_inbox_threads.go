@@ -117,6 +117,40 @@ func writeAsksOwed(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 	if len(read) == 0 {
 		return inboxWrote{}, nil
 	}
+	// Every older answer of the batch, read in one statement before any is stated: the writes
+	// below append no event, so a read per ask between them would answer the same rows. The ids
+	// are named to events_ask_payload_id as a list too, so the index reads the batch's asks alone
+	// whichever way the join is planned.
+	askIDs, markers := make([]string, len(read)), make([]*time.Time, len(read))
+	for index, held := range read {
+		askIDs[index], markers[index] = held.id, held.marker
+	}
+	answers, err := tx.Query(ctx, `
+		select named.id, e.id, coalesce(e.payload->'answer'->>'user', ''), (e.payload->'answer'->>'at')::timestamptz
+		from unnest($1::text[], $2::timestamptz[]) as named (id, marker)
+		join events e on e.type in (`+inboxwrite.AskEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = named.id
+		where e.payload->>'id' = any($1::text[])
+		  and e.payload->'answer'->>'user' is not null and e.payload->'answer'->>'at' is not null
+		  and (named.marker is null or (e.payload->'answer'->>'at')::timestamptz > named.marker)
+		order by named.id, e.id
+	`, askIDs, markers)
+	if err != nil {
+		return inboxWrote{}, fmt.Errorf("read the older answers of a batch of asks: %w", err)
+	}
+	type answer struct {
+		event int64
+		user  string
+		at    time.Time
+	}
+	older := map[string][]answer{}
+	var askID string
+	var each answer
+	if _, err := pgx.ForEachRow(answers, []any{&askID, &each.event, &each.user, &each.at}, func() error {
+		older[askID] = append(older[askID], each)
+		return nil
+	}); err != nil {
+		return inboxWrote{}, fmt.Errorf("read the older answers of a batch of asks: %w", err)
+	}
 	var wrote inboxWrote
 	marked := make([]string, 0, len(read))
 	for _, held := range read {
@@ -128,31 +162,7 @@ func writeAsksOwed(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 			}
 			wrote.tuples += int64(owed)
 		}
-		answers, err := tx.Query(ctx, `
-			select e.id, coalesce(e.payload->'answer'->>'user', ''), (e.payload->'answer'->>'at')::timestamptz
-			from events e
-			where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = $1
-			  and e.payload->'answer'->>'user' is not null and e.payload->'answer'->>'at' is not null
-			  and ($2::timestamptz is null or (e.payload->'answer'->>'at')::timestamptz > $2)
-			order by e.id
-		`, held.id, held.marker)
-		if err != nil {
-			return inboxWrote{}, fmt.Errorf("read the older answers of ask %s: %w", held.id, err)
-		}
-		type answer struct {
-			event int64
-			user  string
-			at    time.Time
-		}
-		var older []answer
-		var each answer
-		if _, err := pgx.ForEachRow(answers, []any{&each.event, &each.user, &each.at}, func() error {
-			older = append(older, each)
-			return nil
-		}); err != nil {
-			return inboxWrote{}, fmt.Errorf("read the older answers of ask %s: %w", held.id, err)
-		}
-		for _, answered := range older {
+		for _, answered := range older[held.id] {
 			if answered.user == "" {
 				continue
 			}
@@ -177,30 +187,32 @@ func writeAsksOwed(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 // --- what a decline owes ------------------------------------------------------------------------
 
 // declinesOwed is the ask.resolved events of a decline (model.AskResolutionDeclined) the decline
-// pass owes: each whose decliner - the event's actor, a person or a session the store can key
-// (graphstore.AuthorOf) - has no participates_in into the ask under that event. A decline holds no
-// marker of its own, so its marker is the tuple its writer states under its event
-// (inboxwrite.Declined), which a decline this release wrote holds and an older build's does not.
+// pass owes: each whose decliner - the event's actor, a person or a session the store can key, as
+// graphstore.AuthorOf reads it and the writer bounds it (actorAuthor) - has no participates_in
+// into the ask under that event. A decline holds no marker of its own, so its marker is the tuple
+// its writer states under its event (inboxwrite.Declined), which a decline this release wrote
+// holds and an older build's does not.
 var declinesOwed = `
 	from events e
-	where e.type in (` + askEventTypes + `) and e.type = 'ask.resolved'
+	where e.type in (` + inboxwrite.AskEventTypes + `) and e.type = 'ask.resolved'
 	  and e.payload->'resolution'->>'kind' = '` + model.AskResolutionDeclined + `'
 	  and coalesce(e.payload->>'id', '') <> ''
-	  and (((e.actor->>'kind' = 'user' or e.actor->>'kind' = 'session') and coalesce(e.actor->>'id', '') <> ''
-	        and octet_length(e.actor->>'id') <= ` + addressBound + `)
-	       or (coalesce(e.actor->>'kind', '') not in ('user', 'session') and coalesce(e.actor->>'owner', '') <> ''
-	           and octet_length(e.actor->>'owner') <= ` + addressBound + `))
+	  and ` + graphstore.AddressFitsSQL(`(`+actorAuthor(`e.actor`)+`)[2]`) + `
 	  and not exists (
 	      select 1 from graph_tuples t
 	      where t.to_kind = '` + graphstore.KindAsk + `' and t.to_id = e.payload->>'id'
 	        and t.kind = '` + graphstore.TupleParticipatesIn + `' and t.source_event = e.id)`
+
+// declinesKind is the decline pass's kind, the one pass of the inbox the block-index tick runs over
+// the events it reads rather than over rows (rollPasses, CatchUpEvents).
+const declinesKind = "ask_declines"
 
 // declinesPass gives the decliner of each decline an older build wrote their participates_in into
 // the ask, under that decline's ask.resolved and at the resolution's own moment, read from the
 // event and never from asks.resolution (inboxwrite.RecordOlder of inboxwrite.Declined).
 func declinesPass() inboxPass {
 	return inboxPass{
-		kind:      "ask_declines",
+		kind:      declinesKind,
 		batch:     `select e.id::text ` + declinesOwed + ` and e.id > $1::text::bigint order by e.id limit $2`,
 		start:     []string{"0"},
 		write:     writeDeclines,
@@ -260,7 +272,7 @@ func writeDeclines(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote,
 // (migration 20261116160000), whose person the store can key, of a thread whose root the store
 // holds a node of. A thread whose root is left out of the store on purpose - a comment past the
 // store's address bound - has no node its participation and marks could point at, as a block of an
-// item the store holds no node of has none (refs' itemScope), so its rows are no rows of this pass,
+// item the store holds no node of has none (refs' ItemScope), so its rows are no rows of this pass,
 // as that comment is no row the comment passes owe.
 var userThreadsOwed = `
 	from user_threads u
@@ -290,10 +302,17 @@ var userThreadsOwed = `
 // is made for the rows the marker test passes alone - an older build's write, under the row's lock
 // - and never for a marked row, so it restates what such a row says and mends nothing this
 // release's writer stated.
+//
+// It takes a row only once every item of its thread its catch-up states holds its node
+// (threadItemsStored): a comment an older build writes while the run is under way, after the
+// comment pass read the table, holds none until a later run or the block-index tick gives it one,
+// and a row of its thread marked meanwhile would stand at a version counting that comment's write
+// while the comment's deliveries, stated with its node, land above the mark. Such a row stays owed
+// (remaining counts it) until its thread's items all hold their nodes.
 func userThreadsPass() inboxPass {
 	return inboxPass{
 		kind: "user_threads",
-		batch: `select u.thread_id::text, u.login ` + userThreadsOwed + `
+		batch: `select u.thread_id::text, u.login ` + userThreadsOwed + ` and ` + threadItemsStored + `
 			and (u.thread_id, u.login) > ($1::uuid, $2) order by u.thread_id, u.login limit $3`,
 		start:     []string{zeroUUID, ""},
 		write:     writeUserThreads,
@@ -326,11 +345,18 @@ var threadCommentsOwed = `select c.id::text ` + commentPointersOwed + `
 // those threads the marker test still passes - one an older build wrote after the passes above
 // read the thread - is stated, with what it owed, before any row of the thread is marked, so each
 // delivery it owed lands at or below the mark (writeCommentPointers, writeMessages,
-// writeAsksOwed). It then locks the batch's rows `for no key update`, in ascending login within
-// each thread, and states and marks them. The store's tuples it reads of a row's person - whether
-// their participates_in and their dismissed into the thread stand - it reads of the rows the
-// marker test passes alone (userThreadsOwed, read again under the lock), to state what each such
-// row says, a dismissal it no longer holds retracted; it reads none of a marked row.
+// writeAsksOwed). It then reads which of the batch's rows stand in a thread each of whose items
+// holds its node (threadItemsStored), locks those of them `for no key update`, in ascending login
+// within each thread, and states and marks them. The test is a statement of its own, read plainly
+// before the lock: it reads the documents of the thread's comments (refs.CommentStoreJoins), and a
+// statement that locks a row names no owner table (api's TestNoForUpdateOnOwnerTables). What it
+// reads - the thread's comments and messages, their nodes and their documents' addresses - only a
+// writer of the thread's owner moves, which waits on the owner locks this batch holds from its
+// first statement, so it answers under the lock what it answered before it. The store's tuples it
+// reads of a row's person - whether their participates_in and their dismissed into the thread
+// stand - it reads of the rows the marker test passes alone (userThreadsOwed, read again under the
+// lock), to state what each such row says, a dismissal it no longer holds retracted; it reads none
+// of a marked row.
 func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
 	threads, logins := column(keys, 0), column(keys, 1)
 	if err := lockOwnersOf(ctx, tx, threadOwners, threads); err != nil {
@@ -343,7 +369,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 	}{
 		{`select k.id::text ` + asksOwed + ` and k.id = any($1::uuid[])`, writeAsksOwed},
 		{`select m.id::text ` + messagesOwed + ` and m.issue_key in (
-		      select u.issue_key from user_threads u where u.thread_id = any($1::uuid[]) and u.kind = 'message')`, writeMessages},
+		      select u.issue_key from user_threads u where u.thread_id = any($1::uuid[]) and u.kind = '` + graphstore.KindMessage + `')`, writeMessages},
 		{threadCommentsOwed, writeOwnedCommentPointers},
 	} {
 		rows, err := tx.Query(ctx, catchUp.read, threads)
@@ -363,6 +389,16 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		}
 		wrote.tuples += caught.tuples
 	}
+	stored, err := readKeys(ctx, tx, 2, `
+		select u.thread_id::text, u.login from user_threads u
+		where (u.thread_id, u.login) in (select * from unnest($1::uuid[], $2::text[])) and `+threadItemsStored,
+		threads, logins)
+	if err != nil {
+		return inboxWrote{}, fmt.Errorf("read which threads of a batch hold every item's node: %w", err)
+	}
+	if len(stored) == 0 {
+		return wrote, nil
+	}
 
 	rows, err := tx.Query(ctx, `
 		select u.login, u.thread_id::text, u.kind, u.read_through, u.dismissed_at, u.replied_at, u.last_reply_id::text,
@@ -371,7 +407,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		           when u.kind = '`+graphstore.KindMessage+`' then (select `+messageEventOf("m")+` from messages m where m.id = u.last_reply_id)
 		           when u.kind = '`+graphstore.KindAsk+`' and u.last_reply_id = u.thread_id then coalesce((
 		               select e.id from events e
-		               where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = u.thread_id::text
+		               where e.type in (`+inboxwrite.AskEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = u.thread_id::text
 		               order by (e.payload->'answer'->>'at')::timestamptz = u.replied_at desc, e.id desc
 		               limit 1), `+noEvent+`)
 		           else (select `+commentEventOf("c")+` from comments c where c.id = u.last_reply_id)
@@ -390,7 +426,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		  and (u.thread_id, u.login) in (select * from unnest($1::uuid[], $2::text[]))
 		order by u.thread_id, u.login
 		for no key update of u
-	`, threads, logins)
+	`, column(stored, 0), column(stored, 1))
 	if err != nil {
 		return inboxWrote{}, fmt.Errorf("read the user_threads rows naming no mark: %w", err)
 	}
@@ -511,7 +547,7 @@ var readStateTables = []readStateTable{
 	{table: "user_agent_thread_dismissed", keys: `r.message_id::text, r.login`, keyset: `(r.message_id, r.login) > ($1::uuid, $2)`,
 		named: `(r.message_id, r.login) in (select * from unnest($1::uuid[], $2::text[]))`, start: []string{zeroUUID, ""},
 		kind: graphstore.TupleDismissed, toKind: graphstore.KindMessage, toID: `r.message_id::text`, moment: `r.dismissed_at`},
-	// A snooze's tuple carries its snoozed_until (decision 13).
+	// A snooze's tuple carries its snoozed_until.
 	{table: "user_ask_snooze", keys: `r.login, r.ask_id::text`, keyset: `(r.login, r.ask_id) > ($1, $2::uuid)`,
 		named: `(r.login, r.ask_id) in (select * from unnest($1::text[], $2::uuid[]))`, start: []string{"", zeroUUID},
 		kind: graphstore.TupleSnoozed, toKind: graphstore.KindAsk, toID: `r.ask_id::text`, moment: `r.snoozed_until`},

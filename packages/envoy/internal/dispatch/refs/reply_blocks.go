@@ -286,6 +286,6 @@ func ScanReplyBlock(row pgx.Row, kind ItemKind) (replyID string, block *model.Re
 	if err := row.Scan(&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug); err != nil {
 		return "", nil, fmt.Errorf("scan the block a %s reply names: %w", kind, err)
 	}
-	block.Ref = BlockRef(itemRef(string(kind), issueKey, project, slug, itemID), block.BlockID)
+	block.Ref = ItemBlockRef(kind, issueKey, project, slug, itemID, block.BlockID)
 	return replyID, block, nil
 }

@@ -46,7 +46,6 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
-  INBOX_RELATION_DIRECTIONS,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
   type ItemBlocks,
@@ -760,13 +759,11 @@ test("narrows an entry of the one read to the row the page draws for it", () => 
       },
     ],
   } satisfies MeInboxResponse;
-  const rows = (answer.entries ?? []).map(inboxEntryRow);
+  const rows = answer.entries.map(inboxEntryRow);
   expect([
     rows.map((row) => row.kind),
     rows[0]?.kind === "thread" ? rows[0].thread.version : undefined,
-    answer.entries.flatMap((entry) => entry.relations.map((relation) => relation.direction)),
-    [...INBOX_RELATION_DIRECTIONS],
-  ]).toEqual([["thread", "none"], 3, ["outbound", "inbound"], ["inbound", "outbound"]]);
+  ]).toEqual([["thread", "none"], 3]);
 });
 
 test("models a snooze's state event and a document named in references_changed", () => {

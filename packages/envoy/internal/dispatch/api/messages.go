@@ -133,7 +133,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // messageRecovery is the recovery point a keyed message write commits with its message
-// (bindRequestKeyRecovery): the message, and the mode it was sent in, empty for a message that
+// (queueRequestKeyRecovery): the message, and the mode it was sent in, empty for a message that
 // targets nobody.
 type messageRecovery struct {
 	MessageID string `json:"message_id"`
@@ -272,10 +272,6 @@ type messageStoreWrite struct {
 	// written is the node write, with every fact of the message held for the event that stores
 	// it (graphstore.QueueCaused).
 	written graphstore.Uncaused
-	// at is the time the node, the row and every fact carry: the transaction's own, which is what
-	// messages.created_at defaults to and what the insert writes, so graph_edges dates a reply's
-	// edge alike whether its tuple or its row answers it.
-	at time.Time
 	// projected is false for a message whose replies_to end the store cannot key
 	// (graphstore.MessageFacts): its row names no node and who wrote it is not recorded, so the
 	// old arms over messages answer its edges.
@@ -387,24 +383,21 @@ func planMessageNode(
 	// A message on no issue that answers nothing sits on the page the store gives the agent it
 	// was sent to, which for a session that claimed a role is that role's (graphstore.AgentPage),
 	// the rule the publisher writes a session's page by.
-	written := false
+	pageHeld := false
 	if row.OnAgentPage() {
 		var page string
-		if page, written = pages[row.Target]; !written {
-			resolved, ok, err := graphstore.AgentPage(ctx, tx, row.Target)
-			if err != nil {
+		if page, pageHeld = pages[row.Target]; !pageHeld {
+			var err error
+			if page, _, err = graphstore.AgentPage(ctx, tx, row.Target); err != nil {
 				return messageStoreWrite{}, err
-			}
-			if ok {
-				page = resolved
 			}
 		}
 		row.Page = page
 	}
-	write := messageStoreWrite{starter: starter, at: at}
+	write := messageStoreWrite{starter: starter}
 	write.node = graphstore.MessageNode(row.ID, project, parties, author, at)
 	nodes, tuples, projected := graphstore.MessageFacts([]graphstore.Node{write.node}, nil, row, author, at, graphstore.NoEvent)
-	if written {
+	if pageHeld {
 		// The page is this transaction's already: MessageFacts' part_of names it, and its node is
 		// not written a second time.
 		nodes = slices.DeleteFunc(nodes, func(node graphstore.Node) bool { return node.Kind == graphstore.KindPage })
@@ -420,7 +413,7 @@ func directStarter(root model.Actor, target *string, issueless bool) string {
 	if !issueless || target == nil {
 		return ""
 	}
-	if route, err := model.ParseRoute(*target); err != nil || route.Kind != "session" {
+	if route, err := model.ParseRoute(*target); err != nil || route.Kind != graphstore.KindSession {
 		return ""
 	}
 	if kind, id, named := graphstore.AuthorOf(root); named && kind == graphstore.KindPerson {
@@ -430,7 +423,7 @@ func directStarter(root model.Actor, target *string, issueless bool) string {
 }
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
-// recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
+// recovery point (queueRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
 // (createAgentMessageInput.ConnectedOnly).
@@ -638,7 +631,7 @@ func (s *server) createStoredMessage(
 			return err
 		}
 		if issueKey != nil {
-			refs.QueueStamp(b, "message", message.ID)
+			refs.QueueStamp(b, graphstore.KindMessage, message.ID)
 		}
 		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		// What the message's body is in the store, under the same event (planPendingItem).

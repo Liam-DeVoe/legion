@@ -7,7 +7,7 @@
  * list while the write is out.
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
@@ -35,17 +35,24 @@ import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
 import { replyRow } from "../threads/replies-fixture";
 import { SnoozeWrites } from "./ask-snooze-fixture";
-import { answerOpenAsks, issueAsk, oneReadAnswer } from "./inbox-fixture";
-import { markAllReadBody, useMarkAllRead } from "./mark-all";
+import {
+  answerOneRead,
+  answerOpenAsks,
+  issueAsk,
+  ONE_READ_AS_OF,
+  oneReadAnswer,
+  oneReadReply,
+} from "./inbox-fixture";
+import { useMarkAllRead } from "./mark-all";
 import { useInboxAsks } from "./one-read";
 import { AskDeclineWritesContext, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { useAskHandOn } from "./useAskHandOn";
 import { useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 import { useUnreadThreadCount } from "./useInboxCount";
-import { dismissThreadRow, useInboxDismiss } from "./useInboxDismiss";
+import { dismissRefusalText, dismissThreadRow, useInboxDismiss } from "./useInboxDismiss";
 import { useInboxThreadRows } from "./useInboxThreadRows";
 
-const AS_OF = "2026-10-12T02:00:00Z";
+const AS_OF = ONE_READ_AS_OF;
 
 /** Every API mock a test installed, restored after it. */
 const restores: { mockRestore: () => void }[] = [];
@@ -60,7 +67,7 @@ function oneRead(
   asks: readonly OpenAskRow[],
   threads: readonly MyReplyRow[] = []
 ): MeInboxResponse {
-  return oneReadAnswer([...asks, ...threads], { asOf: AS_OF });
+  return oneReadAnswer([...asks, ...threads]);
 }
 
 /** What every client of this file is made with: a read the row seeds is never stale, so nothing
@@ -136,7 +143,7 @@ function invalidated(client: QueryClient): boolean {
 
 /** The one read's cached unread count. */
 function unreadCount(client: QueryClient): number | undefined {
-  return client.getQueryData<number>([...meInboxCountQuery().queryKey]);
+  return client.getQueryData<number>(meInboxCountQuery().queryKey);
 }
 
 /** The asks the Inbox lists with its filter cleared, beside a hand-on of `ask` (`useInboxAsks`):
@@ -167,9 +174,22 @@ test("a hand-on to the reader keeps the ask in their list, and a refusal puts th
     issue: { assignee: "carol", key: "CORE-1", title: "Fix the thing" },
   });
   const client = seeded([ask], oneRead([]));
-  restores.push(spyOn(api, "getMeInbox").mockResolvedValue(oneRead([])));
-  // What Dispatch holds of the open asks: carol's, which a read after the refusal answers.
-  restores.push(answerOpenAsks([ask]));
+  // What Dispatch holds: no ask of the reader's, and of the open asks carol's, which each read
+  // after the refusal answers. Both reads are held until the rollback has been checked, so what
+  // the page draws then is what the rollback put back, not what a read brought.
+  const reads = Promise.withResolvers<void>();
+  restores.push(
+    answerOneRead(async () => {
+      await reads.promise;
+      return {};
+    })
+  );
+  restores.push(
+    answerOpenAsks(async () => {
+      await reads.promise;
+      return [ask];
+    })
+  );
   const answer = deferred<unknown>();
   answerRoute("PUT", "/api/v1/asks/*/asked-of").mockReturnValue(answer.promise);
   let submit: ((to: string) => void) | undefined;
@@ -186,6 +206,8 @@ test("a hand-on to the reader keeps the ask in their list, and a refusal puts th
   await waitFor(() => expect(cached(client)?.entries).toEqual([]));
   expect(document.querySelector('[data-ask="ask-b"]')?.getAttribute("data-waiting")).toBe("carol");
   await waitFor(() => expect(api.getMeInbox).toHaveBeenCalled());
+  await act(async () => reads.resolve());
+  await waitFor(() => expect(client.isFetching()).toBe(0));
 });
 
 test("taking an unassigned ask adds it to the one read, and a refusal takes it out again", async () => {
@@ -306,7 +328,6 @@ test("Mark all read draws the one read's rows read and its count at zero, and a 
     () => useMarkAllRead({ asOf: AS_OF, filters: {}, rows: [{ kind: "thread", thread }] }),
     { wrapper: wrapper(client) }
   );
-  expect(markAllReadBody({}, AS_OF).read_through).toBe(AS_OF);
 
   act(() => hook.result.current.markAll());
   await waitFor(() => expect(cachedThread(client, "c1")?.unread).toBe(false));
@@ -334,20 +355,9 @@ test("a dismissal takes the row out of the one read and lowers its count, and a 
   await act(async () => answer.refuse());
   await waitFor(() => expect(cachedThread(client, "c1")?.thread_id).toBe("c1"));
   expect(unreadCount(client)).toBe(1);
-  expect(screen.queryByRole("alert")).toBeNull();
+  expect(hook.result.current.refusal).toBe(dismissRefusalText(1, false, "refused"));
   expect(settled).toEqual([["reply:c1"]]);
 });
-
-/** What `GET /api/v1/me/inbox` answers while Dispatch holds `threads`: the `inbox` state's
- *  answer, or for the count's one-entry page of the `unread` state (`meInboxCountQuery`) how many
- *  of them are unread. */
-function threadsAnswer(
-  query: { readonly state?: string } | undefined,
-  threads: readonly MyReplyRow[]
-): MeInboxResponse {
-  if (query?.state !== "unread") return oneRead([], threads);
-  return { ...oneRead([]), limit: 1, total: threads.filter((thread) => thread.unread).length };
-}
 
 /** The reader's Reply rows and the Inbox count, as the page draws them from the one read
  *  (`useInboxThreadRows`, `useUnreadThreadCount`), under their Mark all read. */
@@ -386,19 +396,17 @@ function drawnCount(): string {
   return screen.getByTestId("count").textContent ?? "";
 }
 
-// The reader's Reply rows and the Inbox count are the one read's. A read of it
-// asked while Mark all read is out - an event's refresh of the reader's threads, say - would
-// reach Dispatch before the press marks anything, and draw the row unread and the count back at
-// one while the press is still going through. It waits for the press's answer, as the Inbox's own
-// reads of the threads and their count do, and then reads what Dispatch holds after it.
+// The reader's Reply rows and the Inbox count are the one read's. A read of it asked while Mark
+// all read is out - an event's refresh of the reader's threads, say - would reach Dispatch before
+// the press marks anything, and draw the row unread and the count back at one while the press is
+// still going through. It waits for the press's answer, and then reads what Dispatch holds after
+// it.
 test("a read of the one read asked while Mark all read is out waits for its answer, so the rows stay drawn read", async () => {
   const before = [replyRow("c1")];
   // What Dispatch holds once the press is in: the row read, and a reply written since.
   const after = [replyRow("c1", { unread: false }), replyRow("c2")];
   let served = before;
-  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async (query) =>
-    threadsAnswer(query, served)
-  );
+  const getMeInbox = answerOneRead(() => ({ threads: served }));
   restores.push(getMeInbox);
   const answer = deferred<InboxReadResponse>();
   answerInboxReads().mockReturnValue(answer.promise);
@@ -435,15 +443,13 @@ test("a read of the one read asked while Mark all read is out waits for its answ
 
 // A read of the one read asked before Mark all read answers the rows as they stood. Landing
 // after the press, it would draw the row unread and the count back at one. The press gives it up
-// and asks for the one read again, as it does the Inbox's own reads of the threads and their
-// count, and on Dispatch's own client that read waits for the press's answer.
+// and asks for the one read again, and on Dispatch's own client that read waits for the press's
+// answer.
 test("a read of the one read asked before Mark all read does not put back the rows the press drew read", async () => {
   const before = [replyRow("c1")];
   const after = [replyRow("c1", { unread: false })];
   const asked = Promise.withResolvers<MeInboxResponse>();
-  const getMeInbox = spyOn(api, "getMeInbox")
-    .mockImplementationOnce(() => asked.promise)
-    .mockImplementation(async (query) => threadsAnswer(query, after));
+  const getMeInbox = answerOneRead({ threads: after }).mockImplementationOnce(() => asked.promise);
   restores.push(getMeInbox);
   const answer = deferred<InboxReadResponse>();
   answerInboxReads().mockReturnValue(answer.promise);
@@ -460,7 +466,7 @@ test("a read of the one read asked before Mark all read does not put back the ro
   await waitFor(() => expect(drawnUnread("c1")).toBe("false"));
   // The read answers as Dispatch held the row when it was asked: unread.
   await act(async () => {
-    asked.resolve(threadsAnswer(undefined, before));
+    asked.resolve(oneReadReply({}, { threads: before }));
     await read;
   });
   expect(drawnUnread("c1")).toBe("false");
@@ -504,8 +510,8 @@ function drawnSnooze(id: string): string | null {
 test("a read of the one read asked while a snooze is out waits for its answer, so the row stays snoozed", async () => {
   const until = "2026-10-20T09:00:00Z";
   const ask = issueAsk({ id: "ask-a" });
-  let served = oneRead([ask]);
-  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async () => served);
+  let served = [ask];
+  const getMeInbox = answerOneRead(() => ({ asks: served }));
   restores.push(getMeInbox);
   const answer = deferred<unknown>();
   answerRoute("PUT", "/api/v1/me/asks/*/snooze").mockReturnValue(answer.promise);
@@ -526,7 +532,7 @@ test("a read of the one read asked while a snooze is out waits for its answer, s
   expect(getMeInbox).not.toHaveBeenCalled();
   expect(client.getQueryState(meInboxQuery().queryKey)?.fetchStatus).toBe("fetching");
 
-  served = oneRead([{ ...ask, snoozed_until: until }]);
+  served = [{ ...ask, snoozed_until: until }];
   await act(async () => answer.resolve(undefined));
   await waitFor(() => expect(getMeInbox).toHaveBeenCalled());
   await waitFor(() => expect(client.isFetching()).toBe(0));

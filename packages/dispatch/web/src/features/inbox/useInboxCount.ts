@@ -6,10 +6,12 @@ import { useNeedsYouCount } from "./BlockedOnYou";
 
 /** How many of the Inbox's thread rows are unread: the `total` of
  *  `GET /api/v1/me/inbox?state=unread&limit=1`, which the sidebar's and the compact header's one
- *  Inbox number adds to the work waiting on the reader. One request per page load, never the
- *  Inbox's own unpaged read. The route needs the `person` scope, which a signed-in browser holds,
- *  so nothing without it asks. Undefined until that read answers, and after a first read that
- *  failed. Its own module, so the shell reads it without loading the Inbox. */
+ *  Inbox number adds to the work waiting on the reader. A one-entry read of its own rather than a
+ *  count over the Inbox's unpaged read, which the number's other half reads (`useNeedsYouCount`):
+ *  the unread threads show without waiting on that read. The route needs the `person` scope,
+ *  which a signed-in browser holds, so nothing without it asks. Undefined until that read
+ *  answers, and after a first read that failed. Its own module, so the shell reads it without
+ *  loading the Inbox. */
 export function useUnreadThreadCount(): number | undefined {
   const human = useIsHuman();
   return useQuery({ ...meInboxCountQuery(), enabled: human }).data;

@@ -19,12 +19,12 @@
 -- row and retracts nothing, and the probes below answer no tuple whose row is gone.
 --
 -- Every writer of this release states those facts in the transaction that writes the rows, and
--- names the node in the insert or update that writes each row (refs.IndexItem, refs.IndexAskParts
--- and the item writers of refs rows, refs.ReplaceCountedItem and refs.ReplaceCounted): a block's
--- node, kind `block` (graphstore.KindBlock), at the address its row's node_id already holds,
+-- names the node in the insert or update that writes each row (refs.IndexItem, refs.PlanAskParts
+-- and the item writer of refs rows, refs.PlanItemReplace): a block's node, kind `block`
+-- (graphstore.KindBlock), at the address its row's node_id already holds,
 -- `<item kind>/<item uuid>#<block id>`, the address a reply to a block names since 20261116114517
 -- and 20261116124448; its part_of to the item; each link it holds, under that link's own kind and
--- to that link's own far end, as a document block's links are (refs.replaceBlockRefs); and the
+-- to that link's own far end, as a document block's links are (refs.PlanBlocks); and the
 -- item's citations, under `mentions`, to each far end its refs rows name, each row holding
 -- tuples_stored from its own insert. An item the store holds no node of has no block node and no
 -- citation either, and its rows name none and hold false; a block whose address, or a link or a

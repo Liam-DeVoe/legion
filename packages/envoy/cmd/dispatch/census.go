@@ -82,7 +82,9 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		fmt.Fprintln(errOut, "census: --verbose lists the citations the store census counts; run it as `census --store --verbose`")
 		return 2
 	}
-	if (*bothReleases || *deadline != graphcensus.DefaultStoreCensusDeadline) && !*storeSide {
+	deadlineGiven := false
+	flags.Visit(func(f *flag.Flag) { deadlineGiven = deadlineGiven || f.Name == "deadline" })
+	if (*bothReleases || deadlineGiven) && !*storeSide {
 		fmt.Fprintln(errOut, "census: --deadline and --both-releases are the store census's; run them as `census --store --deadline 10m --both-releases`")
 		return 2
 	}

@@ -143,7 +143,10 @@ func blockHolds(alias, fromKind, table, column string) string {
 // reaches every link of that attribute at its next read, with no pass over documents nobody
 // edits. A row that names no node, which a build before the store wrote, is the old block_refs
 // arm's, whose test reads the to_types the index copied into the row: such a row follows a
-// change of the targets only once a version is indexed again.
+// change of the targets only once a version is indexed again. Beyond a mention it tests no row's
+// kind, as the view does not, so a decision's decided_by and from_ask, whose attributes declare no
+// targets, are listed as graph_edges lists them; the references read admits only mentions and the
+// pointer kinds the schema declares (blockRefLinked).
 func blockRefListed(alias, target string) string {
 	return `(case when ` + alias + `.node_kind is null
 		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + target + `)
@@ -323,7 +326,7 @@ func keyedItemBlockTupleArm(item ItemKind, blockKind string) string {
 func blockRepliesArm(owner ItemKind) string {
 	replies := repliesFrom(owner)
 	tables, _ := replies.tables()
-	return `select '` + string(replies) + `', x.id::text, 'replies_to', '` + owner.BlockKind() + `', x.replies_to_block, x.created_at, null::bigint
+	return `select '` + string(replies) + `', x.id::text, '` + graphstore.TupleRepliesTo + `', '` + owner.BlockKind() + `', x.replies_to_block, x.created_at, null::bigint
 				from ` + tables.items + ` x where x.replies_to_block = k.node_id` + repliesPrefix(owner) + ` and ` + repliesNotStored(replies, "x")
 }
 

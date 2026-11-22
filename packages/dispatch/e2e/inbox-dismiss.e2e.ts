@@ -130,7 +130,7 @@ async function dismissedThreads(): Promise<number> {
   let cursor: string | undefined;
   do {
     const page = await meInboxThreads({ cursor, state: "dismissed" });
-    counted += (page.rows ?? []).length;
+    counted += page.rows.length;
     cursor =
       page.next_cursor === undefined || page.next_cursor === "" ? undefined : page.next_cursor;
   } while (cursor !== undefined);
@@ -150,7 +150,7 @@ async function inboxThreads(): Promise<number> {
 async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
   const { rows } = await meInboxThreads({ state: "inbox" });
   return Object.fromEntries(
-    (rows ?? [])
+    rows
       .map(inboxThreadRow)
       .map((row) => [
         row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id),

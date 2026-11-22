@@ -1,3 +1,4 @@
+import { meInboxThreads } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
@@ -5,7 +6,6 @@ import { threadReadRequest } from "../../api/client";
 import { meInboxKey, meInboxOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { meInboxThreads } from "../inbox/one-read-rows";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
@@ -84,20 +84,12 @@ export function useMarkThreadRead({
   const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
   const unreadSet = useQuery({ ...meInboxOwnerQuery(owner ?? NO_OWNER), enabled: watching });
   const answer = unreadSet.data;
-  const threads = useMemo(
-    () => (answer === undefined ? undefined : meInboxThreads(answer)),
-    [answer]
-  );
+  const threads = useMemo(() => meInboxThreads(answer), [answer]);
   // This thread's own row of that set, which says both that it is unread and what in it is.
-  const row = watching
-    ? (threads ?? []).find((candidate) => candidate.thread_id === threadId)
-    : undefined;
+  const row = watching ? threads.find((candidate) => candidate.thread_id === threadId) : undefined;
   // Whether this thread is one the mark watches at all.
   const watched =
-    watching &&
-    answer !== undefined &&
-    threads !== undefined &&
-    (answer.total > threads.length || row !== undefined);
+    watching && answer !== undefined && (answer.total > threads.length || row !== undefined);
   // The newest reply this surface saw dwell, for the thread it saw it in.
   const [seen, setSeen] = useState<{ readonly at: string; readonly threadId: string }>();
   const ref = useDwell({

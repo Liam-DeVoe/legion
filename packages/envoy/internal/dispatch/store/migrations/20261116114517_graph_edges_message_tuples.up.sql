@@ -9,7 +9,7 @@
 --
 -- The messages row's node pair is the marker (migration 20261116114515). Every writer of this
 -- release names the message's node in the insert that writes the row, and states the message's
--- pointers in the same transaction, under the event that stored it (api's writeMessageNode,
+-- pointers in the same transaction, under the event that stored it (api's planMessageNode,
 -- graphstore.MessageFacts, and the seed). So a row this release writes goes to the store's arms, a
 -- row the release before it wrote - during a roll, or after a rollback - goes to its old arm, and a
 -- row either release deleted goes to neither: a build of the release before deletes a row and

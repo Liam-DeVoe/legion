@@ -2,25 +2,19 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createContext, useMemo } from "react";
 
 import { api, type WriteMethod } from "../../api/client";
-import { meInboxQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { Ask, OpenAskRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import { type KeyedWriteOptions, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { type AskPress, pressAsk, useAskWrites } from "./ask-writes";
 import {
-  cancelMeInbox,
-  type MeInboxSnapshot,
-  meInboxSnapshot,
-  patchMeInboxAsks,
-  restoreMeInbox,
-} from "./one-read-cache";
-import {
-  cancelOpenAsks,
+  cancelInboxAsks,
+  type InboxAsksSnapshot,
+  inboxAsksKeys,
+  inboxAsksSnapshot,
   type OpenAsksSnapshot,
-  openAsksKeys,
-  openAsksSnapshot,
-  patchOpenAsks,
-  restoreOpenAsks,
+  patchInboxAsks,
+  restoreInboxAsks,
 } from "./open-asks-cache";
 import { invalidateOwnerReads } from "./owner-reads";
 
@@ -75,11 +69,7 @@ const STOPPED_HAND_ON = "the hand-on of this question";
  */
 function handOnWrite(
   queryClient: QueryClient
-): KeyedWriteOptions<
-  unknown,
-  HandOnPress,
-  { readonly oneRead: MeInboxSnapshot; readonly openAsks: OpenAsksSnapshot }
-> {
+): KeyedWriteOptions<unknown, HandOnPress, InboxAsksSnapshot> {
   // The card says why its hand-on was refused, where the reader pressed it. A read of the open
   // asks or of the one read asked while the hand-on is out waits until Dispatch has taken it (its
   // answer or the ask's `ask.asked_of` event): Dispatch can answer it before, with the person from
@@ -89,14 +79,13 @@ function handOnWrite(
     write: (press, bounds) => api.handAskTo(press.ask.id, press.askedOf, bounds),
     holds: (press) => ({
       endsOn: askWritten(press.ask.id, ["ask.asked_of"]),
-      keys: [...openAsksKeys(queryClient), meInboxQuery().queryKey],
+      keys: inboxAsksKeys(queryClient),
     }),
     inline: true,
     label: ({ askedOf }) => `Ask handed to ${askedOf}`,
     onMutate: async (press) => {
-      await Promise.all([cancelOpenAsks(queryClient), cancelMeInbox(queryClient)]);
-      const openAsks = openAsksSnapshot(queryClient);
-      const oneRead = meInboxSnapshot(queryClient);
+      await cancelInboxAsks(queryClient);
+      const previous = inboxAsksSnapshot(queryClient);
       const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
       const handedOn = (row: OpenAskRow): OpenAskRow =>
@@ -112,23 +101,14 @@ function handOnWrite(
               waiting_on_person: press.askedOf,
             }
           : row;
-      patchOpenAsks(queryClient, handedOn);
-      // The rows the open asks held of the ask, any one of them, which join the reader's own
-      // Inbox answer where the ask is handed to them and it held no entry of it yet.
-      const joined =
-        press.askedOf === by
-          ? openAsks
-              .flatMap(([, rows]) => rows ?? [])
-              .filter((row) => row.id === press.ask.id)
-              .slice(0, 1)
-              .map(handedOn)
-          : [];
-      patchMeInboxAsks(queryClient, handedOn, joined);
-      return { oneRead, openAsks };
+      // The first row the open asks held of the ask, which joins the reader's own Inbox answer
+      // where the ask is handed to them and it held no entry of it yet.
+      const held = press.askedOf === by ? firstRowOf(previous.openAsks, press.ask.id) : undefined;
+      patchInboxAsks(queryClient, handedOn, held === undefined ? [] : [handedOn(held)]);
+      return previous;
     },
     onError: (_error, _press, previous) => {
-      restoreOpenAsks(queryClient, previous?.openAsks);
-      restoreMeInbox(queryClient, previous?.oneRead);
+      restoreInboxAsks(queryClient, previous);
     },
     onSettled: (_data, _error, press) => {
       // Every surface that draws this ask follows the write, not the `ask.asked_of` event that
@@ -245,3 +225,12 @@ export function useAskHandOnWrites(): AskHandOnWrites {
  * list does: the issue page's Conversation, a document's margin, its ask block, the Answers page.
  */
 export const AskHandOnWritesContext = createContext<AskHandOnWrites | undefined>(undefined);
+
+/** The first row of `askId` that `reads`, each read of the open asks as a write kept it, holds. */
+function firstRowOf(reads: OpenAsksSnapshot, askId: string): OpenAskRow | undefined {
+  for (const [, rows] of reads) {
+    const row = rows?.find((each) => each.id === askId);
+    if (row !== undefined) return row;
+  }
+  return undefined;
+}

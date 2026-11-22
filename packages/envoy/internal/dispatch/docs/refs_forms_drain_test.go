@@ -225,17 +225,13 @@ func TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst(t *testing.T) {
 // process of such a build is in the fleet, this build takes that row too, beside its advisory lock
 // (store.LockOwner), so the drain's index waits on it and the other process's index lands first.
 // The fleet holds one here: a server_processes row with no owner_lock_protocol, as
-// api.registerEarlierBuildProcess writes one. Once the drain has owed the notes a block index and
+// registerEarlierBuildProcess writes one. Once the drain has owed the notes a block index and
 // waits on that row, the other process records its index by record, a statement over
 // document_block_versions that takes the notes' id, and commits.
 func drainAfterAnotherProcessIndexes(t *testing.T, database *store.Store, service *Service, notes, record string) RefsFormsTick {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `
-		insert into server_processes (instance, commit, signing_keys)
-		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
-		t.Fatalf("register a process of an earlier build: %v", err)
-	}
+	registerEarlierBuildProcess(t, database)
 	other, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the other process's index: %v", err)

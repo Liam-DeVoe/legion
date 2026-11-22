@@ -99,24 +99,15 @@ func TestThePastBoundPassStopsAnOlderBuildsRowFromHoldingTheTriggers(t *testing.
 	if err != nil {
 		t.Fatalf("backfill the store: %v", err)
 	}
+	// Each pass reports the rows it marked alone (pastBoundTable.markRecorded); what the two wrote
+	// of the store is read off it below.
 	for _, kind := range []string{"comments_past_bound", "messages_past_bound"} {
-		var found bool
-		for _, done := range report.Kinds {
-			if done.Kind != kind {
-				continue
-			}
-			found = true
-			if done.Rows != 1 || done.Tuples != 0 || !done.Complete {
-				t.Errorf("the %s pass marked %d rows and stated %d tuples (complete %t), want 1 row, no tuple, complete",
-					kind, done.Rows, done.Tuples, done.Complete)
-			}
-		}
-		if !found {
-			t.Errorf("the backfill reports no %s pass", kind)
+		if done := reportedKind(t, report, kind); done.Rows != 1 || !done.Complete {
+			t.Errorf("the %s pass marked %d rows (complete %t), want 1 row, complete", kind, done.Rows, done.Complete)
 		}
 	}
 	if comments, messages := triggersStillWriteFor(t, database); comments != 0 || messages != 0 {
-		t.Fatalf("after the backfill the triggers still write for %d comments and %d messages, want none: the root's drop of them could never run", comments, messages)
+		t.Fatalf("after the backfill the triggers still write for %d comments and %d messages, want none: the release that drops them could never run", comments, messages)
 	}
 	// The comment has no node at all; the reply's node is the object pass's, and no relation of
 	// its own is stated, since no pass takes its row.

@@ -71,10 +71,13 @@ func EditedTargets(previous, body, serverURL string, found []text.Ref) []Target 
 // grammar's always, since this text has now been read with the whole grammar, and the forms
 // queue only when whole says the write indexed the source's blocks in tx before this call, so the
 // text it read is the source's whole text and every delete that index made, its blocks' included,
-// came before this settle (Replacement.SettlingForms, RefsFormsOwed). A write that leaves the
-// blocks for later - rebuild-refs - passes false and leaves the source owed until this build's
-// own block index of it. So a write this build makes costs the drains nothing, and only an older
-// build's write stays owed.
+// came before this settle (Replacement.SettlingForms, RefsFormsOwed). A caller that leaves the
+// blocks for later passes false and leaves the source owed until this build's own block index of
+// it.
+//
+// No writer of the server calls it: each plans its replacement in its read phase (PlanReplace,
+// PlanItemReplace, rebuild's planSourceReplace) and queues it in its write phase
+// (Replacement.Queue). The tests write a source's references through it.
 func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, whole bool) ([]Target, error) {
 	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
 	if err != nil {
@@ -93,7 +96,7 @@ func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found 
 }
 
 // Replacement is one source's references reconciled with found, the references its text now
-// cites, as replaceRefs reconciles them. It is planned against the edges the source holds
+// cites. It is planned against the edges the source holds
 // (PlanReplace, PlanReplaceFrom), so the targets it moves are known before anything is written,
 // and written by Queue, which puts its statements on a write phase's batch: a writer that decides
 // everything first and writes last plans in its read phase and queues in its write phase.
@@ -106,15 +109,14 @@ type Replacement struct {
 	// forms says the replacement's settle deletes the source's row of the forms queue as well as
 	// the whole grammar's (SettlingForms).
 	forms bool
-	// cites is whether a row the insert writes holds tuples_stored, where its far end fits the
-	// store's bound: an item's whose node the store holds (PlanItemReplace). cited is the tuples
-	// those rows and the dropped ones stand for, held for the write's event (Cited).
-	cites bool
+	// cited is the tuples the rows the insert writes and the dropped ones stand for, held for the
+	// write's event (Cited).
 	cited []graphstore.UncausedTuple
 	// scope and leaves are, for an item's replacement (PlanItemReplace, PlanItemAfter), the item's
 	// scope and the item's refs rows as the replacement leaves them once written, each with its
 	// tuples_stored: what a second replacement of the same item in the same transaction is
-	// planned against (PlanItemAfter).
+	// planned against (PlanItemAfter). A row the insert writes holds tuples_stored where scope
+	// holds the item's node and its far end fits the store's bound.
 	scope  ItemScope
 	leaves []heldCitation
 }
@@ -151,7 +153,6 @@ func planItemReplaceOver(held []heldCitation, scope ItemScope, kind ItemKind, it
 		stored[row.target] = row
 	}
 	replacement := PlanReplaceFrom(targets, string(kind), itemID, found, &at)
-	replacement.cites = scope.held
 	replacement.scope = scope
 	replacement.leaves = make([]heldCitation, 0, len(replacement.held))
 	for _, target := range replacement.held {
@@ -238,7 +239,7 @@ func PlanReplace(ctx context.Context, q Queryer, fromKind, fromID string, found 
 
 // HeldTargets is the targets of the edges q holds for one source, read with the predicate the
 // reconciling delete visits them by: an edge to a node kind this build does not know (nodeKinds)
-// is one that delete keeps, so it is neither held nor moved here (replaceRefs).
+// is one that delete keeps, so it is neither held nor moved here (Replacement.Queue).
 func HeldTargets(ctx context.Context, q Queryer, fromKind, fromID string) ([]Target, error) {
 	held, err := scanTargets(q.Query(ctx, `
 		select to_kind, to_id from refs where from_kind = $1 and from_id = $2 and to_kind = any($3)
@@ -327,7 +328,7 @@ func (r Replacement) Queue(b *store.WriteBatch) {
 			       $6::boolean and octet_length(target.id) <= $7
 			from unnest($3::text[], $4::text[]) as target(kind, id)
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
-		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt, r.cites, graphstore.MaxAddressBytes)
+		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt, r.scope.held, graphstore.MaxAddressBytes)
 	}
 	queueSettleSourceOwed(b, r.fromKind, r.fromID, r.forms)
 }

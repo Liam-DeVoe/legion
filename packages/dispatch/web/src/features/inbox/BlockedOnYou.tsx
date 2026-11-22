@@ -1,4 +1,4 @@
-import { awaitsDecision } from "@legion/contracts";
+import { awaitsDecision, meInboxAsks } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -14,7 +14,6 @@ import {
 } from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
-import { meInboxAsks } from "./one-read-rows";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";
 
@@ -108,20 +107,21 @@ export function needsYou(
 }
 
 /** The rail's and the compact top bar's `Needs you N`: the reader's own, from the one read's
- *  asks, which are the asks that wait on the reader and no other. Undefined until each read it
+ *  asks, which are the asks that wait on the reader and no other. They are selected once for each
+ *  answer, not once a render: the shell and the rail each draw this. Undefined until each read it
  *  adds up has answered - the one read, the sign-in that says whose asks are the reader's, and
  *  the credential requests - and while a first read of any of them has failed, so the rail
  *  draws no number rather than a sum that counts an unread list as empty. A read that answered
  *  once keeps its answer through a later refresh that fails. */
 export function useNeedsYouCount(): number | undefined {
   const human = useIsHuman();
-  const own = useQuery({ ...meInboxQuery(), enabled: human });
+  const own = useQuery({ ...meInboxQuery(), enabled: human, select: meInboxAsks });
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const credentials = useCredentialRequests();
   if (own.data === undefined || viewer === undefined || credentials.status !== "listed") {
     return undefined;
   }
-  return needsYou(meInboxAsks(own.data), credentials.requests, viewer).count;
+  return needsYou(own.data, credentials.requests, viewer).count;
 }
 
 /** The project page's `Blocked on you · N` pill, linking to the Inbox: the reader's own

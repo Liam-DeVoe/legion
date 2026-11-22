@@ -12,36 +12,26 @@ import {
 } from "react";
 
 import type { WriteBounds, WriteMethod } from "../../api/client";
-import { meInboxQuery } from "../../api/queries";
 import { askWritten } from "../../api/write-events";
 import { SendStoppedError } from "../writes/keyed-write";
 import { type KeyedWriteOptions, useKeyedWrite } from "../writes/useKeyedWrite";
 import { type AskPress, pressAsk, useAskWrites } from "./ask-writes";
+import { invalidateMeInbox } from "./one-read-cache";
 import {
-  cancelMeInbox,
-  invalidateMeInbox,
-  type MeInboxSnapshot,
-  meInboxSnapshot,
-  patchMeInboxAsks,
-  restoreMeInbox,
-} from "./one-read-cache";
-import {
-  cancelOpenAsks,
+  cancelInboxAsks,
+  type InboxAsksSnapshot,
+  inboxAsksKeys,
+  inboxAsksSnapshot,
   invalidateOpenAsks,
-  type OpenAsksSnapshot,
-  openAsksKeys,
-  openAsksSnapshot,
-  patchOpenAsks,
-  restoreOpenAsks,
+  patchInboxAsks,
+  restoreInboxAsks,
 } from "./open-asks-cache";
 
 /** Every cached read of the open asks and of the one read before the write took its ask's row out
  *  (`open-asks-cache.ts`, `one-read-cache.ts`), kept so a refused write puts them back. Undefined
  *  where the write left the Inbox alone - a change to an answer the server has already recorded,
  *  whose ask has no open row there - and so kept nothing. */
-type InboxRowsBefore =
-  | { readonly openAsks: OpenAsksSnapshot; readonly oneRead: MeInboxSnapshot }
-  | undefined;
+type InboxRowsBefore = InboxAsksSnapshot | undefined;
 
 /** What an answer, a decline, a question back or a reply is written with, beyond what the write
  *  itself does with the Inbox's row. */
@@ -59,6 +49,8 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
   /** Called after the row is back, so a refusal the surface reads is read on the restored list. */
   readonly onError?: (error: Error, variables: TVariables, before: InboxRowsBefore) => void;
   readonly onSettled?: () => void;
+  /** Reads again what the write moved, the one read among them (`invalidateOwnerReads`): this
+   *  write reads the one read again itself only where the server refuses it. */
   readonly onSuccess?: (data: TData | null, variables: TVariables) => void;
 }
 
@@ -89,8 +81,11 @@ export interface OutstandingAnswerWrite<TVariables> {
  * before could be answered with the row still in it. The Inbox lists the asks other people open,
  * so the hold ends on the event rather than wait out an answer that is late. A write that leaves
  * the row alone - a change to a recorded answer, a question back, a reply - takes nothing out and
- * holds no read. Every write reads the one read again once the server has decided. The write is
- * inline: the surface shows a refusal itself, over what the reader wrote, so the shell's
+ * holds no read. Every write reads the one read again once the server has decided: on a refusal
+ * here, after the surface's own `onError`, and on a landing in the surface's `onSuccess`, which
+ * reads it again with the ask's other reads. Once, either way: a second invalidation made while
+ * the first read is out would only queue the same read behind it (`DispatchQueryClient`). The
+ * write is inline: the surface shows a refusal itself, over what the reader wrote, so the shell's
  * indicator carries the write only while it is out.
  */
 function outstandingAnswerWrite<TData, TVariables extends AskPress>(
@@ -101,7 +96,7 @@ function outstandingAnswerWrite<TData, TVariables extends AskPress>(
   return {
     holds: (press) => ({
       endsOn: askWritten(press.ask.id, ["ask.answered", "ask.resolved"]),
-      keys: removes(press) ? [...openAsksKeys(queryClient), meInboxQuery().queryKey] : [],
+      keys: removes(press) ? inboxAsksKeys(queryClient) : [],
     }),
     inline: true,
     label: (press) => surfaceOf(press).label(press),
@@ -109,26 +104,20 @@ function outstandingAnswerWrite<TData, TVariables extends AskPress>(
     write: (press, bounds) => surfaceOf(press).write(press, bounds),
     onMutate: async (press) => {
       if (!removes(press)) return undefined;
-      await Promise.all([cancelOpenAsks(queryClient), cancelMeInbox(queryClient)]);
-      const openAsks = openAsksSnapshot(queryClient);
-      const oneRead = meInboxSnapshot(queryClient);
-      const without = (row: { readonly id: string }) => row.id !== press.ask.id;
-      patchOpenAsks(queryClient, (row) => (without(row) ? row : undefined));
-      patchMeInboxAsks(queryClient, (row) => (without(row) ? row : undefined));
-      return { oneRead, openAsks };
+      await cancelInboxAsks(queryClient);
+      const before = inboxAsksSnapshot(queryClient);
+      patchInboxAsks(queryClient, (row) => (row.id === press.ask.id ? undefined : row));
+      return before;
     },
     onError: (error, press, before) => {
       if (before !== undefined) {
-        restoreOpenAsks(queryClient, before.openAsks);
-        restoreMeInbox(queryClient, before.oneRead);
+        restoreInboxAsks(queryClient, before);
         void invalidateOpenAsks(queryClient);
       }
       surfaceOf(press).onError?.(error, press, before);
+      void invalidateMeInbox(queryClient);
     },
-    onSettled: (_data, _error, press) => {
-      invalidateMeInbox(queryClient);
-      surfaceOf(press).onSettled?.();
-    },
+    onSettled: (_data, _error, press) => surfaceOf(press).onSettled?.(),
     onSuccess: (data, press) => surfaceOf(press).onSuccess?.(data, press),
   };
 }

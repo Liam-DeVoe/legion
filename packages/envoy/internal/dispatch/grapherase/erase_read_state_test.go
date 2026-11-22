@@ -208,11 +208,11 @@ func TestTheEraseOfAPersonTakesTheirReadStateRows(t *testing.T) {
 	root := write("erin's message to s1", `insert into messages (author, body, target) values ('{"kind":"user","id":"erin"}', 'Can you look?', 'session:s1')`)
 	reply := write("s1's reply to erin", `
 		insert into messages (author, body, in_reply_to, target) values ('{"kind":"session","id":"s1"}', 'Looking.', $1::uuid, 'session:s1')`, root)
-	writeAsThisBuild(t, database, "the person's node", func(tx pgx.Tx) (graphstore.Uncaused, error) {
+	writeAsThisBuild(t, database, "the person's node", func(tx pgx.Tx) ([]graphstore.Uncaused, error) {
 		written := graphstore.PlanUncaused([]graphstore.Node{
 			graphstore.PersonNode(person, model.Actor{Kind: "user", ID: person}, time.Now().UTC(), graphstore.NoEvent),
 		}, nil)
-		return written, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return []graphstore.Uncaused{written}, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 			graphstore.QueueNodes(b, written)
 			return nil
 		})

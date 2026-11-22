@@ -427,13 +427,8 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		if person, reached := reachedPerson(e.Kind, out, fromKind, fromID, kind, toKind, toID); reached {
 			writers[ErasedWriter{Kind: graphstore.KindPerson, ID: person}] = struct{}{}
 		}
-		far := toKind + ":" + toID
-		if toKind == graphstore.KindValue {
-			far = "a value"
-		}
 		read.tupleSeqs = append(read.tupleSeqs, seq)
-		read.listing.tuples = append(read.listing.tuples,
-			fmt.Sprintf("delete graph_tuples %d: %s:%s %s %s", seq, fromKind, fromID, kind, far))
+		read.listing.tuples = append(read.listing.tuples, tupleLine(seq, fromKind, fromID, kind, toKind, toID))
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
@@ -442,6 +437,16 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.ID, b.ID))
 	})
 	return nil
+}
+
+// tupleLine is the listing's line of the tuple at seq the run deletes. A value tuple is named
+// without its value, which can be text.
+func tupleLine(seq int64, fromKind, fromID, kind, toKind, toID string) string {
+	far := toKind + ":" + toID
+	if toKind == graphstore.KindValue {
+		far = "a value"
+	}
+	return fmt.Sprintf("delete graph_tuples %d: %s:%s %s %s", seq, fromKind, fromID, kind, far)
 }
 
 // erasedPart is one node that is a part of an erased item - a block of its body, or one of its
@@ -478,12 +483,12 @@ type erasedPart struct {
 // that is neither the item nor one of its parts is somebody else's words about it - a reply
 // naming the block - and refuses the run as readBlockers' rows do.
 func (e *Erasure) readItemParts(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	var blocks, attempts string
+	var blocks string
 	switch e.Kind {
 	case graphstore.KindComment:
-		blocks, attempts = "comment_blocks b where b.comment_id::text = $1", "comment_deliveries"
+		blocks = "comment_blocks b where b.comment_id::text = $1"
 	case graphstore.KindMessage:
-		blocks, attempts = "message_blocks b where b.message_id::text = $1", "message_deliveries"
+		blocks = "message_blocks b where b.message_id::text = $1"
 	default:
 		return nil
 	}
@@ -499,22 +504,26 @@ func (e *Erasure) readItemParts(ctx context.Context, tx pgx.Tx, read *erasedRead
 	if err := e.readParts(ctx, tx, read, graphstore.KindBlock, blockIDs, seen); err != nil {
 		return err
 	}
-	attemptIDs, err := e.attemptAddresses(ctx, tx, attempts)
+	attemptIDs, err := e.attemptAddresses(ctx, tx)
 	if err != nil {
 		return err
 	}
 	return e.readParts(ctx, tx, read, graphstore.KindDeliveryAttempt, attemptIDs, seen)
 }
 
-// attemptAddresses is the address of the attempt node each row of table - comment_deliveries or
-// message_deliveries - holds for the erased item, spelled from the row's key as its writer spelled
-// it (graphstore.AttemptKey.ID), so a row that names no node any longer still reaches the node it
-// named. An address past the store's bound is no node (graphstore.AttemptOpened), and the read of
-// the nodes finds none at it.
-func (e *Erasure) attemptAddresses(ctx context.Context, tx pgx.Tx, table string) ([]string, error) {
-	query := `select target, attempt from comment_deliveries where comment_id = $1::uuid order by target, attempt`
-	if table == "message_deliveries" {
-		query = `select '', attempt from message_deliveries where message_id = $1::uuid order by attempt`
+// attemptAddresses is the address of the attempt node each comment_deliveries row of an erased
+// comment, or message_deliveries row of an erased message, holds for it, spelled from the row's key
+// as its writer spelled it (graphstore.AttemptKey.ID), so a row that names no node any longer still
+// reaches the node it named. An address past the store's bound is no node
+// (graphstore.AttemptOpened), and the read of the nodes finds none at it.
+func (e *Erasure) attemptAddresses(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	table, query := "comment_deliveries", `select target, attempt from comment_deliveries where comment_id = $1::uuid order by target, attempt`
+	key := func(target string, attempt int) graphstore.AttemptKey {
+		return graphstore.CommentAttempt(e.ID, target, attempt)
+	}
+	if e.Kind == graphstore.KindMessage {
+		table, query = "message_deliveries", `select '', attempt from message_deliveries where message_id = $1::uuid order by attempt`
+		key = func(_ string, attempt int) graphstore.AttemptKey { return graphstore.MessageAttempt(e.ID, attempt) }
 	}
 	rows, err := tx.Query(ctx, query, e.ID)
 	if err != nil {
@@ -526,10 +535,7 @@ func (e *Erasure) attemptAddresses(ctx context.Context, tx pgx.Tx, table string)
 		if err := row.Scan(&target, &attempt); err != nil {
 			return "", fmt.Errorf("read a %s row of %s:%s: %w", table, e.Kind, e.ID, err)
 		}
-		if table == "message_deliveries" {
-			return graphstore.MessageAttempt(e.ID, attempt).ID(), nil
-		}
-		return graphstore.CommentAttempt(e.ID, target, attempt).ID(), nil
+		return key(target, attempt).ID(), nil
 	})
 }
 
@@ -575,12 +581,7 @@ func (e *Erasure) readParts(ctx context.Context, tx pgx.Tx, read *erasedRead, ki
 		seen[*seq] = struct{}{}
 		part := &read.parts[len(read.parts)-1]
 		part.seqs = append(part.seqs, *seq)
-		far := *toKind + ":" + *toID
-		if *toKind == graphstore.KindValue {
-			far = "a value"
-		}
-		read.listing.tuples = append(read.listing.tuples,
-			fmt.Sprintf("delete graph_tuples %d: %s:%s %s %s", *seq, *fromKind, *fromID, *tupleKind, far))
+		read.listing.tuples = append(read.listing.tuples, tupleLine(*seq, *fromKind, *fromID, *tupleKind, *toKind, *toID))
 		inbound := *toKind == kind && *toID == id
 		ours := (*fromKind == graphstore.KindBlock && strings.HasPrefix(*fromID, blocks)) ||
 			(*fromKind == graphstore.KindDeliveryAttempt && strings.HasPrefix(*fromID, attempts))
@@ -639,17 +640,8 @@ func reachedPerson(nodeKind string, out bool, fromKind, fromID, kind, toKind, to
 func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", e.Kind, e.ID))
 	for _, held := range graphstore.ProjectedTables {
-		rows, err := tx.Query(ctx, `select row(`+held.Key+`)::text from `+held.Table+
-			` where node_kind = $1 and node_address = $2 order by `+held.Key, e.Kind, e.ID)
-		if err != nil {
-			return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-		}
-		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-		}
-		for _, key := range keys {
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", held.Table, held.Key, key))
+		if _, err := e.listKeyedRows(ctx, tx, read, held.Table, held.Key, `node_kind = $1 and node_address = $2`, e.Kind, e.ID); err != nil {
+			return err
 		}
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
@@ -686,6 +678,23 @@ func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		}
 	}
 	return nil
+}
+
+// listKeyedRows lists each row of table that where picks, over args, as a row the run deletes,
+// named by its key as row(key)::text spells it and in key order, and answers those keys.
+func (e *Erasure) listKeyedRows(ctx context.Context, tx pgx.Tx, read *erasedRead, table, key, where string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, `select row(`+key+`)::text from `+table+` where `+where+` order by `+key, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the %s rows of %s:%s: %w", table, e.Kind, e.ID, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the %s rows of %s:%s: %w", table, e.Kind, e.ID, err)
+	}
+	for _, held := range keys {
+		read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", table, key, held))
+	}
+	return keys, nil
 }
 
 // readAncestors reads the blocks of the node's document that hold its block, up the

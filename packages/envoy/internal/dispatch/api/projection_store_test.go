@@ -39,19 +39,15 @@ import (
 // by the same transaction, before the row: the three of migration 20261109022248, and the nine of
 // this child, whose node column pair its migrations add (20261116102800, 20261116114515
 // and 20261116140000). A row of one of them names a node the store holds, and the foreign key on
-// that pair is what refuses a row whose node was never written. The tables
-// censustest.ProjectedColumns lists are among them, and the columns of each the store states are
+// that pair is what refuses a row whose node was never written. They are the tables
+// projectedColumns names, censustest.ProjectedColumns' and inboxProjectedColumns', so a table
+// either list gains is one this test holds, and the columns of each the store states are
 // projectedColumns'.
 //
 // The six read-state tables of R6 are projections of tuples and of no node, so they name no node
 // and carry no such key; what holds them to the store is their marker (markedProjections) and the
 // census, and the one exemption's marker test below.
-var projectedTables = []string{
-	"block_refs", "comments", "document_blocks",
-	"comment_deliveries", "message_deliveries", "messages",
-	"comment_blocks", "message_blocks", "ask_blocks",
-	"comment_block_refs", "message_block_refs", "ask_block_refs",
-}
+var projectedTables = slices.Sorted(maps.Keys(projectedColumns))
 
 // tablesThisRunWrites are the projected tables the fixture's own requests write, which the rule
 // below is read over here. The other projected tables - a message's rows, the body blocks and
@@ -174,7 +170,7 @@ var inboxProjectedColumns = func() map[string]map[string]string {
 	link := maps.Clone(node)
 	link["source_seq"] = "the link's tuple, as its legacy_source_seq"
 	return map[string]map[string]string{
-		"comment_deliveries": node, "message_deliveries": node, "messages": node,
+		"comment_deliveries": node, "message_deliveries": node,
 		"comment_blocks": node, "message_blocks": node, "ask_blocks": node,
 		"comment_block_refs": link, "message_block_refs": link, "ask_block_refs": link,
 	}
@@ -927,10 +923,10 @@ func receiverName(fields *ast.FieldList) string {
 // A statement whose table is built at runtime is held as the projected tables runtimeTableSites
 // says it reaches (runtimeTableWrites), and fails where the list does not name its site.
 //
-// The writers of comments are held to the five commentsRowWriters names, each by the function
-// the scan reports its statement in: a sixth function that makes, unmakes or sets a projected
+// The writers of comments are held to the six commentsRowWriters names, each by the function
+// the scan reports its statement in: a seventh function that makes, unmakes or sets a projected
 // column of a comments row fails, even where a store write reaches it, and so does one of the
-// five the scan no longer finds there. The seed's is one of them, the one writer of comments
+// six the scan no longer finds there. The seed's is one of them, the one writer of comments
 // outside internal/dispatch, so a scan that read less of the repository than it should fails
 // too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
@@ -1341,6 +1337,7 @@ func requireTheExemptionWritesUnderTheMarkerTest(t *testing.T, ctx context.Conte
 	if err != nil {
 		t.Fatalf("read the stored functions: %v", err)
 	}
+	defer rows.Close()
 	bodies := map[string]string{}
 	for rows.Next() {
 		var name, body string
@@ -1806,8 +1803,9 @@ func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter 
 		name:  "the message write",
 		table: "messages",
 		write: func(ctx context.Context, tx pgx.Tx) error {
+			at := time.Now().UTC()
 			stored, err := planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, IssueKey: run.issue},
-				model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), nil)
+				model.Actor{Kind: "user", ID: "alice"}, at, nil)
 			if err != nil {
 				return err
 			}
@@ -1817,7 +1815,7 @@ func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter 
 				b.Queue("", `
 					insert into messages (id, issue_key, author, body, created_at, node_kind, node_address)
 					values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A watched message.', $3, $4, $5)
-				`, messageID, run.issue, stored.at, nodeKind, nodeAddress)
+				`, messageID, run.issue, at, nodeKind, nodeAddress)
 				graphstore.QueueCaused(b, stored.written, graphstore.NoEvent)
 				return nil
 			})
@@ -1937,7 +1935,7 @@ func storeWatchedDirectMessage(ctx context.Context, tx pgx.Tx, row graphstore.Me
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, created_at, node_kind, node_address)
 			values ($1::uuid, null, '{"kind":"user","id":"alice"}', 'A watched direct message.', $2, $3::uuid, $4, $5, $6)
-		`, row.ID, row.Target, inReplyTo, stored.at, nodeKind, nodeAddress)
+		`, row.ID, row.Target, inReplyTo, at, nodeKind, nodeAddress)
 		graphstore.QueueCaused(b, stored.written, graphstore.NoEvent)
 		return nil
 	})

@@ -3,14 +3,12 @@
 package api
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,17 +25,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // c-p99 (the spec's R11, the plan's T16): neither the one read nor a write gets slower
 // beyond R11's bounds, every figure taken in this one run on two builds over one corpus.
 //
 // It times two processes the same way: the build of the commit BASELINE_SHA names (buildBaseline),
-// checked out at $TMPDIR/base-p99 and booted over $ISSUE_P99_DATABASE_URL, and this build, built
-// from this checkout with the stamp the base build gets and booted over a database of the test's own
-// the way the base build is booted (bootOneInboxThisBuild, startBuild: the person read from one
-// trusted header, NATS off, a stand-in listener, and the Go runtime settings this process runs
-// under). It boots a build of an earlier commit because what it holds this build to - the reads this
+// checked out as base-p99 under a directory of the test's own in TMPDIR (testtmp.Dir) and booted
+// over $ISSUE_P99_DATABASE_URL, and this build, built from this checkout with the stamp the base
+// build gets and booted over a database of the test's own the way the base build is booted
+// (bootOneInboxThisBuild, startBuild: the person read from one trusted header, NATS off, a
+// stand-in listener, and the Go runtime settings this process runs under). It boots a build of an
+// earlier commit because what it holds this build to - the reads this
 // one replaces, and each write as it was before this build's node and tuple writes - this build
 // cannot answer. Each corpus is the one one_inbox_scale_seed_test.go seeds, through its build's API
 // and its own pool: the base build's through its process, and this build's through this build's
@@ -62,9 +62,11 @@ import (
 //     /api/v1/agents/{session_id}/messages for each conversation the reader started - taken one
 //     after another and summed, which is the base build's p50 the read is held to: at most
 //     oneInboxReadBound times it;
-//   - the writes (oneInboxWritePaths), each held to at most oneInboxWriteBound times the base
-//     build's p50 of the same path, but for putProjectDefaultAssignee, which moves more than one
-//     ask a reading and is printed with the count it moved.
+//   - the writes (oneInboxWritePaths), each held to at most its own bound in oneInboxWriteBounds
+//     times the base build's p50 of the same path, but for putProjectDefaultAssignee's move of
+//     many asks, which moves more than one ask a reading, holds to no bound, and is printed with
+//     the count it moved. Its move of one ask is timed and bounded as patchIssue's and
+//     putAskAskedOf's are.
 //
 // Then, on an audit of each database (installOneInboxAudit): the rows one comment in the thread
 // at the bound writes, held to two per participant beside its fixed rows; and, on this build, each
@@ -72,21 +74,46 @@ import (
 // the first sort and four for each of the second, with its fixed rows printed apart, and to a count
 // of statements that does not grow from its move of one ask to its move of many.
 //
-// Every figure is printed on a line of its own under the prefix c-p99:. The two p50 bounds, the
-// scan rule, the row rules and the statement rule are what fail it; every p95 and p99 is a reading
-// of the pod and fails nothing. It runs when LEGION_SCALE_TEST is 1, as a14 does: seeding two
-// corpora and taking its readings costs minutes, which no ordinary run pays.
+// Every figure is printed on a line of its own under the prefix c-p99:. The read's and the writes'
+// p50 bounds, the scan rule, the row rules and the statement rule are what fail it, and, before
+// any of them, a table of write bounds that does not match the write paths
+// (requireOneInboxWriteBoundsMatchPaths); every p95 and p99 is a reading of the pod and fails
+// nothing. It runs when LEGION_SCALE_TEST is 1, as a14 does: seeding two corpora and taking its
+// readings costs minutes, which no ordinary run pays.
 
 const (
 	// oneInboxReadBound is R11's bound on the one read: its p50 at most twice the p50 of the
 	// reads it replaces, taken in the same run (the root spec's R22).
 	oneInboxReadBound = 2.0
-	// oneInboxWriteBound is R11's bound on each write path: its p50 at most 1.25 times the base
-	// build's p50 of the same path in the same run.
-	oneInboxWriteBound = 1.25
 	// oneInboxAgentToken is the agent bearer newTestServer's server trusts (sharedAgentTokens).
 	oneInboxAgentToken = "agent-token"
 )
+
+// oneInboxWriteBounds is R11's bound on each write path that holds to one, by the path's name in
+// oneInboxWritePaths: its p50 at most this many times the base build's p50 of the same path in the
+// same run, as the Verification's c-p99 list names it. Each bound is the worst p50 ratio three
+// clean runs of this check measured for the path, times 1.1, rounded up to the next 0.25, so a
+// path slower than any run measured by a tenth fails. The table names every write path but the one
+// that moves more than one ask a reading (project-default-assignee), which holds to no bound, and
+// names nothing else: the test fails at its start where it does not
+// (requireOneInboxWriteBoundsMatchPaths).
+var oneInboxWriteBounds = map[string]float64{
+	"comment":                          3.50,
+	"agent-clear-and-read":             3.00,
+	"mark-all-read":                    2.75,
+	"broadcast":                        2.75,
+	"direct-reply":                     2.25,
+	"comment-mention-person":           2.25,
+	"comment-mention":                  2.00,
+	"issue-message":                    2.00,
+	"patch-issue-assignee":             2.00,
+	"ask-asked-of":                     1.75,
+	"ask-answer":                       1.75,
+	"project-default-assignee-one-ask": 2.25,
+	"dismissal":                        1.50,
+	"thread-read":                      1.50,
+	"snooze":                           1.50,
+}
 
 // oneInboxReader is one shape the read is measured over: the person whose read it is, and the
 // sessions of the conversations they started, one direct-reply read of the base build each.
@@ -122,6 +149,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take c-p99's measurement", dismissedScaleEnv)
 	}
+	requireOneInboxWriteBoundsMatchPaths(t)
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, oneInboxDatabaseEnv, oneInboxDatabase)
 
@@ -138,7 +166,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	settleOneInbox(t, this, oneInboxOwedWorkHere)
 	analyzeOneInbox(t, this)
 
-	binary, commit := buildBaseline(t, filepath.Join(os.TempDir(), oneInboxWorktree))
+	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, oneInboxWorktree), oneInboxWorktree))
 	baseServer := bootBaselineTrustingHeader(t, binary, databaseURL)
 	baseDatabase, err := store.Open(ctx, databaseURL)
 	if err != nil {
@@ -166,6 +194,34 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	countOneInboxCommentRows(t, "c-p99", base)
 	countOneInboxCommentRows(t, "c-p99", this)
 	countOneInboxMoves(t, here)
+}
+
+// requireOneInboxWriteBoundsMatchPaths fails the test unless oneInboxWriteBounds names exactly the
+// write paths of oneInboxWritePaths that hold to a bound. Each of these fails it: a name no write
+// path carries, which a path since renamed leaves; a path that is not many and that the table does
+// not name, which would hold to no bound; and a many path the table names, a bound nothing holds.
+func requireOneInboxWriteBoundsMatchPaths(t *testing.T) {
+	t.Helper()
+	var mismatches []string
+	carried := make(map[string]bool)
+	for _, path := range oneInboxWritePaths() {
+		carried[path.name] = true
+		_, named := oneInboxWriteBounds[path.name]
+		switch {
+		case path.many && named:
+			mismatches = append(mismatches, fmt.Sprintf("names the write %s, which moves more than one ask a reading and holds to no bound", path.name))
+		case !path.many && !named:
+			mismatches = append(mismatches, fmt.Sprintf("does not name the write %s, which holds to a bound", path.name))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(oneInboxWriteBounds)) {
+		if !carried[name] {
+			mismatches = append(mismatches, fmt.Sprintf("names the write %s, which no write path carries", name))
+		}
+	}
+	if len(mismatches) > 0 {
+		t.Fatalf("oneInboxWriteBounds does not match oneInboxWritePaths: it %s", strings.Join(mismatches, "; it "))
+	}
 }
 
 // bootOneInboxHere builds this build's server in the process over a database of the test's own: a
@@ -292,11 +348,7 @@ func requireOneInboxHistoryInTheStore(t *testing.T, database *store.Store) {
 // comments or messages in any of them, printing the plan of each read that makes one.
 func explainOneInboxRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx := context.Background()
-	var horizon int64
-	if err := database.Pool.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&horizon); err != nil {
-		t.Fatalf("read the event log's horizon: %v", err)
-	}
+	horizon := eventHead(t, database)
 	var scans []string
 	var plans []string
 	for _, reader := range oneInboxReaders {
@@ -534,9 +586,10 @@ func requireOneInboxGates(t *testing.T, reading int, body []byte, issues []strin
 
 // measureOneInboxWrite takes oneInboxReadings readings of path on each build, after one of each
 // not counted, alternating which build writes first, and prints both builds' p50, p95 and p99 on
-// one line. It fails where this build's p50 is above oneInboxWriteBound times the base build's, but
-// for a path that moves more than one ask a reading, whose times it prints with the count it moved
-// and holds to nothing (R11).
+// one line with the path's bound in oneInboxWriteBounds. It fails where this build's p50 is above
+// that bound times the base build's, but for a path that moves more than one ask a reading
+// (putProjectDefaultAssignee's move of many asks), which the table does not name, and whose times
+// it prints with the count it moved and holds to nothing (R11).
 func measureOneInboxWrite(t *testing.T, path oneInboxPath, base, this *oneInboxSide) {
 	t.Helper()
 	sides := [2]*oneInboxSide{base, this}
@@ -562,15 +615,16 @@ func measureOneInboxWrite(t *testing.T, path oneInboxPath, base, this *oneInboxS
 	baseFigures, baseP50 := oneInboxPercentiles(taken[0])
 	thisFigures, thisP50 := oneInboxPercentiles(taken[1])
 	ratio := float64(thisP50) / float64(baseP50)
-	bound := fmt.Sprintf("bound=%.2f", oneInboxWriteBound)
+	bound := oneInboxWriteBounds[path.name]
+	held := fmt.Sprintf("bound=%.2f", bound)
 	if path.many {
-		bound = "bounds nothing: it moves more than one ask"
+		held = "bounds nothing: it moves more than one ask"
 	}
 	t.Logf("c-p99: write %s: this build %s%s | the base build %s%s | p50 ratio=%.2f %s n=%d taken_at=%s",
-		path.name, thisFigures, beside[1], baseFigures, beside[0], ratio, bound, len(taken[1]), oneInboxNow())
-	if !path.many && ratio > oneInboxWriteBound {
-		t.Errorf("the write %s has p50 %.2fms on this build, %.2f times the base build's %.2fms, above R11's %.2f",
-			path.name, msOf(thisP50), ratio, msOf(baseP50), oneInboxWriteBound)
+		path.name, thisFigures, beside[1], baseFigures, beside[0], ratio, held, len(taken[1]), oneInboxNow())
+	if !path.many && ratio > bound {
+		t.Errorf("the write %s has p50 %.2fms on this build, %.2f times the base build's %.2fms, above its bound %.2f (R11)",
+			path.name, msOf(thisP50), ratio, msOf(baseP50), bound)
 	}
 }
 
@@ -598,7 +652,7 @@ func countOneInboxMoves(t *testing.T, here *oneInboxHere) {
 			t.Fatalf("read the store's last tuple before %s's move %q: %v", move.write, move.what, err)
 		}
 		here.statements.ownStatements(t, here.traced)
-		response := countedOneInboxWrite(t, here.handler, oneInboxHeavy, move.method, move.path, move.body)
+		response := countedWrite(t, here.handler, move.method, move.path, move.body, oneInboxHeavy)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s's move %q: %d %s", move.write, move.what, response.Code, response.Body.String())
 		}
@@ -707,23 +761,6 @@ func countOneInboxMoves(t *testing.T, here *oneInboxHere) {
 			}
 		}
 	}
-}
-
-// countedOneInboxWrite sends body to path as login through this build's handler, on a request
-// marked countedRead, so the traced store records the statements it runs.
-func countedOneInboxWrite(t *testing.T, handler http.Handler, login, method, path string, body any) *httptest.ResponseRecorder {
-	t.Helper()
-	payload, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encode %s %s: %v", method, path, err)
-	}
-	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true), method, path,
-		bytes.NewReader(payload))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(baselineIdentityHeader, login)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
 }
 
 // quietOneInboxStatements answers the statements a counted write ran once it has run none for a
