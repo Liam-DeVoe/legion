@@ -12,23 +12,76 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Refusal is why dsn, the value of the setting named setting, is refused before Postgres is asked,
-// or nil: a postgres:// or postgresql:// URL holding an unencoded "@" after pgx's user part
-// (atPastUserinfo). Such an "@" is where a password holding an "@" or a "/" leaves part of itself,
-// read as the host, the port, the database or a query, which every connect error prints. The
-// refusal names setting alone, never the value, and says what to change. A keyword DSN (`host=…
-// password=…`) is never refused: its password is a value of its own.
+// or nil. It refuses three shapes, each of which Postgres or pgx would print with part of its
+// credential, and names setting alone, never the value, and says what to change:
+//   - a postgres:// or postgresql:// URL holding an unencoded "@" after pgx's user part
+//     (atPastUserinfo). Such an "@" is where a password holding an "@" or a "/" leaves part of
+//     itself, read as the host, the port, the database or a query, which every connect error
+//     prints;
+//   - a value that names the scheme but is no such URL (schemeMistyped): pgx reads only a
+//     lower-case postgres:// or postgresql:// at its first byte as a URL, so it reads
+//     `POSTGRES://u:<pw>@h/x?sslmode=require`, ` postgres://…` and `postgres:u:<pw>@h` as one
+//     keyword setting up to the "=", which it sends the server as a parameter's name, and a server
+//     that admits the client prints that name whole;
+//   - a keyword DSN with a postgres:// URL in a value (urlInKeywordValue): pgx expands no URL in
+//     `dbname=`, and its connect error names the database, URL and password with it.
+//
+// A keyword DSN with no such URL (`host=… password=…`) is never refused: its password is a value
+// of its own.
 func Refusal(setting, dsn string) error {
-	if !atPastUserinfo(dsn) {
-		return nil
+	switch refusalOf(dsn) {
+	case atPast:
+		return fmt.Errorf("%s cannot be read: it holds an \"@\" after its user name and password, where Postgres reads"+
+			" part of its user name, password or database name as its host, port, database or query and prints it;"+
+			" write each \"@\" in a password, user name, database name or query value as %%40, and a \"/\" in a password as %%2F", setting)
+	case schemeMistyped:
+		return fmt.Errorf("%s cannot be read: it names the postgres scheme but does not begin with postgres:// or postgresql://"+
+			" in lower case, with nothing before it, so Postgres would read it as one keyword setting and can print it whole;"+
+			" write the scheme as postgres:// or postgresql://", setting)
+	case urlInKeywordValue:
+		return fmt.Errorf("%s cannot be read: it is a keyword DSN, and a value of it holds a postgres:// URL, which Postgres"+
+			" does not read as a URL and prints whole, its password included; write the DSN as that URL, or name the database by its name", setting)
 	}
-	return fmt.Errorf("%s cannot be read: it holds an \"@\" after its user name and password, where Postgres reads"+
-		" part of its user name, password or database name as its host, port, database or query and prints it;"+
-		" write each \"@\" in a password, user name, database name or query value as %%40, and a \"/\" in a password as %%2F", setting)
+	return nil
+}
+
+// refusal is the shape Refusal refuses a DSN for, or kept.
+type refusal int
+
+const (
+	kept refusal = iota
+	atPast
+	schemeMistyped
+	urlInKeywordValue
+)
+
+// refusalOf is the shape Refusal refuses dsn for, or kept. A URL is a value that begins, at its
+// first byte, with a lower-case postgres:// or postgresql://, as pgx reads one (parseURLSettings);
+// any other value that begins, after leading space, with "postgres:" or "postgresql:" in any case
+// is a mistyped scheme; and any other value is a keyword DSN, refused when it holds postgres:// or
+// postgresql:// in any case.
+func refusalOf(dsn string) refusal {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		if atPastUserinfo(dsn) {
+			return atPast
+		}
+		return kept
+	}
+	lower := strings.ToLower(dsn)
+	trimmed := strings.TrimLeftFunc(lower, unicode.IsSpace)
+	switch {
+	case strings.HasPrefix(trimmed, "postgres:") || strings.HasPrefix(trimmed, "postgresql:"):
+		return schemeMistyped
+	case strings.Contains(lower, "postgres://") || strings.Contains(lower, "postgresql://"):
+		return urlInKeywordValue
+	}
+	return kept
 }
 
 // atPastUserinfo reports whether dsn is a postgres:// or postgresql:// URL holding an unencoded "@"
@@ -60,7 +113,8 @@ func atPastUserinfo(dsn string) bool {
 // reads it, setting naming where dsn came from:
 //
 //   - A dsn Refusal refuses is named "the configured Postgres", with no driver detail: the
-//     driver's text names the host and the database, and part of the password stands there.
+//     driver's text, or the server's, names the host, the database or a parameter's name, and part
+//     of the credential stands there.
 //   - A dsn pgx cannot parse (*pgconn.ParseConfigError) is named by setting alone, with no driver
 //     detail: pgx quotes the DSN, and its own masking of a keyword DSN's password is best-effort
 //     (`password = <secret>`, with spaces around the "=", prints whole).
@@ -71,8 +125,8 @@ func atPastUserinfo(dsn string) bool {
 func ConnectError(setting, dsn string, err error) error {
 	var unparsed *pgconn.ParseConfigError
 	switch {
-	case atPastUserinfo(dsn):
-		return &connectError{text: "connect to " + spilledAddress + ": the driver's error is not printed: it names the host and the database, and part of the DSN's password stands there", err: err}
+	case refusalOf(dsn) != kept:
+		return &connectError{text: "connect to " + spilledAddress + ": the driver's error is not printed: it names the host, the database or a parameter's name, and part of the DSN's credential stands there", err: err}
 	case errors.As(err, &unparsed):
 		return &connectError{text: "connect to Postgres: " + setting + " cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN", err: err}
 	}
@@ -108,8 +162,8 @@ func redactPassword(detail, password string) string {
 // target reads the address a DSN points at and the password it carries. pgx understands both the
 // URL and the keyword/value forms; url.Parse answers when pgx's parse fails here though the failure
 // ConnectError reports is another (a pool or a ping), so even then the operator learns the host.
-// Neither reads part of a password as the host: they differ only for a DSN holding an "@" after
-// pgx's user part, which ConnectError names before it asks target.
+// Neither reads part of a password as the host: they differ only for a DSN Refusal refuses, which
+// ConnectError names before it asks target.
 func target(dsn string) (string, string) {
 	if config, err := pgconn.ParseConfig(dsn); err == nil && config.Host != "" {
 		return net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), config.Password

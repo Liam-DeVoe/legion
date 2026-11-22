@@ -62,7 +62,7 @@ func TestRefusalNamesTheSettingOfEachSpilledShape(t *testing.T) {
 
 // Refusal keeps a DSN whose only "@" ends its userinfo, one whose "@" and "/" are percent-encoded,
 // one whose password holds a "?" or a "#" (which pgx reads as the password), IPv6 and unix-socket
-// hosts, a keyword DSN, and a scheme pgx reads as no URL (POSTGRES://), which pgx refuses itself.
+// hosts, and keyword DSNs, a database whose name begins with "postgres" among them.
 func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 	for _, dsn := range []string{
 		urlDSN("legion"),
@@ -75,11 +75,67 @@ func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 		"postgres:///legion?host=/cloudsql/p:r:i&user=sa%40project.iam",
 		"postgres://h/my%40db",
 		"host=db.invalid user=legion password=p@ss/word dbname=legion",
-		"POSTGRES://legion:" + "x" + "@db.invalid/legion",
+		"host=db.invalid user=postgres dbname=postgres sslmode=disable",
+		"dbname=postgres_main host=/var/run/postgresql",
 	} {
 		if err := Refusal("postgres_dsn", dsn); err != nil {
 			t.Errorf("Refusal(%q) = %v, want nil", dsn, err)
 		}
+	}
+}
+
+// A value that names the postgres scheme but that pgx reads as no URL (upper or mixed case, a
+// space before it, or a scheme with no "//") is refused by the setting alone: pgx reads it up to
+// its first "=" as one keyword setting, sends that name to the server as a parameter's, and a
+// server that admits the client answers `invalid configuration parameter name "<the URL>"`. So is
+// a keyword DSN whose value holds a postgres:// URL, which pgx reads as no URL either and names in
+// its connect error, password and all. ConnectError of each names "the configured Postgres", with
+// none of the driver's text.
+func TestRefusalRefusesAMistypedSchemeAndAURLInAKeywordValue(t *testing.T) {
+	at := "@"
+	for name, row := range map[string]struct{ dsn, want string }{
+		"an upper-case scheme": {"POSTGRES://legion:madeuphead0123" + at + "db.invalid:5432/legion?sslmode=require", "it names the postgres scheme"},
+		"a mixed-case scheme":  {"Postgresql://legion:madeuphead0123" + at + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+		"a space before it":    {" postgres://legion:madeuphead0123" + at + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+		"a tab before it":      {"\tpostgresql://legion:madeuphead0123" + at + "db.invalid/legion", "it names the postgres scheme"},
+		"no // after it":       {"postgres:legion:madeuphead0123" + at + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+		"a URL as dbname":      {"host=127.0.0.1 port=1 dbname=postgres://u:madeuphead0123" + at + "db.invalid/x", "it is a keyword DSN, and a value of it holds a postgres:// URL"},
+		"a URL as user":        {"host=127.0.0.1 user=Postgresql://u:madeuphead0123" + at + "db.invalid/x dbname=x", "it is a keyword DSN, and a value of it holds a postgres:// URL"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := Refusal("postgres_dsn", row.dsn)
+			if err == nil || !strings.HasPrefix(err.Error(), "postgres_dsn cannot be read: "+row.want) {
+				t.Fatalf("Refusal = %v, want it refused by postgres_dsn: %s", err, row.want)
+			}
+			driver := errors.New("server error: FATAL: invalid configuration parameter name \"" + row.dsn + "\" (SQLSTATE 42602)")
+			shown := ConnectError("postgres_dsn", row.dsn, driver)
+			if !strings.HasPrefix(shown.Error(), "connect to the configured Postgres: ") || !errors.Is(shown, driver) {
+				t.Errorf("ConnectError = %v, want the configured Postgres named, unwrapping to the driver's error", shown)
+			}
+			for _, printed := range []string{err.Error(), shown.Error()} {
+				if strings.Contains(printed, "madeuphead") {
+					t.Errorf("%q holds part of the password", printed)
+				}
+			}
+		})
+	}
+}
+
+// pgx's own connect error of a keyword DSN whose dbname is a postgres:// URL names that URL as the
+// database, password and all (the row's control: if pgx stops naming it, the row says it tests
+// nothing); ConnectError of it names none of it. Port 1 on this machine refuses at once.
+func TestConnectErrorOfAKeywordDSNWithAURLAsItsDatabasePrintsNoneOfIt(t *testing.T) {
+	at := "@"
+	dsn := "host=127.0.0.1 port=1 connect_timeout=5 dbname=postgres://u:madeuphead0123" + at + "db.invalid/x"
+	_, err := pgconn.Connect(t.Context(), dsn)
+	if err == nil {
+		t.Fatal("pgconn.Connect to port 1 connected")
+	}
+	if !strings.Contains(err.Error(), "madeuphead0123") {
+		t.Fatalf("pgx's own error %q does not name the database's URL, so this row tests nothing", err)
+	}
+	if shown := ConnectError("postgres_dsn", dsn, err); strings.Contains(shown.Error(), "madeuphead") {
+		t.Errorf("ConnectError = %q, which holds part of the password", shown)
 	}
 }
 
