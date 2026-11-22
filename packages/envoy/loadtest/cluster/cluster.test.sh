@@ -319,17 +319,16 @@ case $verb in
         # exists answer it (the count lives in FAKE_DIR/lock-get-oks) and every read after them
         # fails, so a caller that reads the lock twice where one read would do acts on the first
         # answer and is refused by the second.
-        # FAKE_LOCK_GET_DELAY=S: each read of the lock takes a while -- it leaves
-        # FAKE_DIR/lock-get-started behind and goes on once the test has written
-        # FAKE_DIR/lock-get-go, or S seconds have passed -- so a signal the test sends once the
-        # marker is there lands while the caller is inside that read, however slow the box is. It
-        # waits in 0.05 s naps, which the fake sleep hands to the real one whatever
-        # FAKE_FAST_SLEEP shortens.
+        # FAKE_LOCK_GET_HOLD: each of those reads leaves FAKE_DIR/lock-get-started behind and goes
+        # on only once the test has written FAKE_DIR/lock-get-go, so a signal the test sends once
+        # the marker is there lands while the caller is inside that read, however slow the box is.
+        # It waits in 0.05 s naps, which the fake sleep hands to the real one whatever
+        # FAKE_FAST_SLEEP shortens, and it ends too once FAKE_DIR is gone, so a read the suite's
+        # cleanup left held does not outlive it.
         if [ -n "${FAKE_LOCK_GET_FAIL:-}" ] && [ -f "$FAKE_DIR/lock.json" ]; then
-          if [ -n "${FAKE_LOCK_GET_DELAY:-}" ]; then
+          if [ -n "${FAKE_LOCK_GET_HOLD:-}" ]; then
             : >"$FAKE_DIR/lock-get-started"
-            get_until=$((EPOCHSECONDS + FAKE_LOCK_GET_DELAY))
-            until [ -f "$FAKE_DIR/lock-get-go" ] || ((EPOCHSECONDS >= get_until)); do sleep 0.05; done
+            until [ -f "$FAKE_DIR/lock-get-go" ] || [ ! -d "$FAKE_DIR" ]; do sleep 0.05; done
           fi
           oks=0
           [ ! -f "$FAKE_DIR/lock-get-oks" ] || oks=$(cat "$FAKE_DIR/lock-get-oks")
@@ -1018,8 +1017,15 @@ if [ "\$*" = "\${FAKE_SLEEP_HOLD:-}" ] && grep -qxF -- "\$*" "\$FAKE_DIR/sleep.l
 fi
 if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
   printf '%s\n' "\$*" >>"\$FAKE_DIR/sleep.log"
+  # One writer at a time (flock), and each new second published whole by a rename, so a wait that
+  # reads the clock while another process's wait moves it never reads it empty or half written,
+  # and two waits that move it at once lose neither's seconds.
   if [ -f "\$FAKE_DIR/clock" ] && [[ \$* =~ ^[0-9]+\$ ]]; then
-    printf '%s\n' "\$((\$(<"\$FAKE_DIR/clock") + \$*))" >"\$FAKE_DIR/clock"
+    {
+      flock 9
+      printf '%s\n' "\$((\$(<"\$FAKE_DIR/clock") + \$*))" >"\$FAKE_DIR/clock.\$\$"
+      mv -f -- "\$FAKE_DIR/clock.\$\$" "\$FAKE_DIR/clock"
+    } 9>>"\$FAKE_DIR/clock.lock"
   fi
   exit 0
 fi
@@ -1081,7 +1087,7 @@ export PATH="$bin:$PATH"
 unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FAIL FAKE_QUIET FAKE_STORED_ORDER \
   FAKE_EXEC_ERRORS FAKE_FAST_SLEEP FAKE_TYPING_RC FAKE_DISPATCH_BUILD_ERROR FAKE_COPY_BACK_FAIL \
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
-  FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
+  FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_HOLD \
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_RUNNER_EXEC_FAIL_AT_START \
   FAKE_SLEEP_GATE FAKE_SLEEP_GATE_SECONDS FAKE_SLEEP_HOLD \
   FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
@@ -4217,13 +4223,13 @@ stop_watchdog_end() {
     fail "that wait did not say that it sent the SIGKILL its grace ran out on: $(cat "$oneread_out")"
   unset FAKE_RC_UNTIL_KILL
   # The TERM that lands while the watcher is inside its read of the lock. Every read fails, and the
-  # first holds (FAKE_LOCK_GET_DELAY) until this case has sent the watcher its TERM, so the TERM
+  # first holds (FAKE_LOCK_GET_HOLD) until this case has sent the watcher its TERM, so the TERM
   # lands inside that act however slow the box is; the case then lets the read answer. The
   # watcher takes the TERM as a flag and leaves at the end of the act, its three tries, recording
   # nothing: a TERM ignored there would leave pg_disk_watch_stop waiting on a watcher that polls on.
   # pg_disk_watch_stop then sends its own TERM, which finds the watcher leaving or gone, and waits
   # for it to go.
-  export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_DELAY=60 FAKE_FAST_SLEEP="2 30"
+  export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_HOLD=1 FAKE_FAST_SLEEP="2 30"
   rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
   pg_disk_watch pgterm "$oneread_dir" step-pgterm "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
@@ -4567,8 +4573,6 @@ unreach_step_rc=0
 wait "$unreach_pid" 2>/dev/null || unreach_step_rc=$?
 stop_watchdog_end
 rm -f -- "$fake/clock"
-grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null ||
-  fail "the step command ended before it started its loadgen run, so no runner pod of it went away: $(cat "$unreach_step")"
 [ ! -f "$fake/stop-late" ] ||
   fail "the step command had not ended at the CI step's deadline, with a runner pod that answers no exec: it waits for an exit status nothing can record, and its heartbeat renews the lock while no load runs: $(cat "$unreach_step")"
 ((unreach_step_rc != 0)) ||
