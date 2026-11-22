@@ -1542,9 +1542,10 @@ const legionReleaseRecord = z.object({
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
- * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
- * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
+ * no release row is recorded for it), the role of the claim it brought back, what woke it, when
+ * the wake reached the daemon, and `podReadyAt` and `firstTurnAt`, the first turn of that claim,
+ * each absent until it is observed. `stuck` is a wake that went ten minutes with no turn of the
+ * claim it brought back. `pause` is the project pause that held
  * the wake (contract 178), absent on a wake no pause held: a held wake pairs with no release, so
  * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
  * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`).
