@@ -29,6 +29,7 @@ import {
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
+import { storeWords } from "../lenses/store-words";
 import { blockAttributeLabel, type NodeType } from "../page-words";
 import {
   addDocumentChips,
@@ -196,6 +197,7 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
 export const treeDraftMarks: readonly TreeDraftMark[] = [
   // A later part adds its mark here, one line each.
   lensChips,
+  storeWords,
 ];
 
 /**

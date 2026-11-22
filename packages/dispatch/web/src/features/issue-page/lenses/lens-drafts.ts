@@ -11,9 +11,11 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  *
  * `lensDrafts` is the step of `tree-read/tree-nodes.ts`'s `treeDraftSteps` that drafts these
  * four kinds, and `lensChips` the mark of its `treeDraftMarks` that puts the chips on the drafts
- * once every node has been drafted. Both read the answer in its own order and order nothing: the
- * read's order is the outline's. This module imports only types from `tree-read/` and
- * `issue-tree.ts`, which import it, so no import cycle closes (`biome.json`'s `noImportCycles`).
+ * once every node has been drafted; `store-words.ts`'s mark, after it, names these nodes in
+ * every row's words by their addresses (`addressOf`) and their words. The step and the chips read
+ * the answer in its own order and order nothing: the read's order is the outline's. This module
+ * imports only types from `tree-read/` and `issue-tree.ts`, which import it, so no import cycle
+ * closes (`biome.json`'s `noImportCycles`).
  */
 
 /** One chip that names another node of the tree: a lens, a check or a constraint. */
@@ -82,7 +84,7 @@ export function filled(text: string | undefined): text is string {
 }
 
 /** The four kinds `lensDrafts` draws, as the tree names them. */
-type LensType = "constraint" | "finding" | "lens" | "risk";
+export type LensType = "constraint" | "finding" | "lens" | "risk";
 
 /** The chip lists of a draft before `lensChips` fills them. */
 const NO_CHIPS: Pick<LensFacts, "constrainedBy" | "preventedBy" | "triggered" | "triggeredBy"> = {
@@ -237,7 +239,7 @@ export function lensChips(
  *  finding a block whose read parent is a lens, since the server gives a finding no kind of its
  *  own (`graphstore/reasoning.go`). Its supertag is read as `block` (`8bdd1621fb`) and as
  *  `lens_block` (`5c85ffdc1b`), the two spellings of its kind in the model. */
-function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): LensType | undefined {
+export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): LensType | undefined {
   switch (node.supertag) {
     case "constraint":
     case "lens":
@@ -274,7 +276,7 @@ function issueConstraint(constraint: TreeAnswerNode, context: TreeDraftContext):
  * (`lens/<uuid>`), and a finding's is its lens's and its block id after a `#`
  * (`lens/<uuid>#<block id>`, as the server writes one), or its block id alone.
  */
-function addressOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
+export function addressOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
   const type = lensTypeOf(node, context);
   if (type === undefined) return undefined;
   if (type !== "finding") return `dispatch://${type}/${storeId(node.id, type)}`;
@@ -321,7 +323,7 @@ function itemAbove(readId: string, context: TreeDraftContext): string | undefine
 
 /** The words of the lens kind `lens`'s `has_kind` tuple names, as that `lens_kind` node holds
  *  them: its `words`, else its text; `""` where the read holds none. */
-function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string {
+export function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string {
   for (const tuple of context.tuplesFrom(lens.id)) {
     const kind = tuple.kind === "has_kind" ? context.nodeOf(tuple.to.id) : undefined;
     if (kind === undefined) continue;
@@ -332,12 +334,16 @@ function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string {
 }
 
 /** A constraint's words: a standard's `standard`, else a measurement's
- *  `<measurement>: <value>`, each stored string through `plainWords`. */
-function constraintWords(constraint: TreeAnswerNode): string {
+ *  `<measurement>: <value>`, each stored string read to words by `words`: `plainWords`, and in a
+ *  row's words that string's reading with each store address named (`store-words.ts`). */
+export function constraintWords(
+  constraint: TreeAnswerNode,
+  words: (markdown: string) => string = plainWords
+): string {
   const standard = constraint.attributes?.standard ?? "";
-  if (standard !== "") return plainWords(standard);
-  const measurement = plainWords(constraint.attributes?.measurement ?? "");
-  const value = plainWords(constraint.attributes?.value ?? "");
+  if (standard !== "") return words(standard);
+  const measurement = words(constraint.attributes?.measurement ?? "");
+  const value = words(constraint.attributes?.value ?? "");
   return measurement === "" && value === "" ? "" : `${measurement}: ${value}`;
 }
 

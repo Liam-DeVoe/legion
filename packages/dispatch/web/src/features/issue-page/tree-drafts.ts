@@ -21,6 +21,7 @@ import {
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
+import { storeAddressReference } from "../refs/store-address";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import {
@@ -461,19 +462,50 @@ export function titleWords(title: string): string {
  *
  * An address is found as the page finds a reference in text (`referenceSpans`), and only the
  * address itself is written short: what `trimReference` cuts off its end stays where it stood, so
- * `see dispatch://CORE-2.` reads `see CORE-2.`. A span that names no target
- * (`parseDispatchReference`) is left as written.
+ * `see dispatch://CORE-2.` reads `see CORE-2.`. A store address, which no route names
+ * (`refs/store-address.ts`), is written as the page's word for its node's kind
+ * (`storeKindWord`): `dispatch://lens/<uuid>` reads `lens`, and a risk's, a constraint's and a
+ * finding's read `risk`, `constraint` and `finding`, so no uuid is drawn. The node's own name, and
+ * a link to its row, are the tree read's to give, which this pure rule does not read
+ * (`lenses/store-words.ts`). Any other span that names no target (`parseDispatchReference`), an
+ * interaction's or a lens kind's address among them, is left as written.
  */
 export function addressesAsShortForms(words: string): string {
   let shortened = "";
   let cursor = 0;
   for (const { start, value } of referenceSpans(words, "dispatch://")) {
     const route = parseDispatchReference(value);
+    const word = route === undefined ? storeKindWord(value) : undefined;
+    if (word !== undefined) {
+      shortened += `${words.slice(cursor, start)}${word}`;
+      cursor = start + value.length;
+      continue;
+    }
     if (route === undefined) continue;
     shortened += `${words.slice(cursor, start)}${shortForm(route)}`;
     cursor = start + value.length;
   }
   return shortened + words.slice(cursor);
+}
+
+/** The page's word for the kind of node the store address `value` names
+ *  (`storeAddressReference`), what a place reads such an address by where it knows no name for
+ *  the node: `lens`, `risk`, `constraint`, and `finding` for a block of a lens. Undefined for any
+ *  other value, an interaction's and a lens kind's address among them. */
+export function storeKindWord(value: string): string | undefined {
+  const address = storeAddressReference(value);
+  if (address === undefined) return undefined;
+  if (address.includes("#")) return NODE_TYPE_NAMES.finding;
+  switch (address.slice("dispatch://".length, address.lastIndexOf("/"))) {
+    case "constraint":
+      return NODE_TYPE_NAMES.constraint;
+    case "lens":
+      return NODE_TYPE_NAMES.lens;
+    case "risk":
+      return NODE_TYPE_NAMES.risk;
+    default:
+      return undefined;
+  }
 }
 
 /**
