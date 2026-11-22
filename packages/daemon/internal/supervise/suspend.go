@@ -157,7 +157,8 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	}
 	switch {
 	case m.held == nil:
-		m.held, m.heldLaunch = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By, Pause: request.Pause}, false
+		m.held, m.heldLaunch = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By, Pause: request.Pause,
+			HoldVersion: request.HoldVersion}, false
 		m.log.Info("supervise: the suspension is held for the agent's turn to end", "reason", request.Reason, "by", request.By)
 	case request.By == SuspendedByOperator && m.held.By != SuspendedByOperator:
 		m.log.Info("supervise: the operator's suspension takes the held suspension over", "reason", request.Reason, "held", m.held.Reason)
@@ -170,7 +171,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 		request.By == SuspendedByDaemon && m.held.By == SuspendedByHold:
 		m.log.Info("supervise: a stronger suspension takes the held suspension over", "reason", request.Reason, "by", request.By,
 			"held", m.held.Reason, "heldBy", m.held.By, "heldPause", m.held.Pause)
-		m.held.By, m.held.Reason, m.held.Pause = request.By, request.Reason, 0
+		m.held.By, m.held.Reason, m.held.Pause, m.held.HoldVersion = request.By, request.Reason, 0, request.HoldVersion
 	}
 	// The held deadline only moves earlier, and the timer is re-armed only when that deadline comes
 	// before the one already armed: a stop the runtime refused is retried at the probe interval
@@ -301,6 +302,9 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // resumes it while the hold stands and it keeps its bundle and its pending task. Anything else
 // changes nothing, and an operator's suspension is never taken over. The work hold's takeover
 // whose decision's lock on the tree's work hold row has ended is not made (holdStopUnlocked).
+// Once the work hold's takeover is written, the tree's work hold row is read again
+// (holdReadAfterStop). The hold's stop asked again of a claim the hold already stopped changes
+// nothing here, by the rank, and so writes nothing and reads nothing.
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -315,7 +319,10 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a suspension takes the suspended claim over", "reason", request.Reason,
 		"by", request.By, "suspendedBy", m.claim.SuspendedBy)
 	m.claim.SuspendedBy = request.By
-	return m.persist(ctx)
+	if err := m.persist(ctx); err != nil {
+		return err
+	}
+	return m.holdReadAfterStop(ctx, request)
 }
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
@@ -443,7 +450,18 @@ func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch
 // nothing, since the process may still run, and its error is returned for the caller to decide
 // on: suspendNow refuses the suspension, while letProcessGoFor and exit suspend the claim all the
 // same. It is the one place a suspension's stop and its clean stop are written together.
+//
+// The work hold's stop ends the lock its decision holds on the tree's work hold row
+// (releaseHoldLock) before the runtime's stop. The decision took the stop under the lock, and the
+// runtime's stop can wait for minutes: the Sandbox runtime waits on the pod's launcher, and a
+// transaction held open that long is ended by the database (the store's idle bound). So no
+// transaction stays open across the stop. The opening can commit while the process stops, and
+// read the claim live. The read of the row after the stop's write starts such a claim
+// (holdReadAfterStop).
 func (m *Machine) stopForSuspension(ctx context.Context, by SuspendSource, cleanStopSent bool) error {
+	if by == SuspendedByHold {
+		m.releaseHoldLock()
+	}
 	if err := m.endProcess(ctx, endSuspended(by)); err != nil {
 		return err
 	}
@@ -459,7 +477,11 @@ func (m *Machine) stopForSuspension(ctx context.Context, by SuspendSource, clean
 // owed a launch at the resume: launch is whether the stop met one its caller knows of — a start
 // it cancelled, a launch held until ready, a wake's turn, a waiting relaunch — and a launch still
 // waiting on the machine is read here too (launchMet); the task the claim holds is read where the
-// stop is written (putStop).
+// stop is written (putStop). Every write of the work hold's stop but the takeover of a suspended
+// claim (suspendedAgain) comes here: the stop of the suspend row and of a held stop (suspendNow),
+// the stop over a dead or replaced process (letProcessGoFor), and the stop of a launch with no
+// process (holdSuspendUntilReady, relaunchAgain). Once that write has landed, the tree's work
+// hold row is read again (holdReadAfterStop).
 func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, launch bool) error {
 	var stop *PauseStop
 	if request.Pause != 0 {
@@ -469,7 +491,7 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 		return err
 	}
 	m.log.Info("supervise: suspended", "reason", request.Reason, "by", request.By)
-	return nil
+	return m.holdReadAfterStop(ctx, request)
 }
 
 // suspended moves the claim to suspended by by: its session kept, and the process it stopped let

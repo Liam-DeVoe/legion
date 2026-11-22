@@ -2079,8 +2079,10 @@ type Store interface {
 	// LockWorkHold is the hold tree holds, nil for none, read with tree's row locked for update
 	// until tx ends: the hold's end takes it before it reads the tree's claims (workflow's
 	// tellAndEndWorkHold). A claim's decision that may make the hold's stop holds the row for share
-	// (supervise.Store.LockWorkHold), so the end waits for that decision's commit, and a decision
-	// that asks while the end holds the row waits for the end's commit and then reads no row.
+	// while it decides the stop (supervise.Store.LockWorkHold), so the end waits until that
+	// decision lets the row go, and a decision that asks while the end holds the row waits for the
+	// end's commit and then reads no row. Once the hold's stop is written, the claim's machine
+	// reads the row for share again, and that read too waits for an end in flight.
 	LockWorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	// WorkHeldTrees is every tree of project, by the tree its issue stands in, that holds a claim
 	// stored suspended by the work hold (supervise.SuspendedByHold), in one read whatever the number

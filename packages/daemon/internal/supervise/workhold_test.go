@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -1132,7 +1133,8 @@ func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
 // row has run since: the turn's end leaves the claim idle and sends the task the stop held back,
 // and the hold's deadline cuts no turn. The hold's stop asked of an opened tree is answered
 // ErrWorkHoldEnded and makes no stop. A lock that is not granted keeps the stop held, so the
-// turn's end makes it as before, and the stop's row is left to drop it. Each lock granted is
+// turn's end makes it as before; the read of the row after that stop is refused as well, so the
+// turn's end answers its error, and the stop's row is left to drop it. Each lock granted is
 // released once its decision has run.
 func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 	const dropped = `msg="supervise: the work hold ended before its stop was made; the stop is not made"`
@@ -1216,9 +1218,14 @@ func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
 	t.Run("a lock that is not granted keeps the stop held", func(t *testing.T) {
 		h := heldInTurn(t)
 		h.store.openHold(h.claim().Tree)
-		h.store.fail("LockWorkHold", errors.New("the database did not answer"))
+		refused := errors.New("the database did not answer")
+		h.store.fail("LockWorkHold", refused)
 
-		h.must(StreamTurnEnd{Claim: h.token})
+		// The stop is made under no lock, and the read of the row after it is refused too
+		// (holdReadAfterStop), so the turn's end answers that read's error.
+		if err := h.handle(StreamTurnEnd{Claim: h.token}); !errors.Is(err, refused) {
+			t.Fatalf("the turn's end answered %v, want the refused read of the row after the stop", err)
+		}
 
 		h.wantHeld()
 		h.wantCalls("Suspend", 1)
@@ -1411,7 +1418,8 @@ func TestWorkHoldLockEndsBeforeTheLaunchCheck(t *testing.T) {
 // stop is held over the claim (lockHoldStop): no row of either kind can make the stop, and the
 // tool step's write of the claim's steps has no claim-write deadline to bound how long it would
 // hold a second connection under the lock. The step is recorded all the same, and the turn's end
-// takes the lock and makes the stop.
+// takes the lock and makes the stop, and then takes the lock once more to read the row after the
+// stop's write (holdReadAfterStop).
 func TestWorkHoldTakesNoLockForAToolStepOrAnAnswer(t *testing.T) {
 	h := newHarness(t)
 	h.inPhaseTurn()
@@ -1433,8 +1441,9 @@ func TestWorkHoldTakesNoLockForAToolStepOrAnAnswer(t *testing.T) {
 	}
 	h.must(StreamTurnEnd{Claim: h.token})
 	h.wantHeld()
-	if taken, released := h.store.locks(); taken != before+1 || released != taken {
-		t.Fatalf("after the turn's end the store had granted %d locks and released %d, want the turn end's one more, released", taken, released)
+	if taken, released := h.store.locks(); taken != before+2 || released != taken {
+		t.Fatalf("after the turn's end the store had granted %d locks and released %d, want two more, released: the turn end's and the read after its stop",
+			taken, released)
 	}
 }
 
@@ -1556,5 +1565,354 @@ func TestWorkHoldStopAskedNowWaitsWhereItsLockEndedBeforeIt(t *testing.T) {
 	h.wantHeld()
 	if !slices.Equal(lockedAtTheStop, []int{1}) {
 		t.Fatalf("the takeover was written with %v locks held, want once with the decision's lock held", lockedAtTheStop)
+	}
+}
+
+// holdVersion is the version of the spec that closed the gate, as the hold's stop names it.
+const holdVersion = 4
+
+// versioned is the hold's stop request naming holdVersion, as the outbox's stop row posts it
+// (record.SuperviseRequest.HoldVersion).
+func versioned(request RequestSuspend) RequestSuspend {
+	request.HoldVersion = holdVersion
+	return request
+}
+
+// stopHook is the harness's runtime with at run at each process stop (Suspend), before the stop
+// itself: what a test reads or changes while the runtime stops the process. Every call goes on
+// to the fake, which records it.
+type stopHook struct {
+	*fake.Runtime
+	at func()
+}
+
+func (s stopHook) Suspend(ctx context.Context, loc runtime.Locator) error {
+	s.at()
+	return s.Runtime.Suspend(ctx, loc)
+}
+
+// endedUnderStop is the daemon as Deps.WorkHoldEndedUnderStop reaches it: each claim it was told
+// of, with the version, in order.
+type endedUnderStop struct {
+	mu   sync.Mutex
+	told []holdEndTold
+}
+
+// holdEndTold is one call of Deps.WorkHoldEndedUnderStop.
+type holdEndTold struct {
+	token   claim.Token
+	state   ClaimState
+	by      SuspendSource
+	version int
+}
+
+func (e *endedUnderStop) tell(c Claim, version int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.told = append(e.told, holdEndTold{token: c.Token, state: c.State, by: c.SuspendedBy, version: version})
+}
+
+func (e *endedUnderStop) calls() []holdEndTold {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.told)
+}
+
+// wantNone is the daemon told nothing.
+func (e *endedUnderStop) wantNone(t *testing.T) {
+	t.Helper()
+	if told := e.calls(); len(told) != 0 {
+		t.Fatalf("the daemon was told %+v, want nothing: the hold stands", told)
+	}
+}
+
+// wantOnce is the daemon told once, of h's claim stopped by the hold, with holdVersion.
+func (e *endedUnderStop) wantOnce(h *harness) {
+	h.t.Helper()
+	want := holdEndTold{token: h.token, state: StateSuspended, by: SuspendedByHold, version: holdVersion}
+	if told := e.calls(); !slices.Equal(told, []holdEndTold{want}) {
+		h.t.Fatalf("the daemon was told %+v, want once %+v", told, want)
+	}
+}
+
+// holdReadHarness is newHarness over a machine whose runtime runs at at each process stop
+// (stopHook), nil for nothing, and whose daemon is told of a hold that ended under a stop
+// (endedUnderStop). at runs inside the decision, under the machine's lock, so it reads nothing of
+// the machine.
+func holdReadHarness(t *testing.T, at func(h *harness)) (*harness, *endedUnderStop) {
+	t.Helper()
+	h := newBareHarness(t)
+	told := &endedUnderStop{}
+	h.deps.WorkHoldEndedUnderStop = told.tell
+	h.deps.Runtime = stopHook{Runtime: h.rt, at: func() {
+		if at != nil {
+			at(h)
+		}
+	}}
+	c := queuedClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	return h, told
+}
+
+// Spec step 7 and check a3d61f8e: the decision of the hold's stop ends its lock on the tree's work
+// hold row before the runtime stops the process (stopForSuspension). A process stop can take
+// minutes under the Sandbox runtime, and the database ends a transaction left open that long, so
+// no transaction stays open across the stop. The runtime reads the store's counts when it is asked
+// to stop the process: the decision's lock was granted and released before. The read of the row
+// after the stop's write (holdReadAfterStop) takes one more lock and releases it at once.
+func TestWorkHoldLockEndsBeforeTheProcessStop(t *testing.T) {
+	var atStop []heldLocks
+	h, told := holdReadHarness(t, func(h *harness) {
+		taken, released := h.store.locks()
+		atStop = append(atStop, heldLocks{taken: taken, released: released})
+	})
+	h.reach(StateIdle)
+	before, _ := h.store.locks()
+
+	h.must(versioned(directHoldStop(h)))
+
+	h.wantHeld()
+	if want := []heldLocks{{taken: before + 1, released: before + 1}}; !slices.Equal(atStop, want) {
+		t.Fatalf("the runtime was asked to stop the process with %+v locks granted and released, want %+v: the decision's lock released before the stop",
+			atStop, want)
+	}
+	if taken, released := h.store.locks(); taken != before+2 || released != taken {
+		t.Fatalf("after the stop the store had granted %d locks and released %d, want %d of each: the decision's and the read after the stop's write",
+			taken, released, before+2)
+	}
+	told.wantNone(t)
+}
+
+// Spec step 7 ("starts each claim that the hold stopped") and R2, check a3d61f8e: once the hold's
+// stop is written, the machine reads the tree's work hold row again (holdReadAfterStop). The
+// opening takes that row for update before it reads the claims and deletes it, so where the read
+// finds the row gone, the opening may have read the claim before the stop's write, and the daemon
+// is told once, with the claim and the version, so it starts the claim. A row that stands tells
+// nobody: a later opening reads the stop. A read that fails answers its error, so the stop's row
+// asks again, and tells nobody. Every write of the hold's stop reaches the read: the stop asked
+// now, the takeover of a released claim and a held stop made at the turn's end.
+func TestWorkHoldReadsItsRowAgainOnceTheStopIsWritten(t *testing.T) {
+	tree := queuedClaim().Tree
+	t.Run("a row that stands tells nobody", func(t *testing.T) {
+		h, told := holdReadHarness(t, nil)
+		h.reach(StateIdle)
+
+		h.must(versioned(directHoldStop(h)))
+
+		h.wantHeld()
+		told.wantNone(t)
+	})
+	t.Run("an opening while the process stops has the daemon start the claim", func(t *testing.T) {
+		h, told := holdReadHarness(t, func(h *harness) { h.store.openHold(tree) })
+		h.reach(StateIdle)
+
+		h.must(versioned(directHoldStop(h)))
+
+		h.wantHeld()
+		h.wantCalls("Suspend", 1)
+		told.wantOnce(h)
+	})
+	t.Run("a read that fails answers its error and tells nobody", func(t *testing.T) {
+		refused := errors.New("the lock waited past the claim-write deadline")
+		h, told := holdReadHarness(t, func(h *harness) {
+			h.store.openHold(tree)
+			h.store.fail("LockWorkHold", refused)
+		})
+		h.reach(StateIdle)
+
+		if err := h.handle(versioned(directHoldStop(h))); !errors.Is(err, refused) {
+			t.Fatalf("the hold's stop answered %v, want the refused read of the row after the stop", err)
+		}
+
+		h.wantHeld()
+		told.wantNone(t)
+		if lines := h.logs.lines("level=WARN", "after the hold's stop was written", refused.Error()); len(lines) != 1 {
+			t.Fatalf("logged %q, want one warning naming the read that failed", lines)
+		}
+	})
+	t.Run("the takeover of a released claim reads the row", func(t *testing.T) {
+		h, told := holdReadHarness(t, nil)
+		h.releasedWithATask()
+		h.store.onPut = func(c Claim) {
+			// The opening commits as the takeover is written. The takeover stops no process
+			// (suspendedAgain), so its decision still holds its share lock on the row then, and
+			// the real store would hold the opening back until that lock ends. The memStore does
+			// not block the opening on the share lock, so this stands for a decision whose lock
+			// the database ended before its write. onPut runs under the store's lock, which
+			// guards the opened trees.
+			if c.SuspendedBy == SuspendedByHold {
+				h.store.opened[c.Tree] = true
+			}
+		}
+		stops := len(h.calls("Suspend"))
+
+		h.must(versioned(directHoldStop(h)))
+
+		h.wantHeld()
+		if got := len(h.calls("Suspend")); got != stops {
+			t.Fatalf("the runtime was asked %d more stops, want none: the takeover of a released claim stops no process", got-stops)
+		}
+		told.wantOnce(h)
+	})
+	t.Run("a held stop made at the turn's end reads the row", func(t *testing.T) {
+		h, told := holdReadHarness(t, func(h *harness) { h.store.openHold(tree) })
+		h.inPhaseTurn()
+		if err := h.handle(versioned(holdStop(h, h.clock.Now()))); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the hold's stop of a claim in a turn answered %v, want it held for the turn", err)
+		}
+
+		h.must(StreamTurnEnd{Claim: h.token})
+
+		h.wantHeld()
+		h.wantCalls("Suspend", 1)
+		told.wantOnce(h)
+	})
+}
+
+// The hold's stop asked again of a claim the hold already stopped. An earlier attempt of the
+// stop's row made the stop, and the read of the row after it failed, so the row asks again. In a
+// tree that still holds work, the decision's lock reads the row standing, and the stop changes
+// nothing by its rank (suspendedAgain): nothing is written and nobody is told, and a later opening
+// reads the stop. In a tree the opening has opened since, the decision's lock reads no row and the
+// answer is ErrWorkHoldEnded, so the stop's row finishes. The opening may have read the claim live
+// before the earlier attempt's write, so the decision tells the daemon once, with the version, and
+// the daemon starts the claim.
+func TestWorkHoldStopAskedAgainOfAClaimItStopped(t *testing.T) {
+	refused := errors.New("the database did not answer")
+	stoppedWithAFailedRead := func(t *testing.T) (*harness, *endedUnderStop) {
+		t.Helper()
+		h, told := holdReadHarness(t, func(h *harness) { h.store.fail("LockWorkHold", refused) })
+		h.reach(StateIdle)
+		if err := h.handle(versioned(directHoldStop(h))); !errors.Is(err, refused) {
+			t.Fatalf("the hold's stop answered %v, want the refused read of the row after the stop", err)
+		}
+		h.wantHeld()
+		h.store.fail("LockWorkHold", nil)
+		return h, told
+	}
+	t.Run("in a tree that still holds work", func(t *testing.T) {
+		h, told := stoppedWithAFailedRead(t)
+		puts := len(h.store.history())
+
+		h.must(versioned(directHoldStop(h)))
+
+		h.wantHeld()
+		if got := len(h.store.history()); got != puts {
+			t.Fatalf("the store was written %d claims, want none: the stop asked again changes nothing", got-puts)
+		}
+		told.wantNone(t)
+	})
+	t.Run("in a tree the opening opened", func(t *testing.T) {
+		h, told := stoppedWithAFailedRead(t)
+		h.store.openHold(h.claim().Tree)
+
+		if err := h.handle(versioned(directHoldStop(h))); !errors.Is(err, ErrWorkHoldEnded) {
+			t.Fatalf("the hold's stop asked again after the opening answered %v, want %v", err, ErrWorkHoldEnded)
+		}
+
+		h.wantHeld()
+		h.wantCalls("Suspend", 1)
+		told.wantOnce(h)
+		if taken, released := h.store.locks(); released != taken {
+			t.Fatalf("the store had granted %d locks and released %d, want each released", taken, released)
+		}
+	})
+}
+
+// The hold's stop whose own claim write the database did not take, met by its row after the
+// opening. The stop is made and its write is owed, so the read of the row after it never runs,
+// and the opening read the claim live in the store. DropHoldStop takes the machine's lock outside
+// Handle, so it makes the owed write first, as Handle does at the head of every decision
+// (repairBeforeTheHold): when it reports the claim stopped, the store holds the claim stopped by
+// the hold, and the fact the outbox then applies reads it stopped and starts it. Where the repair
+// fails too, DropHoldStop answers the error and reports nothing, and the row's next attempt, once
+// the store takes the write, reports the claim stopped.
+func TestWorkHoldStopDropMakesTheStopsOwedWriteFirst(t *testing.T) {
+	away := errors.New("the database did not answer")
+	t.Run("the repair lands before the claim is reported stopped", func(t *testing.T) {
+		h := newHarness(t)
+		h.stoppedWithItsWriteOwed(away)
+		h.store.fail("PutClaim", nil)
+
+		dropped, stopped, err := h.m.DropHoldStop(h.ctx)
+
+		if dropped || !stopped || err != nil {
+			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want the stopped claim reported", dropped, stopped, err)
+		}
+		h.wantHeld()
+	})
+	t.Run("a repair that fails reports nothing", func(t *testing.T) {
+		h := newHarness(t)
+		h.stoppedWithItsWriteOwed(away)
+
+		dropped, stopped, err := h.m.DropHoldStop(h.ctx)
+
+		if dropped || stopped || !errors.Is(err, errClaimWriteOwed) {
+			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want nothing reported and the owed write's error", dropped, stopped, err)
+		}
+		if stored := h.store.load(h.token); stored.State == StateSuspended {
+			t.Fatalf("the store holds the claim %s by %q, want it still behind memory", stored.State, stored.SuspendedBy)
+		}
+		h.store.fail("PutClaim", nil)
+		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); dropped || !stopped || err != nil {
+			t.Fatalf("the row's next attempt = dropped %v, stopped %v, %v; want the stopped claim reported", dropped, stopped, err)
+		}
+		h.wantHeld()
+	})
+}
+
+// stoppedWithItsWriteOwed walks h's claim from idle to the hold's stop asked now, made with its
+// claim write refused by away: the claim stands stopped by the hold in memory, its write owed, and
+// the store still holds it idle. Then the opening ends the tree's hold. The read of the row after
+// the stop never ran, since the write failed first.
+func (h *harness) stoppedWithItsWriteOwed(away error) {
+	h.t.Helper()
+	h.reach(StateIdle)
+	h.store.fail("PutClaim", away)
+	if err := h.handle(versioned(directHoldStop(h))); !errors.Is(err, away) {
+		h.t.Fatalf("the hold's stop answered %v, want its claim write refused", err)
+	}
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByHold {
+		h.t.Fatalf("the claim is %s by %q, want it stopped by the hold in memory", c.State, c.SuspendedBy)
+	}
+	if stored := h.store.load(h.token); stored.State == StateSuspended {
+		h.t.Fatalf("the store holds the claim %s by %q, want it behind memory: the stop's write failed", stored.State, stored.SuspendedBy)
+	}
+	h.store.openHold(h.claim().Tree)
+}
+
+// The hold's stop asked again, after the opening, of a claim an earlier attempt stopped whose
+// claim write the database did not take. Handle's repair fails again, so the store still holds
+// the claim live, and a fact of the hold's end would read it live and start nothing. So the
+// decision tells the daemon nothing and answers an error that wraps errClaimWriteOwed, not
+// ErrWorkHoldEnded: the stop's row is asked again rather than finished. Once the store takes the
+// write, the row's next attempt makes it at the head of the decision (Handle's repair), and the
+// decision tells the daemon once, with the version, and answers ErrWorkHoldEnded.
+func TestWorkHoldStopAskedAgainWaitsForItsOwedWrite(t *testing.T) {
+	away := errors.New("the database did not answer")
+	h, told := holdReadHarness(t, nil)
+	h.stoppedWithItsWriteOwed(away)
+
+	err := h.handle(versioned(directHoldStop(h)))
+
+	if !errors.Is(err, errClaimWriteOwed) || errors.Is(err, ErrWorkHoldEnded) {
+		t.Fatalf("the hold's stop asked again with its write owed answered %v, want the owed write's error and not %v", err, ErrWorkHoldEnded)
+	}
+	told.wantNone(t)
+	if stored := h.store.load(h.token); stored.State == StateSuspended {
+		t.Fatalf("the store holds the claim %s by %q, want it still behind memory", stored.State, stored.SuspendedBy)
+	}
+
+	h.store.fail("PutClaim", nil)
+	if err := h.handle(versioned(directHoldStop(h))); !errors.Is(err, ErrWorkHoldEnded) {
+		t.Fatalf("the hold's stop asked again once the store takes the write answered %v, want %v", err, ErrWorkHoldEnded)
+	}
+	h.wantHeld()
+	told.wantOnce(h)
+	if taken, released := h.store.locks(); released != taken {
+		t.Fatalf("the store had granted %d locks and released %d, want each released", taken, released)
 	}
 }

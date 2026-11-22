@@ -480,6 +480,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// on before supervision restores a claim, so no claim write of this boot is left out.
 		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		plan.workHoldEndedUnderStop = workflow.workHoldEndedUnderStop
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
 		// stop transaction and its let-out stamp (openSupervision), and the boot loads its flag
@@ -919,6 +920,10 @@ type plan struct {
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
+	// workHoldEndedUnderStop starts a claim the work hold stopped whose hold its machine found
+	// ended under the stop (workflowRuntime.workHoldEndedUnderStop); nil without a workflow,
+	// where no tree holds work.
+	workHoldEndedUnderStop func(c supervise.Claim, version int)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
 	tools         map[string]string
@@ -1797,6 +1802,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
+		WorkHoldEndedUnderStop:  p.workHoldEndedUnderStop,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		Clock:                   p.clock,

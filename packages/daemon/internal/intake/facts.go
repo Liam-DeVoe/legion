@@ -1443,18 +1443,19 @@ type PodBackstopDue struct {
 func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 
 // WorkHoldOpened is the work hold of tree Tree found ended under a claim it stopped (`gates.hold:
-// work`): the opening committed and started nothing of the claim, and the claim stands stopped by
-// the hold. The opening takes the tree's work hold row for update before it reads the claims, and
-// each decision that may make the hold's stop holds that row for share, so a stop made under that
-// lock is committed before the opening reads the claims, and the opening starts its claim. This
-// fact is left to a stop a decision made without the lock: a stop held for a turn, a compaction
-// or a ready whose decision's lock was not granted, a held stop made after its decision's report
-// of a durable state or its launch check ended the lock, or a stop whose lock the database ended.
-// The hold's stop asked now is never made once its decision's report has ended its lock
-// (supervise.ErrWorkHoldLockEnded). The workflow starts each claim of the tree the hold stopped
-// that no opening start covers, with the opening's task. It is never decoded from an event: the
-// outbox applies it from the stop's row, under the row's id, so a retried row applies it once. It
-// names the whole tree rather than one issue.
+// work`): the opening committed and may have started nothing of the claim, and the claim stands
+// stopped by the hold. The opening takes the tree's work hold row for update before it reads the
+// claims, and each decision that may make the hold's stop decides it under a lock on that row for
+// share. The decision ends that lock before the runtime stops the process, so the opening can
+// read the claim live and commit before the stop is written. A held stop made under no lock, or
+// after its decision's report of a durable state or its launch check ended the lock, can follow
+// the opening too. Once the stop is written, the claim's machine reads the row again, and where
+// the row is gone, the daemon applies this fact at once (supervise.Deps.WorkHoldEndedUnderStop),
+// under an event that names the claim, its generation and the version. The stop's outbox row
+// applies it as well where it meets the open gate and the claim stopped, under the row's id, so a
+// retried row applies it once. The workflow starts each claim of the tree the hold stopped that no
+// opening start covers, with the opening's task. It is never decoded from an event. It names the
+// whole tree rather than one issue.
 type WorkHoldOpened struct {
 	Tree string
 	// Version is the version of the gated document that closed the gate, as the hold's stop named

@@ -157,10 +157,17 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 }
 
 // supervise gives the rig a supervisor over the rig's store, on clock, as a daemon's boot builds
-// one, with each agent connection the rig made registered again.
+// one, with each agent connection the rig made registered again. Its machines tell the daemon of
+// a work hold that ended under a claim it stopped, which applies the fact of the hold's end with
+// the rig's handlers and logs on the runner's logger (workflowRuntime.workHoldEndedUnderStop), as
+// the boot wires it (openSupervision).
 func (r *workHoldRig) supervise(clock *heldClock) {
 	sup, rt := newOutboxSupervisor(r.t, r.tokenProject, r.t.TempDir())
 	sup.deps.Store, sup.deps.Clock = r.trees, clock
+	sup.deps.WorkHoldEndedUnderStop = func(c supervise.Claim, version int) {
+		w := &workflowRuntime{pool: r.pool, handlers: []intake.Handler{r.engine, r.admission}, log: r.runner.log}
+		w.workHoldEndedUnderStop(c, version)
+	}
 	for role, conn := range r.conns {
 		sup.deps.Conns.(*fake.Conns).Register(r.token(role), conn)
 	}
@@ -1384,10 +1391,12 @@ func (s refusedHoldLock) LockWorkHold(ctx context.Context, tree string) (bool, f
 // (holdStopUnmade's stopped case). The close's stop is held for the implementer's turn, and the
 // opening commits while the turn runs, so it reads the implementer working and starts nothing of
 // it. The turn's end is refused its lock, so it makes the held stop under no lock, after the
-// opening. The stop's row then meets the open gate and finds the implementer stopped by the hold:
-// it logs that the stop was made after the gate opened again, naming the implementer and the
-// version that closed the gate, and the fact of the hold's end (intake.WorkHoldOpened) starts the
-// implementer once, with the opening's task.
+// opening. The read of the row after that stop is refused too (supervise's holdReadAfterStop), so
+// the turn's end answers that read's error and the daemon is not told. The stop's row then meets
+// the open gate and finds the implementer stopped by the hold: it logs that the stop was made
+// after the gate opened again, naming the implementer and the version that closed the gate, and
+// the fact of the hold's end (intake.WorkHoldOpened) starts the implementer once, with the
+// opening's task.
 func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -1411,8 +1420,17 @@ func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 		t.Fatalf("the opening queued %d starts of the implementer, want none: it read the implementer working", got)
 	}
 	refuse.Store(true)
-	endTurn(r.ctx, t, machine, token)
+	pending := machine.Claim().Pending
+	if err := machine.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err == nil || !strings.Contains(err.Error(), "the database did not answer") {
+		t.Fatalf("the implementer's turn end answered %v, want the refused read of the row after its stop", err)
+	}
 	refuse.Store(false)
+	if pending != nil && !pending.ConfirmedAt.IsZero() {
+		// The prompt's result behind the turn's end, as endTurn sends it.
+		if err := machine.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: pending.ID, AgentInvoked: true}); err != nil {
+			t.Fatalf("report the end of the prompt the implementer ran: %v", err)
+		}
+	}
 	r.wantHeld(claim.RoleImplementer, launched, "after its turn's end made the stop under no lock")
 
 	r.clock.advance(65 * time.Second)
@@ -1520,6 +1538,83 @@ func TestWorkHoldStartsAStopMadeNowWhoseLockTheDatabaseEnded(t *testing.T) {
 		t.Fatalf("after the opening and the drain the implementer is stored suspended by %q with no work hold standing, "+
 			"%d stop rows and %d starts queued, and the runtime started it %d times since the stop: nothing starts it before the next boot",
 			by, len(r.holdStops(claim.RoleImplementer)), r.startsSince(claim.RoleImplementer, 0), r.launches(claim.RoleImplementer)-launched)
+	}
+}
+
+// R2 and spec step 7, for the hold's stop made now while the opening commits. The decision of the
+// stop ends its lock on the tree's work hold row before the runtime stops the process
+// (supervise's stopForSuspension). The rig's runtime holds the implementer's process stop, far
+// short of the store's idle bound, and the person's approval commits the opening meanwhile
+// without waiting for the row: the opening reads the implementer live and queues no start of it.
+// Once the stop is written, the implementer's machine reads the row again, finds it gone, and the
+// daemon applies the fact of the hold's end at once (workflowRuntime.workHoldEndedUnderStop), so a
+// start of the implementer is queued before the stop's row has finished. The daemon's line names
+// the issue, the role and version 4, and the drain starts the implementer once, with the
+// opening's task.
+func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	token := r.token(claim.RoleImplementer)
+	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(slow.proceed) })
+	t.Cleanup(letGo)
+	r.sup.deps.Runtime = slow
+	machine := r.live(claim.RoleImplementer)
+	launched := r.launches(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+	// The turn the close message starts, ended as the message asks, before the stop's row runs.
+	r.clock.advance(time.Second)
+	r.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
+	endTurn(r.ctx, t, machine, token)
+
+	beforeTheOpening := r.newestRow()
+	ran := r.inBackground(func() error { return r.runner.RunOnce(r.ctx) })
+	select {
+	case <-slow.stopping:
+	case err := <-ran:
+		t.Fatalf("the implementer's stop row returned %v before it stopped the process", err)
+	}
+	opened := r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-while-the-process-stops", r.approval(4, 12), r.engine, r.admission)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	// The process stop is let go before the cleanup waits for either call, so a failure below
+	// leaves no call waiting on the other.
+	t.Cleanup(letGo)
+	select {
+	case err := <-opened:
+		if err != nil {
+			t.Fatalf("apply the approval: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the opening still waits 20 s into the process stop: the stop's decision holds its lock on the tree's work hold row across the stop")
+	}
+	if got := r.startsSince(claim.RoleImplementer, beforeTheOpening); got != 0 {
+		t.Fatalf("the opening queued %d starts of the implementer, want none: it read the implementer live", got)
+	}
+
+	letGo()
+	if err := <-ran; err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
+	if got := r.startsSince(claim.RoleImplementer, beforeTheOpening); got != 1 {
+		t.Fatalf("after the stop the outbox holds %d starts of the implementer, want one: the read of the row after the stop finds the hold ended", got)
+	}
+	ended := loggedMessages(t, logs.String(), "the work hold ended under a claim it stopped; the hold's opening starts the claim")
+	if len(ended) != 1 || ended[0]["issue"] != r.tree.key || ended[0]["role"] != string(claim.RoleImplementer) || ended[0]["version"] != float64(4) {
+		t.Fatalf("the daemon logged %v, want one line naming %s, the implementer and version 4", ended, r.tree.key)
+	}
+	r.drain()
+	want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
+		" Check what your turn already did: a tool call may not have finished.\n\n" + workflow.ResumePhaseTask(r.issue())
+	r.wantStarted(claim.RoleImplementer, launched, want)
+	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
+		t.Fatalf("after the drain the implementer's stops are %+v, want the row finished", stops)
 	}
 }
 

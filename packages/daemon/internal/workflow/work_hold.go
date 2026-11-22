@@ -287,17 +287,20 @@ func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue,
 //
 // It takes the tree's work_holds row for update before it reads the tree's claims
 // (record.Store.LockWorkHold), and the transaction deletes the row and commits with that lock
-// held. A claim's decision that may make the hold's stop holds the same row for share until it
-// ends, until it reports a durable state, or until it checks a launch, since the report's fact and
-// the check each wait on this transaction (supervise.Store.LockWorkHold). So this waits for a
-// decision that holds the row, and its read of the claims, a later statement of the transaction,
-// sees the stop that decision committed: openHeldClaims starts that claim. A decision that asks
-// for the row while this holds it waits for the commit and then reads no row, so it makes no stop.
-// No stop is made between this read of the claims and the commit, except one a decision made
-// without the lock: a stop held for a turn, a compaction or a ready whose decision's lock was not
-// granted, a held stop made after its decision's report or launch check had ended its lock, or a
-// stop whose lock the database ended (intake.WorkHoldOpened covers each). The stop asked now is
-// never made once its decision's report has ended its lock (supervise.ErrWorkHoldLockEnded).
+// held. A claim's decision that may make the hold's stop holds the same row for share while it
+// decides the stop (supervise.Store.LockWorkHold). It ends that lock before the runtime stops the
+// process for the hold, before it reports a durable state, and before it checks a launch, since
+// the process stop can take minutes and the report's fact and the check each wait on this
+// transaction. So this waits for a decision that holds the row, and a decision that asks for the
+// row while this holds it waits for the commit and then reads no row, so it makes no stop. A stop
+// can still be written after this read of the claims: the process stop of a stop decided under
+// the lock, a stop held for a turn, a compaction or a ready whose decision's lock was not
+// granted, and a held stop made after its decision's report or launch check had ended its lock.
+// Once a stop is written, the claim's machine reads the row again (supervise's
+// holdReadAfterStop), and that read waits for this commit. Where it finds the row gone, the
+// daemon applies intake.WorkHoldOpened, which starts the claim (workHoldOpened). The stop asked
+// now is never decided once its decision's report has ended its lock
+// (supervise.ErrWorkHoldLockEnded).
 func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, ended string, fallback *record.WorkHold,
 	line string, args ...any) error {
 	closing, err := e.store.LockWorkHold(ctx, tx, root.Tree)
@@ -484,20 +487,20 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 }
 
 // workHoldOpened is the work hold of a tree found ended under a claim it stopped
-// (intake.WorkHoldOpened): the opening committed and started nothing of the claim (openHeldClaims
-// starts only a claim stored stopped by the hold), and the claim stands stopped by the hold. Under
-// the lock on the tree's work hold row this order does not happen: the opening reads the claims
-// only once each decision that holds the row has committed its stop, and a decision that waited
-// for the opening's commit reads no row and makes no stop (tellAndEndWorkHold, supervise's
-// lockHoldStop). It is left to a stop a decision made without the lock: a stop held for a turn, a
-// compaction or a ready whose decision's lock was not granted, a held stop made after its
-// decision's report of a durable state or its launch check ended the lock, or a stop whose lock
-// the database ended. Such a stop's outbox row then meets the open gate, and the claim is started
-// now, as the boot starts a claim the hold stopped in a tree that holds no work
-// (openStoppedClaims), and the log line of its start names the version the hold's stop named
-// (intake.WorkHoldOpened.Version). The stop asked now is never made once its decision's report has
-// ended its lock (supervise's ErrWorkHoldLockEnded): its row finishes once the stop is made, so it
-// would never meet the open gate. A tree that holds work again, one that lingers, and a root the
+// (intake.WorkHoldOpened): the opening committed and may have started nothing of the claim
+// (openHeldClaims starts only a claim stored stopped by the hold), and the claim stands stopped by
+// the hold. A decision ends its lock on the tree's work hold row before the runtime stops the
+// process for the hold, so the opening can read the claim live and commit before the stop is
+// written (tellAndEndWorkHold, supervise's lockHoldStop). A held stop made under no lock, or after
+// its decision's report or launch check ended the lock, can follow the opening too. Once the stop
+// is written, the claim's machine reads the row again, and where it finds the row gone, the
+// daemon applies this fact at once (supervise's holdReadAfterStop, the daemon's
+// workHoldEndedUnderStop). The stop's outbox row applies it too where it meets the open gate and
+// the claim stopped (the outbox's holdStopUnmade). The claim is started now, as the boot starts a
+// claim the hold stopped in a tree that holds no work (openStoppedClaims), and the log line of its
+// start names the version the hold's stop named (intake.WorkHoldOpened.Version). A claim an
+// opening start covers is not started again, so an opening that read the claim stopped and this
+// fact never start it twice. A tree that holds work again, one that lingers, and a root the
 // record does not hold are left alone. Under `merge` no tree holds work, so the gate is read under
 // `work` alone.
 func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.WorkHoldOpened) (intake.Result, error) {

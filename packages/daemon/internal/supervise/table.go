@@ -458,14 +458,21 @@ type RequestReady struct {
 // across a start while its pause is open (StartedBy), and dropped at the start of the claim's next
 // decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
 // them.
+//
+// HoldVersion is the version of the gated document that closed the gate, on the work hold's stop
+// alone (record.SuperviseRequest.HoldVersion, which the outbox's stop row hands on), and 0 on every
+// other suspension. A held stop keeps it (Machine.held). After the hold's stop is written, the
+// machine reads the tree's work hold row again, and where the opening has deleted the row, it
+// hands this version to the daemon (holdReadAfterStop, Deps.WorkHoldEndedUnderStop).
 type RequestSuspend struct {
-	Claim     claim.Token
-	Reason    string
-	By        SuspendSource
-	Deadline  time.Time
-	TurnAfter time.Time
-	NeverHold bool
-	Pause     int64
+	Claim       claim.Token
+	Reason      string
+	By          SuspendSource
+	Deadline    time.Time
+	TurnAfter   time.Time
+	NeverHold   bool
+	Pause       int64
+	HoldVersion int
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
@@ -2130,8 +2137,9 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && !m.stopWaitsForResult() {
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
-				// The stop landed and let the process go; only its write failed, and the claim is
-				// suspended in memory (suspended).
+				// The stop landed and let the process go; only its write, or the read of the work
+				// hold's row after it (holdReadAfterStop), failed, and the claim is suspended in
+				// memory (suspended).
 				return err
 			}
 			m.claim.State = StateIdle

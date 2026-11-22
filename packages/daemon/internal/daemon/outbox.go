@@ -4001,19 +4001,27 @@ func (r *outbox) openingQueued(ctx context.Context, payload record.SuperviseRequ
 // `work` alone, since under `merge` no tree holds work): a gate that opened again since makes no
 // stop (holdStopUnmade). While the gate holds work, the row posts the stop
 // (supervise.RequestSuspend, By hold) with the deadline and the moment of the message the row
-// stored:
+// stored, and the version that closed the gate:
 //
-//   - The claim's decision takes the tree's work hold row for share until it ends, until it
-//     reports a durable state, or until it checks a launch (supervise.Store.LockWorkHold). The
-//     opening takes that row for update before it reads the tree's claims, so a stop this
-//     decision makes under the lock is committed before the opening reads the claims, and the
-//     opening starts the claim. A decision that waited for the opening's commit reads no row and
-//     answers supervise.ErrWorkHoldEnded: the gate opened again after this row read it, the stop
-//     is not made, and the row finishes with one log line. A decision whose lock ended before its
+//   - The claim's decision takes the tree's work hold row for share and decides the stop under
+//     it (supervise.Store.LockWorkHold). A decision that waited for the opening's commit reads no
+//     row and answers supervise.ErrWorkHoldEnded: the gate opened again after this row read it,
+//     the stop is not made, and the row finishes with one log line. Where an earlier attempt of
+//     the row stopped the claim already, that decision has the daemon start the claim
+//     (supervise.Deps.WorkHoldEndedUnderStop), and the line says the stop was made and the
+//     opening starts the claim. Where that earlier stop's claim write is still owed, the decision
+//     answers an error instead, and the row is asked again. A decision whose lock ended before its
 //     stop — an earlier write of the decision landed a write a failed decision owed, and the
 //     reports owed with it ended the lock — makes no stop and answers
 //     supervise.ErrWorkHoldLockEnded, a wait, so the row is asked again on its backoff, and that
 //     decision takes the lock again.
+//   - The decision ends its lock before the runtime stops the process, so the opening can
+//     commit while the process stops, and read the claim live. Once the stop is written, the
+//     decision reads the row again in a transaction of its own. Where the row stands, a later
+//     opening reads the stop and starts the claim. Where the row is gone, the daemon applies the
+//     fact of the hold's end at once (workflowRuntime.workHoldEndedUnderStop), which starts the
+//     claim. A read that fails is the decision's error, so the row is asked again, and its next
+//     attempt meets the open gate (holdStopUnmade) or posts the stop again.
 //   - The claim holds the stop for the agent's turn — the one in flight, or the one the message
 //     starts in a ready or idle claim — and cuts it at the deadline. It answers
 //     supervise.ErrSuspendHeld meanwhile, a wait, so the row is asked again on its backoff, and a
@@ -4041,9 +4049,13 @@ func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload rec
 		return r.holdStopUnmade(ctx, row, payload, issue, token, machine)
 	}
 	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByHold,
-		Deadline: payload.Deadline, TurnAfter: payload.TurnAfter})
+		Deadline: payload.Deadline, TurnAfter: payload.TurnAfter, HoldVersion: payload.HoldVersion})
 	if errors.Is(err, supervise.ErrWorkHoldEnded) {
-		r.logHoldStopUnmade(row, payload, issue)
+		if machine.Claim().WorkHeld() {
+			r.logHoldStopMadeAfterTheOpening(row, payload, issue)
+		} else {
+			r.logHoldStopUnmade(row, payload, issue)
+		}
 		return nil
 	}
 	if err != nil {
@@ -4061,6 +4073,15 @@ func (r *outbox) logHoldStopUnmade(row record.OutboxRow, payload record.Supervis
 		"row", row.ID, "issue", issue.Key, "role", payload.Role, "version", payload.HoldVersion)
 }
 
+// logHoldStopMadeAfterTheOpening is the one line of a work hold's stop that was made already when
+// its row meets the open gate: the hold's opening starts the claim, by the stop row's fact
+// (holdStopUnmade) or by the machine's (holdStop, supervise.Deps.WorkHoldEndedUnderStop). It
+// names the issue, the role, the tree and the version that closed the gate.
+func (r *outbox) logHoldStopMadeAfterTheOpening(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) {
+	r.log.Info("outbox: the work hold's stop was made after the design gate opened again; the hold's opening starts the claim",
+		"row", row.ID, "issue", issue.Key, "role", payload.Role, "tree", issue.Tree, "version", payload.HoldVersion)
+}
+
 // holdStopUnmade is the work hold's stop meeting a tree that no longer holds work: the gate opened
 // again before the stop was made, so it is not made, and the row finishes. The claim's machine
 // drops such a stop itself at its first decision after the opening committed, whose lock on the
@@ -4071,16 +4092,20 @@ func (r *outbox) logHoldStopUnmade(row record.OutboxRow, payload record.Supervis
 //   - A stop the claim holds for its agent's turn is dropped, and the turn goes on.
 //   - A claim the stop already stopped is started with the opening's task: the fact of the hold's
 //     end (intake.WorkHoldOpened), which names the version the stop names, has the workflow start
-//     each claim of the tree the hold stopped that no opening start covers. A stop made under the
-//     lock on the tree's work hold row is committed before the opening reads the claims, and the
-//     opening starts its claim itself. So this is a stop a decision made without that lock: a stop
-//     held for a turn, a compaction or a ready whose decision's lock was not granted, which kept
-//     the stop held and made it later, a held stop made after its decision's report of a durable
-//     state or its launch check ended the lock, or a stop whose lock the database ended while the
-//     decision ran. The stop asked now is never made after its decision's report ended the lock
-//     (supervise.ErrWorkHoldLockEnded).
+//     each claim of the tree the hold stopped that no opening start covers. The opening may have
+//     read the claim before the stop's write: the decision ends its lock on the tree's work hold
+//     row before the runtime stops the process, a report or a launch check ends it too, and a
+//     lock may not be granted. The machine reads the row again once the stop is written, and
+//     where the opening has deleted it, the daemon starts the claim at once
+//     (workflowRuntime.workHoldEndedUnderStop). So this case is the backstop for a read after the
+//     stop that failed or missed its deadline, and for a stop whose own claim write failed:
+//     DropHoldStop makes the write the machine owes first, so the fact reads the claim stopped.
+//     The fact never starts a claim twice: a claim an opening start covers is not started again.
 //   - Any other claim — a released one the stop never took over, one another source took over —
 //     is left as it is.
+//
+// A claim write the machine still owes after DropHoldStop's repair is an error, and the row asks
+// again on its backoff rather than act on a claim the store does not hold yet.
 func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
 	token claim.Token, machine *supervise.Machine) error {
 	dropped, stopped, err := machine.DropHoldStop(ctx)
@@ -4090,8 +4115,7 @@ func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, paylo
 	case dropped:
 		r.logHoldStopUnmade(row, payload, issue)
 	case stopped:
-		r.log.Info("outbox: the work hold's stop was made after the design gate opened again; the hold's opening starts the claim",
-			"row", row.ID, "issue", issue.Key, "role", payload.Role, "tree", issue.Tree, "version", payload.HoldVersion)
+		r.logHoldStopMadeAfterTheOpening(row, payload, issue)
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("work-hold-opened:%s:%d", token, row.ID),
 			intake.WorkHoldOpened{Tree: issue.Tree, Version: payload.HoldVersion}, r.handlers...); err != nil {
 			return fmt.Errorf("start the claims the work hold of %s stopped after its opening: %w", issue.Tree, err)

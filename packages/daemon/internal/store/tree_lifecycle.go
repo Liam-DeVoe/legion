@@ -126,7 +126,10 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 // (ForConcurrentWorker), so the claim writes the caller makes while the lock lasts are not refused
 // as a second connection (ErrNestedAcquire). A caller that holds a connection already is refused,
 // as any caller is. The pool's idle bound (idleBound) still ends a lock whose decision runs past
-// it, and its connection with it.
+// it, and its connection with it. So the decision ends the lock before the runtime stops a
+// process for the hold, which can run past the bound (supervise's stopForSuspension), and once
+// the stop is written, it takes the lock again and ends it at once, to read whether the hold
+// still stands (supervise's holdReadAfterStop).
 //
 // The wait for the row ends at ctx's deadline, laid twice as the state route lays its bound
 // (internal/api's projectState): the context ends the Go side's wait, and the same bound is the

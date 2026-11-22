@@ -278,9 +278,10 @@ type workflowRuntime struct {
 	// goroutine of its own (reviewRefused).
 	readMemoMu     sync.Mutex
 	refusedReviews map[int64]bool
-	// failed carries the first supervision terminal fact that could not be applied. serve stops
-	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
-	// the fact the failed callback lost.
+	// failed carries the first supervision fact that could not be applied (fail): a terminal fact,
+	// or the fact of a work hold that ended under a claim it stopped. serve stops the daemon with
+	// it: the claim's state is durable, so the next boot applies what the failed callback lost (the
+	// replay of a terminal fact, workflow's workHoldBooted for a claim the hold stopped).
 	failed chan error
 	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
 	// released yet.
@@ -1855,10 +1856,16 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 	ctx := store.ForConcurrentWorker(context.Background())
 	if err := w.applyTerminal(ctx, c, state); err != nil {
 		w.log.Error("apply supervision terminal fact", "claim", c.Token, "state", state, "error", err)
-		select {
-		case w.failed <- err:
-		default:
-		}
+		w.fail(err)
+	}
+}
+
+// fail hands err to serve (w.failed), which stops the daemon with it, without waiting: the
+// channel keeps the first failure, and a later one is dropped while that one is unread.
+func (w *workflowRuntime) fail(err error) {
+	select {
+	case w.failed <- err:
+	default:
 	}
 }
 
@@ -1870,6 +1877,32 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 	w.podResume(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
 		w.terminal(c, state)
+	}
+}
+
+// workHoldEndedUnderStop is supervise's Deps.WorkHoldEndedUnderStop: the machine of c found the
+// work hold of c's tree ended while c stands stopped by the hold. The machine reads the tree's
+// work hold row again once the hold's stop is written, and the opening may have read c before
+// that write and started nothing of it. So the fact of the hold's end (intake.WorkHoldOpened) is
+// applied at once, with version, the version that closed the gate as the stop named it: the
+// workflow starts each claim of the tree the hold stopped that no opening start covers, so an
+// opening that did read c stopped and this fact never start it twice. One line names the issue,
+// the role and the version.
+//
+// It is applied as terminal applies a ready, for the same reasons: inside the machine's decision,
+// under a hold mark of its own (store.ForConcurrentWorker), on a context with no deadline and no
+// cancellation. Its event names the claim, its generation and the version, so a fact applied
+// twice for one stop applies once. An error ends the workflow (w.failed), as terminal's does: the
+// claim would stand stopped by a hold that has ended, and the boot starts such a claim
+// (workflow's workHoldBooted).
+func (w *workflowRuntime) workHoldEndedUnderStop(c supervise.Claim, version int) {
+	w.log.Info("the work hold ended under a claim it stopped; the hold's opening starts the claim",
+		"issue", c.Issue, "role", c.Role, "tree", c.Tree, "version", version)
+	ctx := store.ForConcurrentWorker(context.Background())
+	id := fmt.Sprintf("work-hold-ended-under-stop:%s:%d:%d", c.Token, c.Generation, version)
+	if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, intake.WorkHoldOpened{Tree: c.Tree, Version: version}, w.handlers...); err != nil {
+		w.log.Error("start the claims the work hold stopped after its opening", "claim", c.Token, "tree", c.Tree, "error", err)
+		w.fail(err)
 	}
 }
 

@@ -52,8 +52,8 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 // fact takes (treelifecycle.BindWork), and the hold's opening holds that lock while it waits for
 // the row, so a check made under the row would wait on the opening, and the opening on the check,
 // until the database ended the idle transaction. A stop held over the claim that this decision
-// makes after the check is made without the lock: the stop's outbox row starts the claim once it
-// meets the open gate (DropHoldStop's stopped case).
+// makes after the check is made without the lock: the read of the row after the stop's write
+// starts the claim where the opening has deleted the row (holdReadAfterStop).
 func (m *Machine) checkLaunch(ctx context.Context) error {
 	m.releaseHoldLock()
 	return m.deps.Store.CheckLaunch(ctx, m.claim)
