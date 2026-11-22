@@ -51,20 +51,12 @@ func ReserveIntakeLeases(callers *store.LeaseCallers) (IntakeLeases, error) {
 	return IntakeLeases{events: events, jobs: jobs}, nil
 }
 
-// reserveDurableLeases reserves one durable's three callers and returns the lease pool they all
-// take their connections from.
+// reserveDurableLeases reserves one durable's three callers (store.LeaseCallers.ForAll) and
+// returns the lease pool they all take their connections from.
 func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLeases, error) {
-	var leases intakeLeases
-	for _, caller := range []string{
-		consumerLease(durable),
-		intakeHoldName(durable),
-		intakeHoldName(durable) + " renewal",
-	} {
-		reserved, err := callers.For(caller)
-		if err != nil {
-			return nil, fmt.Errorf("reserve the lease pool for %s: %w", caller, err)
-		}
-		leases = reserved
+	leases, err := callers.ForAll(consumerLease(durable), intakeHoldName(durable), intakeHoldName(durable)+" renewal")
+	if err != nil {
+		return nil, err
 	}
 	return leases, nil
 }
@@ -74,6 +66,8 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // both before it returns, and returns the error of a connect that fails with neither intake
 // started. Without the GitHub App neither intake reads anything, so neither connects. broker is the
 // server's event broker, through which Intake appends issue.deployed (RecordDeployedEvents).
+// pushes is what Intake hands a push of a branch to (PushImports): in the server, the
+// architecture importer, which imports nothing without the App either. nil hands pushes nowhere.
 //
 // leases is each intake's reservation of the lease pool (ReserveIntakeLeases), taken by the
 // caller while it wires itself rather than here, so that a configuration these intakes are idle
@@ -105,14 +99,14 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // every envoy-dispatch process one delivers from each durable at a time -- and so that neither
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}) (stop func(), err error) {
-	return startIntakes(ctx, connect, pool, leases, github, broker, settingsWake, clock.Real())
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports) (stop func(), err error) {
+	return startIntakes(ctx, connect, pool, leases, github, broker, settingsWake, pushes, clock.Real())
 }
 
 // startIntakes is StartIntakes with the clock both intakes run on (heldDurable.clock): clock.Real
 // from StartIntakes, and a test's clocktest.Fake, which moves the intakes' stop deadlines only
 // when the test moves it.
-func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, c clock.Clock) (stop func(), err error) {
+func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, c clock.Clock) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -129,6 +123,7 @@ func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
 	intake.clock = c
+	intake.pushes = pushes
 	job := newJobIntake(jobClient, pool, leases.jobs, github, c, settings)
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })

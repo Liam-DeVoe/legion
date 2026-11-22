@@ -2,8 +2,6 @@ package testnats
 
 import (
 	"fmt"
-	"math/rand/v2"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -112,6 +110,18 @@ authorization {
 `, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
 }
 
+// GrantedUsersConfig is the configuration of a server with JetStream whose whole authorization is
+// users, each nkey user held to its grant's allow lists as a hub renders a static user: a client
+// that names none of them is refused, since the configuration names no no_auth_user. A subscribe
+// entry may carry a queue group after a space, as a grant writes one.
+func GrantedUsersConfig(users ...StaticUser) string {
+	entries := make([]string, len(users))
+	for i, user := range users {
+		entries[i] = userEntry(user.NKey, user.Publish, user.Subscribe)
+	}
+	return fmt.Sprintf("jetstream {}\nauthorization {\n  users = [\n    %s\n  ]\n}\n", strings.Join(entries, "\n    "))
+}
+
 // userEntry is one nkey user of a configuration, with its grant.
 func userEntry(nkey string, publish, subscribe []string) string {
 	return fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }",
@@ -136,35 +146,21 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 
 // StartWithCalloutServer runs the server StartWithCallout runs and returns it with its client URL,
 // for a test that stops, starts or restarts it under connected clients. Its relay and its own
-// client port listen on a loopback address of their own (calloutHost).
-func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
-	t.Helper()
-	server := startOn(t, calloutHost(), CalloutConfig(keys, static...), []string{"-js"})
-	awaitSeed(t, server.URL(), keys.ServiceSeed)
-	return server, server.URL()
-}
-
-// calloutHost is the address a callout server's relay and the server's own client port listen on:
-// on Linux, where every address of 127.0.0.0/8 is the loopback, one chosen at random, and
-// elsewhere 127.0.0.1.
+// client port listen on a loopback address of their own, as every server start makes does.
 //
 // A test of the auth service counts what its hub sends the service, and the hub sends it a
-// request for every client that reaches it. A relay holds its port only for its own test's life.
-// A client that test leaves behind keeps dialing the port (a bus client reconnects forever), and
-// the kernel can give the same port to a later server's relay, in this test binary or in another
-// binary go test runs beside it. In the envoy-go-race step a client with no credential reached a
-// callout test's hub that way, and its replica counted three dropped requests where the test had
-// sent one. Such a client dials the address its own server had, so a hub on an address of its own
-// is out of its reach, whichever port it gets. The server's own client port reaches the hub as
-// its relay does, and the kernel gives that port from the same range: while it listened on
-// 127.0.0.1, such a client could still reach the hub there, and
+// request for every client that reaches it. In the envoy-go-race step a client another test left
+// behind, with no credential, reached a callout test's hub through a port the kernel had given out
+// again, and its replica counted three dropped requests where the test had sent one; while the
+// server's own client port listened on 127.0.0.1, such a client still reached the hub there, and
 // TestAClosingReplicaLogsWhatItCountedSinceItsLastLine/drops counted five drops after its first
-// line where its two connects made two (job 135649687816). So both listen on this address.
-func calloutHost() string {
-	if runtime.GOOS != "linux" {
-		return "127.0.0.1"
-	}
-	return fmt.Sprintf("127.%d.%d.%d", 1+rand.IntN(254), rand.IntN(256), 1+rand.IntN(254))
+// line where its two connects made two (job 135649687816). The address of its own (start) puts the
+// hub out of such a client's reach, whichever port it gets.
+func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
+	t.Helper()
+	server := start(t, CalloutConfig(keys, static...), []string{"-js"})
+	awaitSeed(t, server.URL(), keys.ServiceSeed)
+	return server, server.URL()
 }
 
 // awaitSeed waits for the server at uri to admit the nkey user whose seed is seed: the proof it

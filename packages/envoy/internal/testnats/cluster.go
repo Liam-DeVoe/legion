@@ -11,6 +11,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -20,6 +21,9 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
+	// routes are the relays of the members' route ports, member i's at i, which FreezeRoutes
+	// freezes to hold every message between the members.
+	routes []*relay
 }
 
 // StartCluster runs a cluster of n servers with JetStream, each with a store of its own, shut down
@@ -52,8 +56,9 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
+	relays := make([]*relay, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -68,10 +73,11 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 			return server.clusterAddress()
 		}, false)
 		t.Cleanup(routeRelay.Close)
+		relays[i] = routeRelay
 	}
-	cluster := &Cluster{Servers: make([]*Server, n)}
+	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes)+config, []string{"-js"})
+		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
@@ -81,7 +87,8 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 }
 
 // clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
-func clusterConfig(i int, routes []string) string {
+// The member's own route listener takes host, the address of its route relay (testport.LoopbackIP).
+func clusterConfig(i int, routes []string, host string) string {
 	urls := make([]string, len(routes))
 	for j, route := range routes {
 		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)
@@ -90,12 +97,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.
@@ -103,6 +110,25 @@ func memberName(i int) string { return fmt.Sprintf("n%d", i+1) }
 
 // Name is member i's server_name (Server.Name).
 func (c *Cluster) Name(i int) string { return c.Servers[i].Name() }
+
+// FreezeRoutes stops the members' routes moving bytes, in either direction, and returns the func
+// that thaws them, which runs once however often it is called. Every route keeps its connection,
+// as Server.Freeze keeps a client's: no member hears another until the thaw, so a replicated
+// stream's leader takes a publish its own clients send it and cannot store it, since no follower
+// hears the proposal, and a second publish under the same message id meanwhile is refused as
+// still in process (nats-server's JSStreamDuplicateMessageConflict).
+func (c *Cluster) FreezeRoutes(t testing.TB) func() {
+	t.Helper()
+	thaws := make([]func(), len(c.routes))
+	for i, route := range c.routes {
+		thaws[i] = route.freeze()
+	}
+	return func() {
+		for _, thaw := range thaws {
+			thaw()
+		}
+	}
+}
 
 // Member is the index of the member whose server_name is name, or -1 when none has it.
 func (c *Cluster) Member(name string) int {
@@ -129,9 +155,11 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 
 // AwaitReady waits until one running member leads the JetStream meta group, that leader counts
 // every running member, and no stopped one, as an online peer, every running member is current
-// with it, and JetStream answers an account info request on every running member. A test calls it
-// after it starts a stopped member again, or after it stops one, before it asks JetStream for
-// anything that needs the meta group.
+// with it, and JetStream answers an account info request on every running member, through the
+// shared wait, whose one bound is the test binary's deadline: a cluster's JetStream start on a
+// loaded machine can take longer than any fixed wait allows. A test calls it after it starts a
+// stopped member again, or after it stops one, before it asks JetStream for anything that needs
+// the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening over for every member,

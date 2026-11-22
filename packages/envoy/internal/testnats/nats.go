@@ -9,7 +9,9 @@
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
 // moving in either direction without dropping a connection (Server.Freeze), or the server's
 // replies alone (Server.FreezeReplies), a reload with no client message in flight
-// (Server.Reload), and a port no other test binary can take while the test runs.
+// (Server.Reload), and a port no other test binary can take while the test runs. The relay
+// listens on a loopback address of its own (testport.LoopbackIP), so a client another test left
+// dialing its own server's old address cannot reach it after that test.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -46,6 +48,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -69,7 +72,7 @@ var Images = []struct{ Name, Ref string }{{"hub", HubImage}}
 
 var (
 	mainRuns      bool
-	sharedOnce    sync.Once
+	sharedMu      sync.Mutex
 	shared        *accountServer
 	sharedCleanup *sharedTB
 )
@@ -123,20 +126,44 @@ func URL(t testing.TB) string {
 	if !mainRuns {
 		t.Fatal("testnats: the package's TestMain must return testnats.Main(m.Run), which shuts the shared NATS server down")
 	}
-	sharedOnce.Do(func() {
-		sharedCleanup = &sharedTB{TB: t}
-		shared = startAccountServer(sharedCleanup, firstAccounts)
-	})
-	if shared == nil {
-		t.Fatal("testnats: the package's shared NATS server did not start; the test that first asked for it reports why")
-	}
-	return shared.url(t)
+	return sharedServer(t).url(t)
 }
 
-// sharedTB stands in for the test that first asks for the package's shared server. That server
-// outlives the test, so the cleanup start registers on it runs from Main, after the last test, and
-// what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that has already
-// ended panics.
+// sharedServer is the package's shared server, started by the first test that asks for it. A
+// start that fails fails the test that asked, with its own reason, and leaves nothing behind: the
+// next test that asks starts the server afresh. Under load a JetStream start can fail where a
+// later one succeeds, and a failed start once failed every later test of the binary that asked,
+// with no reason of its own (TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart).
+func sharedServer(t testing.TB) *accountServer {
+	t.Helper()
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if shared != nil {
+		return shared
+	}
+	attempt := &sharedTB{TB: t}
+	started := false
+	// A failed start ends this goroutine (t.Fatalf), so what it set up is torn down here, before
+	// the lock is let go.
+	defer func() {
+		if !started {
+			attempt.run()
+		}
+	}()
+	server := startShared(attempt, firstAccounts)
+	started = true
+	shared, sharedCleanup = server, attempt
+	return server
+}
+
+// startShared starts the shared server: startAccountServer, which a row of this package's tests
+// replaces to have a start fail.
+var startShared = startAccountServer
+
+// sharedTB stands in for the test that asks for the package's shared server and starts it. That
+// server outlives the test, so the cleanup start registers on it runs from Main, after the last
+// test, and what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that
+// has already ended panics. A start that fails runs its cleanups at once instead (sharedServer).
 type sharedTB struct {
 	testing.TB
 	cleanups []func()
@@ -148,6 +175,15 @@ func (s *sharedTB) Cleanup(clean func()) { s.cleanups = append(s.cleanups, clean
 func (s *sharedTB) Errorf(format string, args ...any) {
 	s.failed = true
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+// Deadline is the deadline of the test sharedTB stands in for, when it has one, so the shared
+// server's start waits as long as that test may run (awaitReady).
+func (s *sharedTB) Deadline() (time.Time, bool) {
+	if timed, ok := s.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // run runs the cleanups the shared server registered, the most recent first, as testing does.
@@ -259,8 +295,9 @@ type Server struct {
 	log        *logCapture
 	relay      *relay
 	url        string
-	// host is the loopback address both the relay and the server's own client port listen on
-	// (startOn), so a client reaches the server on that address alone.
+	// host is the server's own loopback address (testport.LoopbackIP): the relay listens there,
+	// and so do the server's own client and monitoring listeners, which a client that knows their
+	// port could reach as well as the relay's.
 	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
@@ -571,26 +608,19 @@ func (s *Server) natsServer() *natsserver.Server {
 func (s *Server) running() bool { return s.natsServer() != nil }
 
 // hostOnlyConfig is the configuration of a server a test starts with none of its own:
-// nats-server warns on an empty configuration file ("config has no values or is empty"), and the
-// host it names here is the one this rig imposes on every server anyway. The file is never empty,
-// so a server started without a configuration can still be reloaded with one.
+// nats-server warns on an empty configuration file ("config has no values or is empty"), and
+// serverOptions replaces the host it names with the server's own, as it does every
+// configuration's. The file is never empty, so a server started without a configuration can still
+// be reloaded with one.
 const hostOnlyConfig = "host: 127.0.0.1\n"
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. The relay and the
-// server's own client port listen on 127.0.0.1; startOn is start with both on another loopback
-// address.
+// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
+// place a server of this package is made: every helper here is a call on it.
 func start(t testing.TB, config string, serverArgs []string) *Server {
-	t.Helper()
-	return startOn(t, "127.0.0.1", config, serverArgs)
-}
-
-// startOn is start with the relay and the server's own client port listening on host. It is the
-// one place a server of this package is made: every helper here is a call on it.
-func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
 		config = hostOnlyConfig
@@ -599,7 +629,7 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
@@ -611,7 +641,7 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 		args:       serverArgs,
 		log:        &logCapture{},
 		url:        "nats://" + address,
-		host:       host,
+		host:       listener.Addr().(*net.TCPAddr).IP.String(),
 	}
 	server.relay = newRelay(listener, server.address, true)
 	registerServer(address, server)
@@ -645,9 +675,8 @@ func left(t testing.TB) time.Duration {
 }
 
 // launch runs a nats-server on the server's configuration and store, and returns once it accepts
-// connections. That wait is nats-server's own (ReadyForConnections), which takes a span: it is
-// given what is left before the test binary's deadline less testwait's margin (left), the bound
-// every wait of these tests has, and no bound under -timeout 0.
+// connections and has logged no fatal error (awaitReady). It runs again at each Start, Restart and
+// member restart, on the same log, so a fatal error an earlier run logged is forgotten first.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
 	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
@@ -658,13 +687,15 @@ func (s *Server) launch(t testing.TB) {
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}
+	s.log.clearFatal()
 	srv.SetLoggerV2(s.log, opts.Debug, opts.Trace, false)
 	go srv.Start()
-	within := left(t)
-	if !srv.ReadyForConnections(within) {
+	if err := awaitReady(t, srv, s.log); err != nil {
+		// The log as the wait left it, before a shutdown that has no bound of its own.
+		log := s.log.String()
 		srv.Shutdown()
 		srv.WaitForShutdown()
-		t.Fatalf("NATS did not accept connections within %s, what was left before the test binary's deadline less testwait's margin: %s", within, s.log.String())
+		t.Fatalf("NATS did not accept connections: %v: %s", err, log)
 	}
 	// Before s.srv is set the relay refuses every connection, so no client request reaches the
 	// server before its system account's response timers are set past any test (responseThreshold).
@@ -682,6 +713,40 @@ func (s *Server) launch(t testing.TB) {
 	}
 }
 
+// readyProbe is the span awaitReady gives each ask of nats-server's own readiness
+// (ReadyForConnections), which checks the server's listeners once and then, within the span,
+// again every 25 ms: a millisecond is one check. The wait's one bound and its pace are the
+// shared wait's (testwait.Until).
+const readyProbe = time.Millisecond
+
+// readiness is the part of a nats-server awaitReady asks.
+type readiness interface {
+	ReadyForConnections(time.Duration) bool
+}
+
+// awaitReady returns once srv, just started, accepts connections: the server's own readiness
+// (ReadyForConnections), asked through the shared wait, whose one bound is the test binary's
+// deadline and whose last reading is the server's log. A server that logged a fatal error, a
+// listener it could not open among them, fails its start at once, whether or not its client
+// listener came up: awaitReady answers that as its error, so the caller shuts the server down
+// before it fails the test.
+func awaitReady(t testing.TB, srv readiness, log *logCapture) error {
+	t.Helper()
+	fatal := false
+	testwait.Until(t, "the NATS server to accept connections", func() (string, bool) {
+		ready := srv.ReadyForConnections(readyProbe)
+		if log.fatalLogged() {
+			fatal = true
+			return "", true
+		}
+		return "not ready, its log: " + log.String(), ready
+	})
+	if fatal {
+		return errors.New("the server logged a fatal error")
+	}
+	return nil
+}
+
 // flagsMu serialises the calls that meet over natsserver.FlagSnapshot: ConfigureOptions sets it and
 // ReloadOptions merges it over the options it is given, whichever server made it.
 var flagsMu sync.Mutex
@@ -697,11 +762,11 @@ const (
 )
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
-// command line, then imposes what this rig owns: a client port the server picks on host, a
-// monitoring port it picks on 127.0.0.1, the test's own store, no signal handlers, path as the
-// configuration file, and the lame duck's timing when the configuration sets none (rigLameDuck).
-// serverArgs replace nats-server's defaults rather than add to them, as the arguments after the
-// image's own command do.
+// command line, then imposes what this rig owns: host, the server's loopback address, for its
+// client and monitoring listeners, a port for each the server picks, the test's own store, no
+// signal handlers, path as the configuration file, and the lame duck's timing when the
+// configuration sets none (rigLameDuck). serverArgs replace nats-server's defaults rather than add
+// to them, as the arguments after the image's own command do.
 func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -718,7 +783,7 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 	}
 	opts.Host = host
 	opts.Port = -1
-	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPHost = host
 	opts.HTTPPort = -1
 	opts.StoreDir = store
 	opts.NoSigs = true
@@ -743,8 +808,9 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 
 // logCapture is the server's logger: it keeps every line the server logs, for Server.Log.
 type logCapture struct {
-	mu   sync.Mutex
-	text strings.Builder
+	mu    sync.Mutex
+	text  strings.Builder
+	fatal bool
 }
 
 func (c *logCapture) write(level, format string, args ...any) {
@@ -757,14 +823,33 @@ func (c *logCapture) write(level, format string, args ...any) {
 func (c *logCapture) Noticef(format string, args ...any) { c.write("INF", format, args...) }
 func (c *logCapture) Warnf(format string, args ...any)   { c.write("WRN", format, args...) }
 func (c *logCapture) Errorf(format string, args ...any)  { c.write("ERR", format, args...) }
-func (c *logCapture) Fatalf(format string, args ...any)  { c.write("FTL", format, args...) }
-func (c *logCapture) Debugf(format string, args ...any)  { c.write("DBG", format, args...) }
-func (c *logCapture) Tracef(format string, args ...any)  { c.write("TRC", format, args...) }
+func (c *logCapture) Fatalf(format string, args ...any) {
+	c.write("FTL", format, args...)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatal = true
+}
+func (c *logCapture) Debugf(format string, args ...any) { c.write("DBG", format, args...) }
+func (c *logCapture) Tracef(format string, args ...any) { c.write("TRC", format, args...) }
 
 func (c *logCapture) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.text.String()
+}
+
+// clearFatal forgets a fatal error an earlier run of the server logged, before the next (launch).
+func (c *logCapture) clearFatal() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatal = false
+}
+
+// fatalLogged reports whether the server has logged a fatal error.
+func (c *logCapture) fatalLogged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fatal
 }
 
 // Start runs a NATS server with JetStream, shut down when the test ends (even when its start

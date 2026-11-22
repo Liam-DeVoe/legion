@@ -467,6 +467,19 @@ func holdClusterTransactionID(t *testing.T) (release func()) {
 	return release
 }
 
+// requireEventUncommitted fails the test if the event with id has committed: the row read whoami's
+// answer while the insert that holds it was open, and this says the insert was still open then.
+func requireEventUncommitted(t *testing.T, database *store.Store, id int64, what string) {
+	t.Helper()
+	var visible bool
+	if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from events where id = $1)`, id).Scan(&visible); err != nil {
+		t.Fatalf("read whether %s has committed: %v", what, err)
+	}
+	if visible {
+		t.Fatalf("%s, event %d, has committed, so this row did not hold it open while whoami answered", what, id)
+	}
+}
+
 // TestWhoamiEventHeadStaysBelowAnEventStillOpen: event ids do not commit in id order, because
 // writes to different owners take no lock in common (events.Broker.Append), so the newest id a read
 // can see says nothing about the ids below it. A page starts its reads after whoami answers and
@@ -501,7 +514,8 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 // only a transaction in Dispatch's own database can write its event log. whoami's event_head waits
 // on those alone (Horizon.WriterFloor), so another service's job on the same instance, or another
 // package's test, does not hold every page's load for the two seconds eventFeedHead would otherwise
-// wait -- and the head it answers is still the log's newest id.
+// wait -- and the head it answers is still the log's newest id. The transaction stands until the
+// row releases it after whoami's answer, so a whoami that waited on it would never answer.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
@@ -522,7 +536,8 @@ func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 // a write of Dispatch's own database is often open, so whoami must not wait for it. A mark it took
 // on an earlier call stands below every id that write holds, the write having taken its transaction
 // id after that mark, so it answers from that mark at once: below the open id, and at or above
-// what the earlier call answered.
+// what the earlier call answered. The write stays open to the end of the row, so a whoami that
+// waited on it would never answer.
 func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
@@ -534,6 +549,7 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 	// never answer: the wait for its answer is what says it answered from the mark it holds.
 	low, high, _ := appendOutOfOrder(t, database, "ONE", "TWO")
 	head := eventHeadID(t, awaitWhoami(t, handler, "whoami's answer while a write of this database is open"))
+	requireEventUncommitted(t, database, low, "the open write")
 	if head >= low || head < earlier {
 		t.Fatalf("whoami answered event_head %d while event %d was open below the committed %d, want an id below it and at or above the earlier answer %d", head, low, high, earlier)
 	}
@@ -586,7 +602,8 @@ func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpe
 // load an event insert can be open since before the new process took any mark, so no mark counts
 // until it ends, and the process has proven no horizon of its own yet. Every event at or below the
 // horizon the process before it persisted is final, so whoami answers that at once, below the open
-// event, rather than waiting for the insert or answering 503.
+// event, rather than waiting for the insert or answering 503. The insert stays open to the end of
+// the row, so a whoami that waited on it would never answer.
 func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
@@ -623,6 +640,7 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	// The insert stays open to the end of the test, so a whoami that waited on it would never
 	// answer: the wait for its answer is what says it answered from the persisted horizon.
 	head := eventHeadID(t, awaitWhoami(t, handler, "whoami's answer while an event insert from before boot is open"))
+	requireEventUncommitted(t, database, open, "the event insert from before boot")
 	if head < newest || head >= open {
 		t.Fatalf("whoami answered event_head %d, want the persisted horizon %d or above, and below the open event %d", head, newest, open)
 	}

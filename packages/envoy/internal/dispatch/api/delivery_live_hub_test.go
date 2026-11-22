@@ -2274,8 +2274,11 @@ func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T)
 		getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, body, "")))
 }
 
+// The clock reads noon UTC (newNoonHubClock) and runs on from there, so the row's run itself
+// crossing a real UTC midnight, which would move the days before the row's own Advance, decides
+// nothing.
 func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing.T) {
-	clock := newHeldHubClock()
+	clock := newNoonHubClock()
 	rig := newMeasuredHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()

@@ -92,6 +92,11 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *ciphertoken.Verifier
+	// agentSecretsURL points Deps' broker relay for the credential pages at a fake secrets broker
+	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
+	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
+	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	agentSecretsURL string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -327,6 +332,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		verifier = checkedTokenVerifier(t, verifier)
 		collaboratorHTTP = collabtest.HTTPClient(t)
 	}
+	agentSecretsTokenFile := ""
+	if options.agentSecretsURL != "" {
+		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:            database,
 		Identity:         people,
@@ -355,6 +364,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonWarnEvery:       horizontest.StallWarning,
 		OIDC:                   verifier,
 		BrokerTokens:           brokerTokens,
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  agentSecretsTokenFile,
 		AgentStream:            agentStream,
 		AgentPublisher:         agentPublisher,
 		Embedder:               embedder,

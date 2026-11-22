@@ -114,8 +114,16 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
+	row.delivery = subscribedDelivery(holder.intake)
+	// The second message has to be in the holder's hands, queued behind the first, before the stop
+	// begins, or the stop has nothing to hand back. The durable's count of messages outstanding does
+	// not say that: nats-server counts a message delivered (consumer.go, deliverMsg's trackPending)
+	// before its stream's send loop puts it on the wire (stream.go, internalLoop), and a stop whose
+	// drain reaches the server first leaves the message with the durable, never sent to the holder.
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	awaitAckPending(t, publisher, 2)
+	waitFor(t, func() bool { return queuedBehindKeys(row.delivery) == 1 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(row.delivery), consumerState(publisher))
+	})
 
 	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and on a loaded
 	// runner the drain can take longer than callNATS's wait: the stop then withholds its hand-backs,
@@ -147,7 +155,6 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 			close(held)
 		})
 	}
-	row.delivery = subscribedDelivery(holder.intake)
 	row.delivery.beforeHandBackPublish.Store(&hook)
 	row.from = row.recorded.count()
 	done := make(chan struct{})
@@ -160,7 +167,11 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The handler finishes as the stop waits for it; the stop then hands back the message that
-	// was waiting behind it, and the hook holds the write before that publish.
+	// was waiting behind it, and the hook holds the write before that publish. The hook runs on a
+	// goroutine the holder's Run waits for -- the stop's own, or a handler's the stop gave up, whose
+	// deferred answer hands its message back -- so a hand-back reaches the hook before Run returns,
+	// and a Run that returned with held still open made none. held is read again once done is, as
+	// both can be closed by the time the select runs.
 	holder.release()
 	waitFor(t, func() bool {
 		select {

@@ -363,16 +363,22 @@ func intakeTestClient(t *testing.T) *bus.Client {
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind.
+// test that means to publish into a bound consumer does not race the bind. Its one bound is the
+// shared wait's (waitFor): a bind that is merely slow on a loaded machine still passes, and one
+// that never comes fails the row naming the durable's last state.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
-	var err error
+	var state string
 	waitFor(t, func() bool {
-		var info *natsgo.ConsumerInfo
-		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			state = err.Error()
+			return false
+		}
+		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
+		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable: %v", err)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
 	})
 }
 

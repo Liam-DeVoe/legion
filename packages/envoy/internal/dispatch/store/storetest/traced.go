@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -100,6 +101,24 @@ func RequireNoStatements(t testing.TB, counter *StatementCounter, window time.Du
 	if made := counter.Count() - before; made != 0 {
 		t.Errorf("%s: %d statements over %v, want none", what, made, window)
 	}
+}
+
+// AwaitQuiet waits, through the shared wait, until counter has counted no statement over a span of
+// quiet: a span held for why, as testwait.Span holds one, which says why neither the state the
+// code leaves, synctest.Wait nor a later action's effect shows the code at rest instead. Its one
+// bound is the shared wait's, and its failure names the last count it read.
+func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet time.Duration, why string) {
+	t.Helper()
+	if strings.TrimSpace(why) == "" {
+		t.Fatal("storetest.AwaitQuiet needs a why: say which of the state, synctest.Wait and a later action's effect does not reach the code")
+	}
+	last, since := counter.Count(), time.Now()
+	testwait.Until(t, fmt.Sprintf("the statements counted to stop for %v (%s)", quiet, why), func() (int64, bool) {
+		if n := counter.Count(); n != last {
+			last, since = n, time.Now()
+		}
+		return last, time.Since(since) >= quiet
+	})
 }
 
 // StatementRecorder records the SQL of every statement run on the pool it traces (Traced).

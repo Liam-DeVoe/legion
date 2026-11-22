@@ -81,8 +81,7 @@ github.com/sjawhar/envoy/internal/dispatch/api TestSearchLatencyOnCorpus needs D
 github.com/sjawhar/envoy/internal/dispatch/api TestStatementTimings is a measurement on the seeded database DISPATCH_BENCH_DATABASE_URL names (benchtime.Open), which CI leaves unset
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedTermsRefreshTiming is a measurement on that same seeded database (benchtime.Open)
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set
-github.com/sjawhar/envoy/internal/dispatch/api TestAdvancesListingSpeed is a service level only the timing lane reads (benchtime.Timing, DISPATCH_BENCH_TIMING), which CI leaves unset
-github.com/sjawhar/envoy/internal/dispatch/api TestPrioritiesReadSpeed is a service level only the timing lane reads (benchtime.Timing)
+github.com/sjawhar/envoy/internal/dispatch/api TestPrioritiesReadSpeed is a service level only the timing lane reads (benchtime.Timing, DISPATCH_BENCH_TIMING), which CI leaves unset
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled is a service level only the timing lane reads (benchtime.Timing)
 github.com/sjawhar/envoy/internal/dispatch/api TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound is a service level only the timing lane reads (benchtime.Timing)
 github.com/sjawhar/envoy/internal/dispatch/api TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds is a service level only the timing lane reads (benchtime.Timing)'

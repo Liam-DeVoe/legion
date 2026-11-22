@@ -158,12 +158,15 @@ func recordTablePadding(pc parser.Context, padding tablePadding) bool {
 	return false
 }
 
-// Extend registers lazyTableRows over goldmark's table paragraph transformer, which it asks
-// goldmark for here rather than reading from a variable of this package: the readers run Extend
-// while this package's variables are initialized (blockReader, displayReader), and Go orders that
-// initialization only by the references it sees, which a method reached through goldmark's
-// Extender interface is not one of. A build with Go's coverage counters ordered a package-level
-// copy of the transformer after the readers, so the readers held none and a table's parse panicked.
+// Extend gives the parser goldmark's table paragraph transformer, behind lazyTableRows. It asks
+// goldmark for the transformer here, at the call, rather than reading a variable of this package:
+// goldmark.New calls Extend through the goldmark.Extender interface while it initializes
+// blockReader and displayReader, and Go's initialization order follows no call through an
+// interface, so a variable of this package could still be nil then. It was in every build made
+// without inlining (-gcflags=all=-l, and so every debugger build), and in a build with Go's
+// coverage counters, where the readers copied a nil transformer and each table panicked.
+// goldmark's own package is initialized before this one starts, so its transformer exists
+// whenever Extend runs.
 func (lazyAwareTable) Extend(m goldmark.Markdown) {
 	m.Parser().AddOptions(parser.WithParagraphTransformers(util.Prioritized(lazyTableRows{table: extension.NewTableParagraphTransformer()}, 200)))
 }
