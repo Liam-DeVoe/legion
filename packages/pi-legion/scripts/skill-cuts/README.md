@@ -119,7 +119,8 @@ skill's cases (`cases.ts`), one JSON object per line.
   case the control case took the place of; the skill's verdict and its reason (`keeps` prints as
   "no loss detected by the registered rule"), ending with how many of the skill's screened cases
   have a listing measure that could not be measured; the drops per judge control and the drops
-  counted as `model-not-served`, as `unreadable-directory` and as `listing-misses`; an estimate of
+  counted as `model-not-served`, as `unreadable-directory`, as `listing-misses` and as
+  `injection-unrebuildable`, the last by kind (a case under each kind it holds); an estimate of
   the procedure's false-loss
   chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
   from each case's own screen; its assumptions are printed with it),
@@ -402,7 +403,8 @@ pins its plugins' sources in turn, so the pins are read again until no new one a
 rows of these units reach the table only when the configuration's `targets` name their
 repositories. `build-cases` and `build-tasks` read a pinned repository at the ref its installer
 names at the session's start; where `repositories.tsv` names a ref (a pin's tag) made after the
-session's start, they read the repository's default branch then.
+session's start, they read the repository's default branch then, and leave the repository out,
+with that evidence, when that branch has no commit then either.
 
 ### `attribute`
 
@@ -475,7 +477,16 @@ text's lines that the session's own read of that file held (a session whose read
 shipped at the session's start: each repository of a unit is read at its last commit at or before
 that start (its tree, its `SKILL.md` files and its manifests) and resolved by `copies.ts`'s rules,
 so every skill of the profile is in its repository at the commit the case names, and the case's
-evidence says which skills the later copies output lists that the unit did not ship then. A read
+evidence says which skills the later copies output lists that the unit did not ship then. A
+repository GitHub holds no commit of at or before the time it is read at (the session's start, or
+a subagent's root's last prompt build) did not exist then, so nothing of it was installed then:
+the profile leaves it out, and the evidence item `left out: <repo>, which has no commit at or
+before the session's start <time>` gives the `gh api` read. Such a repository is often one the dev
+box's installers began to install after the session's start, which the later copies output
+lists. When it is the session repository, its project skills and context files are not read and
+the profile names no session repository; no later commit is read in its place, so the listing
+measure counts any of its project skills the session listed as missing. Any other failed GitHub
+read still fails the profile. A read
 whose skill none of its units ships at that start, because the later copies output names a unit
 as its manifest names it later (a marketplace or a plugin renamed since: the read's Oh My Pi
 plugin cache directory, `<marketplace>___<plugin>___<version>`, shows the old name), is placed by
@@ -587,10 +598,15 @@ did. Oh My Pi gives a subagent each skill its agent definition's `autoloadSkills
 keeps it: each arm but `none` rebuilds that message from its own SKILL.md under the recorded path,
 as Oh My Pi renders it (the body, a blank line, `---`, a blank line and `Skill: <path>`, put through
 Oh My Pi's prompt format, which takes the padding out of a table's cells), and `none` leaves it
-out. A case that holds such a block in a form the runner cannot rebuild (a `/skill:` prompt the
-user typed, a block with arguments, a dispatch-first block away from where the plugin puts it, or a
-subagent whose agent autoloads the skill but whose messages hold no block of it and open with no
-compaction summary) is refused (exit 2), naming the case. Each capture's record lists the blocks
+out. A case that holds such a block in a form the runner cannot rebuild is dropped, never run, and
+the rest of the cases file runs (the architect, 2026-11-22): `behaviour screen` drops it before any
+model call, at screen, as `injection-unrebuildable: <kind>: <the fault>`, where the kind is
+`user-invoked` (a `/skill:` prompt the user typed), `other-shape` (a block with arguments or in
+another form) or `plugin-block-misplaced` (a dispatch-first block away from where the plugin puts
+it); a subagent whose agent autoloads the skill but whose messages hold no block of it and open
+with no compaction summary is dropped the same way when its capture is made, as
+`autoload-no-block`, at the stage of that capture. `report` lists each such case as it lists every
+dropped case, and its dropped line counts them by kind. Each capture's record lists the blocks
 it carries (`injections`), and a saved capture of such an arm made before these rules is refused.
 
 In the load test such a skill gets the same block under every name it is tested under, so its runs

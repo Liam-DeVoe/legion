@@ -102,12 +102,14 @@
  *   gives its skill no verdict unless another case is a confirmed loss, and a dropped control
  *   case gives its place to the next case of the control rule's order (score.ts's `scoreSkill`).
  *   A read that failed for another reason, after its retries, fails the command, and
- *   the next run reads it again. A cases file with a case that holds a block of its skill its arms
- *   cannot each give their own text (arms.ts's `injectionFault`: one the plugin or Oh My Pi's
- *   autoload did not write in the form the runner rebuilds) is refused before any model call,
- *   naming each such case; so is a case whose capture finds its subagent's agent autoloads the
- *   skill and its messages hold no block of it (capture.ts's InjectionRefused), when the capture
- *   is made.
+ *   the next run reads it again. A case that holds a block of its skill its arms cannot each give
+ *   their own text is dropped at screen, before any model call, as `injection-unrebuildable`, its
+ *   reason naming each fault's kind (arms.ts's `injectionFaults`: `user-invoked`, a `/skill:`
+ *   prompt the user typed; `other-shape`, a block with arguments or in another form;
+ *   `plugin-block-misplaced`, a dispatch-first block away from where the plugin puts it), and the
+ *   rest of the file runs; so is, at the stage whose capture finds it, a case whose subagent's
+ *   agent autoloads the skill and whose messages hold no block of it (capture.ts's
+ *   InjectionRefused, `autoload-no-block`).
  * - `report` (no model call) prints each case's passes per arm and stage, and for a dropped case
  *   the stage that dropped it, why, and the passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
@@ -206,7 +208,7 @@ import {
   type ArmName,
   buildArm,
   InjectionRefused,
-  injectionFault,
+  injectionFaults,
 } from "./arms";
 import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
 import { main as buildMain } from "./build";
@@ -798,12 +800,28 @@ const Judgement = z.strictObject({
   reason: z.string(),
 });
 
+/** How the drop of a case whose block of its skill the arms cannot each rebuild begins. */
+const INJECTION_UNREBUILDABLE = "injection-unrebuildable";
+/** The kinds of such a block: arms.ts's `injectionFaults` (a `/skill:` prompt the user typed, a
+ *  block with arguments or in another form, a dispatch-first block away from where the plugin
+ *  puts it), and capture.ts's InjectionRefused (a subagent whose agent autoloads the skill and
+ *  whose messages hold no block of it). */
+const InjectionKind = z.enum([
+  "user-invoked",
+  "other-shape",
+  "plugin-block-misplaced",
+  "autoload-no-block",
+]);
+type InjectionKind = z.infer<typeof InjectionKind>;
+
 /** Everything the runner keeps of one case: why it was dropped, if it was, and the stage that
- *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model or the listing,
- *  else the stage whose capture needed a directory no read gives; absent when it was not dropped,
- *  and in a result written before the stage was recorded, `dropStage`); its judge controls; each
- *  stage it ran, `confirm` its latest confirm and `earlierConfirms` the finished ones before it,
- *  oldest first; and the peak resident memory at the end of its last stage. */
+ *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model, the listing or a
+ *  block its arms cannot rebuild, else the stage whose capture needed a directory no read gives
+ *  or found such a block; absent when it was not dropped, and in a result written before the
+ *  stage was recorded, `dropStage`); for an `injection-unrebuildable` drop, the kind of each fault
+ *  (`injectionKinds`); its judge controls; each stage it ran, `confirm` its latest confirm and
+ *  `earlierConfirms` the finished ones before it, oldest first; and the peak resident memory at
+ *  the end of its last stage. */
 export const CaseResult = z.strictObject({
   caseId: z.string().min(1),
   skill: z.string().min(1),
@@ -826,6 +844,7 @@ export const CaseResult = z.strictObject({
     control: StageResult.optional(),
   }),
   earlierConfirms: z.array(StageResult).optional(),
+  injectionKinds: z.array(InjectionKind).optional(),
   peakRssBytes: z.number().nullable(),
 });
 export type CaseResult = z.infer<typeof CaseResult>;
@@ -1120,21 +1139,35 @@ function confirmStages(result: CaseResult): StageResult[] {
 /** The texts of `stage` as score.ts's MadeConfirm holds them: the two digests in one string. */
 const textsOf = (stage: StageResult) => `${stage.texts.old} ${stage.texts.new}`;
 
+/** The drop at screen of case `c` for each block of its skill its arms cannot each rebuild
+ *  (arms.ts's `injectionFaults`), or undefined when it holds none: its reason names each fault's
+ *  kind, then each fault. */
+function injectionDrop(c: Case): { reason: string; kinds: InjectionKind[] } | undefined {
+  const faults = injectionFaults(c);
+  if (faults.length === 0) return undefined;
+  const kinds = [...new Set(faults.map((fault) => fault.kind))];
+  const texts = faults.map((fault) => fault.text).join("; ");
+  return { reason: `${INJECTION_UNREBUILDABLE}: ${kinds.join(", ")}: ${texts}`, kinds };
+}
+
 /** What score.ts reads of `b`'s cases beside their run records (CaseFacts): the drop of each case
  *  that has one, the drop its result records (`dropStage`), else its listing measure's
- *  (score.ts's `listingStanding`), at screen; and each case's confirms with the runner and texts
- *  of each. */
+ *  (score.ts's `listingStanding`), else its block its arms cannot rebuild (`injectionDrop`), at
+ *  screen; and each case's confirms with the runner and texts of each. */
 function caseFacts(b: Behaviour, results: ReadonlyMap<string, CaseResult>): Map<string, CaseFacts> {
   const facts = new Map<string, CaseFacts>();
   for (const c of b.cases) {
     const result = results.get(c.id);
     const listing = listingStanding(c.evidence);
+    const injection = injectionDrop(c);
     const drop =
       result !== undefined && result.dropped !== null
         ? { stage: dropStage(result), reason: result.dropped }
         : listing.state === "dropped"
           ? { stage: "screen" as const, reason: listing.reason }
-          : undefined;
+          : injection !== undefined
+            ? { stage: "screen" as const, reason: injection.reason }
+            : undefined;
     const confirms: MadeConfirm[] = (result === undefined ? [] : confirmStages(result)).map(
       (stage) => ({
         runner: stage.runner ?? null,
@@ -1498,15 +1531,21 @@ async function runStage(
     try {
       capture = await r.capture(c, arm);
     } catch (error) {
-      if (error instanceof InjectionRefused) throw new Refused(error.message);
-      if (!(error instanceof UnreadableDirectory)) throw error;
+      // An InjectionRefused with no kind is buildArm's, whose faults screen drops before any
+      // capture (`injectionDrop`): it fails the command as any other error.
+      const dropped =
+        error instanceof InjectionRefused && error.kind !== undefined
+          ? {
+              dropped: `${INJECTION_UNREBUILDABLE}: ${error.kind}: ${error.message}`,
+              injectionKinds: [error.kind],
+            }
+          : error instanceof UnreadableDirectory
+            ? { dropped: `${UNREADABLE_DIRECTORY}: ${error.message}` }
+            : undefined;
+      if (dropped === undefined) throw error;
       phases.captureMs[name] = performance.now() - started;
       countReads();
-      return {
-        ...current,
-        dropped: `${UNREADABLE_DIRECTORY}: ${error.message}`,
-        droppedAt: stage,
-      };
+      return { ...current, ...dropped, droppedAt: stage };
     }
     phases.captureMs[name] = performance.now() - started;
     if (capture.made) phases.contextMs += capture.record.timings.contextMs;
@@ -1634,6 +1673,12 @@ async function screenCommand(r: Runner): Promise<void> {
     const listing = listingStanding(c.evidence);
     if (listing.state === "dropped") {
       await finished({ ...result, dropped: listing.reason, droppedAt: "screen" }, phases);
+      continue;
+    }
+    const injection = injectionDrop(c);
+    if (injection !== undefined) {
+      const { reason: dropped, kinds: injectionKinds } = injection;
+      await finished({ ...result, dropped, droppedAt: "screen", injectionKinds }, phases);
       continue;
     }
     if (result.controls === null) {
@@ -2046,8 +2091,17 @@ function reportCommand(b: Behaviour): void {
   const notRun = b.cases.filter(
     (c) => !results.has(c.id) && byCase.get(c.id)?.drop === undefined
   ).length;
+  // Each case dropped for a block its arms cannot rebuild, with the kind of each of its faults.
+  const injected = b.cases.flatMap((c) =>
+    byCase.get(c.id)?.drop?.reason.startsWith(INJECTION_UNREBUILDABLE) === true
+      ? [results.get(c.id)?.injectionKinds ?? injectionDrop(c)?.kinds ?? []]
+      : []
+  );
+  const byKind = InjectionKind.options
+    .map((kind) => `${kind} ${injected.filter((kinds) => kinds.includes(kind)).length}`)
+    .join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind})), ${unscreened} unscreened, ${notRun} not run`
   );
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined
@@ -2233,17 +2287,6 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (report) {
     reportCommand(behaviour);
     return EXIT.ok;
-  }
-  // A case whose arms cannot each give the session their own text of a block of its skill would
-  // send the recorded text in every arm.
-  const unrebuilt = cases.flatMap((c) => {
-    const fault = injectionFault(c);
-    return fault === undefined ? [] : [`case ${c.id}: ${fault}`];
-  });
-  if (unrebuilt.length > 0) {
-    throw new Refused(
-      `${given.cases} is refused: ${unrebuilt.join("; ")}; each arm would send the recorded text`
-    );
   }
   if (command === "screen" && behaviour.readingModels !== undefined) {
     const refusal = servedScreeningRefusal(behaviour.readingModels.count);

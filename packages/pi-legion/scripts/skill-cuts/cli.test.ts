@@ -894,7 +894,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses), 1 unscreened, 1 not run"
+      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), 1 unscreened, 1 not run`
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -1284,7 +1284,7 @@ describe("behaviour", () => {
       "case c-unserved: dropped at screen: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      "; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses), "
+      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), `
     );
   }, 300_000);
 
@@ -1388,7 +1388,7 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(reported.code).toBe(0);
     expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
     expect(reported.stdout).toContain(
-      "; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses), "
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), `
     );
   }, 120_000);
 
@@ -1660,6 +1660,9 @@ const SENDS = "each run its own session id; a round's arms interleaved in one se
 /** A made-up drop of a case whose context needs a directory no read gives. */
 const UNREADABLE =
   "unreadable-directory: acme/skills at 0123456789abcdef: skills/beta cannot be read: GitHub cuts the tree of skills/beta short even one level at a time";
+/** The report's count of `injection-unrebuildable` drops, by kind, when there is none. */
+const NO_INJECTION =
+  "0 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0)";
 
 /** A finished stage of case `caseId`, made with the texts of `s` (and by `runner`, when given),
  *  each arm of `passes` passing that many of the stage's judged runs. */
@@ -1809,7 +1812,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
     );
     expect(lines).toContain(
-      "cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses), 0 unscreened, 0 not run"
+      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
@@ -1917,7 +1920,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at screen: ${misses}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
     expect(lines).toContain(
-      "cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses), 0 unscreened, 0 not run"
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(1, 6)}`
@@ -2078,12 +2081,22 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+});
 
+// The architect's rule (2026-11-22T07:48:46Z): a case whose block of its skill the arms cannot
+// each rebuild is dropped and counted under its kind, and the rest of the cases file runs; before,
+// the whole file was refused.
+describe("behaviour: a case whose block of its skill the arms cannot each rebuild", () => {
   // Catches: a case run with the recorded text of its skill in every arm because its messages
-  // hold a block of it the arms do not rebuild.
-  test("behaviour refuses a cases file with a case whose messages hold a block of its skill the arms cannot each rebuild (exit 2), naming the case, before any model call", async () => {
+  // hold a block of it the arms do not rebuild, and the whole file refused for one such case.
+  test("is dropped at screen before any model call, listed and counted by kind, and the rest of the file runs", async () => {
     const s = scenario("invoked-block", LOSS_SKILL(), [{ id: "c-invoked" }, { id: "c-plain" }]);
     const [invoked, plain] = s.cases;
+    recordCaptures({ ...s, cases: s.cases.filter((c) => c.id === "c-plain") }, [
+      "old",
+      "new",
+      "none",
+    ]);
     // A `/skill:alpha` prompt the user typed: a skill-prompt message in the user's form.
     const typed: SessionMessage = {
       role: "custom",
@@ -2110,15 +2123,125 @@ describe("refusals before any model call", () => {
     answer = behaviourStandIn;
     const from = recorder.requests.length;
     const ran = await cli(behaviour("screen", s));
-    expect(ran.code).toBe(2);
-    expect(ran.stderr).toContain(
-      `${s.casesFile} is refused: case c-invoked: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block`
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const fault =
+      "injection-unrebuildable: user-invoked: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block";
+    expect(ran.stdout).toContain(`case c-invoked: dropped: ${fault}`);
+    const requests = requestsSince(from);
+    expect(requests.filter((request) => request.body.includes("Case c-invoked"))).toEqual([]);
+    expect(requests.length).toBeGreaterThan(0);
+    const dropped = result(s.out, "c-invoked");
+    expect([dropped.droppedAt, dropped.injectionKinds, dropped.controls, dropped.stages]).toEqual([
+      "screen",
+      ["user-invoked"],
+      null,
+      {},
+    ]);
+    expect(dropped.dropped).toStartWith(fault);
+    expect(result(s.out, "c-plain").stages.screen?.state).toBe("counted");
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    expect(lines.find((line) => line.startsWith("case c-invoked: "))).toStartWith(
+      `case c-invoked: dropped at screen: ${fault}`
     );
-    expect(ran.stderr).not.toContain("c-plain");
-    expect(requestsSince(from)).toHaveLength(0);
-    expect(existsSync(caseResultFile(s.out, "c-invoked"))).toBe(false);
-    expect(existsSync(caseResultFile(s.out, "c-plain"))).toBe(false);
-  }, 60_000);
+    expect(reported.stdout).toContain(
+      "; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0)), "
+    );
+    // The other stages read the file too, and refuse it no more.
+    const confirm = await cli(behaviour("confirm", s));
+    expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
+  });
+
+  test("a case whose capture finds its subagent's agent autoloads the skill and its messages hold no block of it is dropped as autoload-no-block, and the rest of the file runs", async () => {
+    const s = scenario("autoload-block", LOSS_SKILL(), [{ id: "c-autoload" }, { id: "c-plain" }]);
+    const [autoload, plain] = s.cases;
+    recordCaptures({ ...s, cases: s.cases.filter((c) => c.id === "c-plain") }, [
+      "old",
+      "new",
+      "none",
+    ]);
+    const commit = "0123456789abcdef";
+    const agents = {
+      repo: "acme/legion",
+      commit,
+      path: "packages/agents-pack",
+      name: "agents-pack",
+    };
+    writeFileSync(
+      s.casesFile,
+      [
+        {
+          ...autoload,
+          context: "subagent:alpha-reviewer",
+          profile: { ...autoload?.profile, plugins: [agents] },
+        },
+        plain,
+      ]
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    // The repositories the context reads: the made-up skills, and a plugin whose agent
+    // alpha-reviewer autoloads alpha.
+    const repos = path.join(s.dir, "repos");
+    writeSkill(path.join(repos, "acme", "skills", commit), {
+      "skills/alpha/SKILL.md": f1File(2),
+      "skills/beta/SKILL.md": "---\nname: beta\ndescription: Use for the beta greeting.\n---\n",
+    });
+    writeSkill(path.join(repos, "acme", "legion", commit), {
+      "packages/agents-pack/agents/reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha]\n---\n\nReview.\n",
+    });
+    // An Oh My Pi that answers --version: the context is built before it runs any capture.
+    const omp = path.join(s.dir, "omp");
+    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+    const models = path.join(s.dir, "models.yml");
+    writeFileSync(models, "providers: {}\n");
+    // The session's head saved already, so no store is read.
+    const hash = pathHash("/sessions/c-autoload.jsonl");
+    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
+    writeFileSync(
+      path.join(s.out, "sessions", `store_a-${hash}.json`),
+      JSON.stringify({
+        store: "store_a",
+        pathHash: hash,
+        held: false,
+        cwd: null,
+        start: null,
+        firstUser: null,
+        reminders: [],
+        bytes: 0,
+        badLines: 0,
+        readAt: "2026-11-22T00:00:00.000Z",
+      })
+    );
+    answer = behaviourStandIn;
+    const ran = await cli(
+      behaviour(
+        "screen",
+        s,
+        ...["--models", models, "--omp", omp, "--repos", repos],
+        ...["--cache-dir", path.join(s.dir, "cache")]
+      )
+    );
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const fault = `injection-unrebuildable: autoload-no-block: case c-autoload: its agent alpha-reviewer (packages/agents-pack/agents/reviewer.md of acme/legion at ${commit}) autoloads alpha, and its messages hold no autoloaded block of it`;
+    const dropped = result(s.out, "c-autoload");
+    expect(dropped.dropped).toStartWith(fault);
+    expect([dropped.droppedAt, dropped.injectionKinds, dropped.controls?.hold]).toEqual([
+      "screen",
+      ["autoload-no-block"],
+      true,
+    ]);
+    expect(result(s.out, "c-plain").stages.screen?.state).toBe("counted");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout).toContain(`case c-autoload: dropped at screen: ${fault}`);
+    expect(reported.stdout).toContain(
+      "; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1)), "
+    );
+  });
 });
 
 /** The run records of `informative` cases screened as informative (old and new pass each run,
