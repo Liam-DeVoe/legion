@@ -852,27 +852,29 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 	}
 
 	t.Run("after the check", func(t *testing.T) {
-		readAt := idleNow.Add(-time.Minute)
+		// turnStart is the newest turn start of the pass that queued the check.
+		turnStart := idleNow.Add(-time.Minute)
 		// The check found nothing: its own queued row and the decline it replaces hold nothing.
 		v := leftChild()
 		v.WorkspaceCheckQueued, v.Declined = true, standing
-		v.Claims[0].LastTurnStart = readAt.Add(-time.Second)
-		if got := LeftPodCloseAfterCheck(v, readAt); !got.Close || !slices.Equal(got.Roles, []claim.Role{claim.RoleImplementer}) {
+		v.Claims[0].LastTurnStart = turnStart
+		if got := LeftPodCloseAfterCheck(v, turnStart); !got.Close || !slices.Equal(got.Roles, []claim.Role{claim.RoleImplementer}) {
 			t.Fatalf("decision after a clean read = %+v, want the close of the implementer", got)
 		}
-		// A turn that started after the read began, of a claim that is no longer live as much as
-		// of a live one, is one the read may not have seen: the next pass reads again.
+		// A turn that started after the pass, of a claim that is no longer live as much as of a
+		// live one, is one the read may not have seen, even where it began before the read and
+		// ended while it ran: the next pass reads again.
 		for i := range v.Claims {
 			turned := v
 			turned.Claims = slices.Clone(v.Claims)
-			turned.Claims[i].LastTurnStart = readAt.Add(time.Second)
-			if got := LeftPodCloseAfterCheck(turned, readAt); got.Close || got.Hold != IdleHoldNotIdle {
+			turned.Claims[i].LastTurnStart = turnStart.Add(time.Second)
+			if got := LeftPodCloseAfterCheck(turned, turnStart); got.Close || got.Hold != IdleHoldNotIdle {
 				t.Fatalf("decision after a clean read with the %s's turn since = %+v, want %s", turned.Claims[i].Role, got, IdleHoldNotIdle)
 			}
 		}
 		// A role in a turn now holds the close for the next pass's read.
 		v.Claims[0].State = supervise.StateWorking
-		if got := LeftPodCloseAfterCheck(v, readAt); got.Close || got.Hold != IdleHoldInTurn {
+		if got := LeftPodCloseAfterCheck(v, turnStart); got.Close || got.Hold != IdleHoldInTurn {
 			t.Fatalf("decision after a clean read with a turn running = %+v, want %s", got, IdleHoldInTurn)
 		}
 	})

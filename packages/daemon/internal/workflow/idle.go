@@ -467,19 +467,21 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 
 // LeftPodCloseAfterCheck decides, once the close's workspace check has read the workspace and found
 // nothing that origin does not hold, whether the close still stops the pod's roles and suspends its
-// Sandbox (internal/daemon's checkLeftPodWorkspace). readAt is the moment the read began. It reads
-// every conjunct of LeftPodClose but three: the check is the one queued, the quiet period was read
-// when the check was queued, and the read it made is newer than any decline on record. A claim of
-// the issue that started a turn after readAt may have made work the read did not see, whether that
-// turn still runs or has ended since, so the close waits for the next pass and its next read
+// Sandbox (internal/daemon's checkLeftPodWorkspace). turnStart is the newest turn start of the
+// issue's claims in the view the pass queued the check from (record.IssueWorkspaceCheck.TurnStart).
+// It reads every conjunct of LeftPodClose but three: the check is the one queued, the quiet period
+// was read when the check was queued, and the read it made is newer than any decline on record. A
+// claim of the issue that started a turn after turnStart may have made work the read did not see:
+// a turn that starts before the read and ends while it runs commits after the read's snapshot, and
+// the read's own moment does not show it. So the close waits for the next pass and its next read
 // (IdleHoldNotIdle), as a release's role stop is cancelled by a turn after its mark.
-func LeftPodCloseAfterCheck(view pods.IdleView, readAt time.Time) IdleDecision {
+func LeftPodCloseAfterCheck(view pods.IdleView, turnStart time.Time) IdleDecision {
 	decision := leftPodStops(view)
 	if !decision.Close {
 		return decision
 	}
 	for _, c := range view.Claims {
-		if c.LastTurnStart.After(readAt) {
+		if c.LastTurnStart.After(turnStart) {
 			return IdleDecision{Hold: IdleHoldNotIdle}
 		}
 	}
@@ -622,10 +624,13 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //     (IdleHoldUnownedNotIdle);
 //
 //   - no decline of the issue's idle release says the disk of this pod holds work that no branch
-//     or tag on origin holds (pods.IdleDecline.HoldsUnpushedWork): a check found such work, no
-//     start row has followed it and the pod is the one that check read. A role whose claims all
-//     stopped after such a decline — relaunches that ran out, say — left that work on this disk,
-//     and the release would delete it (IdleHoldUnownedUnpushedWork);
+//     or tag on origin holds (pods.IdleDecline.HoldsUnpushedWork): the last read that could read
+//     the workspace found such work, and the pod is the one that read was made in. A failed read
+//     after it keeps that work. Where the decline and the runtime both name the pod, only another
+//     pod ends it, and a start row into the same pod does not; only where either uid is unknown
+//     does a start row after the decline end it. A role whose claims all stopped after such a
+//     decline — relaunches that ran out, say — left that work on this disk, and the release would
+//     delete it (IdleHoldUnownedUnpushedWork);
 //
 //   - the daemon's project is not paused (pods.IdleView.Paused). The release's own transaction
 //     marks no release while the project is paused (store.Store.ReleaseIdleIssue, decision 12 of

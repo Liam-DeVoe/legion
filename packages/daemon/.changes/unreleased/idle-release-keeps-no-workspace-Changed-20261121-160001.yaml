@@ -19,8 +19,8 @@ body: |-
   against every remote branch and tag, so the heads of branches the remote deleted after their
   merge and `main`'s newer commits no longer read as unpushed, and the daemon takes a read's answer
   only where its commit ids are 40 hexadecimal digits. A turn after a release's mark now cancels the
-  release at its workspace check, a role stop or the teardown, and a decline is stamped with the
-  moment its read began. Before, every idle pass marked the release again, asked the
+  release at its workspace check, a role stop or the teardown, a turn after the pass that queued a
+  left pod's check holds that pod's close, and a decline is stamped with the moment its read began. Before, every idle pass marked the release again, asked the
   shim and cancelled on the same refusal (`bundle_save_failed`, "the workspace's unpushed work is N
   bytes"). The release records write `bundleBytes` 0, and the wake task of a release says what the
   release keeps and that a side head is not kept, in the same words as the plugin's

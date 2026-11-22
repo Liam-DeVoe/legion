@@ -3325,8 +3325,10 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 // work declines the release, and so does a read that fails, since it cannot show that the
 // workspace holds nothing (declineRelease). The daemon pushes nothing on a role's behalf.
 //
-// A check of a release that is over does nothing, and one that finds the project paused cancels
-// the release as before (store.IssueReleaseCheck).
+// A check of a release that is over does nothing. One that finds the project paused cancels the
+// release as before, and so does one that finds the pod given work since the release's mark — a
+// wake, a start, a claim in a turn or a turn after the mark's newest — before any read
+// (store.IssueReleaseCheck, ReleaseCausePaused and ReleaseCauseOvertaken).
 func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	if r.supervisor == nil {
 		return errors.New("issue workspace check executor has no claim supervisor")
@@ -3348,9 +3350,11 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 			"row", row.ID, "issue", row.Issue)
 		return nil
 	case store.ReleaseCancel:
-		// The project is paused: the pause deletes no pod, so the release is cancelled before
-		// any role stops, whatever reached its roles first (decision 12 and departure 4 of
-		// dispatch://INFRA-3759).
+		// The project is paused (ReleaseCausePaused): the pause deletes no pod, so the release
+		// is cancelled before any role stops, whatever reached its roles first (decision 12 and
+		// departure 4 of dispatch://INFRA-3759). Or the pod was given work since the mark
+		// (ReleaseCauseOvertaken): a read beside that work could miss what it makes, so the
+		// release is cancelled before the read, and the pass decides the pod again.
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
@@ -3390,9 +3394,10 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role clai
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through is
 // told once, and the rule holds the pod while the decline stands. A read that finds nothing queues
 // the close's stops and the issue's Sandbox suspension (leftPodStopRows) in one transaction with a
-// view read again (workflow.LeftPodCloseAfterCheck), so a role that started a turn after the read
-// began, or is in one or was given work now, is not stopped; the next pass decides that pod again.
-// A clean read also forgets the decline on record, whose work it found gone.
+// view read again (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass
+// that queued the check (payload.TurnStart) — one that ended while the read ran too — or that is in
+// one or was given work now, is not stopped; the next pass decides that pod again. A clean read
+// also forgets the decline on record, whose work it found gone.
 func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
@@ -3414,7 +3419,7 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 		return err
 	}
 	now := r.now().UTC()
-	closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, readAt))
+	closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart))
 	if err != nil {
 		return err
 	}

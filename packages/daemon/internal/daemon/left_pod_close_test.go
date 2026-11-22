@@ -419,6 +419,70 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	}
 }
 
+// A close's check reads the workspace on the lifecycle lane while other lanes run, so a role can be
+// given work after the pass queued the check: a message starts a turn before the read begins, the
+// read snapshots while the turn runs, and the turn commits after that snapshot and ends before the
+// check decides. That turn started before the read, so the read's moment does not show it; the
+// pass's own newest turn start, carried in the check (record.IssueWorkspaceCheck.TurnStart, as
+// issue_releases.turn_start is a release's), does. The close stops no role and suspends no Sandbox
+// after a turn that started since the pass, and the next pass reads the workspace again.
+//
+// The control runs the same check with no turn since the pass, and the close stops the planner.
+func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
+	check := func(t *testing.T, turn bool) *idleRig {
+		t.Helper()
+		rig := newLeftPodRig(t, false)
+		parkChild(t, rig)
+		rig.drain(t)
+		leftPodGone(rig)
+		resumeAsOperator(t, rig)
+		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+			t.Fatalf("the passes queued %v, want the close's workspace check alone", queued)
+		}
+		readAt := time.Now().UTC().Truncate(time.Microsecond)
+		rig.runner.now = func() time.Time { return readAt }
+		rig.sup.deps.Runtime = &readClockRuntime{releaseRuntime: rig.rt, reading: func() {
+			if !turn {
+				return
+			}
+			// The turn started a second before the read began, after the pass, and it has
+			// ended: the claim stands idle again by the time the check decides.
+			if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = $2 where issue = $1`,
+				rig.issue.Key, readAt.Add(-time.Second)); err != nil {
+				t.Errorf("record the turn: %v", err)
+			}
+		}}
+		rig.drain(t)
+		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+			t.Fatalf("the workspace was read through %v, want one read through the planner", read)
+		}
+		if rig.declined(t) {
+			t.Fatal("the clean read recorded a decline")
+		}
+		return rig
+	}
+
+	t.Run("a_turn_that_ended_during_the_read", func(t *testing.T) {
+		rig := check(t, true)
+		if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+			t.Fatalf("the planner = %s by %s, want it live: a turn that started after the pass may have made work the read did not see",
+				got.State, got.SuspendedBy)
+		}
+		for _, left := range rig.rows(t) {
+			if left == "issue_suspend" || left == "supervise:suspend" {
+				t.Fatalf("rows after the check = %v, want no stop and no Sandbox suspension queued", rig.rows(t))
+			}
+		}
+	})
+
+	t.Run("control:_no_turn_since_the_pass", func(t *testing.T) {
+		rig := check(t, false)
+		if rows := rig.rows(t); !slices.Contains(rows, "supervise:suspend") || !slices.Contains(rows, "issue_suspend") {
+			t.Fatalf("rows after the check = %v, want the close's stop and its Sandbox suspension queued after a clean read with no turn since the pass", rows)
+		}
+	})
+}
+
 // A left pod with no live claim runs no role to read its disk through, so the decline on record is
 // the one word the daemon has of that disk. A planner whose relaunches ran out after a check found
 // one commit origin does not hold left that commit on the disk of the pod the check read, and the

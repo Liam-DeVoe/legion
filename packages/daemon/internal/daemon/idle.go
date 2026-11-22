@@ -636,8 +636,14 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
 		told = open
 	}
+	var turnStart time.Time
+	for _, c := range view.Claims {
+		if c.LastTurnStart.After(turnStart) {
+			turnStart = c.LastTurnStart
+		}
+	}
 	row, err := record.NewOutboxRow(view.Issue, record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, Role: told, CloseRoles: decision.Roles}, now)
+		TreeGeneration: view.Root.Generation, Role: told, CloseRoles: decision.Roles, TurnStart: turnStart}, now)
 	if err != nil {
 		return store.IdleReleaseMark{}, fmt.Errorf("encode the workspace check of %s's close: %w", view.Issue, err)
 	}
@@ -645,14 +651,15 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 		Rows: []store.IdleReleaseRow{{Kind: string(row.Kind), Payload: row.Payload}}}, nil
 }
 
-// leftPodStopsAfterCheck is the decision the close's workspace check makes once its read, begun at
-// readAt, found nothing that origin does not hold (checkLeftPodWorkspace): the close's stops and
-// suspension (leftPodStopRows) over a view read again in the store's transaction, where the close
-// still stands there and no claim started a turn after readAt (workflow.LeftPodCloseAfterCheck),
-// and no rows where it does not.
-func leftPodStopsAfterCheck(now, readAt time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
+// leftPodStopsAfterCheck is the decision the close's workspace check makes once its read found
+// nothing that origin does not hold (checkLeftPodWorkspace): the close's stops and suspension
+// (leftPodStopRows) over a view read again in the store's transaction, where the close still
+// stands there and no claim started a turn after turnStart, the newest turn start of the pass that
+// queued the check (record.IssueWorkspaceCheck.TurnStart, workflow.LeftPodCloseAfterCheck), and no
+// rows where it does not.
+func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
 	return func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decision := workflow.LeftPodCloseAfterCheck(view, readAt)
+		decision := workflow.LeftPodCloseAfterCheck(view, turnStart)
 		if !decision.Close {
 			return store.IdleReleaseMark{}, nil
 		}

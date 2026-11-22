@@ -7164,7 +7164,7 @@ A role that takes over, such as the next phase's worker, is told once.
 A read that fails keeps the work the read before it found, and the role it told.
 A whole turn that starts after the release's mark cancels the release at its workspace check, at a role stop or at the teardown:
 the mark records the newest turn of the pod's claims (`issue_releases.turn_start`), and a later one is the pod given work since.
-The close of a left pod likewise stops no role after a clean read where a claim started a turn after that read began.
+The close of a left pod likewise stops no role after a clean read where a claim started a turn after the pass that queued its check: the check carries that pass's newest turn start, so a turn that began before the read and ended while it ran holds the close too.
 Before this release, the daemon saved the workspace's unpushed work as a git bundle in its database and restored it into the next pod;
 nothing reads or writes such a bundle now ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
 On an ephemeral disk nothing else is kept:

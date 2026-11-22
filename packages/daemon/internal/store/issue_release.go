@@ -307,9 +307,10 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 
 // IssueReleaseCheck decides what the release's check of the workspace may do: it acts for a row
 // the release's mark holds, and is ReleaseOver for every other, which is a check of a release that
-// is over. The check reads no boundary — it stops nothing, so there is nothing yet to cancel — but
-// a check of a finished release must not decline, record a decline or tell a role anything about a
-// release that is not the live one.
+// is over. The check reads no boundary, since it stops nothing, but a check of a finished release
+// must not decline, record a decline or tell a role anything about a release that is not the live
+// one. It cancels the release for two causes only: the project's pause (ReleaseCausePaused) and
+// the pod given work since the mark (ReleaseCauseOvertaken), each named below.
 //
 // A check that finds the project paused cancels the release (ReleaseCausePaused): the pause
 // deletes no pod, so a release whose check had not run when the pause began is cancelled and keeps

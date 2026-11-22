@@ -1304,12 +1304,19 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // same way, and on a read that finds nothing origin does not hold it queues the close's stops and
 // the Sandbox suspension itself (internal/daemon's checkLeftPodWorkspace). A row with no
 // CloseRoles is a release's, and its JSON is the one an earlier release wrote.
+//
+// TurnStart, on a close's row, is the newest turn start of the issue's claims in the view the pass
+// queued the close from (pods.IdleClaim.LastTurnStart), zero where none had had a turn: the close
+// stops no role after a turn that started since (workflow.LeftPodCloseAfterCheck), as a release's
+// mark holds the same moment for its own stops (issue_releases.turn_start). A release's row leaves
+// it zero, since its mark holds it.
 type IssueWorkspaceCheck struct {
 	Tree           string       `json:"tree"`
 	Generation     uint64       `json:"generation"`
 	TreeGeneration uint64       `json:"treeGeneration"`
 	Role           claim.Role   `json:"role"`
 	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
+	TurnStart      time.Time    `json:"turnStart,omitzero"`
 }
 
 func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
