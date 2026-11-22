@@ -164,12 +164,13 @@ func (s source) seed() (string, error) {
 // made while the connection is cut fails at once, where nats.go's default would hold it and send
 // it on the new connection. Each daemon connection creates or updates consumers of the daemon's
 // family, and a create that a guard passed before a cut must not reach the server after a hold's
-// release on its own, unchecked. An acknowledgement made while cut fails too and is logged at
-// error (intake's "ack intake message"); its message is delivered again after its ack wait, which
-// the daemon applies once. A cut is an outage, a hold, or, on the service token's connection
-// (ConnectService), each move to a later token, which reconnects once per token, ten minutes
-// before it lapses (natscred.ServiceRenewBefore); the auth service takes no token that lives more
-// than about an hour. No alert reads that line.
+// release on its own, unchecked. An acknowledgement, a nak or a term made while cut fails too and
+// is logged at error (intake's "ack intake message", its "nak …" lines and "term poison JetStream
+// message"); its message is delivered again after its ack wait, an acknowledged one applied once.
+// A cut is an outage, a hold, or, on the service token's connection (ConnectService), each move to
+// a later token, which reconnects once per token, ten minutes before it lapses
+// (natscred.ServiceRenewBefore); the auth service takes no token that lives more than about an
+// hour. No alert reads those lines.
 //
 // name is what the connection calls itself to the server, and it is a parameter rather than an
 // option because an option can be forgotten and an unnamed connection is one nobody can place:

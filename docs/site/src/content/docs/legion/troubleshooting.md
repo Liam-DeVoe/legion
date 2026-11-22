@@ -1919,15 +1919,19 @@ notice comes once per handoff commit, from whichever read finds it first.
   (`DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64`); `GITHUB_UNREADABLE` is Dispatch's read of
   GitHub failing; `this Dispatch does not answer the webhook App check` is a Dispatch older than
   the check: upgrade it. None of these leaves the repository out or stops the daemon.
-- **`ack intake message`** (an error line with `subject`, `stream_seq`, `delivery_seq` and `error`,
-  often `nats: outbound buffer limit exceeded`). The daemon acknowledged a message while its NATS
-  connection was cut, and its connections keep no reconnect buffer, so the acknowledgement failed
-  at once rather than being sent after the reconnect. The message is delivered again after its ack
-  wait and applied once. A cut is an outage, a hold, or, for a daemon that connects with its
-  service token (`nats_daemon_service_token_file`), each move to a later token: that connection
-  reconnects once per token, ten minutes before it lapses, so such a line can come about once an
-  hour there, when an acknowledgement falls in that reconnect. Nothing to do; no alert reads the
-  line.
+- **`ack intake message`**, **`nak intake processing failure`** (or another `nak …` line: `nak the
+  pull request read`, `nak the repository preparation`, `nak the review's issue preparation`, `nak
+  the review body restore`, `nak the reviewer's permission read`) and **`term poison JetStream
+  message`** (each an error line with `subject`, `stream_seq`, `delivery_seq` and `error`, often
+  `nats: outbound buffer limit exceeded`). The daemon acknowledged, delayed or ended a message while
+  its NATS connection was cut, and its connections keep no reconnect buffer, so the reply failed at
+  once rather than being sent after the reconnect. Each message is delivered again after its ack
+  wait: an acknowledged one is then applied once, a delayed one is retried with no delay of its own,
+  and an ended poison message is ended again. A cut is an outage, a hold, or, for a daemon that
+  connects with its service token (`nats_daemon_service_token_file`), each move to a later token:
+  that connection reconnects once per token, ten minutes before it lapses, so such a line can come
+  about once an hour there, when a reply falls in that reconnect. Nothing to do; no alert reads
+  these lines.
 - **`intake: a missing durable consumer is created at the last message it applied`** (an info line
   with `consumer` and `start`), on the fixed names, the default. One of the daemon's durable
   consumers was gone when the daemon opened it, at boot or when the project's repositories changed
