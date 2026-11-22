@@ -1,4 +1,4 @@
-// Package supervise is process supervision: one state machine per role claim, and the only place
+// Package supervise is process supervision: one state machine per claim, and the only place
 // the runtime's process facts, the worker stream's agent facts, the machine's own timers, and the
 // API's requests meet.
 //
@@ -152,7 +152,8 @@ const (
 	SessionLossClaudeNoFile SessionLoss = "claude-no-file"
 )
 
-// Claim is one role claim as the supervisor holds and persists it.
+// Claim is one claim, one agent of an issue under its token whatever role its step is on now, as
+// the supervisor holds and persists it.
 type Claim struct {
 	Token      claim.Token
 	Project    string
@@ -630,7 +631,7 @@ type StepRecord struct {
 }
 
 // The two kinds of round Claim.UpdateRound spells, each with what identifies it: a pod's, which
-// every role claim of one issue shares, and one claim's own plugin round. They are here, beside
+// every claim of one issue shares, and one claim's own plugin round. They are here, beside
 // the field, because a round is matched in this package and written in internal/daemon's sweep
 // (openPodUpdate), which recognises the rounds it must carry by them.
 //
@@ -1010,7 +1011,7 @@ type Deps struct {
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
 	// the pod, bring the same plugin back and charge the claim toward failed, and a failed claim
 	// cannot push its work. Such a claim is left running, and the update round over its pod is
-	// what carries it: its role is asked the steps of UpdateTask like any other, on its own Envoy
+	// what carries it: it is asked the steps of UpdateTask like any other claim, on its own Envoy
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
@@ -1864,7 +1865,7 @@ type UpdateAskOutcome int
 const (
 	// UpdateAskDelivered is a publish that reached a session: the claim is marked asked.
 	UpdateAskDelivered UpdateAskOutcome = iota + 1
-	// UpdateAskUndelivered is a publish no live session took, the role's topic having no holder
+	// UpdateAskUndelivered is a publish no live session took, the claim's topic having no holder
 	// (notify.ErrNoHolder): nothing is marked, so the sweep asks the claim again.
 	UpdateAskUndelivered
 	// UpdateAskAlreadyDelivered is an ask of a round an earlier ask of which reached a session:
