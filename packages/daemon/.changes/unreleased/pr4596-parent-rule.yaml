@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The daemon's own status writes follow Dispatch's parent rule. It writes a status through
+  Dispatch's status-change route with a request key, at the Dispatch sequence it read, and only
+  once its record has read Dispatch's events up to that sequence. A close of an issue waits until
+  each child of it is `done` in Dispatch, and a merged issue with a child that is not `done` waits
+  in `merging`, its architect told once by `pr-merged`. A refused close changes nothing and is
+  written again once the children are done. A `403 LEGION_STATUS_SCOPE_REQUIRED` keeps the write
+  queued, logs the code and the issue, and tells the controller once per daemon run in a
+  `status-scope` notice that a person must give the daemon a token that holds the scope. A
+  session's status write on a labelled issue is judged by the architect claim the Dispatch chain
+  names, as that claim stood when the write was written, and one on an unknown chain is held
+  until the chain is known.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596
