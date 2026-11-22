@@ -8,10 +8,13 @@
 # judge it by its RESULT and FAIL lines and its closing VERDICT line, never by the Job's phase.
 # The container exits 0 once it has printed that verdict, FAIL lines or not, so a failed check
 # never runs the hour-long measurement again; only a pod that ends before its verdict (a lost
-# machine, an eviction, a failed clone) is retried. Fill the six ${…} variables (and only those, so
-# the script's own $HOME and $COMMIT are left for the shell), then:
-#   export COMMIT=<pushed sha> MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title>
-#   python3 -c 'import os, re, sys; sys.stdout.write(re.sub(r"\$\{(COMMIT|MODE|SCALE|TEN_TIMES|OMP_SESSION|OMP_SESSION_TITLE)\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
+# machine, an eviction, a failed clone) is retried. Fill the seven ${…} variables (and only those,
+# so the script's own $HOME and $COMMIT are left for the shell). LABEL_DOMAIN is the build farm's
+# label domain, the deployment's own, under which its policy reads a Job's session, cost, branch
+# and head; this public file names no domain, so the render refuses when it is unset, as it
+# refuses any of the seven unset:
+#   export COMMIT=<pushed sha> MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
+#   python3 -c 'import os, re, sys; names = ("COMMIT", "MODE", "SCALE", "TEN_TIMES", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("job.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < job.yaml > "$TMPDIR/job.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/job.yaml" && kubectl -n builds create -f "$TMPDIR/job.yaml"
 apiVersion: batch/v1
@@ -21,13 +24,13 @@ metadata:
   namespace: builds
   labels:
     owner: legion-infra-2916-implementer
-    theorem.dev/omp-session: &omp-session "${OMP_SESSION}"
+    ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
-    theorem.dev/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
+    ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
     # About an hour on a dozen CPUs of a Spot build machine.
-    theorem.dev/cost-usd: "2.00"
-    theorem.dev/branch: "legion/INFRA-2916"
-    theorem.dev/head: "${COMMIT}"
+    ${LABEL_DOMAIN}/cost-usd: "2.00"
+    ${LABEL_DOMAIN}/branch: "legion/INFRA-2916"
+    ${LABEL_DOMAIN}/head: "${COMMIT}"
 spec:
   # A pod that ends before its verdict runs the measurement again from the start: it keeps nothing
   # between pods. The Job's deadline counts across every pod and ends the Job whatever
@@ -39,10 +42,10 @@ spec:
   template:
     metadata:
       labels:
-        theorem.dev/kind: legion-evalbench
-        theorem.dev/omp-session: *omp-session
+        ${LABEL_DOMAIN}/kind: legion-evalbench
+        ${LABEL_DOMAIN}/omp-session: *omp-session
       annotations:
-        theorem.dev/omp-session-title: *omp-session-title
+        ${LABEL_DOMAIN}/omp-session-title: *omp-session-title
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
