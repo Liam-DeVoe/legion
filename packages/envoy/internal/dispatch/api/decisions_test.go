@@ -315,9 +315,10 @@ const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}
 // first indexing: the document's first version, written while it has no block rows, and the
 // backfill over a document no block-aware build indexed. The spec's decisions shape its
 // requirements in the version that writes them all, so no requirement's text changed after a
-// tie, and a later version that leaves every requirement and decision alone is one more version
-// the backfill walks. Each link is judged on the change the index recorded for its requirement,
-// so it holds text_changed_at, and reads stale false.
+// tie and no decision's words did, and a later version that leaves every requirement and
+// decision alone is one more version the backfill walks. Each link is judged on the change the
+// index recorded for its requirement, so it holds text_changed_at, and reads changed_since_tie
+// false and stale false.
 func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -344,8 +345,8 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 				t.Fatalf("%s the decision %s answers the links %v, want %v", when, block, targets, ties[block])
 			}
 			for _, link := range entry.Shaped {
-				if link.TextChangedAt == nil || link.Stale {
-					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded and stale false",
+				if link.TextChangedAt == nil || link.ChangedSinceTie || link.Stale {
+					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded, changed_since_tie false and stale false",
 						when, link.To.ID, block, entryJSON(t, link))
 				}
 			}

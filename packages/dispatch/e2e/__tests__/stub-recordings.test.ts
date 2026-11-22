@@ -406,6 +406,7 @@ describe("every committed recording answers the display tree of every stored tex
       "InboxRow.question",
       "IssueAskRow.question",
       "IssueOpenAsk.question",
+      "IssueTreeNode.text",
       "MessageReplyResult.body",
       "MessageWithTrees.body",
       "MyAnswerReply.body",

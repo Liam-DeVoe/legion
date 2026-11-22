@@ -364,14 +364,22 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
 // re-recorded rather than raised.
 //
+// It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
+// `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
+// node's cause: the statement reads the same event id, only through events' primary key, so it
+// moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
+// text of LatestEventID the statements give the digest recorded before. Rule 2's digest was
+// re-recorded for the same reason: with the old text its statements give the one it recorded
+// before.
+//
 // Rule 2's statements are this branch's: a pass records the rule and the version it stated a
 // document by (stated_rule, stated_version), and the backfill and the tick mark a document no
 // pass of their rule has stated at its version (refs.UnstatedBlockIndexSQL) beside rule 1's test
 // of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already
 // standing. Rule 1's entry is the sibling branch's, as it records it.
 var markingStatementDigests = map[int]string{
-	1: "e87bbdc7816050c1285eacf35c762de95b3fd58b6b8b93e0b427208609e988d1",
-	2: "cf4b494e2b300ae9d600b724102aa03bc2c60a3cd5c48956aa30377d93e1bb9c",
+	1: "646218ee6bbd08e2be3542bf8d02a30c9d934a0191338816fcbb043054ee3c2e",
+	2: "73cde9ca52ffda818093f87269ec683b479ae7d22fabe8bd2e0311cf2331a953",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

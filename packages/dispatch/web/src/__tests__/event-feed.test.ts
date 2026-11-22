@@ -1075,23 +1075,7 @@ const rules: Record<string, Rule> = {
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
   },
-  "the first upload of an issue's decisions document refreshes the issue's decisions": {
-    event: event("artifact.created", {
-      artifact: { id: "artifact-4", name: "decisions.md", role: "decisions", slug: "decisions-md" },
-    }),
-    refreshes: ["decisions", "summary", "detail"],
-    spares: ["projects", "inbox", "docSummary"],
-  },
-  // A server built before document roles sends the decisions document with no role, and names it
-  // by its slug alone.
-  "the first upload of a decisions document with no role refreshes the issue's decisions": {
-    event: event("artifact.created", {
-      artifact: { id: "artifact-4", name: "decisions.md", slug: "decisions-md" },
-    }),
-    refreshes: ["decisions", "summary", "detail"],
-    spares: ["projects", "inbox", "docSummary"],
-  },
-  "the upload of another document of the issue leaves the issue's decisions alone": {
+  "the upload of a document of the issue leaves the issue's decisions alone": {
     event: event("artifact.created", {
       artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },
     }),
