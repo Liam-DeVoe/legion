@@ -144,9 +144,14 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
-	// the approval request the version moves, from changing under this transaction.
+	// the approval request the version moves, from changing under this transaction. A retired
+	// document, which takes no new text, read beside that lock, is refused (retiredWriteRefusal):
+	// its history is not replaced and no version is written.
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
+		return RebuildReport{}, VersionResult{}, err
+	}
+	if err := retiredWriteRefusal(artifactID, owner); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	latest, err := latestVersion(ctx, tx, artifactID)

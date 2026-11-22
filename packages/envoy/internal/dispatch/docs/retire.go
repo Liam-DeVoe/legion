@@ -27,15 +27,18 @@ type Retirement struct {
 }
 
 // ErrDocumentRetired refuses what a retired document no longer takes: a second retirement of it
-// (it is retired once, with one document.retired event), and a live write into it, which its
-// owner's lock reads it retired under (joinLiveWrite, RetiredDocumentError).
+// (it is retired once, with one document.retired event), and a live write into it, a version of it
+// or a rebuild of it, which its owner's lock reads it retired under (retiredWriteRefusal,
+// RetiredDocumentError).
 var ErrDocumentRetired = errors.New("docs: the document is retired already")
 
-// RetiredDocumentError is a live write refused because its document is retired (joinLiveWrite):
-// the document's id, name and slug, and the issue it belongs to (nil for a project document), read
-// off the owner the write locked. api answers it as it answers a write it refuses itself: 409
-// DOCUMENT_RETIRED naming the document, or 409 DECISIONS_ARE_NODES for an issue's decisions
-// document (retiredDocumentRefusal). It is ErrDocumentRetired.
+// RetiredDocumentError is a write refused because its document is retired: a live write
+// (joinLiveWrite), a version (NamedVersion, SnapshotVersion) or a rebuild (RebuildDocument), each
+// refused by retiredWriteRefusal. It holds the document's id, name and slug, and the issue it
+// belongs to (nil for a project document), read off the owner the write locked. api answers it as
+// it answers a write it refuses itself: 409 DOCUMENT_RETIRED naming the document, or 409
+// DECISIONS_ARE_NODES for an issue's decisions document (retiredDocumentRefusal). It is
+// ErrDocumentRetired.
 type RetiredDocumentError struct {
 	ID, Name, Slug string
 	IssueKey       *string
@@ -46,6 +49,18 @@ func (e *RetiredDocumentError) Error() string {
 }
 
 func (e *RetiredDocumentError) Unwrap() error { return ErrDocumentRetired }
+
+// retiredWriteRefusal refuses a write into artifactID, whose owner lockArtifactOwner read in the
+// write's transaction: a RetiredDocumentError, logged naming the document, where the read found it
+// retired (artifactOwner.Retired), and nil where it stands. The retirement takes the same lock, so
+// it committed before that read or waits for the write's transaction.
+func retiredWriteRefusal(artifactID string, owner artifactOwner) error {
+	if !owner.Retired {
+		return nil
+	}
+	slog.Warn("dispatch: refuse a write into a retired document", "document", artifactID)
+	return &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey}
+}
 
 // errRetirementReason refuses a retirement that says not why: the reason is the event's record of
 // it, and the only one.
@@ -71,7 +86,9 @@ var retirementEvents = events.NewBroker()
 // document out (roomLayoutSQL): the room reloads without its fragment, so nothing typed into that
 // fragment is reconciled, versioned or indexed, and the room's block index keeps the blocks it
 // recorded of the document as they stood (refs.PlanBlocks). A socket that comes back is refused
-// (ServeHTTP), and api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED.
+// (ServeHTTP), api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED, and this
+// package refuses a live write, a version and a rebuild of it (retiredWriteRefusal, and
+// refuseRetiredFragment for a document of an issue room).
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and
@@ -222,6 +239,7 @@ func refusedDocument(ctx context.Context, q Queryer, asked string) (retired, que
 // Every writer that walks an issue's documents reads it before it writes into one, and skips a
 // document it reads retired: it writes nothing into it, refuses nothing, and goes on with the
 // issue's other documents (WriteIssueAskStates, FollowClosedIssueVersions, KeepAskBlockInStep). A
+// comment thread's margin record skips a retired document as they do (ProjectMark). A
 // list that leaves retired documents out is read before this lock is, or under a lock its caller
 // took, so it is never the read that decides.
 func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (bool, error) {

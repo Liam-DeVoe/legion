@@ -391,7 +391,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Comment on a document or one of its quotes. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -459,7 +459,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS. */
+    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS. A retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdRebuild"];
     delete?: never;
     options?: never;
@@ -562,7 +562,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current document version. */
+    /** @description Name the current document version. A retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes no version; an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdVersions"];
     delete?: never;
     options?: never;
@@ -635,7 +635,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. */
+    /** @description Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. A block ask whose block is in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     patch: operations["patchApiV1AsksById"];
     trace?: never;
   };
@@ -1505,7 +1505,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of an issue document, by slug or unambiguous filename. */
+    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
@@ -1593,7 +1593,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -2898,7 +2898,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of a project document, by slug or unambiguous filename. */
+    /** @description Name the current version of a project document, by slug or unambiguous filename. A retired document is 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/versions answers it. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
