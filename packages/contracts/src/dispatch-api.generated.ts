@@ -322,7 +322,7 @@ export interface paths {
     /** @description List a document's asks. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
-    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask on a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask on a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdAsks"];
     delete?: never;
     options?: never;
@@ -391,7 +391,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Comment on a document or one of its quotes. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -838,7 +838,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Accept a suggestion, applying its replacement. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Accept a suggestion, applying its replacement. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1CommentsByIdAccept"];
     delete?: never;
     options?: never;
@@ -889,7 +889,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Reject a suggestion. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Reject a suggestion. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1CommentsByIdReject"];
     delete?: never;
     options?: never;
@@ -1540,7 +1540,7 @@ export interface paths {
     /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). */
     get: operations["getApiV1IssuesByKeyAsks"];
     put?: never;
-    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask anchored in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask anchored in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1IssuesByKeyAsks"];
     delete?: never;
     options?: never;
@@ -1593,7 +1593,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;

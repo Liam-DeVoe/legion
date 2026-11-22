@@ -362,6 +362,8 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 // gone retracts the followed_by the node still asserts. It writes no follower row and deletes
 // none, so an event caught up after a later one never brings back a row the later one took away.
 // It reports whether it stated anything.
+//
+// kept for one release: catch-up
 func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, added bool, who model.Actor, at time.Time, event int64) (bool, error) {
 	if !graphstore.AddressFits(sessionID) {
 		return false, nil

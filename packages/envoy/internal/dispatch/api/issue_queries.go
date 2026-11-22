@@ -1212,13 +1212,13 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
 // (issue_design_gates.go). The order is a parameter rather than a case expression built into
 // the text, so model.GatedStepsKnown stays the one place that order is written. A row of a step
-// outside it, the retired `decisions` step a daemon of the release before wrote, is left out.
-// A key no issue carries returns no row, which is what the issue
-// read's first batch requires of every statement beside the issue row's.
-//
-// kept for one release: design-gate-rows
+// outside it, the retired `decisions` step a daemon of the release before wrote, is left out by
+// the step filter, which goes with those rows (design-gate-rows). A key no issue carries returns
+// no row, which is what the issue read's first batch requires of every statement beside the issue
+// row's.
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1 and step = any($2::text[])
+		select step, artifact_id from design_gates where issue = $1
+		  and step = any($2::text[]) -- kept for one release: design-gate-rows
 		order by array_position($2::text[], step)
 	`
 

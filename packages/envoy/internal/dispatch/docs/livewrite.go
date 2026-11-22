@@ -370,7 +370,7 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target live
 	}
 	if owner.Retired {
 		slog.Warn("dispatch: refuse a write into a retired document", "document", room)
-		return nil, &RetiredDocumentError{ID: room, Name: owner.Name, Slug: owner.Slug}
+		return nil, &RetiredDocumentError{ID: room, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey}
 	}
 	if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
 		return nil, err
@@ -408,7 +408,8 @@ func refuseRetiredFragment(ctx context.Context, tx pgx.Tx, target liveTarget) er
 		return nil
 	}
 	var name, slug string
-	err := tx.QueryRow(ctx, `select name, slug from artifacts where id = $1 and retired_at is not null`, target.document).Scan(&name, &slug)
+	var issueKey *string
+	err := tx.QueryRow(ctx, `select name, slug, issue_key from artifacts where id = $1 and retired_at is not null`, target.document).Scan(&name, &slug, &issueKey)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil
@@ -416,7 +417,7 @@ func refuseRetiredFragment(ctx context.Context, tx pgx.Tx, target liveTarget) er
 		return fmt.Errorf("read whether the document is retired: %w", err)
 	}
 	slog.Warn("dispatch: refuse a write into a retired document", "document", target.document, "room", target.room)
-	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug}
+	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug, IssueKey: issueKey}
 }
 
 // openLiveWrite takes artifactID's writer slot for the transaction, first waiting for the

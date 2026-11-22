@@ -2302,7 +2302,10 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 // such a block. Once the fleet is one build it writes the ones a version keeps (keptAskState): the
 // state, and for an answer who answered and when, which the release before's readers of a stored
 // version read the ask's state from, and never the answer's words. An ask with no block, and a
-// block the document no longer holds as an ask, are written nothing.
+// block the document no longer holds as an ask, are written nothing, and so is a block whose
+// document is retired (RetireDocument), read under the document owner's lock
+// (retiredUnderOwnerLock): the answer, resolution or decline is taken, and the retired document,
+// which takes no new text, gets none.
 //
 // kept for one release: roll-window-attributes
 func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
@@ -2315,6 +2318,10 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return errUnjoined
+	}
+	retired, err := retiredUnderOwnerLock(ctx, tx, *ask.BlockArtifactID)
+	if err != nil || retired {
+		return err
 	}
 	twoBuilds, err := anotherBuildServes(ctx, tx)
 	if err != nil {

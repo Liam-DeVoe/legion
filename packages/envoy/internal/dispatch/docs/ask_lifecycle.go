@@ -53,9 +53,11 @@ func holdsFragmentSQL(alias string) string {
 }
 
 // issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the
-// tree of an issue room among them, in id order: the order WriteIssueAskStates writes them in, each
-// in its own fragment. A retired document is left out: it takes no new text (RetireDocument), so no
-// close, reopen or repair writes into it, and a live write into it is refused (joinLiveWrite).
+// tree of an issue room among them, and that are not retired, in id order: the order
+// WriteIssueAskStates writes them in, each in its own fragment. Leaving a retired document out of
+// the list is the cheap first pick, not the read that decides: WriteIssueAskStates reads each
+// document's retirement again under its owner's lock before it writes into it
+// (retiredUnderOwnerLock).
 var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` and a.retired_at is null order by a.id`
 
 // issueRoomIDs lists the rooms the documents of the issue $1 are edited in (refs.DocumentRoomSQL),
@@ -115,6 +117,12 @@ func isLifecycleWrite(ctx context.Context) bool {
 // rebuild writes the close's states into the document it seeds (RebuildDocument), so the blocks
 // this left as they were do not come back open on the closed issue. Every other error, a failed or
 // rebuilding room's ErrServiceUnavailable and the database's included, is returned.
+//
+// A retired document (RetireDocument), which takes no new text, is written nothing, and nothing is
+// refused for it: the other documents are written, so a close or a reopen is never refused for a
+// document the decisions step retired. The list leaves retired documents out (issueDocumentIDs),
+// and each document's retirement is read again under its owner's lock before it is written
+// (retiredUnderOwnerLock), so a retirement that commits after the list is read is read there too.
 //
 // An answered ask, which the close's final sweep passes, is written into its copies alone, never
 // into its own block, which settlement keeps in step with its row. While another build serves,
@@ -183,6 +191,13 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 	owner := artifactOwner{IssueKey: &issueKey}
 	var unindexed []BlockRef
 	for _, document := range documents {
+		retired, err := retiredUnderOwnerLock(ctx, tx, document)
+		if err != nil {
+			return nil, fmt.Errorf("read whether document %s is retired: %w", document, err)
+		}
+		if retired {
+			continue
+		}
 		marked, err := s.writeDocumentAskStates(ctx, tx, document, owner, given, actor, markUnindexed, twoBuilds)
 		if err != nil {
 			return nil, fmt.Errorf("write the ask states of document %s: %w", document, err)
@@ -381,6 +396,11 @@ func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey strin
 // that version, of a document whose history cannot load. The close's sweep and the ask repair
 // write nothing into a document whose blocks already show the states they write.
 //
+// A retired document (RetireDocument), which takes no new text, is followed in nothing: no request
+// is moved onto its latest version and no approval is carried to it, and the issue's other
+// documents are followed. Its retirement is read under its owner's lock (retiredUnderOwnerLock),
+// whatever the list read.
+//
 // Nothing is moved or carried twice. MoveApprovalAsk moves nothing when the request already names
 // the latest version, as it does after every version written while the request was open, whose
 // own write moved it. The carry runs only while the newest review approves a version before the
@@ -435,6 +455,13 @@ func (s *Service) FollowClosedIssueVersions(ctx context.Context, issueKey string
 		return fmt.Errorf("list the issue's documents: %w", err)
 	}
 	for _, document := range documents {
+		retired, err := retiredUnderOwnerLock(ctx, tx, document.artifactID)
+		if err != nil {
+			return fmt.Errorf("read whether document %s is retired: %w", document.artifactID, err)
+		}
+		if retired {
+			continue
+		}
 		mover := SettlementActor
 		if document.lastActor != nil {
 			if err := json.Unmarshal(document.lastActor, &mover); err != nil {
@@ -455,9 +482,9 @@ type closedEditSource struct {
 	lastActor  []byte
 }
 
-// issueDocumentEditSources lists the documents of the issue $1 in id order, each with the closed
-// edit source (doc_closed_edit_sources) kept for the room it is edited in, the key its settlement
-// keeps it by (clearSettlementPending), null for none.
+// issueDocumentEditSources lists the documents of the issue $1 in id order, a retired one too, each
+// with the closed edit source (doc_closed_edit_sources) kept for the room it is edited in, the key
+// its settlement keeps it by (clearSettlementPending), null for none.
 var issueDocumentEditSources = `
 	select a.id::text, kept.last_actor
 	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = ` + refs.DocumentRoomSQL("a.id") + `

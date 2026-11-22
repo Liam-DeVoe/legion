@@ -82,9 +82,10 @@ func Restored(state string, answer *model.AskAnswer) Change {
 	return Change{State: state, Answer: answer}
 }
 
-// Recorded is the whole answer state an event recorded - state, answer and resolution - as the
-// catch-up of the boot step reads it off an event a process of another build appended
-// (docs' decision step).
+// Recorded is the whole answer state an event or a row recorded - state, answer and resolution -
+// as the catch-up of the boot step reads it off an event a process of another build appended
+// (docs' decision step), and as the boot step's backfill reads it off an asks row written before
+// this release (AnswerFacts).
 func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolution) Change {
 	return Change{State: state, Answer: answer, Resolution: resolution}
 }
