@@ -22,12 +22,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/legionclaim"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
-// declares (listenerwire.LegionAgentEntry). Its role is one of Roles or a role the deployment
-// defines: a name of roleGrammar but controller (Validate), the role of the step its agent runs as
+// declares (listenerwire.LegionAgentEntry). Its role is a role of an issue (legionclaim.IsRole: one
+// of Legion's six or a role the deployment defines), the role of the step its agent runs as
 // of the entry's latest write. Its role token is the claim token of that agent, which ends in the
 // agent's name, the role of its first step. Readers ignore fields they do not know, so a later
 // writer may add some.
@@ -37,11 +38,6 @@ type Entry = listenerwire.LegionAgentEntry
 // started_at: the session that replaced it and when, both nil for the newest. Neither is stored.
 // It is the listener's wire type (listenerwire.LegionAgent).
 type Agent = listenerwire.LegionAgent
-
-// Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
-// LEGION_ROLES in packages/contracts). An issue's agents are listed in this order, then the agents
-// of every other role, a role the deployment defines in its settings, by role name.
-var Roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // Harnesses are the agent harnesses a Legion session runs under.
 var Harnesses = []string{"omp", "claude"}
@@ -56,16 +52,10 @@ const (
 	maxSessionIDBytes = 128
 	maxProjectBytes   = 64
 	maxIssueBytes     = 32
-	// maxRoleBytes is the longest role the grammar takes (roleGrammar).
-	maxRoleBytes  = 32
+	// maxRoleBytes is the longest role or agent name the grammar takes (legionclaim.RolePattern).
+	maxRoleBytes  = legionclaim.MaxRoleBytes
 	maxTitleBytes = 1024
 )
-
-// roleGrammar is the grammar of an issue's role, one of Roles or a role the deployment defines:
-// the grammar the daemon's claim.IsRole and isStepRole in packages/contracts take, which Dispatch's
-// step write takes too (internal/dispatch/workflowstore). The controller's name is of the grammar
-// and is no role of an issue (isRole).
-const roleGrammar = `[a-z][a-z0-9-]{0,31}`
 
 var (
 	// sessionIDPattern is a session id that is one KV key token: nats.go's key alphabet without
@@ -76,14 +66,7 @@ var (
 	projectTokenPattern = regexp.MustCompile(`^[a-z0-9]+$`)
 	// issueKeyPattern is a Dispatch issue key (claim.IsIssueKey, DISPATCH_KEY_PATTERN).
 	issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-	// rolePattern is a role of the grammar.
-	rolePattern = regexp.MustCompile(`^` + roleGrammar + `$`)
 )
-
-// isRole reports whether role is a role of an issue: a name of the grammar but the controller's.
-func isRole(role string) bool {
-	return role != "controller" && rolePattern.MatchString(role)
-}
 
 // ErrInvalid is a session id, issue key, claim token or entry the registry refuses. Each refusal
 // wraps it with the field and the rule it breaks.
@@ -160,12 +143,12 @@ func ValidateIssue(issue string) error {
 }
 
 // ValidateRoleToken refuses a token that is not the claim token of an agent of an issue
-// (CutClaimToken).
+// (legionclaim.CutClaimToken).
 func ValidateRoleToken(token string) error {
 	if limit := len("legion-") + maxProjectBytes + 1 + maxIssueBytes + 1 + maxRoleBytes; len(token) > limit {
 		return invalid("role_token is %d bytes, past %d", len(token), limit)
 	}
-	if _, _, _, ok := CutClaimToken(token); !ok {
+	if _, _, _, ok := legionclaim.CutClaimToken(token); !ok {
 		return invalid("role_token %q is not legion-<legion_project>-<issue>-<agent>", token)
 	}
 	return nil
@@ -186,10 +169,10 @@ func Validate(entry Entry) error {
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err
 	}
-	if !isRole(entry.Role) {
-		return invalid("role %q is not one of %s or a role of the grammar ^%s$ but controller", entry.Role, strings.Join(Roles, ", "), roleGrammar)
+	if !legionclaim.IsRole(entry.Role) {
+		return invalid("role %q is not one of %s or a role of the grammar %s but controller", entry.Role, strings.Join(legionclaim.Roles, ", "), legionclaim.RolePattern)
 	}
-	if project, issue, _, ok := CutClaimToken(entry.RoleToken); !ok || project != entry.LegionProject || issue != entry.Issue {
+	if project, issue, _, ok := legionclaim.CutClaimToken(entry.RoleToken); !ok || project != entry.LegionProject || issue != entry.Issue {
 		return invalid("role_token %q is not legion-<legion_project>-<issue>-<agent>, the claim token of an agent of %s under %s",
 			entry.RoleToken, entry.Issue, entry.LegionProject)
 	}
@@ -260,12 +243,12 @@ func issueOrder(entries []Entry) []Agent {
 	for _, sessions := range byToken {
 		agents = append(agents, succession(sessions)...)
 	}
-	// rank is a role's place in Roles, and every role outside the six comes after them.
+	// rank is a role's place in legionclaim.Roles, and every role outside the six comes after them.
 	rank := func(role string) int {
-		if i := slices.Index(Roles, role); i >= 0 {
+		if i := slices.Index(legionclaim.Roles, role); i >= 0 {
 			return i
 		}
-		return len(Roles)
+		return len(legionclaim.Roles)
 	}
 	slices.SortStableFunc(agents, func(a, b Agent) int {
 		return cmp.Or(
