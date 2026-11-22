@@ -734,6 +734,15 @@ What each part is for:
   its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
+- **`consumer_names`** (optional) is how the daemon names its three durable consumers,
+  `legion-go-<project>-dispatch`, `-github` and `-wake`: `fixed` (the default) keeps those names,
+  and `fresh` makes a new name at each creation, `<logical>~<id>`, which the daemon's
+  `intake_consumers` table selects. Any other value is refused. Set `fresh` once the operator's
+  consumer-names cutover is done: a daemon on `fixed` stops at its start, and at its next NATS
+  reconnect, once the cutover has marked its project's store done, and one on `fresh` refuses to
+  open its consumers until then. On `fresh`, each consumer's calls go on a NATS connection of its
+  own, `<logical>/<id>`, which presents the daemon's own credential. The boot logs the mode before
+  any NATS connect, and `legion state` reports it as `settings.consumer_names`.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
