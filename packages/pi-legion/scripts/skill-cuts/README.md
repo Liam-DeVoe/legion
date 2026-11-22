@@ -1243,6 +1243,15 @@ read, its windows, and the audit. `--budget-usd` stops the build once its reader
 list price (exit 3). The case file and its spool hold real session text, so `build-cases` (both
 forms) refuses an `--out` inside a git or jj checkout (exit 2).
 
+After each session decided, the build reads its peak resident memory (`VmHWM`, or the largest
+`VmRSS` read each second on a kernel that keeps no `VmHWM`, as gVisor); above 1 GiB it stops as at
+the budget (exit 3), with the cases built so far written: each session still open is stopped and
+recorded `stopped before its case was built: the peak memory passed 1 GiB`, so it is not decided,
+and a run that goes on reads it again. The summary's `stopped` then says so (`the build's peak
+resident memory, <n> MiB, is above 1 GiB, so no new session starts`). Every summary's
+`peakRssBytes` holds the largest peak read in the run, in bytes, and the last line printed gives it
+(`…, peak memory <n> MiB; written to …`), so one run measures the memory a build takes.
+
 The stop rule stops a skill's build (exit 4) as soon as
 `--stop-zero-case-usd` dollars (60 unless given) are spent with no case built, or, once at least
 `--stop-after-sessions` sessions (40) are decided, when the cost projected to `--max` cases from
@@ -1271,8 +1280,8 @@ decided and written in the seeded order, a session that finished first waiting f
 it, so the cases kept are the first `--max` cases of that order, as one session at a time would
 keep them. At most n sessions are open (being read, or read and waiting), so at most n spool files
 are there at once. When the build ends, each session still open is stopped before its next
-reader call and recorded with what it spent, as `not-needed` (or, at the budget, as stopped by
-it).
+reader call and recorded with what it spent, as `not-needed` (or, at the budget or the memory
+stop, as stopped by it).
 
 `build-cases --written <n>` (the second form above) writes up to n written cases of one skill, for
 a skill whose session cases give fewer than 6 informative cases in the screen.
@@ -1319,24 +1328,28 @@ them and the following step: anything but `follows` drops the task (`written-not
 screen's three judge controls run on a written case as on a session case. The summary
 (`<out>.summary.json`) records the inputs, the context session, the model, each task's outcome
 (its case, or its drop reason and detail, with its restatement check and audit), the drops by
-reason and the readers' spend. The build does not go on from an earlier run: an `--out` that is
-there is refused (exit 2). `--budget-usd` stops it once its readers cost that much (exit 3), with
-the cases built so far written. Put the written cases after the skill's session cases in one file
-for `behaviour` (`cat cases.jsonl written.jsonl`), which screens the session cases first.
+reason, the readers' spend and the largest peak resident memory read (`peakRssBytes`). The build
+does not go on from an earlier run: an `--out` that is there is refused (exit 2). `--budget-usd`
+stops it once its readers cost that much (exit 3), with the cases built so far written; so does a
+peak resident memory above 1 GiB, read after each task decided (`stopped`: `the build's peak
+resident memory, <n> MiB, is above 1 GiB, so no new task starts`). Put the written cases after the
+skill's session cases in one file for `behaviour` (`cat cases.jsonl written.jsonl`), which screens
+the session cases first.
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
 skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and
 the count's query outputs. Run again with the same `--out` and the same inputs, `build-cases` keeps
 every session already decided (dropped, or a case the cases file holds), with no pull and no
 reader call, and goes on in the same order from the first session not decided, until `--max`
-cases in all; the budget counts the dollars already spent, and the summary's spend adds the runs.
-A session `not-needed` or stopped by the budget is not decided, so it is read again when it is
-needed. It refuses (exit 2, files left as they were) other inputs, naming each difference; a
-cases file with no summary; and a summary that records no inputs (one an older `build-cases`
-wrote). A kill at any moment leaves both files readable: each case is appended as one whole line,
-then the summary is written to a temporary name and renamed; a case line the summary does not
-record (a kill between the two) is left out when the build goes on, and its session is read
-again. `build-tasks` goes on the same way: its queries, one per store and day, take an hour and
+cases in all; the budget counts the dollars already spent, and the summary's spend adds the runs,
+while its `peakRssBytes` is the last run's own (a summary written before that field goes on as
+well). A session `not-needed` or stopped by the budget or the memory stop is not decided, so it is
+read again when it is needed. It refuses (exit 2, files left as they were) other inputs, naming
+each difference; a cases file with no summary; and a summary that records no inputs (one an older
+`build-cases` wrote). A kill at any moment leaves both files readable: each case is appended as one
+whole line, then the summary is written to a temporary name and renamed; a case line the summary
+does not record (a kill between the two) is left out when the build goes on, and its session is
+read again. `build-tasks` goes on the same way: its queries, one per store and day, take an hour and
 more on the real stores, so the summary records the terms and each query as it ends, and
 `<out>.found.jsonl` the messages each found (path hashes and texts; removed once the tasks are
 written); a run of the same skill text, stores and window makes no terms call and repeats no
@@ -1472,5 +1485,5 @@ does not parse, an item it leaves with no entry, a skill `results-index` finds w
 row, cases file or result, or `behaviour` results that show a drop no stage makes); 2 refused
 before any model call or store read (among the refusals, an `--out` inside a git or jj checkout,
 from `behaviour`'s stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, the
-peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing rule dropped more than half of a
-load's tasks); 4 stopped by build-cases' stop rule.
+peak memory passed 1 GiB in `behaviour` or `build-cases`, or 1.5 GiB in `copies`, or the listing
+rule dropped more than half of a load's tasks); 4 stopped by build-cases' stop rule.

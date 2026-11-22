@@ -1422,11 +1422,17 @@ function treeLevel(repo: string, id: string): Record<string, unknown>[] | undefi
 /** The gh calls the stand-in took. */
 const ghCalls: string[][] = [];
 
+/** The peak resident memory every build of the suite reads unless a test gives its own: under the
+ *  1 GiB at which build-cases stops. */
+const PEAK_BYTES = 200 * 1024 ** 2;
+/** A peak resident memory above that 1 GiB. */
+const OVER_LIMIT = 1024 ** 3 + 1;
+
 /** The stand-in gh: GET reads of commits (SHA, or a PINNED ref's commit), default branches,
  *  acme/infra's legion/projects/10-ACME.yaml, each file of a made-up repository at SHA, the tree
  *  of each made-up repository at SHA or at a PINNED commit (whole, cut short for TRUNCATED's, or
  *  one directory a read by its tree id) and its blobs; and GraphQL reads of blobs in a batch. The
- *  clock is the real one. */
+ *  clock is the real one, and the peak resident memory is PEAK_BYTES. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -1519,6 +1525,7 @@ const io = (lines: string[]): BuildIo => ({
     return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
   },
   now: () => performance.now(),
+  peakRssBytes: () => PEAK_BYTES,
 });
 
 const setupDir = path.join(scratch, "setup");
@@ -1966,6 +1973,8 @@ interface Summary {
   }[];
   readerSpend: { usd: number; models: Record<string, { calls: number }> };
   byModel: Record<string, { tried: number; drops: Partial<Record<DropReason, number>> }>;
+  stopped: unknown;
+  peakRssBytes?: number;
 }
 
 const summaryOf = (out: string): Summary => JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
@@ -3145,6 +3154,13 @@ describe("build-cases over every made-up session", () => {
     );
     expect(good?.pulls).toBeGreaterThan(1);
   });
+
+  test("a build under the memory limit records its peak resident memory in the summary and prints it in its last line", () => {
+    expect(summaryOf(out).peakRssBytes).toBe(PEAK_BYTES);
+    expect(printed.at(-1)).toContain(
+      `of readers at list price, peak memory 200 MiB; written to ${out} and ${out}.summary.json`
+    );
+  });
 });
 
 test("a dev-box session that read a skill of a github: dependency's package and one of a cloned pool gets a profile that holds each unit's skills, the pool's at the commit its installer pins at the session's start", async () => {
@@ -3862,6 +3878,8 @@ interface WrittenSummary {
   casesBuilt: number;
   drops: Partial<Record<DropReason, number>>;
   tasks: { task: number; outcome: string; reason?: DropReason; detail?: string }[];
+  stopped: string | null;
+  peakRssBytes?: number;
 }
 const writtenSummaryOf = (out: string): WrittenSummary =>
   JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
@@ -4065,6 +4083,14 @@ describe("build-cases --written", () => {
     expect(written(after)).toEqual(written(before));
     expect(written(after).length).toBeGreaterThan(0);
   }, 60_000);
+
+  test("a written build under the memory limit records its peak resident memory in the summary and prints it in its last line", () => {
+    expect(writtenSummaryOf(out).stopped).toBeNull();
+    expect(writtenSummaryOf(out).peakRssBytes).toBe(PEAK_BYTES);
+    expect(printed.at(-1)).toContain(
+      `of readers at list price, peak memory 200 MiB; written to ${out} and ${out}.summary.json`
+    );
+  });
 });
 
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
@@ -5042,6 +5068,88 @@ test("build-cases refuses a stop bound that is no number, before any read", asyn
   expect(recorder.requests.length).toBe(from);
   expect(existsSync(out)).toBe(false);
 });
+
+/** An io whose peak resident memory is PEAK_BYTES until it prints a line `decided` matches, and
+ *  OVER_LIMIT from then on; what it writes to standard error goes to `errors`. */
+function overLimitOnce(decided: RegExp, lines: string[], errors: string[]): BuildIo {
+  let over = false;
+  return {
+    ...io(lines),
+    out: (text) => {
+      lines.push(text);
+      if (decided.test(text)) over = true;
+    },
+    err: (line) => errors.push(line),
+    peakRssBytes: () => (over ? OVER_LIMIT : PEAK_BYTES),
+  };
+}
+
+test("build-cases stops above 1 GiB of peak resident memory once a session is decided: the sessions still open are stopped and not decided, the cases decided before are kept, exit 3; a run under the limit goes on and decides them", async () => {
+  const sessions = sessionsFile("memory-stop.jsonl", ["good", "secret", "openai"]);
+  const out = path.join(scratch, "memory-stop", "cases.jsonl");
+  // All three sessions are open at once, so two are still open when the first is decided.
+  const args = buildArgs(sessions, out, "1", "--concurrency", "3");
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const over = overLimitOnce(/^build-cases: \d+\/\d+ /, lines, errors);
+  expect(await main(args, over)).toBe(EXIT.stopped);
+  const reason =
+    "the build's peak resident memory, 1024 MiB, is above 1 GiB, so no new session starts";
+  expect(errors.join("\n")).toContain(`build-cases: stopped: ${reason}`);
+  const stopped = summaryOf(out);
+  expect(stopped.stopped).toBe(reason);
+  expect(stopped.peakRssBytes).toBe(OVER_LIMIT);
+  const [first, ...open] = stopped.sessions;
+  expect(first?.outcome).toStartWith("case ");
+  expect(open.map((each) => each.outcome)).toEqual([
+    "stopped before its case was built: the peak memory passed 1 GiB",
+    "stopped before its case was built: the peak memory passed 1 GiB",
+  ]);
+  expect(loadCases(out, old).map((c) => `case ${c.id}`)).toEqual([first?.outcome]);
+  expect(lines.at(-1)).toContain(`, peak memory 1024 MiB; written to ${out}`);
+  expect(existsSync(`${out}.spool`)).toBe(false);
+
+  // A summary written before the peak was recorded holds no peakRssBytes; a run goes on from it.
+  const summaryFile = `${out}.summary.json`;
+  const older = JSON.parse(readFileSync(summaryFile, "utf8")) as Record<string, unknown>;
+  writeFileSync(summaryFile, JSON.stringify({ ...older, peakRssBytes: undefined }));
+  const again: string[] = [];
+  expect(await main(args, io(again))).toBe(EXIT.ok);
+  expect(again.join("")).toContain("1 sessions decided there (1 cases)");
+  const done = summaryOf(out);
+  expect(done.stopped).toBeNull();
+  expect(done.peakRssBytes).toBe(PEAK_BYTES);
+  expect(done.sessions.map((each) => each.hash)).toEqual(stopped.sessions.map((each) => each.hash));
+  expect(done.sessions.every((each) => each.outcome.startsWith("case "))).toBe(true);
+  expect(loadCases(out, old)).toHaveLength(3);
+}, 120_000);
+
+test("build-cases --written stops above 1 GiB of peak resident memory once a task is decided, with the cases built so far written, exit 3", async () => {
+  const out = path.join(scratch, "written-memory", "cases.jsonl");
+  const context = `store_a:${fileHash(sessionPath("good"))}`;
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    context,
+    "--session-cases",
+    sessionCasesFile()
+  );
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const over = overLimitOnce(/^build-cases: written task \d+ of /, lines, errors);
+  expect(await main(args, over)).toBe(EXIT.stopped);
+  const reason =
+    "the build's peak resident memory, 1024 MiB, is above 1 GiB, so no new task starts";
+  expect(errors.join("\n")).toContain(`build-cases: stopped: ${reason}`);
+  const summary = writtenSummaryOf(out);
+  expect(summary.stopped).toBe(reason);
+  expect(summary.peakRssBytes).toBe(OVER_LIMIT);
+  // Task 1 is a case, as in the written build above, and no task after it is read.
+  const id = `skills-1-${pathHash(sessionPath("good")).slice(0, 12)}-w1`;
+  expect(summary.tasks.map((each) => [each.task, each.outcome])).toEqual([[1, `case ${id}`]]);
+  expect(loadCases(out, old).map((c) => c.id)).toEqual([id]);
+  expect(lines.at(-1)).toContain(`, peak memory 1024 MiB; written to ${out}`);
+}, 60_000);
 
 test("the pull reads the store command's output row by row with psqlRows' checks and faults, and reports a failing command first", async () => {
   const dir = path.join(scratch, "pull-output");

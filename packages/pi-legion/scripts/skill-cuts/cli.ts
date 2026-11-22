@@ -374,7 +374,7 @@ import {
   newSeed,
 } from "./judge";
 import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName, skillNameOf } from "./load";
-import { procPeakRssBytes, startPeakRssSampling } from "./memory";
+import { procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   type DiffFile,
   FindingsEntry,
@@ -468,7 +468,7 @@ const CALL_TIMEOUT_MS = 600_000;
 const DEFAULT_CONCURRENCY = 8;
 /** The most the runner's peak resident memory may reach: a case that ends above it stops the run
  *  (exit 3). */
-const MEMORY_LIMIT_BYTES = 1024 ** 3;
+const MEMORY_LIMIT_BYTES = RUN_MEMORY_LIMIT_BYTES;
 /** The request log's name: `<out>/requests.jsonl` for `behaviour`, `load`, `control craft` and
  *  `proposals`, and the `--out` file's path with `.requests.jsonl` added for `read`, `control`,
  *  `craft` and `nearest`, unless `--request-log` names one. */

@@ -1,10 +1,15 @@
 /**
  * The peak resident memory of this process, for the runner's commands that stop above a limit
- * (cli.ts's behaviour runs, copies.ts). `/proc/self/status` gives `VmHWM`, the kernel's own peak;
- * gVisor gives only `VmRSS`, so there the largest `VmRSS` read is kept, read every second once
- * `startPeakRssSampling` runs and at every call of `procPeakRssBytes`.
+ * (cli.ts's behaviour runs, build.ts's build-cases, copies.ts). `/proc/self/status` gives
+ * `VmHWM`, the kernel's own peak; gVisor gives only `VmRSS`, so there the largest `VmRSS` read is
+ * kept, read every second once `startPeakRssSampling` runs and at every call of
+ * `procPeakRssBytes`.
  */
 import { existsSync, readFileSync } from "node:fs";
+
+/** The most the runner's peak resident memory may reach in `behaviour` (cli.ts) and `build-cases`
+ *  (build.ts): above it the run stops (exit 3). `copies` keeps its own (copies.ts). */
+export const RUN_MEMORY_LIMIT_BYTES = 1024 ** 3;
 
 /** The largest `VmRSS` read so far, for a kernel whose `/proc/self/status` gives no `VmHWM`. */
 let sampledPeakBytes = 0;
@@ -28,6 +33,11 @@ export function procPeakRssBytes(): number {
   if (resident === undefined) throw new Error("/proc/self/status holds neither VmHWM nor VmRSS");
   sampledPeakBytes = Math.max(sampledPeakBytes, resident);
   return sampledPeakBytes;
+}
+
+/** Bytes as whole MiB. */
+export function mib(bytes: number): number {
+  return Math.round(bytes / 2 ** 20);
 }
 
 /** Where the kernel keeps no `VmHWM`, reads the resident memory every RSS_SAMPLE_MS from now on,

@@ -54,14 +54,23 @@
  * checks the rule after the sessions the earlier runs decided, before it reads any, so a build
  * the rule stopped stops again at once with the same bounds. The projection needs `--max`.
  *
+ * **The memory stop.** After each session decided, the build reads its peak resident memory
+ * (`BuildIo.peakRssBytes`, else memory.ts's `procPeakRssBytes`); above RUN_MEMORY_LIMIT_BYTES
+ * (1 GiB) it stops as at the budget (exit 3), with the cases built so far written: each session
+ * still open is stopped before its next reader call and recorded as `stopped before its case was
+ * built: the peak memory passed 1 GiB`, so it is not decided, and a run that goes on reads it
+ * again. With `--written` the peak is read after each task decided, and no task after it is read.
+ * Both forms' summaries record the largest peak read in the run (`peakRssBytes`, in bytes), and
+ * their last line printed gives it in MiB, so one run measures the memory a build takes.
+ *
  * Up to `--concurrency` sessions (BUILD_CONCURRENCY unless given) are open at once: pulled (one
  * store query at a time across them) and read, the gateway taking as many calls at once. A
  * session's outcome is decided in the seeded order, a session that finished waiting for those
  * before it, so the cases kept are the first `--max` cases of that order, as one session at a time
- * would keep them. Once the build ends (at `--max`, at the budget, or by the stop rule), each
- * session still open is stopped before its next reader call and recorded with what it spent, as
- * `not-needed` (or as stopped by the budget). With more than one session open, a session before
- * the one that reached the budget can be stopped by it too.
+ * would keep them. Once the build ends (at `--max`, at the budget, at the memory stop, or by the
+ * stop rule), each session still open is stopped before its next reader call and recorded with
+ * what it spent, as `not-needed` (or as stopped by the budget or the memory stop). With more than
+ * one session open, a session before the one that reached the budget can be stopped by it too.
  *
  * **Going on.** The summary records the run's inputs: the cut, the skill, the seed, and the
  * SHA-256 of `--old`'s files, the sessions file, the copies files read and the count's query
@@ -322,8 +331,8 @@
  * the order, the sessions tried, each session's outcome, model and the reader's dollars on it, the
  * cases built, the drops by reason, the sessions tried and the drops of each model (`byModel`), the
  * bounds, the pulls, the gateway's spend, the GitHub reads sent again after a transient failure
- * by reason (`githubRetries`, summed over the runs of one `--out`), and why the build stopped, if
- * it did.
+ * by reason (`githubRetries`, summed over the runs of one `--out`), why the build stopped, if it
+ * did, and the largest peak resident memory read in the run (`peakRssBytes`).
  *
  * **build-cases --reprofile** builds the profile of each case of a case file again, from the
  * case and its session's head: its store, the `[Skill file: …]` lines of its messages, its start,
@@ -445,7 +454,8 @@
  * above, and no file is written.
  *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
- * `--budget-usd`, with the cases built so far written; 4 stopped by the stop rule, the same.
+ * `--budget-usd` or by the memory stop, with the cases built so far written; 4 stopped by the stop
+ * rule, the same.
  */
 import { createHash } from "node:crypto";
 import {
@@ -576,6 +586,7 @@ import {
   stepText,
 } from "./judge";
 import { firstMessageLoad, Task } from "./load";
+import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import { PsqlTable, PullCheck } from "./psql-rows";
 import {
   AuditAnswer,
@@ -592,7 +603,8 @@ import {
 } from "./readers";
 import { isObject } from "./replay";
 
-/** Exit statuses: `stopped` at `--budget-usd`, `stoppedByCost` by the stop rule (`stopBy`). */
+/** Exit statuses: `stopped` at `--budget-usd` or by the memory stop (`BuildPeak`), `stoppedByCost`
+ *  by the stop rule (`stopBy`). */
 export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3, stoppedByCost: 4 } as const;
 /** The most sessions build-cases reads at once, unless `--concurrency` says otherwise. */
 export const BUILD_CONCURRENCY = 4;
@@ -784,6 +796,33 @@ export interface BuildIo {
   sleep?(ms: number): Promise<void>;
   /** Reads the registry's tarball of a package version (`registryTarball` when absent). */
   readonly npm?: NpmTarball;
+  /** The process's peak resident memory so far, in bytes; memory.ts's `procPeakRssBytes` when
+   *  absent (cli.ts's `skill-cuts build-cases`, whose io already samples it). */
+  peakRssBytes?(): number;
+}
+
+/** The peak resident memory of one build-cases run: the largest of the process's peaks read so
+ *  far (`bytes`), each read from `io.peakRssBytes`, else memory.ts's `procPeakRssBytes`. */
+class BuildPeak {
+  bytes = 0;
+
+  constructor(private readonly io: BuildIo) {}
+
+  /** Reads the process's peak; returns the largest read so far, in bytes. */
+  read(): number {
+    const peak = this.io.peakRssBytes === undefined ? procPeakRssBytes() : this.io.peakRssBytes();
+    this.bytes = Math.max(this.bytes, peak);
+    return this.bytes;
+  }
+
+  /** Reads the process's peak: above RUN_MEMORY_LIMIT_BYTES, why the build starts no new `unit`
+   *  (the memory stop); else undefined. */
+  stop(unit: "session" | "task"): string | undefined {
+    const peak = this.read();
+    return peak > RUN_MEMORY_LIMIT_BYTES
+      ? `the build's peak resident memory, ${mib(peak)} MiB, is above 1 GiB, so no new ${unit} starts`
+      : undefined;
+  }
 }
 
 /** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
@@ -5976,8 +6015,10 @@ const WRITTEN_READ = "written_read";
  * whose messages are the task, a read of `skill://<skill>` and its result (from `--old`, as
  * arms.ts answers a history read, at the path the context session's first read of the skill
  * showed), unless the restate reader finds the line stated in the task (`written-restates`) or
- * the audit does not call the task's following step `follows` (`written-not-followed`). Writes the
- * cases file and `<out>.summary.json` whole at the end; it does not go on from an earlier run.
+ * the audit does not call the task's following step `follows` (`written-not-followed`). The peak
+ * memory is read after each task decided, and above RUN_MEMORY_LIMIT_BYTES no task after it is
+ * read (`BuildPeak`). Writes the cases file and `<out>.summary.json` whole at the end; it does not
+ * go on from an earlier run.
  */
 async function buildWrittenCases(
   values: Readonly<Record<string, unknown>>,
@@ -6254,7 +6295,14 @@ async function buildWrittenCases(
     const records: Record<string, unknown>[] = [];
     const drops: Partial<Record<DropReason, number>> = {};
     let budgetStop: string | undefined;
-    for (const [n, task] of answer.tasks.entries()) {
+    let memoryStop: string | undefined;
+    const peak = new BuildPeak(io);
+    /** Decides task `n` (from 0) of the written-case reader's: its case, or its drop. Returns
+     *  false when the budget stops it first (`budgetStop`). */
+    const decide = async (
+      n: number,
+      task: WrittenCaseAnswer["tasks"][number]
+    ): Promise<boolean> => {
       const number = n + 1;
       const record: Record<string, unknown> = { task: number, line: task.line };
       records.push(record);
@@ -6305,18 +6353,18 @@ async function buildWrittenCases(
             "written-restates",
             `the restatement check finds the line's instruction stated: ${restated}`
           );
-          continue;
+          return true;
         }
       } catch (error) {
         if (error instanceof BudgetSpent) {
           budgetStop = stopped();
-          break;
+          return false;
         }
         dropTask(
           "restatement-check-incomplete",
           `the restatement check was not read: ${messageFor(error)}`
         );
-        continue;
+        return true;
       }
       // The audit: the line, the history as the judge reads it and the following step, and no
       // criterion.
@@ -6335,15 +6383,15 @@ async function buildWrittenCases(
       } catch (error) {
         if (error instanceof BudgetSpent) {
           budgetStop = stopped();
-          break;
+          return false;
         }
         dropTask("audit-failed", messageFor(error));
-        continue;
+        return true;
       }
       record.audit = audit;
       if (audit.verdict !== "follows") {
         dropTask("written-not-followed", `${audit.verdict}: ${audit.reason}`);
-        continue;
+        return true;
       }
       const id = `${unit.id}-${contextPathHash.slice(0, 12)}-w${number}`;
       const c = Case.parse({
@@ -6395,7 +6443,15 @@ async function buildWrittenCases(
       built.push(c);
       Object.assign(record, { outcome: `case ${id}` });
       io.out(`build-cases: written task ${number} of ${answer.tasks.length}: case ${id}\n`);
+      return true;
+    };
+    // The peak memory, after each task decided: above the limit no task after it is read.
+    for (const [n, task] of answer.tasks.entries()) {
+      if (!(await decide(n, task))) break;
+      memoryStop = peak.stop("task");
+      if (memoryStop !== undefined) break;
     }
+    const stop = budgetStop ?? memoryStop;
 
     writeWhole(given.out, built.map((c) => `${JSON.stringify(c)}\n`).join(""));
     writeWhole(
@@ -6420,18 +6476,19 @@ async function buildWrittenCases(
         tasks: records,
         casesBuilt: built.length,
         drops,
-        stopped: budgetStop ?? null,
+        stopped: stop ?? null,
         githubRetries: run.github.retries.record(),
         readerSpend: run.gateway.spend(),
+        peakRssBytes: peak.read(),
       })
     );
     // The file must load as the behaviour commands load it.
     loadCases(given.out, given.old);
     io.out(
-      `build-cases: ${built.length} written cases of ${answer.tasks.length} tasks, $${run.gateway.spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+      `build-cases: ${built.length} written cases of ${answer.tasks.length} tasks, $${run.gateway.spend().usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
     );
-    if (budgetStop !== undefined) {
-      io.err(`build-cases: stopped: ${budgetStop}`);
+    if (stop !== undefined) {
+      io.err(`build-cases: stopped: ${stop}`);
       return EXIT.stopped;
     }
     return EXIT.ok;
@@ -6561,7 +6618,8 @@ function keepCases(out: string, ids: ReadonlySet<string>): Map<string, string> {
  * cases file and then writes its summary, so a kill can leave a case line (whole, or cut short)
  * that the summary does not record: the cases file is written again with only the cases the
  * summary records, and their sessions are decided. A session dropped is decided; one the summary
- * records as a case that the file lacks, one the budget stopped and one not needed are not.
+ * records as a case that the file lacks, one the budget or the memory stop stopped and one not
+ * needed are not.
  */
 function priorBuild(out: string, summaryFile: string, inputs: CasesInputs): PriorBuild | undefined {
   if (!existsSync(summaryFile)) {
@@ -6824,6 +6882,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   // The sessions decided so far, the earlier runs' among them, for the stop rule.
   let decidedSessions = 0;
   let stopped: string | undefined;
+  const peak = new BuildPeak(io);
   let ruleStop: RuleStop | undefined;
   const spools = spoolDir(given.out);
   const write = () => {
@@ -6872,6 +6931,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         pullCalls: pulls,
         githubRetries: run.github.retries.record(prior?.githubRetries),
         readerSpend: addSpend(priorSpend, run.gateway.spend()),
+        peakRssBytes: peak.read(),
         listing: listingCounts(
           caseRecords.map((each) => ListingMeasure.safeParse(each.listing).data)
         ),
@@ -7080,6 +7140,16 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: case ${built.id} (step ${outcome.step}, ${built.model}, ${built.context})\n`
       );
     }
+    // The peak memory, after each session decided: above the limit the build stops as at the
+    // budget, and each session still open is stopped and not decided, so a run that goes on reads
+    // it again.
+    const overMemory = peak.stop("session");
+    if (overMemory !== undefined) {
+      stopped = overMemory;
+      await closeOpen("stopped before its case was built: the peak memory passed 1 GiB");
+      write();
+      break;
+    }
     write();
   }
   const left = open.size > 0;
@@ -7095,7 +7165,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   loadCases(given.out, given.old);
   const usd = addSpend(priorSpend, run.gateway.spend()).usd;
   io.out(
-    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
   );
   if (stopped !== undefined) {
     io.err(`build-cases: stopped: ${stopped}`);
@@ -9206,12 +9276,15 @@ export async function main(argv: readonly string[], io: BuildIo): Promise<number
 }
 
 if (import.meta.main) {
+  // Where the kernel keeps no VmHWM, the resident memory is read every second from now on.
+  startPeakRssSampling();
   process.exit(
     await main(Bun.argv.slice(2), {
       out: (text) => process.stdout.write(text),
       err: (line) => process.stderr.write(`${line}\n`),
       gh: spawnGh,
       now: () => performance.now(),
+      peakRssBytes: procPeakRssBytes,
     })
   );
 }
