@@ -755,7 +755,9 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	defer listener.Close()
 	// A clock whose timers never fire: each route lookup is answered as the listener answers it,
 	// however slow the machine, and is never cut short by its bound (mentionLookupTimeout), which
-	// failed a lookup the listener answered late.
+	// failed a lookup the listener answered late. It freezes the take-over's backoff and the
+	// related-item check's allowance too, so a retryable failure here would wait to the binary's
+	// deadline, where testwait ends it by name (newTargetedMessageHandlerOn).
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{

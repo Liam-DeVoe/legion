@@ -58,7 +58,10 @@ func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *st
 // comment's mention lookups and every listener call's window run on, is clock (nil is the real
 // one): a test whose lookups must be answered however late the listener answers them passes
 // clocktest.Held(), and a test of a receipt timeout passes a fake and moves it to the end of each
-// window its stand-in holds (answerWhileCallsAreHeld).
+// window its stand-in holds (answerWhileCallsAreHeld). A held clock freezes every timer of the
+// server's, the listener take-over's backoff and the related-item check's allowance among them,
+// so a row on it that met a retryable failure would wait to the binary's deadline, where testwait
+// ends it by name; no row on it meets one today.
 func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
 	t.Helper()
 	options := testServerOptions{envoyURL: envoyURL}
@@ -536,10 +539,10 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		// An unanswered read is what a listener take-over gives, so the send asks again for the
-		// take-over window before it settles; every one of those reads is cancelled the same way,
-		// at the end of its window on the server's clock, which the test moves there once the
-		// stand-in holds the read.
+		// An unanswered read is what a listener take-over gives, but the read's window ends on the
+		// server's clock CallWindow past its start, past the test server's take-over window
+		// (testTakeoverWindow), so the send makes one try and settles. The read is cancelled at
+		// the end of its window, which the test moves there once the stand-in holds the read.
 		cancelled := make(chan struct{})
 		var cancelledOnce sync.Once
 		var calls listenerCalls
@@ -1648,13 +1651,14 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 // its own. While the key carried the attempt number, that retry was a key no dedupe layer had
 // ever seen and the agent was handed the same instruction twice. The key is now stable across
 // the attempts of one message in one mode, so the stream recognises the repeat, answers
-// duplicate, and the retry's row says so instead of claiming a delivery that never happened. A
-// missed receipt is tried again inside the listener take-over window (takeoverRetry) under the
-// same key, so the attempt is recorded failed only when every try of that window missed; this
-// listener misses every one until the message's own request has answered. The listener client's
-// window and the take-over's tries run on the server's clock, a fake the test moves through each
-// held call's window (answerWhileCallsAreHeld), so the stand-in's lookups, which it answers at
-// once, are never cut by a window a loaded machine ran out.
+// duplicate, and the retry's row says so instead of claiming a delivery that never happened. The
+// listener client's window and the take-over's tries run on the server's clock, a fake the test
+// moves through each held call's window (answerWhileCallsAreHeld), so the stand-in's lookups,
+// which it answers at once, are never cut by a window a loaded machine ran out. The first send's
+// window ends CallWindow past its start on that clock, past the test server's take-over window
+// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt
+// is recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
+// same-key tries).
 func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	var calls listenerCalls
 	var listenerState struct {

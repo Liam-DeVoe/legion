@@ -1884,7 +1884,9 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 // carries (context.Cause), so the work behind it tells its own bound from the request that ran it
 // going away. The caller cancels it, as it would a context.WithTimeout's. It is the bound the
 // related-item check's allowance takes (relatedBounds): a test moves the server's own fake clock
-// to the deadline the code armed, and no real time decides the outcome.
+// to the deadline the code armed, and no real time decides the outcome. On the real clock, which
+// every deployment runs, it is context.WithTimeoutCause's, as before the clock seam: its end reads
+// context.DeadlineExceeded and it reports its Deadline.
 //
 // A d already spent (zero or less, which only a test sets - suggestionTimeout) ends the context
 // here, before this returns, so nothing behind it reads at all. A timer of zero or less runs its
@@ -1892,6 +1894,9 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 // placeLocked), and work that began before that goroutine ran would be the machine deciding the
 // outcome rather than the case (INFRA-3149).
 func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	if s.clock == clock.Real() {
+		return context.WithTimeoutCause(ctx, d, cause)
+	}
 	bounded, end := context.WithCancelCause(ctx)
 	if d <= 0 {
 		end(cause)

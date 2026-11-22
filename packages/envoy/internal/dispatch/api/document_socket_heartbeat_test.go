@@ -315,6 +315,19 @@ func (h *heartbeatCalls) count() int {
 	return len(h.calls)
 }
 
+// returned is how many of the recorded calls have returned.
+func (h *heartbeatCalls) returned() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, call := range h.calls {
+		if !call.end.IsZero() {
+			n++
+		}
+	}
+	return n
+}
+
 // lastIntrospectionGap is the span from the answer of the last introspection but one to the
 // request of the last, and false when there were fewer than two.
 func (h *heartbeatCalls) lastIntrospectionGap() (heartbeatGap, bool) {
@@ -424,15 +437,16 @@ func presentedHeaders(presented *http.Request) http.Header {
 }
 
 // driveHeartbeats moves fake through n of the server's heartbeats from first, each one heartbeat
-// after the one before, waiting before each move for it to be armed there, and answers the
-// heartbeat after them once it is armed. The server arms its next heartbeat before it resolves its
-// caller again and receives that heartbeat only once the check has returned, so each heartbeat
-// seen armed proves every check two or more heartbeats before it found the caller still resolving.
-func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int, every time.Duration) time.Time {
+// after the one before, waiting before each move for every one of the sockets open to have armed
+// it there, and answers the heartbeat after them once one is armed. The server arms its next
+// heartbeat before it resolves its caller again and receives that heartbeat only once the check has
+// returned, so each heartbeat seen armed proves every check two or more heartbeats before it found
+// the caller still resolving.
+func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int, every time.Duration, sockets int) time.Time {
 	t.Helper()
 	at := first
 	for range n {
-		awaitArmedAt(t, fake, "the socket's heartbeat", at)
+		awaitArmedCountAt(t, fake, "the sockets' heartbeat", at, sockets)
 		fake.Set(at)
 		at = at.Add(every)
 	}
@@ -481,8 +495,13 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 
 			// While the cookie resolves the socket outlives several heartbeats and still
 			// answers its editor.
-			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
+			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat, 1)
 			peer.barrier(t)
+			// The server arms its next heartbeat before it checks the caller, so driveHeartbeats
+			// returns once the fifth is armed, before the fourth check's lookup may have run. The
+			// sign-out waits for that lookup to return, so the fourth check finds the session and
+			// the fifth is the one that refuses, however late a loaded machine runs the fourth.
+			waitUntil(t, "the four heartbeats' lookups of the cookie to return", func() bool { return rig.heartbeats.returned() >= 4 })
 
 			if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
 				t.Fatalf("sign out: %v", err)
@@ -541,7 +560,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 			// Four of the server's heartbeats, each of which re-checks the cookie: the heartbeat
 			// armed after them proves the first three checks found it resolving, since a check that
 			// had not would have closed the socket and armed no heartbeat after the next.
-			driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
+			driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat, 1)
 			peer.barrier(t)
 			if asked := rig.tokens.broker.Count(); asked != 0 {
 				t.Fatalf("the document socket's heartbeat asked the broker %d times, want 0", asked)

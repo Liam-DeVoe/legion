@@ -296,6 +296,39 @@ type Client struct {
 // window to make a call miss it (api's comment delivery tests).
 const CallWindow = 5 * time.Second
 
+// ErrCallWindow reports a listener call its window ended (CallWindow, or what WithTimeout names):
+// the call's error wraps it beside the request's own error, so it is still context.DeadlineExceeded
+// and a net.Error whose Timeout is true, as an end of http.Client.Timeout was. A call the caller's
+// own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
+var ErrCallWindow = errors.New("envoy listener call window ended")
+
+// callWindowError is a call's error once its window ended and its caller's context had not.
+type callWindowError struct {
+	err    error
+	window time.Duration
+}
+
+func (e callWindowError) Error() string {
+	return fmt.Sprintf("%v (%v: %s)", e.err, ErrCallWindow, e.window)
+}
+
+func (e callWindowError) Unwrap() []error { return []error{e.err, ErrCallWindow} }
+
+// Timeout is true: the window is a timeout, as http.Client.Timeout's end was (net.Error).
+func (e callWindowError) Timeout() bool { return true }
+
+// Temporary is true, as net/http's own timeout errors report it (net.Error).
+func (e callWindowError) Temporary() bool { return true }
+
+// windowEnded wraps err in a callWindowError when ctx, the call's window, ended and parent, the
+// caller's context, did not; otherwise it answers err as it is.
+func (c *Client) windowEnded(err error, ctx, parent context.Context) error {
+	if err == nil || err == io.EOF || ctx.Err() == nil || parent.Err() != nil {
+		return err
+	}
+	return callWindowError{err: err, window: c.window}
+}
+
 // Option configures a Client.
 type Option func(*Client)
 
@@ -368,22 +401,33 @@ func New(baseURL string, options ...Option) *Client {
 
 // roundTrip sends request within the client's window on the client's clock. The window covers
 // reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
-// released when the caller closes the body.
+// released when the caller closes the body. A call or a body read the window ended fails with
+// ErrCallWindow beside its own error (windowEnded).
 func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
-	ctx, cancel := c.clock.WithTimeout(request.Context(), c.window)
+	parent := request.Context()
+	ctx, cancel := c.clock.WithTimeout(parent, c.window)
 	response, err := c.httpClient.Do(request.WithContext(ctx))
 	if err != nil {
+		err = c.windowEnded(err, ctx, parent)
 		cancel()
 		return nil, err
 	}
-	response.Body = windowedBody{ReadCloser: response.Body, cancel: cancel}
+	response.Body = windowedBody{ReadCloser: response.Body, client: c, ctx: ctx, parent: parent, cancel: cancel}
 	return response, nil
 }
 
-// windowedBody is an answer's body whose Close also ends the window roundTrip opened for its call.
+// windowedBody is an answer's body whose reads report the end of the window roundTrip opened for
+// its call (windowEnded), and whose Close also ends that window.
 type windowedBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
+	client      *Client
+	ctx, parent context.Context
+	cancel      context.CancelFunc
+}
+
+func (b windowedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	return n, b.client.windowEnded(err, b.ctx, b.parent)
 }
 
 func (b windowedBody) Close() error {

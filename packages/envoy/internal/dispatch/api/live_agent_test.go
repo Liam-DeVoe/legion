@@ -552,6 +552,9 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	memory.SetResponder(reviewerSessionID, true)
 	source := &heldReplaySource{Memory: memory, held: plannerSessionID, asked: make(chan *heldReplay, 4), release: make(chan struct{})}
 	t.Cleanup(func() { close(source.release) })
+	// The server's clock is held: the replay's wait (agentStreamReplayTimeout) never ends on it, and
+	// neither does any other timer of the server's, so a row that came to wait on one would reach
+	// the binary's deadline, where testwait ends it by name.
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, clock: clocktest.Held()}, nil)
 
 	client := rig.dial(t, asUser("alice"))

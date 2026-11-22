@@ -415,6 +415,23 @@ func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time)
 	})
 }
 
+// awaitArmedCountAt waits until at least count timers for at are pending on fake, the server's
+// clock: a row with count sockets open moves the clock to their heartbeat only once each of them
+// has armed it, so none is armed after the move and fires off a heartbeat the row did not drive.
+func awaitArmedCountAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time, count int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%s armed %d times for %s", what, count, at.Format(time.RFC3339Nano)), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		n := 0
+		for _, deadline := range armed {
+			if deadline.Equal(at) {
+				n++
+			}
+		}
+		return armed, n >= count
+	})
+}
+
 // writeSessionRecord answers GET /v1/registry/{session_id} from the rows a stub listener also
 // serves as its live list, so one literal gives both answers and the two agree the way a real
 // listener's do. Dispatch resolves a session through this route rather than through the list,
