@@ -13,24 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/listenerwire"
 )
-
-// readingKeyTaken is request naming the key-taken answer as one its client reads
-// (listenerwire.ReadsHeader), as @legion/envoy-client names it on a send or a publish that names
-// its session.
-func readingKeyTaken(request *http.Request) *http.Request {
-	request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
-	return request
-}
-
-// publishFromReading is rig.publishFrom by a client that reads the key-taken answer
-// (readingKeyTaken).
-func (rig *senderLimitRig) publishFromReading(t *testing.T, sender, topic string, fields map[string]any) limitedAnswer {
-	t.Helper()
-	body := map[string]any{"topic": topic, "source_session": sender, "message": countedMessage}
-	return serveLimited(t, rig.mux, rig.harness.logs.String, readingKeyTaken(postJSON("/v1/messages/publish", messageJSON(t, body, fields))))
-}
 
 // heldAnswer is a send's or a publish's answer as these tests read it: the limitedAnswer (status,
 // body, the request's record line), with the envelope the body carries.
