@@ -1913,6 +1913,7 @@ export const dispatchToolSpecs = [
       "that Dispatch asked, and says how many linked pull requests it left unread past that " +
       "bound. Record the result after the commit is pushed. A repository Dispatch cannot read, " +
       "and a read of GitHub that does not answer, records the result as before. " +
+      "Where the issue has no repository, the result is recorded as before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
