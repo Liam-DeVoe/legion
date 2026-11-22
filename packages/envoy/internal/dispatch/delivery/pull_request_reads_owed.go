@@ -346,27 +346,33 @@ func LinkedPullRequestSQL(url string) string {
 // PullRequestLinksSQL is every link that names pull request number of repo (linkedPullRequest),
 // lowercased, as an array: the /pull/ and the /issues/ form of number under each name whose
 // canonical name is repo's (refs.CanonicalRepoSQL), that is the canonical name itself and each
-// name a repo_projects row renames to it. repo and number are expressions, a column or a bound
-// parameter each. A reader compares lower() of a link with the array, which
+// name a repo_projects row renames to it (linkFormsOf). repo and number are expressions, a column
+// or a bound parameter each. A reader compares lower() of a link with the array, which
 // issue_external_links_url_lower serves with one probe a form, and takes the link only where
-// LinkedPullRequestSQL takes it too (attributedTerms): lower() of a character outside ASCII can
-// be an ASCII letter, and a renamed name that GitHub cannot have names nothing.
+// LinkedPullRequestSQL takes it too: lower() of a character outside ASCII can be an ASCII letter,
+// and a renamed name that GitHub cannot have names nothing. api's link check reads it for one
+// link; the statement, which judges many pull requests, gives linkFormsOf the names it read once
+// (attributedTerms, held_names), which are the names this array is made of.
 //
 // The renamed names are only those of the rows whose own renamed_to is repo's canonical name, in
 // any case: a name passes the comparison of canonical names below only where some row of that
 // name, in any case, renames to repo's canonical name, and that row is one of these, under a name
-// whose lowered form is the same, which is all the array holds of it. The comparison reads
-// repo_projects again for each name, so over every renamed row it read each renamed row once for
-// each, for each pull request a statement judges: the statement over 10 pull requests took 996 ms
-// with 500 renamed repositories, against 8 ms with 1. repo's canonical name is read once, as c.
+// whose lowered form is the same, which is all the array holds of it. repo's canonical name is
+// read once, as c.
 func PullRequestLinksSQL(repo, number string) string {
-	return `array(select lower('https://github.com/' || n.name || '/' || f.form || '/' || ` + number + `)
-		from (select ` + refs.CanonicalRepoSQL(repo) + ` as canonical) c
+	return linkFormsOf(`array(select lower(n.name)
+		from (select `+refs.CanonicalRepoSQL(repo)+` as canonical) c
 		cross join lateral (select c.canonical as name
 			union select renamed.repo from repo_projects renamed
 			where renamed.renamed_to is not null and lower(renamed.renamed_to) = lower(c.canonical)) n
-		cross join (values ('pull'), ('issues')) f(form)
-		where lower(` + refs.CanonicalRepoSQL("n.name") + `) = lower(c.canonical))`
+		where lower(`+refs.CanonicalRepoSQL("n.name")+`) = lower(c.canonical))`, number)
+}
+
+// linkFormsOf is the lowered /pull/ and /issues/ link of pull request number under each name of
+// names, an expression of a text array of names, as an array: the forms of PullRequestLinksSQL.
+func linkFormsOf(names, number string) string {
+	return `array(select lower('https://github.com/' || link_name.name || '/' || link_form.form || '/' || ` + number + `)
+		from unnest(` + names + `) link_name(name) cross join (values ('pull'), ('issues')) link_form(form))`
 }
 
 // OweLinkedPullRequestReads owes a read of GitHub for each pull request that a person or an agent
@@ -642,24 +648,23 @@ func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead,
 
 // owedReadJoin is the lateral join of the owed read of each pull request `a` of the statement's
 // terms answers (attributedTerms): the row owed under a.repo, the canonical name, or under a name
-// that repo_projects renames to it. The owed row's own name goes through the same rule, so a read
-// owed under an old name matches, and so does one owed under the name given where the canonical
-// name is no name GitHub can have (owePullRequestRead). A row that a link by hand alone owed, whose
-// linked_revision is its revision, is skipped where the statement holds a results row of the pull
-// request (h, the alias of each reader): a link says nothing of the head, so that owe leaves the
-// stored head a basis (OweLinkedPullRequestReads). Where no results row is stored, there is no
-// head to hide, and such a row names its refusal as each other row does. A refusal comes first.
-// o.reason is null where no read is owed, and o.refused_as and o.refused_since are null unless the
-// row is a refusal: a trigger that owes a failure over a refusal row leaves both as they were. The
-// index pull_request_reads_owed_repo_number serves the probe.
+// that repo_projects renames to it, which a.names holds, read once a statement (namesOver). The
+// owed row's own name goes through the same rule, so a read owed under an old name matches, and so
+// does one owed under the name given where the canonical name is no name GitHub can have
+// (owePullRequestRead). A row that a link by hand alone owed, whose linked_revision is its
+// revision, is skipped where the statement holds a results row of the pull request (h, the alias
+// of each reader): a link says nothing of the head, so that owe leaves the stored head a basis
+// (OweLinkedPullRequestReads). Where no results row is stored, there is no head to hide, and such
+// a row names its refusal as each other row does. A refusal comes first. o.reason is null where no
+// read is owed, and o.refused_as and o.refused_since are null unless the row is a refusal: a
+// trigger that owes a failure over a refusal row leaves both as they were. The index
+// pull_request_reads_owed_repo_number serves the probe.
 var owedReadJoin = `left join lateral (
 		select o.reason, case when o.reason = 'refusal' then o.refused_as end as refused_as,
 			case when o.reason = 'refusal' then o.refused_since end as refused_since
 		from pull_request_reads_owed o
-		where lower(o.repo) = any(array(select lower(a.repo) union select lower(r.repo) from repo_projects r
-				where r.renamed_to is not null and lower(r.renamed_to) = lower(a.repo)))
+		where lower(o.repo) = any(a.names)
 			and octet_length(o.repo) <= 1024 and o.number = a.number
-			and lower(` + refs.CanonicalRepoSQL("o.repo") + `) = lower(a.repo)
 			and (o.linked_revision is distinct from o.revision or h.repo is null)
 		order by o.reason = 'refusal' desc limit 1) o on true`
 

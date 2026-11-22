@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -44,7 +43,9 @@ const factsRefusedOf = `case when a.stored_repo is not null
 		then exists (select 1 from pull_request_heads x where x.repo = a.stored_repo and x.number = a.number and x.attribution_refused_at is not null)
 		else exists (select 1 from delivery_pull_requests x where x.repo = a.timeline_repo and x.number = a.number and x.facts_refused_at is not null) end`
 
-// attributionCountsSelect is ReadAttributionCounts' select over the terms of the facts line.
+// attributionCountsSelect is ReadAttributionCounts' select over the terms of the facts line. Each
+// link's pull request is counted under its canonical name, read through the statement's renames
+// (renameJoin), so the count reads repo_projects once however many links there are.
 var attributionCountsSelect = `
 	select (select count(*) from attributed a where not a.has_facts),
 		(select count(*) from attributed),
@@ -52,10 +53,10 @@ var attributionCountsSelect = `
 		(select r.id from now_reading r),
 		(select count(*) from pull_request_texts t where t.reading <> (select r.id from now_reading r)),
 		(select count(*) from pull_request_attribution_moves),
-		(select count(*) from (select coalesce(
-				(select lower(` + refs.CanonicalRepoSQL("lp.repo") + `) || '#' || lp.number from ` + LinkedPullRequestSQL("l.url") + ` lp),
-				lower(l.url))
-			from issue_external_links l group by 1 having count(distinct l.issue_key) > 1) tie)`
+		(select count(*) from (select coalesce(lower(` + canonicalOver("link_rename", "lp.repo") + `) || '#' || lp.number, lower(l.url))
+			from issue_external_links l left join lateral ` + LinkedPullRequestSQL("l.url") + ` lp on true
+				` + renameJoin("link_rename", "lp.repo") + `
+			group by 1 having count(distinct l.issue_key) > 1) tie)`
 
 // ReadAttributionCounts counts, at the call, what the attribution of the stored pull requests
 // still waits on (AttributionCounts). It reads no setting and no GitHub. A pull request GitHub

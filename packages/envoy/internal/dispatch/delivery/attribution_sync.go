@@ -71,14 +71,14 @@ func syncAttributionsStatement(schema string) string {
 		update pull_request_heads h set issue_key = a.issue_key,
 			attribution_source = case when a.has_facts then a.source else h.attribution_source end
 		from attributed a
-		where a.known and h.number = a.number and lower(` + refs.CanonicalRepoSQL("h.repo") + `) = lower(a.repo)
+		where a.known and h.number = a.number and lower(h.repo) = any(a.names)
 			and (h.issue_key is distinct from a.issue_key or (a.has_facts and h.attribution_source is distinct from a.source))
 		returning 1
 	), timeline_written as (
 		update delivery_pull_requests d set issue_key = a.issue_key
 		from attributed a
 		where a.known and a.stored_repo is not null
-			and d.number = a.number and lower(` + refs.CanonicalRepoSQL("d.repo") + `) = lower(a.repo)
+			and d.number = a.number and lower(d.repo) = any(a.names)
 			and d.issue_key is distinct from a.issue_key
 		returning 1
 	), queued as (

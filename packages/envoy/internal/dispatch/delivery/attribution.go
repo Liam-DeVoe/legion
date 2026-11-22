@@ -112,19 +112,76 @@ const attributionCandidateBound = 25
 // repository with no rename is its own canonical name, so a repository Dispatch maps no rename
 // for is compared by that name alone.
 func attributionHeld(repo string) string {
-	return `coalesce(not ` + refs.IssueRepoTooDeep +
-		` and lower(` + refs.CanonicalRepoSQL(refs.IssueRepoResolved) + `) = lower(` + refs.CanonicalRepoSQL(repo) + `), false)`
+	return attributionHeldAs(refs.CanonicalRepoSQL(refs.IssueRepoResolved), refs.CanonicalRepoSQL(repo))
+}
+
+// attributionHeldAs is attributionHeld over the two canonical names, which the caller reads: the
+// canonical name of the issue's resolved repository and the pull request's. The statement reads
+// both through its terms of the renaming rule (renameTerms), once a statement, where
+// attributionHeld reads repo_projects for each name of each candidate.
+func attributionHeldAs(issueCanonical, repoCanonical string) string {
+	return `coalesce(not ` + refs.IssueRepoTooDeep + ` and lower(` + issueCanonical + `) = lower(` + repoCanonical + `), false)`
 }
 
 // attributionHeldFor is the condition one candidate, named by the source the expression source
 // reads, passes to be the pull request's issue. The issue whose external link is the pull
 // request's own URL is held in any repository: a person links an issue to one pull request, and
 // the link names that pull request wherever it is (R19 of the spec of several open pull
-// requests). A candidate of any other source is held where attributionHeld holds it, to the
-// repository the expression repo reads. Neither holds a pull request whose head is in a fork,
-// which the statement's own_head refuses before it names any candidate.
-func attributionHeldFor(source, repo string) string {
-	return `(` + source + ` = '` + string(sourceExternalLink) + `' or ` + attributionHeld(repo) + `)`
+// requests). A candidate of any other source is held where held, the condition attributionHeld
+// or attributionHeldAs gives, holds it to the pull request's repository. Neither holds a pull
+// request whose head is in a fork, which the statement's own_head refuses before it names any
+// candidate.
+func attributionHeldFor(source, held string) string {
+	return `(` + source + ` = '` + string(sourceExternalLink) + `' or ` + held + `)`
+}
+
+// renameTerms are the statement's terms of the renaming rule (refs.CanonicalRepoSQL), which read
+// repo_projects once a statement:
+//
+//   - renames: one row for each lowered name that some mapping renames, whose target is the
+//     greatest renamed_to of those mappings: the canonical name of that name, as
+//     refs.CanonicalRepoSQL reads it. A name with no row here is its own canonical name.
+//   - renamed_names: for each lowered target, the lowered names renamed to it.
+//
+// Every read of the rule in the statement is a join of one of them (renameJoin, namesJoin), which
+// a hash join serves from one scan. refs.CanonicalRepoSQL is a scan of repo_projects for each name
+// it reads, and the statement read about 20 names a pull request: on 5,000 stored pull requests
+// and the 43 mappings production held on 22 November, 1 of them renamed, a window read of 1,000
+// pull requests took about 170 ms, of which about 40 ms were those scans.
+const renameTerms = `renames as materialized (
+		select lower(r.repo) as source, pg_catalog.max(r.renamed_to) as target
+		from repo_projects r where r.renamed_to is not null group by lower(r.repo)
+	), renamed_names as materialized (
+		select lower(n.target) as target, pg_catalog.array_agg(n.source) as names
+		from renames n group by lower(n.target)
+	)`
+
+// renameJoin is the join of renames, under alias, that gives the canonical name of the expression
+// name (canonicalOver): a left join, so a name no mapping renames keeps its row.
+func renameJoin(alias, name string) string {
+	return `left join renames ` + alias + ` on ` + alias + `.source = lower(` + name + `)`
+}
+
+// canonicalOver is the canonical name of the expression name over renameJoin(alias, name): the
+// target of its row in renames, else the name itself, which is refs.CanonicalRepoSQL(name).
+func canonicalOver(alias, name string) string {
+	return `coalesce(` + alias + `.target, ` + name + `)`
+}
+
+// namesJoin is the two joins, under alias, that give the names of the expression lowered, a
+// lowered canonical name (namesOver).
+func namesJoin(alias, lowered string) string {
+	return `left join renames ` + alias + `_own on ` + alias + `_own.source = ` + lowered + `
+		left join renamed_names ` + alias + `_to on ` + alias + `_to.target = ` + lowered
+}
+
+// namesOver is, over namesJoin(alias, lowered), every lowered name whose canonical name is
+// lowered in any case: the names renamed to it, and lowered itself where no mapping renames it.
+// So lower(x) = any(namesOver(...)) holds exactly where lower(refs.CanonicalRepoSQL(x)) = lowered:
+// a name x with a row in renames reads as its target, which is lowered only where x is renamed to
+// it, and a name with no row reads as itself.
+func namesOver(alias, lowered string) string {
+	return `(coalesce(` + alias + `_to.names, '{}'::text[]) || case when ` + alias + `_own.source is null then array[` + lowered + `] else '{}'::text[] end)`
 }
 
 // attributionSubjects is the `subjects` term of the statement (attributedTerms): the distinct
@@ -156,19 +213,28 @@ const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 
 // attributedTerms is the statement's terms over judged, a query of (repo, number) under any
 // stored name, for the schema that holds the reading. A caller adds its own select over
-// `attributed`, one row for each judged pull request: repo (the canonical name), number,
-// stored_repo and timeline_repo (the names its results row and its timeline row are stored under,
-// null where it has none), has_facts, known, fallback, issue_key, source and linked (the issue
-// is a link's, and does not resolve to the pull request's repository: a reader of the issue's own
-// repository leaves the pull request out, and a reader of its heads names its repository).
+// `attributed`, one row for each judged pull request: repo (the canonical name), number, names
+// (every lowered name whose canonical name is repo, which a caller compares a stored row's name
+// with, lower(x.repo) = any(a.names), instead of reading the renaming rule again), stored_repo and
+// timeline_repo (the names its results row and its timeline row are stored under, null where it
+// has none), has_facts, known, fallback, issue_key, source and linked (the issue is a link's, and
+// does not resolve to the pull request's repository: a reader of the issue's own repository leaves
+// the pull request out, and a reader of its heads names its repository).
 //
 //   - now_reading: the identity of the reading that runs now, and whether any texts row is on
 //     another. Each of min and max is one probe of pull_request_texts_reading, whatever the
 //     statistics say.
-//   - judged: each judged pull request once, under its canonical name (refs.CanonicalRepoSQL).
+//   - renames and renamed_names: the renaming rule, read once (renameTerms). Every comparison of a
+//     name below reads it through them, never through refs.CanonicalRepoSQL, so the statement
+//     reads repo_projects once however many pull requests it judges.
+//   - judged: each judged pull request once, under its canonical name (refs.CanonicalRepoSQL),
+//     with names, every lowered name whose canonical name is that one (namesOver), held_as, the
+//     lowered canonical name of that canonical name, which the hold and the links compare, and
+//     held_names, the names of held_as. Where no mapping renames a target, which the settings
+//     route refuses, held_as is the canonical name and held_names is names.
 //   - heads and timeline: its results row and its timeline row under any name the renaming rule
-//     reads as that name, the row under the canonical name first, then the results row read from
-//     GitHub last. limit 1 keeps each join one probe of the index on number.
+//     reads as that name (names), the row under the canonical name first, then the results row
+//     read from GitHub last. limit 1 keeps each join one probe of the index on number.
 //   - batch: its texts, joined to that results row. The fallback is the results row's stored
 //     answer, read or unread, also when that is nobody, and the timeline row's issue only where
 //     no results row exists: the one fallback of every reader. The texts are facts only where they
@@ -178,11 +244,12 @@ const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 //     row.
 //   - named to picked: the five sources in the order of the list at the top of this file, from
 //     facts whose head is the pull request's own repository's (own_head), bounded at
-//     attributionCandidateBound and held to the pull request's repository (attributionHeld), but
+//     attributionCandidateBound and held to the pull request's repository (attributionHeldAs), but
 //     for a link that names the pull request, which is held in any repository. A link names it
 //     by the one rule of the link write (linkedPullRequest): its /pull/ or its /issues/ URL, in
 //     any letter case, under any name whose canonical name is the pull request's repository, so a
-//     link written before a rename names it too (PullRequestLinksSQL, LinkedPullRequestSQL). A tie
+//     link written before a rename names it too (linkFormsOf over held_names, as
+//     PullRequestLinksSQL gives them for one pull request, and LinkedPullRequestSQL). A tie
 //     of rank and place, two links of one pull request in two spellings, is ended by the key in
 //     byte order, so no collation, plan or row order picks the issue.
 //   - attributed: one of three states. The rule's answer where the pull request has facts: its
@@ -200,39 +267,47 @@ func attributedTerms(schema, judged string) string {
 // row's own head alone for the order of the facts line (titleAndBranchTexts).
 func attributedTermsOver(schema, judged, texts string) string {
 	hasFacts := `b.texts_current and (b.messages_read or p.key is not null)`
+	heldAs := `lower(` + canonicalOver("pr_own", "k.repo") + `)`
+	held := attributionHeldAs(canonicalOver("issue_rename", refs.IssueRepoResolved), "c.pr_held_as")
 	return `with recursive now_reading as materialized (
 		select r.id, coalesce((select pg_catalog.min(x.reading) from pull_request_texts x), r.id) <> r.id
 			or coalesce((select pg_catalog.max(x.reading) from pull_request_texts x), r.id) <> r.id as other
 		from (select ` + schema + `.attribution_reading() as id) r
-	), judged_raw as (` + judged + `
-	), judged as (
+	), ` + renameTerms + `, judged_raw as (` + judged + `
+	), judged_keys as (
 		select distinct on (lower(c.repo), c.number) c.repo, c.number
-		from (select ` + refs.CanonicalRepoSQL("r.repo") + ` as repo, r.number from judged_raw r) c
+		from (select ` + canonicalOver("raw_rename", "r.repo") + ` as repo, r.number
+			from judged_raw r ` + renameJoin("raw_rename", "r.repo") + `) c
 		order by lower(c.repo), c.number, c.repo
+	), judged as (
+		select k.repo, k.number, ` + namesOver("pr", "lower(k.repo)") + ` as names,
+			` + heldAs + ` as held_as, ` + namesOver("hold", heldAs) + ` as held_names
+		from judged_keys k ` + namesJoin("pr", "lower(k.repo)") + `
+			` + namesJoin("hold", heldAs) + `
 	), heads as (
 		select j.repo as j_repo, j.number as j_number, h.*
 		from judged j cross join lateral (
 			select h.repo, h.number, h.url, h.issue_key, h.attribution_source, h.head_sha, h.base_ref, h.event_at,
 				h.head_ref, h.title, h.state, h.checked_at
 			from pull_request_heads h
-			where h.number = j.number and lower(` + refs.CanonicalRepoSQL("h.repo") + `) = lower(j.repo)
+			where h.number = j.number and lower(h.repo) = any(j.names)
 			order by lower(h.repo) = lower(j.repo) desc, h.github_read_at desc nulls last, h.repo
 			limit 1) h
 	), timeline as (
 		select j.repo as j_repo, j.number as j_number, d.repo, d.issue_key
 		from judged j cross join lateral (
 			select d.repo, d.issue_key from delivery_pull_requests d
-			where d.number = j.number and lower(` + refs.CanonicalRepoSQL("d.repo") + `) = lower(j.repo)
+			where d.number = j.number and lower(d.repo) = any(j.names)
 			order by lower(d.repo) = lower(j.repo) desc, d.repo
 			limit 1) d
 	), batch as (
-		select j.repo, j.number, h.url,
+		select j.repo, j.number, j.names, j.held_as, j.held_names, h.url,
 			case when h.repo is null then tl.issue_key else h.issue_key end as fallback,
 			h.repo as stored_repo, tl.repo as timeline_repo, h.attribution_source as stored_source,
 			coalesce(t.head_sha = h.head_sha and t.base_ref = h.base_ref and t.updated_at is not distinct from h.event_at
 				and t.head_ref = h.head_ref and t.title = h.title, false) as texts_current,
 			coalesce(t.commit_messages is not null, false) as messages_read,
-			coalesce(t.head_repo <> '' and lower(` + refs.CanonicalRepoSQL("t.head_repo") + `) = lower(j.repo), false) as own_head,
+			coalesce(t.head_repo <> '' and lower(t.head_repo) = any(j.names), false) as own_head,
 			case when t.reading = r.id then t.title_keys else k.title_keys end as title_keys,
 			case when t.reading = r.id then t.cited_issues else k.cited_issues end as cited_issues,
 			case when t.reading = r.id then t.branch_keys else k.branch_keys end as branch_keys,
@@ -244,42 +319,44 @@ func attributedTermsOver(schema, judged, texts string) string {
 			left join lateral (select f.* from ` + schema + `.attribution_keys(t.repo, t.head_ref, t.title, t.body, t.commit_messages) f
 				where t.reading <> r.id offset 0) k on true
 	), named as (
-		select src.repo as pr_repo, src.number as pr_number, l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0::bigint as n
+		select src.repo as pr_repo, src.number as pr_number, src.held_as as pr_held_as, l.issue_key as key,
+			'` + string(sourceExternalLink) + `' as source, 0 as rank, 0::bigint as n
 		from batch src cross join lateral (select l.issue_key from issue_external_links l
-			where lower(l.url) = any(` + PullRequestLinksSQL("src.repo", "src.number") + `)
+			where lower(l.url) = any(` + linkFormsOf("src.held_names", "src.number") + `)
 				and exists (select 1 from ` + LinkedPullRequestSQL("l.url") + ` lp) offset 0) l
 		where src.texts_current and src.own_head
 		union all
-		select src.repo, src.number, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n
+		select src.repo, src.number, src.held_as, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n
 		from batch src cross join lateral unnest(src.cited_issues) with ordinality u(url, n)
 			cross join lateral (select l.issue_key from issue_external_links l
 				where lower(l.url) = lower(u.url) and ` + linkURLAsCited + ` = u.url offset 0) l
 		where src.texts_current and src.own_head
 		union all
-		select src.repo, src.number, u.key, '` + string(sourceBranch) + `', 2, u.n
+		select src.repo, src.number, src.held_as, u.key, '` + string(sourceBranch) + `', 2, u.n
 		from batch src cross join lateral unnest(src.branch_keys) with ordinality u(key, n) join issues i on i.key = u.key
 		where src.texts_current and src.own_head
 		union all
-		select src.repo, src.number, u.key, '` + string(sourceTitleBody) + `', 3, u.n
+		select src.repo, src.number, src.held_as, u.key, '` + string(sourceTitleBody) + `', 3, u.n
 		from batch src cross join lateral unnest(src.title_keys) with ordinality u(key, n) join issues i on i.key = u.key
 		where src.texts_current and src.own_head
 		union all
-		select src.repo, src.number, u.key, '` + string(sourceCommitMessage) + `', 4, u.n
+		select src.repo, src.number, src.held_as, u.key, '` + string(sourceCommitMessage) + `', 4, u.n
 		from batch src cross join lateral unnest(src.commit_keys) with ordinality u(key, n) join issues i on i.key = u.key
 		where src.texts_current and src.own_head
 	), candidates as (
-		select pr_repo, pr_number, key, source, rank, n
+		select pr_repo, pr_number, pr_held_as, key, source, rank, n
 		from (select named.*, row_number() over (partition by pr_repo, pr_number order by rank, n, key collate "C") place from named) r
 		where place <= ` + strconv.Itoa(attributionCandidateBound) + `
 	), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `, held as (
-		select c.pr_repo, c.pr_number, c.key, c.source, c.rank, c.n, ` + attributionHeld("c.pr_repo") + ` as in_repo
+		select c.pr_repo, c.pr_number, c.key, c.source, c.rank, c.n, ` + held + ` as in_repo
 		from candidates c left join issues i on i.key = c.key ` + refs.IssueRepoJoin + `
-		where ` + attributionHeldFor("c.source", "c.pr_repo") + `
+			` + renameJoin("issue_rename", refs.IssueRepoResolved) + `
+		where ` + attributionHeldFor("c.source", held) + `
 	), picked as (
 		select distinct on (pr_repo, pr_number) pr_repo, pr_number, key, source, in_repo
 		from held order by pr_repo, pr_number, rank, n, key collate "C"
 	), attributed as (
-		select b.repo, b.number, b.stored_repo, b.timeline_repo, b.fallback, ` + hasFacts + ` as has_facts,
+		select b.repo, b.number, b.names, b.stored_repo, b.timeline_repo, b.fallback, ` + hasFacts + ` as has_facts,
 			(` + hasFacts + `) or not b.texts_current as known,
 			case when ` + hasFacts + ` then p.key when b.texts_current then null else b.fallback end as issue_key,
 			case when ` + hasFacts + ` then coalesce(p.source, '` + string(sourceNone) + `')
@@ -333,7 +410,7 @@ var pullRequestsOfIssuesSelect = `
 	select ` + PullRequestColumns + `, answer from (
 		select d.*, a.issue_key as answer
 		from attributed a join delivery_pull_requests d
-			on d.number = a.number and lower(` + refs.CanonicalRepoSQL("d.repo") + `) = lower(a.repo)
+			on d.number = a.number and lower(d.repo) = any(a.names)
 		where a.issue_key = any($1::text[])) x
 	order by answer, number, repo`
 
@@ -342,12 +419,14 @@ var pullRequestsOfIssuesSelect = `
 const pullRequestKeys = `select k.repo, k.number from unnest($1::text[], $2::int[]) k(repo, number)`
 
 // pullRequestIssuesStatement is PullRequestIssues' statement: the answer of each key its caller
-// gave, matched under the renaming rule, for each key with a results row or a timeline row.
+// gave, matched under the renaming rule, for each key with a results row or a timeline row. Each
+// key's canonical name is a join of renames, so the match is a hash join of the keys and the
+// answers.
 func pullRequestIssuesStatement(schema string) string {
 	return attributedTerms(schema, pullRequestKeys) + `
 	select k.repo, k.number, a.issue_key, a.source, a.has_facts, a.known
-	from (` + pullRequestKeys + `) k
-	join attributed a on a.number = k.number and lower(` + refs.CanonicalRepoSQL("k.repo") + `) = lower(a.repo)
+	from (` + pullRequestKeys + `) k ` + renameJoin("key_rename", "k.repo") + `
+	join attributed a on a.number = k.number and lower(` + canonicalOver("key_rename", "k.repo") + `) = lower(a.repo)
 	where a.stored_repo is not null or a.timeline_repo is not null`
 }
 
@@ -628,9 +707,11 @@ var factsLineJudged = `select h.repo, h.number from pull_request_heads h
 			and not coalesce(t.head_sha = h.head_sha and t.base_ref = h.base_ref and t.updated_at is not distinct from h.event_at
 				and t.head_ref = h.head_ref and t.title = h.title and t.commit_messages is not null, false)
 	union select d.repo, d.number from delivery_pull_requests d
+		` + renameJoin("timeline_rename", "d.repo") + `
+		` + namesJoin("timeline", "lower("+canonicalOver("timeline_rename", "d.repo")+")") + `
 		where d.unfetchable_at is null and not exists (
 			select 1 from pull_request_heads x
-			where x.number = d.number and lower(` + refs.CanonicalRepoSQL("x.repo") + `) = lower(` + refs.CanonicalRepoSQL("d.repo") + `))`
+			where x.number = d.number and lower(x.repo) = any(` + namesOver("timeline", "lower("+canonicalOver("timeline_rename", "d.repo")+")") + `))`
 
 // factsLineSelect is the facts line's select over its terms: each entry under its canonical name,
 // the name of a stored results row that is not the canonical name, the name of its timeline row,
@@ -638,7 +719,7 @@ var factsLineJudged = `select h.repo, h.number from pull_request_heads h
 var factsLineSelect = `
 	select a.repo, a.number,
 		coalesce((select x.repo from pull_request_heads x
-			where x.number = a.number and lower(` + refs.CanonicalRepoSQL("x.repo") + `) = lower(a.repo) and lower(x.repo) <> lower(a.repo)
+			where x.number = a.number and lower(x.repo) = any(a.names) and lower(x.repo) <> lower(a.repo)
 			order by x.repo limit 1), a.repo),
 		a.stored_repo is not null, coalesce(a.timeline_repo, ''),
 		coalesce(hr.state = 'open', false), coalesce(hr.github_read_at is null, false),
