@@ -26,7 +26,7 @@ import {
   textOptionDescription,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
-import { RefPartsControl, RefPickerNotes, RefRowLabel } from "../refs/RefPickerList";
+import { RefPartsControl, RefPickerNotes, RefRowDetail, RefRowLabel } from "../refs/RefPickerList";
 import {
   insertionText,
   isCompositionKey,
@@ -139,7 +139,7 @@ function RefRow({
               className={`self-stretch text-xs ${textOptionDescription}`}
               title={item.description}
             >
-              {item.description}
+              <RefRowDetail row={row} />
             </TruncatedText>
           )}
         </span>

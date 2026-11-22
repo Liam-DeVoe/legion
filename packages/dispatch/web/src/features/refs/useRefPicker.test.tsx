@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, expect, type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
-import { ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
   ArchitectureTree,
@@ -165,6 +165,7 @@ const shot: ArtifactWithTrees = {
 };
 
 interface Pane {
+  client: QueryClient;
   getArchitecture: Mock<typeof api.getArchitecture>;
   getIssueCollaborators: Mock<typeof api.getIssueCollaborators>;
   getReferences: Mock<typeof api.getReferences>;
@@ -242,16 +243,16 @@ function renderHost({
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(blocks);
   const listAgentArtifacts = spyOn(api, "listAgentArtifacts").mockResolvedValue([shot]);
   const search = spyOn(api, "search").mockImplementation(searchAnswer);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
+      <QueryClientProvider client={client}>
         <Host issueKey={noIssue ? undefined : "CORE-1"} />
       </QueryClientProvider>
     </MemoryRouter>
   );
   pane = {
+    client,
     getArchitecture,
     getIssueCollaborators,
     getReferences,
@@ -893,6 +894,53 @@ test("the picker adds no stopped option while the live agents list failed", asyn
   await waitFor(() =>
     expect(drawnRows()).toEqual(["People: alice@example.com", "Components: The relay"])
   );
+});
+
+// A refilling agent list keeps the rows an earlier read gave and never says that nothing
+// matches: it says the list is refilling instead, where the agent and role rows are read from,
+// under a query that matches no row as under none.
+test("mention suggestions say the agent list is refilling instead of that no agent matches", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+  await waitFor(() => expect(drawnRows()).toContain("Agents: Planner"));
+  page.listAgents.mockRejectedValue(
+    new ApiError(503, { code: "ENVOY_REFILLING", error: "The agent list is refilling." })
+  );
+  await act(async () => {
+    await page.client.refetchQueries({ queryKey: ["agents"] });
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-list-refilling").textContent).toBe(AGENT_LIST_REFILLING)
+  );
+  expect(drawnRows()).toContain("Agents: Planner");
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+
+  await user.keyboard("nobody");
+  await waitFor(() => expect(page.search).toHaveBeenCalledWith("nobody", expect.anything()));
+  await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
+  expect(screen.getByTestId("agent-list-refilling")).toBeInTheDocument();
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+});
+
+// A row is an option inside a listbox, which owns only options, so the agent in it is drawn with
+// its running state and no link: a session's row by its name, and a role's row by its holder.
+test("the mention picker draws each agent with its state and no link", async () => {
+  const user = userEvent.setup();
+  renderHost();
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@plann");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  const list = screen.getByRole("listbox", { name: "References" });
+  for (const option of within(list).getAllByRole("option")) {
+    const agent = option.querySelector('[data-agent-name="planner-session"]');
+    expect(agent?.textContent, option.textContent ?? "").toBe("Planner");
+    await waitFor(() => expect(agent?.getAttribute("data-agent-state")).toBe("running"));
+  }
+  expect(list.querySelector("a")).toBeNull();
 });
 
 /** A comment's hit whose snippet is `snippet`, with the tree the server read it into where the
