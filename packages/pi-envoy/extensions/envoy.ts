@@ -3328,10 +3328,25 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A role claim the model or a plugin asks for once this session's stop has begun is refused
   // (R24 of dispatch://INFRA-3589). The stop hands back every role this process holds and deletes
   // the session's record next, and a move whose claim was in flight when the stop began keeps
-  // nothing of it. Both the plugin bridge's claim and the tool say the same sentence
-  // (`RoleClaimStoppingError`), which the Legion boot reads as its session's stop.
+  // nothing of it. The plugin bridge's claim, its role-bound notice subscription and the tool say
+  // the same sentence (`RoleClaimStoppingError`), which the Legion boot and the Legion controller
+  // read as their session's stop.
   const refuseClaimWhileStopping = (role: string): void => {
     if (shuttingDown) throw new RoleClaimStoppingError(role);
+  };
+
+  // The start of the plugin bridge's claim and of its role-bound notice subscription once this
+  // instance's stop has begun. The instance stays on the bridge after its stop
+  // (`shutDownSession`), so this answers for as long as the process lives. A call for the session
+  // this instance serves, which the bridge routes to it by that id, is refused naming the stop
+  // (`RoleClaimStoppingError`), and no other instance gets it. A call for a session this instance
+  // does not serve reached it through the bridge's fallback (`instances.at(-1)`), and this stop is
+  // not that session's: it is refused as an instance that serves no such session refuses it, so
+  // the Legion entry does not take it for its own session's stop.
+  const refuseBridgeWhileStopping = (targetSessionID: string, role: string, call: string): void => {
+    if (!shuttingDown) return;
+    if (targetSessionID === hostSessionID()) throw new RoleClaimStoppingError(role);
+    throw new Error(`Envoy has no active session for Legion ${call}: ${targetSessionID}`);
   };
 
   // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
@@ -4493,7 +4508,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // list is this instance's own entry on the object it published into.
   const claim: LegionRoleClaim = async (targetSessionID, role, callerContext) => {
     // A stopping session claims no role, and is not marked as Legion's either.
-    refuseClaimWhileStopping(role);
+    refuseBridgeWhileStopping(targetSessionID, role, "role claim");
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(`Envoy has no active session for Legion role claim: ${targetSessionID}`);
@@ -4542,6 +4557,17 @@ export default function envoyExtension(hostApi: PiApi): void {
     callerContext,
     whileHolding
   ) => {
+    // A subscription that lasts while this session holds a role is part of that role's claim:
+    // once this session's stop has begun it is refused in the claim's words
+    // (`RoleClaimStoppingError`), at its start as the claim is, and after each wait and when a
+    // step fails, so the Legion controller reads it as its session's stop. The stop hands the
+    // role back next.
+    if (whileHolding !== undefined) {
+      refuseBridgeWhileStopping(targetSessionID, whileHolding, "notice subscription");
+    }
+    const refuseWhileStopping = (): void => {
+      if (whileHolding !== undefined) refuseClaimWhileStopping(whileHolding);
+    };
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(
@@ -4553,13 +4579,19 @@ export default function envoyExtension(hostApi: PiApi): void {
     // role claim does.
     requireInbound();
     if (registrationState.establishedFor() !== targetSessionID) {
-      await establishForBridge(context);
+      try {
+        await establishForBridge(context);
+      } catch (error) {
+        refuseWhileStopping();
+        throw error;
+      }
     }
     let marked: readonly string[] = [];
     if (whileHolding !== undefined) {
       // A role move still in flight could end the role just after the subscription opens, so the
       // role is read once every move started before this call has landed.
       await registrationState.roleMoves.settled();
+      refuseWhileStopping();
       if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
         throw new Error(
           `Envoy session ${targetSessionID} does not hold role ${whileHolding} for a notice subscription`
@@ -4587,6 +4619,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         unfollow(topic);
         registrationState.unmarkRoleBoundSubjects(marked);
       }
+      refuseWhileStopping();
       throw error;
     }
   };
@@ -4837,6 +4870,17 @@ export default function envoyExtension(hostApi: PiApi): void {
     // at a time, and a command of the session the host left runs on until it is killed here. A
     // `!` that arrives from here on is refused saying so (`runShellCommandTurn`).
     for (const running of runningShellCommands.values()) running.stop();
+    // The instance stays on the role-claim bridge, stopped, after this stop too: a claim or a
+    // role-bound notice subscription the bridge routes to this session from here on is refused
+    // naming the stop (`refuseBridgeWhileStopping`). The bridge never answers that it has no
+    // instance for this session, and never hands its claim to another instance. The instance moves
+    // to the front of the bridge's list, so the bridge's fallback for a session no instance serves
+    // (`instances.at(-1)`) reaches a live instance where one is bound.
+    if (publishedInterface !== undefined) {
+      const { instances } = publishedInterface.roleClaim;
+      const bound = instances.indexOf(claimInstance);
+      if (bound !== -1) instances.unshift(...instances.splice(bound, 1));
+    }
     // This session is about to deregister with the listener, so it stops being an address a
     // reply can reach: a subagent still running in this process must report none rather than
     // name it, and a dead entry must not be what makes some other session ambiguous.
@@ -4906,10 +4950,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       agentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
-      // The instance stayed on the role-claim bridge while the stop ran: a claim the bridge
-      // routed to this session meanwhile was refused naming the stop (`RoleClaimStoppingError`),
-      // rather than reaching another instance or none. It leaves the bridge now.
-      if (publishedInterface !== undefined) {
+      // An instance that served no session (a `task` subagent's, whose `sessionID` stayed empty)
+      // leaves the role-claim bridge now: the bridge routes nothing to it by id, and kept there
+      // it would hold this instance's state for the life of the process. An instance that served
+      // a session stays on it, stopped (above).
+      if (publishedInterface !== undefined && hostSessionID() === "") {
         const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);
         if (bound !== -1) publishedInterface.roleClaim.instances.splice(bound, 1);
       }

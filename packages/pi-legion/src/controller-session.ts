@@ -13,7 +13,11 @@ import {
   listenerAskedToClaimAgain,
 } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
-import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
+import {
+  claimEnvoyRole,
+  claimRefusedForStop,
+  subscribeLegionNotice,
+} from "@legion/pi-shared/role-claim-bridge";
 import {
   clearStartupTurn,
   markStartupTurnPending,
@@ -52,6 +56,13 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
+  /** The session's stop has begun (`legion.ts` calls it at `session_shutdown`), R24 of
+   * dispatch://INFRA-3589: the claim's signal aborts, so a role claim the listener answered 503
+   * is not made again, and a claim of the daemon-launched controller that fails from then on says
+   * nothing and exits nothing. A role claim or a notice subscription Envoy refuses because the
+   * session's stop has begun (`claimRefusedForStop`) is that same stop: in RPC mode, which the
+   * daemon-launched controller runs, a SIGTERM stops Envoy's session with no `session_shutdown`. */
+  readonly stop: () => void;
 }
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
@@ -121,6 +132,9 @@ export function createControllerSession(deps: {
   // failure of a typed claim the daemon-launched controller stays up for (`claimOnce`). Any other
   // 503, such as one to the controller-topic subscription after the role landed, is not in it.
   const roleClaimGaveUp = new WeakSet<object>();
+  // Aborts as the session's stop begins (`stop`): the role claim's signal, and what tells a claim
+  // the stop overtook to end quietly (`claimOnce`).
+  const stopped = new AbortController();
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -202,7 +216,9 @@ export function createControllerSession(deps: {
    * (`daemonControllerSlackChannels`) for as long as it holds the role, and once it holds the role
    * and the topics it reports ready on `claims/ready`, which is when the daemon hands it the start
    * message; it marks `startupTurn` as sent right before that report. Any step of its claim that
-   * fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot does. A root
+   * fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot does, except once
+   * the session's stop has begun ({@link ControllerSession.stop}): the stop ends the process
+   * itself, and an exit in its middle would cut its role release and its DELETE short. A root
    * architect's or phase worker's pane carries a boot token too, its own claim's:
    * `/legion-claim-controller` run there is a takeover by hand like any other, which needs the
    * capability and stops before any daemon call without it.
@@ -242,7 +258,9 @@ export function createControllerSession(deps: {
   // after its counted tries (`claimWith`, `roleClaimGaveUp`): that command fails where the person
   // reads it, and the process, which still holds what it held, stays. Any other failure of a typed
   // claim, a 503 to its controller-topic subscription after the role landed included, exits as
-  // the daemon's own claim does, so a controller never stays up without its topics.
+  // the daemon's own claim does, so a controller never stays up without its topics. A claim the
+  // session's stop overtook (`stopped`) says nothing and exits nothing: the stop ends the process
+  // itself.
   const claimOnce = async (
     context: CommandContext | SessionContext,
     progress: ClaimProgress,
@@ -253,6 +271,7 @@ export function createControllerSession(deps: {
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
+      if (stopped.signal.aborted) return;
       if (startedBy === "typed" && error instanceof Error && roleClaimGaveUp.has(error))
         throw error;
       logger.error(
@@ -385,7 +404,8 @@ export function createControllerSession(deps: {
     // wherever it runs, and any claim of a controller the daemon did not launch, also shows each
     // wait as a notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where
     // the person sees it, with the listener's answer; in the daemon-launched controller its process
-    // stays up, with the role and topics its first claim took, and its waits are in that log.
+    // stays up, with the role and topics its first claim took, and its waits are in that log. Every
+    // wait ends at the session's stop (`stopped`), and no claim is made after it.
     const ui: SessionContext["ui"] = context.ui;
     let waitShown = false;
     const showWaiting = (line: string): void => {
@@ -398,9 +418,16 @@ export function createControllerSession(deps: {
       claimWidget = { session: sessionID, clear: () => ui.setWidget?.(CLAIM_WIDGET, undefined) };
       waitShown = true;
     };
+    // Envoy refused a step of this claim because the session's stop has begun
+    // (`claimRefusedForStop`): that stop is this claim's too, so the claim ends quietly
+    // (`claimOnce`). In RPC mode a SIGTERM stops Envoy's session with no `session_shutdown`.
+    const heardStop = (error: unknown): never => {
+      if (claimRefusedForStop(error)) stopped.abort();
+      throw error;
+    };
     try {
       await claimRoleAgainOnBusy(
-        () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
+        () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext).catch(heardStop),
         registration.claimToken,
         supervised && startedBy === "daemon"
           ? {
@@ -408,6 +435,7 @@ export function createControllerSession(deps: {
                 logger.warn(`[legion] ${line}`);
                 showWaiting(line);
               },
+              signal: stopped.signal,
             }
           : {
               log: (line) => {
@@ -418,6 +446,7 @@ export function createControllerSession(deps: {
                 if (ui.setWidget !== undefined) showWaiting(line);
               },
               maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
+              signal: stopped.signal,
             }
       );
     } catch (error) {
@@ -444,7 +473,7 @@ export function createControllerSession(deps: {
       legionControllerNoticeSubject(project),
       envoyContext,
       registration.claimToken
-    );
+    ).catch(heardStop);
     // The project's Slack channels, as the daemon that launched this controller names them: each
     // channel's app mentions, for as long as this session holds the controller role, never
     // registered with the listener, so a resume hears the list it is launched with and no other.
@@ -454,7 +483,7 @@ export function createControllerSession(deps: {
         slackMentionTopic(channel),
         envoyContext,
         registration.claimToken
-      );
+      ).catch(heardStop);
     }
     if (supervised) {
       // The daemon delivers its start prompt at this ready, so the start is sent from here on.
@@ -717,5 +746,6 @@ export function createControllerSession(deps: {
     startCommand,
     isClaimedSession,
     mintGrant,
+    stop: () => stopped.abort(),
   };
 }

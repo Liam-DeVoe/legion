@@ -776,8 +776,10 @@ export default function legionExtension(pi: PiApi): void {
   });
   pi.on("session_shutdown", async (_event, context) => {
     // The session's stop has begun: its claim boot claims nothing from here on, and a claim that
-    // fails says nothing and exits nothing (R24 of dispatch://INFRA-3589).
+    // fails says nothing and exits nothing (R24 of dispatch://INFRA-3589). The controller's claim
+    // does the same.
     claimSession.stop();
+    controllerSession.stop();
     clearStartupTurn(context.sessionManager.getSessionId());
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();

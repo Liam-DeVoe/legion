@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
+import {
+  claimEnvoyRole,
+  claimRefusedForStop,
+  type LegionRoleClaimInstance,
+  legionRoleClaimBridge,
+  subscribeLegionNotice,
+} from "@legion/pi-shared/role-claim-bridge";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import {
   createPi,
+  response,
   responseWithRegistration,
   sessionContext,
   settle,
@@ -249,4 +257,117 @@ test("a session event after the stop began runs no subagent check", async () => 
   await settle();
 
   expect(publishes).toBe(before);
+});
+
+/** What a call that should fail failed with, or undefined when it did not fail. */
+async function failure(call: Promise<void>): Promise<unknown> {
+  return call.then(
+    () => undefined,
+    (error: unknown) => error
+  );
+}
+
+// The Legion controller claims its role, and its session's stop begins: the stop's DELETE is
+// still on the wire when the controller asks for its controller topic for as long as it holds the
+// role. The subscription is refused in the claim's words (`RoleClaimStoppingError`), which the
+// controller reads as its session's stop, and nothing is registered for it.
+test("a role-bound notice subscription after the stop began is refused naming the stop and registers nothing", async () => {
+  const session = "ses_subscribe_while_stopping";
+  const role = "legion-acme-controller";
+  const notice = "notifications.legion.ACME.controller";
+  let stopBegan = false;
+  const heldDeletes: (() => void)[] = [];
+  const afterStop: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (stopBegan) afterStop.push(`${init?.method ?? "GET"} ${path}`);
+    if (path === "/v1/roles/set") {
+      return response({
+        session_id: session,
+        machine_id: "test",
+        dir: "/tmp/envoy-omp-test",
+        topics: [`notifications.role.${role}`],
+      });
+    }
+    // The stop's last call, held so that the stop still runs when the subscription is asked for.
+    if (init?.method === "DELETE" && path === `/v1/sessions/${session}`) {
+      await heldOn(heldDeletes);
+    }
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?subscribe-while-stopping");
+  const fixture = createPi();
+  const context = host(session, [], [], []);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+
+  try {
+    await claimEnvoyRole(session, role, context);
+    stopBegan = true;
+    const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
+    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
+
+    const refused = await failure(subscribeLegionNotice(session, notice, context, role));
+    await settle();
+
+    expect(claimRefusedForStop(refused)).toBe(true);
+    expect(afterStop.filter((call) => call.endsWith("/v1/interests/subscribe"))).toEqual([]);
+    for (const answer of heldDeletes.splice(0)) answer();
+    await stopping;
+  } finally {
+    for (const answer of heldDeletes.splice(0)) answer();
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }
+});
+
+// A pi pane in RPC mode gets no `session_shutdown`, so a Legion claim can come after its stop has
+// ended: a first-turn bound, or a claim retried after a 503. The session's instance stays on the
+// role-claim bridge after its stop. The claim and a role-bound subscription for its session are
+// refused naming the stop, and no other Envoy instance of the process is asked. The stopped
+// instance moved to the front of the bridge's list, so a claim for a session no instance serves
+// still reaches a live instance. Once the stopped instance is the only one, it refuses that claim,
+// but not in the stop's words: the stop is not that session's.
+test("a claim for a session whose stop ended is refused naming the stop, and no other instance is asked", async () => {
+  const session = "ses_claim_after_stop";
+  const role = "legion-acme-repo-1-implementer";
+  globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?claim-after-stop");
+  // Another live instance of the process, bound before the session's own: it records what the
+  // bridge hands it.
+  const asked: string[] = [];
+  const other: LegionRoleClaimInstance = {
+    claim: async (target, claimed) => {
+      asked.push(`claim ${target} ${claimed}`);
+    },
+    subscribe: async (target, topic) => {
+      asked.push(`subscribe ${target} ${topic}`);
+    },
+    sessionID: () => "ses_other_live",
+  };
+  const { instances } = legionRoleClaimBridge();
+  instances.push(other);
+  const fixture = createPi();
+  const context = host(session, [], [], []);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  await fixture.handlers.get("session_shutdown")?.({}, context);
+
+  const claimed = await failure(claimEnvoyRole(session, role, context));
+  const subscribed = await failure(
+    subscribeLegionNotice(session, `notifications.role.${role}`, context, role)
+  );
+
+  expect(asked).toEqual([]);
+  expect(claimRefusedForStop(claimed)).toBe(true);
+  expect(claimRefusedForStop(subscribed)).toBe(true);
+
+  await claimEnvoyRole("ses_unserved", role);
+  expect(asked).toEqual([`claim ses_unserved ${role}`]);
+
+  instances.splice(instances.indexOf(other), 1);
+  const elsewhere = await failure(claimEnvoyRole("ses_unserved", role));
+  expect(elsewhere).toBeInstanceOf(Error);
+  expect(claimRefusedForStop(elsewhere)).toBe(false);
 });

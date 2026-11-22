@@ -2612,6 +2612,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const logLegionLine = (line: string): void => {
     if (serverGates.tells(line)) logLegion(line)
   }
+  /** What ends the pane (`stopPane`) reads: the server's stop, and its gated Legion log. */
+  const paneServer = { stopping: () => stopping, log: logLegionLine }
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2678,7 +2680,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }),
     )
     const refusal = `Envoy is off for this session: ${envoy.error ?? envoy.notice}`
-    if (pane !== undefined) stopPane(`a Legion pane needs Envoy for its task; ${refusal}`)
+    if (pane !== undefined) {
+      stopPane(`a Legion pane needs Envoy for its task; ${refusal}`, paneServer)
+    }
     await serveEnvoyOff(MCP_SERVER_INFO, refusal)
     return
   }
@@ -2962,6 +2966,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       if (pane !== undefined) {
         stopPane(
           `a Legion pane's task reaches it over NATS, and inbound messages are off: ${inbound.off}`,
+          paneServer,
         )
       }
       // No registration happens here, so the title is stamped directly.

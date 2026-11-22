@@ -285,7 +285,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     (cmd/listener's relay_socket.go). No program at this head publishes one;
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
-//     role subjects: a failed delivery's report, and an unheld role's refusal.
+//     role subjects. At this head only a role subject's exception goes there: a failed delivery's
+//     report, or an unheld role's refusal. No listener publishes an exception for an agent
+//     subject (cmd/listener's isControlTopic covers the role subjects alone).
 //
 // So a direct publish of the edge's reaches no Dispatch, GitHub, Slack, team or Legion event, no
 // other project's role lane and no role lane in the form that names no project, nothing on the

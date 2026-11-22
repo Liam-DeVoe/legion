@@ -393,6 +393,31 @@ test("a 5xx at claims/ready after the host's signal aborted is not retried, says
   expect(lines).toEqual([]);
 });
 
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers 503 (R24 of dispatch://INFRA-3589). The regain sends no ready again
+// and writes nothing on the host's log: the host's stop ends the agent itself.
+test("a regain whose claims/ready fails after the host's signal aborted writes nothing on the host's log", async () => {
+  const stopping = new AbortController();
+  let readies = 0;
+  const { host, steps, lines, regain } = claimHost({
+    ready: () => {
+      readies += 1;
+      if (readies === 1) return new Response(null, { status: 204 });
+      stopping.abort();
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+    },
+    overrides: { signal: stopping.signal },
+  });
+  const booted = await bootLegionClaim(host);
+
+  await regain()?.(claimToken, "reclaimed");
+  await booted.claimed;
+
+  expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(2);
+  expect(steps).not.toContain("stop");
+  expect(lines).toEqual([]);
+});
+
 test("the name is taken at the host's first-turn callback and not before it", async () => {
   const { host, steps, firstTurn, regain } = claimHost({});
 

@@ -61,7 +61,8 @@ export interface LegionClaimHost {
   readonly roleClaimRetryFirstDelayMs?: number;
   /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
    *  from then on, a claim the listener answered 503 is not made again after it, and a failed
-   *  `claims/ready` is neither said nor sent again (`callReadyWithRetry`). */
+   *  `claims/ready`, at the boot or after a role regain, is neither said nor sent again
+   *  (`callReadyWithRetry`, and the regain hook's own line). */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
@@ -162,6 +163,8 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
         await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready), host);
         host.log(`re-ran claims/ready after role ${role} was ${reason}`);
       } catch (error) {
+        // A ready the host's stop overtook says nothing: the stop ends the agent itself.
+        if (host.signal?.aborted === true) return;
         host.log(
           `claims/ready after role ${role} was ${reason} failed; the daemon's queued task stays undelivered until the next regain or boot: ${messageFor(error)}`
         );

@@ -71,8 +71,5 @@
     "notifications.envoy.deliver.*",
     "notifications.envoy.relayreply.m.>"
   ],
-  "publish_deny": [
-    "notifications.dispatch.>",
-    "notifications.github.>"
-  ]
+  "publish_deny": ["notifications.dispatch.>", "notifications.github.>"]
 }

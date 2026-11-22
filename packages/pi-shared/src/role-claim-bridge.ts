@@ -43,8 +43,9 @@ type LegionRoleRegained = (role: string, reason: RoleRegainReason) => Promise<vo
 
 /**
  * Why a role claim is refused once its session's stop has begun (R24 of dispatch://INFRA-3589):
- * the Envoy entry's claim throws it, for the bridge and for `envoy_role_set`. The stop hands back
- * every role the process holds and deletes the session's record next.
+ * the Envoy entry's claim throws it, for the bridge and for `envoy_role_set`, and so does the
+ * bridge's notice subscription that lasts while the session holds a role (`whileHolding`). The
+ * stop hands back every role the process holds and deletes the session's record next.
  */
 export class RoleClaimStoppingError extends Error {
   override readonly name = "RoleClaimStoppingError";
@@ -84,7 +85,12 @@ export type LegionRoleClaimInstance = {
 };
 
 export type LegionRoleClaimBridge = {
-  /** Every live instance in bind order; an instance removes itself on `session_shutdown`. */
+  /**
+   * Every bound instance in bind order. An instance whose session's stop has begun moves to the
+   * front and stays: it refuses that session's claims and role-bound subscriptions naming the stop
+   * (`RoleClaimStoppingError`) for the rest of the process. One that served no session, a `task`
+   * subagent's, leaves as its stop ends.
+   */
   readonly instances: LegionRoleClaimInstance[];
   /**
    * Sessions Legion drives: every id `claimEnvoyRole` has claimed a role for, in this process.
@@ -125,7 +131,8 @@ export function legionRoleClaimBridge(): LegionRoleClaimBridge {
  * dispatched envoy.ts's rebind for the same event before or after it. With several instances
  * on the same id (a fixture that binds one per test) the most recently bound wins. A target no
  * instance serves yet falls back to the most recently bound instance, which establishes the
- * session itself.
+ * session itself. A session whose stop has begun keeps its instance on the bridge, which refuses
+ * the claim naming the stop, so no other instance gets it.
  */
 export async function claimEnvoyRole(
   sessionID: string,
