@@ -165,6 +165,61 @@ func TestAReadEndsAfterGitExitsThoughAnEscapedProcessHoldsThePipe(t *testing.T) 
 	}
 }
 
+// A push with no deadline is answered soon after git's diff exits, though a process git started
+// keeps writing to git's standard output, the diff's pipe, after it: once git has exited and one
+// WaitDelay has passed, the read takes what the pipe holds then and no more. A read that took
+// whatever the pipe held each time would never end while the process wrote. The process writes
+// lines of the diff's own shape, which name nothing, until the test stops it (after 40 s, or at
+// the test's end), and the answer is the one a push with no such process gets.
+func TestAReadEndsAfterGitExitsThoughAProcessKeepsWritingToThePipe(t *testing.T) {
+	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
+	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
+	stop := filepath.Join(t.TempDir(), "stop")
+	stopWriting := func() { _ = os.WriteFile(stop, nil, 0o600) }
+	t.Cleanup(stopWriting)
+	timer := time.AfterFunc(40*time.Second, stopWriting)
+	defer timer.Stop()
+	git := fixturegit.CompiledGit(t)
+	guard := gitFirst(t, "case \" $* \" in\n"+
+		"*\" --unified=0 \"*) '"+git+"' \"$@\" || exit\n"+
+		"  (while [ ! -e '"+stop+"' ]; do echo '+a junk line of nothing'; done) 2>/dev/null &\n  exit 0 ;;\n"+
+		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+	started := time.Now()
+	err := guard.Push(context.Background(), push.req)
+	if took := time.Since(started); took > 25*time.Second {
+		t.Errorf("the push was answered after %s, reading the writing process", took.Round(time.Second))
+	}
+	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
+		t.Fatalf("the report is %q, want the one with no writing process, %q", got, want)
+	}
+}
+
+// Where a process git started holds both git's standard output and its standard error, exec waits
+// one WaitDelay after git exits for the standard error it copies, and Wait answers
+// exec.ErrWaitDelay: the read of the standard output then ends at once, its own wait having run
+// out with exec's, rather than one WaitDelay after Wait. The process is started by the diff's git
+// alone, so the push takes one WaitDelay and some, as on main, where exec copies both outputs; a
+// read that waited a second WaitDelay after Wait would take two. The WaitDelay here is 8 s, so
+// the two stand apart however slow the machine.
+func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *testing.T) {
+	const delay = 8 * time.Second
+	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
+	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
+	git := fixturegit.CompiledGit(t)
+	guard := gitFirst(t, "case \" $* \" in\n"+
+		"*\" --unified=0 \"*) sleep 40 &\n  exec '"+git+"' \"$@\" ;;\n"+
+		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+	guard.waitDelay = delay
+	started := time.Now()
+	err := guard.Push(context.Background(), push.req)
+	if took := time.Since(started); took >= delay*3/2 {
+		t.Errorf("the push was answered after %s, past one and a half WaitDelays of %s: the read waited a second one", took.Round(time.Second), delay)
+	}
+	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
+		t.Fatalf("the report is %q, want the one with no holding process, %q", got, want)
+	}
+}
+
 // A read of a push's diff ends with the push's bound while git's diff has not exited, and a
 // process git started has left git's process group (setsid) and holds the diff's pipe open far
 // past the bound: the read is refused as a setup failure naming the bound, within a few seconds
@@ -213,11 +268,17 @@ func TestARenamedPathIsReadAsItsNewPath(t *testing.T) {
 }
 
 // A path that holds a space is reported as itself. git ends the "+++" line that names such a path
-// with a tab, which is no part of the path.
+// with a tab, which is no part of the path; where the path also holds a byte git quotes, a tab of
+// its own here, git writes it C-quoted with its b/ prefix inside the quotes, and the report names
+// the path itself, not that quoted form.
 func TestAPathWithASpaceIsReportedAsItself(t *testing.T) {
-	push := aPushOf(t, map[string]string{"a named file.md": "the runner answers at " + theHost + "\n"})
+	push := aPushOf(t, map[string]string{
+		"a named file.md":     "the runner answers at " + theHost + "\n",
+		"a named\tand tab.md": "the runner answers at " + theHost + "\n",
+	})
 	err := push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))
-	want := []string{"a named file.md: " + theClass}
+	// git lists the paths in byte order, and a tab sorts before a space.
+	want := []string{"a named\tand tab.md: " + theClass, "a named file.md: " + theClass}
 	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
 		t.Fatalf("the report is %q, want %q", got, want)
 	}

@@ -468,7 +468,18 @@ func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole
 	// struct. It also makes the bound reach a helper the child started, which for the shared
 	// check is the git it runs against the remote.
-	return cmd, procgroup.Configure(cmd)
+	killed := procgroup.Configure(cmd)
+	cmd.WaitDelay = g.exitDelay()
+	return cmd, killed
+}
+
+// exitDelay is how long a child's output is waited for once the child has exited: exec's
+// WaitDelay, procgroup.WaitDelay where no test set Guard.waitDelay.
+func (g *Guard) exitDelay() time.Duration {
+	if g.waitDelay > 0 {
+		return g.waitDelay
+	}
+	return procgroup.WaitDelay
 }
 
 // stopped is the *stoppedError of c, started at started, which the end of ctx stopped.

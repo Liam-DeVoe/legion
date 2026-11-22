@@ -43,6 +43,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -103,6 +104,10 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// waitDelay, where it is not 0, stands in for procgroup.WaitDelay in every child of the guard,
+	// as exec's WaitDelay and as the wait readOutput gives a child's output after it exits
+	// (Guard.exitDelay). This package's own tests set it, to tell one such wait from two.
+	waitDelay time.Duration
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a

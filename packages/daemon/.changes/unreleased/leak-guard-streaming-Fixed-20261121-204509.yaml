@@ -8,8 +8,15 @@ body: |-
   report is the same, but a refusal now names at most 1000 lines and counts the rest in a last
   line of its own, so a push of many lines at a path a rule refuses no longer prints one line for
   each. A read of git's output ends with the push's bound, and one `WaitDelay` after git exits,
-  even when a process git started holds the pipe open, as exec's own copy of a child's output
-  does. A path holding a space is now reported without the tab git ends its `+++` line with.
+  even when a process git started holds the pipe open or keeps writing to it, as exec's own copy
+  of a child's output does.
+
+  A path that holds a space is now read as itself. Before, git's `+++` line for it, which ends in
+  a tab, was read whole: the report named the path with the tab after it, and where the path also
+  held a byte git quotes (a tab, a newline, a double quote or a backslash), with git's C-quoting
+  and `b/` prefix too, and the rules matched the path
+  rules and the path-scoped allowlist against that quoted form. They now match the real path,
+  as for a path with no space.
 time: 2026-11-21T20:45:09Z
 custom:
     Issue: leak-guard-streaming
