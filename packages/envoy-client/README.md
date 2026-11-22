@@ -15,9 +15,13 @@ history before that and stops where the fragments begin.
 limit on a row's work rather than on a hang: measured in a 2-CPU pod under 16 busy loops
 (8 x nproc), `dispatch-cwd.test.ts`'s row that kills a child ignoring SIGTERM reached 5,000.89 ms
 and failed, where it costs 0.14 s idle and 0.31 s with its own file alone. A row that hangs still
-fails the suite; it takes 30 s to say so rather than 5 s.
+fails the suite; it takes 30 s to say so rather than 5 s. The command also loads the row-deadline
+preload (`--preload @legion/test-fixtures/row-deadline`), as #4437's commands did, so a wait of
+`@legion/test-fixtures/wait` ends at its row's own guard, less a margin, naming what it waited
+for, wherever in the row it starts; without the preload such a wait counts from its own start, and
+one that starts late in a row ends after Bun's guard, which names nothing.
 
-Bun reads that number from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
+Bun reads the `--timeout` from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and
 `BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
 still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
@@ -30,13 +34,15 @@ whose limit must stay below something the row must not wait out says that too.
 The NATS dial's rows (`nats-handshake.test.ts`, `nats-dial-retry.test.ts`) carry no limit of their
 own, and no verdict of theirs reads a clock. Real sockets do not fit the fake clock, so the rows run
 `connectNats` on a clock they drive (`NatsDialClock`, `src/__tests__/driven-dial-clock.ts`), which
-holds each wait and bound until the row ends it, hold nats.js's own timers until the row runs them
-(`src/__tests__/held-nats-timers.ts`), so no real time orders a bound or a handshake against one of
-them, and read the timers nats.js's own code armed and ran from
-`@legion/test-fixtures/timer-record`. Each wait for a fact is `@legion/test-fixtures/wait`'s, which
-ends before the guard of the command that runs it and names what it waited for. So they run under
-`bun run test`'s 30000 ms: the slowest, a silent dial run to its 10 s bound, took up to 10,104.52 ms
-under 8 busy loops on 2 CPUs, and a bare `bun test` gives it Bun's 5,000 ms.
+holds each wait and bound until the row ends it. The bound rows hold nats.js's own timers until the
+row runs them (`src/__tests__/held-nats-timers.ts`), so no real time orders a bound or a handshake
+against one of them; the rows of a dial the server closes during its handshake hold only the
+timers nats.js's `util.js` `timeout()` arms, its handshake's among them, and let its reconnect
+waits run. The rows read the timers nats.js's own code armed and ran from
+`@legion/test-fixtures/timer-record`. Each wait for a fact is `@legion/test-fixtures/wait`'s. So
+they run under `bun run test`'s 30000 ms: the slowest, a silent dial run to its 10 s bound, took up
+to 10,104.52 ms under 8 busy loops on 2 CPUs, and a bare `bun test` gives it Bun's 5,000 ms and no
+row-deadline preload.
 
 ## Inbound delivery
 

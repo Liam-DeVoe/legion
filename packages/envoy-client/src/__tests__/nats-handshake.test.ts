@@ -126,7 +126,8 @@ function delaysOf(timers: readonly TimerOnTheWay[]): number {
 }
 
 /** Where nats.js arms a dial's handshake timer: the `setTimeout` of its `util.js` `timeout()`, as
- *  the timer record names an arming (`file:line`). */
+ *  the timer record names an arming (`file:line`). `timeout()` also times a request and a
+ *  subscription, so this place names their timers too; no row of this file makes either. */
 const HANDSHAKE_TIMER = (() => {
   const file = join(NATS_ROOT, "lib/nats-base-client/util.js");
   const lines = readFileSync(file, "utf8").split("\n");
@@ -197,13 +198,14 @@ function connectResolving(lookup: () => Promise<string[]>) {
 }
 
 describe("a NATS dial that the server closes during the handshake", () => {
-  // Every row here holds nats.js's handshake timers (`holdNatsTimers`), and only those: its
+  // Every row here holds the timers nats.js's `util.js` `timeout()` arms (`holdNatsTimers`): a
+  // dial's handshake timer, and a request's or a subscription's, which no row here makes. Its
   // reconnect waits still run. A process the machine leaves off its CPU for the rest of a
   // handshake's 10 s wakes to that timer and to the server's answer at once, and Bun runs the
   // timer first, so the dial failed on its own timeout with no defect in the code (a block of
   // 10.5 s inside a dial does it every time, INFRA-3904). Held, the timer runs only when a row runs
   // it, which none does: a dial that waited for its timer never settles, and the row fails at its
-  // deadline naming the wait.
+  // deadline naming the wait, since envoy-client's `test` command loads the row-deadline preload.
   beforeEach(() => {
     nats = holdNatsTimers((from) => from === HANDSHAKE_TIMER);
   });
@@ -263,11 +265,10 @@ describe("a NATS dial that the server closes during the handshake", () => {
   // (it counts each from the dial before), and its refused handshake's timer, held, does not run.
   test("fails at once on a reconnect: one refused handshake, then exactly one reconnect", async () => {
     const server = fake((n) => (n === 1 ? "refuse" : "serve"));
-    const nc = await connect({
-      ...options([server.url]),
-      reconnectTimeWait: 200,
-      reconnectJitter: 0,
-    });
+    const nc = await settled(
+      "the first connection",
+      connect({ ...options([server.url]), reconnectTimeWait: 200, reconnectJitter: 0 })
+    );
     connections.push(nc);
     const record = recordTimed();
     let reconnectedAt: number | undefined;
@@ -292,11 +293,10 @@ describe("a NATS dial that the server closes during the handshake", () => {
   // held handshake would wait for that handshake's timer, which is held here and never runs.
   test("keeps a close during a reconnect's handshake final", async () => {
     const server = fake((n) => (n === 0 ? "serve" : "hold"));
-    const nc = await connect({
-      ...options([server.url]),
-      reconnectTimeWait: 200,
-      reconnectJitter: 0,
-    });
+    const nc = await settled(
+      "the first connection",
+      connect({ ...options([server.url]), reconnectTimeWait: 200, reconnectJitter: 0 })
+    );
     const record = recordTimed();
     server.dropAll();
     // The close comes in the turn the server takes the reconnect's connection, so no timer runs
@@ -320,11 +320,10 @@ describe("a NATS dial that the server closes during the handshake", () => {
 
   test("keeps the authorization rule: refused reconnects end the connection", async () => {
     const server = fake((n) => (n === 0 ? "serve" : "refuse-authorization"));
-    const nc = await connect({
-      ...options([server.url]),
-      reconnectTimeWait: 200,
-      reconnectJitter: 0,
-    });
+    const nc = await settled(
+      "the first connection",
+      connect({ ...options([server.url]), reconnectTimeWait: 200, reconnectJitter: 0 })
+    );
     server.dropAll();
     const closed = await outcomeOf(settled("the close after the refused reconnects", nc.closed()));
     expect(closed.error).toBeUndefined();
@@ -335,11 +334,10 @@ describe("a NATS dial that the server closes during the handshake", () => {
   // up: the row calls close() inside nats.js's own PONG handling, which is that moment.
   test("keeps a close between a reconnect's PONG and its connection final", async () => {
     const server = fake(() => "serve");
-    const nc = await connect({
-      ...options([server.url]),
-      reconnectTimeWait: 100,
-      reconnectJitter: 0,
-    });
+    const nc = await settled(
+      "the first connection",
+      connect({ ...options([server.url]), reconnectTimeWait: 100, reconnectJitter: 0 })
+    );
     const handler = (
       nc as unknown as {
         protocol: {
@@ -376,16 +374,19 @@ describe("a NATS dial that the server closes during the handshake", () => {
     // The reconnect's lookup is held until the row has closed the connection, then answers.
     const lookupAnswers = Promise.withResolvers<void>();
     const reconnectLookupDone = Promise.withResolvers<void>();
-    const nc = await connectResolving(async () => {
-      lookups += 1;
-      if (lookups > 1) {
-        // The reconnect's lookup: the row closes while it is held here, then lets it answer.
-        inReconnectLookup.resolve();
-        await lookupAnswers.promise;
-        reconnectLookupDone.resolve();
-      }
-      return ["127.0.0.1"];
-    })({ ...options([`nats://fake.test:${port}`]), reconnectTimeWait: 200, reconnectJitter: 0 });
+    const nc = await settled(
+      "the first connection",
+      connectResolving(async () => {
+        lookups += 1;
+        if (lookups > 1) {
+          // The reconnect's lookup: the row closes while it is held here, then lets it answer.
+          inReconnectLookup.resolve();
+          await lookupAnswers.promise;
+          reconnectLookupDone.resolve();
+        }
+        return ["127.0.0.1"];
+      })({ ...options([`nats://fake.test:${port}`]), reconnectTimeWait: 200, reconnectJitter: 0 })
+    );
     server.dropAll();
     await settled("the reconnect's name lookup", inReconnectLookup.promise);
     await settled("the connection's close", nc.close());
@@ -402,11 +403,14 @@ describe("a NATS dial that the server closes during the handshake", () => {
   test("keeps a close during the first of a name's two addresses final", async () => {
     const server = fake((n) => (n === 0 ? "serve" : "hold"));
     const port = new URL(server.url).port;
-    const nc = await connectResolving(async () => ["127.0.0.1", "127.0.0.1"])({
-      ...options([`nats://fake.test:${port}`]),
-      reconnectTimeWait: 200,
-      reconnectJitter: 0,
-    });
+    const nc = await settled(
+      "the first connection",
+      connectResolving(async () => ["127.0.0.1", "127.0.0.1"])({
+        ...options([`nats://fake.test:${port}`]),
+        reconnectTimeWait: 200,
+        reconnectJitter: 0,
+      })
+    );
     server.dropAll();
     // The close comes in the turn the server takes the first address's connection, so nats.js's
     // handshake timer for that address cannot run out before it.
