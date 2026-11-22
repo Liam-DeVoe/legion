@@ -1,4 +1,4 @@
-import { describe, expect, jest, setSystemTime, test } from "bun:test";
+import { describe, expect, jest, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import {
   chmodSync,
   closeSync,
@@ -20,7 +20,7 @@ import * as path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { processEnded, processRunning } from "@legion/test-fixtures/process-end";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -42,6 +42,10 @@ import {
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
 import { hasErrnoCode } from "../errors";
 import { killGroup } from "../process-group";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // Both sections resolve one `credential` object (`ActiveDispatchConfig`, `EnabledEnvoySettings`).
 // What this file is about is which file and which variable a section reads, so each resolution is
@@ -1610,11 +1614,11 @@ ${end === "release" ? exit : ""}
       });
       let pid = 0;
       try {
-        // A real process on the platform's clock: the command writes its child's pid when it has
-        // started it, and nothing else says so.
-        for (const deadline = Date.now() + BUN_START_MS; pid === 0; await Bun.sleep(20)) {
-          if (Date.now() > deadline) throw new Error("the command never wrote its child's pid");
+        // A real process: the command writes its child's pid when it has started it, and nothing
+        // else says so. The poll is a pace, not a bound: the row's own 60 s is its only hang guard.
+        while (pid === 0) {
           if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
+          if (pid === 0) await Bun.sleep(20);
         }
         // The control: while the reading process runs, the command's child is there.
         expect(processRunning(pid)).toBe(true);

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import publicUrlFixture from "../../../contracts/fixtures/dispatch-public-url.json";
 import {
@@ -15,6 +16,10 @@ import {
   sessionDispatchSettings,
   sessionDispatchUrl,
 } from "../session-settings";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const tempDir = temporaryDirectories("dispatch-config");
 

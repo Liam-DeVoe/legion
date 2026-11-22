@@ -1,7 +1,12 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const scratch = mkdtempSync(path.join(tmpdir(), "process-group-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));

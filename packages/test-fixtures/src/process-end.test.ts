@@ -1,6 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { HANG_GUARD_MS } from "./hang-guard";
 import { processEnded, processRunning } from "./process-end";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /** The state field of /proc/<pid>/stat: `S` sleeping, `T` stopped, `Z` a zombie. */
 function stateOf(pid: number): string {

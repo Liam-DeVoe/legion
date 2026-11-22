@@ -1,8 +1,13 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorNatsSeed } from "./operator-nats-seed";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const dir = temporaryDirectory("operator-nats-seed-test");
 

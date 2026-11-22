@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
@@ -8,6 +8,7 @@ import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -44,6 +45,10 @@ import {
 } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 isolatePaneEnvironment()
 

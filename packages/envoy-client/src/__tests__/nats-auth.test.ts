@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { connect, nkeys } from "nats";
 import { natsSeedFromEnvironment } from "../envoy-settings";
@@ -13,6 +14,10 @@ import {
   natsServer,
   useNatsServerDirectory,
 } from "./nats-server";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 interface TestKeyPair {
   getSeed(): Uint8Array;

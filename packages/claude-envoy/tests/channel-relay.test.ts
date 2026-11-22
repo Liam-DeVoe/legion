@@ -7,7 +7,7 @@
  * is a stand-in that serves the socket's wire and the broker's token exchange on one origin
  * (`@legion/envoy-client/test/relay-socket-stand-in`).
  */
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { readEnvoyConfig } from "@legion/envoy-client/envoy-config"
@@ -18,6 +18,7 @@ import {
   startRelaySocketStandIn,
 } from "@legion/envoy-client/test/relay-socket-stand-in"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { ModEvent } from "../hooks/mod-protocol"
 import { startAgentStream } from "../src/agent-stream-runner"
@@ -35,6 +36,10 @@ import {
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 isolatePaneEnvironment()
 

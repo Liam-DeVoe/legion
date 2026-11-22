@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -8,10 +8,15 @@ import {
   SESSION_HEARTBEAT_MS,
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
 import { resolveCallTiming } from "../transport";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const listener = {
   enabled: true,

@@ -1,4 +1,13 @@
-import { afterEach, beforeAll, describe, expect, jest, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  jest,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -22,6 +31,7 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { processEnded } from "@legion/test-fixtures/process-end";
 import {
   temporaryDirectories,
@@ -53,6 +63,10 @@ import * as fx from "./askgate-fixtures";
 import { createDecisionRecorder, RECORD_CUT_DELAY_MS, type RecordClient } from "./decision-record";
 import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;

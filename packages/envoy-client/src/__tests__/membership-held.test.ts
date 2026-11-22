@@ -7,7 +7,7 @@
 // a final refusal of their sign-in, and Dispatch's `401 MEMBERSHIP_HELD` to a broker token marks
 // nothing stale.
 
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, setDefaultTimeout, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins";
@@ -15,11 +15,16 @@ import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
 import { isFinalRefusal, TradeRetryingError } from "@legion/cipher-client/token-errors";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 afterEach(forgetBrokerClients);
 

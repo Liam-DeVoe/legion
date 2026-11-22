@@ -7,6 +7,7 @@ import {
   expect,
   jest,
   mock,
+  setDefaultTimeout,
   setSystemTime,
   spyOn,
   test,
@@ -92,6 +93,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -113,6 +115,10 @@ import {
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /** The Dispatch token a row hands the session in DISPATCH_TOKEN. */
 const DISPATCH_TOKEN = fixtureSecret("dsp");

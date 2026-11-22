@@ -13,13 +13,14 @@
 // nats-credential-keeper.test.ts's; how long its trades wait, and `renew` and
 // `followNatsCredential`'s deadlines, are nats-credential-deadlines.test.ts's.
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
@@ -46,6 +47,10 @@ import {
   TRADE_DEADLINE_MS,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { podEnvironment, stubBroker, tempDir } = natsBrokerStandIns("nats-credential");
 

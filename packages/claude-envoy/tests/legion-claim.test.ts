@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -6,6 +6,7 @@ import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
@@ -18,6 +19,10 @@ import {
   startLegionClaim,
   waitForTranscript,
 } from "../src/legion-claim"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */

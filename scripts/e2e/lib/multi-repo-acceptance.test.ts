@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import {
   bashPath,
   closeServers,
@@ -20,6 +21,10 @@ import {
   stateBody,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // scripts/e2e/multi-repo-acceptance.sh is the observer for the live multi-repository acceptance
 // run; this file covers every observation but second-owner (multi-repo-second-owner.test.ts) and

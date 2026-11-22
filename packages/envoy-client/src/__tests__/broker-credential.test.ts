@@ -8,10 +8,11 @@
 // machine is broker-credential-signins.test.ts's; a pod session whose registration has not landed
 // is broker-credential-registration.test.ts's.
 
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, forgetBrokerSession } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
@@ -20,6 +21,10 @@ import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
 import { createEnvoyClient } from "../transport";
 import { brokerStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { noFile, podEnvironment, projectedToken, servers, stubBroker, stubDispatch, tempDir } =
   brokerStandIns("broker-credential");

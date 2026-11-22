@@ -6,7 +6,7 @@
 // refused for good, and that it never trades the machine in the person's place, unless the
 // process turned the person trade off. With nobody signed in, both callers trade the machine.
 
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
@@ -28,11 +28,16 @@ import {
   SUBJECT_TOKEN_TYPE_PERSON,
 } from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient, DispatchWriteUnsettledError } from "../dispatch-http";
 import { envoySettings } from "../envoy-settings";
 import { brokerStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { noFile, podEnvironment, projectedToken, servers, stubBroker, stubDispatch, tempDir } =
   brokerStandIns("broker-credential-signins");

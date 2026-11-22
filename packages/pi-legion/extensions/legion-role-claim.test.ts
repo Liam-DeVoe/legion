@@ -1,4 +1,13 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
@@ -47,6 +56,11 @@ const natsStandInConnect = async () => ({
 
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 mock.module("@oh-my-pi/pi-coding-agent", () => ({
   copyToClipboard: async () => undefined,

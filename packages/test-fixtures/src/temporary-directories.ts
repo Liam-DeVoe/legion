@@ -13,17 +13,7 @@ import {
 import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-/**
- * The bound on the hooks that remove the temporary directories: a hang guard, not a measured
- * bound. Bun bounds a hook by the run's `--timeout`, 5 s when a run names none (as a check's own
- * `bun test <file>` does), and no package setting reaches a hook in every file of a run, so the
- * hooks carry their own: long enough that load never decides it, short enough that a removal that
- * hangs fails its row by name inside the test process rather than at the job's timeout. It is the
- * value of the shared hang guard (`HANG_GUARD_MS`) another change adds to this package; whichever
- * lands second points this name at that export.
- */
-const HANG_GUARD_MS = 120_000;
+import { HANG_GUARD_MS } from "./hang-guard";
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {

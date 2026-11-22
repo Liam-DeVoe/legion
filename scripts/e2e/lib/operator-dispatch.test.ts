@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,9 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorDispatch } from "./operator-dispatch";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const dir = temporaryDirectory("operator-dispatch-test");
 

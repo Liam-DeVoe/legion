@@ -7,6 +7,7 @@ import {
   expect,
   jest,
   mock,
+  setDefaultTimeout,
   setSystemTime,
   spyOn,
   test,
@@ -66,6 +67,7 @@ import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/h
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   temporaryDirectories,
@@ -105,6 +107,10 @@ import type {
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
