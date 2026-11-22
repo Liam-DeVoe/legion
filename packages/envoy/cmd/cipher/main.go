@@ -1371,7 +1371,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	// What each GitHub profile's token leaves out is said before anything runs, and never a token.
-	reportLeftOut(stderr, values.GitHubLeftOut)
+	reportLeftOut(stderr, c.baseURL, names, values)
 
 	// The airlock's two files are written before anything is said or run: without the trust
 	// bundle the command cannot verify the proxy, and a command that cannot reach its secret is
@@ -1419,13 +1419,24 @@ func projectHint(stderr io.Writer, detail *redact.RemoteText) {
 
 // reportLeftOut says, for each GitHub profile of a release and each account of it, in order, the
 // entries of the profile's permissions its token leaves out since the installation on that account
-// does not hold them (the values answer's github_left_out), one line each. Every word is the
-// broker's, so each prints on one line (redact.OneLine); none of them is a token.
-func reportLeftOut(stderr io.Writer, leftOut map[string]map[string][]string) {
-	for _, name := range slices.Sorted(maps.Keys(leftOut)) {
-		for _, account := range slices.Sorted(maps.Keys(leftOut[name])) {
+// does not hold them (values.GitHubLeftOut, the values answer's github_left_out), one line each;
+// none of them is a token. Every word is the broker's, or the words of whatever answers in its
+// place, which can echo the release's Proof header, so each prints as base lets the broker's words
+// print (cipheraddr.Address.WordsOf): beside a clean address on one line as the rule reads it, with
+// the credentials the release carried redacted, and beside any other not at all. An entry is held
+// as redact.RemoteText with that record (Answer.Decode), and an account, a key the decode holds in
+// no box, as values.LeftOutAccounts holds it (Answer.Said). A profile is a key too, named only
+// where this run asked for it (releasedName).
+func reportLeftOut(stderr io.Writer, base cipheraddr.Address, asked []string, values GrantValues) {
+	for _, name := range slices.Sorted(maps.Keys(values.GitHubLeftOut)) {
+		accounts := values.GitHubLeftOut[name]
+		for _, account := range slices.Sorted(maps.Keys(accounts)) {
+			entries := make([]string, len(accounts[account]))
+			for i, entry := range accounts[account] {
+				entries[i] = base.WordsOf(entry)
+			}
 			fmt.Fprintf(stderr, "agent-secrets: the profile %s left out %s for %s, since the installation there does not hold them\n",
-				redact.OneLine(name), redact.OneLine(strings.Join(leftOut[name][account], ", ")), redact.OneLine(account))
+				releasedName(name, asked), strings.Join(entries, ", "), base.WordsOf(values.LeftOutAccounts[account]))
 		}
 	}
 }

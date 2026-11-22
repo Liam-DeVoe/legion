@@ -203,6 +203,23 @@ func TestABrokerAnswerPrintsNoCredentialItsRequestCarried(t *testing.T) {
 			},
 		}, exec("AWS_ONE"), 1, false,
 			[]string{"for both AWS_ONE and a name this run did not ask for"}},
+		// The left-out lines come before the airlock's files, so the airlock's AWS pair refusal
+		// ends the run after them, before any command runs.
+		{"exec-left-out", map[string]func(string) any{
+			"POST /v1/requests": granted,
+			"POST /v1/grants/": func(p string) any {
+				return map[string]any{"values": map[string]string{}, "airlock": map[string]any{
+					"proxy_url": "http://airlock.broker.example:3128", "proxy_password": testAirlockPlaceholder,
+					"ca_certificate": "-----BEGIN CERTIFICATE-----\nproxy\n-----END CERTIFICATE-----\n",
+					"names":          map[string]any{"AWS_ONE": awsName, p: awsName},
+				}, "github_left_out": map[string]any{
+					"AWS_ONE": map[string]any{echoProof(p): []string{echoProof(p), "members"}},
+					p:         map[string]any{"acme": []string{"issues"}},
+				}}
+			},
+		}, exec("AWS_ONE"), 1, false,
+			[]string{"the profile AWS_ONE left out " + shownEcho + ", members for " + shownEcho + ", since",
+				"the profile a name this run did not ask for (" + unaskedNames + ") left out issues for acme, since"}},
 		{"ttl-revoke", map[string]func(string) any{"POST /v1/requests": func(p string) any {
 			return map[string]any{"request_id": "req-1", "state": "granted", "grant_id": p}
 		}}, []string{"request", "--reason", "need it", "--ttl", "60s", "SOME_SECRET"}, 1, false,

@@ -129,6 +129,10 @@
         "test": "print-agent-secrets.OperatorGrants"
       },
       {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.GrantValues",
+        "test": "print-agent-secrets.GrantValues"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.Reread",
         "test": "print-agent-secrets.Reread"
       },
@@ -4773,6 +4777,13 @@
       "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrants: every printer at every placement"
     },
     {
+      "id": "print-agent-secrets.GrantValues",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.GrantValues",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.GrantValues: every printer at every placement"
+    },
+    {
       "id": "print-agent-secrets.Reread",
       "requirement": "r2-held",
       "package": "./cmd/cipher",
@@ -4890,6 +4901,13 @@
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-airlock-names",
       "production": "agent-secrets airlockVars: the AWS pair refusal names a release key only where this run asked for it (releasedName)"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-left-out",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-left-out",
+      "production": "agent-secrets reportLeftOut: each github_left_out entry and account as the rule reads it with the release's credentials redacted (Answer.Decode, Answer.Said, cipheraddr.Address.WordsOf), and a profile only where this run asked for it (releasedName)"
     },
     {
       "id": "agentsecrets-answer-words-ttl-revoke",
@@ -8456,6 +8474,11 @@
       "site": "agent-secrets airlockVars' AWS pair refusal, which printed the release's airlock name keys raw",
       "source": "the class search of round 5's deep review",
       "guard": "agentsecrets-answer-words-exec-airlock-names"
+    },
+    {
+      "site": "agent-secrets reportLeftOut, main's left-out report, which printed the release's github_left_out profile names, accounts and entries through redact.OneLine alone",
+      "source": "the merge of main 6488745247",
+      "guard": "agentsecrets-answer-words-exec-left-out"
     },
     {
       "site": "agent-secrets grantedLifetime's --ttl refusal, which printed the request and grant ids without the record and sent them back whatever they held",

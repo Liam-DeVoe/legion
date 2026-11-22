@@ -219,24 +219,3 @@ func releasedName(name string, asked []string) string {
 	}
 	return "a name this run did not ask for (" + unaskedNames + ")"
 }
-
-// releasedNames is names, each a name a release holds, as a line lists them: each this run asked
-// for as it typed it, then how many others the release holds, none of them printed (releasedName).
-func releasedNames(names, asked []string) string {
-	var listed []string
-	others := 0
-	for _, name := range names {
-		if slices.Contains(asked, name) {
-			listed = append(listed, name)
-		} else {
-			others++
-		}
-	}
-	switch {
-	case others == 1:
-		listed = append(listed, "1 name this run did not ask for ("+unaskedNames+")")
-	case others > 1:
-		listed = append(listed, fmt.Sprintf("%d names this run did not ask for (%s)", others, unaskedNames))
-	}
-	return strings.Join(listed, ", ")
-}

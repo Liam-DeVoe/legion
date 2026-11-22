@@ -117,6 +117,15 @@ type operatorGrantsTwin struct {
 	Grants []operatorGrantTwin `json:"grants"`
 }
 
+type grantValuesTwin struct {
+	Values          map[string]string              `json:"values"`
+	ExpiresAt       *time.Time                     `json:"expires_at"`
+	Locations       []string                       `json:"locations"`
+	GitHubLeftOut   map[string]map[string][]string `json:"github_left_out"`
+	Airlock         *AirlockRelease                `json:"airlock"`
+	LeftOutAccounts map[string]string              `json:"-"`
+}
+
 type rereadTwin struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
@@ -216,6 +225,16 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    OperatorGrants{Grants: []OperatorGrant{operatorGrant}},
 			Same:     operatorGrantsTwin{Grants: []operatorGrantTwin{operatorGrantTwinValue}},
 			Exported: operatorGrantsTwin{Grants: []operatorGrantTwin{operatorGrantTwinValue}},
+		},
+		{
+			Name: "agent-secrets.GrantValues",
+			Kind: "fields",
+			Boxed: GrantValues{GitHubLeftOut: map[string]map[string][]redact.RemoteText{"APP": {"acme": {words}}},
+				LeftOutAccounts: map[string]redact.RemoteText{"acme": words}},
+			Same: grantValuesTwin{GitHubLeftOut: map[string]map[string][]string{"APP": {"acme": {probe}}},
+				LeftOutAccounts: map[string]string{"acme": probe}},
+			Exported: grantValuesTwin{GitHubLeftOut: map[string]map[string][]string{"APP": {"acme": {probe}}},
+				LeftOutAccounts: map[string]string{"acme": probe}},
 		},
 		{
 			Name:     "agent-secrets.Reread",
