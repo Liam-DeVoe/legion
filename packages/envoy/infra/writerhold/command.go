@@ -379,6 +379,15 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		// mid-hold, and comes back held at the gen the route named for the released one.
 		row, err = records.RestoreRow(ctx, gen, natsgrant.OperatorPhaseHeld, holdID, o.reason)
 	}
+	if errors.As(err, &refused) && refused.Code == "hold_mismatch" {
+		// After a prepare entry the broker restores released only with that entry's hold id; its
+		// 409 names no id, so neither can this line.
+		other := ""
+		if holdID != "" {
+			other = " of a hold other than " + holdID
+		}
+		return refusef(StepPreflight, "the log's latest entry is a prepare row%s, and the broker restores released after it only with that hold's id: restore it with `hold restore --hold <its hold id>`", other)
+	}
 	if err != nil {
 		return err
 	}
