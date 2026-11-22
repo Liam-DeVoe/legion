@@ -199,7 +199,8 @@ without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit
 delivery view may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
 `{"kind":"events"}` and resumes with `{"since":"<event id>"}`. An agent view is
 `{"kind":"agent","session_id":"<uuid>"}` and never has a resume. A resume of the wrong shape, or
-any unknown member, is an `INVALID_FRAME` error.
+a resume that carries a member its view does not take, is an `INVALID_FRAME` error. Any other
+member a frame does not declare is ignored, so a page of a newer build can reach this build.
 
 Dispatch answers a delivery view with:
 

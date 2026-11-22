@@ -7,8 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -37,14 +35,10 @@ func sessionActor(session string) string {
 	return fmt.Sprintf(`{"kind":"session","id":%q}`, session)
 }
 
-// writeProjects writes the projects and their repository mappings. Each project has one default
-// mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use. Each mapping is written under a mapping write's locks,
-// as the mapping routes do (delivery.LockRepoProjectWrite), and the transaction does not take the
-// change log's lock: each mapping's trigger records its settings change in the change log's
-// outbox, which takes no lock, and once the transaction has committed the seed moves those changes
-// into the log, as every writer of a mapping does (delivery.DrainRepoProjectChange). Each project
-// also names the seed's own person as its default assignee, the column every project fills
+// writeProjects writes the projects. Each project has a default repository (default_repo), which
+// an issue with no repository of its own resolves to. The issues that carry a repository of their
+// own name a second one (projectPlan.OwnRepo). Each project also names the seed's own person as
+// its default assignee, the column every project fills
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), and that person
 // is written first as somebody who has signed in (0068_people): every write that stores a
 // default holds it to a people row (allowedLogin, internal/dispatch/api/issue_assignee.go), so
@@ -53,8 +47,7 @@ func sessionActor(session string) string {
 // store.PgPeopleStore.Record writes one, and left alone where somebody signed in under that
 // address before the seed ran.
 func (r *seedRun) writeProjects(ctx context.Context) error {
-	if err := r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		broker := events.NewBroker()
+	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			insert into people (email, signed_in_at) values ($1, $2) on conflict (email) do nothing
 		`, seedAuthor.ID, baseTime); err != nil {
@@ -62,32 +55,14 @@ func (r *seedRun) writeProjects(ctx context.Context) error {
 		}
 		for index, project := range r.plan.projects {
 			if _, err := tx.Exec(ctx, `
-				insert into projects (key, name, default_assignee, next_number, created_at, last_seq)
-				values ($1, $2, $3, 1, $4, 0)
-			`, project.Key, project.Name, seedAuthor.ID, timeAt(index, len(r.plan.projects))); err != nil {
+				insert into projects (key, name, default_assignee, default_repo, next_number, created_at, last_seq)
+				values ($1, $2, $3, $4, 1, $5, 0)
+			`, project.Key, project.Name, seedAuthor.ID, project.Repo, timeAt(index, len(r.plan.projects))); err != nil {
 				return fmt.Errorf("project %s: %w", project.Key, err)
-			}
-			for _, mapping := range []struct {
-				repo    string
-				primary bool
-			}{{project.Repo, true}, {project.OwnRepo, false}} {
-				if _, err := delivery.LockRepoProjectWrite(ctx, tx, broker, mapping.repo, project.Key); err != nil {
-					return fmt.Errorf("lock repo mapping %s: %w", mapping.repo, err)
-				}
-				if _, err := tx.Exec(ctx, `
-					insert into repo_projects (repo, project, created_by, created_at, is_default)
-					values ($1, $2, $3::jsonb, $4, $5)
-				`, mapping.repo, project.Key, seedActor, baseTime, mapping.primary); err != nil {
-					return fmt.Errorf("repo mapping %s: %w", mapping.repo, err)
-				}
 			}
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	delivery.DrainRepoProjectChange(ctx, r.database.Pool)
-	return nil
+	})
 }
 
 // writeArchitecture writes one architecture source and one snapshot for each project, the

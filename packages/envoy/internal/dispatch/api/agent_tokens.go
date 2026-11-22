@@ -303,8 +303,8 @@ func newAgentToken() (string, [sha256.Size]byte, error) {
 	return plaintext, sha256.Sum256([]byte(plaintext)), nil
 }
 
-// rowScanner is a row of either a single-row read or a multi-row one, which scanAgentToken takes
-// so one decoding serves both.
+// rowScanner is the one method a pgx.Row and a pgx.Rows share, so one scan function reads a row
+// from either.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
