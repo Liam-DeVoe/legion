@@ -137,8 +137,9 @@ document that adds, revises, restores or takes out a requirement a root sent up;
 request is a route request.
 
 The ancestor may be an issue of another project.
+Dispatch takes such a parent only from the release that holds it: before that, a parent link across projects answers `400 PARENT_INPUT` ("parent must be in the same project"), and a root whose `dispatch read` shows a `child_of` parent of another project is one Dispatch has taken.
 Register on it as on one of your own project: the daemon ends the root's chain before that ancestor.
-The root runs as a root of its own project, and the ancestor counts it as an open child.
+The root runs as a root of its own project, and the ancestor's daemon counts it as an open child from its next controller tick.
 Your daemon reads that ancestor's approval and reviews at each controller tick, an hour by default.
 A pending basis there opens, and a changes request on it reaches you, at the first tick after the person's review, not at once.
 The ancestor's architect gets no notice of your root from your daemon; it sees the root as an open child.

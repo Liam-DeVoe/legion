@@ -103,10 +103,13 @@ every repository your App is installed on (`-R owner/repo`).
 A change in a repository that another project's deployment runs is filed in that project, with `--parent` your root:
 `dispatch issue --project <KEY> --parent <root> --repo <owner/name> …`.
 Tell that project's controller with `envoy_publish` on `notifications.role.legion-<project>-controller` (its key in lower case).
-That project's daemon runs the child, and your root waits for it as for an open child of its own.
+That project's daemon runs the child, and your root's daemon counts it as an open child of your root from its next controller tick.
 A credential scoped to one project cannot make this link from either end: the create answers `PROJECT_SCOPE`.
 Where yours is scoped, tell that controller what to file and under which root instead; it files the issue in its own project and has the parent set by a credential that names no single project, such as the operator's.
-Release no such child with `release_children`: it answers `ISSUE_OUTSIDE_TREE`.
+Until Dispatch takes a parent in another project, the create answers `400 PARENT_INPUT` ("parent must be in the same project") to every credential.
+While it does, have the issue filed in that project with no parent, record your root's wait on it as "Recording a wait on other work" says, and have the parent set once Dispatch takes it.
+A `blocked_by` link to another project's issue answers `PROJECT_SCOPE` to a scoped credential too: where yours is scoped, ask your project's controller to have the wait set by a credential that names no single project.
+Release no such child with `release_children`: it answers `ISSUE_OUTSIDE_TREE`, or `ISSUE_ALREADY_RELEASED` once that child is past `todo`.
 That project's controller takes it as a root of its own, and its architect writes it as a view on your root where your root's approval allows ("A root under an approved ancestor" in `design-gate.md`).
 
 ## Recording a wait on other work
