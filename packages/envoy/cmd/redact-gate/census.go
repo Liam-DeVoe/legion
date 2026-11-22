@@ -127,6 +127,7 @@ func (g *gate) goCensus(dir string) census {
 type goListed struct {
 	ImportPath, Dir, Export           string
 	GoFiles, CgoFiles, IgnoredGoFiles []string
+	Deps                              []string // every package it imports, directly or not
 	Standard, DepOnly                 bool
 	Error                             *struct{ Err string }
 }
@@ -235,6 +236,7 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 			exports := map[string]string{}
 			for _, p := range deps {
 				exports[p.ImportPath] = p.Export
+				g.recordImports(p.ImportPath, p.Deps)
 			}
 			wanted := set(need)
 			for _, p := range deps {

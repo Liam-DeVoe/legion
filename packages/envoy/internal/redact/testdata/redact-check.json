@@ -503,6 +503,13 @@
         "function": "github.com/sjawhar/envoy/internal/testnats.connLock",
         "operands": ["*github.com/nats-io/nats.go.Conn", "uintptr"],
         "why": "a NATS test helper's read of nats.go's connection lock (Conn.mu), a sync.RWMutex a test takes by address to hold a publish: it prints nothing and reaches no answer"
+      },
+      {
+        "file": "packages/envoy/internal/bus/kv.go",
+        "function": "github.com/sjawhar/envoy/internal/bus.readsDirect",
+        "operands": [],
+        "guarded_package": "github.com/nats-io/nats.go",
+        "why": "nats.go keeps whether its legacy KV handle reads by direct get in the handle's unexported useDirect and reports it through no method; readsDirect reads that bool once its guard holds the handle's type to nats.go, and prints nothing"
       }
     ],
     "external_errors": ["golang.org/x/oauth2.RetrieveError"],

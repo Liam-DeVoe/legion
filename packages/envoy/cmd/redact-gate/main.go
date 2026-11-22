@@ -128,13 +128,18 @@ type holderRow struct {
 // types to hand each box its record. ExportedFieldsOnly names a walk that reads exported fields
 // alone, each reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index,
 // which the census checks in place of the types it reaches: the box keeps its text in unexported
-// fields (structural.go, reflection).
+// fields. GuardedPackage names a reflection of a value whose type no static type names (a
+// library's unexported type behind an interface), which runs only where a guard holds that type
+// to the one package GuardedPackage names: the census checks the guard, and checks that neither
+// the box's package nor an external error type's is in that package's import closure, in place of
+// the types it reaches (structural.go, reflection).
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`
 	Operands           []string `json:"operands"`
 	RecordsBoxes       bool     `json:"records_boxes"`
 	ExportedFieldsOnly bool     `json:"exported_fields_only"`
+	GuardedPackage     string   `json:"guarded_package"`
 	Why                string   `json:"why"`
 }
 
@@ -274,7 +279,8 @@ type gate struct {
 	rowTimeout                time.Duration // each row's own budget; a run's bound adds its start-up (runTest)
 	longest                   time.Duration // the longest correct run of stage 4
 	longestRow                string
-	valueOf                   map[string][]valueOfSite // reflect.ValueOf sites by package
+	valueOf                   map[string][]valueOfSite   // reflect.ValueOf sites by package
+	imports                   map[string]map[string]bool // each listed package's import closure, itself included (recordImports)
 	failures                  int
 	unknowns                  int // runs past their bound (stages 4 and 5): neither a pass nor a failure
 	out                       io.Writer

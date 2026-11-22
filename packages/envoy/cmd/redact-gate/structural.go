@@ -17,14 +17,74 @@ func (g *gate) structural(c *census, dir, path string, fset *token.FileSet, file
 	box := g.inv.Gate.Box
 	boxPkg, boxName := splitTypeName(box.Type)
 	g.collectValueOf(path, files, info)
+	stores, inits := collectStores(files, info)
 	// The generic instances already listed in this package, each listed once.
 	instances := map[string]bool{}
 	for _, f := range files {
 		rel, _ := filepath.Rel(dir, fset.Position(f.Pos()).Filename)
 		rel = filepath.ToSlash(rel)
-		w := &walker{g: g, c: c, fset: fset, info: info, rel: rel, path: path, boxPkg: boxPkg, boxName: boxName, instances: instances}
+		w := &walker{g: g, c: c, fset: fset, info: info, rel: rel, path: path, boxPkg: boxPkg, boxName: boxName, instances: instances, stores: stores, inits: inits}
 		w.file(f)
 	}
+}
+
+// collectStores is, for every variable of the package's files, where a statement stores to it
+// (an assignment, an increment, a range clause, a declaration with a value) and, counted as a store
+// at each, where its address is taken; and the initializer of each package-level variable
+// declared alone with one value. A guarded_package entry's guard reads both (packageGuarded).
+func collectStores(files []*ast.File, info *types.Info) (map[types.Object][]token.Pos, map[types.Object]ast.Expr) {
+	stores := map[types.Object][]token.Pos{}
+	inits := map[types.Object]ast.Expr{}
+	store := func(e ast.Expr, at token.Pos) {
+		if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+			if o := info.Defs[id]; o != nil {
+				stores[o] = append(stores[o], at)
+			} else if o := info.Uses[id]; o != nil {
+				stores[o] = append(stores[o], at)
+			}
+		}
+	}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.AssignStmt:
+				for _, l := range n.Lhs {
+					store(l, n.Pos())
+				}
+			case *ast.IncDecStmt:
+				store(n.X, n.Pos())
+			case *ast.RangeStmt:
+				for _, e := range []ast.Expr{n.Key, n.Value} {
+					if e != nil {
+						store(e, n.Pos())
+					}
+				}
+			case *ast.UnaryExpr:
+				if n.Op == token.AND {
+					store(n.X, n.Pos())
+				}
+			case *ast.ValueSpec:
+				if len(n.Values) > 0 {
+					for _, name := range n.Names {
+						store(name, n.Pos())
+					}
+				}
+			}
+			return true
+		})
+		for _, d := range f.Decls {
+			if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.VAR {
+				for _, s := range gd.Specs {
+					if vs, ok := s.(*ast.ValueSpec); ok && len(vs.Names) == 1 && len(vs.Values) == 1 {
+						if o := info.Defs[vs.Names[0]]; o != nil {
+							inits[o] = vs.Values[0]
+						}
+					}
+				}
+			}
+		}
+	}
+	return stores, inits
 }
 
 // valueOfSite is one reflect.ValueOf call, with the static types its argument can have: its own,
@@ -142,6 +202,8 @@ type walker struct {
 	boxPkg, boxName string
 	writes          int
 	instances       map[string]bool
+	stores          map[types.Object][]token.Pos // collectStores
+	inits           map[types.Object]ast.Expr    // collectStores
 }
 
 func (w *walker) at(n ast.Node) (string, int) {
@@ -536,6 +598,11 @@ var reflectionMethods = map[string]bool{
 // (exported_fields_only) is allowed instead where each of its calls is a reflect.Value.Field that
 // runs only under a t.Field(i).IsExported() guard on its own index (exportedGuarded): the box
 // keeps its text in unexported fields, so such a walk cannot reach it, whatever type it is given.
+// An entry that names a guarded package (guarded_package) is allowed instead where its reflect
+// call runs only under a guard holding its value's type to that package (packageGuarded), and
+// that package's import closure holds neither the box's package nor an external error type's
+// (closureClean): no type that package declares can then hold either, as no operand the census
+// checks can, an interface field aside.
 func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function string) {
 	kind, what := "", ""
 	if callee := w.callee(call); reflectionMethods[callee] {
@@ -587,6 +654,22 @@ func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function str
 			f.Why = "exported_fields_only names a walk whose Field here does not run only under a t.Field(i).IsExported() guard on its own index"
 		default:
 			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); it reads an exported field alone, and the box keeps its text in unexported fields"
+		}
+		return
+	}
+	if exempt.GuardedPackage != "" {
+		guarded, why := w.packageGuarded(call, parents)
+		switch {
+		case kind != "reflect":
+			f.Why = "guarded_package names a conversion, which no type guard holds"
+		case guarded == "":
+			f.Why = "guarded_package names a reflection that does not run only under a guard holding its value's type to one package: " + why
+		case guarded != exempt.GuardedPackage:
+			f.Why = "guarded_package names " + exempt.GuardedPackage + ", and the guard here holds the value's type to " + guarded
+		default:
+			if f.OK, f.Why = w.closureClean(guarded); f.OK {
+				f.Why = "named in the inventory (" + exempt.Why + "); " + f.Why
+			}
 		}
 		return
 	}
@@ -675,6 +758,200 @@ func (w *walker) guards(cond ast.Expr, index types.Object) bool {
 	}
 	at, ok := ast.Unparen(field.Args[0]).(*ast.Ident)
 	return ok && w.info.Uses[at] == index
+}
+
+// packageGuarded is the package a guard holds the type of call's value to, or "" and why there
+// is none. call is a reflect.Value method whose receiver is a variable X of the function the call
+// is in, which one statement of the package stores to, before the guard, and none takes the
+// address of. The guard is a statement of that function's body, before the one holding call, of
+// the form `if ... || X.Type().PkgPath() != P || ... { ...; return ... }`, with no init and no
+// else, in a function with no label, so no goto passes it; and P is reflect.TypeFor[T]().PkgPath()
+// for a named type T, written in place or as the one initializer of a package-level variable no
+// other statement of the package stores to (pkgPathOf). The package is T's.
+func (w *walker) packageGuarded(call *ast.CallExpr, parents []ast.Node) (string, string) {
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return "", "the call has no receiver"
+	}
+	id, _ := ast.Unparen(sel.X).(*ast.Ident)
+	var value *types.Var
+	if id != nil {
+		value, _ = w.info.Uses[id].(*types.Var)
+	}
+	var body *ast.BlockStmt
+	for i := len(parents) - 1; i >= 0 && body == nil; i-- {
+		switch fn := parents[i].(type) {
+		case *ast.FuncDecl:
+			body = fn.Body
+		case *ast.FuncLit:
+			body = fn.Body
+		}
+	}
+	if value == nil || body == nil || value.Pos() < body.Pos() || value.Pos() > body.End() {
+		return "", "its receiver is no variable of the function it is called in"
+	}
+	labeled := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		_, isLabel := n.(*ast.LabeledStmt)
+		labeled = labeled || isLabel
+		return !labeled
+	})
+	if labeled {
+		return "", "the function holds a label, so a goto can pass a guard"
+	}
+	stores := w.stores[value]
+	if len(stores) != 1 {
+		return "", fmt.Sprintf("its receiver %s is stored to %d times, its address taken counted as one", id.Name, len(stores))
+	}
+	for _, stmt := range body.List {
+		if stmt.End() > call.Pos() {
+			break
+		}
+		guard, ok := stmt.(*ast.IfStmt)
+		if !ok || guard.Init != nil || guard.Else != nil || stores[0] > guard.Pos() || len(guard.Body.List) == 0 {
+			continue
+		}
+		if _, returns := guard.Body.List[len(guard.Body.List)-1].(*ast.ReturnStmt); !returns {
+			continue
+		}
+		if pkg := w.pkgPathGuard(guard.Cond, value); pkg != "" {
+			return pkg, ""
+		}
+	}
+	return "", "no statement before it, after " + id.Name + " is stored, returns where " + id.Name + ".Type().PkgPath() is not one named type's package"
+}
+
+// pkgPathGuard is the package cond, read as a chain of ||, compares the package path of value's
+// type with by != (pkgPathOf), or "".
+func (w *walker) pkgPathGuard(cond ast.Expr, value types.Object) string {
+	b, ok := ast.Unparen(cond).(*ast.BinaryExpr)
+	if !ok {
+		return ""
+	}
+	switch b.Op {
+	case token.LOR:
+		if pkg := w.pkgPathGuard(b.X, value); pkg != "" {
+			return pkg
+		}
+		return w.pkgPathGuard(b.Y, value)
+	case token.NEQ:
+		if w.typePkgPath(b.X, value) {
+			return w.pkgPathOf(b.Y)
+		}
+		if w.typePkgPath(b.Y, value) {
+			return w.pkgPathOf(b.X)
+		}
+	}
+	return ""
+}
+
+// typePkgPath reports whether e is value.Type().PkgPath(), value a reflect.Value.
+func (w *walker) typePkgPath(e ast.Expr, value types.Object) bool {
+	pkgPath, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok || len(pkgPath.Args) != 0 || w.callee(pkgPath) != "(reflect.Type).PkgPath" {
+		return false
+	}
+	sel, ok := ast.Unparen(pkgPath.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	typeOf, ok := ast.Unparen(sel.X).(*ast.CallExpr)
+	if !ok || len(typeOf.Args) != 0 || w.callee(typeOf) != "(reflect.Value).Type" {
+		return false
+	}
+	sel, ok = ast.Unparen(typeOf.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	id, ok := ast.Unparen(sel.X).(*ast.Ident)
+	return ok && w.info.Uses[id] == value
+}
+
+// pkgPathOf is the package e names as reflect.TypeFor[T]().PkgPath() does, T a named type: e
+// itself, or a package-level variable whose one store is that initializer (collectStores); "" for
+// any other expression.
+func (w *walker) pkgPathOf(e ast.Expr) string {
+	if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+		v, ok := w.info.Uses[id].(*types.Var)
+		if !ok || v.Pkg() == nil || v.Parent() != v.Pkg().Scope() || len(w.stores[v]) != 1 || w.inits[v] == nil {
+			return ""
+		}
+		e = w.inits[v]
+	}
+	pkgPath, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok || len(pkgPath.Args) != 0 || w.callee(pkgPath) != "(reflect.Type).PkgPath" {
+		return ""
+	}
+	sel, ok := ast.Unparen(pkgPath.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	typeFor, ok := ast.Unparen(sel.X).(*ast.CallExpr)
+	if !ok || len(typeFor.Args) != 0 {
+		return ""
+	}
+	fun := ast.Unparen(typeFor.Fun)
+	if index, ok := fun.(*ast.IndexExpr); ok {
+		fun = ast.Unparen(index.X)
+	}
+	var name *ast.Ident
+	switch fun := fun.(type) {
+	case *ast.SelectorExpr:
+		name = fun.Sel
+	case *ast.Ident:
+		name = fun
+	}
+	if fn, ok := w.info.Uses[name].(*types.Func); !ok || fn.Origin().FullName() != "reflect.TypeFor" {
+		return ""
+	}
+	instance := w.info.Instances[name]
+	if instance.TypeArgs == nil || instance.TypeArgs.Len() != 1 {
+		return ""
+	}
+	named, ok := types.Unalias(instance.TypeArgs.At(0)).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return ""
+	}
+	return named.Obj().Pkg().Path()
+}
+
+// recordImports adds deps, the import closure go list names for path under one build, and path
+// itself, to path's closure: the union over the builds listed so far, so the closure a guard is
+// checked against (closureClean) is never narrower than the build being read.
+func (g *gate) recordImports(path string, deps []string) {
+	if g.imports == nil {
+		g.imports = map[string]map[string]bool{}
+	}
+	closure := g.imports[path]
+	if closure == nil {
+		closure = map[string]bool{path: true}
+		g.imports[path] = closure
+	}
+	for _, d := range deps {
+		closure[d] = true
+	}
+}
+
+// closureClean reports whether pkg's import closure (recordImports) holds neither the box's
+// package nor the package of an external error type, and says why.
+func (w *walker) closureClean(pkg string) (bool, string) {
+	closure := w.g.imports[pkg]
+	if closure == nil {
+		return false, "guarded_package names " + pkg + ", whose import closure no go list of these builds names"
+	}
+	var held []string
+	if closure[w.boxPkg] {
+		held = append(held, "the box's package "+w.boxPkg)
+	}
+	for _, e := range w.g.inv.Gate.External {
+		if p, _ := splitTypeName(e); closure[p] {
+			held = append(held, "the package of the external error type "+e)
+		}
+	}
+	if len(held) > 0 {
+		return false, "guarded_package names " + pkg + ", whose import closure holds " + strings.Join(held, " and ")
+	}
+	return true, "its guard holds its value's type to " + pkg + ", whose import closure holds neither the box's package nor an external error type's"
 }
 
 func (w *walker) listed(t types.Type, operands []string) bool {
