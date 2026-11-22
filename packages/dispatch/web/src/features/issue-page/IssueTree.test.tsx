@@ -8851,8 +8851,9 @@ test("the outline says the issue holds nothing only once the reads its nodes com
   }
 });
 
-/** The address of the spec's one block, `t1`, that the tree read answers (`specBlock`), which
- *  the names read names it by; its node is `spec#b-t1`. */
+/** The address of the spec's one block, `t1`, that the tree read answers (`specBlock`); its node
+ *  is `spec#b-t1`. The names read is not given it, as it is given no node's own address: it
+ *  names the issue's own key, which the root's words write. */
 const SPEC_BLOCK = buildDispatchReference({
   block: { id: "t1" },
   key: KEY,
@@ -8881,8 +8882,9 @@ const STEP_WORDS = "Hang the lanterns first.";
 // until that read answered such a node matched nothing: on a cold load of an address with `?q=`
 // whose words only such nodes hold, the outline said that nothing holds the words, and then drew
 // the matching rows in the line's place. Under one the body draws that line only once the names
-// are held, and nothing in its place before. The tree read now answers the step with its words,
-// and the names read names it by them too.
+// are held, and nothing in its place before. The tree read now answers the step with its words;
+// the names read is not given its address, and names the issue's own key, which the root's words
+// write.
 test("under a words filter the outline does not say nothing holds the words while the names read is out, and draws the rows that match them once it has answered", async () => {
   setViewport(1440);
   // The names read, held out until the case answers it with the step's words.
@@ -8921,8 +8923,8 @@ test("under a words filter the outline does not say nothing holds the words whil
 });
 
 // And once the names are held the line is drawn where no node holds the words: the step's words,
-// which the tree read and the names read give alike, do not hold the filter's word, so nothing
-// does.
+// which the tree read gives - the names read is not given the step's address - do not hold the
+// filter's word, so nothing does.
 test("under a words filter the outline says nothing holds the words once the names read has answered with words that do not hold them", async () => {
   setViewport(1440);
   // The names read, held out until the case answers it with the step's words.
@@ -8965,7 +8967,7 @@ test("under a words filter the outline says nothing holds the words once the nam
 // With no filter on the outline's line reads no words, so it does not wait on the names. The
 // spec holds its summary alone, a callout, which is no row of the outline, so the issue holds
 // nothing to draw, and the outline says so while the names read is still out. That read names
-// the issue's own key, which the root's words write, and the summary's address.
+// the issue's own key, which the root's words write; it is not given the summary's address.
 test("with no filter the outline says the issue holds nothing while the names read is out", async () => {
   setViewport(1440);
   // The names read, held out for the whole case.

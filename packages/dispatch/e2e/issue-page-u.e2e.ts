@@ -1,3 +1,4 @@
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -5,6 +6,7 @@ import { CONTROL_LABELS, NODE_STATE_WORDS } from "../web/src/features/issue-page
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
+import { decisionNodesOf, decisionSum, decisionSumOf } from "./issue-layout-seed-support";
 import { gotoIssue, issueRead, phase } from "./issue-page";
 import {
   drawnRows,
@@ -28,7 +30,6 @@ import {
   convertedGate,
   decisionNodesGate,
   decisionsReadOf,
-  decisionsViewServedGate,
   heldAnswer,
   owedUnless,
   type TreeView,
@@ -39,10 +40,9 @@ import {
 import {
   askOfNode,
   askRowId,
-  decisionNodesOf,
+  blockRowId,
   decisionRowId,
-  decisionSum,
-  decisionSumOf,
+  decisionsViewServedGate,
   type FilterReading,
   heldDecisionsRead,
   holdTreeReads,
@@ -73,8 +73,8 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * `drawnRows`, `parentOfRow` and `unfoldEveryBranch` (`e2e/issue-page-g.ts`), `pickPreset`
  * (`e2e/issue-page-i.ts`), `waitingCount` (`e2e/issue-page-p.ts`), the readers of the Decisions
  * view (`e2e/issue-page-q.ts`), `watchApiRequests` (`e2e/traffic.ts`), the helpers of
- * `e2e/issue-page-t.ts` and the rows' own
- * (`e2e/issue-page-u.ts`).
+ * `e2e/issue-page-t.ts`, the reads of the tree read the rows share with the seeds
+ * (`e2e/issue-layout-seed-support.ts`) and the rows' own (`e2e/issue-page-u.ts`).
  *
  * The rows are the two of the Verification document's browser checks, by their titles:
  *
@@ -130,6 +130,13 @@ const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balic
 /** The words row 2's Change sends. */
 const CHANGE_WORDS = "Tie it to the second statement instead.";
 
+/** How long the count of tree reads row 2 (3) holds must stay unchanged before the row takes it
+ *  as every read the reword's event sent: the scheduler starts the reads of one event within
+ *  `MIN_REFETCH_INTERVAL_MS` of each other, and none of a query whose read is out
+ *  (`web/src/api/query-refresh.ts`), and 500 ms more lets a request the page sent reach
+ *  Playwright's route. */
+const EVENT_READS_STILL_MS = MIN_REFETCH_INTERVAL_MS + 500;
+
 /** What every seed returns: the key of the issue the page opens. */
 interface SeededIssue {
   readonly key: string;
@@ -178,12 +185,14 @@ async function stateWordOf(page: Page, id: string): Promise<string | null> {
 // Row 1: every decision the page draws is a node, with the review state the model holds.
 // ---------------------------------------------------------------------------------------------
 
-/** How row 1 names the rows of one seed: by the id the tree draws a node of the tree read by
- *  (`treeIdOf`), an ask by its row (`askRowId`), and the open questions of the asks read. */
+/** How row 1 names the rows of one seed: a decision and a statement by the id the row of their
+ *  block carries (`blockRowId`, `<slug>#b-<block id>`), an ask by its row (`askRowId`), and the
+ *  open questions of the asks read. A block the tree read holds no node of fails the row. */
 interface RowNames {
   readonly ask: (askId: string) => string;
-  readonly node: (readId: string) => string;
+  readonly decision: (block: string) => string;
   readonly openAsks: readonly string[];
+  readonly requirement: (block: string) => string;
 }
 
 /** One decision of the Spec column as row 1 expects it: the names its cell and its links go by,
@@ -357,10 +366,11 @@ async function readRowOne(
   const idOf = treeIdOf(answer, reads);
   const wanted = wantedOf({
     ask: (askId) => askRowId(reads, askId),
-    node: idOf,
+    decision: (block) => blockRowId(key, answer, "decision", block),
     openAsks: (reads.asks ?? []).flatMap((ask) =>
       ask.state === "open" && ask.kind !== "approval" ? [askRowId(reads, ask.id)] : []
     ),
+    requirement: (block) => blockRowId(key, answer, "requirement", block),
   });
   const foot = decisionsFoot(page);
   // `readFilter` above read the view once its rows and count held still with the network quiet,
@@ -513,8 +523,8 @@ function rowOneSeed<S extends SeededIssue>(
 const ROW_ONE_SEEDS = [
   rowOneSeed("seedDecisionsFilter", seedDecisionsFilter, (seeded, names) => {
     const block = (index: number) => seeded.decisions[index] ?? "";
-    const D = (index: number) => names.node(block(index));
-    const r = (index: number) => names.node(seeded.requirements[index - 1] ?? "");
+    const D = (index: number) => names.decision(block(index));
+    const r = (index: number) => names.requirement(seeded.requirements[index - 1] ?? "");
     const decision = (index: number) => [D(index), block(index)];
     const declined = names.ask(seeded.declinedAskId);
     const answered = names.ask(seeded.answeredAskId);
@@ -546,9 +556,9 @@ const ROW_ONE_SEEDS = [
     declined: null,
     departure: null,
     parts: {
-      agents: [names.node(seeded.tiedToNote), names.node(seeded.untied)],
+      agents: [names.decision(seeded.tiedToNote), names.decision(seeded.untied)],
       open_questions: names.openAsks,
-      review: [names.node(seeded.tiedNewer), names.node(seeded.tiedOlder)],
+      review: [names.decision(seeded.tiedNewer), names.decision(seeded.tiedOlder)],
       yours: [],
     },
   })),
@@ -615,7 +625,8 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
 // server finds the quote inside that block alone, and refuses with 400 a block that does not hold
 // it (`api/anchors.go`' `resolveAnchor`).
 // SLOW(>=2s): a seeded issue with a third decision written, a Keep and a Change each waited on
-// until the server's reads redraw the list, a reload, and a refused Keep under held tree reads.
+// until the server's reads redraw the list, a reload, and a refused Keep under held tree reads,
+// after the reword's event reads have held still for `EVENT_READS_STILL_MS`.
 test("Keep and Change act on the decision node @owed", async ({ browser }) => {
   test.setTimeout(ROW_TWO_MS);
   await phase(browser, seedReviewList, async (page, seeded) => {
@@ -750,7 +761,8 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
 
     // (3) With the page's next tree reads held, the third decision's words change through the
     // API and its Keep sends the sum of the words the page drew: Dispatch refuses it, the row
-    // still waits with its alert, and once the held reads go on the row draws the new words.
+    // still waits with its alert, the refused Keep sends a tree read of its own, and once the
+    // held reads go on the row draws the new words.
     await readFilter(page, traffic, "decisions");
     const thirdRow = nodeRow(page, ids.third).first();
     const thirdKeep = thirdRow.locator(KEEP);
@@ -762,12 +774,36 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
       await decisionSum(key, THIRD_DECISION.block),
       "the edit leaves the third decision's sum as it was"
     ).not.toBe(drawnSum);
+    // The reword's own event reads the tree too, and those reads are held with the rest, so the
+    // Keep's read is counted past them. The count is taken once it is above zero and has not
+    // moved for `EVENT_READS_STILL_MS`: the scheduler starts no read of a query whose read is
+    // out, so from then on the count rises only for a read the page starts outside it, as the
+    // refused Keep's settle does (`readDecisionsAgain`, `DecisionActions.tsx`).
+    let eventReads = 0;
+    let movedAt = Date.now();
+    await expect
+      .poll(
+        () => {
+          const count = held.count();
+          if (count !== eventReads) {
+            eventReads = count;
+            movedAt = Date.now();
+          }
+          return eventReads > 0 && Date.now() - movedAt >= EVENT_READS_STILL_MS;
+        },
+        {
+          intervals: [100],
+          message: "the reword's event reads the tree, and the count of held reads holds still",
+        }
+      )
+      .toBe(true);
     const refusedFrom = writes.length;
     const answered = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
         new URL(response.url()).pathname === keepPath(third)
     );
+    const beforeKeep = held.count();
     await thirdKeep.click();
     const refused = await answered;
     expect(
@@ -784,8 +820,10 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
       'the refused decision keeps "Waiting for review"'
     ).toBe(NODE_STATE_WORDS.decision.waiting_review);
     await expect
-      .poll(() => held.count(), { message: "the refused Keep reads the tree again" })
-      .toBeGreaterThan(0);
+      .poll(() => held.count(), {
+        message: "the refused Keep reads the tree again, past the reads the reword's event left",
+      })
+      .toBeGreaterThan(beforeKeep);
     await held.release();
     await expect
       .poll(

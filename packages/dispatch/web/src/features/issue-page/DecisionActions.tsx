@@ -1,5 +1,5 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useState } from "react";
 
 import { api } from "../../api/client";
 import { issueTreeKey } from "../../api/queries";
@@ -18,13 +18,10 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  type DecisionNode,
-  decisionQuote,
-  decisionsOfAnswer,
-} from "./decision-nodes/decision-nodes";
+import { type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { treeRead } from "./spec-filter/tree-read";
 import { dropViews, issueTreeQuery } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
@@ -130,10 +127,10 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * Both writes are the ones that tab made: Keep is `POST /artifacts/{id}/blocks/{block}/keep`
  * against the decision node's own document and block, carrying the sum of the text this node
  * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
- * comment anchored to the words of the decision's first block (`decisionQuote`). The decision is
- * the node of the tree read the page already holds (`issueTreeKey`), found by its address among
- * that answer's decisions (`decisionsOfAnswer`), so the node makes no read of its own
- * to draw its controls.
+ * comment anchored to the decision's own block and the words of its first block, its `heading`
+ * (`decisionQuote`). The decision is the node of the tree read the page already holds
+ * (`issueTreeKey`), found by its address among that answer's decisions (`decisionsOfAnswer`), so
+ * the node makes no read of its own to draw its controls.
  */
 export function DecisionActions({
   document,
@@ -154,13 +151,11 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  // The tree read under the key the page reads it by, watched by an observer that is never
-  // enabled: the node sends no request of its own and sees every answer the page's own observer
-  // fetches. Its decisions are read once per answer for every node of the page
+  // The decisions of the tree read are read once per answer for every node of the page
   // (`decisionsOfAnswer`), with no asks: they only make an answered question a person's
   // decision, and these controls are drawn only on a decision waiting for review, which is an
   // agent's, so the decision its address finds is the same without them.
-  const tree = useQuery({ ...issueTreeQuery(issueKey), enabled: false });
+  const tree = useQuery(treeRead(issueTreeQuery(issueKey)));
   const decision =
     tree.data === undefined || nodeReference === undefined
       ? undefined
@@ -203,8 +198,9 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
-  // Read once per answer of the tree read, which is when the decision is a new object.
-  const quote = useMemo(() => decisionQuote(decision), [decision]);
+  // A Change quotes the decision's heading, the words of its first block (`decisionQuote`): a
+  // decision that holds no such words, whose heading is empty, has none to anchor a Change to.
+  const quotable = decision.heading !== "";
   const keep = useKeyedWrite({
     inline: true,
     issue: issueKey,
@@ -244,7 +240,7 @@ function DecisionControls({
             {CONTROL_LABELS.keep_decision}
           </button>
         ) : null}
-        {quote === undefined ? null : (
+        {quotable ? (
           <button
             aria-expanded={changing}
             className={`${DECISION_BUTTON} bg-page-paper text-page-decision`}
@@ -256,21 +252,20 @@ function DecisionControls({
           >
             {CONTROL_LABELS.change_decision}
           </button>
-        )}
+        ) : null}
       </p>
       {keep.error === null ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
           {keep.error.message}
         </p>
       )}
-      {changing && quote !== undefined ? (
+      {changing && quotable ? (
         <ChangeComposer
           decision={decision}
           documentId={documentId}
           issueKey={issueKey}
           focusField={!restored}
           onDone={() => change(false)}
-          quote={quote}
         />
       ) : null}
     </>
@@ -285,7 +280,6 @@ function ChangeComposer({
   focusField,
   issueKey,
   onDone,
-  quote,
 }: {
   decision: DecisionNode;
   documentId: string;
@@ -294,7 +288,6 @@ function ChangeComposer({
   focusField: boolean;
   issueKey: string;
   onDone: () => void;
-  quote: string;
 }): ReactNode {
   const drafts = useContext(ChangeDrafts);
   // The words the reader typed before the body last closed, if it did.
@@ -312,7 +305,11 @@ function ChangeComposer({
     // quote inside that block alone, so words the decision shares with another place in the
     // document still name the decision, and it refuses a block that does not hold the quote.
     write: (input: { body: string }, bounds) => {
-      const anchor: AnchorInput = { artifact: documentId, block_id: decision.block_id, quote };
+      const anchor: AnchorInput = {
+        artifact: documentId,
+        block_id: decision.block_id,
+        quote: decision.heading,
+      };
       return api.createComment(issueKey, { anchor, body: input.body }, bounds);
     },
     // The change is a comment the tree read hangs under its decision (`decision-review.ts`), so
@@ -329,8 +326,8 @@ function ChangeComposer({
     // form keeps them while it is drawn, and a body that closed before the refusal, or closes
     // after it, opens again with the Change and its words. The mutation runs this after the form
     // has gone too, as it runs `onSuccess`. The form says so in the page's own words, never in
-    // the server's: a refusal's text names what the reader cannot act on, such as a quote that
-    // matches two places and the field that would say which (decision 92).
+    // the server's: a refusal's text names what the reader cannot act on, such as the block id of
+    // a `400 INVALID_ANCHOR` that names a block that does not hold the quote (decision 92).
     onError: (_error, input) => {
       drafts?.set(decision.ref, input.body);
     },
@@ -365,7 +362,7 @@ function ChangeComposer({
         data-testid="decision-quote"
         {...authorText}
       >
-        {quote}
+        {decision.heading}
       </blockquote>
       <label className={`text-xs ${tones.muted}`} htmlFor={fieldId} {...pageChrome}>
         {CONTROL_LABELS.your_change}

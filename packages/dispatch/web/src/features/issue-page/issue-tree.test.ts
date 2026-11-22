@@ -263,8 +263,8 @@ function checkedResults(
 }
 
 /** One agent's decision, whose words are `text` and whose `shaped` edge reaches the spec blocks
- *  `shaped` - a link from the decision's block to each - as the model's decision a decision node
- *  carries (`decided`). */
+ *  `shaped` - a link from the decision's block to each (`specLink`) - as the model's decision a
+ *  decision node carries (`decided`). */
 function decision(
   blockId: string,
   text: string,
@@ -278,31 +278,37 @@ function decision(
     heading: text,
     kept: null,
     kind: "agent",
-    links: shaped.map((one) => ({
-      changed_since_tie: false,
-      created_at: "2026-11-05T00:00:00Z",
-      created_version: 1,
-      from_block: blockId,
-      stale: false,
-      to: {
-        block_id: one,
-        changed_at: null,
-        changed_by: null,
-        id: "artifact-spec",
-        kind: "block",
-        made_at: null,
-        made_by: null,
-        parent: null,
-        parent_version: null,
-        ref: `dispatch://${KEY}/spec#b-${one}`,
-      },
-    })),
+    links: shaped.map((one) => specLink(blockId, one)),
     ref: `dispatch://${KEY}/artifact/decisions-md#b-${blockId}`,
     replaced: false,
     text,
     text_sha256: "sum",
     unsure: false,
     waiting_review: false,
+  };
+}
+
+/** A decision's link from its block `fromBlock` - the decision's, or the ask's, `""` for an ask of
+ *  the conversation - to the spec block `blockId`, as the decisions read answers one. */
+function specLink(fromBlock: string, blockId: string): DecisionLink {
+  return {
+    changed_since_tie: false,
+    created_at: "2026-11-05T00:00:00Z",
+    created_version: 1,
+    from_block: fromBlock,
+    stale: false,
+    to: {
+      block_id: blockId,
+      changed_at: null,
+      changed_by: null,
+      id: "artifact-spec",
+      kind: "block",
+      made_at: null,
+      made_by: null,
+      parent: null,
+      parent_version: null,
+      ref: `dispatch://${KEY}/spec#b-${blockId}`,
+    },
   };
 }
 
@@ -509,8 +515,9 @@ function siblingOrder(one: Written, other: Written): number {
  * requirement its `serves` names, every other block under the issue unless the case gives it
  * another (`Fixture.parents`) - and a requirement the coverage read holds and a check the results
  * read holds with their words, each result under its check, the children, the asks, an ask a
- * person answered with that person's decision (`tree-fixtures.ts`), a reply under its head, an
- * ask's thread under the ask, a comment anchored inside a typed block under that block, and every
+ * person answered with that person's decision (`tree-fixtures.ts`), linked to each spec block a
+ * `shaped` tuple the case adds from it reaches, a reply under its head, an ask's thread under the
+ * ask, a comment anchored inside a typed block under that block, and every
  * thread a person wrote in, a thread only agents wrote in being no node (`agents-only.ts`). An
  * agent's decision is a node the case adds (`Fixture.nodes`, `decided`), and a decision block of
  * a document's blocks is none. Each block pointer is a tuple, to the node it names where the
@@ -650,16 +657,24 @@ function answered(fixture: Fixture): IssueTreeReads {
     });
   });
   // The read answers each ask a person answered with that person's decision
-  // (`issue_tree_read.go`'s `readDecisions`).
+  // (`issue_tree_read.go`'s `readDecisions`), whose links are the spec blocks the ask's own
+  // `shaped` tuples reach (`decisionread`'s `readLinks`).
   for (const ask of asks.values()) {
     if (asBlock.has(ask.id)) continue;
+    const links = (tied ?? []).flatMap((tuple) =>
+      tuple.kind === "shaped" &&
+      tuple.from.id === ask.id &&
+      byId.has(blockNodeId(specSlug, tuple.to.id))
+        ? [specLink("", tuple.to.id)]
+        : []
+    );
     written.push({
       node: answerNode(ask.id, "ask", key, {
         author: [ask.author],
         made_at: ask.created_at,
         text: ask.question,
         ...(ask.question_tree === undefined ? {} : { text_tree: ask.question_tree }),
-        ...(ask.state !== "answered" ? {} : { decision: {} }),
+        ...(ask.state !== "answered" ? {} : { decision: { links } }),
       }),
     });
   }

@@ -48,6 +48,7 @@ import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-na
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms, blockNodeId } from "./tree-drafts";
 import { treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
+import type { TreeTuple } from "./tree-read/tree-read";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -259,55 +260,40 @@ function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
   );
 }
 
-// R9: an agent's decision is drawn with who decided it: the session or the person its node's
-// `decided_by` tuple names, which the tree read answers with that session or person as context,
-// since the node's `decision` names no decider. The session that wrote it is named by the title
-// the page's sessions read gives it, as any agent's is: its role's word on the row and its whole
-// title in the opened body. A session no registry lists any longer is named by the title it
-// stamped on what it wrote, in the same two places. A decision whose node names nobody draws no
-// author on its row, and its opened body says "Author unknown". Each decision is a node of the
-// tree read, a `decision` block of the spec.
-// Red on purpose: the tree read answers no title a session stamped (a session's context node
-// carries none, and the names read and the agents registry name no session the registry has
-// let go), so the stamped title's clause fails until the model's tree route answers it.
-test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
-  const title = "Legion architect · CORE-1";
-  const storedTitle = "Legion planner · CORE-1";
-  const named = "d-named";
-  const unnamed = "d-unnamed";
-  const stored = "d-stored";
-  const gone = "session-gone";
+/** What the tree draws of each of the spec's `decision` blocks `blocks`: each row drawn by
+ *  `TreeRow`, its body open, from the node the tree model builds out of a tree read that holds
+ *  those blocks, a context node for each session of `sessions`, and `tuples`, under an agents
+ *  registry that lists `registered` and no other session. A decision is read as who decided it on
+ *  its row (`row`) and in its opened body (`body`), the whole title that body gives (`title`),
+ *  the author's kind (`kind`), and the row's node type (`type`). */
+function decisionsDrawn({
+  blocks,
+  registered,
+  sessions,
+  tuples,
+}: {
+  blocks: readonly string[];
+  registered: Agent[];
+  sessions: readonly string[];
+  tuples: readonly TreeTuple[];
+}) {
   const root = buildIssueTree({
     issue: issueDetails(),
     tree: treeAnswer(
       [
-        ...[named, unnamed, stored].map((block, position) =>
+        ...blocks.map((block, position) =>
           decision(block, {
             document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
           })
         ),
-        treeNode(AGENT.id, "session", null, { role: "context" }),
-        treeNode(gone, "session", null, { role: "context" }),
+        ...sessions.map((session) => treeNode(session, "session", null, { role: "context" })),
       ],
-      [treeTuple("decided_by", named, AGENT.id), treeTuple("decided_by", stored, gone)]
+      tuples
     ),
   });
-  const registered: Agent = {
-    capabilities: [],
-    dir: "/w",
-    host: "host",
-    last_activity: null,
-    last_seen: Date.now(),
-    machine_id: "host",
-    open_asks: 0,
-    roles: [],
-    session_id: AGENT.id,
-    state: "live",
-    title,
-  };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(agentsQuery().queryKey, [registered]);
-  const drawn = (block: string) => {
+  queryClient.setQueryData(agentsQuery().queryKey, registered);
+  return (block: string) => {
     const id = blockNodeId(SPEC_SLUG, block);
     const shown = root.children.find((child) => child.id === id);
     if (shown === undefined) throw new Error(`the tree draws no decision ${id}`);
@@ -334,6 +320,38 @@ test("an agent's decision draws the session its entry names as its decider, by t
       view.unmount();
     }
   };
+}
+
+// R9: an agent's decision is drawn with who decided it: the session or the person its node's
+// `decided_by` tuple names, which the tree read answers with that session or person as context,
+// since the node's `decision` names no decider. The session that wrote it is named by the title
+// the page's sessions read gives it, as any agent's is: its role's word on the row and its whole
+// title in the opened body. A decision whose node names nobody draws no author on its row, and
+// its opened body says "Author unknown". Each decision is a node of the tree read, a `decision`
+// block of the spec.
+test("an agent's decision draws the session its entry names as its decider, by the title the registry gives it, and Author unknown where it names none", () => {
+  const title = "Legion architect · CORE-1";
+  const named = "d-named";
+  const unnamed = "d-unnamed";
+  const registered: Agent = {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: AGENT.id,
+    state: "live",
+    title,
+  };
+  const drawn = decisionsDrawn({
+    blocks: [named, unnamed],
+    registered: [registered],
+    sessions: [AGENT.id],
+    tuples: [treeTuple("decided_by", named, AGENT.id)],
+  });
   expect(drawn(named)).toEqual({
     body: null,
     kind: "agent",
@@ -348,6 +366,28 @@ test("an agent's decision draws the session its entry names as its decider, by t
     title: null,
     type: "decision",
   });
+});
+
+// R9: an agent's decision whose `decided_by` tuple names a session no registry lists any longer
+// names that session by the title it stamped on what it wrote, in the same two places as a
+// session the registry lists: its role's word on the row and its whole title in the opened body.
+// The decision is a node of the tree read, a `decision` block of the spec.
+// Owed, so red on purpose: the tree read answers no title a session stamped (a session's context
+// node carries none, and the names read and the agents registry name no session the registry has
+// let go). It passes once the row reads its decider's title from the session node the
+// `decided_by` tuple names in the tree read (`title`, which INFRA-1253's spec v168 has the
+// model's tree route answer on each session node: the newest title the session stamped). Bun
+// then counts this `test.failing` as failed, and it must become a plain `test`.
+test.failing("owed until the tree read answers a session's stamped title: a decider no registry lists is drawn by the title it stamped", () => {
+  const storedTitle = "Legion planner · CORE-1";
+  const stored = "d-stored";
+  const gone = "session-gone";
+  const drawn = decisionsDrawn({
+    blocks: [stored],
+    registered: [],
+    sessions: [gone],
+    tuples: [treeTuple("decided_by", stored, gone)],
+  });
   expect(drawn(stored)).toEqual({
     body: null,
     kind: "agent",
@@ -356,6 +396,7 @@ test("an agent's decision draws the session its entry names as its decider, by t
     type: "decision",
   });
 });
+
 // A view that edits rows in place passes `editable`, and the row element itself carries
 // `data-editable` for that view's style. Every other view passes nothing, and its rows carry none.
 test("a row carries data-editable where its view passes editable, and none by default", () => {

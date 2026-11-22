@@ -14,19 +14,19 @@ import { issueHeader } from "./issue-page-p";
 import type { ApiRequest } from "./traffic";
 
 /**
- * What the rows of `e2e/issue-page-t.e2e.ts` read of what the page received besides what it
- * drew, the gates they check first, and what the page draws beside the rows. These helpers are
- * kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
+ * What the rows of the `e2e/issue-page-t-*.e2e.ts` files read of what the page received
+ * besides what it drew, the gates they check first, and what the page draws beside the rows.
+ * These helpers are kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
  * (`e2e/tools/issue-page-t-record.ts`) loads on a base that holds F's page and not the tree read:
  * what reads the tree read names its modules and its answer's types, which that base does not
- * hold, so it is here, with every other helper the recorder does not read with, so that file
- * loads no more than the recorder needs.
+ * hold, so it is here, so that file loads no more than the recorder needs; the steps and
+ * comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
  *
  * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
  * (`GET /api/v1/issues/{key}/tree`) and of one of its views (`?view=`), every page of a read
  * merged; `decisionsReadOf` keeps the decisions read; `viewNodeIds` names the rows root R2 lets a
  * view draw. `treeReads` and `blocksReads` count what a load or a press sent. Each row's gate is
- * one `owedUnless` call on a probe (`treeReadGate`, `convertedGate`, `decisionsViewServedGate`,
+ * one `owedUnless` call on a probe (`treeReadGate`, `convertedGate`, `decisionsViewGate`,
  * `decisionNodesGate`, `partUGate`, `footLineGate`): where the gate is not on this branch's base
  * the row skips, naming the gate in an `owed` annotation, and never passes, since a row cannot
  * pass on code the base does not hold yet.
@@ -43,7 +43,7 @@ export type TreeView = Filter;
 const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
 
 /** The path of issue `key`'s tree read. */
-export function treePath(key: string): string {
+function treePath(key: string): string {
   return `/api/v1/issues/${encodeURIComponent(key)}/tree`;
 }
 
@@ -453,20 +453,6 @@ export async function treeReadGate(page: Page, key: string): Promise<Gate> {
   };
 }
 
-/** The model's Decisions view of the tree read, as the server serves it: issue `key`'s tree read
- *  with `view=decisions` answers, read through the signed-in page's own request context. It is
- *  met by the server's answer, never by whether the page asked for the view, so a press of
- *  Decisions that sends no view read fails its row. */
-export async function decisionsViewServedGate(page: Page, key: string): Promise<Gate> {
-  const response = await page.request.get(`${treePath(key)}?view=decisions`);
-  return {
-    met: response.ok(),
-    owed:
-      "owed until the server serves the tree read's Decisions view on this branch's base: the " +
-      `tree read answers ${response.status()} to view=decisions here; ${OWED_BY}`,
-  };
-}
-
 /** The model's issues born converted: issue `key`'s tree read says it is one. */
 export async function convertedGate(page: Page, key: string): Promise<Gate> {
   const path = treePath(key);
@@ -478,6 +464,17 @@ export async function convertedGate(page: Page, key: string): Promise<Gate> {
     owed:
       "owed until the model's issues born converted are on this branch's base: the tree read " +
       `answers converted: false here; ${OWED_BY}`,
+  };
+}
+
+/** The model's decisions read moved onto the tree read: what the page sent, `requests`, holds a
+ *  read of issue `key`'s tree with `view=decisions`. */
+export function decisionsViewGate(requests: readonly ApiRequest[], key: string): Gate {
+  return {
+    met: treeReads(requests, key, "decisions") > 0,
+    owed:
+      "owed until the model's decisions view of the tree read is on this branch's base: the " +
+      `page reads its decisions here with no view=decisions read of the tree; ${OWED_BY}`,
   };
 }
 

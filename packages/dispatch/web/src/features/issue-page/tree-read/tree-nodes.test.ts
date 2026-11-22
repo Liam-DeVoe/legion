@@ -31,6 +31,7 @@ import {
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
+import { NODE_TYPE_NAMES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
@@ -393,6 +394,29 @@ test("a typed block's row and its chip draw the block's own content, not its kin
   expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
 });
 
+// Every re-read of the tree builds the drafts again, from an answer whose unchanged objects the
+// cache keeps. A row handed a new reading or a new source draws its words again, and a link
+// focused in them loses the focus, so drawing the same answer twice hands a typed block's row the
+// same cut reading and the same source, and a comment's row the same source.
+test("drawing the same answer twice hands a row the same reading and the same source", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0, {
+      text_tree: typedReading("requirement", { blockId: "r1" }, "The first statement."),
+    }),
+    personsComment("c1", "r1", "2026-11-05T09:00:00Z"),
+  ]);
+  const builds = [drawn(tree).drafts, drawn(tree).drafts];
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(row?.tree).toEqual(reading("The first statement."));
+  expect(row?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.tree).toBe(row?.tree);
+  expect(again?.source).toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toBe(turn?.source);
+});
+
 // A node's `author` lists every author of its first version, whoever made it first ahead of the
 // rest, and a row draws one name: a comment two authors wrote draws the first of them, and a
 // message whose list is empty draws none.
@@ -496,8 +520,9 @@ test("a reading stands under the parent the read names, and nowhere else", () =>
 
 // R10: a statement whose own `from` names one origin and a decision that says it shaped it names
 // another draws the two edges disagreeing - an agent's decision, and an ask a person answered,
-// which the read answers with that person's decision. An ask still open decided nothing, as the
-// decisions read's entries hold (`isDecisionEntry`), so its `shaped` tuple draws no disagreement.
+// which the read answers with that person's decision and its ties. A decision is one by the rule
+// every reader of a decision reads (`decision-nodes.ts`' `decisionNodes`), and an ask still open
+// decided nothing, so its `shaped` tuple draws no disagreement.
 test("an open ask's shaped tuple draws no shaped_disagreement, where a decision's and an answered ask's do", () => {
   const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
   const { drafts } = drawn(
@@ -508,8 +533,10 @@ test("an open ask's shaped tuple draws no shaped_disagreement, where a decision'
         block("r-answered", "requirement", KEY, SPEC, 2, { attributes: origin }),
         block("r-agent", "requirement", KEY, SPEC, 3, { attributes: origin }),
         node("q-open", "ask", KEY),
-        node("q-answered", "ask", KEY, { decision: {} }),
-        decisionNode("d1", KEY),
+        node("q-answered", "ask", KEY, {
+          decision: { links: [linkTo(`dispatch://${KEY}/spec#b-r-answered`)] },
+        }),
+        block("d1", "decision", KEY, DECISIONS, 0),
       ],
       [
         tuple("shaped", "q-open", "r-open"),
@@ -526,6 +553,84 @@ test("an open ask's shaped tuple draws no shaped_disagreement, where a decision'
   expect(
     ["r-open", "r-answered", "r-agent"].map((id) => drafts.get(blockNodeId("spec", id))?.gaps)
   ).toEqual([[], ["shaped_disagreement"], ["shaped_disagreement"]]);
+});
+
+// R10: the gap mark counts what `decisionNodes` counts, so a node no reader of a decision finds
+// claims nothing against the statement's origin: a decision node that carries no `decision`,
+// which no reader could say how it stands, and one no document holds, which has no address.
+test("a decision node with no decision or no document draws no shaped_disagreement", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-bare", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        block("r-nowhere", "requirement", KEY, SPEC, 2, { attributes: origin }),
+        // The fixture gives every decision node a decision, so this one has its own taken away.
+        { ...block("d-bare", "decision", KEY, DECISIONS, 0), decision: undefined },
+        decisionNode("d-nowhere", KEY),
+      ],
+      [tuple("shaped", "d-bare", "r-bare"), tuple("shaped", "d-nowhere", "r-nowhere")]
+    ),
+    {
+      coverage: coverage(["r-origin", "r-bare", "r-nowhere"].map(requirement)),
+      issue: issueDetails(),
+    }
+  );
+
+  expect(["r-bare", "r-nowhere"].map((id) => drafts.get(blockNodeId("spec", id))?.gaps)).toEqual([
+    [],
+    [],
+  ]);
+});
+
+// R10: a decision node whose decision the read answers as a person's (`decision.kind` `person`)
+// is a decision as every reader reads it (`decisionNodes`), so a `shaped` tuple from it that
+// names another node than the statement's origin draws the disagreement, as an agent's does.
+test("a decision node of a person's decision draws shaped_disagreement", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-person", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        block("d-person", "decision", KEY, DECISIONS, 0, { decision: { kind: "person" } }),
+      ],
+      [tuple("shaped", "d-person", "r-person")]
+    ),
+    { coverage: coverage(["r-origin", "r-person"].map(requirement)), issue: issueDetails() }
+  );
+
+  expect(drafts.get(blockNodeId("spec", "r-person"))?.gaps).toEqual(["shaped_disagreement"]);
+});
+
+// R10: an ask the asks read says a person answered is that person's decision where the tree read
+// carries none on its node (`decisionNodes`), so its `shaped` tuple that names another node than
+// the statement's origin draws the disagreement.
+test("an ask the asks read answers draws shaped_disagreement where its node carries no decision", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-answered", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        node("q-answered", "ask", KEY),
+      ],
+      [tuple("shaped", "q-answered", "r-answered")]
+    ),
+    {
+      asks: [
+        question("q-answered", {
+          answer: { at: "2026-11-06T12:00:00Z", selected: [], text: "Both.", user: "alice" },
+          state: "answered",
+        }),
+      ],
+      coverage: coverage(["r-origin", "r-answered"].map(requirement)),
+      issue: issueDetails(),
+    }
+  );
+
+  expect(drafts.get(blockNodeId("spec", "r-answered"))?.gaps).toEqual(["shaped_disagreement"]);
 });
 
 // R1, root R4: a check stands under the requirement the read answers and again under each other
@@ -1599,4 +1704,29 @@ test("an ask block's row draws the asks read's question, not the options its blo
     reading(words),
   ]);
   expect(row?.options?.map((option) => option.label)).toEqual(["1024 px", "1280 px"]);
+});
+
+// R3 and R5: a document is no node, so a requirement whose stored source cites one - its
+// `From:` line - carries a chip that opens it, at its own address and named by the page's word
+// for a document; the source is the tree read's text of the block, whatever its words drop.
+test("a requirement whose From line cites a document carries its chip from the tree read's text", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const cites = `dispatch://${KEY}/artifact/notes-md`;
+  const details = issueDetails();
+  const issue = { ...details, artifacts: [...(details.artifacts ?? []), notes] };
+  const words = "The measurements behind it are kept.";
+  const { root } = drawn(
+    answer([
+      block("r-cites", "requirement", KEY, SPEC, 0, {
+        text: `${words}\nFrom: ${cites}`,
+        text_tree: reading(words),
+      }),
+    ]),
+    { issue }
+  );
+
+  expect(
+    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
+    "the requirement draws no chip for the document its From line cites"
+  ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });

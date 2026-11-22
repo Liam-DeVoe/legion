@@ -1,0 +1,838 @@
+import { type Browser, expect, type Page } from "@playwright/test";
+
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
+import { shortDay } from "../web/src/features/issue-page/node-time";
+import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
+import { gotoIssue, phase, presetCount, presetToggle } from "./issue-page";
+import { expectIssuePageDrawn, unfoldEveryBranch } from "./issue-page-g";
+import { expectActivePreset, pickPreset } from "./issue-page-i";
+import {
+  drawnRowReadings,
+  fixtureSeed,
+  type KeyedRow,
+  keyedRows,
+  type NamedSeed,
+  parentIndex,
+  type RowReading,
+  SEEDS,
+  type SeededIssue,
+  type SeedFixture,
+  seedKeys,
+  sortedFields,
+  steadily,
+} from "./issue-page-t";
+import {
+  convertedGate,
+  type DecisionsRead,
+  type DrawnNode,
+  decisionNodesGate,
+  decisionsAreNodes,
+  decisionsReadOf,
+  drawnNodes,
+  heldAnswer,
+  owedUnless,
+  R2_ROW_KINDS,
+  seedEventsLanded,
+  type TreeView,
+  treeAnswerOf,
+  treeReadGate,
+} from "./issue-page-t-tree";
+import { heldDecisionsRead, idReadsOf, sessionTitleGate } from "./issue-page-u";
+import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
+
+/**
+ * What the rows of the new issue page that draw it from the tree read share: the outline drawn
+ * from the issue's tree read (`GET /api/v1/issues/{key}/tree`) and each filter from that read's
+ * view (`?view=`), read on the real stack. Each row turns the new page on for alice with `phase`
+ * (1440 by 900), seeds one of the issues of `e2e/issue-layout-seed.ts`, opens it with
+ * `gotoIssue`, and reads it through `unfoldEveryBranch`, `pickPreset`, `watchApiRequests` and
+ * `expectLoadSettled` (`e2e/traffic.ts`), the helpers of `e2e/issue-page-t.ts` and
+ * `e2e/issue-page-t-tree.ts`, and the steps and comparisons of this file.
+ *
+ * The rows are the four of the Verification document's browser checks, by their titles. They
+ * stand in four spec files that hold only their rows, each about a minute of one browser shard
+ * of CI, since one file of them all took most of a shard's limit:
+ *
+ * 1. `c-same-rows`: "the outline drawn from the tree read holds the rows the reads drew", one row
+ *    per seed, so the check's `-g` runs all 14 and each ends inside CI's nine minutes:
+ *    `e2e/issue-page-t-same-rows-a.e2e.ts` holds the first nine of `SEEDS` in their order
+ *    (`SAME_ROWS_A_SEEDS`) and `e2e/issue-page-t-same-rows-b.e2e.ts` the last five
+ *    (`SAME_ROWS_B_SEEDS`), a split by time (`SAME_ROWS_A`). Each row stands under the node the
+ *    answer names as its parent, or its nearest drawn ancestor, in the answer's order; that is
+ *    read from the answer and never from the fixture, so the check's control fails on the parent
+ *    first. Every other reading is the fixture's (`e2e/fixtures/issue-page-t-rows.json`), by
+ *    key, as the page opens and with every branch open, and each time is its source's in this
+ *    run.
+ * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once", and Plan,
+ *    pressed 31 s after the load, past the app's 30 s `staleTime`, sends no read but its view's:
+ *    the page's reads are refreshed by events, never by age. It is in
+ *    `e2e/issue-page-t-reads.e2e.ts`.
+ * 3. `c-views`: "each filter draws its view read's rows", on `seedWholeIssue` and
+ *    `seedSpineCases`, in `e2e/issue-page-t-reads.e2e.ts` too.
+ * 4. `c-fresh`: "a write is drawn without a reload": a status picked in the page's header sends
+ *    one or two tree reads (its own refresh, and its event's), and a reply sent from the row's
+ *    Reply on the open question becomes a row under it and sends one or two. It is in
+ *    `e2e/issue-page-t-write.e2e.ts`.
+ *
+ * Each row checks its gates first, each with one `owedUnless` call, and skips where a gate is not
+ * on this branch's base, with an `owed` annotation naming the gate; it never passes then, since a
+ * row cannot pass on code the base does not hold yet. Rows 1 to 4 wait on the model's tree read,
+ * which `treeReadGate` reads as the route's 404; row 1 on issues born converted too
+ * (`convertedGate`), the answer's `converted: true`; row 4's reply waits on the line at the foot
+ * of the outline, which is not on this branch's base (`footLineGate`). These rows carry no
+ * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
+ * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
+ * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
+ * holds a decision (`decisionNodesGate`); row 1's author of an agent's decision, drawn by the
+ * title its session stamped, for each such seed too, on the tree read answering that title on a
+ * session node (`sessionTitleGate`), which row 1 itself leaves out (`ReadingsPart`); row 2's
+ * Decisions, row 3's Decisions and row 4's Keep on the server's answer to the tree read's
+ * `view=decisions`, read before Decisions is pressed (`decisionsViewServedGate`), so a press that
+ * sends no view read fails the row; and row 3's decision lines and row 4's Keep on the page
+ * drawing the decisions from the tree read's nodes. Each such row stands in its row's file.
+ *
+ * These helpers name the tree read's modules and its answer's types, so they are not in
+ * `e2e/issue-page-t.ts`, which the recorder loads on a base without the tree read. They are not
+ * in `e2e/issue-page-t-tree.ts` either: this file reads the fixture as it loads
+ * (`DECISION_SEEDS`), which the other specs that import that file for `refuseTreeRead` need not.
+ */
+
+/** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
+ *  them (`decisionNodesGate`), and so does its author of an agent's decision (`sessionTitleGate`). */
+export const DECISION_SEEDS = new Set(
+  SEEDS.flatMap(([name]) =>
+    fixtureSeed(name).rows.some((row) => row.kind.type === "decision") ? [name] : []
+  )
+);
+
+/**
+ * How many of `SEEDS`, in their order, row 1 reads in `e2e/issue-page-t-same-rows-a.e2e.ts`; the
+ * rest, from `seedTwiceTheNodes` on, are in `e2e/issue-page-t-same-rows-b.e2e.ts`. The split is
+ * by time rather than by count, since the later seeds are the larger issues: in one chromium run
+ * with one worker, the first nine seeds took 72 s and the last five 71 s, their decision clauses
+ * included, where the first seven took 53 s and the last seven 90 s.
+ */
+const SAME_ROWS_A = 9;
+
+/** The seeds of row 1 in `e2e/issue-page-t-same-rows-a.e2e.ts`. */
+export const SAME_ROWS_A_SEEDS: readonly NamedSeed[] = SEEDS.slice(0, SAME_ROWS_A);
+
+/** The seeds of row 1 in `e2e/issue-page-t-same-rows-b.e2e.ts`. */
+export const SAME_ROWS_B_SEEDS: readonly NamedSeed[] = SEEDS.slice(SAME_ROWS_A);
+
+/** The filters whose view read rows 2 and 3 read on any server that serves the tree read.
+ *  Decisions reads its view too, on its first press, in rows of its own that gate on the server
+ *  serving that view (`decisionsViewServedGate`). */
+export const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly TreeView[];
+
+/** How long one seed's row 1 may take: every row of the outline read with its body, inside CI's
+ *  nine minutes. */
+export const SAME_ROWS_MS = 480_000;
+
+/** How long each other row may take. */
+export const ROW_MS = 240_000;
+
+/** The words row 4 replies with. */
+export const REPLY_WORDS = "The tree read draws this reply with no reload.";
+
+/** A decision row's state word once alice kept it. */
+export const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
+
+/** The ids, each once and sorted, so two lists of drawn ids compare as sets. */
+export function idSet(ids: readonly string[]): string[] {
+  return [...new Set(ids)].sort();
+}
+
+/** The id of the row the row `index` of `rows` stands under (`parentIndex`), null at the top. */
+function parentIdOf(rows: readonly RowReading[], index: number): string | null {
+  const parent = parentIndex(rows, index);
+  return parent === undefined ? null : (rows[parent]?.id ?? null);
+}
+
+/** `value` as JSON with every object's fields sorted (`sortedFields`), so two readings compare by
+ *  what they hold and not by the order their fields were written in. */
+function canonical(value: unknown): string {
+  return JSON.stringify(sortedFields(value)) ?? "undefined";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 1: the outline from the tree read.
+// ---------------------------------------------------------------------------------------------
+
+/** What row 1 reads of one seed's page. */
+interface OutlineRead {
+  readonly answer: IssueTreeRead;
+  /** The decisions read the page received, and where it received none - the page draws its
+   *  decisions from the tree read's nodes and sends no decisions read - the read of the
+   *  Decisions view the row sends itself (`heldDecisionsRead`), so whether the seed's decisions
+   *  are nodes (`decisionsAreNodes`) reads what the server holds, not whether the page asked. */
+  readonly decisions: DecisionsRead;
+  readonly keys: ReadonlyMap<string, string>;
+  readonly opened: readonly RowReading[];
+  readonly reads: TreeIdReads;
+  readonly rows: readonly RowReading[];
+}
+
+/** Opens the seeded issue and reads it as the recorder did: the rows as the page opens, once two
+ *  readings agree, then every row once every branch is open, with its body where `bodies`; and
+ *  what the page received of the tree read, and the decisions read as `OutlineRead.decisions`
+ *  says. */
+async function readOutline(
+  page: Page,
+  seeded: SeededIssue,
+  { bodies = true }: { readonly bodies?: boolean } = {}
+): Promise<OutlineRead> {
+  const tree = treeAnswerOf(page);
+  const decisions = decisionsReadOf(page, seeded.key);
+  const traffic = watchApiRequests(page);
+  await gotoIssue(page, `/issues/${seeded.key}`);
+  await expectIssuePageDrawn(page);
+  const opened = await steadily(page, traffic, `${seeded.key} as the page opens`, () =>
+    drawnRowReadings(page, { bodies: false })
+  );
+  await unfoldEveryBranch(page);
+  const unfolded = await steadily(page, traffic, `${seeded.key} with every branch open`, () =>
+    drawnRowReadings(page, { bodies: false })
+  );
+  const rows = bodies ? await drawnRowReadings(page) : unfolded;
+  const answer = await heldAnswer(tree, `${seeded.key}'s tree read`);
+  const reads = await idReadsOf(seeded.key);
+  const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
+  return {
+    answer,
+    decisions: await heldDecisionsRead(seeded.key, decisions),
+    keys: seedKeys(seeded, slugs),
+    opened,
+    reads,
+    rows,
+  };
+}
+
+/** A node of the answer by the id its row carries: of the nodes the tree draws by one id, the
+ *  first the answer holds, with its place in the answer's order. */
+interface HeldNode {
+  readonly node: IssueTreeNode;
+  readonly order: number;
+}
+
+function heldNodes(answer: IssueTreeRead, idOf: (readId: string) => string): Map<string, HeldNode> {
+  const held = new Map<string, HeldNode>();
+  for (const [order, node] of (answer.nodes ?? []).entries()) {
+    const id = idOf(node.id);
+    if (!held.has(id)) held.set(id, { node, order });
+  }
+  return held;
+}
+
+/** The rows that take their place from the fixture rather than from the tree read: a row the
+ *  answer holds no node for, which is a decision of today's decisions read (until the page draws
+ *  decisions from the tree read's nodes), and a row drawn under such a decision, a Change, which
+ *  the read places under its decision only once the decision is a node (`decisionNodesGate`). */
+function placedByFixture(
+  readings: readonly RowReading[],
+  held: ReadonlyMap<string, HeldNode>
+): Set<number> {
+  const placed = new Set<number>();
+  for (const [index, reading] of readings.entries()) {
+    if (reading.id === null || !held.has(reading.id)) {
+      placed.add(index);
+      continue;
+    }
+    const parent = parentIndex(readings, index);
+    if (parent !== undefined && placed.has(parent) && readings[parent]?.kind.type === "decision") {
+      placed.add(index);
+    }
+  }
+  return placed;
+}
+
+/** Where the tree read places `node`'s rows, by the id of the row each stands under (null for
+ *  the top, under the issue): its `parent`, walked up the answer to the nearest node `drawn` as a
+ *  row; for a check or a plan task of this issue also each statement its `serves` tuples name,
+ *  where the outline stands it again (root R4), and there alone where the walk reaches the
+ *  issue. */
+function homesOf(
+  node: IssueTreeNode,
+  outline: OutlineRead,
+  idOf: (readId: string) => string,
+  drawn: ReadonlySet<string>
+): ReadonlySet<string | null> {
+  const key = outline.reads.issue.key;
+  const nodes = new Map((outline.answer.nodes ?? []).map((one) => [one.id, one]));
+  const foreign = (one: IssueTreeNode): boolean => one.issue !== undefined && one.issue !== key;
+  let parent: string | null = null;
+  const passed = new Set<string>();
+  for (
+    let above = node.parent?.id ?? null;
+    above !== null && !passed.has(above);
+    above = nodes.get(above)?.parent?.id ?? null
+  ) {
+    passed.add(above);
+    const id = idOf(above);
+    if (id === key) break;
+    if (drawn.has(id)) {
+      parent = id;
+      break;
+    }
+  }
+  if ((node.supertag !== "check" && node.supertag !== "plan_task") || foreign(node)) {
+    return new Set([parent]);
+  }
+  const served = (outline.answer.tuples ?? []).flatMap((tuple) => {
+    const target =
+      tuple.kind === "serves" && tuple.from.id === node.id ? nodes.get(tuple.to.id) : undefined;
+    return target?.supertag === "requirement" && !foreign(target) ? [idOf(target.id)] : [];
+  });
+  return new Set(parent === null && served.length > 0 ? served : [parent, ...served]);
+}
+
+/** The first row of `readings` the answer holds that does not stand under the node the answer
+ *  places it under, at the level that gives, or stands before a sibling the answer orders before
+ *  it; undefined where none. */
+function firstRowOutOfPlace(
+  where: string,
+  readings: readonly RowReading[],
+  outline: OutlineRead
+): string | undefined {
+  const idOf = treeIdOf(outline.answer, outline.reads);
+  const held = heldNodes(outline.answer, idOf);
+  const placed = placedByFixture(readings, held);
+  const drawn = new Set(readings.flatMap((reading) => (reading.id === null ? [] : [reading.id])));
+  const last = new Map<number, { readonly id: string; readonly order: number }>();
+  for (const [index, reading] of readings.entries()) {
+    const own = reading.id === null ? undefined : held.get(reading.id);
+    if (own === undefined || reading.id === null || placed.has(index)) continue;
+    const parent = parentIndex(readings, index);
+    const under = parentIdOf(readings, index);
+    const homes = homesOf(own.node, outline, idOf, drawn);
+    const named = `the ${reading.kind.type ?? "untyped"} row ${reading.id}`;
+    if (!homes.has(under) || (parent === undefined && reading.level !== 1)) {
+      const answered = [...homes].map((home) => home ?? "the issue").join(" or ");
+      return (
+        `${where}, ${named} stands at level ${reading.level ?? "none"} under ` +
+        `${under ?? "the issue"}, and the tree read places it under ${answered}`
+      );
+    }
+    const before = last.get(parent ?? -1);
+    if (before !== undefined && before.order > own.order) {
+      return (
+        `${where}, ${named} is drawn under ${under ?? "the issue"} after ${before.id}, which ` +
+        "the tree read orders after it"
+      );
+    }
+    last.set(parent ?? -1, { id: reading.id, order: own.order });
+  }
+  return undefined;
+}
+
+/** What row 1 compares of a row with the fixture: every reading but its place, each in the part
+ *  of it a comparison takes (`ReadingsPart`). */
+const READINGS = [
+  "words",
+  "kind",
+  "author",
+  "time",
+  "state",
+  "chips",
+  "gaps",
+  "facts",
+  "counts",
+  "alsoUnder",
+  "body",
+] as const satisfies readonly (keyof KeyedRow)[];
+
+/** What the fixture compares of a row that takes its place from it (`placedByFixture`). */
+const PLACE = ["parentKey", "level"] as const satisfies readonly (keyof KeyedRow)[];
+
+/** Whether `row` of the fixture is a section that restates a person's answer: a decision the
+ *  fixture draws under an answered question. */
+function restatesAnAnswer(row: KeyedRow, recorded: readonly KeyedRow[]): boolean {
+  return (
+    row.kind.type === "decision" &&
+    recorded.some(
+      (other) =>
+        other.key === row.parentKey &&
+        other.kind.type === "ask" &&
+        other.state?.token === "answered"
+    )
+  );
+}
+
+function rowName(row: KeyedRow): string {
+  return `${row.key} under ${row.parentKey ?? "the issue"}`;
+}
+
+/** What a part of the readings gives for a reading it does not take (`ReadingsPart`). */
+const LEFT_OUT = Symbol("left out");
+
+/**
+ * The part of each row's readings one comparison with the fixture takes (`differences`). Part U
+ * draws an agent's decision by its decider, the session the far end of its node's `decided_by`
+ * tuple names (`sessionDecided`): by the registry's title, else by the title the tree read
+ * answers that session stamped, which it answers only from INFRA-1253's spec v168 on
+ * (`sessionTitleGate`), else as an agent nothing names; the fixture recorded the stamped title.
+ * Row 1 takes every reading but that author, on the row's line and in its body
+ * (`BESIDE_STAMPED_TITLE`), and its `@owed` row that author alone (`STAMPED_TITLE`).
+ */
+interface ReadingsPart {
+  /** What the part takes of reading `field` of a row, `value` as one side reads it, where the row
+   *  is an agent's decision (`agent`) or not: all of it, a part of it, or `LEFT_OUT`. */
+  readonly reading: (field: keyof KeyedRow, value: unknown, agent: boolean) => unknown;
+  /** Whether it takes the rows themselves: a drawn row the fixture does not hold, a row of the
+   *  fixture the page does not draw, and each drawn time against its source. */
+  readonly rows: boolean;
+}
+
+/** Row 1's part: every reading of every row, and the rows themselves, but the author of an
+ *  agent's decision, on its line and in its body. */
+const BESIDE_STAMPED_TITLE: ReadingsPart = {
+  reading: (field, value, agent) => {
+    if (!agent) return value;
+    if (field === "author") return LEFT_OUT;
+    // A body read without its `author`; a body not read (null) as it is.
+    return field === "body" && typeof value === "object" && value !== null
+      ? Object.fromEntries(Object.entries(value).filter(([name]) => name !== "author"))
+      : value;
+  },
+  rows: true,
+};
+
+/** Row 1's `@owed` part: the author of an agent's decision alone, on its line and in its body. */
+const STAMPED_TITLE: ReadingsPart = {
+  reading: (field, value, agent) => {
+    if (!agent) return LEFT_OUT;
+    if (field === "author") return value;
+    if (field !== "body") return LEFT_OUT;
+    // A body read's `author`; null for a body not read.
+    return typeof value === "object" && value !== null && "author" in value ? value.author : null;
+  },
+  rows: false,
+};
+
+/** The rows of the decisions a session decided, by the id each row carries (`idOf`): each
+ *  decision node of `answer` whose `decided_by` tuple ends at a session, the decider part U draws
+ *  the decision by (`tree-drafts.ts`' `deciderOf`). */
+function sessionDecided(answer: IssueTreeRead, idOf: (readId: string) => string): Set<string> {
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
+  return new Set(
+    (answer.tuples ?? []).flatMap((tuple) =>
+      tuple.kind === "decided_by" &&
+      tuple.to.kind === "session" &&
+      nodes.get(tuple.from.id)?.supertag === "decision"
+        ? [idOf(tuple.from.id)]
+        : []
+    )
+  );
+}
+
+/** What one comparison with the fixture found: each difference, and how many of the rows it
+ *  matched it took a reading of. */
+interface Comparison {
+  readonly compared: number;
+  readonly found: readonly string[];
+}
+
+/**
+ * How `readings` differ from the fixture's rows `recorded` in the part of them `part` takes, each
+ * row matched by its key (and, for a node drawn under two parents, by its parent's key first):
+ * every reading but its place, and the place too for a row the fixture places
+ * (`placedByFixture`); then, where `part` takes the rows themselves, each row one side holds and
+ * the other does not, and each time against its source in this run. Once the seeds' decisions are
+ * nodes (`nodes`, `decisionNodesGate`), the two differences the check names are allowed: the
+ * section that restates a person's answer is no row, and the answered question's row carries its
+ * `shaped` ties as chips beside the fixture's.
+ */
+function differences(
+  where: string,
+  readings: readonly RowReading[],
+  recorded: readonly KeyedRow[],
+  outline: OutlineRead,
+  nodes: boolean,
+  part: ReadingsPart
+): Comparison {
+  const idOf = treeIdOf(outline.answer, outline.reads);
+  const held = heldNodes(outline.answer, idOf);
+  const placed = placedByFixture(readings, held);
+  const agents = sessionDecided(outline.answer, idOf);
+  const drawn = keyedRows(readings, outline.keys);
+  const unmatched = new Map<string, KeyedRow[]>();
+  for (const row of recorded) unmatched.set(row.key, [...(unmatched.get(row.key) ?? []), row]);
+  const found: string[] = [];
+  let compared = 0;
+  for (const [index, row] of drawn.entries()) {
+    const candidates = unmatched.get(row.key) ?? [];
+    const at = Math.max(
+      0,
+      candidates.findIndex((candidate) => candidate.parentKey === row.parentKey)
+    );
+    const match = candidates[at];
+    if (match === undefined) {
+      if (part.rows) found.push(`${where}, ${rowName(row)} is a row the fixture does not hold`);
+      continue;
+    }
+    candidates.splice(at, 1);
+    const id = readings[index]?.id ?? null;
+    const agent = row.kind.type === "decision" && id !== null && agents.has(id);
+    const fields = (placed.has(index) ? [...READINGS, ...PLACE] : READINGS).filter(
+      (field) => part.reading(field, match[field], agent) !== LEFT_OUT
+    );
+    if (fields.length > 0) compared += 1;
+    for (const field of fields) {
+      const theirs = part.reading(field, match[field], agent);
+      const mine = part.reading(
+        field,
+        field === "chips" && nodes && row.kind.type === "ask" && row.state?.token === "answered"
+          ? row.chips.filter((chip) =>
+              match.chips.some((kept) => canonical(kept) === canonical(chip))
+            )
+          : row[field],
+        agent
+      );
+      if (canonical(mine) !== canonical(theirs)) {
+        found.push(
+          `${where}, ${rowName(row)} draws its ${field} as ${canonical(mine)}, and the fixture ` +
+            `as ${canonical(theirs)}`
+        );
+      }
+    }
+  }
+  if (!part.rows) return { compared, found };
+  for (const rows of unmatched.values()) {
+    for (const row of rows) {
+      if (nodes && restatesAnAnswer(row, recorded)) continue;
+      found.push(`${where}, ${rowName(row)} is a row of the fixture the page does not draw`);
+    }
+  }
+  return { compared, found: [...found, ...timeDifferences(where, readings, drawn, held)] };
+}
+
+/** Row 1's comparison of one seed's outline with the fixture's record of seed `name`, as the
+ *  page opens and with every branch open (`differences`), in the part of each row's readings
+ *  `part` takes. */
+function outlineDifferences(outline: OutlineRead, name: string, part: ReadingsPart): Comparison {
+  const recorded = fixtureSeed(name);
+  const nodes = decisionsAreNodes(outline.answer, outline.decisions);
+  const comparisons = [
+    differences("as the page opens", outline.opened, recorded.opened, outline, nodes, part),
+    differences("with every branch open", outline.rows, recorded.rows, outline, nodes, part),
+  ];
+  return {
+    compared: comparisons.reduce((sum, one) => sum + one.compared, 0),
+    found: comparisons.flatMap((one) => one.found),
+  };
+}
+
+/** Each drawn time that is not its source's in this run, as the page's short day: a node's
+ *  `made_at` in the tree read the page received, and a decision's `changed_at` on its node there
+ *  (`decision.changed_at`), the time `draftDecision` draws for it. */
+function timeDifferences(
+  where: string,
+  readings: readonly RowReading[],
+  drawn: readonly KeyedRow[],
+  held: ReadonlyMap<string, HeldNode>
+): string[] {
+  return readings.flatMap((reading, index) => {
+    const row = drawn[index];
+    if (reading.time === null || row === undefined) return [];
+    const decision = reading.kind.type === "decision";
+    const node = held.get(reading.id ?? "")?.node;
+    const source = decision ? node?.decision?.changed_at : node?.made_at;
+    if (source === undefined || source === null) {
+      return [`${where}, ${rowName(row)} draws a time, and the tree read holds none for it`];
+    }
+    const want = shortDay(source);
+    return reading.time === want
+      ? []
+      : [`${where}, ${rowName(row)} draws its time as ${reading.time}, and its source as ${want}`];
+  });
+}
+
+/** The review state the tree read answers on decision `node`, as the page's token for it. */
+function answeredReviewState(node: IssueTreeNode, changed: boolean): string | null {
+  if (node.decision?.replaced === true) return "replaced";
+  if (changed) return "change_requested";
+  if (node.decision?.waiting_review === true) return "waiting_review";
+  return node.decision?.kept == null ? null : "kept";
+}
+
+/** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
+ *  decision row's review state is the answer's, each Change stands under its decision's row, the
+ *  section that restates a person's answer is no row, and the answered question's row carries a
+ *  chip for each node its `shaped` ties name. */
+function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
+  const { answer, rows } = outline;
+  const idOf = treeIdOf(answer, outline.reads);
+  const held = heldNodes(answer, idOf);
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
+  const changes = decisionNodeChanges(answer);
+  const under = rows.map((_, index) => parentIdOf(rows, index));
+
+  const states = rows.flatMap((row) => {
+    const node = row.id === null ? undefined : held.get(row.id)?.node;
+    if (row.kind.type !== "decision" || node?.supertag !== "decision") return [];
+    const want = answeredReviewState(node, changes.has(node.id));
+    const token = row.state?.token ?? null;
+    return token === want ? [] : [`${row.id} draws ${token}, and the tree read answers ${want}`];
+  });
+  expect(states, "each decision row's review state is the tree read's").toEqual([]);
+
+  const strays = (answer.nodes ?? []).flatMap((node) => {
+    const decision = node.parent === null ? undefined : nodes.get(node.parent.id);
+    if (
+      node.supertag !== "comment" ||
+      node.author?.[0]?.kind !== "user" ||
+      decision?.supertag !== "decision"
+    ) {
+      return [];
+    }
+    const id = idOf(node.id);
+    const home = idOf(decision.id);
+    const at = rows.findIndex((row) => row.id === id);
+    if (at < 0) return [`the Change ${id} is no row`];
+    return under[at] === home ? [] : [`the Change ${id} stands under ${under[at]}, not ${home}`];
+  });
+  expect(strays, "each Change stands under its decision's row").toEqual([]);
+
+  const keyed = keyedRows(rows, outline.keys);
+  const restating = recorded.rows.filter((row) => restatesAnAnswer(row, recorded.rows));
+  expect(
+    restating.flatMap((row) => (keyed.some((one) => one.key === row.key) ? [row.key] : [])),
+    "the section that restates a person's answer is no row"
+  ).toEqual([]);
+
+  const asks = [
+    ...new Set(restating.flatMap((row) => (row.parentKey === null ? [] : [row.parentKey]))),
+  ];
+  const unnamed = asks.flatMap((askKey) => {
+    const row = rows[keyed.findIndex((one) => one.key === askKey)];
+    if (row === undefined || row.id === null) return [`the answered question ${askKey} is no row`];
+    // A chip's address names a block by its id in its document (`block_id`).
+    const shaped = (answer.tuples ?? []).flatMap((tuple) =>
+      tuple.kind === "shaped" && idOf(tuple.from.id) === row.id
+        ? [nodes.get(tuple.to.id)?.block_id ?? tuple.to.id]
+        : []
+    );
+    if (shaped.length === 0) return [`the answered question ${askKey} shaped no node`];
+    return shaped.flatMap((target) =>
+      row.chips.some((chip) => chip.address?.includes(target) === true)
+        ? []
+        : [`the answered question ${askKey} draws no chip naming ${target}`]
+    );
+  });
+  expect(unnamed, "the answered question's row carries a chip for each node it shaped").toEqual([]);
+}
+
+/** Row 1 on the seed `name`, which `seed` seeds: each row stands under the parent the tree read
+ *  answers, as the page opens and with every branch open, and reads as the reads drew it, but the
+ *  author of an agent's decision, which is `expectSameRowsStampedTitle`'s (`ReadingsPart`). */
+export async function expectSameRows(
+  browser: Browser,
+  name: string,
+  seed: NamedSeed[1]
+): Promise<void> {
+  await phase(browser, seed, async (page, seeded) => {
+    owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await convertedGate(page, seeded.key));
+    const outline = await readOutline(page, seeded);
+    expect(
+      firstRowOutOfPlace("as the page opens", outline.opened, outline) ??
+        firstRowOutOfPlace("with every branch open", outline.rows, outline),
+      "each row stands under the parent the tree read answers"
+    ).toBeUndefined();
+    expect(
+      outlineDifferences(outline, name, BESIDE_STAMPED_TITLE).found,
+      "each row reads as the reads drew it"
+    ).toEqual([]);
+  });
+}
+
+/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `decisionNodesGate`
+ *  and asserted once it is met (`expectDecisionsFromNodes`). */
+export async function expectSameRowsDecisions(
+  browser: Browser,
+  name: string,
+  seed: NamedSeed[1]
+): Promise<void> {
+  await phase(browser, seed, async (page, seeded) => {
+    owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await convertedGate(page, seeded.key));
+    const outline = await readOutline(page, seeded, { bodies: false });
+    owedUnless(decisionNodesGate(outline.answer, outline.decisions));
+    expectDecisionsFromNodes(outline, fixtureSeed(name));
+  });
+}
+
+/** Row 1's author of an agent's decision on the seed `name`, which `seed` seeds, owed on
+ *  `sessionTitleGate`: the title its session stamped, on its row's line and in its body, as the
+ *  fixture recorded it. */
+export async function expectSameRowsStampedTitle(
+  browser: Browser,
+  name: string,
+  seed: NamedSeed[1]
+): Promise<void> {
+  await phase(browser, seed, async (page, seeded) => {
+    owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await convertedGate(page, seeded.key));
+    owedUnless(await sessionTitleGate(seeded.key));
+    const outline = await readOutline(page, seeded);
+    const { compared, found } = outlineDifferences(outline, name, STAMPED_TITLE);
+    expect(
+      compared,
+      `no row the page draws of ${name} is an agent's decision the fixture holds, so the ` +
+        "row would compare nothing"
+    ).toBeGreaterThan(0);
+    expect(found, "each agent's decision draws the title its session stamped").toEqual([]);
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 2: what the first load and each filter send.
+// ---------------------------------------------------------------------------------------------
+
+/** The requests of the first load: every request until the page is quiet and draws the same rows
+ *  twice, as the fixture's `loadRequests` counted them. */
+export async function firstLoad(page: Page, traffic: ApiRequests, key: string) {
+  await seedEventsLanded(page);
+  await gotoIssue(page, `/issues/${key}`);
+  await expectIssuePageDrawn(page);
+  const { total } = await steadily(page, traffic, `${key} as the page opens`, async () => ({
+    rows: await drawnRowReadings(page, { bodies: false }),
+    total: traffic.total(),
+  }));
+  return traffic.requests.slice(0, total);
+}
+
+/** Turns `filter` on and waits for its rows to hold still. */
+export async function pressFilter(page: Page, traffic: ApiRequests, filter: TreeView) {
+  const name = PRESET_NAMES[filter];
+  await pickPreset(page, name);
+  await expectActivePreset(page, name);
+  return steadily(page, traffic, `the ${name} filter`, async () => ({
+    count: await presetCount(page, filter).textContent(),
+    nodes: await drawnNodes(page),
+    rows: await drawnRowReadings(page, { bodies: false }),
+  }));
+}
+
+/** Turns `filter` off, which puts the page back on Conversation. */
+export async function releaseFilter(page: Page, filter: TreeView): Promise<void> {
+  await presetToggle(page, filter).click();
+  await expectActivePreset(page, PRESET_NAMES.conversation);
+}
+
+/** Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
+ *  waits out whatever a timer due in that time sent, so what follows counts what a press sends. */
+export async function pastStaleTime(page: Page, traffic: ApiRequests): Promise<void> {
+  await page.clock.fastForward("00:31");
+  await expectLoadSettled(traffic);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 3: each filter's rows are its view read's.
+// ---------------------------------------------------------------------------------------------
+
+/** The seeds row 3 reads. */
+export const VIEW_SEEDS: readonly NamedSeed[] = [
+  ["seedWholeIssue", seedWholeIssue],
+  ["seedSpineCases", seedSpineCases],
+];
+
+/** The ids of the drawn nodes of `type`. */
+export function idsOfType(nodes: readonly DrawnNode[], type: string): string[] {
+  return nodes.flatMap((node) => (node.type === type ? [node.id] : []));
+}
+
+/** Each check of the view that is drawn under no row of a statement its `serves` names. */
+export function checksOutOfPlace(
+  rows: readonly RowReading[],
+  answer: IssueTreeRead,
+  reads: TreeIdReads
+): string[] {
+  const idOf = treeIdOf(answer, reads);
+  const key = reads.issue.key;
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
+  const own = (node: IssueTreeNode | undefined): node is IssueTreeNode =>
+    node !== undefined && (node.issue === undefined || node.issue === key);
+  const placements = new Set(
+    rows.flatMap((row, index) => {
+      const parent = parentIndex(rows, index);
+      return row.id === null ? [] : [`${row.id} ${parent === undefined ? "" : rows[parent]?.id}`];
+    })
+  );
+  return (answer.tuples ?? []).flatMap((tuple) => {
+    const check = nodes.get(tuple.from.id);
+    const statement = nodes.get(tuple.to.id);
+    if (
+      tuple.kind !== "serves" ||
+      !own(check) ||
+      !own(statement) ||
+      check.supertag !== "check" ||
+      check.role !== "query" ||
+      statement.supertag !== "requirement"
+    ) {
+      return [];
+    }
+    const [checkId, statementId] = [idOf(check.id), idOf(statement.id)];
+    return placements.has(`${checkId} ${statementId}`)
+      ? []
+      : [`${checkId} is drawn under no row of ${statementId}, which it serves`];
+  });
+}
+
+/** Each key the filter draws that the fixture's rows of it do not hold, and each the other way,
+ *  that is of a kind root R2 draws under the filter: a difference R2 does not explain. */
+export function unexplainedDifferences(
+  filter: TreeView,
+  rows: readonly RowReading[],
+  keys: ReadonlyMap<string, string>,
+  recorded: SeedFixture
+): string[] {
+  const drawn = keyedRows(rows, keys);
+  const drawnKeys = new Set(drawn.map((row) => row.key));
+  const recordedKeys = new Set(recorded.filters[filter]?.rows ?? []);
+  const kinds: readonly string[] = [...R2_ROW_KINDS[filter].query, ...R2_ROW_KINDS[filter].context];
+  const kindOf = (key: string): string | null =>
+    [...drawn, ...recorded.rows, ...recorded.opened].find((row) => row.key === key)?.kind.type ??
+    null;
+  return [
+    ...[...drawnKeys].filter((key) => !recordedKeys.has(key)),
+    ...[...recordedKeys].filter((key) => !drawnKeys.has(key)),
+  ].flatMap((key) => {
+    const kind = kindOf(key);
+    if (kind !== null && !kinds.includes(kind)) return [];
+    const side = drawnKeys.has(key) ? "is drawn and the fixture holds no row of it" : "is no row";
+    return [`${key} (${kind ?? "a row of no kind"}) ${side}`];
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 4: a write is drawn from the tree read again, with no reload.
+// ---------------------------------------------------------------------------------------------
+
+/** The id of the row the row whose words hold `words` stands under (null at the top), or
+ *  undefined where no row holds them. */
+export function parentOfWords(
+  readings: readonly RowReading[],
+  words: string
+): string | null | undefined {
+  const index = readings.findIndex((reading) => reading.words?.includes(words) === true);
+  if (index < 0) return undefined;
+  return parentIdOf(readings, index);
+}
+
+/** The state word the row of node `id` draws, or null where no row of it draws one. */
+export async function stateWordOf(page: Page, id: string): Promise<string | null> {
+  const rows = await drawnRowReadings(page, { bodies: false });
+  return rows.find((row) => row.id === id)?.state?.word ?? null;
+}
+
+/** Asserts what a write sends of the tree read: the read its event asks for - with the live feed
+ *  down, its settle's - and one more where that read is still out as the other ask comes
+ *  (`subscribeTreeFreshness`), never more. */
+export function expectOneOrTwoReads(reads: number, message: string): void {
+  expect(reads, message).toBeGreaterThanOrEqual(1);
+  expect(reads, message).toBeLessThanOrEqual(2);
+}

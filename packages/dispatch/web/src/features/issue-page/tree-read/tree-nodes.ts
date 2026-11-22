@@ -12,9 +12,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { isDecisionEntry } from "../../issue/decision-entries";
 import { buildDispatchReference, parseNodeReference } from "../../refs/routes";
-import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
   askIdOf,
@@ -48,6 +46,7 @@ import {
   deciderOf,
   plainWords,
   requirementGaps,
+  stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-read";
@@ -503,7 +502,12 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
  *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are read by
  *  the outline's one rule (`requirementGaps`), which draws its two edges disagreeing too: the
  *  node its `from` attribute names (`originOf`) against each decision a `shaped` tuple that ends
- *  at it starts from (`isDecisionNode`), each read as the id the tree draws that node by. */
+ *  at it starts from, each read as the id the tree draws that node by. Which of those nodes is a
+ *  decision is read by the one rule every other reader of a decision reads (`decisionNodes`,
+ *  held as `TreeDraftContext.decisions`): a decision node that carries the model's decision and
+ *  stands in a document, of whatever kind, and an ask a person answered, where the read carries
+ *  that person's decision on it or the asks read says it is answered. An open or a declined ask
+ *  decided nothing, and a decision node with no `decision` or no document is no decision. */
 function draftRequirement(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -524,7 +528,7 @@ function draftRequirement(
         : new Set(
             context.tuplesTo(node.id).flatMap((tuple) => {
               const shaper = tuple.kind === "shaped" ? context.nodeOf(tuple.from.id) : undefined;
-              return shaper !== undefined && isDecisionNode(shaper)
+              return shaper !== undefined && context.decisions.has(shaper)
                 ? [context.treeIdOfNode(shaper)]
                 : [];
             })
@@ -532,21 +536,6 @@ function draftRequirement(
     draft.gaps = requirementGaps(coverage.gaps ?? [], origin, shapers);
   }
   return draft;
-}
-
-/** Whether `node` is a decision, by the rule the decisions read's entries are read by
- *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
- *  person answered it, which the read says by the decision it sends on the ask - the route sends
- *  one only on an ask whose state is `answered` (`issue_tree_read.go`'s `readDecisions`). An open
- *  ask is a question and a declined one decided nothing, so neither carries one, and neither is
- *  a decision. */
-function isDecisionNode(node: TreeAnswerNode): boolean {
-  if (node.supertag !== "decision" && node.supertag !== "ask") return false;
-  const answered = node.supertag === "ask" && node.decision !== undefined;
-  return isDecisionEntry({
-    answer_state: answered ? "answered" : null,
-    kind: node.supertag === "decision" ? (node.decision?.kind ?? "agent") : "person",
-  });
 }
 
 /** The node a requirement's `from` attribute names as where it came from: the attribute's first
@@ -721,7 +710,7 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, ask);
-  if (askId !== undefined) draft.source = textSourceOf("ask", askId);
+  if (askId !== undefined) draft.source = stableSourceOf("ask", askId);
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -762,7 +751,7 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
-  draft.source = textSourceOf(node.supertag, node.id);
+  draft.source = stableSourceOf(node.supertag, node.id);
   return draft;
 }
 
@@ -816,23 +805,34 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = textSourceOf("artifact", node.document.artifact_id);
+      draft.source = stableSourceOf("artifact", node.document.artifact_id);
     }
   }
   return draft;
 }
 
+/** Each typed block's reading cut to its own content (`readingOf`), by the reading it was cut
+ *  from. A re-read whose answer is unchanged keeps each reading's object, and so a row is handed
+ *  the cut it was handed before, and its words are not drawn again. */
+const cutReadings = new WeakMap<DisplayTree, DisplayTree>();
+
 /** The reading of `node`'s words that a row and a chip draw. The read sends a block's reading
  *  as the blocks read does, of the block's whole stored text: a typed block's reading is the one
  *  typed node, its type and its attributes on it, which the row draws apart (its kind, its chips,
  *  its facts). So a block whose reading is that one node of its own kind (`typedNodeOf`) reads as
- *  the node's own content, as the server's other reads cut a typed block's text to its content.
- *  Every other reading is the node's words as sent. A view's line (`presets.ts`) reads it here
- *  too. */
+ *  the node's own content, as the server's other reads cut a typed block's text to its content,
+ *  the same object for the same reading (`cutReadings`). Every other reading is the node's words
+ *  as sent. A view's line (`presets.ts`) reads it here too. */
 export function readingOf(node: TreeAnswerNode): DisplayTree | undefined {
   const reading = node.text_tree;
   const content = typedNodeOf(node)?.content;
-  return reading !== undefined && Array.isArray(content) ? { ...reading, content } : reading;
+  if (reading === undefined || !Array.isArray(content)) return reading;
+  let cut = cutReadings.get(reading);
+  if (cut === undefined) {
+    cut = { ...reading, content };
+    cutReadings.set(reading, cut);
+  }
+  return cut;
 }
 
 /** The one node of `node`'s own kind its reading is, where the read sent a typed block's reading,

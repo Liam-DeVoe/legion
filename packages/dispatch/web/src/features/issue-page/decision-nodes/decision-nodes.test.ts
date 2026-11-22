@@ -557,10 +557,10 @@ test("an unsure decision is one whose uncertainty is high", () => {
   ]);
 });
 
-// A Change quotes the words of the decision's first paragraph, cut as the server reads
-// a quote: a hard break as one space, a list's items one space apart, a heading passed over, and
-// the stored first paragraph where the read sent no reading. A converted decision's first
-// paragraph is its old heading, which its heading is read from too.
+// A Change quotes the words of the decision's first paragraph in the server's reading of it
+// (`text_tree`), cut as the server reads a quote: a hard break as one space, a list's items one
+// space apart and a heading passed over. A converted decision's first paragraph is its old
+// heading, which its heading is read from too.
 test("a decision's quote is the words of its first paragraph", () => {
   const run = (text: string): DisplayTree => ({ text, type: "text" });
   const item = (text: string): DisplayTree => ({
@@ -586,15 +586,27 @@ test("a decision's quote is the words of its first paragraph", () => {
         "Keep the model pure."
       ),
     }),
-    decision("d-stored", { text: "Keep the model pure.\n\nWhy it holds.", text_tree: undefined }),
   ]);
   const nodes = decisionNodes(tree, READS);
-  const quotes = [
-    "Keep it pure.",
-    "Hold the deploy. Then ship.",
-    "Keep the model pure.",
-    "Keep the model pure.",
-  ];
+  const quotes = ["Keep it pure.", "Hold the deploy. Then ship.", "Keep the model pure."];
+
+  expect(nodes.map(decisionQuote)).toEqual(quotes);
+  expect(nodes.map((one) => one.heading)).toEqual(quotes);
+});
+
+// A read from a pod of the build before during a rolling deploy carries no reading of a
+// decision's text, or one that holds no blocks, which is no reading either. The decision is then
+// read by its stored text's reading (`storedReading`), so its quote, which is its heading too, is
+// the words of its first paragraph, a `##` heading passed over, and never that paragraph's
+// markdown: the server matches a quote against the document's words.
+test("a decision read with no reading that holds blocks quotes its stored text's words, never its markdown", () => {
+  const text = "## Purity\n\n**Keep** the model pure.\n\nWhy it holds.";
+  const tree = answer([
+    decision("d-none", { text, text_tree: undefined }),
+    decision("d-blockless", { text, text_tree: { type: "doc" } }),
+  ]);
+  const nodes = decisionNodes(tree, READS);
+  const quotes = ["Keep the model pure.", "Keep the model pure."];
 
   expect(nodes.map(decisionQuote)).toEqual(quotes);
   expect(nodes.map((one) => one.heading)).toEqual(quotes);

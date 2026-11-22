@@ -6867,3 +6867,46 @@ describe("the rule for when a read of the tree or of a view starts", () => {
     test(ruleWords(rule), () => holdsRule(rule));
   }
 });
+
+// A child of the issue is renamed. Dispatch writes the child's own `issue.updated`, naming its
+// ancestors, and no event of the parent: a title moves no `child.status`. Today's page draws the
+// parent's Children from the parent's issue read, which that event refreshes, so the new title
+// is drawn there with no reload. The outline draws the child's row's words from the parent's tree
+// read, so that event must read the parent's tree again, or the row keeps the old title.
+test("a child renamed while the parent's outline is drawn reads the parent's tree and draws the new title", async () => {
+  const CHILD = "CORE-2";
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let title = "The child's first title";
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer([], { nodes: [answerNode(CHILD, "issue", { text: title })] })
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const childWords = (root: TreeNode) => nodesInOrder(root).find((node) => node.id === CHILD)?.text;
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(childWords(view.result.current)).toBe("The child's first title"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const before = treeReadsOf();
+
+    title = "The child's new title";
+    const renamed = feedEvent(
+      "issue.updated",
+      { ancestors: [KEY], changed: ["title"], title },
+      { issue_key: CHILD }
+    );
+    await act(async () => {
+      refreshQueries(client, eventRefreshTargets(renamed, "alice"));
+      await Bun.sleep(1_500);
+    });
+    expect(treeReadsOf() - before, "the child's rename reads the parent's tree").toBe(1);
+    expect(childWords(view.result.current), "the child's row draws its new title").toBe(
+      "The child's new title"
+    );
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});

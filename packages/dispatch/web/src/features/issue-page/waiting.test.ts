@@ -8,7 +8,7 @@ import type {
   IssueCoverage,
   IssueDetails,
 } from "../../api/types";
-import { decisionNodes, decisionQuote } from "./decision-nodes/decision-nodes";
+import { decisionNodes } from "./decision-nodes/decision-nodes";
 import { buildIssueTree, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
@@ -719,46 +719,4 @@ test("a proposed ask and a proposed decision still wait on the reader", () => {
     counted: { approvals: [spec.id], asks: 1, decisions: 1, total: 3 },
     drawn: ["mine", "spec#b-listed"],
   });
-});
-
-// A Change's quote, from a pod of the build before during a rolling deploy, whose read sends no
-// reading of a decision's text: the decision is then read by its stored text's reading
-// (`storedReading`), so the quote is the words of its first block below the heading
-// (`decisionQuote`). A paragraph whose markdown holds markup - `**` - quotes its words, not its
-// markdown, as a read reading's would: the words the server matches a quote against.
-test("a Change of a decision read with no reading is read by its stored text's reading, so its quote is its words", () => {
-  const decided = decisionsOf(
-    answerOf([
-      decisionNode("d1", [], { text: "## Purity\n\nKeep the model pure." }),
-      decisionNode("d2", [], { text: "## Purity again\n\n**Keep** the model pure.\n\nTest it." }),
-    ])
-  );
-
-  expect(decided.map((one) => one.text_tree)).toEqual([undefined, undefined]);
-  expect(decided.map((one) => decisionQuote(one))).toEqual([
-    "Keep the model pure.",
-    "Keep the model pure.",
-  ]);
-});
-
-// One rule reads a decision for a Change: a reading that holds no blocks - a `text_tree` with no
-// `content` - is no reading, so the decision is read by its stored text's reading
-// (`storedReading`). Its quote is then the words of its first paragraph. Read as the blockless
-// reading's words, which are none, the decision would hold no block to quote.
-test("a decision whose reading holds no blocks is read by its stored markdown", () => {
-  const blockless = { text_tree: { type: "doc" } };
-  const decided = decisionsOf(
-    answerOf([
-      decisionNode("d1", [], { ...blockless, text: "## Purity\n\nKeep the model pure." }),
-      decisionNode("d2", [], {
-        ...blockless,
-        text: "## Purity again\n\nKeep the model pure.\n\nTest it alone.",
-      }),
-    ])
-  );
-
-  expect(decided.map((one) => decisionQuote(one))).toEqual([
-    "Keep the model pure.",
-    "Keep the model pure.",
-  ]);
 });

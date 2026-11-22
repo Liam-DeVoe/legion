@@ -19,7 +19,7 @@ import {
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
-import type { TextSource } from "../refs/text-references";
+import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
@@ -590,6 +590,32 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
+/** Each record's text source, by its kind and then its id: `textSourceOf`'s, made once, so every
+ *  build of the drafts hands a row the source object it handed it before, and the row's words are
+ *  not drawn again for a source that only looks new. */
+const sources: { readonly [Kind in TextSource["kind"]]: Map<string, TextSource> } = {
+  artifact: new Map(),
+  ask: new Map(),
+  comment: new Map(),
+  message: new Map(),
+};
+
+/** The text source of record `id` of `kind` (`textSourceOf`), the one object `sources` holds; none
+ *  where there is no id, as `textSourceOf` answers. */
+export function stableSourceOf(
+  kind: TextSource["kind"],
+  id: string | undefined
+): TextSource | undefined {
+  if (id === undefined) return undefined;
+  const byId = sources[kind];
+  let source = byId.get(id);
+  if (source === undefined) {
+    source = textSourceOf(kind, id);
+    if (source !== undefined) byId.set(id, source);
+  }
+  return source;
+}
+
 /**
  * Who decided a decision node, as the page names an author: the far end of its `decided_by`
  * tuple, which the tree read answers with that person or session as context
@@ -615,8 +641,8 @@ export function deciderOf(
  * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
  * draws none, and an absent `from` is no gap of its own (R10). `tree-read/tree-nodes.ts`'
  * `draftRequirement` reads both edges from the tree read: the statement's `from` attribute, and
- * the `shaped` tuples that end at it from a decision node - a `decision` node, or an ask the read
- * answers a person's decision on (`isDecisionNode`); an open or a declined ask decided nothing.
+ * the `shaped` tuples that end at it from a decision, by the one rule every reader of a decision
+ * reads (`decision-nodes.ts`' `decisionNodes`); an open or a declined ask decided nothing.
  */
 export function requirementGaps(
   coverage: readonly string[],

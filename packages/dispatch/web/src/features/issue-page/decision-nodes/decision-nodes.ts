@@ -203,23 +203,31 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
 }
 
 /**
- * A person's decision: an answered ask, where it carries `shaped` ties. The ask is answered where
- * the read answers the person's decision on its node (`decision`), which it does for an ask a
- * person answered alone, and otherwise where the asks read says so; the read's word stands over
- * the asks read's, which may be older or newer than it. Where the read answers the person's
- * decision, its members are the read's. Where it answers none, the decision reads as today's
- * decisions read reads a person's decision, a section of `decisions.md` that names the ask: of
- * the kind `person`, naming the ask itself, waiting for nobody's review, never kept nor replaced,
- * made when it was answered and at no version of a document, with no sum, since only a decision
- * that waits is kept; and its links are its `shaped` ties (`shapedLinks`). Undefined for any
- * other ask.
+ * A person's decision: an answered ask that shaped something. Where the read answers the person's
+ * decision on the ask's node (`decision`), which it does for an ask a person answered alone, the
+ * ask is answered, it shaped what the decision's links name, and its members are the read's: the
+ * links are its `shaped` ties as the decisions read answers them, so a person's decision is read
+ * alike from an answer that holds no `shaped` tuple from it. The Decisions view is such an answer:
+ * it holds no statement, and the read sends a tuple only where the answer holds its far end
+ * (`issue_tree_read.go`'s `answer`). Where the read answers no person's decision on the ask, it is
+ * answered where the asks read says so, it shaped something where the answer holds a `shaped`
+ * tuple from it, and the decision reads as today's decisions read reads a person's decision, a
+ * section of `decisions.md` that names the ask: of the kind `person`, naming the ask itself,
+ * waiting for nobody's review, never kept nor replaced, made when it was answered and at no
+ * version of a document, with no sum, since only a decision that waits is kept; and its links are
+ * those tuples (`shapedLinks`). The read's word that the ask is answered stands over the asks
+ * read's, which may be older or newer than it. Undefined for any other ask.
  */
 function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
   const ask = lookup.askOf(node);
   const ref = nodeReference(node, lookup.key, ask);
-  const answered = node.decision !== undefined || ask?.state === "answered";
-  if (!answered || ref === undefined) return undefined;
-  if (!lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")) return undefined;
+  if (ref === undefined) return undefined;
+  const shaped =
+    node.decision === undefined
+      ? ask?.state === "answered" &&
+        lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")
+      : (node.decision.links ?? []).length > 0;
+  if (!shaped) return undefined;
   const members: ModelMembers =
     node.decision === undefined
       ? {
