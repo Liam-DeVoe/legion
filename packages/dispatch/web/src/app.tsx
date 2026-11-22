@@ -100,7 +100,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { useFootInset } from "./hooks/useFootInset";
+import { useFootClearance, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -665,12 +665,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
+  // Where the document scrolls the page, outside the new issue page's frame, `<main>` is a
+  // scroller of the foot (`hooks/useFootInset.ts` says what that is): its bottom padding lets its
+  // last content scroll clear of the foot's floats.
+  useFootClearance(mainRef, !issueFrame && !fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // The status corner is the top layer of the foot of the screen (`hooks/useFootInset.ts` lists
-  // the foot's layers, the elements in each, and the controls that read the top one): it
-  // publishes its own reach there, so those controls ride above the whole corner rather than
-  // under the pending-writes indicator or the connection pill. An empty corner has no box, so it
-  // adds nothing.
+  // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). The hook holds its height and its floor, so the
+  // top layer's floats keep clear of the whole corner rather than sit over the pending-writes
+  // indicator or the connection pill. An empty corner has no box, so it counts nothing.
   const statusCornerRef = useRef<HTMLDivElement>(null);
   useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
@@ -918,15 +921,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           Skip to content
         </a>
         {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
-            cannot keep for a reload above the connection pill. It stands 1rem above the foot's
-            banner layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in
-            each), so it lies over nothing else fixed or stuck at the foot of the screen, and
-            below `xl` never lower than its floor. Only what it shows takes the pointer. A socket
-            Dispatch refuses carries no status the page can read, so nothing in the pill is
-            terminal: once reconnecting has gone on for two minutes it offers a reload, and the
-            page keeps trying underneath. */}
+            cannot keep for a reload above the connection pill. It is a float of the foot's status
+            layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each): it
+            stands 1rem above the banner layer's property, which the hook chooses so the corner
+            lies over nothing else fixed or stuck at the foot of the screen, and never lower than
+            its floor (`--foot-floor`, which its classes set per breakpoint). Only what it shows
+            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
+            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
+            offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-banner-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className="pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
@@ -1065,7 +1069,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           className={
             issueFrame
               ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
-              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-[max(8rem,var(--foot-clearance,0px))] xl:pb-[max(1.5rem,var(--foot-clearance,0px))]"} ${mainLayoutClass}`
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}

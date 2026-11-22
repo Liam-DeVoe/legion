@@ -15,6 +15,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
+import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -1163,6 +1164,17 @@ export function ConversationTab({
   // leaves every mode unknown, never "not supported".
   const agents = agentsCurrent ? listedAgents : undefined;
   const scrolledToFocus = useRef<string | undefined>(undefined);
+  // `Jump to latest` is a float of the foot's top layer (`hooks/useFootInset.ts` lists the foot's
+  // layers and the elements in each) while it shows, which is only once the reads have loaded.
+  const jumpShown =
+    !loading &&
+    !failed &&
+    visible &&
+    phoneThread === undefined &&
+    !follow.atTop &&
+    shown.length > 0;
+  const jumpRef = useRef<HTMLButtonElement>(null);
+  useFootInset(jumpRef, jumpShown, "top");
 
   useEffect(() => {
     if (!visible || focus === undefined || scrolledToFocus.current === focus.id) {
@@ -1344,21 +1356,23 @@ export function ConversationTab({
       {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
           composer's controls; below `sm` that edge is the right edge of the content column
           itself rather than a margin outside it, which is why a card under the pill is covered
-          at all. The pill rides 1rem above the top layer of the foot of the screen, and never
-          below the floor it has at each width (`web/src/hooks/useFootInset.ts` lists the foot's
-          layers and the elements in each), so nothing fixed or stuck at that foot lies over it,
-          however a refusal's row grows a composer. The list scrolls behind the pill as it
-          scrolls behind any floating control, so a card crossing that foot band passes under
-          it: while the card is there the pill covers its Accept and Reject, as it covers its
-          Reply and Pin. That cover lasts no longer than the passage - scrolling the card on
-          clears it, and so does the pill's own tap, which jumps to the latest and takes the pill
-          off the screen. A thread opened full-screen covers the Conversation the pill acts on,
-          and its own composer sits at the foot, so the pill waits for Back. */}
-      {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
+          at all. The pill is a float of the foot's top layer (`web/src/hooks/useFootInset.ts`
+          lists the foot's layers and the elements in each): it stands 1rem above the status
+          layer's property, which the hook chooses so the pill lies over no foot element and
+          stays on the screen, however a refusal's row grows a composer, and never lower than its
+          floor (`--foot-floor`, which its classes set per breakpoint). The list scrolls behind the
+          pill as it scrolls behind any floating control, so a card crossing that foot band passes
+          under it: while the card is there the pill covers its Accept and Reject, as it covers its
+          Reply and Pin. That cover lasts no longer than the passage - scrolling the card on clears
+          it, and so does the pill's own tap, which jumps to the latest and takes the pill off the
+          screen. A thread opened full-screen covers the Conversation the pill acts on, and its
+          own composer sits at the foot, so the pill waits for Back. */}
+      {jumpShown ? (
         <button
-          className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,0px)_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-[max(9rem,calc(var(--foot-status-inset,0px)_+_1rem))] xl:bottom-[max(6rem,calc(var(--foot-status-inset,0px)_+_1rem))] ${primaryButtonBg} ${primaryButtonHoverBg}`}
+          className={`fixed right-6 bottom-[max(var(--foot-floor),calc(var(--foot-status-inset,0px)_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg [--foot-floor:5rem] sm:[--foot-floor:9rem] xl:[--foot-floor:6rem] ${primaryButtonBg} ${primaryButtonHoverBg}`}
           data-testid="jump-to-latest"
           onClick={follow.jumpToLatest}
+          ref={jumpRef}
           type="button"
         >
           Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}

@@ -24,6 +24,13 @@
    `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
 @custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
 
+/* Not inherited: a scroller holding no clearance of its own reads 0, never an ancestor's. */
+@property --foot-clearance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
    exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
    built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import

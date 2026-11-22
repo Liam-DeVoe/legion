@@ -2,7 +2,7 @@ import { type ReactNode, type RefObject, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { useFootInset } from "../../hooks/useFootInset";
+import { useFootClearance, useFootInset } from "../../hooks/useFootInset";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -226,10 +226,14 @@ export function MarginSheet({
   // What the margin's own tabs give way to: the rail it collapses to, or a phone margin thread.
   const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
   // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
-  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so it
-  // publishes how far up it reaches and the layers above it ride above it. Expanded, it is a
+  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook
+  // holds its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
   // modal sheet over the page, and adds nothing. The dialog's container is this same `<aside>`.
   useFootInset(dialog.containerRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
+  // As the column from `xl` up and as Details' drawer, the same `<aside>` is a scroller of the
+  // foot (`hooks/useFootInset.ts` says what that is): its bottom padding lets its last content
+  // scroll clear of the foot's floats.
+  useFootClearance(dialog.containerRef, !compactSheet);
 
   return (
     <>
@@ -246,14 +250,14 @@ export function MarginSheet({
         aria-modal={sheet.expanded && compactSheet ? true : undefined}
         className={
           drawer
-            ? "min-h-0 flex-1 overflow-y-auto px-4 pt-1.5 pb-8"
+            ? "min-h-0 flex-1 overflow-y-auto px-4 pt-1.5 pb-[max(2rem,var(--foot-clearance,0px))]"
             : `fixed inset-x-0 bottom-0 ${sheet.expanded && isCompactViewport ? "z-30" : "z-10"} border-t shadow-[0_-8px_24px_rgba(15,23,42,0.08)] ${card} ${
                 owner === undefined
                   ? "hidden"
                   : sheet.expanded
                     ? "max-h-[85dvh] overflow-y-auto p-4"
                     : "h-16 overflow-hidden"
-              } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`
+              } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:pb-[max(1rem,var(--foot-clearance,0px))] xl:shadow-none`
         }
         data-expanded={sheet.expanded ? "true" : "false"}
         data-testid="margin-sheet"

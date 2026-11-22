@@ -291,9 +291,10 @@ export function DeploymentResilience(): ReactNode {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const dismissed = useRef(false);
   const lastVersionCheckAt = useRef(0);
-  // The banner is the one element of the foot's banner layer (`hooks/useFootInset.ts` lists the
-  // foot's layers and the elements in each): it sits 1rem above the page layer and publishes how
-  // far up it reaches, so the status corner rides above it.
+  // The banner is the one float of the foot's banner layer (`hooks/useFootInset.ts` lists the
+  // foot's layers and the elements in each). It stands 1rem above the page layer's property, which
+  // the hook chooses so the banner lies over no page element and stays on the screen. It has no
+  // floor. The hook holds its height, so the status corner keeps clear of it.
   const bannerRef = useRef<HTMLElement>(null);
   useFootInset(bannerRef, updateAvailable, "banner");
 
