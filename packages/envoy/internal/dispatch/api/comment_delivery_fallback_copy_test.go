@@ -483,12 +483,13 @@ type queuedMention struct {
 // outbox decides, and with no route the mention's own send is the only thing that can hand s1
 // the comment. The sender holds the queued attempt's claim throughout, writing it again every
 // mentionClaimRefresh: it is the live claim the outbox bounds its wait by however long the lane
-// is held. The listener client's send window is an hour, longer than any run, so no send of this
-// lane's misses it however long a loaded machine takes between the stall and its release; a test
-// whose send must miss it names a shorter one (aMentionQueuedWithinASendWindow).
+// is held. The listener client's send window is pastTheRun, longer than any run of the test
+// binary, so no send of this lane's misses it however long a loaded machine takes between the
+// stall and its release; a test whose send must miss it names a shorter one
+// (aMentionQueuedWithinASendWindow).
 func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention {
 	t.Helper()
-	return aMentionQueuedWithinASendWindow(t, route, time.Hour)
+	return aMentionQueuedWithinASendWindow(t, route, pastTheRun)
 }
 
 // aMentionQueuedWithinASendWindow is aMentionQueuedBehindAStalledSend with the window the

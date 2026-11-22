@@ -114,25 +114,26 @@ func openLiveSocketAt(t *testing.T, dialer *gws.Dialer, url string, header http.
 // the wait's one bound is the test binary's deadline (testwait.Receive), so an answer a loaded
 // machine sends late still ends it and one that never comes fails the test by name.
 //
-// The dial runs on a context the test's cleanup cancels, so a wait that gave up leaves no dial
-// behind it. That context ends gorilla's TCP connect but not its read of the server's answer, which
-// DialContext makes with no deadline when the dialer sets no timeout, so until the handshake ends
-// the context's end also closes the connection the dial opened. A connection the handshake answers
-// once the test no longer waits for it is closed, as the test would have closed it.
+// The dial runs on a context the test's cleanup cancels, and the cleanup waits for the dial's
+// goroutine to return, so no dial outlives the test. That context ends gorilla's TCP connect but
+// not its read of the server's answer, which DialContext makes with no deadline when the dialer
+// sets no timeout, so until the handshake ends the context's end also closes the connection the
+// dial opened. A connection the handshake answers once the test no longer waits for it is closed,
+// as the test would have closed it. A dialer whose connect takes no context (NetDial alone) could
+// outlive the cleanup, so dialLive refuses it.
 func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) (*gws.Conn, *http.Response, error) {
 	t.Helper()
+	if dialer.NetDial != nil && dialer.NetDialContext == nil {
+		t.Fatalf("dialLive dials %s with a dialer whose connect takes no context (NetDial), which no cleanup can end; give it NetDialContext", url)
+	}
 	ctx, stop := context.WithCancel(context.Background())
 	unbounded := *dialer
 	unbounded.HandshakeTimeout = 0
-	// connect is the TCP connect gorilla makes for a ws:// URL: the dialer's NetDialContext, else
-	// its NetDial, which takes no context, else a plain net.Dialer's.
+	// connect is the TCP connect gorilla makes for a ws:// URL: the dialer's NetDialContext, else a
+	// plain net.Dialer's. Both end with ctx.
 	connect := (&net.Dialer{}).DialContext
-	switch {
-	case dialer.NetDialContext != nil:
+	if dialer.NetDialContext != nil {
 		connect = dialer.NetDialContext
-	case dialer.NetDial != nil:
-		netDial := dialer.NetDial
-		connect = func(_ context.Context, network, address string) (net.Conn, error) { return netDial(network, address) }
 	}
 	// release stops the close the context's end would make of the dialed connection. Gorilla calls
 	// NetDialContext on the goroutine that called DialContext, so only that goroutine sets it and
@@ -152,11 +153,14 @@ func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) 
 		err      error
 	}
 	answered := make(chan dialed, 1)
+	// worked closes once the dial's goroutine has returned, which the cleanup waits for.
+	worked := make(chan struct{})
 	// abandoned says no one takes the answer any more, which the cleanup sets; mu orders it with
 	// the answer's send, so an answer is either taken from answered or closed, never left open.
 	var mu sync.Mutex
 	abandoned := false
 	go func() {
+		defer close(worked)
 		conn, response, err := unbounded.DialContext(ctx, url, header)
 		if release != nil {
 			release()
@@ -172,7 +176,6 @@ func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) 
 	t.Cleanup(func() {
 		stop()
 		mu.Lock()
-		defer mu.Unlock()
 		abandoned = true
 		// An answer the dial sent that the test never took, its wait having given up first.
 		select {
@@ -182,6 +185,10 @@ func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) 
 			}
 		default:
 		}
+		mu.Unlock()
+		// The cancel ends the connect, and the close the context's end makes ends the handshake's
+		// read, so the goroutine returns once it has closed any connection it was answered.
+		<-worked
 	})
 	got := testwait.Receive(t, "the server's answer to the upgrade of "+url, answered)
 	return got.conn, got.response, got.err
@@ -449,16 +456,6 @@ func (c *socketClient) awaitEnd(t *testing.T) int {
 	})
 }
 
-// heartbeatPastTheRun is the heartbeat of a rig whose page answers no ping for as long as a step of
-// the test takes: one that moves megabytes across the socket, which takes as long as the loaded
-// machine takes (17.9 s measured with the client's writes throttled to 512 KiB/s, 54 s for 8.5 MB
-// through 16 KiB socket buffers), since a frame holds the client's write lock until it is written
-// and gorilla's ping handler waits 1 s for that lock before it drops the pong; or one whose page
-// reads nothing while the test holds the server's writer (heldWrites). A day is longer than any run
-// of the package, so the server's pong deadline, twice the heartbeat, never ends such a step, and
-// the test binary's deadline is the one bound the test's waits have.
-const heartbeatPastTheRun = 24 * time.Hour
-
 // open reports whether the socket has not ended.
 func (c *socketClient) open() bool {
 	select {
@@ -551,8 +548,8 @@ func (l smallSendBuffers) Accept() (net.Conn, error) {
 // test that must know the writer stays held holds it with heldWrites instead. Its handshake ends on
 // the server's answer (dialLive).
 func smallReadDialer() *gws.Dialer {
-	return &gws.Dialer{NetDial: func(network, address string) (net.Conn, error) {
-		conn, err := net.Dial(network, address)
+	return &gws.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetReadBuffer(4096)
 		}
@@ -911,7 +908,10 @@ func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 }
 
 func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeatPastTheRun}, nil)
+	// The server's pong deadline, twice the heartbeat, would end the transfer: a frame holds the
+	// client's write lock until it is written, and gorilla's ping handler drops a pong it waited 1 s
+	// for that lock. A heartbeat past the run leaves the test binary's deadline the one bound.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun}, nil)
 	// A write buffer larger than either message sends each as one frame, as Firefox sends a message.
 	dialer := *gws.DefaultDialer
 	dialer.WriteBufferSize = 10 << 20
@@ -946,7 +946,9 @@ func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
 // limit counts a message's frames together: the frame that takes the message past 8 MiB closes the
 // socket with 1009, though the message never finishes.
 func TestAMessageOverTheReadLimitInChromesFramesClosesTheSocket(t *testing.T) {
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeatPastTheRun}, nil)
+	// A heartbeat past the run, as TestAFrameOverTheReadLimitClosesTheSocket's: the transfer holds
+	// back the client's pongs.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun}, nil)
 	const frame = 131000
 	dialer := *gws.DefaultDialer
 	dialer.WriteBufferSize = frame
@@ -1140,7 +1142,9 @@ func TestTheLiveTestHooksAreMountedOnlyUnderTestHooks(t *testing.T) {
 func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 	busy := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeatPastTheRun, liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
+	// A heartbeat past the run: the page reads nothing while the writer is held, so it answers no
+	// ping, and the pong deadline would end the socket however long the held steps take.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
 	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 	held.hold(t)
 	client.send(t, liveSubscribe("busy", eventsView(), ""))

@@ -186,7 +186,7 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 	held := &heldWrites{}
 	// The page reads nothing until the writer is let go, so it answers no ping until then: a
 	// heartbeat past the run keeps the pong deadline from ending the socket however long that takes.
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeatPastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
 	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 
 	// The writer is held inside its first write of x's events, as a page that reads nothing holds
@@ -432,7 +432,7 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 	events := newFakeLiveKind(frames, 512)
 	// The page answers no ping while it reads nothing: a heartbeat past the run keeps the pong
 	// deadline from ending the socket however long the steps before its read take.
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeatPastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
 		func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
 	client := rig.open(t, smallReadDialer(), asUser("alice"))
 	client.send(t, liveSubscribe("slow", eventsView(), ""))
@@ -468,7 +468,7 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 		held := &heldWrites{}
 		// The page never reads, so it answers no ping: a heartbeat past the run keeps the pong
 		// deadline from ending the socket however long the steps take.
-		rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeatPastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
+		rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
 		client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 		held.hold(t)
 		client.send(t, liveSubscribe("x", eventsView(), ""))

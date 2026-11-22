@@ -15,11 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// answeredWindow is the client's window for a listener that answers: longer than any run, so a
-// loaded machine that carries a send or its answer slowly never turns the answer into a receipt
-// timeout. A case that exercises the window gives the client one of its own.
-const answeredWindow = time.Hour
-
 // The dashboard reads a failed attempt row that carries an envelope id as one its session answered
 // with an error (rowAnsweredWithError in packages/dispatch/web/src/features/conversation/delivery.ts),
 // and offers it no same-mode Retry. That holds only while every failure sendResolvedDelivery reports
@@ -79,17 +74,28 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 				t.Cleanup(listener.Close)
 				url = listener.URL
 			}
-			window := answeredWindow
+			// A listener that answers gets a window past the run (pastTheRun), so a loaded machine
+			// that carries a send or its answer slowly never turns the answer into a receipt timeout.
+			window := pastTheRun
 			if tc.late {
 				// The late listener answers only once the client has given up, so this window
 				// ends the call however long a loaded machine takes to end it.
 				window = 150 * time.Millisecond
 			}
 			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(window))}}
-			answered := make(chan sendOutcome, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			answered, returned := make(chan sendOutcome, 1), make(chan struct{})
+			// Registered after the listener's Close, so it runs before it: the call's context ends,
+			// which ends its request, before the listener waits out its handlers, and the worker has
+			// returned before the subtest ends, whatever ended it.
+			t.Cleanup(func() {
+				cancel()
+				testwait.Receive(t, "sendResolvedDelivery's worker to return once its context ended", returned)
+			})
 			go func() {
+				defer close(returned)
 				answered <- s.sendResolvedDelivery(
-					context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+					ctx, tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			}()
 			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
@@ -116,7 +122,9 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(listener.Close)
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(answeredWindow))}}
+		// A window past the run (pastTheRun): the listener answers at once, and a loaded machine
+		// that carries that answer slowly must not turn it into a receipt timeout.
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(pastTheRun))}}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

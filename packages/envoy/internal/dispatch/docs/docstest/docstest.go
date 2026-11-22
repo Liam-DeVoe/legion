@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -133,11 +134,36 @@ const dialMargin = 30 * time.Second
 
 // DialContext is Dial for a caller that is not a test, such as a load driver: ctx alone bounds the
 // connection's opening (gorilla's own 45 s handshake bound is dropped), a failure is returned, and
-// the caller closes the peer.
+// the caller closes the peer. Gorilla uses ctx only for the TCP connect and its deadline, not for
+// its read of the upgrade's answer, so the raw connection is closed when ctx ends while the
+// handshake is under way, and left alone once it is done.
 func DialContext(ctx context.Context, url string, header http.Header, artifactID string, doc *crdt.Doc) (*Peer, error) {
 	dialer := *gws.DefaultDialer
 	dialer.HandshakeTimeout = 0
+	var (
+		mu   sync.Mutex
+		stop func() bool
+	)
+	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		var plain net.Dialer
+		raw, err := plain.DialContext(dialCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		stop = context.AfterFunc(ctx, func() { raw.Close() })
+		mu.Unlock()
+		return raw, nil
+	}
 	connection, response, err := dialer.DialContext(ctx, url, header)
+	mu.Lock()
+	detach := stop
+	mu.Unlock()
+	if detach != nil && !detach() && err == nil {
+		// ctx ended as the handshake finished: its close of the raw connection already ran.
+		connection.Close()
+		err = fmt.Errorf("the handshake's context ended: %w", context.Cause(ctx))
+	}
 	if err != nil {
 		if response != nil {
 			// A refused handshake's response carries the server's reason in its status and body.

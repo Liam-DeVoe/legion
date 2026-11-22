@@ -42,6 +42,14 @@ func awaitStill(t *testing.T, what string, still time.Duration, count func() int
 	})
 }
 
+// pastTheRun is a span longer than any run of a test binary of this package: longer than the
+// longest -timeout a command of this repository gives it (the API race step's 70 minutes,
+// .github/workflows/ci-job-envoy-go-race-api.yaml). A test sets a product's window or interval to it
+// where the row needs that window never to close during the run (a settle it triggers itself, a
+// liveness it does not exercise), so a loaded machine cannot close it before the binary's deadline
+// ends the test.
+const pastTheRun = 24 * time.Hour
+
 // queuedWaiters is what releaseOnceQueued last read: the backends queued behind the held lock, or
 // the error that ended the reading.
 type queuedWaiters struct {

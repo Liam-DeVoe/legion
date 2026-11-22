@@ -237,16 +237,16 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // is settle old, by which time the update is written too, so the rules see both and the acted_on
 // rules run before the overridden one: the comment is not judged alone as an override.
 //
-// The settle is an hour, longer than any run, so the test and not the machine's speed decides
-// when it has passed. The update is posted once a page of the sweep has read the log up to the
-// comment and committed, and the comment must still be unjudged then: a sweep that judges an event
-// as soon as it reads it has judged the comment alone. The test then moves every event and every
-// suggestion an hour back on the database's clock, the clock and the columns a pass reads every
-// age by (readSuggestionPage, touchedSuggestions), in one statement, so their order and the gaps
-// between them stay as they were, and wakes the sweep as a commit does: both writes are now settle
-// old, and the next pass judges them together.
+// The settle is pastTheRun, longer than any run of this test binary, so the test and not the
+// machine's speed decides when it has passed. The update is posted once a page of the sweep has
+// read the log up to the comment and committed, and the comment must still be unjudged then: a
+// sweep that judges an event as soon as it reads it has judged the comment alone. The test then
+// moves every event and every suggestion twice the settle back on the database's clock, the clock
+// and the columns a pass reads every age by (readSuggestionPage, touchedSuggestions), in one
+// statement, so their order and the gaps between them stay as they were, and wakes the sweep as a
+// commit does: both writes are now well past their settle, and the next pass judges them together.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
-	const settle = time.Hour
+	const settle = pastTheRun
 	sweep := startIdleSweep(t, "OTOGETHER", settle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
@@ -258,9 +258,9 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	}
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
 
-	ageSuggestionLog(t, sweep.database, settle)
+	ageSuggestionLog(t, sweep.database, 2*settle)
 	notifyChannel(t, sweep.database, EventsChannel, "")
-	// Both writes are settle old now; the wait is the horizon's, which the pass reads up to.
+	// Both writes are past their settle now; the wait is the horizon's, which the pass reads up to.
 	horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
 	})

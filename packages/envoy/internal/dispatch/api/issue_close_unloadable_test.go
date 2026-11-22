@@ -19,8 +19,9 @@ import (
 // older release made and restoring for its reopen, succeed rather than fail on that document for
 // good.
 func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningRestoresThem(t *testing.T) {
-	// An hour, so no settlement timer loads the unloadable document between the requests.
-	f := newRepairFixtureSettlingAfter(t, time.Hour)
+	// Past the run (pastTheRun), so no settlement timer loads the unloadable document between the
+	// requests.
+	f := newRepairFixtureSettlingAfter(t, pastTheRun)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closing beside an unloadable document", "Context\n")
 	uploaded := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "notes.md", "content": "Notes\n",

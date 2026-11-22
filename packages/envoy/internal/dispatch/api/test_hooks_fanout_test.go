@@ -71,16 +71,22 @@ func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
 
 // A process that dies while a call waits for it takes its lock with its connection, and the call
 // stops waiting for it: it answers once the processes still holding the lock have acknowledged,
-// not at the timeout. Until then it does not answer, since that process was alive when the call
-// was sent. Both are read off facts rather than a clock. The silent process listens for calls as
-// every process with the hooks on does, so it hears this one once it is sent, which is after the
-// call read the held locks, its own among them: from then on the call waits for it. It stays alive
-// for alive more, a window in which a correct call answers nothing, and the test marks the close
-// before it closes the connection, so an answer that came while the lock was still held finds no
-// mark; a call that waited out its timeout answers 504 TEST_HOOK_TIMEOUT (testHookFanout.call),
-// not 200.
+// rather than waiting out its timeout. Until then it does not answer, since that process was alive
+// when the call was sent. Both are read off facts rather than a clock. The silent process listens
+// for calls as every process with the hooks on does, so it hears this one once it is sent, which
+// is after the call read the held locks, its own among them: from then on the call waits for it.
+// It stays alive for alive more, a window in which a correct call answers nothing, and the test
+// marks the close before it closes the connection, so an answer that came while the lock was
+// still held finds no mark.
+//
+// The call's timeout (Deps.TestHookTimeout) is a day, which no step of that sequence reaches
+// however slowly a loaded machine takes it. The call starts its timeout before it waits for its
+// own listener and sends (testHookFanout.call), so the production ten seconds would let a slow
+// start and the hold above end a correct call with 504 TEST_HOOK_TIMEOUT. A call that never
+// stopped waiting for the dead process waits out the day instead, and the wait for its answer
+// (testwait.Receive) fails the row by name at the test binary's deadline.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
-	handler, database := newTestHandlerWithTestHooks(t)
+	handler, database, _ := newTestServer(t, testServerOptions{testHooks: true, testHookTimeout: 24 * time.Hour})
 	conn, _ := holdTestHookLock(t, database)
 	if _, err := conn.Exec(context.Background(), "listen "+testHooksChannel); err != nil {
 		t.Fatalf("listen for test-hook calls on the silent process's connection: %v", err)
@@ -101,7 +107,11 @@ func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 	// ends.
 	t.Cleanup(func() { testwait.Receive(t, "the silent process's goroutine to end", ended) })
 
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "alice")
+	}()
+	response := testwait.Receive(t, "the hook's answer once the silent process's lock went", answered)
 	if response.Code != http.StatusOK {
 		t.Fatalf("disconnect hook after the silent process died: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
