@@ -704,25 +704,58 @@ func (f LineFacts) ShutGates(key string) []string {
 func (f LineFacts) GatesOpen(key string) bool { return len(f.ShutGates(key)) == 0 }
 
 // Queued says whether issue waits in the line for its first start as a root (QueuedRoot): its own
-// record and design gate say its first start has still to come, and its run starts as a root's on
-// the pass's chains (Chains.StartsAsRoot), a root's or a new run of an issue that holds its own
-// gate. The record is read first, so an issue whose record already says no costs no walk of its
+// record and design gate say its first start has still to come, its run starts as a root's on the
+// pass's chains (Chains.StartsAsRoot), a root's or a new run of an issue that holds its own gate,
+// and nothing holds it where it stands (HeldWhereItStands). A run that starts as a root's can stand
+// under a parent, a gate holder past its first run, and it meets the holds of an issue under a
+// parent before it starts as every such issue does; the promotion starts only what the line
+// holds, so it starts no such run while a hold stands, and the same todo queues it once the hold
+// ends. The record is read first, so an issue whose record already says no costs no walk of its
 // chain.
 func (f LineFacts) Queued(issue Issue) bool {
-	return QueuedRoot(issue, f.Gates[issue.Key]) && f.Chains.StartsAsRoot(issue.Key)
+	return QueuedRoot(issue, f.Gates[issue.Key]) && f.Chains.StartsAsRoot(issue.Key) && !f.HeldWhereItStands(issue)
 }
 
-// AwaitsTodo says whether issue is a new run that waits for a person's todo to start it (R19 and
-// R20 of dispatch://INFRA-3320): it stands at admitted in Legion's work on a run past its first,
-// holds no slot row (holds false), and Dispatch shows it at a status in work other than todo,
-// which is all that keeps it out of the line: at todo it would be a queued root (Queued) that
-// holds no row, which the promotion starts with its architect (AwaitsPromotion). R20 opens such a
-// run at the status a person moved the issue to (workflow's NewRun), as when a person reopens an
-// issue the merge of its pull request closed straight to in_progress, and a run that starts as a
-// root's starts only on the handover a todo makes. The queued rule is read as it stands, over the
-// issue at todo, and is not stated a second time here.
+// HeldWhereItStands says whether issue's chain holds it where it stands, so that the line starts
+// nothing of it by any path, its queued promotion (Queued) or its first phase (Waiting): its chain
+// is unknown (R16 of dispatch://INFRA-3320), which says neither whether it is a root nor what
+// stands above it; or it stands under a parent in one of R19's three holds — its parent is out of
+// Legion's work and an issue above that parent is in it (ancestry), its top issue waits on a person
+// (root_awaiting_person), or an issue above it stands in its retro or its merge
+// (HeldUnderAccepted). It is the one statement of those holds that the line reads; which of them
+// holds the issue, and which issue holds it, is the held list's word (HeldReasonOf).
+func (f LineFacts) HeldWhereItStands(issue Issue) bool {
+	chains := f.Chains
+	chain := chains.Chain(issue.Key)
+	if !chain.Known() {
+		return true
+	}
+	above := chains.Above(issue.Key)
+	if len(above) == 0 {
+		return false
+	}
+	if above[0] != chain.Links[0] {
+		return true
+	}
+	if top, _ := chains.Record(chains.TopIssue(issue.Key)); top.AwaitingPerson() {
+		return true
+	}
+	return HeldUnderAccepted(chains, issue)
+}
+
+// AwaitsTodo says whether issue waits for a person's todo to start its run (R19 and R20 of
+// dispatch://INFRA-3320): it stands at admitted in Legion's work, holds no slot row (holds false),
+// and Dispatch shows it at a status in work other than todo, which is all that keeps it out of the
+// line: at todo it would be a queued root (Queued) that holds no row, which the promotion starts
+// with its architect (AwaitsPromotion). A run that starts as a root's starts only on the handover
+// a todo makes, and two such runs come to stand elsewhere: a root a person moved from todo to
+// in_progress before its first promotion, and a new run that R20 opens at the status a person
+// moved the issue to (workflow's NewRun), as when a person reopens an issue the merge of its pull
+// request closed straight to in_progress. The queued rule is read as it stands, over the issue at
+// todo, and is not stated a second time here, so an issue a hold of Queued's stops waits for that
+// hold and not for a todo.
 func (f LineFacts) AwaitsTodo(issue Issue, holds bool) bool {
-	if holds || issue.Phase != phase.Admitted || issue.Generation < 2 || issue.Status == "todo" || !InLegionsWork(issue) {
+	if holds || issue.Phase != phase.Admitted || issue.Status == "todo" || !InLegionsWork(issue) {
 		return false
 	}
 	atTodo := issue
@@ -1072,12 +1105,14 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // for nothing. An issue under a parent is held where it stands, and waits for nothing here, in
 // three cases that the chain alone decides (R19): its parent is not in Legion's work and an issue
 // above the parent is (ancestry), its top issue waits on a person (root_awaiting_person), or an
-// issue above it stands in its retro or its merge (HeldUnderAccepted). The other hold, on
-// Dispatch blocked-by links, takes an issue out of here only where it holds it where it stands:
-// an issue whose first phase would start waits at admitted until the last issue it names is done
-// (LineFacts.Held, blockers.Holds), so the line never offers it a slot. A root's links are read at
-// its promotion instead, which passes it over and keeps its place (blockers.WaitsOn); either way
-// the state names it under admission.blocked.
+// issue above it stands in its retro or its merge (HeldUnderAccepted). The unknown chain and the
+// three cases are one rule (LineFacts.HeldWhereItStands), which both the queued roots (Queued) and
+// the first phases read, so a gate holder past its first run under a parent, whose run starts as a
+// root's, meets them too. The other hold, on Dispatch blocked-by links, takes an issue out of here
+// only where it holds it where it stands: an issue whose first phase would start waits at admitted
+// until the last issue it names is done (LineFacts.Held, blockers.Holds), so the line never offers
+// it a slot. A root's links are read at its promotion instead, which passes it over and keeps its
+// place (blockers.WaitsOn); either way the state names it under admission.blocked.
 //
 // A root is in the line as a root that never ran (LineQueuedRoot) only while its own record says
 // the generation it carries has not run — it stands at admitted with its design gate never
@@ -1240,11 +1275,18 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// An issue whose chain is unknown starts nothing (R16): neither as a root nor under a
-		// parent, since the chain is what says which of the two it is. The re-read of the chain
-		// is what moves it.
-		chain := chains.Chain(issue.Key)
-		if !chain.Known() {
+		// An issue its chain holds where it stands starts nothing here (HeldWhereItStands, the one
+		// statement of those holds, which the queued roots above read too): one whose chain is
+		// unknown (R16), neither a root nor an issue under a parent until the re-read of the chain
+		// moves it; and an issue under a parent in one of R19's holds. Under a parent out of work
+		// with an issue above that parent in work, it is that issue's unreleased work. Under a top
+		// issue that handed work to a person, it starts with that issue's resume (admit's
+		// promotion of the answered root). Beneath an issue the daemon has already accepted, it
+		// waits for that issue to close, since starting it would let the ancestor merge work its
+		// own head does not carry; the chain is read past the issues between, so a parent already
+		// done does not hide the merging issue above it, and the architect is told why when the
+		// issue enters.
+		if facts.HeldWhereItStands(issue) {
 			hold(issue)
 			continue
 		}
@@ -1257,19 +1299,6 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			continue
 		}
 		_, holds := slotted[issue.Key]
-		// An issue under a parent at work starts once Dispatch shows it todo, and only while its
-		// parent is in Legion's work: under a parent out of work with an issue above that parent
-		// in work, it is that issue's unreleased work and waits (the ancestry hold, R19).
-		if above := chains.Above(issue.Key); len(above) > 0 && above[0] != chain.Links[0] {
-			hold(issue)
-			continue
-		}
-		// A top issue that handed work to a person starts nothing under it while it waits: the
-		// issues under it start with its resume (admit's promotion of the answered root).
-		if top, _ := chains.Record(chains.TopIssue(issue.Key)); top.AwaitingPerson() {
-			hold(issue)
-			continue
-		}
 		if !facts.GatesOpen(issue.Key) {
 			hold(issue)
 			continue
@@ -1288,15 +1317,6 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// and run when the wait begins (admit's tellChildrenFirst), and the state names it under
 		// admission.blocked meanwhile.
 		if _, waits := facts.ChildWaits[issue.Key]; waits {
-			hold(issue)
-			continue
-		}
-		// An issue beneath an issue the daemon has already accepted waits for that issue to
-		// close (HeldUnderAccepted): starting it would let the ancestor merge work its own head
-		// does not carry. A person's move of such an issue to todo records it here at admitted
-		// and leaves it here; the architect is told why when it enters. The chain is read past
-		// the issues between, so a parent already done does not hide the merging issue above it.
-		if HeldUnderAccepted(chains, issue) {
 			hold(issue)
 			continue
 		}

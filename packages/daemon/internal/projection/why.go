@@ -394,8 +394,8 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"start it had, while a child of it is open."
 	}},
 	record.HeldAwaitingTodo: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {
-		return "Its new run waits for a person's todo: Dispatch shows it in work at a status other than todo, " +
-			"and the daemon starts no architect for a new run before Dispatch shows the issue at todo."
+		return "It waits for a person's todo to start its run: Dispatch shows it in work at a status other than todo, " +
+			"and the daemon starts no architect for its run before Dispatch shows the issue at todo."
 	}},
 	record.HeldDesignGate: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "A design gate it waits for stands shut: " + heldBy + " waits for a person's approval of each gated " +

@@ -54,14 +54,15 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // whose chain the copy cannot show (its parent has no row), a root whose label is off, an issue
 // whose parent is on the backlog under a root at work, an issue under a root that waits on a
 // person, a root on a new run that Dispatch shows in_progress and that waits for a person's todo
-// (R20), an issue under a shut design gate, a child an unfinished Dispatch link holds, a parent
-// whose own children are still open, an issue beneath an accepted ancestor, an issue past its
-// review that nothing holds, which reads at_work (record.HeldAtWork), and an issue none of the
-// others is true of — and the rows are read from the projected state, which is where a reader
-// meets them. tree_closed and tree_parked are no longer given: an issue under a done or parked
-// parent with nothing above it in work is a root. No issue stands for awaiting_children, a
-// parent that holds a phase start while a child of it is open (record.HeldAwaitingChildren);
-// this fixture builds none.
+// (R20), a root a person moved from todo to in_progress before its first promotion, which waits
+// for a todo the same way, an issue under a shut design gate, a child an unfinished Dispatch link
+// holds, a parent whose own children are still open, an issue beneath an accepted ancestor, an
+// issue past its review that nothing holds, which reads at_work (record.HeldAtWork), and an issue
+// none of the others is true of — and the rows are read from the projected state, which is where
+// a reader meets them. tree_closed and tree_parked are no longer given: an issue under a done or
+// parked parent with nothing above it in work is a root. No issue stands for awaiting_children, a
+// parent that holds a phase start while a child of it is open (record.HeldAwaitingChildren); this
+// fixture builds none.
 //
 // Six controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -104,6 +105,10 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	waitsForTodo.Generation = 2
 	promotedNewRun := treeRoot("LEGION-141", "in_progress", phase.Admitted)
 	promotedNewRun.Generation = 2
+	// A root on its first run that a person moved from todo to in_progress before its promotion:
+	// it stands at admitted on no slot with its gate never designed, and only a person's todo
+	// queues it, as it does the new run above.
+	movedBeforeItsStart := treeRoot("LEGION-142", "in_progress", phase.Admitted)
 	// A root that handed work to a person, holding the slot its wait keeps, and a member of its
 	// tree: the daemon starts no issue of the tree before that root resumes. The root's gate
 	// stands open, so the word its member reads is the wait and nothing else.
@@ -143,8 +148,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 
 	store := projectionStore{
 		issues: []record.Issue{unknownChain, onBacklog, underBacklog, unlabelled, queuedRoot, waitsForTodo, promotedNewRun,
-			askingRoot, askingMember, gatedRoot, gatedMember, openRoot, blockedChild, merging, beneathMerging, unplaced,
-			slotHolder, linkedRoot, parentOfOpen, answeredRoot},
+			movedBeforeItsStart, askingRoot, askingMember, gatedRoot, gatedMember, openRoot, blockedChild, merging, beneathMerging,
+			unplaced, slotHolder, linkedRoot, parentOfOpen, answeredRoot},
 		slots: []record.Slot{
 			{Issue: "LEGION-150", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-160", Index: 1, AdmittedAt: projectedAt},
@@ -183,6 +188,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		{Issue: "LEGION-111", Reason: record.HeldAncestry, HeldBy: []string{"LEGION-160"}},
 		{Issue: "LEGION-120", Reason: record.HeldLabelOff},
 		{Issue: "LEGION-140", Reason: record.HeldAwaitingTodo},
+		{Issue: "LEGION-142", Reason: record.HeldAwaitingTodo},
 		{Issue: "LEGION-151", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-150"}},
 		{Issue: "LEGION-161", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-160"}},
 		{Issue: "LEGION-171", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},

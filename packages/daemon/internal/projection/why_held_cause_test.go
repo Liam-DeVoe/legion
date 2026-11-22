@@ -167,8 +167,8 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		awaitingSentence = "Its top issue, LEGION-100, has handed work to a person, and the daemon starts nothing under it before that issue resumes."
 		gateSentence     = "A design gate it waits for stands shut: LEGION-100 waits for a person's approval of each gated step's document " +
 			"at its current version, and the daemon starts nothing under it until it opens."
-		todoSentence = "Its new run waits for a person's todo: Dispatch shows it in work at a status other than todo, " +
-			"and the daemon starts no architect for a new run before Dispatch shows the issue at todo."
+		todoSentence = "It waits for a person's todo to start its run: Dispatch shows it in work at a status other than todo, " +
+			"and the daemon starts no architect for its run before Dispatch shows the issue at todo."
 	)
 	fixtures := map[heldEntry]heldFixture{
 		{record.HeldChainUnknown, api.WhyBlocked}: {linked(unknownChain, "LEGION-100"),

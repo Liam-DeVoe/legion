@@ -25,8 +25,8 @@ import (
 //     LEGION-301, whose own blocked_by link holds it under its parent, the open children below
 //     LEGION-300, and the Dispatch links LEGION-110 waits on — and LEGION-601, which both of
 //     the last two hold at once and which reads both sentences, the children and then the link;
-//   - unlisted, the issue whose cause the record carries (LEGION-401, a root at admitted behind
-//     its own shut gate).
+//   - unlisted, the issue whose cause the record carries (LEGION-401, a root at admitted on its
+//     first run that Dispatch shows in_progress, which waits for a person's todo).
 //
 // And nine issues carry no answer at all. Two are at work on a slot of the cap: LEGION-500,
 // with its implementer running, and LEGION-501, at phase.Held with no earlier phase on the
@@ -83,8 +83,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			lineIssue("LEGION-600", "LEGION-600", "in_progress", phase.Admitted, "N"),
 			lineIssue("LEGION-601", "LEGION-600", "todo", phase.Admitted, "O"),
 			// The issue the lists do not place: the record holds it in Legion's work at admitted
-			// under the word design_gate — it is a root, which holds its own gate, and this
-			// fixture records no gate row for it, so the gate stands shut.
+			// under the word awaiting_todo — it is a root on its first run that Dispatch shows
+			// in_progress, holding no slot and no gate row, which only a person's todo queues.
 			lineIssue("LEGION-401", "LEGION-401", "in_progress", phase.Admitted, "I"),
 			// The four that carry no answer: at work, held in a slot, done, and on the backlog.
 			lineIssue("LEGION-500", "LEGION-500", "in_progress", phase.Implementing, "J"),
@@ -249,8 +249,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			Reason: "Its own first phase waits for the open issues below it: LEGION-602 and LEGION-603. " +
 				"It waits on LEGION-900, which is not done."},
 		"LEGION-401": {State: api.WhyUnlisted,
-			Reason: "A design gate it waits for stands shut: LEGION-401 waits for a person's approval of each gated " +
-				"step's document at its current version, and the daemon starts nothing under it until it opens."},
+			Reason: "It waits for a person's todo to start its run: Dispatch shows it in work at a status other than todo, " +
+				"and the daemon starts no architect for its run before Dispatch shows the issue at todo."},
 		// The one past its review that nothing is working on, served its held word's sentence:
 		// its architect held it from its retro, so it reads unclassified, since at_work's sentence
 		// says the workers run and the ladder gives that word to no held issue.

@@ -945,8 +945,8 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
 // `design_gate`, and dispatch://INFRA-4730 added two at contract 215: `chain_unknown`, an issue on
 // a Dispatch chain the daemon's copy cannot show to its top, at the head of the ladder, and
-// `awaiting_todo`, a new run that waits for a person's todo, between `awaiting_children` and
-// `design_gate`.
+// `awaiting_todo`, a run that starts as a root's does and waits for a person's todo, between
+// `awaiting_children` and `design_gate`.
 test("the held words are the daemon's, with chain_unknown first and awaiting_children and awaiting_todo before design_gate", () => {
   expect(LEGION_HELD_REASONS).toEqual([
     "chain_unknown",

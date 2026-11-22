@@ -570,8 +570,8 @@ var lineKinds = []EnumeratedValue{
 // at gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren),
 // and two words arrived at chainContract (version.go's 215): `chain_unknown`, an issue on a
 // Dispatch chain the copy cannot read to its top (record.HeldChainUnknown), and `awaiting_todo`,
-// a new run that waits for a person's todo (record.HeldAwaitingTodo). So it is written out value
-// by value, sorted by value, as waitAnswers is.
+// a run that starts as a root's does and waits for a person's todo (record.HeldAwaitingTodo). So
+// it is written out value by value, sorted by value, as waitAnswers is.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},

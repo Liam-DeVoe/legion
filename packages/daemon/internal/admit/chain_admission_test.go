@@ -235,6 +235,101 @@ func TestTheThreeHoldsOfAnIssueUnderAParent(t *testing.T) {
 	}
 }
 
+// A run that starts as a root's does (record.Chains.StartsAsRoot) but stands under a parent — a
+// gate holder on a run past its first — meets the holds of an issue under a parent before it
+// starts, as every issue under a parent does (R19 of dispatch://INFRA-3320), and starts nothing
+// on a chain the copy cannot show to its top (R16). A person's todo on one under a parent on the
+// backlog below a root at work (ancestry), under a root that waits on a person
+// (root_awaiting_person), under a root in merging (accepted_ancestor) or under a parent the copy
+// holds no row of (chain_unknown) starts nothing of it, and the held list names it. The word is the
+// ladder's first true one (record.HeldReasonOf): the hold itself where the ladder reads it before
+// the issue's own gate, and under the root in merging its own design gate, which no architect has
+// designed for the new run and which the ladder reads before accepted_ancestor for every issue at
+// admitted. Once the hold ends — the parent back in work, the root resumed, the root closed, the
+// parent's row read — the todo it stands at queues it, and its promotion starts its architect.
+func TestARunThatStartsAsARootMeetsTheHoldsOfAnIssueUnderAParent(t *testing.T) {
+	gateHolder := func(key, parent string) record.Issue {
+		issue := chainRecord(key, parent, phase.Admitted, "in_progress")
+		issue.Generation, issue.HoldsGate, issue.HandedOver = 2, true, true
+		return issue
+	}
+	for _, tc := range []struct {
+		name, key, parent, holder string
+		word                      record.HeldReason
+		seed, end                 func(t *testing.T, pool *pgxpool.Pool)
+	}{
+		{
+			name: "under a parent on the backlog below a root at work", key: "LEGION-112", parent: "LEGION-111", holder: "LEGION-110",
+			word: record.HeldAncestry,
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				seedRunning(t, pool, "LEGION-110", "")
+				putIssue(t, pool, chainRecord("LEGION-111", "LEGION-110", phase.Admitted, "backlog"))
+			},
+			end: func(t *testing.T, pool *pgxpool.Pool) {
+				putIssue(t, pool, chainRecord("LEGION-111", "LEGION-110", phase.Admitted, "todo"))
+			},
+		},
+		{
+			name: "under a root that waits on a person", key: "LEGION-121", parent: "LEGION-120", holder: "LEGION-120",
+			word: record.HeldRootAwaitingPerson,
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				putIssue(t, pool, quietRootRecord("LEGION-120", "LEGION-120", phase.AwaitingPerson))
+				takeSlot(t, pool, "LEGION-120")
+				seedLifecycle(t, pool, "LEGION-120")
+			},
+			end: func(t *testing.T, pool *pgxpool.Pool) {
+				putIssue(t, pool, quietRootRecord("LEGION-120", "LEGION-120", phase.Implementing))
+			},
+		},
+		{
+			name: "under a root in merging", key: "LEGION-131", parent: "LEGION-130", holder: "LEGION-131",
+			word: record.HeldDesignGate,
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				putIssue(t, pool, chainRecord("LEGION-130", "", phase.Merging, "retro"))
+				seedApprovedGate(t, pool, "LEGION-130", 1, 1)
+			},
+			end: func(t *testing.T, pool *pgxpool.Pool) {
+				putIssue(t, pool, chainRecord("LEGION-130", "", phase.Done, record.DoneStatus))
+			},
+		},
+		{
+			name: "under a parent the copy holds no row of", key: "LEGION-141", parent: "LEGION-140", holder: "LEGION-140",
+			word: record.HeldChainUnknown,
+			seed: func(*testing.T, *pgxpool.Pool) {},
+			end: func(t *testing.T, pool *pgxpool.Pool) {
+				inTx(t, pool, func(tx pgx.Tx) {
+					putCopyTx(t, tx, record.Issue{Key: "LEGION-140", Project: testProject, Status: "in_progress"})
+				})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := quiet(t, 4)
+			tc.seed(t, pool)
+			putIssue(t, pool, gateHolder(tc.key, tc.parent))
+
+			apply(t, pool, admission, "persons-todo", intake.DispatchIssue{Key: tc.key, ResolvedRepo: "acme/widgets", Seq: 10,
+				Type: "issue.updated", Status: "todo", Title: tc.key, Parent: tc.parent, Rank: tc.key, HandedOver: true}, admission.engine)
+
+			if starts := architectStarts(t, pool, tc.key); starts != 0 {
+				t.Fatalf("a person's todo on %s started %d architects of it, want none while it is held %s", tc.key, starts, tc.word)
+			}
+			assertNotStarted(t, pool, tc.key)
+			_, held := passJudgement(t, pool, admission)
+			assertHeldBy(t, held, tc.key, tc.word, tc.holder)
+
+			tc.end(t, pool)
+			tick(t, pool, admission, "the-hold-ends")
+
+			if starts := architectStarts(t, pool, tc.key); starts != 1 || !holdsSlot(t, pool, tc.key) {
+				t.Fatalf("once its hold ended %s started %d architects (slot %v), want its promotion's one at the todo it stands at",
+					tc.key, starts, holdsSlot(t, pool, tc.key))
+			}
+		})
+	}
+}
+
 // An issue whose parent is done with no issue above it in Legion's work is a root: one at work
 // goes on, and one that has not started waits for a person's handover. The shapes of INFRA-1238
 // (a done parent under an issue in Legion's work) and INFRA-500 (a done parent under an issue in

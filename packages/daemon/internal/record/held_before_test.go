@@ -12,8 +12,8 @@ import (
 // stated by its sentence table (the projection's heldSentences), whose own test holds the table
 // to this answer. chain_unknown stands first, since the ladder reads it before every other word
 // (R16 of dispatch://INFRA-3320), awaiting_children stands between root_awaiting_person and
-// design_gate, and awaiting_todo, a new run waiting for a person's todo (R20), stands between
-// awaiting_children and design_gate.
+// design_gate, and awaiting_todo, a run that starts as a root's does waiting for a person's todo
+// (R19, R20), stands between awaiting_children and design_gate.
 func TestTheHeldWordsThatTakeTheBlockedArmAreTheNineTheLadderReadsBeforeTheLinks(t *testing.T) {
 	var before []HeldReason
 	for _, word := range HeldReasons {

@@ -107,7 +107,7 @@ func parsesWith(keys stateKeys, body []byte) []string {
 
 // stateWithTheHoldsThisChangeAdds is the populated state with two more held rows, one of each
 // reason this change adds: an issue the daemon holds on a chain the copy cannot show to its top,
-// and a new run that waits for a person's todo, which no issue holds.
+// and a run that waits for a person's todo, which no issue holds.
 func stateWithTheHoldsThisChangeAdds(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
