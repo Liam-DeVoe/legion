@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -434,7 +435,7 @@ func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 		raced = true
 	}}
 	useKV(t, r, seam)
-	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
+	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
 	if !raced {
@@ -492,26 +493,29 @@ func TestPutClearingGapKeepsTheStandingWritersRecordWhenTheCacheHasCaughtUp(t *t
 		cached, err := r.Get(sessionID)
 		return err == nil && cached.RepositoryGap == mark && cached.Epoch == "e2"
 	})
-	before, _, _ := r.StoredByWriter(ctx, sessionID)
 	// The refresh's write, as roleSetHandler makes it under clearForged.
-	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
+	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
 	after, own, err := r.StoredByWriter(ctx, sessionID)
 	if err != nil || !own {
 		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
 	}
-	if after.RepositoryGap != mark {
-		t.Errorf("PutClearingGap dropped the writer's gap mark: gap=%q, want %q", after.RepositoryGap, mark)
+	if after.UpdatedAt <= 0 {
+		t.Fatalf("the refresh stamped no registration time on %s: %+v", sessionID, after)
 	}
-	if after.Delivery != DeliveryConsumer || after.Epoch != "e2" || after.ConsumerStart != 7 {
-		t.Errorf("PutClearingGap dropped the writer's delivery set: delivery=%q epoch=%q start=%d, want consumer/e2/7", after.Delivery, after.Epoch, after.ConsumerStart)
-	}
-	if after.ConsumerHoldsStored(6) != before.ConsumerHoldsStored(6) {
-		t.Errorf("PutClearingGap changed which stored messages the consumer holds: holds(6) %t -> %t (start %d -> %d)", before.ConsumerHoldsStored(6), after.ConsumerHoldsStored(6), before.ConsumerStart, after.ConsumerStart)
-	}
-	if after.ClientInstanceID != "instance-live" || !slices.Contains(after.Capabilities, "aside") {
-		t.Errorf("PutClearingGap cleared the live session's instance or capabilities: instance=%q caps=%v", after.ClientInstanceID, after.Capabilities)
+	// The whole written entry is compared (as the H1 row does), so a display field dropped, or a new
+	// SessionEntry field added later, fails the row: only the machine, self-subscription, projects and
+	// time change; the gap mark, the whole delivery set and the client instance, capabilities and
+	// display fields are kept.
+	got := after
+	got.UpdatedAt = 0
+	want := live
+	want.SessionID = sessionID
+	want.SelfSubscribed = true
+	want.RepositoryGap = mark
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("PutClearingGap over the standing writer's record wrote %+v, want %+v", got, want)
 	}
 }
 
@@ -531,7 +535,7 @@ func TestPutClearingGapKeepsNothingFromAWritersRecordNamingAnotherSession(t *tes
 	foreign := SessionEntry{SessionID: "ses_someone_else", MachineID: "edge-a", Projects: []string{"PRIV"},
 		Delivery: DeliveryConsumer, Epoch: "e9", ConsumerStart: 99, ClientInstanceID: "foreign", Capabilities: []string{"forged"}, RepositoryGap: "foreign-mark"}
 	restore := r.SetStoredByWriterSeamForTest(sessionID, foreign, true, nil)
-	err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}})
+	err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
 	restore()
 	if err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
@@ -571,7 +575,7 @@ func TestPutClearingGapDecidesFromEachPassRecord(t *testing.T) {
 		raced = true
 	}}
 	useKV(t, r, seam)
-	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
+	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
 	if !raced {

@@ -882,55 +882,6 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // is refused with ErrEntryUnbound and nothing is written: every reader would read it as no record,
 // while this registry's own copy held it until its watcher delivered it.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
-	return r.putWithin(ctx, sessionID, entry)
-}
-
-// PutClearingGap writes claim's machine, self-subscription and projects over a session's record as a
-// role claim's refresh, clearing a forged record (cmd/listener's roleSetHandler). It reads the stream
-// leader on every pass (readForClear), never the cache, since the cache cannot tell a RePublish from a
-// registration, and decides from the record each pass read:
-//   - the session's own writer's record (DecodeEntry binds it and its SessionID is the key): the forged
-//     premise the clear rested on is gone, so this writes that record back with only claim's
-//     MachineID, SelfSubscribed and Projects changed, UpdatedAt stamped and Port written out, and
-//     every other field kept - the gap mark, the delivery set (Delivery, Epoch, ConsumerStart, read
-//     together so the record never reads as an earlier release's), the client instance, capabilities
-//     and display fields - so a live session's own registration that landed since the claim read it as
-//     forged is not cleared by this write.
-//   - any other record - a RePublish, a marker, a copy of another key's record, or one naming no key:
-//     claim's own fields with no gap mark, so the forged record is cleared at its true sequence.
-//
-// The entry is rebuilt from claim on every pass, so a pass that reads a forged record after one that
-// read the writer's record clears, and never writes the earlier pass's record's fields. An entry that
-// names no machine is refused with ErrEntryUnbound.
-func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID string, claim SessionEntry) error {
-	if claim.MachineID == "" {
-		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
-	}
-	claim.SessionID = sessionID
-	kv, epoch := r.watcher.Handle()
-	for {
-		stored, revision, found, err := r.readForClear(ctx, kv, sessionID)
-		if err != nil {
-			return fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
-		}
-		entry := claim
-		entry.RepositoryGap = ""
-		if found && stored.SessionID == sessionID {
-			entry = stored
-			entry.MachineID, entry.SelfSubscribed, entry.Projects, entry.Port = claim.MachineID, claim.SelfSubscribed, claim.Projects, 0
-		}
-		entry.UpdatedAt = r.now().UnixMilli()
-		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
-		if err != nil {
-			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
-		}
-		if !lost {
-			return nil
-		}
-	}
-}
-
-func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	if entry.MachineID == "" {
 		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
 	}
@@ -1002,6 +953,50 @@ func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry
 			return nil
 		}
 		known = false
+	}
+}
+
+// PutClearingGap writes machineID, selfSubscribed and projects over a session's record as a role
+// claim's refresh, clearing a forged record (cmd/listener's roleSetHandler). It reads the stream
+// leader on every pass (readForClear), never the cache, since the cache cannot tell a RePublish from a
+// registration, and decides from the record each pass read:
+//   - the session's own writer's record (DecodeEntry binds it and its SessionID is the key): the forged
+//     premise the clear rested on is gone, so this writes that record back with only machineID,
+//     selfSubscribed and projects changed, UpdatedAt stamped and Port written out, and every other
+//     field kept - the gap mark, the delivery set (Delivery, Epoch, ConsumerStart, read together so the
+//     record never reads as an earlier release's), the client instance, capabilities and display
+//     fields - so a live session's own registration that landed since the claim read it as forged is
+//     not cleared by this write.
+//   - any other record - a RePublish, a marker, a copy of another key's record, or one naming no key:
+//     the three values and nothing else, no gap mark, so the forged record is cleared at its true
+//     sequence.
+//
+// The entry is rebuilt on every pass, so a pass that reads a forged record after one that read the
+// writer's record clears, and never writes the earlier pass's record's fields. An empty machineID is
+// refused with ErrEntryUnbound.
+func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machineID string, selfSubscribed bool, projects []string) error {
+	if machineID == "" {
+		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
+	}
+	kv, epoch := r.watcher.Handle()
+	for {
+		stored, revision, found, err := r.readForClear(ctx, kv, sessionID)
+		if err != nil {
+			return fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
+		}
+		entry := SessionEntry{SessionID: sessionID, MachineID: machineID, SelfSubscribed: selfSubscribed, Projects: projects}
+		if found && stored.SessionID == sessionID {
+			entry = stored
+			entry.MachineID, entry.SelfSubscribed, entry.Projects, entry.Port = machineID, selfSubscribed, projects, 0
+		}
+		entry.UpdatedAt = r.now().UnixMilli()
+		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
+		if err != nil {
+			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
+		}
+		if !lost {
+			return nil
+		}
 	}
 }
 

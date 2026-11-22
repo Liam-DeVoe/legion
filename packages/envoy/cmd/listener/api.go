@@ -2159,25 +2159,23 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// listener's cache with no bucket call, as a registration reads it (registerPass): a
 		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.
 		_, before := d.sessions.Lookup(body.SessionID)
-		put := d.sessions.PutWithin
+		var writeErr error
 		if clearForged {
 			// The stream leader holds no writer's record for the key the cached entry names, so none
 			// of its fields but the machine, self-subscription and the claim token's projects may be
 			// the session's own: a RePublish could set its own session's title, a non-consumer
 			// delivery that pauses its relay until the next registration, a display field or a gap
-			// mark. The refresh carries back none of them, building the entry from the fields it
-			// keeps, as the gap and renewal writes carry back nothing of a server-written record (the
-			// F3 rule). PutClearingGap clears a record no writer's stands for; where the session's own
-			// registration landed in the race between this confirmation and the write, it writes that
-			// record back with only the machine, self-subscription and projects changed, keeping its
-			// delivery set and the rest, rather than clearing a live session's own.
-			entry = session.SessionEntry{
-				MachineID: entry.MachineID, SelfSubscribed: entry.SelfSubscribed, Projects: entry.Projects,
-			}
-			put = d.sessions.PutClearingGap
+			// mark. PutClearingGap writes only those three over a record no writer's stands for, as the
+			// gap and renewal writes carry back nothing of a server-written record (the F3 rule); where
+			// the session's own registration landed in the race between this confirmation and the
+			// write, it writes that record back with only those three changed, keeping its delivery set
+			// and the rest, rather than clearing a live session's own.
+			writeErr = d.sessions.PutClearingGap(ctx, body.SessionID, entry.MachineID, entry.SelfSubscribed, entry.Projects)
+		} else {
+			writeErr = d.sessions.PutWithin(ctx, body.SessionID, entry)
 		}
-		if err := put(ctx, body.SessionID, entry); err != nil {
-			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
+		if writeErr != nil {
+			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", writeErr), http.StatusServiceUnavailable)
 			return
 		}
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
