@@ -160,8 +160,9 @@ are in [`consumernames/README.md`](consumernames/README.md).
 
 - **Names.** In the fixed mode a session's consumer is `s-<session id>` and the listener's durable
   is `listener-<machine id>`. In the fresh mode each creation gets a name never made before:
-  `session~<nuid>`, carrying the metadata `envoy.logical` and `envoy.session_id`, and
-  `listener-<machine id>~<nuid>`, carrying `envoy.logical`. Their records live in the KV bucket
+  `session~<random>`, carrying the metadata `envoy.logical` and `envoy.session_id`, and
+  `listener-<machine id>~<random>`, carrying `envoy.logical`, where `<random>` is 22 characters
+  drawn from `crypto/rand`. Their records live in the KV bucket
   `envoy_session_consumers`. The start's bind, the monitor's rebuild, the probe, the bound wait and
   `/healthz` all read the durable through its record. The sweep lists only `session~` names that
   carry `envoy.session_id`.

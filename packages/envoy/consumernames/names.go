@@ -58,7 +58,7 @@ type Config struct {
 	Server Server
 	// Prefix is the part of a physical name before its '~' (FreshName): "session" for a session
 	// consumer, the logical name itself for a durable. A record of logical names only consumers of
-	// that form, Prefix(logical)~<nuid>, and Fixed(logical) as an operation's old name alone
+	// that form, Prefix(logical)~<random>, and Fixed(logical) as an operation's old name alone
 	// (check).
 	Prefix func(logical string) string
 	// Fixed is the name the family gave logical before this package, which the cutover's convert

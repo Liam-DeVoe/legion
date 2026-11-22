@@ -13,12 +13,14 @@ consumer reads.
 
 | Family | Logical name | Fixed name (the fixed mode) | Physical name of each creation (the fresh mode) |
 | --- | --- | --- | --- |
-| Session consumer | the session id | `s-<session id>` | `session~<nuid>` |
-| The listener's own durable | `listener-<machine id>` | the logical name | `listener-<machine id>~<nuid>` |
-| Dispatch's durables | `delivery-events`, `delivery-jobs` | the logical name | `<logical>~<nuid>` |
-| A Legion daemon's durables | `legion-go-<project>-<kind>` | the logical name | `<logical>~<nuid>` |
+| Session consumer | the session id | `s-<session id>` | `session~<random>` |
+| The listener's own durable | `listener-<machine id>` | the logical name | `listener-<machine id>~<random>` |
+| Dispatch's durables | `delivery-events`, `delivery-jobs` | the logical name | `<logical>~<random>` |
+| A Legion daemon's durables | `legion-go-<project>-<kind>` | the logical name | `<logical>~<random>` |
 
-- `FreshName(prefix)` is `<prefix>~<nuid>`. A `~` is in no fixed name, so no fresh name is a fixed one.
+- `FreshName(prefix)` is `<prefix>~<random>`, where `<random>` is 22 characters of `[0-9A-Za-z]`,
+  each drawn from `crypto/rand` (about 131 bits), so no name says anything of the next. A `~` is
+  in no fixed name, so no fresh name is a fixed one.
 - `Config.Prefix(logical)` is the part before the `~`: `session` for a session consumer, the logical
   name itself for a durable. `LogicalOf` cuts a durable's physical name at its last `~`. It does not
   give a session's logical name, which is the consumer's metadata (below).
@@ -98,16 +100,16 @@ revision:
   reader's to answer, as `ErrRecordDeleted`, or `ErrNoSentinel` under `envoy.bucket`, before it
   decodes anything.
 - **The family fence.** A record's current, retired names and candidate must be
-  `<Prefix(logical)>~<nuid>` names of its own key. Its operation's old name may also be the key's
+  `<Prefix(logical)>~<random>` names of its own key. Its operation's old name may also be the key's
   fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`, naming the field.
   Every creator applies the fence to every record it reads.
 
   The prefix, the fixed name, the metadata and the key rule come from one table in this package
-  (`Naming`, `FamilyNaming`): `SessionNaming()` (`session~<nuid>`, fixed `s-<session id>`, metadata
+  (`Naming`, `FamilyNaming`): `SessionNaming()` (`session~<random>`, fixed `s-<session id>`, metadata
   `envoy.logical` and `envoy.session_id` both the session id, keys `CheckKey` passes),
-  `DurableNaming()` for a key `DurableKey` made (`<durable>~<nuid>`, fixed and `envoy.logical` the
+  `DurableNaming()` for a key `DurableKey` made (`<durable>~<random>`, fixed and `envoy.logical` the
   durable's name, keys `DurableKey` made of a listener's durable, `listener-<machine id>`), and
-  `LogicalNaming()` for Dispatch's and a daemon's durables (`<logical>~<nuid>`, fixed and
+  `LogicalNaming()` for Dispatch's and a daemon's durables (`<logical>~<random>`, fixed and
   `envoy.logical` the logical name). Every creator builds its `Config.Prefix`, `Config.Fixed`,
   `Config.Metadata` and `Config.CheckKey` from it.
   `FamilyNaming(family, logical)` takes only the family's own keys: Dispatch's store only

@@ -1,6 +1,6 @@
 // The listener's own durable in the fresh consumer naming mode: a fourth family of the selection
 // record. Its logical name is the durable's, bus.ListenerDurable(machine id); each creation gets the
-// physical name <durable>~<nuid> (consumernames.FreshName); and its record is kept in the session
+// physical name <durable>~<random> (consumernames.FreshName); and its record is kept in the session
 // consumers' selection bucket under consumernames.DurableKey(durable), a key no session's is. In the
 // fixed mode, the default, the durable is named as before and nothing here runs.
 
@@ -219,7 +219,7 @@ func natsInfo(info *jetstream.ConsumerInfo) (*nats.ConsumerInfo, error) {
 
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
 // through its record, brought in place to the whole configuration the durable's create gives, or a
-// fresh <durable>~<nuid> at the record's start, and for a durable with no record at deliver policy
+// fresh <durable>~<random> at the record's start, and for a durable with no record at deliver policy
 // all, today's first create. A current the server no longer holds is created again at the start its
 // record proves. A current Names adopted rather than this call created (Step 0, a create whose
 // outcome was unknown) is corrected in place like any other before it is bound

@@ -17,7 +17,7 @@ import (
 )
 
 // SessionConsumerNamePrefix begins the physical name of every session consumer the fresh mode
-// creates (consumernames.FreshName): session~<nuid>, the family table's (consumernames.SessionPrefix).
+// creates (consumernames.FreshName): session~<random>, the family table's (consumernames.SessionPrefix).
 // An earlier build's sweep lists only names that begin s-, so it never takes one of these for a
 // session.
 const SessionConsumerNamePrefix = consumernames.SessionPrefix

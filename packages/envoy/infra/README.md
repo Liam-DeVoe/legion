@@ -3933,7 +3933,7 @@ to.
 
 After those entries, and in `ListenerPermissions` and `ListenerHostPermissions` alone, come the
 calls of the session consumers, one durable pull consumer per session named `s-<session id>` in the
-default fixed naming mode and `session~<nuid>` in the fresh one (`bus.SessionConsumers`), on any
+default fixed naming mode and `session~<random>` in the fresh one (`bus.SessionConsumers`), on any
 consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
 without a filter subject in its subject), `INFO`, `DELETE` and `MSG.NEXT` on
 `ENVOY_NOTIFICATIONS.*`, the acknowledgements `$JS.ACK.ENVOY_NOTIFICATIONS.*.>`, and the stream's

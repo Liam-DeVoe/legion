@@ -3,6 +3,7 @@ package consumernames
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"unicode"
 
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nuid"
 )
 
 // LogicalMetadataKey is the consumer metadata every physical consumer carries, naming its logical
@@ -639,16 +639,46 @@ func CheckKey(logical string) error {
 	return nil
 }
 
-// FreshName is a physical name never made before: prefix, '~' and a NUID. A '~' is no character
-// of a fixed name's family prefix, so no fresh name is a fixed one.
+// FreshName is a physical name never made before: prefix, '~' and a random suffix (freshSuffix).
+// A '~' is no character of a fixed name's family prefix, so no fresh name is a fixed one.
 func FreshName(prefix string) string {
-	return prefix + "~" + nuid.Next()
+	return prefix + "~" + freshSuffix()
+}
+
+// freshAlphabet is the characters of a fresh name's suffix, the ones freshOf takes: [0-9A-Za-z].
+const freshAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// freshSuffixLength is how many characters a fresh name's suffix holds: 22 of freshAlphabet, about
+// 131 bits, the length a NUID had, so no name grows.
+const freshSuffixLength = 22
+
+// freshSuffix is freshSuffixLength characters of freshAlphabet, each drawn uniformly from
+// crypto/rand: a byte of 248 or more (4 × 62) is drawn again, so every character is equally likely.
+// No suffix says anything of another, so a principal that sees one process's names or reply
+// inboxes cannot predict its next candidate and create that name first.
+func freshSuffix() string {
+	var suffix [freshSuffixLength]byte
+	var random [32]byte
+	for n := 0; n < len(suffix); {
+		// crypto/rand's Read never returns an error, and always fills the buffer.
+		_, _ = rand.Read(random[:])
+		for _, b := range random {
+			if b >= 4*byte(len(freshAlphabet)) {
+				continue
+			}
+			suffix[n] = freshAlphabet[int(b)%len(freshAlphabet)]
+			if n++; n == len(suffix) {
+				break
+			}
+		}
+	}
+	return string(suffix[:])
 }
 
 // LogicalOf is the logical name of a physical one, for a family whose Config.Prefix is the logical
 // name itself, such as a durable's (the listener's durable, Dispatch's and a daemon's): the name cut
 // at its last '~', or the name itself when it holds none (a fixed name). It does not hold for the
-// session family, whose prefix is the constant "session": LogicalOf("session~<nuid>") is
+// session family, whose prefix is the constant "session": LogicalOf("session~<random>") is
 // "session", and a session consumer's logical name is its LogicalMetadataKey metadata.
 func LogicalOf(physical string) string {
 	if i := strings.LastIndexByte(physical, '~'); i >= 0 {

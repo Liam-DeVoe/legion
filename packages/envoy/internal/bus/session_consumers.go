@@ -303,7 +303,7 @@ func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHand
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.
 type SessionConsumerStart struct {
 	// Name is the consumer's name, which a pull of it names (Pull): s-<session id> in the fixed
-	// mode, the session's current session~<nuid> in the fresh mode (session_fresh.go).
+	// mode, the session's current session~<random> in the fresh mode (session_fresh.go).
 	Name string
 	// Created is set when the call created the consumer.
 	Created bool

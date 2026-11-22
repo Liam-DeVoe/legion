@@ -120,7 +120,7 @@ type SessionPull struct {
 // Pull starts pulling consumer name, sessionID's, on the connection, without reading it first: the
 // first Next returns ErrSessionConsumerNotFound when the stream holds no such consumer. name is the
 // one a consumer call answered (SessionConsumerStart.Name): s-<session id> in the fixed mode, the
-// session's current session~<nuid> in the fresh mode, which carries no session id, so the caller
+// session's current session~<random> in the fresh mode, which carries no session id, so the caller
 // names the session for the pull's lines. Pulled messages wait in the pull for Next. Release ends
 // it and hands every one of them back to the server at once; Stop ends it and leaves them, so the
 // server delivers each message it delivered and was not acked for again only once its ack wait
