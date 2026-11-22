@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strings"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -57,10 +59,12 @@ The census's families are every family of the broker's cutover rows: session, di
 daemon/<P>. --family is optional: when any is given, the values must be exactly the rows' families,
 or the census is UNKNOWN, naming each one missing or extra, before it reads or removes anything.
 
-The census reads each --daemon-database store only at the address its daemon's Deployment in
-namespace legion names (its envoy-infra.consumer-names/project, store-database and store-instance
-annotations): the file's URL must name that database and its second line that instance. A store
-whose database does not exist there is gone: the census prints it GONE, removes none of that
+The census reads each --daemon-database store only at the address one source names: its daemon's
+Deployment in namespace legion (its envoy-infra.consumer-names/project, store-database and
+store-instance annotations), or, for a project retired after the cutover, which has none, its entry
+of ConfigMap envoy-operator/envoy-operator-retired-stores (keys <project>.database and
+<project>.instance). The file's URL must name that database and its second line that instance. A
+store whose database does not exist there is gone: the census prints it GONE, removes none of that
 daemon's consumers and prints each LEFT. A store it cannot match or read leaves it UNKNOWN.
 
 settings: --replicas (ENVOY_NATS_REPLICAS), --stream-max-bytes (ENVOY_STREAM_MAX_BYTES),
@@ -84,8 +88,8 @@ type streamsOptions struct {
 // StreamIDWriter reconciles each daemon store's recorded StreamID with the current identity of
 // ENVOY_NOTIFICATIONS, which it reads on conn, the census's own operator connection. Its stores
 // are one for each daemonDatabases <P>=<file> entry, and each family daemon/<P> must be one of
-// them. It reads a store only at the address the daemon's Deployment names (deployments;
-// DaemonStoreDatabaseAnnotation, DaemonStoreInstanceAnnotation), and writes the identity where
+// them. It reads a store only at the address its one source names (deployments: the daemon's
+// Deployment, or a retired project's entry of RetiredStoresConfigMap), and writes the identity where
 // the store's differs. A store whose database the server answers does not exist is gone, and a
 // store it cannot match, reach or read is unreconciled; while any store is unreconciled, it writes
 // nothing. What it did is its StreamIDResult, which places each of its stores, and so each daemon
@@ -152,8 +156,9 @@ func (r StreamIDResult) Covers(families []string) error {
 // From, and now records To.
 type StreamIDChange struct{ Project, From, To string }
 
-// GoneStore is a store confirmed gone: daemon/<Project>'s Deployment names its database Database
-// on the Cloud SQL instance Instance, the operator's --daemon-database file states the instance
+// GoneStore is a store confirmed gone: daemon/<Project>'s one source of its address (its Deployment,
+// or its entry of RetiredStoresConfigMap) names its database Database on the Cloud SQL instance
+// Instance, the operator's --daemon-database file states the instance
 // StatedInstance (a store is gone only when the two are equal, and both are printed so a reader
 // sees what was compared), and the server answered Answer, that the database does not exist
 // (SQLSTATE 3D000).
@@ -181,18 +186,45 @@ const (
 	DaemonStoreInstanceAnnotation = "envoy-infra.consumer-names/store-instance"
 )
 
-// DaemonDeployment is one Deployment in the daemons' namespace: its name and annotations.
+// The retired projects' stores as the deployment renders them: a Legion project retired after the
+// fresh-name cutover runs no Deployment, and its cutover row (daemon/<project key>) stays, so the
+// deployment renders its store's address in ConfigMap RetiredStoresConfigMap of namespace
+// RetiredStoresNamespace, the namespace of the accepted minters' ConfigMap: one pair of data keys
+// for each retired project, <project key>.database (RetiredStoreDatabaseSuffix), the store's
+// database name, and <project key>.instance (RetiredStoreInstanceSuffix), the connection name of
+// the Cloud SQL instance that holds it. The readers of the daemon stores read it with the same
+// credential as the Deployments, so a retired project's store is read, and found gone, at that
+// address.
+const (
+	RetiredStoresNamespace     = AcceptedMintersNamespace
+	RetiredStoresConfigMap     = "envoy-operator-retired-stores"
+	RetiredStoreDatabaseSuffix = ".database"
+	RetiredStoreInstanceSuffix = ".instance"
+)
+
+// DaemonDeployment is one source of a daemon store's address: a Deployment in the daemons'
+// namespace, by its name and annotations, or, Retired, one retired project's entry of ConfigMap
+// RetiredStoresConfigMap, named by its project key, with its keys read as the annotations a
+// Deployment carries (KubeDaemonDeployments).
 type DaemonDeployment struct {
 	Name        string
 	Annotations map[string]string
+	Retired     bool
 }
 
-// DaemonDeployments lists the Deployments of the daemons' namespace.
+// DaemonDeployments lists the sources of the daemon stores' addresses.
 type DaemonDeployments func(ctx context.Context) ([]DaemonDeployment, error)
 
-// KubeDaemonDeployments lists the Deployments of DaemonNamespace through client, all of them in
-// one list. A list the API server refuses or does not answer is its error, which fails the
-// census's readers of the daemon stores, and the census is UNKNOWN.
+// KubeDaemonDeployments is the one reader of the daemon stores' addresses, which every reader of a
+// daemon store shares (the census's readers, cleanup --gone, status and enroll). Through client it
+// lists the Deployments of DaemonNamespace, all of them in one list, and then each retired
+// project's entry of ConfigMap RetiredStoresConfigMap, in the order of their
+// project keys: Retired, named by its project key and annotated with it (DaemonProjectAnnotation)
+// and with each of its two keys present (DaemonStoreDatabaseAnnotation,
+// DaemonStoreInstanceAnnotation), so an entry missing a key reads as one missing that annotation,
+// which the readers refuse naming the key. A ConfigMap that does not exist holds no retired project.
+// A list or read the API server refuses or does not answer, and a key of the ConfigMap of neither
+// form, are its error, which fails the readers of the daemon stores, and the census is UNKNOWN.
 func KubeDaemonDeployments(client kubernetes.Interface) DaemonDeployments {
 	return func(ctx context.Context) ([]DaemonDeployment, error) {
 		list, err := client.AppsV1().Deployments(DaemonNamespace).List(ctx, metav1.ListOptions{})
@@ -202,6 +234,32 @@ func KubeDaemonDeployments(client kubernetes.Interface) DaemonDeployments {
 		deployments := make([]DaemonDeployment, len(list.Items))
 		for i, d := range list.Items {
 			deployments[i] = DaemonDeployment{Name: d.Name, Annotations: d.Annotations}
+		}
+		where := "ConfigMap " + RetiredStoresNamespace + "/" + RetiredStoresConfigMap
+		retired, err := client.CoreV1().ConfigMaps(RetiredStoresNamespace).Get(ctx, RetiredStoresConfigMap, metav1.GetOptions{})
+		switch {
+		case apierrors.IsNotFound(err):
+			return deployments, nil
+		case err != nil:
+			return nil, fmt.Errorf("read %s: %w", where, err)
+		}
+		entries := map[string]map[string]string{}
+		for key, value := range retired.Data {
+			project, annotation := strings.TrimSuffix(key, RetiredStoreDatabaseSuffix), DaemonStoreDatabaseAnnotation
+			if project == key {
+				project, annotation = strings.TrimSuffix(key, RetiredStoreInstanceSuffix), DaemonStoreInstanceAnnotation
+			}
+			if project == key || project == "" {
+				return nil, fmt.Errorf("%s holds key %q, of neither form <project>%s nor <project>%s, so no retired project's store is read",
+					where, key, RetiredStoreDatabaseSuffix, RetiredStoreInstanceSuffix)
+			}
+			if entries[project] == nil {
+				entries[project] = map[string]string{DaemonProjectAnnotation: project}
+			}
+			entries[project][annotation] = value
+		}
+		for _, project := range slices.Sorted(maps.Keys(entries)) {
+			deployments = append(deployments, DaemonDeployment{Name: project, Annotations: entries[project], Retired: true})
 		}
 		return deployments, nil
 	}
@@ -215,8 +273,8 @@ var ErrNoStoreWriter = errors.New("this build passes the census no writer of the
 // FreshNames reads the fresh consumer names the selection records name, on conn, from each store
 // (FreshNamesRead): for the listeners' durables, Dispatch's (from the database at
 // dispatchDatabaseFile) and each daemon's (daemonDatabases' <P>=<file> entries, each read at the
-// address its Deployment names, as StreamIDWriter reads it). A store it cannot read is its error,
-// and so is a daemon store it cannot match with its Deployment; a daemon store whose database is
+// address its one source names, as StreamIDWriter reads it). A store it cannot read is its error,
+// and so is a daemon store it cannot match with its source; a daemon store whose database is
 // gone holds no names, and the reader names that daemon's consumers instead (FreshNamesRead.Gone).
 // It is consumernames.RecordedFreshNames, whose package imports this one, so cmd/envoy-infra
 // passes it in.
@@ -358,8 +416,9 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			// The fresh names are read by streams.Census itself, after its phase and convert checks
 			// and its barrier on the selection bucket, so a record written before the barrier is
 			// read: with no reader, or one that cannot read a store, the census is UNKNOWN and
-			// removes nothing. The daemons' Deployments, which both readers of the daemon stores
-			// check each store's address against, are listed with the hold's own Kubernetes client.
+			// removes nothing. The daemons' Deployments and the retired projects' entries, which both
+			// readers of the daemon stores check each store's address against, are read with the
+			// hold's own Kubernetes client.
 			deployments := KubeDaemonDeployments(op.Hub.Client)
 			barriers := map[string]uint64{}
 			r, err := streams.Census(ctx, nc, streams.CensusInput{
@@ -477,7 +536,7 @@ func leftBy(r streams.Report, barriers map[string]uint64, err error) error {
 
 // reconcileStreamIDs has stores bring every daemon store's StreamID to ENVOY_NOTIFICATIONS'
 // current identity, after the census's complete listing and its phase and convert checks, each
-// store read at the address its Deployment names (deployments). Each store it changed is printed
+// store read at the address its one source names (deployments). Each store it changed is printed
 // as `CHANGED daemon/<P>: stream_id "old" -> "new"` and named in the census's done entry as
 // stream_id.daemon/<P>; each store gone as `GONE daemon/<P>: database <db> on instance <instance>
 // (the operator's file states <instance>): <answer>`, named as gone.daemon/<P> with the text after
