@@ -64,12 +64,6 @@ func TestMain(m *testing.M) {
 		if stack := os.Getenv(testGhStackEnv); stack != "" {
 			ghStackBinary, ghStackOwner = stack, os.Getuid()
 		}
-		// A test's stand-in for gh-stack's PATH, which the test owns, in place of the image's
-		// root-owned /opt/legion/gh-stack-bin, /opt/legion/bin and /usr/bin. Only this test binary
-		// reads the variable; the legion binary has the image's alone.
-		if path := os.Getenv(testGhStackPathEnv); path != "" {
-			ghStackPath, ghStackOwner = filepath.SplitList(path), os.Getuid()
-		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())

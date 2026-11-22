@@ -192,31 +192,16 @@ remote line and setting of the working directory route to, and is refused where 
 two. gh-stack hands `--remote`, branches and other values to `git fetch` and `git push`, where
 one that starts with `-` is an option of git's own (`--upload-pack=<command>` runs that
 command), so every flag is read against the pinned release's, and an unknown flag or command,
-`--`, a value that starts with `-`, a `--remote` that names no listed remote and a remote whose
-name starts with `-` are refused. What gh-stack's git reads of the repository is held the same
-way. Every `git remote -v` line, fetch and push, must be an https `github.com` `OWNER/REPO` URL,
-since a `<transport>::` URL runs a program and a path or another host is no repository the call
-was routed by. Every key the repository's configuration files set must be on an allowlist of
-settings that run no program and move no fetch or push (a clone's own, a Legion workspace's,
-gh-stack's, and everyday ones such as `user.name` and `pull.rebase`), any other key refused,
-and a `branch.*.pushRemote`, `remote.pushDefault`, `branch.*.remote` or `gh-stack.remote`
-setting must name a listed remote, not `.`. Branch names from gh-stack's stack file that start
-with `-` or fail `git check-ref-format`, a head or base there that is no commit id, and a local
-branch whose name starts with `-` are refused. `submit` without `--auto` is refused, since its
-editor writes pull request text no guard reads, and so are `alias` and `feedback`. `submit` and
-`link` must find one repository, the one their pushes went to, and hand the guard the pull
-request template they would post. Its update check, which reads github/gh-stack's releases with
-the call's token, is off for every call.
-gh-stack runs with `PATH` set to `/opt/legion/gh-stack-bin`, `/opt/legion/bin` and `/usr/bin`
-alone, each root's and writable by no one else, or the call is refused. The first holds the
-image's `git`, `packages/daemon/cmd/gh-stack-git`: it runs a git call only where its argument
-list is one gh-stack starts git with (the calls are generated from the pinned gh-stack's source
-by `packages/daemon/internal/ghstackgit/generate.sh`), none of the names in it starts with `-`
-or is `.` or `..`, and each refspec is the one gh-stack builds of one branch name, whatever
-gh-stack read the names from. It runs `checkout <name>` as `checkout <name> --`, so git never
-reads the name as a path, and then runs `/opt/legion/bin/git` with `PATH` at the other two
-directories, so the pre-push guard still runs and finds the image's git. It exits 125 where it
-refuses a call, a code git itself does not use.
+`--`, a value that starts with `-` and a `--remote` that names no listed remote are refused.
+`submit` without `--auto` is refused, since its editor writes pull request text no guard reads,
+and so are `alias` and `feedback`. `submit` and `link` must find one repository, the one their
+pushes went to, and hand the guard the pull request template they would post. Its update check,
+which reads github/gh-stack's releases with the call's token, is off for every call.
+This reads the call, not the repository: the wrapper is a routing and correctness tool, not a
+boundary against the pod's own agent. A party that can write the pod's `.git` (its
+configuration, hooks, remotes or gh-stack's stack files) can already read the pod's tokens, so
+what gh-stack's git does with such state is out of its scope; the Cipher airlock is to replace
+`legion gh`.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
 (`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form

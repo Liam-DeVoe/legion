@@ -548,11 +548,11 @@ RUN go mod download \
 COPY packages/daemon packages/daemon
 COPY packages/envoy packages/envoy
 WORKDIR /src/packages/daemon
-# The licenses of the Go modules `legion`, `agent-secrets` and gh-stack's git compile in, with the
-# build's CGO_ENABLED (which decides them, with the GOARCH this stage builds for); fails the build
-# when one's license cannot be determined.
+# The licenses of the Go modules `legion` and `agent-secrets` compile in, with the build's CGO_ENABLED
+# (which decides them, with the GOARCH this stage builds for); fails the build when one's license
+# cannot be determined.
 RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
-    ./cmd/legion ./cmd/gh-stack-git github.com/sjawhar/envoy/cmd/cipher
+    ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
@@ -561,7 +561,6 @@ RUN test -n "$LEGION_REVISION" \
     && ldflags="-X main.revision=${LEGION_REVISION}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
     && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion \
-    && CGO_ENABLED=0 go build -o /out/gh-stack-git ./cmd/gh-stack-git \
     && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
 
 # ------------------------------------------------------------------------------------------------
@@ -1115,7 +1114,7 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
     assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion worker image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs, listed in the first section below, carry their terms in /usr/share/doc/<package>/copyright. npm packages installed unmodified carry their own license files beside them: the CodeGraph plugin and its dependencies under /opt/omp-plugins/node_modules, the CodeGraph CLI's dependencies under /opt/codegraph/lib/node_modules, and the language servers under /opt/language-servers/node_modules (their sections below). azure-cli's Python distributions carry their own license files in their *.dist-info directories under /opt/azure-cli/env, where a wheel ships one (azure-cli's sections below)." \
       "Debian packages installed in the image, one per line, each with its terms in /usr/share/doc/<package>/copyright" /in/debian-packages \
-      "Go modules compiled into /opt/legion/bin/legion, /opt/legion/bin/agent-secrets and /opt/legion/gh-stack-bin/git" /in/go-notices \
+      "Go modules compiled into /opt/legion/bin/legion and /opt/legion/bin/agent-secrets" /in/go-notices \
       "npm packages inlined into the pi-envoy plugin, /opt/legion/pi-envoy (also its dist/THIRD_PARTY_NOTICES)" /in/pi-envoy-notices \
       "npm packages inlined into the pi-legion plugin, /opt/legion/pi-legion (also its dist/THIRD_PARTY_NOTICES)" /in/pi-legion-notices \
       "npm packages inlined into the claude-envoy plugin, /opt/legion/claude-envoy (also its dist/THIRD_PARTY_NOTICES)" /in/claude-envoy-notices \
@@ -1218,12 +1217,6 @@ COPY --from=tools /opt/tools/gh /usr/local/bin/gh
 # its own data directory, which in a pod is under the issue's scratch, so the shim links each one
 # there before Oh My Pi starts (podsafety.EnsureGhExtensions, from podsafety.GhExtensionsDir).
 COPY --from=tools /opt/tools/gh-extensions /opt/legion/gh-extensions
-# gh-stack's git: `legion gh stack` runs gh-stack with PATH set to /opt/legion/gh-stack-bin,
-# /opt/legion/bin and /usr/bin alone (cmd/legion's ghStackPath), and this directory's git is
-# packages/daemon/cmd/gh-stack-git: it runs /opt/legion/bin/git, with PATH at the other two, only
-# for an argument list gh-stack starts git with, none of whose names starts with `-`
-# (internal/ghstackgit). Root's, like the rest of /opt/legion.
-COPY --from=go /out/gh-stack-git /opt/legion/gh-stack-bin/git
 # mise, the binary the tools stage installed and checked against MISE_SHA256, so there is no pin of
 # its own here, for the two scripts a role runs that resolve the Oh My Pi pin with `mise where` and
 # `mise x`: scripts/e2e/lib/install-plugin-profile.sh and the skill-scenario rig
@@ -1581,8 +1574,7 @@ ARG GH_STACK_TOOL
 # `gh stack` from a data directory laid out as the shim lays a role's out (a link to
 # /opt/legion/gh-extensions/gh-stack under gh/extensions), and it must print the version ARG
 # GH_STACK_TOOL pins, so an image whose extension gh cannot find or whose binary is another
-# release fails here. gh-stack's git, /opt/legion/gh-stack-bin/git, must run a call gh-stack
-# makes (`git --version`, which prints git's version) and refuse one it does not make. So the three
+# release fails here. So the three
 # absolute paths stay as fixed as they were when git and jj were reached by their own names, and
 # a pod environment can name all three; what has moved is that a push now passes through the git
 # wrapper's hook and a commit through `legion git`. One commit through the PATH's git, in a scratch
@@ -1689,7 +1681,7 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     done; \
     testpg_log="$(stat -c '%u:%g %a %s' /var/run/legion/testpg.log)"; echo "/var/run/legion/testpg.log: $testpg_log"; \
     test "$testpg_log" = "0:0 444 0"; \
-    plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy /opt/legion/gh-extensions /opt/legion/gh-stack-bin \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
+    plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy /opt/legion/gh-extensions \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
     echo "plugin and gh extension files not root's alone: ${plugins:-none}"; test -z "$plugins"; \
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
@@ -1714,10 +1706,6 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     stack="$(XDG_DATA_HOME="$ghdata" XDG_CONFIG_HOME="$ghdata/config" XDG_STATE_HOME="$ghdata/state" XDG_CACHE_HOME="$ghdata/cache" \
       GH_CONFIG_DIR="$ghdata/gh-config" GH_NO_UPDATE_NOTIFIER=1 GH_STACK_NO_UPDATE_NOTIFIER=1 GH_TELEMETRY=0 /usr/local/bin/gh stack --version)"; \
     rm -rf "$ghdata"; echo "gh stack: $stack"; test "$stack" = "gh stack version ${GH_STACK_TOOL##*@}"; \
-    shimmed="$(PATH=/opt/legion/gh-stack-bin:/opt/legion/bin:/usr/bin git --version)"; echo "gh-stack's git, a call gh-stack makes: $shimmed"; \
-    case "$shimmed" in "git version "*) ;; *) exit 1 ;; esac; \
-    shimmed="$(PATH=/opt/legion/gh-stack-bin:/opt/legion/bin:/usr/bin git --exec=x 2>&1 || true)"; echo "gh-stack's git, a call it does not make: $shimmed"; \
-    case "$shimmed" in *"is no git call gh-stack"*) ;; *) exit 1 ;; esac; \
     npm="$(command -v npm)"; echo "npm: $npm"; test "$npm" = /usr/local/bin/npm; \
     DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-check HOME=/tmp \
       /opt/legion/pi-envoy/bin/dispatch --help > /tmp/dispatch-help; \

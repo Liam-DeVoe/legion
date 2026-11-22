@@ -237,12 +237,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	if err == nil && target.command == "stack" {
-		// `gh stack` runs the image's gh-stack itself, not through gh, with the image's own PATH,
-		// whose git is the shim (gh_stack.go, gh_stack_shim.go).
+		// `gh stack` runs the image's gh-stack itself, not through gh (gh_stack.go).
 		err = ghStackBinaryIsTheImages()
-		if err == nil {
-			err = ghStackPathIsTheImages()
-		}
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
@@ -349,10 +345,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.command == "stack" {
 		// The image's gh-stack, with what gh would hand it: its arguments after `stack`, and
 		// GH_EXTENSION=1, which tells it gh ran it (cli/cli v2.98.0 pkg/cmd/extension/manager.go,
-		// Dispatch); and ghStackPath, so every git it starts is the image's gh-stack git.
+		// Dispatch).
 		program, programArgs = ghStackBinary, args[1:]
 		set["GH_EXTENSION"], set[leakguard.RunByRealGhVar] = "1", ghStackBinary
-		set["PATH"] = strings.Join(ghStackPath, ":")
 	}
 	// A call no private-name pass read runs no pager program: such a program runs with this call's
 	// token directory and could write what that pass never read. Its pager is cat, which gh reads

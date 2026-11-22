@@ -8,18 +8,12 @@ body: |-
     0.3.0's own, with its command's name first, because gh-stack hands --remote, branches and
     other values to `git fetch` and `git push`, where a value that starts with `-` would run a
     command: such a value, an unknown flag or command, a flag before the command's name, a help
-    given a value, `--`, and a --remote that names no listed remote are refused. What gh-stack's
-    git reads of the repository is held the same way: every remote must be an https github.com
-    OWNER/REPO URL, every key the repository's git configuration sets must be on an allowlist of
-    settings that run no program and move no fetch or push, a push setting must name a listed
-    remote, and branch names from gh-stack's stack file that start with `-` or fail
-    `git check-ref-format` are refused. `gh stack submit` needs --auto, since its editor writes
-    pull request text no guard reads, and the pull request template `submit` and `link` post
-    goes to the leak guard. `gh stack alias` and `gh stack feedback` are refused. gh-stack runs
-    with PATH set to root-owned image directories alone, whose `git`,
-    /opt/legion/gh-stack-bin/git, runs a git call only where it is one gh-stack 0.3.0 makes, with
-    no name in it that starts with `-` or is `.`, whatever gh-stack read the name from, and runs
-    `git checkout <name>` as `git checkout <name> --`, so git never reads the name as a path.
+    given a value, `--`, and a --remote that names no listed remote are refused. `gh stack
+    submit` needs --auto, since its editor writes pull request text no guard reads, and the pull
+    request template `submit` and `link` post goes to the leak guard. `gh stack alias` and
+    `gh stack feedback` are refused. It reads the call, not the repository's own state, which a
+    party that can write the pod's `.git` controls and that party can already read the pod's
+    tokens.
 time: 2026-11-22T08:34:40Z
 custom:
     Issue: pr4975

@@ -21,6 +21,13 @@ import (
 // directory, and no gh alias, ever runs in its place. The rest of this file is how the call is
 // read before it runs.
 //
+// What this reads is the call: its arguments, GH_REPO and the working directory's remotes, so
+// that the call runs with the token of the one owner it acts on, and gh-stack's arguments reach
+// git as gh-stack means them. It is a routing and correctness tool, not a boundary against the
+// pod's own agent: a party that can write the pod's `.git` (its configuration, hooks, gh-stack's
+// stack files) can already read the pod's tokens, so this reads none of that state, and the
+// Cipher airlock is to replace `legion gh`.
+//
 // gh-stack v0.3.0 builds its one API client for the repository go-gh's repository.Current
 // answers (internal/config's Repo and GitHubClient): GH_REPO where set, else one of the working
 // directory's github.com remotes or the repository a gh-resolved marker names. None of its flags
@@ -40,8 +47,7 @@ import (
 // ghStackCommands, compiled from the pinned release's source, and an unknown one is refused; a
 // flag's value that starts with `-` is refused; --remote must name a remote `git remote -v`
 // lists; and `--`, after which gh-stack would take an argument that starts with `-` as a branch,
-// is refused. What that git reads of the repository itself, its configuration, its remotes and
-// gh-stack's stack file, is read in gh_stack_git.go.
+// is refused.
 //
 // The text gh-stack writes to GitHub is the titles and bodies of the pull requests `submit` and
 // `link` create: the one commit's subject and body or the branch's name, and the working tree's
@@ -126,14 +132,7 @@ func ghStackTarget(args []string, env map[string]string, remotes func() ([]ghRem
 	if err != nil {
 		return ghTarget{}, err
 	}
-	names, err := ghStackRemotes(call, lines)
-	if err != nil {
-		return ghTarget{}, err
-	}
-	if err := ghStackGitConfigRefusal(names); err != nil {
-		return ghTarget{}, err
-	}
-	if err := ghStackFileRefusal(); err != nil {
+	if err := ghStackRemoteIsListed(call, lines); err != nil {
 		return ghTarget{}, err
 	}
 	// The routing counts GH_REPO, where set, and every remote line and marker alike: gh-stack's
@@ -165,6 +164,23 @@ func ghStackTarget(args []string, env map[string]string, remotes func() ([]ghRem
 		return ghTarget{}, err
 	}
 	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: "stack", files: files}, nil
+}
+
+// ghStackRemoteIsListed refuses a --remote value that names no remote `git remote -v` lists: a
+// URL or a path there would push outside every repository the call is routed by.
+func ghStackRemoteIsListed(call ghStackCall, lines []ghRemote) error {
+	var names []string
+	for _, line := range lines {
+		if !line.marker {
+			names = append(names, line.name)
+		}
+	}
+	for _, remote := range call.remotes {
+		if !slices.Contains(names, remote) {
+			return fmt.Errorf("`gh stack` gives --remote %q, which is no remote `git remote -v` lists here (%s), so it sends nothing; name one of them", remote, strings.Join(slices.Compact(slices.Sorted(slices.Values(names))), ", "))
+		}
+	}
+	return nil
 }
 
 // ghStackCall is what readGhStackCall read of a `gh stack` call: its command's name (empty for
