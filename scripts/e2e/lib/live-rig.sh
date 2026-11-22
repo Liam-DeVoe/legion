@@ -57,17 +57,18 @@ rig_repo=''
 rig_listener_src=''
 live_rig_status=0
 
+# live_rig_cleanup prints the run's last line through lib/run-verdict.sh, which
+# live-daemon-proof.sh sources: PASS only for a run that reached run_end, live_rig_proof's last
+# statement, so a run a signal ended reads FAIL.
 live_rig_cleanup() {
   local status=$?
   if [ -n "$rig_listener_src" ] && [ -n "$rig_repo" ]; then
     git -C "$rig_repo" worktree remove --force "$rig_listener_src" >/dev/null 2>&1 || true
   fi
   rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
-    echo "$proof_label e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "$proof_label e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "$proof_label e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "$proof_label e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 
 live_rig_proof() {
@@ -206,4 +207,5 @@ EOF
   fi
   note "the driver exited $live_rig_status"
   pass
+  run_end
 }

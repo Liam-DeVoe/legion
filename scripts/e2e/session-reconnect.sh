@@ -134,7 +134,8 @@ run_one() {
   local tree=$1 expect=$2 run=$3
   (
     set -e
-    root=$tree live_rig_proof "session reconnect $run${base_sha:+ at ${base_sha:0:12}}" "session-reconnect-$run" "^$test_name\$/^$run\$" "$evidence_root/$run" "$expect"
+    root=$tree
+    live_rig_proof "session reconnect $run${base_sha:+ at ${base_sha:0:12}}" "session-reconnect-$run" "^$test_name\$/^$run\$" "$evidence_root/$run" "$expect"
   )
 }
 
@@ -187,11 +188,9 @@ control_cleanup() {
     git -C "$root" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
   fi
   [ -z "$base_work" ] || rm -rf "$base_work"
-  if [ "$status" -eq 0 ]; then
-    echo "session reconnect negative control: PASS in $((SECONDS - started))s (evidence: $evidence_root)"
-  else
-    echo "session reconnect negative control: FAIL at $check after $((SECONDS - started))s (evidence: $evidence_root)" >&2
-  fi
+  run_verdict "$status" \
+    "session reconnect negative control: PASS in $((SECONDS - started))s (evidence: $evidence_root)" \
+    "session reconnect negative control: FAIL at $check after $((SECONDS - started))s (evidence: $evidence_root)"
 }
 
 # The rig's heartbeat seam over the base's plugin: the head's own seam (ENVOY_HEARTBEAT_STOP_AFTER_MS
@@ -305,3 +304,4 @@ case " ${runs[*]} " in
   *) note "no stopped-heartbeat run was made, so this control held nothing of its own: it names the outcomes above" ;;
 esac
 pass
+run_end

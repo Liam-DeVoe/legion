@@ -40,6 +40,8 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 . "$root/scripts/e2e/lib/transcript.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 # The nats-server the run installs when the caller names none: lib/live-daemon-proof.sh's pin, the
 # hub's v2.15.1, the version packages/envoy/go.mod pins. The daemon refuses a nats-server below
@@ -72,6 +74,8 @@ pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 refuse() { echo "FAIL $check: $*" >&2; exit 2; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
+# cleanup prints the run's last line through lib/run-verdict.sh: PASS only for a run that reached
+# run_end, the script's last statement, so a run a signal ended reads FAIL.
 cleanup() {
   local status=$?
   set +e
@@ -84,11 +88,9 @@ cleanup() {
       echo "could not drop the run's database $database" >&2
   fi
   [ -z "$work" ] || rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
-    echo "rollback notices e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "rollback notices e2e: FAIL at $check after $((SECONDS - started))s (evidence: ${evidence:-none})" >&2
-  fi
+  run_verdict "$status" \
+    "rollback notices e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "rollback notices e2e: FAIL at $check after $((SECONDS - started))s (evidence: ${evidence:-none})"
 }
 trap cleanup EXIT
 
@@ -226,3 +228,4 @@ pass
 begin "roll forward"
 run_driver forward "$work/new.test" TestARolledForwardDaemonDeliversTheNoticesTheRollbackLeftLive
 pass
+run_end

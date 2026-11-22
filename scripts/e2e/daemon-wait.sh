@@ -114,11 +114,9 @@ control_cleanup() {
     git -C "$root" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
   fi
   [ -z "$base_work" ] || rm -rf "$base_work"
-  if [ "$status" -eq 0 ]; then
-    echo "daemon wait negative control: PASS in $((SECONDS - started))s (evidence: $base_evidence)"
-  else
-    echo "daemon wait negative control: FAIL at $check after $((SECONDS - started))s (evidence: $base_evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "daemon wait negative control: PASS in $((SECONDS - started))s (evidence: $base_evidence)" \
+    "daemon wait negative control: FAIL at $check after $((SECONDS - started))s (evidence: $base_evidence)"
 }
 
 negative_control() {
@@ -179,6 +177,7 @@ negative_control() {
   note "$line"
   note "${detail#"${detail%%[![:space:]]*}"}"
   pass
+  run_end
 }
 
 if [ -z "$base_commit" ]; then
