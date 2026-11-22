@@ -167,6 +167,9 @@ type restoreRun struct {
 	barrier bool
 	// left is what this run changed, which a stop entry names (restoreStop).
 	left *restoreLeft
+	// gone is each daemon family whose store the census's rule found gone, to why
+	// (daemonGoneText): restore leaves it out (readDaemonStores).
+	gone map[string]string
 }
 
 // restoreReach opens a restore's reach, which records what it changes in left.
@@ -188,8 +191,70 @@ func (r *run) restoreReach(ctx context.Context, left *restoreLeft) (*restoreRun,
 		return nil, err
 	}
 	r.read("the info of " + notifications + " and the broker's cutover rows")
-	return &restoreRun{r: r, nc: nc, records: records, streamID: selection.StreamIdentity(info),
-		lastSeq: info.State.LastSeq, cutovers: cutovers, stores: map[string]familyStore{}, left: left}, nil
+	rr := &restoreRun{r: r, nc: nc, records: records, streamID: selection.StreamIdentity(info),
+		lastSeq: info.State.LastSeq, cutovers: cutovers, stores: map[string]familyStore{}, left: left, gone: map[string]string{}}
+	if err := rr.readDaemonStores(ctx); err != nil {
+		return nil, err
+	}
+	return rr, nil
+}
+
+// readDaemonStores reads, by the census's rule for the daemon stores (daemonStoresByRule), the
+// store of each daemon family of the restore that a --daemon-database file names, at exactly the
+// address its project's one source names, before restore reads or writes anything else; a store
+// the rule reads is the run's database of its family. A store the rule finds gone does not block
+// the rollback: restore leaves its family out (families, live), writes nothing there, leaves its
+// broker cutover row as it is, which cleanup --gone's removal of its consumers follows, and names
+// it in its output and its done entry (goneOutputs). A store the rule leaves unreconciled is
+// UNKNOWN, naming each. A daemon family no file names is left to the store's open (store).
+func (rr *restoreRun) readDaemonStores(ctx context.Context) error {
+	var named []string
+	for _, family := range rr.families() {
+		if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
+			if _, ok := rr.r.o.daemonDatabase(project); ok {
+				named = append(named, family)
+			}
+		}
+	}
+	if len(named) == 0 {
+		return nil
+	}
+	stores, err := rr.r.daemonStoresByRule(ctx, named)
+	if err != nil {
+		return err
+	}
+	var unreconciled []string
+	for _, s := range stores {
+		family := daemonFamily(s.project)
+		switch {
+		case s.unreconciled != "":
+			unreconciled = append(unreconciled, fmt.Sprintf("%s's store: %s", family, s.unreconciled))
+		case s.gone != nil:
+			rr.gone[family] = daemonGoneText(*s.gone)
+		}
+	}
+	if len(unreconciled) > 0 {
+		return unknownf(nil, "the daemon stores, by the census's rule for them, so restore writes nothing: %s", strings.Join(unreconciled, "; "))
+	}
+	rr.r.read("the daemon stores, each at the address its one source names")
+	for _, family := range slices.Sorted(maps.Keys(rr.gone)) {
+		fmt.Fprintf(rr.r.stdout, "restore: %s: store gone: %s; restore writes nothing there and leaves its cutover row as it is\n", family, rr.gone[family])
+	}
+	return nil
+}
+
+// live are names, those of a saved set, but each of a family whose store is gone (gone).
+func (rr *restoreRun) live(names []restoreSetName) []restoreSetName {
+	return slices.DeleteFunc(slices.Clone(names), func(n restoreSetName) bool { return rr.gone[n.Family] != "" })
+}
+
+// goneOutputs adds to a done entry's outputs each daemon store restore left out as gone, under
+// gone.<family>.
+func (rr *restoreRun) goneOutputs(outputs map[string]string) map[string]string {
+	for family, why := range rr.gone {
+		outputs["gone."+family] = why
+	}
+	return outputs
 }
 
 // store is family's store. The selection bucket is read only after the hold's bucket barrier on
@@ -309,7 +374,7 @@ func (rr *restoreRun) delete(ctx context.Context, set restoreSetName, name strin
 // families are the families a restore covers, sorted: the session consumers' and the listener
 // durables' (the selection bucket), Dispatch's when --dispatch-database-file names its store, each
 // daemon --daemon-database names, and every family a broker cutover row names, whose store must
-// then be named.
+// then be named; but each daemon family whose store the census's rule found gone (gone).
 func (rr *restoreRun) families() []string {
 	set := map[string]bool{familySession: true}
 	if rr.r.o.dispatchDatabaseFile != "" {
@@ -321,6 +386,7 @@ func (rr *restoreRun) families() []string {
 	for _, row := range rr.cutovers {
 		set[row.Family] = true
 	}
+	maps.DeleteFunc(set, func(family string, _ bool) bool { return rr.gone[family] != "" })
 	return slices.Sorted(maps.Keys(set))
 }
 
@@ -704,10 +770,11 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 	if err != nil {
 		return err
 	}
+	names := rr.live(set.Names)
 	r.read(fmt.Sprintf("the saved set of %d names", len(set.Names)))
 	var unresolved []string
 	phases := map[string]int{}
-	for _, name := range set.Names {
+	for _, name := range names {
 		phase, err := rr.settle(ctx, name, name.Start)
 		if err != nil {
 			return err
@@ -717,7 +784,7 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 			unresolved = append(unresolved, name.Family+"/"+name.Logical)
 		}
 	}
-	r.read(fmt.Sprintf("the record and target of each of the %d saved names", len(set.Names)))
+	r.read(fmt.Sprintf("the record and target of each of the %d saved names", len(names)))
 	op, err := r.operatorHub(ctx)
 	if err != nil {
 		return err
@@ -727,14 +794,14 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 		return hubUnknown(err, "the hub's restart")
 	}
 	r.read("the declared servers")
-	outputs := map[string]string{"names": strconv.Itoa(len(set.Names)), "no_start": strings.Join(unresolved, " ")}
+	outputs := rr.goneOutputs(map[string]string{"names": strconv.Itoa(len(names)), "no_start": strings.Join(unresolved, " ")})
 	for _, server := range declared {
 		outputs[restoreServerID+server.Pod] = server.Varz.ServerID
 	}
 	if err := a.done(ctx, outputs); err != nil {
 		return err
 	}
-	fmt.Fprintf(r.stdout, "restore --prepare: %d names: %d kept, %d source_deleted, %d with no start\n", len(set.Names),
+	fmt.Fprintf(r.stdout, "restore --prepare: %d names: %d kept, %d source_deleted, %d with no start\n", len(names),
 		phases[restoreKept], phases[restoreSourceDeleted], phases[restoreNoStart])
 	for _, name := range unresolved {
 		fmt.Fprintf(r.stdout, "  %s has no start: give it one with restore --key <K> --from <seq> --hold %s\n", name, r.o.holdID)
@@ -897,8 +964,8 @@ func (r *run) restoreKeyAdmitted(ctx context.Context, a *admission, m member, le
 	if err != nil {
 		return err
 	}
-	if err := a.done(ctx, map[string]string{"family": name.Family, "logical": name.Logical, "target": name.Target,
-		"start": formatSeq(r.o.from), "phase": phase}); err != nil {
+	if err := a.done(ctx, rr.goneOutputs(map[string]string{"family": name.Family, "logical": name.Logical, "target": name.Target,
+		"start": formatSeq(r.o.from), "phase": phase})); err != nil {
 		return err
 	}
 	fmt.Fprintf(r.stdout, "restore --key: %s/%s restores %s at %d (%s)\n", name.Family, name.Logical, name.Target, r.o.from, phase)
@@ -920,6 +987,9 @@ func (rr *restoreRun) keyName(ctx context.Context, m member) (restoreSetName, er
 		return restoreSetName{}, fmt.Errorf("%s/%s is no name restore --prepare saved", m.Family, m.Logical)
 	}
 	name := set.Names[i]
+	if why := rr.gone[name.Family]; why != "" {
+		return restoreSetName{}, fmt.Errorf("%s/%s is of %s, whose store is gone (%s): restore writes nothing there", name.Family, name.Logical, name.Family, why)
+	}
 	st, err := rr.store(ctx, name.Family)
 	if err != nil {
 		return restoreSetName{}, err
@@ -979,8 +1049,9 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 		return err
 	}
 	r.read("the saved set and the server ids restore --prepare recorded")
+	names := rr.live(set.Names)
 	var unresolved []string
-	for _, name := range set.Names {
+	for _, name := range names {
 		st, err := rr.store(ctx, name.Family)
 		if err != nil {
 			return err
@@ -993,7 +1064,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 			unresolved = append(unresolved, name.Family+"/"+name.Logical)
 		}
 	}
-	r.read(fmt.Sprintf("the record of each of the %d saved names", len(set.Names)))
+	r.read(fmt.Sprintf("the record of each of the %d saved names", len(names)))
 	if len(unresolved) > 0 {
 		return fmt.Errorf("these names have no settled start, so nothing is restarted or created: %s; give each its start with restore --key <K> --from <seq> --hold %s",
 			strings.Join(unresolved, ", "), r.o.holdID)
@@ -1022,7 +1093,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 	r.read("the hub's restart, its proof and its barrier")
 	var creates []restoreSetName
 	fence := false
-	for _, name := range set.Names {
+	for _, name := range names {
 		create, deleted, err := rr.check(ctx, name)
 		if err != nil {
 			return err
@@ -1032,7 +1103,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 			creates = append(creates, name)
 		}
 	}
-	r.read(fmt.Sprintf("the record and live target of each of the %d saved names after the restart", len(set.Names)))
+	r.read(fmt.Sprintf("the record and live target of each of the %d saved names after the restart", len(names)))
 	if fence {
 		// A target this run saw present after its restart, and deleted: its server-side writer
 		// may still write until its server restarts once more.
@@ -1050,15 +1121,18 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 			return err
 		}
 	}
-	outputs := map[string]string{"names": strconv.Itoa(len(set.Names)), "created": strconv.Itoa(len(creates))}
+	outputs := rr.goneOutputs(map[string]string{"names": strconv.Itoa(len(names)), "created": strconv.Itoa(len(creates))})
 	for _, server := range after {
 		outputs[restoreServerID+server.Pod] = server.Varz.ServerID
 	}
 	if err := a.done(ctx, outputs); err != nil {
 		return err
 	}
-	fmt.Fprintf(r.stdout, "restore --finish: %d names restored, %d targets created at their starts; every family reads %s\n",
-		len(set.Names), len(creates), selection.CutoverRolledBack)
+	every := "every family reads " + selection.CutoverRolledBack
+	if len(rr.gone) > 0 {
+		every += "; " + strings.Join(slices.Sorted(maps.Keys(rr.gone)), ", ") + ", whose stores are gone, left as they are"
+	}
+	fmt.Fprintf(r.stdout, "restore --finish: %d names restored, %d targets created at their starts; %s\n", len(names), len(creates), every)
 	return nil
 }
 

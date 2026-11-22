@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,8 +17,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
@@ -553,6 +556,103 @@ func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 		require.Equal(t, string(converted), string(repairSentinelValue(t, rig.stack)), "repair-sentinel reproduces the second cutover's sentinel")
 		require.NoError(t, rig.release(repair))
 	})
+}
+
+// restoreDaemonRig is a rig with daemon project rsa's store, rendered with its Deployment and named
+// by a real file (restoreRigOn), whose fixed dispatch consumer a cutover converted, and the rollback
+// hold set. It answers the rig, the rollback hold and rsa's logical name.
+func restoreDaemonRig(t *testing.T) (*restoreRig, string, string) {
+	rig := newRestoreRig(t, daemonFamily("rsa"))
+	const fixed, subject = daemonFixedPrefix + "rsa-dispatch", "notifications.github.rsa"
+	seqs := rig.publish(subject, 3)
+	rig.fixed(restoreFixedConfig(fixed, subject), 1)
+	rig.cutover(restoreConversion{fixed: fixed, start: seqs[1]})
+	return rig, rig.heldHold(holdrecord.WorkflowRollback), fixed
+}
+
+// restore reads each daemon store a --daemon-database file names by the census's rule for the
+// daemon stores, at exactly the address the project's one source names, before it writes
+// anything: a file that reaches another database than the project's Deployment names makes
+// restore --prepare UNKNOWN, naming the file's database and the Deployment's, with no set saved and
+// no record touched. Control, in the same hold: with the Deployment naming the store, restore
+// --prepare plans the name. And 76d0af0d8f's restore, which opens the file's URL with no rule,
+// writes through the file whatever the Deployment names.
+func TestRestoreReadsEachDaemonStoreByTheAddressRule(t *testing.T) {
+	ctx := context.Background()
+	rig, rollback, logical := restoreDaemonRig(t)
+	db := rig.pools[daemonFamily("rsa")]
+	before := rig.record(daemonFamily("rsa"), logical)
+	deployments := rig.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace)
+	setDatabase := func(database string) {
+		t.Helper()
+		rendered, err := deployments.Get(ctx, "legion-daemon-rsa", metav1.GetOptions{})
+		require.NoError(t, err)
+		rendered.Annotations[writerhold.DaemonStoreDatabaseAnnotation] = database
+		_, err = deployments.Update(ctx, rendered, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}
+	setDatabase("daemon_elsewhere")
+
+	code, _, stderr := rig.restore(rollback, "--prepare")
+	require.Equal(t, 2, code, "restore --prepare beside a file for another Deployment's database: %s", stderr)
+	require.Contains(t, stderr, fmt.Sprintf("--daemon-database rsa=<file> reaches database %q, and Deployment legion/legion-daemon-rsa names database %q",
+		db.Config().ConnConfig.Database, "daemon_elsewhere"))
+	_, found, err := readRestoreSet(ctx, rig.records(), rollback)
+	require.NoError(t, err)
+	require.False(t, found, "restore --prepare saved a set beside a store the rule does not read")
+	require.Equal(t, before, rig.record(daemonFamily("rsa"), logical), "restore --prepare touched rsa's record")
+
+	setDatabase(db.Config().ConnConfig.Database)
+	code, _, stderr = rig.restore(rollback, "--prepare")
+	require.Zero(t, code, "control: restore --prepare with the Deployment naming the store: %s", stderr)
+	require.NotNil(t, rig.record(daemonFamily("rsa"), logical).Restore, "control: restore --prepare planned rsa's name")
+}
+
+// A daemon store the census's rule finds gone (SQLSTATE 3D000 at the address its Deployment names)
+// does not block a rollback: restore leaves that family out, writes nothing there, leaves its
+// broker cutover row as it is (cleanup --gone removes its consumers), and names it in its output
+// and in the done entries of restore --prepare and restore --finish; the other families roll back
+// and the hold is released. Control: 76d0af0d8f's restore, which reads the gone store's records
+// and stops on its 3D000.
+func TestRestoreSkipsAGoneDaemonStore(t *testing.T) {
+	ctx := context.Background()
+	rig, rollback, logical := restoreDaemonRig(t)
+	dropped := censusDroppedDatabase()
+	rig.censusDeploy(censusDeployment("GONE", dropped, censusInstance))
+	gone := censusStoreFileFor(t, "GONE", rig.pools[daemonFamily("rsa")], dropped, censusInstance)
+	rig.flags = append(rig.flags, "--daemon-database", gone)
+	// The real env opens the file's URL; the stack's env hands over h.dbs, so it gets a pool on the
+	// same URL, which 76d0af0d8f's restore reads.
+	raw, err := os.ReadFile(strings.TrimPrefix(gone, "GONE="))
+	require.NoError(t, err)
+	url, _, _ := strings.Cut(string(raw), "\n")
+	gonePool, err := pgxpool.New(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(gonePool.Close)
+	rig.mu.Lock()
+	rig.dbs[daemonFamily("GONE")] = gonePool
+	rig.mu.Unlock()
+	_, err = rig.records().PutCutover(ctx, daemonFamily("GONE"), selection.CutoverDone, rollback)
+	require.NoError(t, err)
+	goneWords := "restore: " + daemonFamily("GONE") + ": store gone: database " + dropped + " on instance " + censusInstance
+
+	code, stdout, stderr := rig.restore(rollback, "--prepare")
+	require.Zero(t, code, "restore --prepare beside a gone store: %s%s", stdout, stderr)
+	require.Contains(t, stdout, goneWords)
+	require.Contains(t, rig.lastEntry(rollback, restoreCommandPrepare).Outputs["gone."+daemonFamily("GONE")], "database "+dropped)
+	code, stdout, stderr = rig.restore(rollback, "--finish")
+	require.Zero(t, code, "restore --finish beside a gone store: %s%s", stdout, stderr)
+	require.Contains(t, stdout, goneWords)
+	require.Contains(t, rig.lastEntry(rollback, restoreCommandFinish).Outputs["gone."+daemonFamily("GONE")], "database "+dropped)
+	row, ok := rig.cutoverRow(daemonFamily("GONE"))
+	require.True(t, ok)
+	require.Equal(t, holdrecord.CutoverRow{Family: daemonFamily("GONE"), State: selection.CutoverDone, HoldID: rollback, HoldGen: row.HoldGen}, row, "restore left the gone family's cutover row as it was")
+	live, ok := rig.cutoverRow(daemonFamily("rsa"))
+	require.True(t, ok)
+	require.Equal(t, selection.CutoverRolledBack, live.State, "the live daemon family rolled back")
+	require.Equal(t, selection.CutoverRolledBack, rig.marker(daemonFamily("rsa")).Cutover)
+	require.Equal(t, logical, rig.record(daemonFamily("rsa"), logical).Current, "rsa's fixed name is restored")
+	require.NoError(t, rig.release(rollback))
 }
 
 // The H5 row's sessions: one whose target expires after restore --finish created it, and one whose
