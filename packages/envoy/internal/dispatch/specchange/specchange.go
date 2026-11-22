@@ -153,7 +153,7 @@ func fromBlock(block Block) (Proposal, []specgraph.Problem, bool) {
 	}
 	if nodes != 1 {
 		if len(problems) == 0 {
-			problems = []specgraph.Problem{{Pos: pos, Node: cmpID(id), Rule: "bad-block", Detail: "bad-block: the block reads as no node of The Spec"}}
+			problems = []specgraph.Problem{{Pos: pos, Node: idOrDash(id), Rule: "bad-block", Detail: "bad-block: the block reads as no node of The Spec"}}
 		}
 		return Proposal{}, problems, false
 	}
@@ -181,7 +181,8 @@ func escape(value string) string {
 	return strings.NewReplacer("&", "&amp;", `"`, "&quot;").Replace(value)
 }
 
-func cmpID(id string) string {
+// idOrDash is id, or "-" for a block that names none, as specgraph names a node of no id.
+func idOrDash(id string) string {
 	if id == "" {
 		return "-"
 	}
