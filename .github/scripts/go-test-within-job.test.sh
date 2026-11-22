@@ -73,9 +73,10 @@ rm -f "$work/go-status"
 check "exits 1, go's status" "$(is "$status" 1)"
 
 echo "case: a job whose limit leaves under 60 s"
-drive JOB_TIMEOUT_MINUTES=2 -- go test ./gcp
+# A 1-minute limit leaves at most 0 s after the 60 s spare however fast the stand-in is read.
+drive JOB_TIMEOUT_MINUTES=1 -- go test ./gcp
 check "fails with exit 1" "$(is "$status" 1)"
-check "says too few seconds are left" "$(contains "$out" '^::error::go-test-within-job.sh: the job has run [0-9]* s of its 2 min, which leaves [0-9-]* s after 60 s for what follows the go test: too few to run it in$')"
+check "says too few seconds are left" "$(contains "$out" '^::error::go-test-within-job.sh: the job has run [0-9]* s of its 1 min, which leaves [0-9-]* s after 60 s for what follows the go test: too few to run it in$')"
 check "and runs no go test" "$(is "$(ran_go)" no)"
 
 echo "case: no JOB_TIMEOUT_MINUTES"
@@ -104,11 +105,25 @@ check "says it runs a go test" "$(contains "$out" 'runs a go test: give it `go t
 check "and runs nothing" "$(is "$(ran_go)" no)"
 
 echo "case: no Runner.Worker among its parents"
+# CI runs this harness under a real Runner.Worker, which the walk would find, so this case runs the
+# wrapper with a stand-in ps first on PATH that reads every process as a bash whose parent is 1.
+mkdir -p "$work/no-worker"
+cat > "$work/no-worker/ps" <<'PS'
+#!/usr/bin/env bash
+case " $* " in
+  *" -o comm= "*) echo bash ;;
+  *" -o ppid= "*) echo 1 ;;
+  *) exit 2 ;;
+esac
+PS
+chmod +x "$work/no-worker/ps"
+rm -f "$work/go-args"
 set +e
-out=$(env PATH="$work/bin:$PATH" JOB_TIMEOUT_MINUTES=32 "$wrapper" go test ./gcp 2>&1)
+out=$(env PATH="$work/no-worker:$work/bin:$PATH" JOB_TIMEOUT_MINUTES=32 "$wrapper" go test ./gcp 2>&1)
 status=$?
 set -e
 check "refuses with exit 2" "$(is "$status" 2)"
 check "says the job's start cannot be read" "$(contains "$out" "no Runner.Worker among this process's parents")"
+check "and runs no go test" "$(is "$(ran_go)" no)"
 
 summary "go-test-within-job.sh"
