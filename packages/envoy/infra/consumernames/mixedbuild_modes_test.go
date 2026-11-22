@@ -27,7 +27,8 @@ import (
 var mixedBuildModesMachine = holdtest.ListenerMachines[2]
 
 // mixedBuildModeStop is the line a fixed-mode listener logs as a connection made again finds the
-// cutover done (cmd/listener/main.go, WatchConversion's callback), before it exits.
+// cutover done (cmd/listener/main.go, the marker gate's callback, bus.Client.GateOnMarker), before
+// it exits.
 const mixedBuildModeStop = "session consumer naming stops the listener"
 
 // The two modes across the window (plan §2 "Two modes", §3 step 3), the listener's part: a creator
@@ -36,7 +37,7 @@ const mixedBuildModeStop = "session consumer naming stops the listener"
 // connect after convert has run and the hold is released, it reads the marker done and exits,
 // naming ENVOY_CONSUMER_NAMES, so a reconnect never turns a creator to fresh and the re-read at
 // every connect stops it. Control: a build that reads its marker only at start (the same listener
-// with the conversion watch taken out by an overlay) keeps running after the release and serves a
+// with the marker gate taken out by an overlay) keeps running after the release and serves a
 // fixed name, s-<id>, to a session that registers.
 //
 // The Dispatch side of this row (envoy-dispatch in both builds across the window, every message as
@@ -169,20 +170,21 @@ func mixedBuildModeStops(output string) []map[string]any {
 	return lines
 }
 
-// mixedBuildStartOnlyListener is this tree's listener with its conversion watch taken out, so it
-// reads its marker at start alone: the build the control runs. The overlay replaces
-// internal/bus/session_fresh.go with a copy whose WatchConversion returns at once.
+// mixedBuildStartOnlyListener is this tree's listener with its marker gates taken out, so it reads
+// its marker at start alone: the build the control runs. The overlay replaces
+// cmd/listener/consumer_naming.go with a copy whose guardFixedNaming shuts no connection's gate
+// (bus.Client.GateOnMarker, on the session consumers' connection and on the durable's) and keeps
+// the start's read of each (awaitFixedNaming).
 func mixedBuildStartOnlyListener(t *testing.T) string {
 	t.Helper()
-	source := filepath.Join("..", "..", "internal", "bus", "session_fresh.go")
+	source := filepath.Join("..", "..", "cmd", "listener", "consumer_naming.go")
 	text, err := os.ReadFile(source)
 	require.NoError(t, err)
-	const watch = "func (s *SessionConsumers) WatchConversion(converted func(error)) {\n\tif s.fresh != nil || converted == nil {"
-	require.Equal(t, 1, strings.Count(string(text), watch), "session_fresh.go's WatchConversion no longer opens as the overlay expects")
-	changed := strings.Replace(string(text), watch,
-		"func (s *SessionConsumers) WatchConversion(converted func(error)) {\n\tif true || s.fresh != nil || converted == nil {", 1)
+	const gate = "\t\tgated.connection.GateOnMarker(converted)\n"
+	require.Equal(t, 1, strings.Count(string(text), gate), "consumer_naming.go's guardFixedNaming no longer gates as the overlay expects")
+	changed := strings.Replace(string(text), gate, "\t\t_ = converted\n", 1)
 	dir := t.TempDir()
-	copyPath := filepath.Join(dir, "session_fresh.go")
+	copyPath := filepath.Join(dir, "consumer_naming.go")
 	require.NoError(t, os.WriteFile(copyPath, []byte(changed), 0o600))
 	absSource, err := filepath.Abs(source)
 	require.NoError(t, err)
