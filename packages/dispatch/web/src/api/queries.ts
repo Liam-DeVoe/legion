@@ -13,14 +13,12 @@ import {
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import {
-  type ClosedWindow,
-  HOUR_MS,
-  holdsNoMoment,
   type ItemsWindow,
   LEGION_WORK_TIME,
   readLegionItems,
 } from "../features/project/issues-legion";
 import type { AdvancesListing } from "../features/project/issues-table-data";
+import { type ClosedWindow, closedRange, holdsNoMoment, hourStart } from "../lib/closed-window";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "./client";
@@ -432,25 +430,6 @@ export const projectIssuesQuery = (project: string, open = false) =>
     },
   });
 
-/** What `GET /api/v1/issues` is asked for a Closed window: `closed_since` at its first moment and
- *  `closed_before` at its end, each where the window has it, and nothing for no window. */
-function closedRange(window: ClosedWindow | undefined) {
-  const from = window?.from ?? null;
-  const to = window?.to ?? null;
-  return {
-    ...(from === null ? {} : { closed_since: new Date(from).toISOString() }),
-    ...(to === null ? {} : { closed_before: new Date(to).toISOString() }),
-  };
-}
-
-/** `window` with a rolling window's first moment moved back to the start of its hour, so a read
- *  of it and its key hold for an hour. The browser leaves out the rows it reads before the
- *  window's own first moment. A window of fixed ends, and no window, stay as they are. */
-function hourStart(window: ClosedWindow | undefined): ClosedWindow | undefined {
-  if (window === undefined || window.from === null || !window.rolling) return window;
-  return { ...window, from: Math.floor(window.from / HOUR_MS) * HOUR_MS };
-}
-
 /** Every done issue of a project that a Closed window holds, or every done issue where the view
  *  names no window: what a view that lists done rows reads when the browser sorts, narrows and
  *  pages them. A rolling window is read from the start of the hour of its first moment
@@ -529,6 +508,40 @@ export const projectOpenCountQuery = (project: string) =>
       return (await api.listIssuePage({ project, open: true, limit: 1 })).total;
     },
   });
+
+/**
+ * What a query under a project's listing prefix (`projectIssuesQueryKey(project)`) holds, by the
+ * query that writes it: a listing's issues (`projectIssuesQuery`, `projectDoneIssuesQuery`, and
+ * an advances listing's `advancesIssuesQuery` too), a page of a listing with its rows in
+ * `issues` (`projectDonePageQuery`), or Open's count (`projectOpenCountQuery`).
+ */
+export type IssueListData =
+  | { readonly kind: "listing"; readonly issues: readonly IssueSummary[] }
+  | {
+      readonly kind: "page";
+      readonly issues: readonly IssueSummary[];
+      readonly page: IssueSummaryPage;
+    }
+  | { readonly kind: "count"; readonly count: number };
+
+/** `data`, what a query under a project's listing prefix holds, read by its shape. Undefined for
+ *  no answer yet and for any other value; a page whose `issues` is null holds no row, and reads
+ *  as no shape. */
+export function readIssueList(data: unknown): IssueListData | undefined {
+  if (Array.isArray(data)) return { kind: "listing", issues: data as IssueSummary[] };
+  if (typeof data === "number") return { kind: "count", count: data };
+  if (typeof data !== "object" || data === null || !("issues" in data)) return undefined;
+  return Array.isArray(data.issues)
+    ? { kind: "page", issues: data.issues as IssueSummary[], page: data as IssueSummaryPage }
+    : undefined;
+}
+
+/** The rows `data` holds where it is a listing or a page of one (`readIssueList`), else
+ *  undefined: Open's count holds no row. */
+export function listedIssues(data: unknown): readonly IssueSummary[] | undefined {
+  const read = readIssueList(data);
+  return read === undefined || read.kind === "count" ? undefined : read.issues;
+}
 
 /** Resolves once no board move on `project` is pending; rejects if the fetch is cancelled first. */
 function boardMovesSettled(context: QueryFunctionContext, project: string): Promise<void> {

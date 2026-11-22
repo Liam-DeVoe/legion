@@ -10,16 +10,10 @@ import type {
 } from "../../api/types";
 import { fold } from "../../components/MultiSelect";
 import type { LayoutColumns } from "../../components/table-layout";
+import { inWindow, readWindow } from "../../lib/closed-window";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
-import {
-  HOUR_MS,
-  LEGION_PHASES,
-  type LegionFacts,
-  legionFactsOf,
-  legionPhaseTitle,
-} from "./issues-legion";
 import {
   ASKS_PICKS,
   activityPick,
@@ -28,7 +22,6 @@ import {
   DURATION_PICKS,
   type DurationPick,
   durationPick,
-  inWindow,
   LEGION_PHASE_PICKS,
   LEGION_TREE_PICKS,
   legionPick,
@@ -40,7 +33,6 @@ import {
   REVIEW_ROUND_PICKS,
   ROLE_PICKS,
   readAsksPick,
-  readWindow,
   reviewRoundsPick,
   sameSet,
   sinceDurationPick,
@@ -48,7 +40,14 @@ import {
   WORKER_STATE_PICKS,
   waitingReasonPick,
   workerPicks,
-} from "./issues-views";
+} from "./issues-filter-picks";
+import {
+  HOUR_MS,
+  LEGION_PHASES,
+  type LegionFacts,
+  legionFactsOf,
+  legionPhaseTitle,
+} from "./issues-legion";
 
 /** An issue's card on the Legion board: the card, and the board column it is in, by its id and
  *  the board's own label for it. That column is the issue's Legion phase. */
@@ -178,8 +177,8 @@ export type ColumnFilterSpec =
       readonly normalize?: (value: string) => string;
     }
   | { readonly kind: "text"; readonly value: (item: Item) => string }
-  /** A window of time, `<N>d`, `<from>..<to>` or `all` (`readWindow` in `issues-views.ts`), over
-   *  the moment `value` reads, which is null where the row has none. */
+  /** A window of time, `<N>d`, `<from>..<to>` or `all` (`readWindow` in `lib/closed-window.ts`),
+   *  over the moment `value` reads, which is null where the row has none. */
   | { readonly kind: "range"; readonly value: (item: Item) => string | null };
 
 /** Every column the table has. Narrow enough that a rendering, a width or a minimum keyed by
@@ -237,6 +236,9 @@ export interface ColumnSpec {
   /** Its cells read the row's Legion facts (`LegionFacts`): a filter, a sort or a grouping of it
    *  waits for the read of those facts (`FACTS_COLUMNS`). */
   readonly facts?: true;
+  /** Its source is the board route (the Design's columns table, "No daemon": hidden), so it shows
+   *  in no project with no Legion daemon (`isBoardFedColumn`). */
+  readonly boardFed?: true;
   /** Headers sort unless this says otherwise. */
   readonly sortable?: boolean;
   readonly filter?: ColumnFilterSpec;
@@ -477,6 +479,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "legion_phase",
     size: 168,
     min: 168,
+    boardFed: true,
     // Every Legion phase is offered in the board's order, then None, whatever the rows hold.
     filter: one((item) => phaseColumnPick(item.card?.column), {
       order: LEGION_PHASE_PICKS,
@@ -581,6 +584,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "roles",
     size: 136,
     min: 136,
+    boardFed: true,
     filter: {
       kind: "picks",
       values: (item) => workerPicks(item.card?.card.roles),
@@ -593,6 +597,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "activity",
     size: 168,
     min: 168,
+    boardFed: true,
     filter: one((item) => activityPick(item.card?.card.slot_use), {
       order: WORKER_STATE_PICKS,
       show: workerStateWords,
@@ -603,6 +608,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "waited",
     size: 176,
     min: 176,
+    boardFed: true,
     filter: duration((item) => [sinceDurationPick(item.card?.card.waiting?.since, item.at)]),
   },
   {
@@ -611,6 +617,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "waiting_reason",
     size: 164,
     min: 164,
+    boardFed: true,
     filter: one((item) => waitingReasonPick(item.card?.card.waiting), {
       order: WAITING_REASON_PICKS,
       show: waitingReasonWords,
@@ -621,12 +628,14 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "time_in_phase",
     size: 224,
     min: 224,
+    boardFed: true,
     filter: duration((item) => [sinceDurationPick(item.card?.card.phase_since, item.at)]),
   },
   {
     id: "work_hours",
     size: 148,
     min: 148,
+    boardFed: true,
     facts: true,
     filter: duration(
       factsPicks((item) => {
@@ -639,6 +648,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "review_rounds",
     size: 180,
     min: 180,
+    boardFed: true,
     facts: true,
     filter: {
       kind: "picks",
@@ -654,6 +664,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "legion",
     size: 156,
     min: 156,
+    boardFed: true,
     facts: true,
     filter: {
       kind: "picks",
@@ -673,6 +684,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     // label with its sort mark (118 px) but the control (94 px with 44 px buttons), a 4 px gap
     // and the 44 px filter button, with the cell's 16 px of padding from `md` (12 px below it).
     compactMin: 158,
+    boardFed: true,
     facts: true,
     // Its minimum holds, on one line, its label with its sort mark (118 px drawn), the Share and
     // Hours control and the filter button, with 44 px buttons and the cell's padding; from 1280
@@ -698,6 +710,8 @@ export const columnIds: readonly string[] = COLUMNS.filter(
 export const FACTS_COLUMNS: readonly string[] = COLUMNS.filter((column) => column.facts).map(
   (column) => column.id
 );
+/** Whether a column's source is the board route (`ColumnSpec`'s `boardFed`). */
+export const isBoardFedColumn = (id: string): boolean => columnSpec.get(id)?.boardFed === true;
 const groupable: readonly string[] = COLUMNS.filter(
   (column) => column.filter?.kind === "picks" && column.filter.group !== undefined
 ).map((column) => column.id);

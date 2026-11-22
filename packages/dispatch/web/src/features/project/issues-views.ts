@@ -1,6 +1,4 @@
-import { LEGION_ROLES } from "@legion/contracts";
 import { useCallback, useMemo, useState } from "react";
-import type { Actor } from "../../api/types";
 import { readStore, writeStore } from "../../components/table-storage";
 import {
   commaListParam,
@@ -12,19 +10,10 @@ import {
   useAddressFields,
   useAddressParam,
 } from "../../lib/page-address";
-import { DAY_MS } from "../delivery/lib/window";
-import { isViewer } from "../refs/actor";
 import { useStoredUserPreference, useUserPreference } from "../shell/userPreference";
 import { type IssueStatus, openIssueStatuses } from "./board-model";
-import {
-  type ClosedWindow,
-  HOUR_MS,
-  holdsNoMoment,
-  LEGION_PHASES,
-  type LegionFacts,
-  sinceMs,
-} from "./issues-legion";
-import type { ColumnId } from "./issues-table-model";
+import { sameSet } from "./issues-filter-picks";
+import { type ColumnId, isBoardFedColumn } from "./issues-table-model";
 
 /**
  * The Issues tab's views, and what the address says about them.
@@ -36,30 +25,12 @@ import type { ColumnId } from "./issues-table-model";
  * replaces the view's value of it, and every other parameter narrows the view further. The
  * project's issue table reads and writes its own spelling of the whole view (`readUrl` and
  * `writeUrl` in `issues-table-model.ts`, whose defaults are Open's), and `viewsGrammar` puts the
- * view between that spelling and the address. This module imports nothing of the table model
- * but its types, so the model may import the picks below.
+ * view between that spelling and the address. The table model imports nothing of this module
+ * (its filter picks are `issues-filter-picks.ts`'s), so this module reads the model's columns
+ * (`isBoardFedColumn`).
  */
 
 export type BuiltInViewId = "open" | "done";
-
-/** The columns the board route feeds (the Design's columns table, "No daemon": hidden). None of
- *  them shows in a project with no Legion daemon. */
-export const BOARD_FED_COLUMNS = [
-  "legion_phase",
-  "roles",
-  "activity",
-  "waited",
-  "waiting_reason",
-  "time_in_phase",
-  "work_hours",
-  "review_rounds",
-  "legion",
-  "phase_hours",
-] as const;
-
-/** Whether a column's source is the board route. */
-export const isBoardFedColumn = (id: string): boolean =>
-  (BOARD_FED_COLUMNS as readonly string[]).includes(id);
 
 export interface BuiltInView {
   readonly id: BuiltInViewId;
@@ -201,11 +172,6 @@ export function currentAddress(params: URLSearchParams): URLSearchParams | undef
   for (const key of dropped) next.delete(key);
   return next;
 }
-
-/** Whether `a` and `b` hold as many values, each value of `a` one of `b`'s: the same set of
- *  picks, in any order. */
-export const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
-  a.length === b.length && a.every((value) => b.includes(value));
 
 /** The parameters a view has a value of, which `expandView` and `compressView` write. */
 const VIEW_OWN_KEYS: readonly string[] = ["view", "status", "nofilter", "sort"];
@@ -397,258 +363,6 @@ export function useViewLayout(
     [fromAddress, key, writeAddressLayout]
   );
   return [layout, setLayout] as const;
-}
-
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-
-/** The first moment of a UTC date (`2026-11-03`), or undefined for a date that is not one. */
-function readDay(text: string): number | undefined {
-  if (!DATE.test(text)) return undefined;
-  const at = Date.parse(`${text}T00:00:00Z`);
-  return !Number.isNaN(at) && new Date(at).toISOString().slice(0, 10) === text ? at : undefined;
-}
-
-/** One end of a `<from>..<to>` window: null for an end left out, the moment of a UTC date or of
- *  an RFC 3339 time written in UTC with `Z`, or undefined for anything else. */
-function readEnd(text: string): number | null | undefined {
-  if (text === "") return null;
-  if (DATE.test(text)) return readDay(text);
-  if (!UTC_TIME.test(text)) return undefined;
-  const at = Date.parse(text);
-  return Number.isNaN(at) ? undefined : at;
-}
-
-/** The value of `f.closed` that names no window. */
-export const ALL_CLOSED = "all";
-
-/** The first moment the list route reads in `closed_since` or `closed_before`: an RFC 3339 time
- *  writes its year in four digits, so no time before 0000-01-01T00:00:00Z. No close comes before
- *  it. */
-const FIRST_READABLE_MS = Date.parse("0000-01-01T00:00:00Z");
-
-/**
- * The Closed window `f.closed` names, or undefined for none. `<N>d` is the last N times 24 hours
- * up to `nowMs`, rolling. `<from>..<to>` is a range of UTC dates (`2026-11-03`) or RFC 3339 times
- * written in UTC with `Z`, `from` included and `to` left out, as the list route takes
- * `closed_since` and `closed_before`; either end may be left out. A range whose `to` is at or
- * before its `from` holds no moment (`holdsNoMoment`): it lists no row, and no read asks the
- * route for it. `all`, and a value this cannot read, are no window: an older link still opens the
- * view.
- */
-export function readWindow(
-  value: string | null | undefined,
-  nowMs: number
-): ClosedWindow | undefined {
-  if (value === null || value === undefined || value === ALL_CLOSED) return undefined;
-  const days = /^(\d+)d$/.exec(value);
-  if (days !== null) {
-    const count = Number(days[1]);
-    const from = nowMs - count * DAY_MS;
-    // A count whose first moment comes before the first moment the list route reads holds every
-    // close, as no window does: so it is none, and no read sends the route a time it refuses.
-    return count > 0 && from >= FIRST_READABLE_MS ? { from, to: null, rolling: true } : undefined;
-  }
-  const split = value.indexOf("..");
-  if (split === -1) return undefined;
-  const from = readEnd(value.slice(0, split));
-  const to = readEnd(value.slice(split + 2));
-  if (from === undefined || to === undefined || (from === null && to === null)) return undefined;
-  return { from, to, rolling: false };
-}
-
-/** Whether a row closed at `closedAt` is in `window`. With a window, a row that never closed is
- *  in none; with none, every row is. */
-export function inWindow(
-  closedAt: string | null | undefined,
-  window: ClosedWindow | undefined
-): boolean {
-  if (window === undefined) return true;
-  const at = sinceMs(closedAt);
-  if (at === undefined) return false;
-  return (window.from === null || at >= window.from) && (window.to === null || at < window.to);
-}
-
-/** The `to` end that includes the UTC day `day`, which a date picker's To shows: the next day,
- *  which the window leaves out. "" stays "", an end left out. */
-export function toEndOfDay(day: string): string {
-  if (day === "") return "";
-  const at = readDay(day);
-  return at === undefined ? day : new Date(at + DAY_MS).toISOString().slice(0, 10);
-}
-
-/** The last UTC day a `to` end includes, which a date picker's To shows: the day before a date,
- *  or the day of the moment before a time. "" for an end left out or one this cannot read. */
-export function lastDayOf(to: string): string {
-  const at = readEnd(to);
-  return at === null || at === undefined ? "" : new Date(at - 1).toISOString().slice(0, 10);
-}
-
-/** The `f.closed` value a date picker writes for the UTC days `from` to `to`, both included, or
- *  undefined where it names neither or its To comes before its From, a window that holds no
- *  moment: so 2026-11-03 to 2026-11-09 writes `2026-11-03..2026-11-10`, and one day is
- *  `<day>..<next day>`. */
-export function rangeValue(from: string, to: string): string | undefined {
-  if (from === "" && to === "") return undefined;
-  const value = `${from}..${toEndOfDay(to)}`;
-  // A range reads no clock, so any `nowMs` reads it the same.
-  return holdsNoMoment(readWindow(value, 0)) ? undefined : value;
-}
-
-/** The UTC days a date picker shows for a `<from>..<to>` value, its To the last day the window
- *  includes (`lastDayOf`), or undefined for a value that is no range. */
-export function rangeDays(
-  value: string
-): { readonly from: string; readonly to: string } | undefined {
-  const split = value.indexOf("..");
-  if (split === -1) return undefined;
-  const from = readEnd(value.slice(0, split));
-  const to = value.slice(split + 2);
-  if (from === undefined || readEnd(to) === undefined) return undefined;
-  return {
-    from: from === null ? "" : new Date(from).toISOString().slice(0, 10),
-    to: lastDayOf(to),
-  };
-}
-
-/** A pick of a row with no value, kept in the address as `none`: an empty value there would
- *  take the view's own value away rather than pick anything. */
-export const NONE_PICK = "none";
-
-/** The picks of a column that holds a length of time (`f.waited`, `f.time_in_phase`,
- *  `f.work_hours`), in their order: each length takes its lower bound and not its upper. */
-export const DURATION_PICKS = ["under-1h", "1h-1d", "1d-7d", "over-7d", NONE_PICK] as const;
-export type DurationPick = (typeof DURATION_PICKS)[number];
-
-/** The pick a length of `ms` milliseconds falls in, None for no length. */
-export function durationPick(ms: number | undefined): DurationPick {
-  if (ms === undefined || Number.isNaN(ms)) return NONE_PICK;
-  if (ms < HOUR_MS) return "under-1h";
-  if (ms < 24 * HOUR_MS) return "1h-1d";
-  return ms < 7 * 24 * HOUR_MS ? "1d-7d" : "over-7d";
-}
-
-/** The pick of the time from `since` to `nowMs` (Time waiting, Time in Legion phase), None
- *  where there is no time to start from. */
-export function sinceDurationPick(since: string | null | undefined, nowMs: number): DurationPick {
-  const at = sinceMs(since);
-  return at === undefined ? NONE_PICK : durationPick(nowMs - at);
-}
-
-/** Review rounds' picks (`f.review_rounds`), in their order. */
-export const REVIEW_ROUND_PICKS = ["0", "1", "2", "3-or-more", NONE_PICK] as const;
-export type ReviewRoundsPick = (typeof REVIEW_ROUND_PICKS)[number];
-
-/** The pick of a counted number of review rounds, None for an issue with no Legion work. */
-export function reviewRoundsPick(rounds: number | undefined): ReviewRoundsPick {
-  if (rounds === undefined) return NONE_PICK;
-  if (rounds >= 3) return "3-or-more";
-  return rounds >= 2 ? "2" : rounds >= 1 ? "1" : "0";
-}
-
-/** Legion tree's picks (`f.legion`): two of them select their union, so `f.legion=root` with
- *  `f.legion=child` is every issue with Legion work. */
-export const LEGION_TREE_PICKS = ["root", "child", NONE_PICK] as const;
-export type LegionPick = (typeof LEGION_TREE_PICKS)[number];
-
-/** Where an issue stands in its Legion tree: the root, a child, or None with no Legion work. */
-export function legionPick(facts: Pick<LegionFacts, "tree_depth"> | undefined): LegionPick {
-  if (facts === undefined) return NONE_PICK;
-  return facts.tree_depth === 0 ? "root" : "child";
-}
-
-/** Legion phase's picks (`f.legion_phase`): the board's column ids, in its order, then None for
- *  an issue with no card. */
-export const LEGION_PHASE_PICKS: readonly string[] = [
-  ...LEGION_PHASES.map((phase) => phase.id),
-  NONE_PICK,
-];
-
-/** The pick of the board column an issue's card is in, None with no card. */
-export function phaseColumnPick(column: string | undefined): string {
-  return column === undefined || column === "" ? NONE_PICK : column;
-}
-
-/** Workers' picks (`f.roles=implementer`): each Legion role's id in `LEGION_ROLES`' order, and
- *  None. */
-export const ROLE_PICKS: readonly string[] = [...LEGION_ROLES, NONE_PICK];
-
-/** The picks of the roles at work on a card, None where none is. */
-export function workerPicks(roles: readonly string[] | null | undefined): readonly string[] {
-  return roles === null || roles === undefined || roles.length === 0 ? [NONE_PICK] : roles;
-}
-
-/** Why it waits' picks (`f.waiting_reason=ready`): the board's `waiting.reason` values, in
- *  their order (Ready to start, Capacity to go on, A blocker, A person), and None. */
-export const WAITING_REASON_PICKS = ["ready", "slot", "blocked", "person", NONE_PICK] as const;
-
-/** The pick of why a card waits, None where it does not. A reason this build does not know is
- *  its own pick, under the board's word. */
-export function waitingReasonPick(waiting: { readonly reason: string } | null | undefined): string {
-  return waiting === null || waiting === undefined || waiting.reason === ""
-    ? NONE_PICK
-    : waiting.reason;
-}
-
-/** Worker state's picks (`f.activity`): the board's `slot_use` values, in their order (Working,
- *  Between turns, Waiting on child issues, Waiting on a person, Idle), and None. */
-export const WORKER_STATE_PICKS = [
-  "working",
-  "between_turns",
-  "held_children",
-  "held_person",
-  "held_idle",
-  NONE_PICK,
-] as const;
-
-/** The pick of what a card's slot is used for, None with no slot of its own. */
-export function activityPick(slotUse: string | null | undefined): string {
-  return slotUse === null || slotUse === undefined || slotUse === "" ? NONE_PICK : slotUse;
-}
-
-/** Open asks' picks (`f.asks`): With open asks and No open asks. */
-export const ASKS_PICKS = ["any", NONE_PICK] as const;
-export type AsksPick = (typeof ASKS_PICKS)[number];
-
-/** The pick of an issue's count of open asks. */
-export function asksPick(openAsks: number): AsksPick {
-  return openAsks > 0 ? "any" : NONE_PICK;
-}
-
-/** An `f.asks` value as the filter keeps it. The filter once picked a count, so a link of then
- *  keeps its rows: `f.asks=0` reads as None, and a count above 0 as With open asks. */
-export function readAsksPick(value: string): string {
-  if (!/^\d+$/.test(value)) return value;
-  return Number(value) > 0 ? "any" : NONE_PICK;
-}
-
-/** The picks of an issue's hours by phase (`f.phase_hours=<phase>`): each phase with hours, and
- *  no None, so a row with no hours is in no pick. Several picks select the rows with hours in
- *  any of them. */
-export function phaseHoursPicks(
-  hours: Readonly<Record<string, number>> | null | undefined
-): readonly string[] {
-  return Object.entries(hours ?? {})
-    .filter(([, spent]) => spent > 0)
-    .map(([phase]) => phase);
-}
-
-/** Queue's picks (`f.queue`), the words today's links carry: In Legion queue, Not in Legion
- *  queue. */
-export const QUEUE_PICKS = ["Queued", "Not queued"] as const;
-
-/** The Created by pick that names the reader who opens the page (`f.author=@me`). */
-export const ME = "@me";
-
-/** Whether an issue's creator is the reader: a person whose login is the reader's, or an agent
- *  session whose `owner` is the reader. `author` is the issue's creator as the table reads it
- *  (`createdBy`). A saved link with `@me` means the reader who opens it. */
-export function createdByReader(author: Actor | null, reader: string | undefined): boolean {
-  if (author === null || reader === undefined) return false;
-  if (author.kind === "session") {
-    return author.owner !== undefined && author.owner.toLowerCase() === reader.toLowerCase();
-  }
-  return isViewer(author, reader);
 }
 
 /** The narrowing of the Evals tab's links that leaves out the rows of a tree: repeatable, one

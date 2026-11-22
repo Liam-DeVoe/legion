@@ -19,6 +19,7 @@ import { borderDefault, issueStatusScale, surfaceMutedBg } from "../../theme/cla
 import { openIssueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
+import { sameSet } from "./issues-filter-picks";
 import { countStatuses, statusSegments } from "./issues-table-bar";
 import {
   COLUMNS,
@@ -28,7 +29,6 @@ import {
   UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
-import { sameSet } from "./issues-views";
 
 /**
  * A priority page's status strip: every status of the rows the table holds, each as wide as its

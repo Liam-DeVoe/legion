@@ -26,18 +26,21 @@ import { LEGION_PHASES, type LegionFacts, type LegionPhase } from "./issues-legi
 import { useIssueTableColumns } from "./issues-table-columns";
 import {
   buildItems,
+  COLUMNS,
   ISSUE_GROUP_ATTRIBUTE,
   ISSUE_LINK_ATTRIBUTE,
   ISSUE_ROW_ATTRIBUTE,
   ISSUE_TABLE_COLUMNS,
   type Item,
   type ItemContext,
+  isBoardFedColumn,
   type LegionReads,
   MEASURE_METHODS,
   viewLayoutColumns,
 } from "./issues-table-model";
-import { BOARD_FED_COLUMNS } from "./issues-views";
 
+/** The columns the board route feeds, in the registry's order. */
+const BOARD_FED = COLUMNS.flatMap(({ id }) => (isBoardFedColumn(id) ? [id] : []));
 const HOUR = 3_600_000;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
@@ -600,7 +603,7 @@ test("every column sorts, and no header is over 20 characters", async () => {
     id === "select" ? [] : [String(columnDef.header)]
   );
   expect(headers.filter((header) => header.length > 20)).toEqual([]);
-  expect(BOARD_FED_COLUMNS.map((id) => String(table?.getColumn(id)?.columnDef.header))).toEqual([
+  expect(BOARD_FED.map((id) => String(table?.getColumn(id)?.columnDef.header))).toEqual([
     "Legion phase",
     "Workers",
     "Worker state",
@@ -626,7 +629,7 @@ test("with no Legion daemon the board-fed columns are in neither Columns nor Gro
   await screen.findByRole("table", { name: "Issues" });
   const leaves = table?.getAllLeafColumns() ?? [];
   const hideable = leaves.filter((column) => column.getCanHide()).map(({ id }) => id);
-  for (const id of BOARD_FED_COLUMNS) expect(hideable).not.toContain(id);
+  for (const id of BOARD_FED) expect(hideable).not.toContain(id);
   expect(hideable).toContain("queue");
   expect(hideable).toContain("closed");
   expect(leaves.filter((column) => column.getCanGroup()).map(({ id }) => id)).toEqual([

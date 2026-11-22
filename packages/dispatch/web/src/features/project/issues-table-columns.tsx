@@ -16,6 +16,7 @@ import { LabelPill, StatusPill } from "../../components/Pill";
 import { rangeWords } from "../../components/RangeFilter";
 import { Tooltip, useTooltip } from "../../components/Tooltip";
 import type { LayoutColumns } from "../../components/table-layout";
+import { type ClosedWindow, inWindow, readWindow } from "../../lib/closed-window";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -42,12 +43,12 @@ import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import {
-  type ClosedWindow,
-  formatPhaseTime,
-  formatWorkTime,
-  type LegionFacts,
-  sinceMs,
-} from "./issues-legion";
+  LEGION_PHASE_PICKS,
+  ROLE_PICKS,
+  WAITING_REASON_PICKS,
+  WORKER_STATE_PICKS,
+} from "./issues-filter-picks";
+import { formatPhaseTime, formatWorkTime, type LegionFacts, sinceMs } from "./issues-legion";
 import {
   PhaseHoursCell,
   type PhaseHoursMode,
@@ -65,6 +66,7 @@ import {
   embeddedPhoneMin,
   ISSUE_TABLE_COLUMNS,
   type Item,
+  isBoardFedColumn,
   MEASURE_METHODS,
   matchesFilters,
   phaseHoursTotal,
@@ -74,15 +76,6 @@ import {
   workerStateWords,
   workHoursOf,
 } from "./issues-table-model";
-import {
-  inWindow,
-  isBoardFedColumn,
-  LEGION_PHASE_PICKS,
-  ROLE_PICKS,
-  readWindow,
-  WAITING_REASON_PICKS,
-  WORKER_STATE_PICKS,
-} from "./issues-views";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {

@@ -3,7 +3,7 @@ import { QueryClient, QueryObserver, replaceEqualDeep } from "@tanstack/react-qu
 import { http } from "msw";
 
 import { answerRequests } from "../__tests__/network";
-import type { ClosedWindow } from "../features/project/issues-legion";
+import type { ClosedWindow } from "../lib/closed-window";
 import { api } from "./client";
 import {
   advancesIssuesQuery,

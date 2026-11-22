@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
-import { boardMoveMutationKey } from "../../api/queries";
+import { boardMoveMutationKey, readIssueList } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { BoardChange } from "./board-model";
@@ -62,11 +62,12 @@ export function useBoardMoves(project: string): {
       // under the same prefix hold no such list, and no card.
       const held = queryClient
         .getQueriesData<unknown>({ queryKey: listings })
-        .flatMap(([queryKey, data]) =>
-          Array.isArray(data) && (data as IssueSummary[]).some((issue) => issue.key === key)
-            ? [{ queryKey, issues: data as IssueSummary[] }]
-            : []
-        );
+        .flatMap(([queryKey, data]) => {
+          const read = readIssueList(data);
+          return read?.kind === "listing" && read.issues.some((issue) => issue.key === key)
+            ? [{ queryKey, issues: read.issues }]
+            : [];
+        });
       for (const { queryKey, issues } of held) {
         // Not awaited: the cancel takes effect synchronously, and the write must land in this
         // tick so a second move is planned from it. The read below restores what it drops.

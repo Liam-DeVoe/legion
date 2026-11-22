@@ -1,10 +1,9 @@
 // The Legion parts of the Issues tab that hold no React and no cache: the board's phase order,
 // the time formats a cell and a card write, where each listed row takes its Legion facts from
 // (the board's `issues` map, grown to the page's clock, else the items route of
-// `legion-work-time`), the windows and pages that items read spans, the Closed window the Done
-// reads take, and the rule that keeps an older server's Done answer off the page. The page reads
-// what these name (`api/queries.ts`); the tests read the rules here rather than through the
-// markup.
+// `legion-work-time`), the windows and pages that items read spans, and the rule that keeps an
+// older server's Done answer off the page. The page reads what these name (`api/queries.ts`);
+// the tests read the rules here rather than through the markup.
 import type {
   EvalItemRow,
   EvalItemsResponse,
@@ -194,26 +193,6 @@ export function itemFacts(row: EvalItemRow): LegionFacts | undefined {
     work_first_at: typeof workFirstAt === "string" ? workFirstAt : null,
     work_hours: workHours,
   };
-}
-
-/** A Closed window (`f.closed`), as the Done reads take it: its first moment (`from`, included)
- *  and its end (`to`, left out), in milliseconds since the epoch, either one null where the
- *  window leaves it open. `rolling` is a window of the last N days (`f.closed=<N>d`), whose first
- *  moment moves with the clock; a read of every done row starts it on the hour
- *  (`projectDoneIssuesQuery`). The views (`issues-views.ts`) read the address into this. */
-export interface ClosedWindow {
-  readonly from: number | null;
-  readonly to: number | null;
-  readonly rolling: boolean;
-}
-
-/** Whether a Closed window holds no moment: its end at or before its first moment, as an address
- *  whose to day comes before its from day names. No close falls in it, and the list route refuses
- *  it (`INVALID_CLOSED_WINDOW`), so a read of it asks the route nothing and lists no row. */
-export function holdsNoMoment(window: ClosedWindow | undefined): boolean {
-  return (
-    window !== undefined && window.from !== null && window.to !== null && window.from >= window.to
-  );
 }
 
 /** The eval whose items carry a closed issue's Legion facts, one `issue` row per issue. */

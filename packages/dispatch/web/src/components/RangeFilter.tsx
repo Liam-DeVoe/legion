@@ -1,6 +1,6 @@
 import type { Column } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
-import { ALL_CLOSED, rangeDays, rangeValue } from "../features/project/issues-views";
+import { ALL_CLOSED, rangeDays, rangeValue } from "../lib/closed-window";
 import {
   borderDefault,
   surfaceBg,
@@ -132,7 +132,7 @@ function RangePanel({
 }
 
 export interface RangeFilterProps<TData> {
-  /** A column of moments whose filter holds a window (`readWindow` in `issues-views.ts`). */
+  /** A column of moments whose filter holds a window (`readWindow` in `lib/closed-window.ts`). */
   readonly column: Column<TData, unknown>;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;

@@ -1,5 +1,4 @@
 import { askProject } from "../features/inbox/list-row";
-import { listRows } from "../features/issue/issue-field-looks";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
@@ -7,6 +6,7 @@ import {
   architectureSourcesQuery,
   inboxQuery,
   inboxThreadsKey,
+  listedIssues,
   myRepliesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
@@ -813,7 +813,7 @@ function priorityWriteTargets(
     row !== null &&
     ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
   const when: RefreshCheck = (data) => {
-    const rows = listRows(data);
+    const rows = listedIssues(data);
     return rows === undefined ? advancesIt(data) : rows.some(advancesIt);
   };
   targets.push(

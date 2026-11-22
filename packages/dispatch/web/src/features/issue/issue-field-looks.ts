@@ -7,7 +7,12 @@
  */
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
-import { inboxQuery, projectDefaultAssigneesQuery } from "../../api/queries";
+import {
+  inboxQuery,
+  listedIssues,
+  projectDefaultAssigneesQuery,
+  readIssueList,
+} from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import type { IssueField, IssueFieldPick } from "./issue-field-writes";
@@ -142,21 +147,11 @@ function lookOf(
   return { ...look, waiting: waitingOf(rows) };
 }
 
-/** The rows of `data`, what a list of issues holds, in each shape a project's list takes: a
- *  listing (`IssueSummary[]`), or a page of one (`{ issues, total, limit, offset }`, which Done
- *  reads), whose rows are its `issues`. Undefined for any other value: Open's count, a number,
- *  holds no row. */
-export function listRows(data: unknown): readonly IssueSummary[] | undefined {
-  if (Array.isArray(data)) return data as IssueSummary[];
-  if (typeof data !== "object" || data === null || !("issues" in data)) return undefined;
-  return Array.isArray(data.issues) ? (data.issues as IssueSummary[]) : undefined;
-}
-
 /** The row of `issueKey` in the first list of issues the client holds that has one. */
 function listedIssue(client: QueryClient, issueKey: string): IssueSummary | undefined {
   for (const query of client.getQueryCache().getAll()) {
     if (cacheOf(query.queryKey) !== "list") continue;
-    const row = listRows(query.state.data)?.find((each) => each.key === issueKey);
+    const row = listedIssues(query.state.data)?.find((each) => each.key === issueKey);
     if (row !== undefined) return row;
   }
   return undefined;
@@ -193,7 +188,7 @@ export function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Lo
     return looks;
   }
   if (cache === "list") {
-    for (const row of listRows(data) ?? []) {
+    for (const row of listedIssues(data) ?? []) {
       if (!looks.has(row.key)) looks.set(row.key, { fields: pickedFields(row) });
     }
     return looks;
@@ -280,7 +275,7 @@ export function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | undef
 
 /** `data`, which the query under `queryKey` holds, with every one of `showings` over it: the
  *  same value where it shows them all already, or where the query is none of the three a pick
- *  shows on. A page of a list of issues keeps every field but its rows (`listRows`). */
+ *  shows on. A page of a list of issues keeps every field but its rows (`readIssueList`). */
 export function shownOn(
   client: QueryClient,
   queryKey: QueryKey,
@@ -297,17 +292,17 @@ export function shownOn(
     );
   }
   if (cache === "list") {
-    const rows = listRows(data);
-    if (rows === undefined) return data;
-    const shown = mapRows(rows, (row) =>
+    const read = readIssueList(data);
+    if (read === undefined || read.kind === "count") return data;
+    const shown = mapRows(read.issues, (row) =>
       showings.reduce(
         (issue, showing) =>
           showing.issueKey === issue.key ? withFields(issue, showing.look.fields) : issue,
         row
       )
     );
-    if (shown === rows) return data;
-    return Array.isArray(data) ? shown : { ...(data as object), issues: shown };
+    if (shown === read.issues) return data;
+    return read.kind === "page" ? { ...read.page, issues: shown } : shown;
   }
   if (!Array.isArray(data)) return data;
   if (cache === "inbox") {

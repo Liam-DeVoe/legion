@@ -40,6 +40,7 @@ import {
   type TableLayoutModel,
   useTableLayout,
 } from "../../components/table-layout";
+import { readWindow } from "../../lib/closed-window";
 import {
   addressPath,
   copyAddress,
@@ -74,6 +75,7 @@ import {
   ViewControls,
 } from "./IssueViewTabs";
 import { type IssueFiltersState, useIssueFilters } from "./issue-filters";
+import { sameSet } from "./issues-filter-picks";
 import { useIssueTableActions } from "./issues-table-actions";
 import { countStatuses, IssueStatusBar } from "./issues-table-bar";
 import {
@@ -101,6 +103,7 @@ import {
   ISSUE_LINK_ATTRIBUTE,
   ISSUE_ROW_ATTRIBUTE,
   type Item,
+  isBoardFedColumn,
   matchesFilters,
   matchesSearch,
   PAGE_SIZES,
@@ -123,17 +126,14 @@ import {
   currentAddress,
   expandView,
   inExcludedTree,
-  isBoardFedColumn,
   isSavedViewChanged,
   isViewChanged,
   matchSavedView,
   narrowingsDiffer,
   readCols,
   readExcludedTrees,
-  readWindow,
   type SavedView,
   type SavedViews,
-  sameSet,
   savedViewQuery,
   shownColumns,
   useExcludedTrees,

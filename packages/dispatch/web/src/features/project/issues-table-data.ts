@@ -10,11 +10,12 @@ import {
   sameDoneWindow,
 } from "../../api/queries";
 import type { IssueSummary, IssueSummaryPage, LegionBoardResponse } from "../../api/types";
+import type { ClosedWindow } from "../../lib/closed-window";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
 import { openIssueStatuses } from "./board-model";
-import { type ClosedWindow, itemsWindows, type LegionFacts, listedDoneRows } from "./issues-legion";
+import { itemsWindows, type LegionFacts, listedDoneRows } from "./issues-legion";
 import { buildItems, type LegionReads, type ReadStatus } from "./issues-table-model";
 
 /**

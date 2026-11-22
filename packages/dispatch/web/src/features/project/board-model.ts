@@ -54,7 +54,7 @@ export function laneKey(lane: PriorityLane): string {
 export type BoardBy = "status" | "legion_phase";
 
 /** The rail of the rows the daemon holds no card for, on a Board by Legion phase: the id the
- *  Legion phase filter gives its None pick (`NONE_PICK` in `issues-views.ts`). */
+ *  Legion phase filter gives its None pick (`NONE_PICK` in `issues-filter-picks.ts`). */
 const NONE_COLUMN = "none";
 
 /** The one column of a Board by Legion phase whose cards a reader may put in order. */

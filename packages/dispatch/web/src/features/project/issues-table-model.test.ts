@@ -35,7 +35,7 @@ import {
   viewLayoutColumns,
   writeUrl,
 } from "./issues-table-model";
-import { BOARD_FED_COLUMNS, viewColumns, viewFor, viewsGrammar } from "./issues-views";
+import { viewColumns, viewFor, viewsGrammar } from "./issues-views";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -882,7 +882,7 @@ test("view=done reads its sort, -closed, and a write of it leaves view=done alon
   expect(resorted.toString()).toBe("view=done&sort=-work_hours");
   expect(grammar.read(resorted).sorting).toEqual([{ id: "work_hours", desc: true }]);
   // Every Legion column is a sort and a filter the address keeps.
-  for (const id of BOARD_FED_COLUMNS)
+  for (const { id } of COLUMNS.filter((column) => column.boardFed))
     expect(readUrl(new URLSearchParams(`sort=${id}`)).sorting).toEqual([{ id, desc: false }]);
 });
 
