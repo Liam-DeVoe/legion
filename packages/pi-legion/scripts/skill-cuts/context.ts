@@ -31,9 +31,12 @@
  *   reason; a plugin whose repository cannot be read stops the case with the reason, as a failed
  *   role-prompt read does, so every arm of a case has the same plugins. For a subagent's context
  *   (`subagent:<agent>`), the record names the agent definition the subagent ran (`agent`,
- *   `agentIn`) and the skills it autoloads, read in Oh My Pi's order: a dev box's user agents,
- *   the directory its installers link as `~/.omp/agent/agents`, at the commit of the subagent's
- *   start (`userAgents`), then each plugin's `agents/`; capture.ts checks the arm against it.
+ *   `agentIn`) and the skills it autoloads, read in Oh My Pi's order: the project's agents, the
+ *   nearest `.omp/agents` of the session repository from the working directory up, a link there
+ *   followed within the repository (`projectAgents`), else, for a dev box's session under its
+ *   home, the directory its installers link as `~/.omp/agents`; then a dev box's user agents, the
+ *   directory its installers link as `~/.omp/agent/agents` (both at the commit of the subagent's
+ *   start, `devboxAgents`); then each plugin's `agents/`; capture.ts checks the arm against it.
  * - `work/`: the checkout of the session repository. Each of its context files (a file named
  *   `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `copilot-instructions.md`, REPOSITORY_CONTEXT_FILES,
  *   at its default branch's commit at the session's start) is written there at its path in the
@@ -81,10 +84,12 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -136,6 +141,10 @@ export interface RepoSource {
    *  until `tree` writes each file of it, or until the release it gives is called, which drops
    *  what no `tree` wrote. Optional. */
   prefetch?(repo: string, commit: string, dirs: readonly string[]): Promise<() => void>;
+  /** The target of `file` of `repo` at `commit` when the commit holds it as a symbolic link (git's
+   *  mode 120000), as the link's text; undefined when it holds none there, or holds a file or a
+   *  directory. Throws when a read fails. Optional: a source without it holds no links. */
+  link?(repo: string, commit: string, file: string): Promise<string | undefined>;
   /** The reads this source has made of GitHub so far: how many `gh` calls, the milliseconds in
    *  which at least one of them was running, and the calls sent again after a transient failure,
    *  by reason (common.ts's `GhRetries.record`). Absent for a source that reads no GitHub. */
@@ -224,8 +233,9 @@ export interface ContextRecord {
       }
     | null;
   /** For a subagent's context, the agent definition it ran, with the skills it autoloads
-   *  (`agentIn`): the dev box's user agent of its name, else the profile's plugins'; null for
-   *  another context or an agent neither defines. */
+   *  (`agentIn`): the project's agent of its name (the checkout's, else the dev box's
+   *  `~/.omp/agents`), else the dev box's user agent, else the profile's plugins'; null for
+   *  another context or an agent none of them defines. */
   readonly agent: AgentDefinition | null;
   /** What of the real session's context the capture does not reproduce. */
   readonly leftOut: readonly string[];
@@ -236,13 +246,20 @@ export interface ContextRecord {
   readonly githubRetries: Readonly<Record<string, number>>;
 }
 
-/** A subagent's agent definition: its name, where it is (the repository and commit of a plugin
- *  of the profile, or of the dev box's repository for a user agent, and the file's path in that
- *  repository), for a user agent the installer line that links its directory as Oh My Pi's user
- *  agents directory (`linkedBy`, `<script>:<line>`), and the skills its `autoloadSkills` names,
- *  which Oh My Pi puts into the subagent's session before its task (arms.ts). */
+/** A subagent's agent definition: its name, which of Oh My Pi's agent directories holds it
+ *  (`source`: the project's, the user's or a plugin's, as Oh My Pi's own AgentDefinition names
+ *  the first two), where it is (the repository and commit of the session repository for a project
+ *  agent of the checkout, of the dev box's repository for a user agent or one of `~/.omp/agents`,
+ *  or of a plugin of the profile, and the file's path in that repository: for a project agent of
+ *  the checkout, under the `.omp/agents` Oh My Pi found nearest the working directory, or the
+ *  directory a link there names), what links its directory where Oh My Pi reads it (`linkedBy`:
+ *  the installer line, `<script>:<line>`, for the user agents and `~/.omp/agents`; each link of
+ *  the repository followed, `<link> -> <target>`, for a project directory reached through one),
+ *  and the skills its `autoloadSkills` names, which Oh My Pi puts into the subagent's session
+ *  before its task (arms.ts). */
 export interface AgentDefinition {
   readonly name: string;
+  readonly source: "project" | "user" | "plugin";
   readonly repo: string;
   readonly commit: string;
   readonly path: string;
@@ -882,6 +899,38 @@ export function ghSource(
       }
       return release;
     },
+    async link(repo, commit, file) {
+      const { entries, truncated } = await listingOf(repo, commit);
+      let entry: { readonly mode: string; readonly sha: string } | undefined;
+      if (!truncated) entry = entries.find((each) => each.path === file);
+      else {
+        // A commit whose recursive tree GitHub cuts short: the one level of the link's parent,
+        // read one level at a time from the root along its path, as `walk` reads a directory; a
+        // level GitHub cuts short even alone is an UnreadableDirectory, as in `walk`.
+        const parent = path.posix.dirname(file);
+        const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
+          const read = await treeRead(repo, sha, false);
+          if (!read.truncated) return read.tree;
+          throw new UnreadableDirectory(
+            repo,
+            commit,
+            parent,
+            `${repo} at ${commit}: ${parent} cannot be read: GitHub cuts the tree of ${at === "" ? "the root" : at} short even one level at a time`
+          );
+        };
+        let listed = await level(commit, "");
+        let at = "";
+        for (const name of parent === "." ? [] : parent.split("/")) {
+          const tree = listed.find((each) => each.path === name);
+          if (tree?.type !== "tree") return undefined;
+          at = at === "" ? name : `${at}/${name}`;
+          listed = await level(tree.sha, at);
+        }
+        entry = listed.find((each) => each.path === path.posix.basename(file));
+      }
+      if (entry?.mode !== "120000") return undefined;
+      return new TextDecoder().decode(await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
+    },
     async tree(repo, commit, dir, dest) {
       if (dir === "") return tarball(repo, commit, dest);
       const { entries, truncated } = await listingOf(repo, commit);
@@ -921,6 +970,14 @@ export function localSource(root: string): RepoSource {
       const where = path.join(at(repo, commit), file);
       if (!existsSync(where)) throw new NoSuchFile(`${repo} at ${commit} holds no file ${file}`);
       return new Uint8Array(readFileSync(where));
+    },
+    async link(repo, commit, file) {
+      const where = path.join(at(repo, commit), file);
+      try {
+        return lstatSync(where).isSymbolicLink() ? readlinkSync(where) : undefined;
+      } catch {
+        return undefined;
+      }
     },
     async tree(repo, commit, dir, dest) {
       const where = path.join(at(repo, commit), dir);
@@ -1279,11 +1336,28 @@ async function pluginCheckout(
 /** Where a dev box's installer scripts are in its repository (build.ts's DEVBOX_INSTALLERS_RULE:
  *  `installers/*.sh`). */
 const INSTALLERS = "installers";
-/** Oh My Pi's user agents directory as an installer names the place it links: `.omp/agent/agents`
- *  under the home, written `$HOME`, `${HOME}` or `~`. Oh My Pi reads the `*.md` files there before
- *  any plugin's agents (packages/coding-agent/src/task/discovery.ts, lines 93-120 at the pin), at
- *  each subagent's start (task/structured-subagent.ts, lines 538-541). */
-const USER_AGENTS = /^(?:\$\{?HOME\}?|~)\/\.omp\/agent\/agents\/?$/;
+/** The two agent directories under the home that an installer can make, as it names the place:
+ *  under `$HOME`, `${HOME}` or `~`. `user` is Oh My Pi's user agents directory, `.omp/agent/agents`,
+ *  which it reads after the project's and before any plugin's (packages/coding-agent/src/task/
+ *  discovery.ts, lines 93-120 at the pin), at each subagent's start (task/structured-subagent.ts,
+ *  lines 538-541). `home` is `.omp/agents` in the home itself: a project's agents directory
+ *  (PROJECT_AGENTS) at the home's level, which Oh My Pi's walk from the working directory up
+ *  reaches when the working directory is under the home (config.ts, lines 218-246). */
+const HOME_AGENTS = {
+  user: /^(?:\$\{?HOME\}?|~)\/\.omp\/agent\/agents\/?$/,
+  home: /^(?:\$\{?HOME\}?|~)\/\.omp\/agents\/?$/,
+} as const;
+type HomeAgents = keyof typeof HOME_AGENTS;
+/** Each of HOME_AGENTS as the record names it: what it holds, and what a link makes of it. */
+const HOME_AGENTS_WORDS: Readonly<Record<HomeAgents, { what: string; as: string }>> = {
+  user: { what: "the user agents of a dev box", as: "Oh My Pi's user agents directory" },
+  home: {
+    what: "the project agents of a dev box's home",
+    as: "~/.omp/agents, which Oh My Pi reads as a project's agents",
+  },
+};
+/** A word of an installer line that names `~/.omp/agents` or a path under it. */
+const HOME_AGENTS_NAMED = /^(?:\$\{?HOME\}?|~)\/\.omp\/agents(?:\/|$)/;
 /** An installer line that links `<from>` at `<to>`: `ensure_link <from> <to>` (the helper a
  *  dotfiles repository's installers/lib.sh defines), or `ln` and its flags. */
 const LINK_LINE = /^\s*(?:ensure_link|ln((?:\s+-[A-Za-z-]+)+))\s+(\S+)\s+(\S+)\s*(?:#.*)?$/;
@@ -1325,24 +1399,40 @@ function installerPath(
   return name === "HOME" ? { text } : { text, inRepository: joinPath(rest.replace(/^\/+/, "")) };
 }
 
-/** The directory of its repository an installer script links as Oh My Pi's user agents
- *  directory (USER_AGENTS), and the line (from 1) that links it; undefined when it links none. A
- *  link of the repository's root is none: it holds no agents directory of its own. */
-function agentsLink(text: string): { readonly dir: string; readonly line: number } | undefined {
+/** What an installer script makes of the agent directories under the home (HOME_AGENTS): for
+ *  each, the directory of its repository that the first line linking one there links, and that
+ *  line (from 1); and each other line one of whose words, its variables put in, names
+ *  `~/.omp/agents` or a path under it (`homeNamed`: a copy into it, a `mkdir` of it), which the
+ *  runner does not read. A comment line is none, and a link of the repository's root is none: the
+ *  root holds no agents directory of its own. */
+function installerAgents(text: string): {
+  readonly links: Partial<Record<HomeAgents, { readonly dir: string; readonly line: number }>>;
+  readonly homeNamed: readonly number[];
+} {
   const vars = scriptVariables(text);
+  const links: Partial<Record<HomeAgents, { dir: string; line: number }>> = {};
+  const homeNamed: number[] = [];
   for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim().startsWith("#")) continue;
     const link = LINK_LINE.exec(line);
-    if (link === null) continue;
-    const flags = link[1]?.trim().split(/\s+/);
-    if (flags?.some((flag) => flag === "--symbolic" || /^-[A-Za-z]*s/.test(flag)) === false) {
-      continue;
-    }
-    const from = installerPath(link[2] ?? "", vars).inRepository;
-    if (from && USER_AGENTS.test(installerPath(link[3] ?? "", vars).text)) {
-      return { dir: from, line: index + 1 };
-    }
+    const flags = link?.[1]?.trim().split(/\s+/);
+    const symbolic =
+      flags === undefined ||
+      flags.some((flag) => flag === "--symbolic" || /^-[A-Za-z]*s/.test(flag));
+    const from =
+      link !== null && symbolic ? installerPath(link[2] ?? "", vars).inRepository : undefined;
+    const to = link === null ? "" : installerPath(link[3] ?? "", vars).text;
+    const linked = (["user", "home"] as const).filter((kind) => from && HOME_AGENTS[kind].test(to));
+    for (const kind of linked) links[kind] ??= { dir: from ?? "", line: index + 1 };
+    const named = line
+      .trim()
+      .split(/\s+/)
+      .some((word) =>
+        HOME_AGENTS_NAMED.test(installerPath(word.split("=").at(-1) ?? "", vars).text)
+      );
+    if (named && !linked.includes("home")) homeNamed.push(index + 1);
   }
-  return undefined;
+  return { links, homeNamed };
 }
 
 /** The directory `dir` of `repo` at `commit`, through the cache (`dirs/<key>`): an empty directory
@@ -1369,15 +1459,150 @@ function repoDirectory(
   });
 }
 
-/** A directory of agent definitions Oh My Pi reads for a subagent: where it is written here
- *  (`dir`), the repository, commit and path it is read from, and, for the dev box's user agents,
- *  the installer line that links it (`linkedBy`). */
+/** A directory of agent definitions Oh My Pi reads for a subagent: which of its agent
+ *  directories it is (`source`), where it is written here (`dir`), the repository, commit and
+ *  path it is read from, and what links it where Oh My Pi reads it (`linkedBy`; AgentDefinition). */
 interface AgentDir {
+  readonly source: AgentDefinition["source"];
   readonly dir: string;
   readonly repo: string;
   readonly commit: string;
   readonly path: string;
   readonly linkedBy?: string;
+}
+
+/** A directory of a repository that an installer line links under the home: the repository, the
+ *  commit it is read at, the directory's path in it, and the line (`<script>:<line>`). */
+interface AgentLink {
+  readonly repo: string;
+  readonly commit: string;
+  readonly path: string;
+  readonly linkedBy: string;
+}
+
+/** Oh My Pi's project agents directory under one level of a session's working directory: the
+ *  `agents` of its config directory `.omp` (task/discovery.ts, lines 34 and 100-109 at the pin,
+ *  which keep only that base of config.ts's `.omp`, `.claude`, `.codex` and `.gemini`: lines
+ *  11-16 and 90-93; `.claude/agents` and the like are skipped by design, lines 13-16). */
+const PROJECT_AGENTS = ".omp/agents";
+/** The most symbolic links in a row `projectAgentsPath` follows; past them the path names
+ *  nothing, as Oh My Pi's stat fails on a loop. */
+const LINK_HOPS = 8;
+
+/** Where a level's `.omp/agents` is (`projectAgentsPath`): its path in the repository and each
+ *  link followed to reach it, or the link whose target leaves the repository. */
+type ProjectAgentsPath =
+  | { readonly path: string; readonly via: readonly string[] }
+  | { readonly outside: { readonly link: string; readonly target: string } };
+
+/** Where `<level>/.omp/agents` of `repo` at `commit` is, as Oh My Pi's stat reaches it: each
+ *  symbolic link the repository holds at `<level>/.omp` or at its `agents` (`RepoSource.link`)
+ *  followed to its target in the repository, LINK_HOPS in a row at most, with each link followed
+ *  (`<link> -> <target>`); or the first such link whose target is not in the repository (an
+ *  absolute path, or one above the repository's root), which the context cannot read. */
+async function projectAgentsPath(
+  source: RepoSource,
+  repo: string,
+  commit: string,
+  level: string
+): Promise<ProjectAgentsPath> {
+  let at = level;
+  const via: string[] = [];
+  for (const name of [".omp", "agents"]) {
+    let next = path.posix.join(at, name);
+    for (let hops = 0; hops < LINK_HOPS; hops++) {
+      const target = await source.link?.(repo, commit, next);
+      if (target === undefined) break;
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(next), target));
+      if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
+        return { outside: { link: next, target } };
+      }
+      via.push(`${next} -> ${target}`);
+      next = resolved === "." ? "" : resolved;
+    }
+    at = next;
+  }
+  return { path: at, via };
+}
+
+/** Whether `dir` holds an entry: a link that names nothing holds none. */
+function holdsEntries(dir: string): boolean {
+  try {
+    return readdirSync(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The project's agents of `c`'s subagent session in its checkout, as Oh My Pi finds them
+ * (task/discovery.ts, lines 100-109, and config.ts's `findAllNearestProjectConfigDirs`, lines
+ * 218-246, at the pin): the nearest `.omp/agents` directory from the session's working directory
+ * up through each parent, the profile's `workingDirectory` in its session repository (the
+ * checkout's root when it names none) and each directory above it up to the checkout's root, read
+ * from the session repository at its commit, a symbolic link at `.omp` or `agents` followed to
+ * its target in the repository (`projectAgentsPath`; the record's `linkedBy` names each link).
+ * Only that one directory is read, as Oh My Pi reads only the nearest; git holds no empty
+ * directory, so a level whose `.omp/agents` holds no file, or links to nothing in the
+ * repository, has none. None when the profile names no session repository, or no level of its
+ * checkout holds one: Oh My Pi walks on above the checkout to the filesystem's root, where the
+ * dev box's home may hold one (`devboxAgents`), and the levels between the checkout and the home
+ * are no repository's. None, with why (`stopped`), at a level whose link leaves the repository:
+ * Oh My Pi reads its target there when it is a directory, and reads no farther one then, so the
+ * nearest is not known. Throws naming the case when a read fails, and an UnreadableDirectory as
+ * it is.
+ */
+async function projectAgents(
+  c: ContextCase,
+  builds: Builds,
+  source: RepoSource
+): Promise<{ readonly dir?: AgentDir; readonly stopped?: string }> {
+  const repository = c.profile.sessionRepository;
+  if (repository === undefined) return {};
+  const { repo, commit } = repository;
+  // The working directory, then each parent of it, up to the checkout's root ("").
+  const levels: string[] = [];
+  for (let at = c.profile.workingDirectory ?? ""; ; ) {
+    levels.push(at);
+    if (at === "") break;
+    const up = path.posix.dirname(at);
+    at = up === "." ? "" : up;
+  }
+  for (const level of levels) {
+    const where = path.posix.join(level, PROJECT_AGENTS);
+    let reached: ProjectAgentsPath;
+    let dir: string | undefined;
+    try {
+      reached = await projectAgentsPath(source, repo, commit, level);
+      if (!("outside" in reached)) {
+        const at = reached.path === "" ? "." : reached.path;
+        dir = await repoDirectory(builds, source, repo, commit, at);
+      }
+    } catch (error) {
+      if (error instanceof UnreadableDirectory) throw error;
+      throw new Error(
+        `case ${c.id}: ${where} of the session repository ${repo} at ${commit}, where Oh My Pi looks for the project's agents, could not be read: ${messageFor(error)}`
+      );
+    }
+    if ("outside" in reached) {
+      return {
+        stopped: `the project agents: the session repository ${repo} at ${commit} holds ${reached.outside.link} as a link to ${reached.outside.target}, outside the repository, so the context reads neither its target, which Oh My Pi reads as the project's agents when it is a directory, nor any .omp/agents farther from the working directory`,
+      };
+    }
+    if (dir !== undefined && holdsEntries(dir)) {
+      return {
+        dir: {
+          source: "project",
+          dir,
+          repo,
+          commit,
+          path: reached.path,
+          ...(reached.via.length === 0 ? {} : { linkedBy: reached.via.join(", ") }),
+        },
+      };
+    }
+  }
+  return {};
 }
 
 /** The commit at which a subagent's session read the pool directories of `repo`, the last
@@ -1391,16 +1616,40 @@ function poolCommit(c: ContextCase, repo: string): string | undefined {
   return /\bits pool directories at ([0-9a-f]{7,40})\b/.exec(item?.source ?? "")?.[1];
 }
 
-/** The link that an installer script of `repo` at `commit` makes of a directory of the repository
- *  as Oh My Pi's user agents directory (`agentsLink`, the first script in name order that makes
- *  one), or undefined. Throws naming the case when the installers cannot be read. */
-async function installersLink(
+/** Whether the session's working directory is under its home, as far as the case says: the
+ *  absolute working directory build.ts writes into its `session repository <repo>` or `no session
+ *  repository` evidence item (the path after "working directory "), under `/home/<user>` or
+ *  `/root`; undefined when no such item names one. */
+function underHome(c: ContextCase): boolean | undefined {
+  for (const each of c.evidence ?? []) {
+    if (!each.item.startsWith("session repository ") && each.item !== "no session repository") {
+      continue;
+    }
+    const cwd = /\bworking directory (\/[^\s,;]+)/.exec(each.source)?.[1];
+    if (cwd !== undefined) return /^(?:\/home\/[^/]+|\/root)(?:\/|$)/.test(cwd);
+  }
+  return undefined;
+}
+
+/** What the installer scripts of a repository at a commit make of the agent directories under
+ *  the home (`installersAt`): for each, the first link of a directory of the repository there,
+ *  with the line (`<script>:<line>`) that makes it; and each other line that names
+ *  `~/.omp/agents`. */
+interface InstallerLinks {
+  readonly links: Partial<Record<HomeAgents, { readonly path: string; readonly linkedBy: string }>>;
+  readonly homeNamed: readonly string[];
+}
+
+/** What the installer scripts of `repo` at `commit` make of the agent directories under the home
+ *  (InstallerLinks; `installerAgents`, the scripts in name order). Throws naming the case when the
+ *  installers cannot be read. */
+async function installersAt(
   c: ContextCase,
   builds: Builds,
   source: RepoSource,
   repo: string,
   commit: string
-): Promise<{ readonly path: string; readonly linkedBy: string } | undefined> {
+): Promise<InstallerLinks> {
   let installers: string;
   try {
     installers = await repoDirectory(builds, source, repo, commit, INSTALLERS);
@@ -1413,33 +1662,47 @@ async function installersLink(
     .filter((entry) => entry.isFile() && entry.name.endsWith(".sh"))
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
+  const links: Partial<Record<HomeAgents, { path: string; linkedBy: string }>> = {};
+  const homeNamed: string[] = [];
   for (const script of scripts) {
-    const link = agentsLink(readFileSync(path.join(installers, script), "utf8"));
-    if (link !== undefined)
-      return { path: link.dir, linkedBy: `${INSTALLERS}/${script}:${link.line}` };
+    const read = installerAgents(readFileSync(path.join(installers, script), "utf8"));
+    for (const kind of ["user", "home"] as const) {
+      const link = read.links[kind];
+      if (link === undefined) continue;
+      links[kind] ??= { path: link.dir, linkedBy: `${INSTALLERS}/${script}:${link.line}` };
+    }
+    homeNamed.push(...read.homeNamed.map((line) => `${INSTALLERS}/${script}:${line}`));
   }
-  return undefined;
+  return { links, homeNamed };
 }
 
 /**
- * The dev box's user agents of `c`'s profile: the directory that a repository of the profile links
- * as Oh My Pi's user agents directory (USER_AGENTS) from one of its installer scripts
- * (`installers/*.sh`; a dotfiles repository's installers/omp.sh links its `omp/agents` there).
- * Oh My Pi reads that directory at each subagent's start, so the installers and the directory are
- * read at the commit of the subagent's start: the one the case's evidence names for the
- * repository's pool directories (`poolCommit`), else the one commit the profile holds the
- * repository at. None for a Legion store's session (arms.ts's `legionStore`), which runs no dev
- * box's installers, or when no repository of the profile links one. None, with why (`leftOut`),
- * when the profile holds a linking repository at more than one commit and the evidence names
- * neither, or when more than one repository links one, since a dev box runs one repository's
- * installers. Throws naming the repository when its installers or that directory cannot be read.
+ * The agent directories a dev box's installers link under its home (HOME_AGENTS), for `c`'s
+ * profile: for each, the directory a repository of the profile links there from one of its
+ * installer scripts (`installers/*.sh`; a dotfiles repository's installers/omp.sh links its
+ * `omp/agents` as the user agents). Oh My Pi reads them at each subagent's start, so the
+ * installers are read at the commit of the subagent's start: the one the case's evidence names
+ * for the repository's pool directories (`poolCommit`), else the one commit the profile holds
+ * the repository at. `~/.omp/agents` is one only when the session's working directory is under
+ * the home (`underHome`), where Oh My Pi's walk reaches it; elsewhere it is none, and nothing is
+ * recorded of it. None for a Legion store's session (arms.ts's `legionStore`), which runs no dev
+ * box's installers, or for a directory no repository links. None, with why (`leftOut`, by
+ * directory), when the profile holds a linking repository at more than one commit and the
+ * evidence names neither, when more than one repository links it (a dev box runs one
+ * repository's installers), and for `~/.omp/agents` when an installer line names it other than
+ * as such a link, or when the case does not say where the working directory is. Throws naming
+ * the repository when its installers cannot be read.
  */
-async function userAgents(
+async function devboxAgents(
   c: ContextCase,
   builds: Builds,
   source: RepoSource
-): Promise<{ readonly dir?: AgentDir; readonly leftOut: readonly string[] }> {
-  if (legionStore(c) !== undefined) return { leftOut: [] };
+): Promise<{
+  readonly links: Partial<Record<HomeAgents, AgentLink>>;
+  readonly leftOut: Readonly<Record<HomeAgents, readonly string[]>>;
+}> {
+  const leftOut: Record<HomeAgents, string[]> = { user: [], home: [] };
+  if (legionStore(c) !== undefined) return { links: {}, leftOut };
   // Each repository of the profile, with each commit the profile holds it at.
   const held = new Map<string, string[]>();
   for (const each of [...c.profile.skills, ...c.profile.plugins, ...c.profile.contextFiles]) {
@@ -1447,46 +1710,94 @@ async function userAgents(
     if (!commits.includes(each.commit)) commits.push(each.commit);
     held.set(each.repo, commits);
   }
-  const links: { repo: string; commit: string; path: string; linkedBy: string }[] = [];
-  const leftOut: string[] = [];
+  const found: Record<HomeAgents, AgentLink[]> = { user: [], home: [] };
+  const named: string[] = [];
   for (const [repo, commits] of held) {
     const atStart = poolCommit(c, repo);
-    const found: { commit: string; path: string; linkedBy: string }[] = [];
+    const reads: { commit: string; read: InstallerLinks }[] = [];
     for (const commit of atStart === undefined ? commits : [atStart]) {
-      const link = await installersLink(c, builds, source, repo, commit);
-      if (link !== undefined) found.push({ commit, ...link });
+      reads.push({ commit, read: await installersAt(c, builds, source, repo, commit) });
     }
-    if (atStart === undefined && commits.length > 1 && found.length > 0) {
-      leftOut.push(
-        `the user agents of a dev box: the profile holds ${repo} at ${commits.join(" and ")}, its ${found.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${found.length === 1 ? "links" : "each link"} a directory as Oh My Pi's user agents directory, and no evidence item "read times of ${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
+    const ambiguous = atStart === undefined && commits.length > 1;
+    for (const kind of ["user", "home"] as const) {
+      const links = reads.flatMap(({ commit, read }) => {
+        const link = read.links[kind];
+        return link === undefined ? [] : [{ repo, commit, ...link }];
+      });
+      if (!ambiguous || links.length === 0) {
+        found[kind].push(...links);
+        continue;
+      }
+      const { what, as } = HOME_AGENTS_WORDS[kind];
+      leftOut[kind].push(
+        `${what}: the profile holds ${repo} at ${commits.join(" and ")}, its ${links.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${links.length === 1 ? "links" : "each link"} a directory as ${as}, and no evidence item "read times of ${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
       );
-      continue;
     }
-    links.push(...found.map((link) => ({ repo, ...link })));
+    for (const { commit, read } of reads) {
+      named.push(...read.homeNamed.map((line) => `${repo}'s ${line} at ${commit}`));
+    }
   }
-  if (links.length > 1) {
-    leftOut.push(
-      `the user agents of a dev box: ${links.map((link) => `${link.repo}'s ${link.linkedBy}`).join(" and ")} each link a directory as Oh My Pi's user agents directory, and a dev box runs one repository's installers, so the context reads none of them`
+  for (const kind of ["user", "home"] as const) {
+    if (found[kind].length < 2) continue;
+    const { what, as } = HOME_AGENTS_WORDS[kind];
+    leftOut[kind].push(
+      `${what}: ${found[kind].map((link) => `${link.repo}'s ${link.linkedBy}`).join(" and ")} each link a directory as ${as}, and a dev box runs one repository's installers, so the context reads none of them`
     );
   }
-  const [link] = links;
-  if (link === undefined || leftOut.length > 0) return { leftOut };
+  if (named.length > 0) {
+    leftOut.home.push(
+      `${HOME_AGENTS_WORDS.home.what}: ${named.join(" and ")} ${named.length === 1 ? "names" : "each name"} ~/.omp/agents in a line the runner does not read as a link of a directory of the repository (ensure_link or ln -s), so the context reads none of it`
+    );
+  }
+  const [user] = found.user;
+  const [home] = found.home;
+  const under = underHome(c);
+  if (under === false) leftOut.home = [];
+  else if (home !== undefined && leftOut.home.length === 0 && under === undefined) {
+    leftOut.home.push(
+      `${HOME_AGENTS_WORDS.home.what}: ${home.repo}'s ${home.linkedBy} links ${home.path} as ~/.omp/agents, which Oh My Pi reads as a project's agents when the session's working directory is under the home, and no evidence item names the working directory, so the context reads none`
+    );
+  }
+  return {
+    links: {
+      ...(user !== undefined && leftOut.user.length === 0 ? { user } : {}),
+      ...(home !== undefined && leftOut.home.length === 0 && under === true ? { home } : {}),
+    },
+    leftOut,
+  };
+}
+
+/** The directory `link` names, read through the cache, as an agent directory of `kind` that the
+ *  record calls `as`. Throws naming the case when it cannot be read. */
+async function linkedAgents(
+  c: ContextCase,
+  builds: Builds,
+  source: RepoSource,
+  link: AgentLink,
+  kind: AgentDefinition["source"],
+  as: string
+): Promise<AgentDir> {
   try {
     return {
-      dir: { ...link, dir: await repoDirectory(builds, source, link.repo, link.commit, link.path) },
-      leftOut,
+      ...link,
+      source: kind,
+      dir: await repoDirectory(builds, source, link.repo, link.commit, link.path),
     };
   } catch (error) {
     throw new Error(
-      `case ${c.id}: ${link.path} of ${link.repo} at ${link.commit}, which ${link.linkedBy} links as Oh My Pi's user agents directory, could not be read: ${messageFor(error)}`
+      `case ${c.id}: ${link.path} of ${link.repo} at ${link.commit}, which ${link.linkedBy} links as ${as}, could not be read: ${messageFor(error)}`
     );
   }
 }
 
 /** The directories of agent definitions `c`'s subagent context reads, in Oh My Pi's order
- *  (task/discovery.ts, lines 93-120 at the pin: the user's, then each extension package's): the
- *  dev box's user agents (`userAgents`), then the `agents/` of each of `plugins` (the profile's,
- *  each with its checkout); with what of them the context leaves out. None for another context. */
+ *  (task/discovery.ts, lines 100-120 at the pin: the nearest project's, the user's, then each
+ *  extension package's): the project's agents, those of the checkout (`projectAgents`), else the
+ *  dev box's `~/.omp/agents`, which is farther from the working directory than every level of
+ *  the checkout (`devboxAgents`); the dev box's user agents; then the `agents/` of each of
+ *  `plugins` (the profile's, each with its checkout). With what of them the context leaves out:
+ *  of `~/.omp/agents` only where no level of the checkout holds the project's. None for another
+ *  context. */
 async function agentDirs(
   c: ContextCase,
   plugins: readonly { readonly plugin: ProfilePlugin; readonly tree: string }[],
@@ -1494,18 +1805,34 @@ async function agentDirs(
   source: RepoSource
 ): Promise<{ readonly dirs: readonly AgentDir[]; readonly leftOut: readonly string[] }> {
   if (!c.context.startsWith("subagent:")) return { dirs: [], leftOut: [] };
-  const user = await userAgents(c, builds, source);
+  const project = await projectAgents(c, builds, source);
+  const devbox = await devboxAgents(c, builds, source);
+  const inCheckout = project.dir !== undefined || project.stopped !== undefined;
+  const { home, user } = devbox.links;
+  const nearest =
+    project.dir ??
+    (inCheckout || home === undefined
+      ? undefined
+      : await linkedAgents(c, builds, source, home, "project", HOME_AGENTS_WORDS.home.as));
   return {
     dirs: [
-      ...(user.dir === undefined ? [] : [user.dir]),
+      ...(nearest === undefined ? [] : [nearest]),
+      ...(user === undefined
+        ? []
+        : [await linkedAgents(c, builds, source, user, "user", HOME_AGENTS_WORDS.user.as)]),
       ...plugins.map(({ plugin, tree }) => ({
+        source: "plugin" as const,
         dir: path.join(tree, plugin.path, "agents"),
         repo: plugin.repo,
         commit: plugin.commit,
         path: path.posix.join(plugin.path, "agents"),
       })),
     ],
-    leftOut: user.leftOut,
+    leftOut: [
+      ...(project.stopped === undefined ? [] : [project.stopped]),
+      ...devbox.leftOut.user,
+      ...(inCheckout ? [] : devbox.leftOut.home),
+    ],
   };
 }
 
@@ -1517,7 +1844,7 @@ async function agentDirs(
  * `autoloadSkills` names (a list, or names split at commas; each trimmed). A file that cannot be
  * read (a link that names nothing) is passed over, as Oh My Pi drops it. Null for another
  * context, or for an agent no directory defines: one of Oh My Pi's own (none of which autoloads a
- * skill at the pin), or a project's (`.omp/agents`), which a profile does not hold.
+ * skill at the pin).
  */
 function agentIn(context: string, dirs: readonly AgentDir[]): AgentDefinition | null {
   const agent = /^subagent:(.+)$/.exec(context)?.[1];
@@ -1545,6 +1872,7 @@ function agentIn(context: string, dirs: readonly AgentDir[]): AgentDefinition | 
           : [];
       return {
         name: agent,
+        source: at.source,
         repo: at.repo,
         commit: at.commit,
         path: path.posix.join(at.path, file),
@@ -1556,10 +1884,10 @@ function agentIn(context: string, dirs: readonly AgentDir[]): AgentDefinition | 
   return null;
 }
 
-/** The agent definition `c`'s subagent context runs (`agentIn`), read from the dev box's user
- *  agents and its profile's plugins at their commits through the cache, as buildContext reads
- *  them; null for a context that is no subagent's. Throws as buildContext does when a repository
- *  it reads cannot be read. */
+/** The agent definition `c`'s subagent context runs (`agentIn`), read from the project's agents,
+ *  the dev box's user agents and its profile's plugins at their commits through the cache, as
+ *  buildContext reads them; null for a context that is no subagent's. Throws as buildContext does
+ *  when a repository it reads cannot be read. */
 export async function subagentDefinition(
   c: ContextCase,
   options: Pick<ContextOptions, "source" | "cacheDir">

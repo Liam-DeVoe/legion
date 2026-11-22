@@ -175,18 +175,21 @@
  *   over those with no removed read; each model of the cases; the skill's verdict and its reason
  *   (score.ts; `keeps` is printed "no loss detected by the registered rule", or "no loss of no
  *   skill …" with no skill compared), with how many of its screened cases have a listing that
- *   could not be measured; the rule's sensitivity (`lossChance` at an old pass rate of 0.9 and
- *   0.7 and drops of 0.1 to 0.4), each screened case's smallest drop and their medians
- *   (score.ts's `dropFigures`), the estimated false-loss rate at the cases run
- *   (`falseLossChance`), the spend, the peak memory, how many captures' system-prompt digests
- *   differ from their session's, and the `--limits` text as it is. Beside the verdict, as
- *   descriptions: each kind's screened cases with each arm's screen passes and the informative
- *   ones, the mean of old's screen pass rate less the compared arm's over the screened cases, all
- *   and each kind's, with its 95% t interval over the cases (score.ts's `meanDifference`), the
- *   screened cases that tie, floor, ceil and reverse (`screenShapes`), and the judge's identity
- *   (judge.ts's `judgeIdentity`) with how many stages record it. Its compared arm is the one
- *   its results record. With `--reading-models`, it prints each model of the file with its
- *   sessions and
+ *   could not be measured and how many rest on the assumption that their session had Dispatch;
+ *   the rule's sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to
+ *   0.4), each screened case's smallest drop and their medians (score.ts's `dropFigures`), the
+ *   estimated false-loss rate at the cases run (`falseLossChance`), the spend, the peak memory,
+ *   how many captures' system-prompt digests differ from their session's, how many cases carry
+ *   the Envoy plugin's block of the skill, by where the answer that their session had Dispatch
+ *   comes from (arms.ts's `dispatchOf`: a Legion role, the transcript, or the assumption; each
+ *   capture that carries the block records it in its stage's `captures`), and the `--limits` text
+ *   as it is. Beside the verdict, as descriptions: each kind's screened cases with each arm's
+ *   screen passes and the informative ones, the mean of old's screen pass rate less the compared
+ *   arm's over the screened cases, all and each kind's, with its 95% t interval over the cases
+ *   (score.ts's `meanDifference`), the screened cases that tie, floor, ceil and reverse
+ *   (`screenShapes`), and the judge's identity (judge.ts's `judgeIdentity`) with how many stages
+ *   record it. Its compared arm is the one its results record. With `--reading-models`, it prints
+ *   each model of the file with its sessions and
  *   whether the gateway serves it (the file's `served`), the sessions with no model and not
  *   queried, and the served models the screened session cases ran on, each with its cases; a
  *   verdict's line then ends with the reading sessions it speaks for, on each served model its
@@ -1899,11 +1902,19 @@ const Run = z.strictObject({
 });
 type Run = z.infer<typeof Run>;
 
-/** The capture an arm's runs replay: its body file, below `--out`, and the two digests. */
+/** How a case's session is taken to have had Dispatch, which the Envoy plugin's block rests on
+ *  (arms.ts's `dispatchOf`): from a Legion role, from its transcript, or on the assumption. */
+const DispatchFrom = z.enum(["legion-role", "transcript", "assumed"]);
+type DispatchFrom = z.infer<typeof DispatchFrom>;
+
+/** The capture an arm's runs replay: its body file, below `--out`, and the two digests; and, for
+ *  a capture that carries the Envoy plugin's block of the skill, where the answer that the
+ *  session had Dispatch comes from (absent otherwise, and in a stage made before this field). */
 const CaptureNote = z.strictObject({
   bodyFile: z.string(),
   captureDigest: z.string().nullable(),
   sessionDigest: z.string().nullable(),
+  dispatch: DispatchFrom.optional(),
 });
 
 /** How a stage's runs were sent, as each stage result records it: each run with a session id of
@@ -2766,6 +2777,11 @@ async function runStage(
       bodyFile: path.relative(r.out, capture.bodyFile),
       captureDigest: capture.record.captureDigest ?? null,
       sessionDigest: c.sessionDigest,
+      // A capture saved before the record kept its blocks holds no `injections`.
+      ...((capture.record.injections ?? []).some((each) => each.by === "plugin") &&
+      capture.record.dispatch
+        ? { dispatch: capture.record.dispatch.from }
+        : {}),
     };
   }
   countReads();
@@ -3276,9 +3292,31 @@ function speaksFor(b: Behaviour, score: SkillScore): string {
   );
 }
 
+/** Where the answer that each case's session had Dispatch comes from, by case id, for each case
+ *  one of whose captures carries the Envoy plugin's block of the skill (CaptureNote's `dispatch`,
+ *  of any stage). */
+function dispatchAnswers(results: ReadonlyMap<string, CaseResult>): Map<string, DispatchFrom> {
+  const answers = new Map<string, DispatchFrom>();
+  for (const result of results.values()) {
+    const stages = [...Object.values(result.stages), ...(result.earlierConfirms ?? [])];
+    for (const stage of stages) {
+      for (const note of Object.values(stage?.captures ?? {})) {
+        if (note.dispatch !== undefined) answers.set(result.caseId, note.dispatch);
+      }
+    }
+  }
+  return answers;
+}
+
 /** The end of a verdict's line: how many of the skill's screened cases have a listing measure
- *  that says their listing could not be measured, or none (score.ts's `listingStanding`). */
-function listingWords(b: Behaviour, score: SkillScore): string {
+ *  that says their listing could not be measured (score.ts's `listingStanding`), and how many of
+ *  them carry the Envoy plugin's block on the assumption that their session had Dispatch
+ *  (`dispatchAnswers`), so a reader sees both rests of the verdict at once. */
+function listingWords(
+  b: Behaviour,
+  results: ReadonlyMap<string, CaseResult>,
+  score: SkillScore
+): string {
   const screened = score.cases.filter(
     (each) => each.screen.state === "counted" && each.drop?.stage !== "screen"
   );
@@ -3286,7 +3324,9 @@ function listingWords(b: Behaviour, score: SkillScore): string {
     const c = b.cases.find((candidate) => candidate.id === each.caseId);
     return listingStanding(c?.evidence).state === "not measurable";
   }).length;
-  return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured`;
+  const answers = dispatchAnswers(results);
+  const assumed = screened.filter((each) => answers.get(each.caseId) === "assumed").length;
+  return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
@@ -3315,7 +3355,7 @@ function verdictLine(
         ? `not yet: two confirms on one runner disagree in ${third.join(", ")}, so a third confirm of each is due (behaviour confirm)`
         : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
   }
-  const listing = listingWords(b, score);
+  const listing = listingWords(b, results, score);
   if (outcome.verdict === null) {
     const controlResult =
       score.controlCase === undefined ? undefined : results.get(score.controlCase);
@@ -3776,6 +3816,11 @@ function reportCommand(given: Behaviour): void {
     `digests: ${differ.length} of ${notes.size} captures' system-prompt digests differ from their session's`
   );
   lines.push(judgeLine(results));
+  const answers = [...dispatchAnswers(results).values()];
+  const from = (answer: DispatchFrom) => answers.filter((each) => each === answer).length;
+  lines.push(
+    `dispatch: ${answers.length} cases carry the Envoy plugin's block of the skill: ${from("assumed")} rest on the assumption that their session had Dispatch, ${from("legion-role")} take it from a Legion role, ${from("transcript")} from their transcript (arms.ts's dispatchOf)`
+  );
   const total = controlsUsd + stageUsd.screen + stageUsd.confirm + stageUsd.control;
   lines.push(
     `spend at list price: $${total.toFixed(4)} (judge controls $${controlsUsd.toFixed(4)}, screen $${stageUsd.screen.toFixed(4)}, confirm $${stageUsd.confirm.toFixed(4)}, control $${stageUsd.control.toFixed(4)})`

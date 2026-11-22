@@ -78,8 +78,9 @@
  *   plugin puts it into a session with Dispatch from its session-start hook
  *   (packages/claude-envoy/hooks/session-hook.ts), which a load test's Claude Code does not run,
  *   and a profile does not say whether its session had that plugin.
- * - A skill a subagent's agent definition autoloads (`autoloadSkills`, read from the profile's
- *   plugins at their commits, context.ts's `subagentDefinition`): a `subagent:<agent>` profile
+ * - A skill a subagent's agent definition autoloads (`autoloadSkills`, read as Oh My Pi reads it:
+ *   the dev box's user agents its installers link, then the profile's plugins, each at its commit;
+ *   context.ts's `subagentDefinition`): a `subagent:<agent>` profile
  *   whose agent autoloads the skill is refused on Oh My Pi, before any model call. The subagent
  *   gets the skill's text before its task whatever the listing says, and under another name its
  *   agent would autoload none.
@@ -154,7 +155,12 @@
  * the numbers (exit 3): the architect decides such a load. The skill's verdict is made with and
  * without the tasks whose listing could not be measured (`listedOutcome`), both in the summary's
  * `verdicts`: where they agree it stands, with how many tasks were not measured; where they
- * differ there is no verdict, since it depends on those tasks.
+ * differ there is no verdict, since it depends on those tasks. Beside the listing counts, the
+ * summary's `dispatch` and the listing rule's line count the tasks whose capture carries the
+ * Envoy plugin's block of the skill, and of them those that rest on the assumption that their
+ * session had Dispatch: a task holds no message of its session, so arms.ts's `dispatchOf` answers
+ * from its profile's context alone (a Legion role's, else the assumption), and each capture's
+ * record keeps that answer (`dispatch`).
  */
 import { createHash } from "node:crypto";
 import {
@@ -169,7 +175,7 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { type Arm, type Injection, PLUGIN_INJECTED, withPluginBlock } from "./arms";
+import { type Arm, dispatchOf, type Injection, PLUGIN_INJECTED, withPluginBlock } from "./arms";
 import {
   anthropicHeaders,
   type CaptureCase,
@@ -1317,6 +1323,9 @@ class LoadTest {
         messages: placed?.messages ?? [task],
         profileSkills: caseProfile.skills,
         injections,
+        // A task holds no message of its session, so the answer comes from its context alone: a
+        // Legion role's, or the assumption.
+        dispatch: dispatchOf({ context, messages: [] }),
       },
     };
   }
@@ -1949,6 +1958,22 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     notMeasurable: standings.filter((standing) => standing.state === "not measurable").length,
     dropped: listingDrops.size,
   };
+  // Each task whose capture carries the Envoy plugin's block of the skill, by where the answer
+  // that its session had Dispatch comes from (arms.ts's `dispatchOf`), counted beside the listing.
+  const froms =
+    o.host === "omp"
+      ? profiled.flatMap(({ profile }) =>
+          pluginInjects(profile.profile, own)
+            ? [dispatchOf({ context: profile.profile.context, messages: [] }).from]
+            : []
+        )
+      : [];
+  const dispatchCounts = {
+    carryBlock: froms.length,
+    assumed: froms.filter((from) => from === "assumed").length,
+    legionRole: froms.filter((from) => from === "legion-role").length,
+    transcript: froms.filter((from) => from === "transcript").length,
+  };
   // With no --hint-model the hint model is the model itself, and Oh My Pi's hints are written on
   // the Messages route only, so each capture to be made would fail.
   if (
@@ -2100,6 +2125,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           listing: listings.get(task.id) ?? null,
         })),
         listing: listingCounts,
+        dispatch: dispatchCounts,
         verdict,
         verdicts: {
           withUnmeasured: listed.withUnmeasured,
@@ -2125,7 +2151,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
   );
   test.say(
-    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds`
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds; ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {
