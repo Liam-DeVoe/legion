@@ -3019,7 +3019,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 212: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
+// 221: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
 // commits as, keys sorted (runtime.RoleIdentities). The push step of `legion jj` reads it
@@ -3035,12 +3035,13 @@ package api
 // release has no table, and its step does nothing; the reader passes over a field of an identity
 // it does not know, so a field a later release adds turns no step off. No shape of `GET
 // /legion/v1/state` or of a request moves, and this change adds no store migration; its records
-// in contract-shapes.json and request-shapes.json are 205's, written again at 212 by `-update`.
-// (This entry takes 212, above main's 205: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head of each of the 38 open pull requests of cybermonklabs/legion, of 415 open,
-// whose file list names this file, made on 2026-11-21 between 21:15:31Z and 21:40:45Z, found 206
-// declared by #3712, 207 by #3993, #4392, #4432, #4590 and #4805, 208 by #4175, 209 by #4049, 210
-// by #4661, 211 by #4611, and 213 to 217 by others, and none declaring 212. This entry stood at
-// 200, 202 and 209 before. Read the base's own number and every open pull request again at the
-// next merge rather than from this line.)
-const DaemonAPIVersion = 212
+// in contract-shapes.json and request-shapes.json are 205's, written again at 221 by `-update`.
+// (This entry takes 221, above main's 205: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head of each of the 33 open pull requests of cybermonklabs/legion, of 438 open,
+// whose file list names this file, made on 2026-11-22 between 07:24:26Z and 07:41:06Z, found 206
+// declared by #3712 and #4940, 207 by #3993 and #4432, 208 by #4175, 209 by #4049, 210 by #4661,
+// 211 by #2230, 212 by #4030, #4392 and #4540, 213 to 220 by others, 223 by #4805 and 224 by
+// #4960, and none declaring 221. This entry stood at 200, 202, 209 and 212 before. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+const DaemonAPIVersion = 221
