@@ -92,16 +92,16 @@
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
  * answer names that finding.
  */
-import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { textLines } from "./cases";
-import { type CraftList, readerProperties } from "./craftlist";
+import { OneLine, sha256 } from "./common";
+import { type CraftList, PropertyId, readerProperties } from "./craftlist";
 import type { Gateway, MessagesBody, ReplyMessage, Spent } from "./gateway";
 import { TaskLabel } from "./score";
-import type { StyleRule } from "./style";
+import { STYLE_PARTS, type StylePart, type StyleRule } from "./style";
 
 /** The directory of the prompt files. */
 export const PROMPTS_DIR = path.join(import.meta.dir, "prompts");
@@ -203,7 +203,7 @@ export function loadPrompt(name: string): LoadedPrompt {
     const bytes = readFileSync(path.join(PROMPTS_DIR, `${name}.md`));
     prompt = {
       ...parsePrompt(name, bytes.toString("utf8")),
-      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sha256: sha256(bytes),
     };
     prompts.set(name, prompt);
   }
@@ -212,7 +212,7 @@ export function loadPrompt(name: string): LoadedPrompt {
 
 /** One text block of a request's user message. `cache` marks it for the prompt cache: a part that
  *  every request of a batch shares, sent before the part that differs. */
-export interface UserPart {
+interface UserPart {
   readonly text: string;
   readonly cache?: boolean;
 }
@@ -329,10 +329,6 @@ const Id = z.string().min(1);
 /** A file and a line of it, from 1. */
 const Place = z.strictObject({ file: z.string().min(1), line: z.int().positive() });
 type Place = z.infer<typeof Place>;
-/** One line of text: not blank, no line break. */
-const OneLine = z
-  .string()
-  .refine((text) => text.trim() !== "" && !text.includes("\n"), "is not one non-blank line");
 /** Text that is not blank. */
 const NonBlank = z.string().refine((text) => text.trim() !== "", "is blank");
 
@@ -986,13 +982,12 @@ const tasksReader: Reader<TasksInput, TasksAnswer> = {
 // and its nearest skills of theirs.
 
 const StyleId = z.string().regex(/^S[1-9]\d*$/, "is not S<n>");
-const PropertyId = z.string().regex(/^C[1-9]\d*$/, "is not C<n>");
 /** What the craft reader's `<style>` calls each part of the style text. */
-const PART_NAMES = {
+const PART_NAMES: Readonly<Record<StylePart, string>> = {
   order: "the order table",
   rules: "the rules",
   check: "the check before you commit",
-} as const;
+};
 /** A skill and its files: a nearest skill of theirs. */
 const NamedSkill = z.strictObject({
   name: z.string().regex(/^[^:\s]+$/, "is not a skill name with no colon and no space"),
@@ -1002,7 +997,7 @@ const NamedSkill = z.strictObject({
 const StyleRuleInput = z.strictObject({
   id: StyleId,
   line: z.int().positive(),
-  part: z.enum(["order", "rules", "check"]),
+  part: z.enum(STYLE_PARTS),
   text: z.string().min(1),
 });
 type StyleRuleInput = z.infer<typeof StyleRuleInput>;
@@ -1052,7 +1047,7 @@ export const CraftAnswer = z.strictObject({
 });
 export type CraftAnswer = z.infer<typeof CraftAnswer>;
 /** A gap's rule against a nearest skill: `nearest:<skill>:<path>:<line>`. */
-const NEAREST_RULE = /^nearest:([^:]+):(.+):(\d+)$/;
+export const NEAREST_RULE = /^nearest:([^:]+):(.+):(\d+)$/;
 
 /** Each rule of the style text, and each property of `list` that a reader checks (never one a
  *  behaviour test checks), as the craft and proposal readers take them. */

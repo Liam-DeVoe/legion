@@ -40,13 +40,13 @@
  */
 import path from "node:path";
 import { z } from "zod";
-import { firstLine, type GhRetries, schemaFaults } from "./common";
+import { firstLine, type GhRetries, schemaFaults, started } from "./common";
 import type { SkillCutsConfig } from "./config";
 import { type Gh, type GhResult, parseJson, parseManifest } from "./copies";
 
 export const PLUGINS_MANIFEST = "omp/plugins/package.json";
 export const INSTALLER = "installers/omp.sh";
-export const SKILL_POOLS = "skills-sources.json";
+const SKILL_POOLS = "skills-sources.json";
 
 /** A skill set of the configuration. */
 export type SkillSet = NonNullable<SkillCutsConfig["sets"]>[number];
@@ -106,7 +106,8 @@ export interface PinChange {
   readonly after: string;
 }
 
-const COMMIT = /^[0-9a-f]{40}$/;
+/** A commit's 40 hex digits. */
+export const COMMIT = /^[0-9a-f]{40}$/;
 const NOT_FOUND = /\b404\b|Not Found/;
 const RAW = "Accept: application/vnd.github.raw";
 const SKILL_FILE = /^skills\/([^/]+)\/SKILL\.md$/;
@@ -385,7 +386,9 @@ export class SetReads {
 
 /** The pins of `sets` at the commit `commit` of `dotfilesRepo`, or at its default branch's commit
  *  now when `commit` is undefined. Throws on a set no line or more than one line pins, a pin that
- *  does not resolve, a set whose skills are not at `skills/`, and a read that fails. */
+ *  does not resolve, a set whose skills are not at `skills/`, and a read that fails. The reads that
+ *  need nothing of each other run at once (common.ts's `ghLimiter` bounds the gh processes), and
+ *  the first failure thrown is the one reading them in turn would meet first. */
 export async function readPins(
   reads: SetReads,
   sets: readonly SkillSet[],
@@ -399,55 +402,65 @@ export async function readPins(
     at = head.commit;
     commitFrom = `the default branch ${head.branch} of ${dotfilesRepo} when the count ran`;
   }
-  const plugins = await reads.text(dotfilesRepo, at, PLUGINS_MANIFEST);
-  const installer = await reads.text(dotfilesRepo, at, INSTALLER);
+  const dotfilesAt = at;
+  const pluginsRead = started(reads.text(dotfilesRepo, dotfilesAt, PLUGINS_MANIFEST));
+  const installerRead = started(reads.text(dotfilesRepo, dotfilesAt, INSTALLER));
+  const plugins = await pluginsRead;
+  const installer = await installerRead;
   const pins = [
     ...(plugins === undefined ? [] : packagePins(plugins, sets)),
     ...(installer === undefined ? [] : vendorPins(installer, sets)),
   ];
   let pools: Promise<string | undefined> | undefined;
-  const read: SetAtPin[] = [];
-  for (const set of sets) {
+  /** `set` at its pin, its reads made in this order but each started as soon as what it needs is
+   *  read: its tag, then where its skills are, its upstreams and its skills. */
+  const readSet = async (set: SkillSet): Promise<SetAtPin> => {
     const mine = pins.filter((pin) => pin.set === set.id);
     const pin = mine[0];
     if (pin === undefined) {
       throw new Error(
-        `the dotfiles commit ${at} pins no ${set.id} (${set.repo}): neither ${PLUGINS_MANIFEST} as a github: dependency nor ${INSTALLER} by an ensure_vendor line`
+        `the dotfiles commit ${dotfilesAt} pins no ${set.id} (${set.repo}): neither ${PLUGINS_MANIFEST} as a github: dependency nor ${INSTALLER} by an ensure_vendor line`
       );
     }
     if (mine.length > 1) {
       throw new Error(
-        `the dotfiles commit ${at} pins ${set.id} ${mine.length} times (${mine.map((each) => `${each.manifest}:${each.line}`).join(", ")}); set-count reads one pin a set`
+        `the dotfiles commit ${dotfilesAt} pins ${set.id} ${mine.length} times (${mine.map((each) => `${each.manifest}:${each.line}`).join(", ")}); set-count reads one pin a set`
       );
     }
+    const upstreamsRead = started(reads.upstreams(set.repo));
     const resolved = await reads.resolve(set.repo, pin.ref);
+    const skillsRead = started(reads.skills(set.repo, resolved.commit));
     let skillsFrom: string;
     try {
       if (pin.kind === "package") {
         skillsFrom = packageSkills(await reads.text(set.repo, resolved.commit, "package.json"));
       } else {
-        pools ??= reads.text(dotfilesRepo, at, SKILL_POOLS);
+        pools ??= started(reads.text(dotfilesRepo, dotfilesAt, SKILL_POOLS));
         skillsFrom = vendorPool(await pools, pin.dir);
       }
     } catch (error) {
       throw new Error(`${set.id} at ${resolved.commit}: ${(error as Error).message}`);
     }
-    read.push({
+    return {
       id: set.id,
       repo: set.repo,
-      upstreams: await reads.upstreams(set.repo),
+      upstreams: await upstreamsRead,
       pin,
       commit: resolved.commit,
       resolvedBy: resolved.by,
       skillsFrom,
-      skills: await reads.skills(set.repo, resolved.commit),
-    });
-  }
-  return { commit: at, commitFrom, sets: read };
+      skills: await skillsRead,
+    };
+  };
+  const setsRead = sets.map((set) => started(readSet(set)));
+  const read: SetAtPin[] = [];
+  for (const each of setsRead) read.push(await each);
+  return { commit: dotfilesAt, commitFrom, sets: read };
 }
 
 /** Each commit of `dotfilesRepo` in [`since`, `until`) at which a pin of one of `sets` changed, in
- *  the order of their dates. */
+ *  the order of their dates. Every manifest's listing and every commit's two texts are read at
+ *  once, and the first failure thrown is the one reading them in turn would meet first. */
 export async function pinChanges(
   reads: SetReads,
   sets: readonly SkillSet[],
@@ -455,16 +468,29 @@ export async function pinChanges(
   since: string,
   until: string
 ): Promise<PinChange[]> {
-  const changes: PinChange[] = [];
-  for (const [manifest, pinsOf] of [
-    [PLUGINS_MANIFEST, packagePins],
-    [INSTALLER, vendorPins],
-  ] as const) {
-    for (const commit of await reads.commits(dotfilesRepo, manifest, since, until)) {
+  /** The changes of the pins in `manifest`, as `pinsOf` reads them: every commit's two texts read
+   *  at once, each commit then taken in the listing's order. */
+  const manifestChanges = async (
+    manifest: string,
+    pinsOf: (text: string, sets: readonly SkillSet[]) => PinLine[]
+  ): Promise<PinChange[]> => {
+    const listed = (await reads.commits(dotfilesRepo, manifest, since, until)).map((commit) => {
       const parent = commit.parents[0]?.sha;
-      const before =
-        parent === undefined ? undefined : await reads.text(dotfilesRepo, parent, manifest);
-      const after = await reads.text(dotfilesRepo, commit.sha, manifest);
+      return {
+        commit,
+        parent,
+        beforeRead: started(
+          parent === undefined
+            ? Promise.resolve(undefined)
+            : reads.text(dotfilesRepo, parent, manifest)
+        ),
+        afterRead: started(reads.text(dotfilesRepo, commit.sha, manifest)),
+      };
+    });
+    const changes: PinChange[] = [];
+    for (const { commit, parent, beforeRead, afterRead } of listed) {
+      const before = await beforeRead;
+      const after = await afterRead;
       /** The text of the pins of `set` in the manifest's text `text` at `at`. */
       const pinned = (text: string | undefined, at: string | undefined, set: SkillSet) => {
         try {
@@ -488,7 +514,14 @@ export async function pinChanges(
         });
       }
     }
-  }
+    return changes;
+  };
+  const manifestsRead = [
+    started(manifestChanges(PLUGINS_MANIFEST, packagePins)),
+    started(manifestChanges(INSTALLER, vendorPins)),
+  ];
+  const changes: PinChange[] = [];
+  for (const each of manifestsRead) changes.push(...(await each));
   return changes.sort(
     (a, b) =>
       a.date.localeCompare(b.date) ||

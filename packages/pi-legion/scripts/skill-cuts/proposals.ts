@@ -19,11 +19,10 @@
  * target skill's findings entry, the style rules and the reader properties; it answers what the
  * change fixes and makes.
  */
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { json, Refused, writeWhole } from "./common";
+import { fileDigests, json, Refused, sha256, writeWhole } from "./common";
 import type { CraftList } from "./craftlist";
 import { BudgetSpent, type Gateway, usdOf } from "./gateway";
 import {
@@ -402,9 +401,28 @@ export interface ProposalsIo {
   err(line: string): void;
 }
 
-/** The SHA-256 of `text`, in hex. */
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
+/** The records an entry gives of the style text and the craft list a reader read: each one's file,
+ *  the words its flag gives it and its SHA-256, the style text's count of rules, and the ids of
+ *  `properties`, the craft list's reader properties sent. A `proposals` entry and a `craft` entry
+ *  (cli.ts's `craftRead`) give them so. */
+export function rulesRecords(
+  reads: Pick<ProposalsRun, "style" | "craft">,
+  properties: readonly { readonly id: string }[]
+) {
+  return {
+    style: {
+      file: reads.style.file,
+      source: reads.style.source,
+      sha256: reads.style.sha256,
+      rules: reads.style.rules.length,
+    },
+    craft: {
+      file: reads.craft.file,
+      source: reads.craft.source,
+      sha256: reads.craft.sha256,
+      readerProperties: properties.map((property) => property.id),
+    },
+  };
 }
 
 /** The file of item `id`'s entry under `out`. */
@@ -449,7 +467,7 @@ export interface ProposalsGateways {
   readonly proposal: Gateway;
 }
 
-/** Writes reader `name`'s refusals of item `id` to `<out>/<id>.refused.json`, and says so. */
+/** Writes the reader's refusals of item `id` to `<out>/<id>.refused.json`, and says so. */
 function writeRefused(run: ProposalsRun, id: string, error: ReaderFailed, io: ProposalsIo): void {
   const file = path.join(run.out, `${id}.refused.json`);
   writeWhole(
@@ -465,9 +483,14 @@ function writeRefused(run: ProposalsRun, id: string, error: ReaderFailed, io: Pr
   io.err(`proposals: ${id}: ${error.message}; no entry; written to ${file}`);
 }
 
-/** Reads `item` with both readers and writes its entry and the user messages sent; returns
- *  whether it has an entry. A reader whose every reply was refused leaves it none, and writes its
- *  refusals beside. */
+/** A target skill as a run reads it, once: its files (`skillFiles`) and their SHA-256s. */
+interface TargetSkill {
+  readonly files: { path: string; text: string }[];
+  readonly digests: { path: string; sha256: string }[];
+}
+
+/** Reads `item` with both readers and writes its entry and the user messages sent. A reader whose
+ *  every reply was refused leaves it none, and writes its refusals beside. */
 async function readItem(
   run: ProposalsRun,
   item: ProposalItem,
@@ -475,10 +498,14 @@ async function readItem(
     readonly targetInputs: ReadonlyMap<string, ProposalTargetInput["diff"]>;
     /** Each diff's files by path (readers.ts's `diffFilesByPath`), by its prefix. */
     readonly files: ReadonlyMap<string, ReadonlyMap<string, DiffFile>>;
+    /** The style rules and reader properties of the run (`rulesInput`), the same for each item. */
+    readonly rules: Pick<ProposalInput, "style" | "properties">;
+    /** Each target skill read so far, by its directory. */
+    readonly skills: Map<string, TargetSkill>;
   },
   gateways: ProposalsGateways,
   io: ProposalsIo
-): Promise<boolean> {
+): Promise<void> {
   const diff = run.diffs.get(idPrefix(item.id));
   const diffInput = shared.targetInputs.get(idPrefix(item.id));
   const files = shared.files.get(idPrefix(item.id));
@@ -498,14 +525,15 @@ async function readItem(
     `<!-- the user message of the ${name} request -->\n${userParts(name, value)
       .map((part) => part.text)
       .join("\n\n")}\n`;
-  writeWhole(input, message("proposal-target", targetInput));
+  const targetMessage = message("proposal-target", targetInput);
+  writeWhole(input, targetMessage);
   let target: ReaderResult;
   try {
     target = await runReader("proposal-target", targetInput, gateways.target);
   } catch (error) {
     if (!(error instanceof ReaderFailed)) throw error;
     writeRefused(run, item.id, error, io);
-    return false;
+    return;
   }
   // runReader parsed it with the proposal-target reader's answer schema.
   const targetAnswer = target.answer as ProposalTargetAnswer;
@@ -521,7 +549,7 @@ async function readItem(
       lines: at.lines,
     };
   });
-  const rules = rulesInput(run.style.rules, run.craft.list);
+  const rules = shared.rules;
   const base = {
     entry: "proposal",
     id: item.id,
@@ -531,19 +559,7 @@ async function readItem(
     line: item.line,
     body: run.body,
     diff: { pr: diff.pr, file: diff.file, sha256: diff.sha256 },
-    style: {
-      file: run.style.file,
-      source: run.style.source,
-      sha256: run.style.sha256,
-      rules: run.style.rules.length,
-    },
-    craft: {
-      file: run.craft.file,
-      source: run.craft.source,
-      sha256: run.craft.sha256,
-      readerProperties: rules.properties.map((property) => property.id),
-    },
-    findings: { file: run.findings.file, sha256: run.findings.sha256 },
+    ...rulesRecords(run, rules.properties),
     input,
     target: {
       reader: { prompt: "proposal-target", settings: loadPrompt("proposal-target").settings },
@@ -570,7 +586,7 @@ async function readItem(
       })
     );
     io.out(`proposals: ${item.id}: no target found; $${targetUsd.toFixed(4)} at list price\n`);
-    return true;
+    return;
   }
   const targets: unknown[] = [];
   const texts: ProposalInput["targets"] = [];
@@ -597,7 +613,13 @@ async function readItem(
     const root = run.skillsRoots.find((candidate) => candidate.repo === repo);
     if (root === undefined) throw new Error(`no skills root is of ${repo}`);
     const dir = path.join(root.dir, name);
-    const files = skillFiles(dir);
+    let skill = shared.skills.get(dir);
+    if (skill === undefined) {
+      const files = skillFiles(dir);
+      skill = { files, digests: fileDigests(files) };
+      shared.skills.set(dir, skill);
+    }
+    const { files, digests } = skill;
     const entry = run.findings.entries.findLast(
       ({ entry }) => entry.skill.source === repo && path.basename(entry.skill.dir) === name
     );
@@ -606,7 +628,7 @@ async function readItem(
       repo,
       name,
       dir,
-      files: files.map((file) => ({ path: file.path, sha256: sha256(file.text) })),
+      files: digests,
       findings:
         entry === undefined
           ? null
@@ -628,17 +650,14 @@ async function readItem(
     findings,
     ...rules,
   };
-  writeWhole(
-    input,
-    `${message("proposal-target", targetInput)}\n${message("proposal", proposalInput)}`
-  );
+  writeWhole(input, `${targetMessage}\n${message("proposal", proposalInput)}`);
   let proposal: ReaderResult;
   try {
     proposal = await runReader("proposal", proposalInput, gateways.proposal);
   } catch (error) {
     if (!(error instanceof ReaderFailed)) throw error;
     writeRefused(run, item.id, error, io);
-    return false;
+    return;
   }
   // runReader parsed it with the proposal reader's answer schema.
   const answer = proposal.answer as ProposalAnswer;
@@ -659,11 +678,10 @@ async function readItem(
   io.out(
     `proposals: ${item.id}: fixes ${answer.fixes.length}, makes ${answer.makes.length}; $${usd.toFixed(4)} at list price\n`
   );
-  return true;
 }
 
 /** Waits for each of `reads`, then throws the first rejection, a spent budget before any other. */
-async function settle(reads: readonly Promise<boolean>[]): Promise<void> {
+async function settle(reads: readonly Promise<void>[]): Promise<void> {
   const failed = (await Promise.allSettled(reads)).flatMap((each) =>
     each.status === "rejected" ? [each.reason as unknown] : []
   );
@@ -701,12 +719,18 @@ export async function runProposals(
   const files = new Map(
     [...run.diffs].map(([prefix, diff]) => [prefix, diffFilesByPath(diff.files)])
   );
+  const shared = {
+    targetInputs,
+    files,
+    rules: rulesInput(run.style.rules, run.craft.list),
+    skills: new Map<string, TargetSkill>(),
+  };
   const firsts = new Map<string, ProposalItem>();
   for (const item of pending) {
     if (!firsts.has(idPrefix(item.id))) firsts.set(idPrefix(item.id), item);
   }
   const first = new Set(firsts.values());
-  const read = (item: ProposalItem) => readItem(run, item, { targetInputs, files }, gateways, io);
+  const read = (item: ProposalItem) => readItem(run, item, shared, gateways, io);
   await settle([...first].map(read));
   await settle(pending.filter((item) => !first.has(item)).map(read));
   return run.items.flatMap((item) => (existsSync(entryFile(run.out, item.id)) ? [] : [item.id]));

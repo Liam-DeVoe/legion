@@ -920,7 +920,7 @@ describe("behaviour", () => {
       `verdict: loss: in c02, c04, c05, c06, c07, c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c02) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
     );
     // Each informative case passed old 10, new 0 and none 0 of its screen runs.
-    const each = falseLossChance({ old: 10, new: 0, none: 0 });
+    const each = falseLossChance({ old: 10, compared: 0, none: 0 });
     const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
     expect(each).toBeGreaterThan(0);
     expect(reported.stdout).toContain(
@@ -930,7 +930,7 @@ describe("behaviour", () => {
       `(c02 ${percent(each)}, c04 ${percent(each)}, c05 ${percent(each)}, c06 ${percent(each)}, c07 ${percent(each)}, c08 ${percent(each)})`
     );
     expect(lines).toContain(
-      `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, cut, none: 0.1 }))}`).join(", ")}`
+      `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, compared: cut, none: 0.1 }))}`).join(", ")}`
     );
     expect(lines).toContain(
       "digests: 23 of 23 captures' system-prompt digests differ from their session's"
@@ -1690,10 +1690,10 @@ process.stdout.write(JSON.stringify(answers[route]));
       counted > 0 && Math.abs(exact - counted) / counted < 1e-9;
     // Old and cut pooled with a Laplace term, none with its own: (o + n + 1)/22 and (z + 1)/12.
     for (const passes of [
-      { old: 7, new: 6, none: 2 },
-      { old: 9, new: 4, none: 0 },
+      { old: 7, compared: 6, none: 2 },
+      { old: 9, compared: 4, none: 0 },
     ]) {
-      const p = (passes.old + passes.new + 1) / 22;
+      const p = (passes.old + passes.compared + 1) / 22;
       const counted = bruteForce(p, p, (passes.none + 1) / 12);
       expect({ passes, agrees: agrees(falseLossChance(passes), counted) }).toEqual({
         passes,
@@ -1702,15 +1702,15 @@ process.stdout.write(JSON.stringify(answers[route]));
     }
     // An old text that passed 10 of 10 still has a chance above 0: the pooled rate is 21/22, not
     // the screen's own rate of 1, at which no loss could happen.
-    const full = falseLossChance({ old: 10, new: 10, none: 0 });
+    const full = falseLossChance({ old: 10, compared: 10, none: 0 });
     expect(full).toBeGreaterThan(0);
     expect(agrees(full, bruteForce(21 / 22, 21 / 22, 1 / 12))).toBe(true);
     // A sensitivity point: the old text at 0.9, the cut's at 0.7, no skill at 0.1 (about 20%).
-    const point = lossChance({ old: 0.9, cut: 0.7, none: 0.1 });
+    const point = lossChance({ old: 0.9, compared: 0.7, none: 0.1 });
     expect(agrees(point, bruteForce(0.9, 0.7, 0.1))).toBe(true);
     expect(point).toBeGreaterThan(0.2);
     expect(point).toBeLessThan(0.21);
-    expect(() => lossChance({ old: 0, cut: 0, none: 0.1 })).toThrow("no case is informative");
+    expect(() => lossChance({ old: 0, compared: 0, none: 0.1 })).toThrow("no case is informative");
   });
 });
 
@@ -1957,7 +1957,7 @@ describe("behaviour: the compared arm", () => {
     );
     const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
     expect(lines).toContain(
-      `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, cut, none: 0.1 }))}`).join(", ")}`
+      `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, compared: cut, none: 0.1 }))}`).join(", ")}`
     );
   }, 60_000);
 

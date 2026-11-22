@@ -138,12 +138,11 @@
  *   models-by-cut.tsv      With --models: MODELS_BY_CUT_COLUMNS, each cut's ranked changed skills
  *                          in rank order: cut, rank, skill, path, then the same model columns.
  */
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { schemaFaults } from "./common";
+import { Refused, schemaFaults, sha256 } from "./common";
 import { cutOrSet, loadConfig, type SkillCutsConfig } from "./config";
 import {
   INSTALLERS_COLUMNS,
@@ -169,6 +168,17 @@ const Calls = z.record(Hash, z.array(Key).min(1));
 const Count = z.number().int().nonnegative();
 /** A session as the count names it across stores: its store and its file hash. */
 export const sessionKey = (store: string, hash: string) => `${store}\t${hash}`;
+/** The store of the session `key` (a `sessionKey`): a store's name holds no tab. */
+export const keyStore = (key: string) => key.slice(0, key.indexOf("\t"));
+/** The sessions `keys` (each a `sessionKey`), in their order, as a sessions file's text: one line
+ *  `{"store", "hash"}` each. */
+export const sessionLines = (keys: readonly string[]) =>
+  keys
+    .map((key) => {
+      const [store = "", hash = ""] = key.split("\t");
+      return `${JSON.stringify({ store, hash })}\n`;
+    })
+    .join("");
 
 /** One count row of count.sql. */
 export const CountRow = z.strictObject({
@@ -368,7 +378,7 @@ export function readQueryDir<O>(
       try {
         const bytes = readFileSync(path.join(storeDir, file));
         outputs.push(parse(store, name, bytes.toString("utf8")));
-        digests.set(`${store}/${file}`, createHash("sha256").update(bytes).digest("hex"));
+        digests.set(`${store}/${file}`, sha256(bytes));
       } catch (error) {
         if (error instanceof EarlierCount) throw error;
         unreadable.push({ store, name, why: (error as Error).message });
@@ -510,11 +520,11 @@ export interface QueryIssue {
 
 const DAY_MS = 86_400_000;
 const STATEMENT_TIMEOUT = /statement timeout/i;
-const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
-const twoDigits = (value: number) => String(value).padStart(2, "0");
+export const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+export const twoDigits = (value: number) => String(value).padStart(2, "0");
 
 /** The UTC days (YYYY-MM-DD) from the day of `first` to the day of `last`, both included. */
-function daysFrom(first: number, last: number): string[] {
+export function daysFrom(first: number, last: number): string[] {
   const days: string[] = [];
   for (let at = Math.floor(first / DAY_MS) * DAY_MS; at <= last; at += DAY_MS) {
     days.push(new Date(at).toISOString().slice(0, 10));
@@ -1655,8 +1665,8 @@ export interface ModelCount {
   readonly withModel: number;
 }
 
-/** A ranked skill's `<cut id>/models/<skill>.json` (`modelFiles`): its ModelCount, as
- *  `behaviour --reading-models` reads it. */
+/** A ranked skill's `<cut or set id>/models/<skill>.json` (`modelFiles`): its ModelCount, as
+ *  `behaviour --reading-models` and `build-cases --written` read it (`modelCountOf`). */
 export const ModelCountFile: z.ZodType<ModelCount> = z.strictObject({
   sessions: Count,
   byModel: z.array(
@@ -1673,6 +1683,18 @@ export const ModelCountFile: z.ZodType<ModelCount> = z.strictObject({
   served: Count,
   withModel: Count,
 });
+
+/** The ModelCount `value` holds: the JSON of the models file `file`, which the flag `flag` names.
+ *  Throws a refusal when it is none. */
+export function modelCountOf(value: unknown, file: string, flag: string): ModelCount {
+  const parsed = ModelCountFile.safeParse(value);
+  if (!parsed.success) {
+    throw new Refused(
+      `${flag} ${file} is not a skill's reading sessions by model (attribute's <cut or set id>/models/<skill>.json): ${schemaFaults(parsed.error)}`
+    );
+  }
+  return parsed.data;
+}
 
 /** The read sessions `sessions` (each a `sessionKey`) by the model `models` gives each. */
 export function modelCount(sessions: ReadonlySet<string>, models: SessionModels): ModelCount {
@@ -1831,13 +1853,10 @@ export function sessionFiles(
   ranking: Ranking
 ): { files: { name: string; text: string }[]; skipped: string[] } {
   const { rows, skipped } = filedSkills(attribution, ranking);
-  const files = rows.map((row) => {
-    const lines = [...row.sessions].sort().map((key) => {
-      const [store = "", hash = ""] = key.split("\t");
-      return `${JSON.stringify({ store, hash })}\n`;
-    });
-    return { name: path.join("sessions", `${row.skill}.jsonl`), text: lines.join("") };
-  });
+  const files = rows.map((row) => ({
+    name: path.join("sessions", `${row.skill}.jsonl`),
+    text: sessionLines([...row.sessions].sort()),
+  }));
   return { files, skipped };
 }
 
@@ -1902,9 +1921,9 @@ function code(text: string): string {
 }
 /** `text` as one Markdown table cell: each backslash escaped first, then each `|`, so a cell's
  * own backslash never escapes the pipe after it. */
-const cell = (text: string | number) =>
+export const cell = (text: string | number) =>
   String(text).replaceAll("\\", "\\\\").replaceAll("|", "\\|");
-const iso = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
+export const iso = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
 /** `count` with `word`, or with `plural` unless the count is 1: `1 session`, `2 sessions`. */
 const counted = (count: number, word: string, plural = `${word}s`) =>
   `${count} ${count === 1 ? word : plural}`;

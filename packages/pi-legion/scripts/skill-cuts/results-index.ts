@@ -69,10 +69,11 @@ function readJson(file: string, what: string): unknown {
   }
 }
 
-/** The names under `dir`, at any depth, or a refusal when it cannot be read. */
-function listed(dir: string, flag: string): string[] {
+/** The names under `dir` (`recursive`: at any depth; else only those directly under it), or a
+ *  refusal when it cannot be read. */
+function listed(dir: string, flag: string, recursive = true): string[] {
   try {
-    return readdirSync(dir, { recursive: true, encoding: "utf8" }).sort();
+    return readdirSync(dir, { recursive, encoding: "utf8" }).sort();
   } catch (error) {
     throw new Refused(`${flag} ${dir} cannot be read: ${String(error)}`);
   }
@@ -99,14 +100,19 @@ function nearestRows(dir: string): Map<string, { file: string; row: NearestRow }
   return rows;
 }
 
+/** The shallowest `report.txt` of `names`, paths inside a result, or undefined. */
+function shallowestReport(names: readonly string[]): string | undefined {
+  const depth = (member: string) => member.split("/").filter((part) => part !== ".").length;
+  return names
+    .filter((each) => path.basename(each) === "report.txt")
+    .sort((a, b) => depth(a) - depth(b))[0];
+}
+
 /** The text of a result's report (`report.txt`, the shallowest of that name), from its directory
  *  or its tarball, or why it has none. */
 function reportOf(result: string): { text: string } | { none: string } {
-  const depth = (member: string) => member.split("/").filter((part) => part !== ".").length;
   if (statSync(result).isDirectory()) {
-    const [member] = readdirSync(result, { recursive: true, encoding: "utf8" })
-      .filter((each) => path.basename(each) === "report.txt")
-      .sort((a, b) => depth(a) - depth(b));
+    const member = shallowestReport(readdirSync(result, { recursive: true, encoding: "utf8" }));
     if (member === undefined) return { none: "no report.txt" };
     return { text: readFileSync(path.join(result, member), "utf8") };
   }
@@ -114,11 +120,7 @@ function reportOf(result: string): { text: string } | { none: string } {
   if (list.exitCode !== 0) {
     return { none: `its tarball cannot be read: ${list.stderr.toString().trim()}` };
   }
-  const [member] = list.stdout
-    .toString()
-    .split("\n")
-    .filter((each) => path.basename(each) === "report.txt")
-    .sort((a, b) => depth(a) - depth(b));
+  const member = shallowestReport(list.stdout.toString().split("\n"));
   if (member === undefined) return { none: "no report.txt" };
   const read = Bun.spawnSync(["tar", "-xzOf", result, member]);
   if (read.exitCode !== 0) {
@@ -152,8 +154,9 @@ export function main(argv: readonly string[], io: IndexIo): number {
     throw new Refused(`${summaryFile} is not set-count's summary: ${schemaFaults(summary.error)}`);
   }
   const rows = nearestRows(given.nearest);
-  listed(given.cases, "--cases");
-  listed(given.results, "--results");
+  // Only that each root can be read: its files are looked up by name.
+  listed(given.cases, "--cases", false);
+  listed(given.results, "--results", false);
 
   const lacking: string[] = [];
   const lines = summary.data.atLeast20.map(({ set, skill, own }) => {

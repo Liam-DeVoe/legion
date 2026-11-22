@@ -426,19 +426,20 @@ function oursArm(
     if (read !== undefined && !lacking.has(index)) {
       const target = targets.get(read.id) ?? read.target;
       const shown = path.join(arm.installedDir, read.file);
-      return structuredClone(answered(message, arm, { file: read.file, target, shown }));
+      return answered(message, arm, { file: read.file, target, shown });
     }
     const content = message.content;
-    if (message.role !== "assistant" || content === undefined) return structuredClone(message);
+    if (message.role !== "assistant" || content === undefined) return message;
     const renamed = content.map((part) => {
       const target = part.type === "toolCall" ? targets.get(part.id ?? "") : undefined;
       if (target === undefined) return part;
       return { ...part, arguments: { ...Object(part.arguments), path: target } };
     });
-    return structuredClone({ ...message, content: renamed });
+    return { ...message, content: renamed };
   });
   return {
     ...arm,
+    // withoutReads copies every message it keeps, so no message here shares the case's objects.
     ...withInjections(c, withoutReads(messages, lacking), skillDir, ours.name),
     dispatch: dispatchOf(c),
     ours: {
@@ -826,6 +827,13 @@ function withInjections(
   return { messages: out, injections };
 }
 
+/** The directory a read's result header `header` shows its skill installed in: the header less
+ *  `/<file>`, `file` being the path the read read inside the skill; undefined when there is no
+ *  header, or it does not end so. */
+export function installedDirOf(header: string | undefined, file: string): string | undefined {
+  return header?.endsWith(`/${file}`) ? header.slice(0, -(file.length + 1)) : undefined;
+}
+
 /** The arm `name` of case `c`, from the skill directories `dirs`, with whether its session had
  * Dispatch (`dispatchOf`). `minus` writes its copy of the old directory to `<scratch>/minus`,
  * replacing one there. Throws naming the case when a skillReads index is not a read of a
@@ -852,8 +860,9 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
   // The installed directory: the first header's path less the file it read.
   let installedDir = path.join("/skills", c.skill);
   for (const { file, header } of reads.values()) {
-    if (header?.endsWith(`/${file}`)) {
-      installedDir = header.slice(0, -(file.length + 1));
+    const dir = installedDirOf(header, file);
+    if (dir !== undefined) {
+      installedDir = dir;
       break;
     }
   }

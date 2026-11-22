@@ -315,7 +315,7 @@ import {
   InjectionRefused,
   injectionFaults,
 } from "./arms";
-import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
+import { main as attributeMain, type ModelCount, modelCountOf, modelId } from "./attribute";
 import { main as buildMain } from "./build";
 import {
   type Capture,
@@ -331,12 +331,15 @@ import {
 import { type Case, caseKind, loadCases, Thinking, textLines } from "./cases";
 import {
   configFrom,
+  fileDigests,
   json,
+  OneLine,
   parse,
   Refused,
   required,
   Stopped,
   schemaFaults,
+  sha256,
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
@@ -351,7 +354,7 @@ import {
 } from "./context";
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
-import { type CraftList, main as craftLinesMain, parseCraftList } from "./craftlist";
+import { main as craftLinesMain, readCraftList } from "./craftlist";
 import { main as craftMergeMain } from "./craftmerge";
 import {
   BudgetSpent,
@@ -377,7 +380,7 @@ import {
   newSeed,
 } from "./judge";
 import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName, skillNameOf } from "./load";
-import { procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
+import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   type DiffFile,
   FindingsEntry,
@@ -389,6 +392,7 @@ import {
   type PullDiff,
   parseProposalItems,
   pendingItems,
+  rulesRecords,
   runProposals,
   splitDiff,
 } from "./proposals";
@@ -398,10 +402,11 @@ import {
   ClaimInput,
   type Control,
   type CraftAnswer,
-  type CraftGap,
+  CraftGap,
   type CraftInput,
   craftInput,
   loadPrompt,
+  NEAREST_RULE,
   type NearestAnswer,
   plantControl,
   READER_NAMES,
@@ -469,9 +474,6 @@ import { type StyleRule, styleRules } from "./style";
 const CALL_TIMEOUT_MS = 600_000;
 /** The model calls in flight at once, unless `--concurrency` says otherwise. */
 const DEFAULT_CONCURRENCY = 8;
-/** The most the runner's peak resident memory may reach: a case that ends above it stops the run
- *  (exit 3). */
-const MEMORY_LIMIT_BYTES = RUN_MEMORY_LIMIT_BYTES;
 /** The request log's name: `<out>/requests.jsonl` for `behaviour`, `load`, `control craft` and
  *  `proposals`, and the `--out` file's path with `.requests.jsonl` added for `read`, `control`,
  *  `craft` and `nearest`, unless `--request-log` names one. */
@@ -507,22 +509,12 @@ function processIo(): CliIo {
 
 /** The JSON value the file `file` holds. Throws a refusal naming the file. */
 function readJson(file: string, what: string): unknown {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (error) {
-    throw new Refused(`cannot read ${what} ${file}: ${messageFor(error)}`);
-  }
+  const text = readBytes(file, what).toString("utf8");
   try {
     return JSON.parse(text);
   } catch (error) {
     throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
   }
-}
-
-/** Bytes as whole MiB. */
-function mib(bytes: number): number {
-  return Math.round(bytes / 2 ** 20);
 }
 
 // The request log.
@@ -650,6 +642,21 @@ function openGateway(values: {
     concurrency,
     timeoutMs: CALL_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
+  });
+}
+
+/** `openGateway` of a model command's parsed options: the configuration `config`, the key file
+ *  `keyFile`, and `values`' `--budget-usd` and `--concurrency`. */
+function gatewayOf(
+  config: SkillCutsConfig,
+  keyFile: string,
+  values: { readonly "budget-usd"?: string; readonly concurrency?: string }
+): Gateway {
+  return openGateway({
+    config,
+    keyFile,
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
   });
 }
 
@@ -892,11 +899,6 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
 
 // `craft`, `nearest`, `craft-coverage` and `control craft`: the readers of our skills.
 
-/** The SHA-256 of `bytes`, in hex. */
-function sha256(bytes: string | Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
 /** Whether `file` is a file; false where it, or a directory on its path, is none. */
 function isFile(file: string): boolean {
   try {
@@ -932,11 +934,6 @@ function readSkill(dir: string, flag: string): ReadSkill {
   const skill = files.find((file) => file.path === "SKILL.md");
   if (skill === undefined) throw new Refused(`${flag} ${dir} has no SKILL.md`);
   return { dir, name: skillNameOf(readFrontmatter(skill.text), dir), files };
-}
-
-/** Each file of `skill`: its path inside the skill and the SHA-256 of its text. */
-function fileDigests(skill: ReadSkill): { path: string; sha256: string }[] {
-  return skill.files.map((file) => ({ path: file.path, sha256: sha256(file.text) }));
 }
 
 /** The skills directly under `root`: each `<root>/<name>/SKILL.md`, by name. Throws a refusal
@@ -998,10 +995,7 @@ const CRAFT_USAGE = `usage: cli.ts craft ${CRAFT_FLAGS} --out <entry.json> [--re
 
 /** The style text and the craft list a reader reads (`--style` and `--craft`), each with its file,
  *  the words its `--*-source` flag gives it, and its SHA-256: `craft`'s and `proposals`'. */
-interface RulesReads {
-  readonly style: { file: string; source: string; sha256: string; rules: readonly StyleRule[] };
-  readonly list: { file: string; source: string; sha256: string; list: CraftList };
-}
+type RulesReads = Pick<ProposalsRun, "style" | "craft">;
 
 /** What a craft read reads, all of it before any call: the skill, the style text and its rules,
  *  the craft list, and each nearest skill of theirs, each with its source where it has one. */
@@ -1023,16 +1017,15 @@ function rulesReads(
   } catch (error) {
     throw new Refused(`the style text ${given.style} is refused: ${messageFor(error)}`);
   }
-  const listBytes = readBytes(given.craft, "the craft list");
-  let list: CraftList;
-  try {
-    list = parseCraftList(listBytes.toString("utf8"));
-  } catch (error) {
-    throw new Refused(`the craft list ${given.craft} is refused: ${messageFor(error)}`);
-  }
+  const craftList = readCraftList(given.craft);
   return {
     style: { file: given.style, source: given["style-source"], sha256: sha256(styleBytes), rules },
-    list: { file: given.craft, source: given["craft-source"], sha256: sha256(listBytes), list },
+    craft: {
+      file: given.craft,
+      source: given["craft-source"],
+      sha256: sha256(craftList.bytes),
+      list: craftList.list,
+    },
   };
 }
 
@@ -1058,7 +1051,7 @@ function craftReaderInput(reads: CraftReads, skill: ReadSkill = reads.skill): Cr
       skill: skill.name,
       files: skill.files,
       style: reads.style.rules,
-      list: reads.list.list,
+      list: reads.craft.list,
       nearest: reads.nearest,
     })
   );
@@ -1066,6 +1059,46 @@ function craftReaderInput(reads: CraftReads, skill: ReadSkill = reads.skill): Cr
     throw new Refused(`the craft reader's input is refused: ${schemaFaults(checked.error)}`);
   }
   return checked.data;
+}
+
+/** One fresh request of the reader `name` on `input`, its entry written whole to `out`: `entry`,
+ *  then the answer (null when every reply was refused), what `after` gives for that answer, the
+ *  refusals, the spend and its dollars at list price. Returns the answer and its dollars, or the
+ *  ReaderFailed of a reader whose every reply was refused; any other failure throws. */
+async function readToFile<A>(
+  name: ReaderName,
+  input: unknown,
+  gateway: Gateway,
+  out: string,
+  entry: Record<string, unknown>,
+  after: (answer: A | null) => Record<string, unknown> = () => ({})
+): Promise<{ answer: A; usd: number } | { answer: undefined; failed: ReaderFailed }> {
+  try {
+    const result = await runReader(name, input, gateway);
+    // runReader parsed it with the reader's answer schema.
+    const answer = result.answer as A;
+    const usd = usdOf(result.spent);
+    writeWhole(
+      out,
+      json({
+        ...entry,
+        answer,
+        ...after(answer),
+        refusals: result.refusals,
+        spent: result.spent,
+        usd,
+      })
+    );
+    return { answer, usd };
+  } catch (error) {
+    if (!(error instanceof ReaderFailed)) throw error;
+    const { refusals, spent } = error;
+    writeWhole(
+      out,
+      json({ ...entry, answer: null, ...after(null), refusals, spent, usd: usdOf(spent) })
+    );
+    return { answer: undefined, failed: error };
+  }
 }
 
 /** One fresh request of the craft reader on `input`, the input of `skill`: writes its exact user
@@ -1089,44 +1122,18 @@ async function craftRead(
       name: skill.name,
       dir: skill.dir,
       source: reads.skillSource,
-      files: fileDigests(skill),
+      files: fileDigests(skill.files),
     },
-    style: {
-      file: reads.style.file,
-      source: reads.style.source,
-      sha256: reads.style.sha256,
-      rules: reads.style.rules.length,
-    },
-    craft: {
-      file: reads.list.file,
-      source: reads.list.source,
-      sha256: reads.list.sha256,
-      readerProperties: input.properties.map((property) => property.id),
-    },
+    ...rulesRecords(reads, input.properties),
     nearest: reads.nearest.map((each) => ({
       name: each.name,
       dir: each.dir,
-      files: fileDigests(each),
+      files: fileDigests(each.files),
     })),
     reader: { prompt: "craft", settings: loadPrompt("craft").settings },
     input: message,
   };
-  try {
-    const result = await runReader("craft", input, gateway);
-    // runReader parsed it with the craft reader's answer schema.
-    const answer = result.answer as CraftAnswer;
-    const usd = usdOf(result.spent);
-    writeWhole(
-      out,
-      json({ ...entry, answer, refusals: result.refusals, spent: result.spent, usd })
-    );
-    return { answer, usd };
-  } catch (error) {
-    if (!(error instanceof ReaderFailed)) throw error;
-    const { refusals, spent } = error;
-    writeWhole(out, json({ ...entry, answer: null, refusals, spent, usd: usdOf(spent) }));
-    return { answer: undefined, failed: error };
-  }
+  return await readToFile<CraftAnswer>("craft", input, gateway, out, entry);
 }
 
 /** The gaps of `answer` in a few words: `no gap`, or their count and their rules. */
@@ -1142,12 +1149,7 @@ async function craftCommand(argv: readonly string[], io: CliIo): Promise<number>
   const given = required(values, CRAFT_REQUIRED, CRAFT_USAGE);
   const reads = craftReads(given, values);
   const input = craftReaderInput(reads);
-  const gateway = openGateway({
-    config: configFrom(given.config),
-    keyFile: given["key-file"],
-    budgetUsd: values["budget-usd"],
-    concurrency: values.concurrency,
-  });
+  const gateway = gatewayOf(configFrom(given.config), given["key-file"], values);
   const logged = loggedGateway(
     gateway,
     values["request-log"] ?? `${given.out}.${REQUEST_LOG}`,
@@ -1164,8 +1166,9 @@ async function craftCommand(argv: readonly string[], io: CliIo): Promise<number>
   return EXIT.ok;
 }
 
-const NEAREST_USAGE =
-  "usage: cli.ts nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]";
+const NEAREST_FLAGS =
+  "--config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json>";
+const NEAREST_USAGE = `usage: cli.ts nearest ${NEAREST_FLAGS} [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]`;
 
 /** The text of a SKILL.md less its frontmatter (context.ts's `frontmatterBlock`: the block
  *  readFrontmatter reads, after any leading HTML comments), with the blank lines before it and the
@@ -1214,12 +1217,7 @@ async function nearestCommand(argv: readonly string[], io: CliIo): Promise<numbe
   if (!checked.success) {
     throw new Refused(`the nearest reader's input is refused: ${schemaFaults(checked.error)}`);
   }
-  const gateway = openGateway({
-    config: configFrom(given.config),
-    keyFile: given["key-file"],
-    budgetUsd: values["budget-usd"],
-    concurrency: values.concurrency,
-  });
+  const gateway = gatewayOf(configFrom(given.config), given["key-file"], values);
   const logged = loggedGateway(
     gateway,
     values["request-log"] ?? `${given.out}.${REQUEST_LOG}`,
@@ -1239,58 +1237,53 @@ async function nearestCommand(argv: readonly string[], io: CliIo): Promise<numbe
     reader: { prompt: "nearest", settings: loadPrompt("nearest").settings },
     input: message,
   };
-  try {
-    const result = await runReader("nearest", checked.data, logged);
-    // runReader parsed it with the nearest reader's answer schema.
-    const answer = result.answer as NearestAnswer;
-    const nearest = answer.nearest.map((entry) => ({
-      ...entry,
-      description:
-        candidates.find((each) => each.name === entry.name && each.source === entry.source)
-          ?.description ?? "",
-    }));
-    const usd = usdOf(result.spent);
-    writeWhole(
-      given.out,
-      json({ ...row, answer, nearest, refusals: result.refusals, spent: result.spent, usd })
-    );
-    const named = answer.nearest.map((entry) => `${entry.name} (${entry.source})`).join(", ");
-    io.out(
-      `nearest: ${skill.name}: ${answer.verdict}${named === "" ? "" : `: ${named}`}, $${usd.toFixed(4)} at list price; written to ${given.out}\n`
-    );
-    return EXIT.ok;
-  } catch (error) {
-    if (!(error instanceof ReaderFailed)) throw error;
-    const { refusals, spent } = error;
-    writeWhole(
-      given.out,
-      json({ ...row, answer: null, nearest: [], refusals, spent, usd: usdOf(spent) })
-    );
-    io.err(`nearest: ${error.message}; written to ${given.out}`);
+  const read = await readToFile<NearestAnswer>(
+    "nearest",
+    checked.data,
+    logged,
+    given.out,
+    row,
+    (answer) => ({
+      nearest:
+        answer === null
+          ? []
+          : answer.nearest.map((entry) => ({
+              ...entry,
+              description:
+                candidates.find((each) => each.name === entry.name && each.source === entry.source)
+                  ?.description ?? "",
+            })),
+    })
+  );
+  if (read.answer === undefined) {
+    io.err(`nearest: ${read.failed.message}; written to ${given.out}`);
     return EXIT.failed;
   }
+  const named = read.answer.nearest.map((entry) => `${entry.name} (${entry.source})`).join(", ");
+  io.out(
+    `nearest: ${skill.name}: ${read.answer.verdict}${named === "" ? "" : `: ${named}`}, $${read.usd.toFixed(4)} at list price; written to ${given.out}\n`
+  );
+  return EXIT.ok;
 }
 
 const COVERAGE_USAGE =
   "usage: cli.ts craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>";
 
 /** What craft-coverage reads of a craft entry (`craftRead`): its skill's directory and source, and
- *  whether it has an answer, with its gaps. */
-const CoverageEntry = z.looseObject({
-  entry: z.literal("craft"),
-  skill: z.looseObject({ dir: z.string().min(1), source: z.string().nullable() }),
+ *  whether it has an answer, with its gaps: proposals.ts's FindingsEntry, each gap of any shape. */
+const CoverageEntry = FindingsEntry.extend({
   answer: z.looseObject({ gaps: z.array(z.unknown()) }).nullable(),
 });
 type CoverageEntry = z.infer<typeof CoverageEntry>;
 
 /** Each craft entry of the entries file `file` (a `reader-findings.jsonl`) with its line, as
- *  `schema` reads it, in the file's order, and the file's SHA-256; its other lines (a proposal's
+ *  `schema` reads it, in the file's order, and the file's bytes; its other lines (a proposal's
  *  entry) are passed over. Throws a refusal naming the file when it cannot be read, or naming a
  *  line that is no JSON or that `schema` refuses. */
 function craftEntries<T>(
   file: string,
   schema: z.ZodType<T>
-): { sha256: string; entries: { line: number; entry: T }[] } {
+): { bytes: Buffer; entries: { line: number; entry: T }[] } {
   const bytes = readBytes(file, "the entries");
   const text = bytes.toString("utf8");
   const entries = text.split("\n").flatMap((line, index) => {
@@ -1309,7 +1302,7 @@ function craftEntries<T>(
     }
     return [{ line: index + 1, entry: entry.data }];
   });
-  return { sha256: sha256(bytes), entries };
+  return { bytes, entries };
 }
 
 /** `skill-cuts craft-coverage`: each skill of a root beside its craft entry, or none. */
@@ -1329,25 +1322,25 @@ function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
   const all = skillDirs(given.root);
   const names = all.filter((name) => !skip.has(name));
   const skipped = all.filter((name) => skip.has(name));
-  // Each skill's craft entries of the source, by its directory's name, in the file's order.
-  const entries = new Map<string, CoverageEntry[]>();
+  // Each skill's last craft entry of the source, by its directory's name, and its count of them.
+  const entries = new Map<string, { last: CoverageEntry; count: number }>();
   for (const { entry } of craftEntries(given.entries, CoverageEntry).entries) {
     if (values.source !== undefined && entry.skill.source !== values.source) continue;
     const name = path.basename(entry.skill.dir);
-    entries.set(name, [...(entries.get(name) ?? []), entry]);
+    entries.set(name, { last: entry, count: (entries.get(name)?.count ?? 0) + 1 });
   }
   const missing = names.filter((name) => !entries.has(name));
   const lines = names.map((name) => {
-    const found = entries.get(name) ?? [];
-    const last = found.at(-1);
-    if (last === undefined) return `${name}: none`;
+    const found = entries.get(name);
+    if (found === undefined) return `${name}: none`;
+    const { last, count } = found;
     const what =
       last.answer === null
         ? "every reply refused"
         : last.answer.gaps.length === 0
           ? "no gap"
           : counted(last.answer.gaps.length, "gap");
-    return `${name}: entry: ${what}${found.length > 1 ? ` (the last of ${found.length} entries)` : ""}`;
+    return `${name}: entry: ${what}${count > 1 ? ` (the last of ${count} entries)` : ""}`;
   });
   const source = values.source === undefined ? "" : `, source ${values.source}`;
   const skippedWords = skipped.length === 0 ? "" : ` (skipped: ${skipped.join(", ")})`;
@@ -1366,9 +1359,12 @@ function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
 
 // `proposals`: the open proposals of closed pull requests (proposals.ts).
 
+const PROPOSALS_FLAGS =
+  "--config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <text>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir>";
+const PROPOSALS_DRY_RUN = "--dry-run --body <file> --section <heading> --list <text>...";
 const PROPOSALS_USAGE = [
-  "usage: cli.ts proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <text>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]",
-  "       cli.ts proposals --dry-run --body <file> --section <heading> --list <text>...",
+  `usage: cli.ts proposals ${PROPOSALS_FLAGS} [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]`,
+  `       cli.ts proposals ${PROPOSALS_DRY_RUN}`,
 ].join("\n");
 
 /** `skill-cuts proposals`: each item of the named lists of a pull request's body, read with the
@@ -1473,17 +1469,12 @@ async function proposalsCommand(argv: readonly string[], io: CliIo): Promise<num
     skillsRoots,
     repoRoot: { repo, dir },
     style: rules.style,
-    craft: rules.list,
-    findings: { file: given.findings, ...findings },
+    craft: rules.craft,
+    findings: { file: given.findings, sha256: sha256(findings.bytes), entries: findings.entries },
     out: given.out,
   };
   const pending = pendingItems(items, given.out);
-  const gateway = openGateway({
-    config: configFrom(given.config),
-    keyFile: given["key-file"],
-    budgetUsd: values["budget-usd"],
-    concurrency: values.concurrency,
-  });
+  const gateway = gatewayOf(configFrom(given.config), given["key-file"], values);
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   io.out(
     `proposals: ${counted(items.length, "item")}, ${pending.length} to read; the others have an entry under ${given.out}\n`
@@ -1573,12 +1564,17 @@ function joinLines(text: string, from: number, to: number): string {
  *  answers whether each candidate states it. */
 interface Side {
   readonly name: "copy" | "original";
-  readonly words: string;
   readonly lines: { readonly from: number; readonly to: number } | "all";
-  readonly kinds: readonly string[];
+  readonly kinds: readonly CraftGap["kind"][];
   readonly rules: readonly string[];
   readonly claim: string | undefined;
 }
+
+/** Each side of a control craft, as the report's words name it. */
+const SIDE_WORDS: Readonly<Record<Side["name"], string>> = {
+  copy: "the copy",
+  original: "the unchanged skill",
+};
 
 /** A candidate of a side: its gap, and the claim reader's answer (null where the side gives no
  *  claim; `states` null where every reply was refused), with the file it is written to. */
@@ -1587,16 +1583,22 @@ interface Candidate {
   readonly claim: { states: boolean | null; reason: string; file: string } | null;
 }
 
-/** The side `name` of a control craft, as `values` give it. Throws a refusal on a line range,
- *  a kind or a rule it cannot read, and on a claim of more than one line. */
+/** The side `name` of a control craft, as its flags give it (`--<name>-line`, `-kind`, `-rule` and
+ *  `-claim`). Throws a refusal on a line range, a kind or a rule it cannot read, and on a claim of
+ *  more than one line. */
 function sideOf(
   name: Side["name"],
-  values: Record<string, string | readonly string[] | boolean | undefined>,
+  given: {
+    readonly line: string;
+    readonly kinds: readonly string[] | undefined;
+    readonly rules: readonly string[] | undefined;
+    readonly claim: string | undefined;
+  },
   reads: CraftReads,
   input: CraftInput
 ): Side {
   const flag = `--${name}`;
-  const range = String(values[`${name}-line`]);
+  const range = given.line;
   const parts = /^(\d+)(?:-(\d+))?$/.exec(range);
   const from = Number(parts?.[1]);
   const to = Number(parts?.[2] ?? parts?.[1]);
@@ -1606,31 +1608,25 @@ function sideOf(
   if (parts !== null && (from < 1 || to < from)) {
     throw new Refused(`${flag}-line ${range} is not a range of lines from 1`);
   }
-  const list = (key: string) => (values[key] ?? []) as readonly string[];
-  for (const kind of list(`${name}-kind`)) {
-    if (kind !== "present" && kind !== "missing")
-      throw new Refused(`${flag}-kind ${kind} is not present or missing`);
-  }
+  const kinds = (given.kinds ?? []).map((kind) => {
+    const parsed = CraftGap.shape.kind.safeParse(kind);
+    if (!parsed.success) throw new Refused(`${flag}-kind ${kind} is not present or missing`);
+    return parsed.data;
+  });
+  const rules = given.rules ?? [];
   const ids = new Set([...input.style, ...input.properties].map((rule) => rule.id));
-  for (const rule of list(`${name}-rule`)) {
-    if (!ids.has(rule) && !/^nearest:[^:]+:.+:\d+$/.test(rule)) {
+  for (const rule of rules) {
+    if (!ids.has(rule) && !NEAREST_RULE.test(rule)) {
       throw new Refused(
         `${flag}-rule ${rule} is no rule of the style text ${reads.style.file}, no reader property of the craft list and no nearest:<skill>:<path>:<line>`
       );
     }
   }
-  const claim = values[`${name}-claim`];
-  if (typeof claim === "string" && (claim.trim() === "" || claim.includes("\n"))) {
+  const claim = given.claim;
+  if (claim !== undefined && !OneLine.safeParse(claim).success) {
     throw new Refused(`${flag}-claim is not one line`);
   }
-  return {
-    name,
-    words: name === "copy" ? "the copy" : "the unchanged skill",
-    lines: parts === null ? "all" : { from, to },
-    kinds: list(`${name}-kind`),
-    rules: list(`${name}-rule`),
-    claim: typeof claim === "string" ? claim : undefined,
-  };
+  return { name, lines: parts === null ? "all" : { from, to }, kinds, rules, claim };
 }
 
 /** `side`'s criteria in words. */
@@ -1674,39 +1670,29 @@ async function judgeSide(
       const file = path.join(out, "claims", `${side.name}-${index + 1}.json`);
       const input = ClaimInput.parse({ claim, gap, files: skill.files });
       writeWhole(inputFile(file), READERS.claim.render(input));
-      const record = { side: side.name, candidate: index + 1, input, prompt: "claim" };
-      const settings = loadPrompt("claim").settings;
-      try {
-        const result = await runReader("claim", input, gateway);
-        // runReader parsed it with the claim reader's answer schema.
-        const said = result.answer as ClaimAnswer;
-        const { refusals, spent } = result;
-        writeWhole(
-          file,
-          json({ ...record, settings, answer: said, refusals, spent, usd: usdOf(spent) })
-        );
-        return { gap, claim: { ...said, file } };
-      } catch (error) {
-        if (!(error instanceof ReaderFailed)) throw error;
-        const { refusals, spent } = error;
-        writeWhole(
-          file,
-          json({ ...record, settings, answer: null, refusals, spent, usd: usdOf(spent) })
-        );
-        return { gap, claim: { states: null, reason: error.message, file } };
-      }
+      const read = await readToFile<ClaimAnswer>("claim", input, gateway, file, {
+        side: side.name,
+        candidate: index + 1,
+        input,
+        prompt: "claim",
+        settings: loadPrompt("claim").settings,
+      });
+      return read.answer === undefined
+        ? { gap, claim: { states: null, reason: read.failed.message, file } }
+        : { gap, claim: { ...read.answer, file } };
     })
   );
   const places = (some: readonly Candidate[]) =>
     some.map((each) => `${each.gap.file}:${each.gap.line}`).join(", ");
+  const words = SIDE_WORDS[side.name];
   if (candidates.length === 0) {
-    return { candidates, holds: side.name === "original", why: `${side.words} has no candidate` };
+    return { candidates, holds: side.name === "original", why: `${words} has no candidate` };
   }
   if (claim === undefined) {
     return {
       candidates,
       holds: side.name === "copy",
-      why: `${side.words} has a candidate: ${places(candidates)}`,
+      why: `${words} has a candidate: ${places(candidates)}`,
     };
   }
   const stating = candidates.filter((each) => each.claim?.states === true);
@@ -1715,20 +1701,20 @@ async function judgeSide(
     return {
       candidates,
       holds: side.name === "copy",
-      why: `a candidate of ${side.words} states the claim: ${places(stating)}`,
+      why: `a candidate of ${words} states the claim: ${places(stating)}`,
     };
   }
   if (side.name === "original" && unknown.length > 0) {
     return {
       candidates,
       holds: false,
-      why: `the claim reader's every reply was refused for ${places(unknown)} of ${side.words}`,
+      why: `the claim reader's every reply was refused for ${places(unknown)} of ${words}`,
     };
   }
   return {
     candidates,
     holds: side.name === "original",
-    why: `no candidate of ${side.words} states the claim (${counted(candidates.length, "candidate")})`,
+    why: `no candidate of ${words} states the claim (${counted(candidates.length, "candidate")})`,
   };
 }
 
@@ -1775,10 +1761,28 @@ async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<
   }
   const reads = craftReads(given, values);
   const originalInput = craftReaderInput(reads);
-  const sides = (["copy", "original"] as const).map((name) =>
-    sideOf(name, values, reads, originalInput)
+  const copySide = sideOf(
+    "copy",
+    {
+      line: given["copy-line"],
+      kinds: values["copy-kind"],
+      rules: values["copy-rule"],
+      claim: values["copy-claim"],
+    },
+    reads,
+    originalInput
   );
-  const [copySide, originalSide] = sides as [Side, Side];
+  const originalSide = sideOf(
+    "original",
+    {
+      line: given["original-line"],
+      kinds: values["original-kind"],
+      rules: values["original-rule"],
+      claim: values["original-claim"],
+    },
+    reads,
+    originalInput
+  );
   const skillText = reads.skill.files[0]?.text ?? "";
   let changed: string;
   if (removed !== undefined) changed = removeSection(skillText, removed);
@@ -1794,12 +1798,7 @@ async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<
   if (existsSync(copies)) {
     throw new Refused(`--out ${given.out} holds a copy already: give a fresh --out`);
   }
-  const gateway = openGateway({
-    config: configFrom(given.config),
-    keyFile: given["key-file"],
-    budgetUsd: values["budget-usd"],
-    concurrency: values.concurrency,
-  });
+  const gateway = gatewayOf(configFrom(given.config), given["key-file"], values);
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const copyDir = path.join(copies, path.basename(path.resolve(given.skill)));
   // The directory a link names, so that the change is never written through it into the skill.
@@ -1833,9 +1832,11 @@ async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<
   if (copyRead.answer === undefined || originalRead.answer === undefined) {
     held = false;
     why = [
-      ...(copyRead.answer === undefined ? [`on the copy, ${copyRead.failed.message}`] : []),
+      ...(copyRead.answer === undefined
+        ? [`on ${SIDE_WORDS.copy}, ${copyRead.failed.message}`]
+        : []),
       ...(originalRead.answer === undefined
-        ? [`on the unchanged skill, ${originalRead.failed.message}`]
+        ? [`on ${SIDE_WORDS.original}, ${originalRead.failed.message}`]
         : []),
     ].join("; ");
     control = {
@@ -1934,6 +1935,15 @@ const OursNote = z.strictObject({
 });
 type OursNote = z.infer<typeof OursNote>;
 
+/** The digests (`textDigest`) of the skill directories a run reads: `--old`, and `--new` or
+ *  `--ours` where given; each stage records those it ran with. */
+const Texts = z.strictObject({
+  old: z.string(),
+  new: z.string().optional(),
+  ours: z.string().optional(),
+});
+type Texts = z.infer<typeof Texts>;
+
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and of `--new` or `--ours` it ran with, `compared` the arm
  *  the old text was compared with (a stage that records none was run with `--new`, before it was
@@ -1946,11 +1956,7 @@ type OursNote = z.infer<typeof OursNote>;
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
-  texts: z.strictObject({
-    old: z.string(),
-    new: z.string().optional(),
-    ours: z.string().optional(),
-  }),
+  texts: Texts,
   compared: Compared.optional(),
   ours: OursNote.optional(),
   plantedLine: z.string().nullable(),
@@ -2044,14 +2050,6 @@ export function textDigest(dir: string, keep: (file: string) => boolean = () => 
   return hash.digest("hex").slice(0, 16);
 }
 
-/** The digests (`textDigest`) of the skill directories a run reads: `--old`, and `--new` or
- *  `--ours` where given. */
-interface Texts {
-  readonly old: string;
-  readonly new?: string;
-  readonly ours?: string;
-}
-
 /** `texts` as score.ts's MadeConfirm holds them: the old text's digest and the compared arm's in
  *  one string, `none` for no skill. */
 function textsKey(texts: Texts): string {
@@ -2074,29 +2072,27 @@ export function runnerDigest(): string {
  *  the digests of `--old`, `--new` and `--ours` (`textDigest`), so only `minus`'s copy is hashed
  *  here; `twin` holds the old text. */
 export function armCaptureDir(out: string, arm: Arm, texts: Texts): string {
-  const text =
-    arm.skillDir === undefined
-      ? "none"
-      : arm.name === "old" || arm.name === "new" || arm.name === "ours"
-        ? (texts[arm.name] ?? textDigest(arm.skillDir))
-        : arm.name === "twin"
-          ? texts.old
-          : textDigest(arm.skillDir);
-  return path.join(out, "captures", `${arm.name}-${text}`);
+  const dir = (text: string) => path.join(out, "captures", `${arm.name}-${text}`);
+  if (arm.skillDir === undefined) return dir("none");
+  if (arm.name === "old" || arm.name === "new" || arm.name === "ours") {
+    return dir(texts[arm.name] ?? textDigest(arm.skillDir));
+  }
+  if (arm.name === "twin") return dir(texts.old);
+  return dir(textDigest(arm.skillDir));
 }
 
 /** An estimate of the chance that the registered rule calls a loss in one informative case when
  *  the compared arm's text is the old text: score.ts's `lossChance` with both texts passing at p =
- *  (old + new + 1) / (2 × SCREEN_RUNS + 2), the case's old and compared arm's screen passes (`new`
- *  here, whatever the compared arm is) pooled with a Laplace term, and no skill at q = (none + 1)
- *  / (SCREEN_RUNS + 2); with no skill compared, no skill is the compared arm, at p. */
+ *  (old + compared + 1) / (2 × SCREEN_RUNS + 2), the case's old and compared arm's screen passes
+ *  pooled with a Laplace term, and no skill at q = (none + 1) / (SCREEN_RUNS + 2); with no skill
+ *  compared, no skill is the compared arm, at p. */
 export function falseLossChance(
-  passes: { old: number; new: number; none: number },
+  passes: { old: number; compared: number; none: number },
   compared: Compared = "new"
 ): number {
-  const p = (passes.old + passes.new + 1) / (2 * SCREEN_RUNS + 2);
+  const p = (passes.old + passes.compared + 1) / (2 * SCREEN_RUNS + 2);
   const q = (passes.none + 1) / (SCREEN_RUNS + 2);
-  return lossChance({ old: p, cut: p, none: compared === "none" ? p : q }, compared);
+  return lossChance({ old: p, compared: p, none: compared === "none" ? p : q }, compared);
 }
 
 /** The report's sensitivity table: the old text's pass rates, the drops of the cut's text from
@@ -2271,6 +2267,12 @@ function runRecords(results: Iterable<CaseResult>): RunRecord[] {
  *  `--reading-models` or with enough reading sessions on served models. */
 function sessionRefusal(b: Behaviour): NoVerdict | undefined {
   return b.readingModels === undefined ? undefined : servedScreeningRefusal(b.readingModels.count);
+}
+
+/** The served-sessions refusal (`sessionRefusal`) as the whole skill's: a skill with written cases
+ *  is screened on them, so only one with none gets no verdict by it. */
+function skillRefusal(b: Behaviour): NoVerdict | undefined {
+  return b.cases.some((c) => caseKind(c) === "written") ? undefined : sessionRefusal(b);
 }
 
 /** The kind of each case of `b` by its id (cases.ts's `caseKind`). */
@@ -2462,6 +2464,12 @@ const MODEL_NOT_SERVED = "model-not-served";
  *  the one whose id, its text after its last `/`, is `model`'s; or undefined when none is. */
 function servedModel(model: string, servedModels: readonly string[]): string | undefined {
   return servedModels.find((served) => modelId(served) === modelId(model));
+}
+
+/** Why the gateway runs nothing on the case model `model`: no model of `servedModels` (the
+ *  configuration's) serves it. */
+function notServedWords(model: string, servedModels: readonly string[]): string {
+  return `its model ${model} is none the gateway serves (the configuration's servedModels: ${servedModels.join(", ") || "none"})`;
 }
 
 /** The directory under `--out` that keeps each session head a capture read (capture.ts's
@@ -2820,7 +2828,7 @@ async function runStage(
 
 /** Ends case `result`'s stage: records the peak memory, writes the result, says the case's line
  *  (its stage, the peak and the seconds of each phase of `phases`), runs `--after-case`, and stops
- *  the run when the peak is above MEMORY_LIMIT_BYTES. Returns the result as written. */
+ *  the run when the peak is above RUN_MEMORY_LIMIT_BYTES. Returns the result as written. */
 async function finishCase(
   r: Runner,
   result: CaseResult,
@@ -2850,7 +2858,7 @@ async function finishCase(
       r.afterCaseFailures.push(file);
     }
   }
-  if (peak > MEMORY_LIMIT_BYTES) {
+  if (peak > RUN_MEMORY_LIMIT_BYTES) {
     throw new Stopped(
       `the runner's peak resident memory, ${mib(peak)} MiB, is above 1 GiB, so the run stops after case ${result.caseId}, whose results are written to ${file}`
     );
@@ -2869,8 +2877,11 @@ async function screenCommand(r: Runner): Promise<void> {
   // Each case's result, read once here and kept as each case ends (only this process writes
   // <out>/cases/), for the score that says when screening stops.
   const results = readResults(r);
+  // The score, computed again only once a case has ended: a case passed over changes nothing.
+  let scoreSoFar: SkillScore | undefined;
   const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
     results.set(result.caseId, await finishCase(r, result, "screen", phases));
+    scoreSoFar = undefined;
   };
   // The served-sessions refusal stops the session cases only; the setup refused a skill with no
   // written case before any call.
@@ -2902,7 +2913,8 @@ async function screenCommand(r: Runner): Promise<void> {
       continue;
     }
     if (result === undefined) {
-      const score = scored(r, results);
+      scoreSoFar ??= scored(r, results);
+      const score = scoreSoFar;
       const counts = screenCounts(score, kindOf);
       if (counts.informative >= MIN_INFORMATIVE_CASES) {
         say(
@@ -2923,7 +2935,7 @@ async function screenCommand(r: Runner): Promise<void> {
       }
       result = newResult(c);
       if (servedModel(c.model, r.servedModels) === undefined) {
-        const dropped = `${MODEL_NOT_SERVED}: its model ${c.model} is none the gateway serves (the configuration's servedModels: ${r.servedModels.join(", ") || "none"})`;
+        const dropped = `${MODEL_NOT_SERVED}: ${notServedWords(c.model, r.servedModels)}`;
         await finished({ ...result, dropped, droppedAt: "screen" }, phases);
         continue;
       }
@@ -3340,7 +3352,7 @@ function verdictLine(
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string {
-  const refusal = b.cases.some((c) => caseKind(c) === "written") ? undefined : sessionRefusal(b);
+  const refusal = skillRefusal(b);
   if (refusal !== undefined) return `none: ${refusal.reason}`;
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) return `not yet: ${unfinished} (behaviour screen)`;
@@ -3553,9 +3565,10 @@ function judgeLine(results: ReadonlyMap<string, CaseResult>): string {
   const others = new Map<string, number>();
   for (const result of results.values()) {
     for (const stage of Stage.options) {
-      const judge = result.stages[stage]?.judge;
-      if (result.stages[stage] === undefined) continue;
+      const state = result.stages[stage];
+      if (state === undefined) continue;
       stages += 1;
+      const judge = state.judge;
       if (judge === undefined) none += 1;
       else if (judge.sha256 === now.sha256 && settings(judge) === settings(now)) same += 1;
       else {
@@ -3564,7 +3577,7 @@ function judgeLine(results: ReadonlyMap<string, CaseResult>): string {
       }
     }
   }
-  const other = [...others.values()].reduce((sum, count) => sum + count, 0);
+  const other = stages - same - none;
   const which =
     others.size === 0
       ? ""
@@ -3600,8 +3613,10 @@ function oursAgainstOldLines(
     /** The passes of `arm` summed over the counted stages of `stages`. */
     const passes = (arm: ArmName, stages: readonly (Partial<Record<ArmName, number>> | null)[]) =>
       stages.reduce((sum, each) => sum + (each?.[arm] ?? 0), 0);
-    const screens = cases.map(({ screen }) => (screen.state === "counted" ? screen.passes : null));
-    const screen = (["old", "ours", "none"] as const)
+    const screens = cases.flatMap(({ screen }) =>
+      screen.state === "counted" ? [screen.passes] : []
+    );
+    const screen = stageArms("screen", "ours")
       .map((arm) => `${arm} ${passes(arm, screens)}/${cases.length * SCREEN_RUNS}`)
       .join(", ");
     // Each counted confirm's passes and runs: its POOLED_CONFIRMS pooled ones', or its last one's.
@@ -3617,7 +3632,7 @@ function oursAgainstOldLines(
     const confirm =
       confirms.length === 0
         ? "no confirm runs"
-        : `confirm on ${counted(confirms.length, "case")}: ${(["old", "ours"] as const)
+        : `confirm on ${counted(confirms.length, "case")}: ${stageArms("confirm", "ours")
             .map(
               (arm) =>
                 `${arm} ${passes(
@@ -3667,7 +3682,7 @@ function dropLines(b: Behaviour, score: SkillScore): string[] {
  *  dropped case's line gives the stage that dropped it, why, and each stage it ran. */
 function reportCommand(given: Behaviour): void {
   const results = readResults(given);
-  const b = { ...given, compared: recordedCompared(given, results)?.compared ?? given.compared };
+  const b = { ...given, compared: recordedCompared(given.out, results) ?? given.compared };
   const score = scored(b, results);
   const byCase = new Map(score.cases.map((each) => [each.caseId, each]));
   const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`];
@@ -3770,7 +3785,7 @@ function reportCommand(given: Behaviour): void {
     const row = SENSITIVITY.drops.map((drop) => {
       const cut = old - drop;
       const none = b.compared === "none" ? cut : SENSITIVITY.none;
-      return `${b.compared} ${cut.toFixed(1)} ${percent(lossChance({ old, cut, none }, b.compared))}`;
+      return `${b.compared} ${cut.toFixed(1)} ${percent(lossChance({ old, compared: cut, none }, b.compared))}`;
     });
     lines.push(`  old ${old.toFixed(1)}: ${row.join(", ")}`);
   }
@@ -3779,7 +3794,9 @@ function reportCommand(given: Behaviour): void {
   const chances = score.cases.flatMap((each) => {
     if (!each.informative || each.screen.state !== "counted") return [];
     const { old, none, [b.compared]: other = 0 } = each.screen.passes;
-    return [{ id: each.caseId, chance: falseLossChance({ old, new: other, none }, b.compared) }];
+    return [
+      { id: each.caseId, chance: falseLossChance({ old, compared: other, none }, b.compared) },
+    ];
   });
   const rate = 1 - chances.reduce((none, { chance }) => none * (1 - chance), 1);
   const laplace = `${2 * SCREEN_RUNS + 2}`;
@@ -3848,31 +3865,19 @@ const BEHAVIOUR_USAGE = [
   "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
 ].join("\n");
 
-/** The reading sessions by model `file` holds: attribute.ts's `<cut or set id>/models/<skill>.json`
- *  of a skill (ModelCountFile). Throws a refusal naming the file. */
-function readReadingModels(file: string): ModelCount {
-  const parsed = ModelCountFile.safeParse(readJson(file, "the reading sessions by model"));
-  if (!parsed.success) {
-    throw new Refused(
-      `--reading-models ${file} is not a skill's reading sessions by model (attribute's <cut or set id>/models/<skill>.json): ${schemaFaults(parsed.error)}`
-    );
-  }
-  return parsed.data;
-}
-
-/** The compared arm the stages of `results` (`b`'s) record (a stage that records none was run with
- *  `--new`), with a file that records it; undefined when no stage was run. Throws a refusal naming
- *  two files that record different arms. */
+/** The compared arm the stages of `results` record (a stage that records none was run with
+ *  `--new`); undefined when no stage was run. Throws a refusal naming two files under `out` that
+ *  record different arms. */
 function recordedCompared(
-  b: Behaviour,
+  out: string,
   results: ReadonlyMap<string, CaseResult>
-): { compared: Compared; file: string } | undefined {
+): Compared | undefined {
   let found: { compared: Compared; file: string } | undefined;
   for (const result of results.values()) {
     for (const stage of Stage.options) {
       const state = result.stages[stage];
       if (state === undefined) continue;
-      const each = { compared: recordedArm(state), file: caseResultFile(b.out, result.caseId) };
+      const each = { compared: recordedArm(state), file: caseResultFile(out, result.caseId) };
       found ??= each;
       if (found.compared !== each.compared) {
         throw new Refused(
@@ -3881,7 +3886,7 @@ function recordedCompared(
       }
     }
   }
-  return found;
+  return found?.compared;
 }
 
 /** `skill-cuts behaviour <command>`. */
@@ -3958,9 +3963,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     throw new Refused(`--case ${values.case}: ${given.cases} holds no case ${values.case}`);
   }
   if (one !== undefined && servedModel(one.model, config.servedModels) === undefined) {
-    throw new Refused(
-      `--case ${one.id}: its model ${one.model} is none the gateway serves (the configuration's servedModels: ${config.servedModels.join(", ") || "none"})`
-    );
+    throw new Refused(`--case ${one.id}: ${notServedWords(one.model, config.servedModels)}`);
   }
   const readingModels = values["reading-models"];
   const limits = values.limits;
@@ -3976,7 +3979,14 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     readingModels:
       readingModels === undefined
         ? undefined
-        : { file: readingModels, count: readReadingModels(readingModels) },
+        : {
+            file: readingModels,
+            count: modelCountOf(
+              readJson(readingModels, "the reading sessions by model"),
+              readingModels,
+              "--reading-models"
+            ),
+          },
     limits:
       limits === undefined
         ? undefined
@@ -3988,12 +3998,8 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   }
   // The served-sessions refusal stops the session cases only: a skill with written cases is
   // screened on them (screenCommand).
-  const refusal = sessionRefusal(behaviour);
-  if (
-    command === "screen" &&
-    refusal !== undefined &&
-    !cases.some((c) => caseKind(c) === "written")
-  ) {
+  const refusal = skillRefusal(behaviour);
+  if (command === "screen" && refusal !== undefined) {
     throw new Refused(
       `the skill ${cases[0]?.skill} gets no verdict, and no case of it is screened: ${refusal.reason} (--reading-models ${readingModels}); the walk of the cut's ranking goes on to its next skill`
     );
@@ -4215,7 +4221,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     configFiles: values["omp-config"] ?? [],
     claude: values.claude ?? "claude",
     requestLog: log,
-    memoryLimitBytes: MEMORY_LIMIT_BYTES,
+    memoryLimitBytes: RUN_MEMORY_LIMIT_BYTES,
     psqlCommand: config.psqlCommand,
     stores: config.stores.map((store) => store.name),
     ...(config.devboxClaudeConfigDir === undefined
@@ -4242,12 +4248,12 @@ const USAGE = [
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] ... --original-line <a>[-<b>|all] ... <craft's flags> --out <dir>",
   "  craft-lines --list <craft-list.json>",
-  "  craft --config <skill-cuts.json> --key-file <file> --skill <dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> [--nearest <dir>]... [--skill-source <text>] --out <entry.json> ...",
+  `  craft ${CRAFT_FLAGS} --out <entry.json> ...`,
   "  craft-merge --entry <entry.json> --entry <entry.json> [--entry <entry.json>]... --out <merged.json>",
-  "  nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> ...",
+  `  nearest ${NEAREST_FLAGS} ...`,
   "  craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>",
-  "  proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <text>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> ...",
-  "  proposals --dry-run --body <file> --section <heading> --list <text>...",
+  `  proposals ${PROPOSALS_FLAGS} ...`,
+  `  proposals ${PROPOSALS_DRY_RUN}`,
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",

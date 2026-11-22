@@ -1,15 +1,17 @@
 /**
- * What the skill-cuts commands share: a whole-file write, JSON text, a zod error's faults on one
- * line, strict option parsing, the configuration as a refusal, the two errors a command's `main`
- * turns into its exit status (`Refused` 2, `Stopped` 3), and the one rule by which a gh call that
- * failed is sent again (`GhRetries`). It imports no other command's file, so every one of them can
- * import it.
+ * What the skill-cuts commands share: a whole-file write, JSON text, a SHA-256 in hex, a zod error's
+ * faults on one line, one line of text as a schema, strict option parsing, the configuration as a
+ * refusal, the two errors a command's `main` turns into its exit status (`Refused` 2, `Stopped`
+ * 3), the one rule by which a gh call that failed is sent again (`GhRetries`), and a read started
+ * beside others (`started`). It imports no other command's file, so every one of them can import
+ * it.
  */
+import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
-import type { z } from "zod";
+import { z } from "zod";
 import { loadConfig, type SkillCutsConfig } from "./config";
 
 /** A command's refusal of its arguments or inputs, before any store read or model call: its
@@ -33,6 +35,23 @@ export function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** The SHA-256 of `bytes`, in hex. */
+export function sha256(bytes: string | Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Each file of `files`: its path and the SHA-256 of its text. */
+export function fileDigests(
+  files: readonly { readonly path: string; readonly text: string }[]
+): { path: string; sha256: string }[] {
+  return files.map((file) => ({ path: file.path, sha256: sha256(file.text) }));
+}
+
+/** One line of text: not blank, no line break. */
+export const OneLine = z
+  .string()
+  .refine((text) => text.trim() !== "" && !text.includes("\n"), "is not one non-blank line");
+
 /** Each issue of a zod error as `<path>: <message>`, joined by `; `; an issue of the whole value
  *  is named `root`. */
 export function schemaFaults(error: z.ZodError, root = "the value"): string {
@@ -41,13 +60,21 @@ export function schemaFaults(error: z.ZodError, root = "the value"): string {
     .join("; ");
 }
 
+/** The options `parse` takes, as `parseArgs` takes them. */
+type ParseOptions = NonNullable<Parameters<typeof parseArgs>[0]>["options"];
+
+/** The values `parse` gives for the options `O`: each option's value, or undefined. */
+export type OptionValues<O extends ParseOptions> = ReturnType<
+  typeof parseArgs<{ args: string[]; options: O; strict: true; allowPositionals: false }>
+>["values"];
+
 /** Parses `argv` with `options`, strictly, with no positional argument. Throws a refusal that
  *  ends with `usage`. */
-export function parse<O extends NonNullable<Parameters<typeof parseArgs>[0]>["options"]>(
+export function parse<O extends ParseOptions>(
   argv: readonly string[],
   options: O,
   usage: string
-) {
+): OptionValues<O> {
   try {
     return parseArgs({ args: [...argv], options, strict: true, allowPositionals: false }).values;
   } catch (error) {
@@ -151,6 +178,31 @@ export interface RetryIo {
   sleep(ms: number): Promise<void>;
   /** Writes one line to standard error. */
   err(line: string): void;
+}
+
+/** Where a command says each retry of its gh calls, and how it waits. */
+export interface CommandRetryIo {
+  /** Writes one line to standard error. */
+  err(line: string): void;
+  /** The wait before a gh call is sent again; Bun.sleep unless given. */
+  sleep?(ms: number): Promise<void>;
+}
+
+/** The GhRetries of the command `who`: each retry said on `io.err`, each wait `io.sleep`'s, else
+ *  Bun.sleep's. */
+export function commandRetries(io: CommandRetryIo, who: string): GhRetries {
+  return new GhRetries(
+    { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
+    who
+  );
+}
+
+/** `promise`, a read started now beside others and awaited later in its turn: its rejection is
+ *  marked handled, so a read not yet awaited when an earlier one throws is no unhandled
+ *  rejection. Awaiting it still throws. */
+export function started<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => undefined);
+  return promise;
 }
 
 /**

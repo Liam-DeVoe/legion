@@ -488,12 +488,12 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Arm, readResult } from "./arms";
+import { type Arm, installedDirOf, readResult } from "./arms";
 import {
   type InstallersRow,
   type ManifestsRow,
   type ModelCount,
-  ModelCountFile,
+  modelCountOf,
   modelId,
   type Placer,
   type PrefixTableRow,
@@ -520,10 +520,12 @@ import {
   textLines,
 } from "./cases";
 import {
+  commandRetries,
   configFrom,
   firstLine,
-  GhRetries,
+  type GhRetries,
   json,
+  type OptionValues,
   parse,
   Refused,
   required,
@@ -2033,8 +2035,8 @@ export type NpmTarball = (name: string, version: string) => Promise<Uint8Array |
 export const tarballUrl = (name: string, version: string) =>
   `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
 
-// A fetch waits for ever by itself, and one did: a screen sat 15 minutes in a registry read after
-// the pod's network faulted. A try still running at this limit is given up and sent again.
+// A fetch with no signal waits for ever on a connection that never answers, and so would the run
+// that made it. A try still running at this limit is given up and sent again.
 const NPM_TIMEOUT_MS = 60_000;
 
 /** The reason, in the words of common.ts's TRANSIENT_FAILURES, of each error code with which Bun's
@@ -2487,11 +2489,7 @@ function githubReads(
   branches: ReadonlyMap<string, string>,
   who: "build-cases" | "build-tasks"
 ): GithubReads {
-  const retries = new GhRetries(
-    { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
-    who
-  );
-  return new GithubReads(io.gh, branches, retries, io.npm);
+  return new GithubReads(io.gh, branches, commandRetries(io, who), io.npm);
 }
 
 /** Which skills a package pinned by an exact npm version ships, and where its source says so. */
@@ -4522,6 +4520,34 @@ const BUILD_CASES_USAGE =
   "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 /** The flags only `build-cases --written` takes. */
 const WRITTEN_FLAGS = ["context-session", "session-cases", "reading-models", "model-pool"] as const;
+/** build-cases' options, of each of its forms. */
+const BUILD_CASES_OPTIONS = {
+  config: { type: "string" },
+  "key-file": { type: "string" },
+  cut: { type: "string" },
+  set: { type: "string" },
+  skill: { type: "string" },
+  old: { type: "string" },
+  sessions: { type: "string" },
+  seed: { type: "string" },
+  copies: { type: "string" },
+  count: { type: "string" },
+  reprofile: { type: "string" },
+  out: { type: "string" },
+  max: { type: "string" },
+  "budget-usd": { type: "string" },
+  concurrency: { type: "string" },
+  "stop-projected-usd": { type: "string" },
+  "stop-after-sessions": { type: "string" },
+  "stop-zero-case-usd": { type: "string" },
+  written: { type: "string" },
+  "context-session": { type: "string" },
+  "session-cases": { type: "string" },
+  "reading-models": { type: "string" },
+  "model-pool": { type: "string", multiple: true },
+} as const;
+/** build-cases' options as `parse` reads them. */
+type BuildCasesValues = OptionValues<typeof BUILD_CASES_OPTIONS>;
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
@@ -4532,6 +4558,44 @@ const Candidate = z.strictObject({
   path: z.string().min(1).optional(),
 });
 type Candidate = z.infer<typeof Candidate>;
+
+/** The paths of the candidates of `order` that lack one and that `wanted` keeps, by
+ *  `<store>\0<hash>`: one sessions.sql query (`resolvePaths`) for each store of `stores` that has
+ *  such a candidate, in their order; and the queries made. */
+async function candidatePaths(
+  command: string,
+  stores: readonly { readonly name: string }[],
+  order: readonly Candidate[],
+  wanted: (candidate: Candidate) => boolean = () => true
+): Promise<{ paths: Map<string, string>; queries: number }> {
+  const paths = new Map<string, string>();
+  let queries = 0;
+  for (const store of stores) {
+    const hashes = order
+      .filter((each) => each.store === store.name && each.path === undefined && wanted(each))
+      .map((each) => each.hash);
+    const resolved = await resolvePaths(command, store.name, hashes);
+    queries += resolved.queries;
+    for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
+  }
+  return { paths, queries };
+}
+
+/** A refusal unless `seed`, a `--seed`, is a whole number. */
+function checkSeed(seed: string): void {
+  if (!/^\d+$/.test(seed)) throw new Refused(`--seed ${seed} is not a whole number`);
+}
+
+/** The dollars `text` gives for `--<flag>`, or undefined when it is not given. Throws a refusal on
+ *  a text that is no number of dollars of 0 or more. */
+function dollars(flag: string, text: string | undefined): number | undefined {
+  if (text === undefined) return undefined;
+  const usd = Number(text);
+  if (text.trim() === "" || !(usd >= 0)) {
+    throw new Refused(`--${flag} ${text} is not a number of dollars of 0 or more`);
+  }
+  return usd;
+}
 
 /** A refusal unless `file` is a file. */
 function mustBeFile(file: string, what: string): void {
@@ -4934,6 +4998,62 @@ async function sessionProfile(
   };
 }
 
+/** Why the first read `first` of a session in the store `store` gives no case (a session case, or
+ *  written cases' context): attribute.ts's rules (`run.placer`) place it at no copy, or at a copy
+ *  of another repository than the cut's; undefined when they place it at the cut repository's. */
+function placementDrop(
+  run: CaseRun,
+  store: string,
+  first: SkillRead
+): { readonly drop: DropReason; readonly detail: string } | undefined {
+  const placed = run.placer.place(store, first.header ?? "", run.skill);
+  const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
+  if (placed.copy === undefined) {
+    return {
+      drop: "not-cut-copy",
+      detail: `no rule places ${first.header} at a copy: ${placed.outcome}`,
+    };
+  }
+  if (placedRepository !== run.cut.repo) {
+    return {
+      drop: "not-cut-copy",
+      detail: `the ${placed.rule} rule places ${first.header} at ${placedRepository} ${placedPath}${placed.outcome === undefined ? "" : ` (${placed.outcome})`}`,
+    };
+  }
+  return undefined;
+}
+
+/** Whether `profile` installs the copy of the skill `skill` of the repository `repo` under no
+ *  namespace, as every case's profile must. */
+function installsCutCopy(profile: Profile, skill: string, repo: string): boolean {
+  return profile.skills.some(
+    (each) => each.name === skill && each.repo === repo && each.namespace === undefined
+  );
+}
+
+/** The last system-prompt digest of `branch` before the entry `at`. */
+function promptDigestBefore(branch: readonly SessionEntry[], at: number): string | undefined {
+  return lastBefore(branch, at, (entry) =>
+    entry.type === "custom" &&
+    entry.customType === "system-prompt-digest" &&
+    typeof entry.data === "string"
+      ? entry.data
+      : undefined
+  );
+}
+
+/** `profile`, with the prompt a session records (`init`, a subagent's) where it records one: its
+ *  system prompt as the case keeps it (`systemPrompt`) and its tools. */
+function withRecordedPrompt(
+  profile: Profile,
+  init: SessionInit | undefined,
+  systemPrompt: string[] | undefined
+): Profile {
+  return init === undefined || systemPrompt === undefined
+    ? profile
+    : { ...profile, systemPrompt, tools: init.tools };
+}
+
 /** The case of one session's transcript, pulled into the file `spool`, or why it gives none.
  *  Adds what the reader spent and what its restatement check read to `record`. Throws NotNeeded
  *  before a reader call once `session.stopped` is set. The transcript is read from the spool
@@ -4972,17 +5092,8 @@ async function caseOf(
   // output as the sessions file, so the builder keeps what attribute.ts counted for the cut's
   // copy: a read in a checkout or one the store's context places, as well as one the prefix table
   // maps.
-  const placed = run.placer.place(store.name, first.header ?? "", run.skill);
-  const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
-  if (placed.copy === undefined) {
-    return drop("not-cut-copy", `no rule places ${first.header} at a copy: ${placed.outcome}`);
-  }
-  if (placedRepository !== run.cut.repo) {
-    return drop(
-      "not-cut-copy",
-      `the ${placed.rule} rule places ${first.header} at ${placedRepository} ${placedPath}${placed.outcome === undefined ? "" : ` (${placed.outcome})`}`
-    );
-  }
+  const misplaced = placementDrop(run, store.name, first);
+  if (misplaced !== undefined) return misplaced;
 
   // The model and thinking level: the step's are the last before it, and the step comes after the
   // read, so each is the one in effect at the read or one set after it. A session that gives the
@@ -5234,9 +5345,10 @@ async function caseOf(
   if ("drop" in before) return drop(before.drop, before.detail);
   const messages = before.messages;
   const caseReads = skillReads(messages, run.skill);
-  const installedDirs = caseReads.flatMap((read) =>
-    read.header?.endsWith(`/${read.file}`) ? [read.header.slice(0, -(read.file.length + 1))] : []
-  );
+  const installedDirs = caseReads.flatMap((read) => {
+    const dir = installedDirOf(read.header, read.file);
+    return dir === undefined ? [] : [dir];
+  });
   const byPath = readByPath(messages, run.skill, installedDirs);
   if (byPath !== undefined) return drop("read-by-path", byPath);
 
@@ -5275,13 +5387,7 @@ async function caseOf(
     );
   }
 
-  const digest = lastBefore(t.branch, stepItem.at, (entry) =>
-    entry.type === "custom" &&
-    entry.customType === "system-prompt-digest" &&
-    typeof entry.data === "string"
-      ? entry.data
-      : undefined
-  );
+  const digest = promptDigestBefore(t.branch, stepItem.at);
   // The profile: from the reads before the step, read at the root's last prompt build before a
   // subagent's start (PARENT_LOAD_RULE), or at the build a top-level session's step ran under
   // (TOP_BUILD_RULE). Its GitHub reads were made for the reads the reader could reach, so they
@@ -5297,12 +5403,7 @@ async function caseOf(
   } catch (error) {
     return drop("profile-failed", messageFor(error));
   }
-  if (
-    !profiled.profile.skills.some(
-      (each) =>
-        each.name === run.skill && each.repo === run.cut.repo && each.namespace === undefined
-    )
-  ) {
+  if (!installsCutCopy(profiled.profile, run.skill, run.cut.repo)) {
     return drop(
       "not-cut-copy",
       notInstalled(
@@ -5319,20 +5420,7 @@ async function caseOf(
     messages,
     systemPrompt: init?.systemPrompt,
     realStep: t.message(stepIndex),
-    violatingStep: {
-      role: "assistant",
-      content: [
-        ...(answer.violatingStep.text.trim() === ""
-          ? []
-          : [{ type: "text", text: answer.violatingStep.text }]),
-        ...answer.violatingStep.toolCalls.map((call, n) => ({
-          type: "toolCall",
-          id: `violating_${n + 1}`,
-          name: call.name,
-          arguments: call.arguments,
-        })),
-      ],
-    },
+    violatingStep: writtenMessage(answer.violatingStep, "violating"),
     criterion: answer.criterion,
   });
   const skillReadIndices = caseReads.map((each) => each.index);
@@ -5422,10 +5510,7 @@ async function caseOf(
     model,
     thinking: thinking.data,
     context,
-    profile:
-      init === undefined || secrets.value.systemPrompt === undefined
-        ? profiled.profile
-        : { ...profiled.profile, systemPrompt: secrets.value.systemPrompt, tools: init.tools },
+    profile: withRecordedPrompt(profiled.profile, init, secrets.value.systemPrompt),
     messages: secrets.value.messages,
     skillReads: skillReadIndices,
     realStep: secrets.value.realStep,
@@ -5576,10 +5661,7 @@ function contextReads(evidence: readonly Evidence[]): ShownRead[] | undefined {
  * A case whose profile cannot be built, or no longer installs its skill, is left out and named,
  * and the command fails; a read of the heads that fails fails it too.
  */
-async function reprofileCases(
-  values: Readonly<Record<string, unknown>>,
-  io: BuildIo
-): Promise<number> {
+async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<number> {
   const given = required(
     values,
     ["config", "old", "copies", "count", "reprofile", "out"],
@@ -5600,7 +5682,7 @@ async function reprofileCases(
     "stop-zero-case-usd",
     ...WRITTEN_FLAGS,
     "written",
-  ]) {
+  ] as const) {
     if (values[flag] !== undefined) {
       throw new Refused(
         `--reprofile pulls no session and calls no reader, so it takes no --${flag}`
@@ -5684,6 +5766,8 @@ async function reprofileCases(
     });
     subagents.set(name, await subagentListings(config.psqlCommand, name, sessions));
   }
+  // Each profile built, by its input: the written cases of one context session give one input.
+  const profiles = new Map<string, ProfileResult>();
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
   const leftOut: { id: string; why: string }[] = [];
@@ -5729,41 +5813,42 @@ async function reprofileCases(
           },
         ];
     const reading = reads.get(c.id);
-    let profiled: ProfileResult;
-    try {
-      profiled = await caseProfile(run, {
-        store: store.name,
-        context: store.context,
-        project: legion ? store.context.slice("legion:".length) : undefined,
-        reads: contextReads(old) ?? shownReads(c.messages),
-        sessionStart: c.sessionStart,
-        cwd: held
-          ? (head?.cwd ?? undefined)
-          : agents === undefined
-            ? undefined
-            : `/legion/workspaces/${agents.repo}/`,
-        recordedPrompt: c.profile.systemPrompt !== undefined,
-        readTime: reading?.read,
-        checkout:
-          held || decided === undefined
-            ? undefined
-            : {
-                repo: decided.item.startsWith(SESSION_REPOSITORY)
-                  ? decided.item.slice(SESSION_REPOSITORY.length)
-                  : undefined,
-                rel: c.profile.workingDirectory ?? "",
-                line: decided,
-              },
-      });
-    } catch (error) {
-      leave(`${DROP_REASONS["profile-failed"]}: ${messageFor(error)}`);
-      continue;
+    const input: ProfileInput = {
+      store: store.name,
+      context: store.context,
+      project: legion ? store.context.slice("legion:".length) : undefined,
+      reads: contextReads(old) ?? shownReads(c.messages),
+      sessionStart: c.sessionStart,
+      cwd: held
+        ? (head?.cwd ?? undefined)
+        : agents === undefined
+          ? undefined
+          : `/legion/workspaces/${agents.repo}/`,
+      recordedPrompt: c.profile.systemPrompt !== undefined,
+      readTime: reading?.read,
+      checkout:
+        held || decided === undefined
+          ? undefined
+          : {
+              repo: decided.item.startsWith(SESSION_REPOSITORY)
+                ? decided.item.slice(SESSION_REPOSITORY.length)
+                : undefined,
+              rel: c.profile.workingDirectory ?? "",
+              line: decided,
+            },
+    };
+    const key = JSON.stringify(input);
+    let profiled = profiles.get(key);
+    if (profiled === undefined) {
+      try {
+        profiled = await caseProfile(run, input);
+      } catch (error) {
+        leave(`${DROP_REASONS["profile-failed"]}: ${messageFor(error)}`);
+        continue;
+      }
+      profiles.set(key, profiled);
     }
-    if (
-      !profiled.profile.skills.some(
-        (each) => each.name === c.skill && each.repo === cut.repo && each.namespace === undefined
-      )
-    ) {
+    if (!installsCutCopy(profiled.profile, c.skill, cut.repo)) {
       leave(
         notInstalled(
           { skill: c.skill, cut },
@@ -5933,17 +6018,8 @@ async function writtenContext(
       `${reads.length} read results of skill://${run.skill} files, none successful`
     );
   }
-  const placed = run.placer.place(store.name, first.header ?? "", run.skill);
-  const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
-  if (placed.copy === undefined) {
-    return drop("not-cut-copy", `no rule places ${first.header} at a copy: ${placed.outcome}`);
-  }
-  if (placedRepository !== run.cut.repo) {
-    return drop(
-      "not-cut-copy",
-      `the ${placed.rule} rule places ${first.header} at ${placedRepository} ${placedPath}${placed.outcome === undefined ? "" : ` (${placed.outcome})`}`
-    );
-  }
+  const misplaced = placementDrop(run, store.name, first);
+  if (misplaced !== undefined) return misplaced;
   const firstAt = t.items[first.index]?.at ?? 0;
   const model = lastBefore(t.branch, firstAt, modelChange);
   if (model === undefined) return drop("no-model", "no model_change before the skill's first read");
@@ -5954,13 +6030,7 @@ async function writtenContext(
   const rebuilt = sessionContext(store, t, filePath);
   if ("drop" in rebuilt) return rebuilt;
   const shown = shownReads(all.slice(0, first.index + 1));
-  const digest = lastBefore(t.branch, firstAt, (entry) =>
-    entry.type === "custom" &&
-    entry.customType === "system-prompt-digest" &&
-    typeof entry.data === "string"
-      ? entry.data
-      : undefined
-  );
+  const digest = promptDigestBefore(t.branch, firstAt);
   let readTime: ReadTime;
   let build: BuildWindow | undefined;
   let profiled: ProfileResult;
@@ -5987,12 +6057,7 @@ async function writtenContext(
   } catch (error) {
     return drop("profile-failed", messageFor(error));
   }
-  if (
-    !profiled.profile.skills.some(
-      (each) =>
-        each.name === run.skill && each.repo === run.cut.repo && each.namespace === undefined
-    )
-  ) {
+  if (!installsCutCopy(profiled.profile, run.skill, run.cut.repo)) {
     return drop("not-cut-copy", notInstalled(run));
   }
   return {
@@ -6097,18 +6162,6 @@ async function chooseContext(
   };
 }
 
-/** The models file `file` (attribute.ts's `<cut or set id>/models/<skill>.json`) that `flag`
- *  names. Throws a refusal when it is none. */
-function modelsFile(file: string, flag: string): { file: string; count: ModelCount } {
-  const parsed = ModelCountFile.safeParse(readJson(file));
-  if (!parsed.success) {
-    throw new Refused(
-      `${flag} ${file} is not a skill's reading sessions by model (attribute's <cut or set id>/models/<skill>.json): ${schemaFaults(parsed.error)}`
-    );
-  }
-  return { file, count: parsed.data };
-}
-
 /** The served model with the most reading sessions over `counts` (models files, their sessions
  *  summed by model), a tie going to the lower name in string order; undefined when none is
  *  served. */
@@ -6158,6 +6211,9 @@ function writtenMessage(
 
 /** The id of a written case's read call of the skill. */
 const WRITTEN_READ = "written_read";
+/** The index of a written case's read result in its messages: the task, the read's call, its
+ *  result. */
+const WRITTEN_READ_RESULT = 2;
 
 /**
  * `build-cases --written <n>`: up to n written cases of one skill (README.md, "build-cases and
@@ -6174,10 +6230,7 @@ const WRITTEN_READ = "written_read";
  * read (`BuildPeak`). Writes the cases file and `<out>.summary.json` whole at the end; it does not
  * go on from an earlier run.
  */
-async function buildWrittenCases(
-  values: Readonly<Record<string, unknown>>,
-  io: BuildIo
-): Promise<number> {
+async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise<number> {
   const given = required(
     values,
     ["config", "key-file", "skill", "old", "copies", "count", "out", "written"],
@@ -6189,7 +6242,7 @@ async function buildWrittenCases(
     "stop-projected-usd",
     "stop-after-sessions",
     "stop-zero-case-usd",
-  ]) {
+  ] as const) {
     if (values[flag] !== undefined) {
       throw new Refused(
         `--written writes the cases of one context session, so it takes no --${flag}`
@@ -6200,15 +6253,8 @@ async function buildWrittenCases(
     throw new Refused(`--written ${given.written} is not a whole number of 1 or more`);
   }
   const count = Number(given.written);
-  const text = (flag: string) => {
-    const value = values[flag];
-    return typeof value === "string" ? value : undefined;
-  };
-  const budget = text("budget-usd");
-  const budgetUsd = budget === undefined ? undefined : Number(budget);
-  if (budget !== undefined && (budget.trim() === "" || !((budgetUsd ?? -1) >= 0))) {
-    throw new Refused(`--budget-usd ${budget} is not a number of dollars of 0 or more`);
-  }
+  const budget = values["budget-usd"];
+  const budgetUsd = dollars("budget-usd", budget);
   // The cases file and its spool hold real session text.
   refuseOutInCheckout(given.out);
   const summaryFile = `${given.out}.summary.json`;
@@ -6218,13 +6264,13 @@ async function buildWrittenCases(
     );
   }
   const config = configFrom(given.config);
-  const unit = cutOrSetOption({ cut: text("cut"), set: text("set") }, config);
+  const unit = cutOrSetOption({ cut: values.cut, set: values.set }, config);
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
   mustBeFile(given["key-file"], "--key-file");
-  const named = text("context-session");
+  const named = values["context-session"];
   const contextGiven = named === undefined ? undefined : contextSessionOption(named, config);
-  const sessionsFile = text("sessions");
-  const seed = text("seed");
+  const sessionsFile = values.sessions;
+  const seed = values.seed;
   // Both only choose the context session, so a build that names one reads neither.
   for (const [flag, value] of [
     ["sessions", sessionsFile],
@@ -6243,15 +6289,23 @@ async function buildWrittenCases(
         `--written needs --context-session <store>:<hash>, or --sessions and --seed to take the context session from the seeded order of the skill's reading sessions. ${BUILD_CASES_USAGE}`
       );
     }
-    if (!/^\d+$/.test(seed)) throw new Refused(`--seed ${seed} is not a whole number`);
+    checkSeed(seed);
     order = blindOrder(readCandidates(sessionsFile, config), seed).map(({ item }) => item);
   }
-  const readingFile = text("reading-models");
+  const readingFile = values["reading-models"];
   const readingModels =
-    readingFile === undefined ? undefined : modelsFile(readingFile, "--reading-models");
-  const poolFiles = (values["model-pool"] ?? []) as readonly string[];
-  const pool = poolFiles.map((file) => modelsFile(file, "--model-pool"));
-  const casesFile = text("session-cases");
+    readingFile === undefined
+      ? undefined
+      : {
+          file: readingFile,
+          count: modelCountOf(readJson(readingFile), readingFile, "--reading-models"),
+        };
+  const poolFiles = values["model-pool"] ?? [];
+  const pool = poolFiles.map((file) => ({
+    file,
+    count: modelCountOf(readJson(file), file, "--model-pool"),
+  }));
+  const casesFile = values["session-cases"];
   let sessionCases: Case[] = [];
   if (casesFile !== undefined) {
     mustBeFile(casesFile, "--session-cases");
@@ -6317,14 +6371,7 @@ async function buildWrittenCases(
   const spools = spoolDir(given.out, io);
   try {
     // Paths for the candidates that lack one, per store.
-    const paths = new Map<string, string>();
-    for (const store of config.stores) {
-      const hashes = order
-        .filter((each) => each.store === store.name && each.path === undefined)
-        .map((each) => each.hash);
-      const resolved = await resolvePaths(config.psqlCommand, store.name, hashes);
-      for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
-    }
+    const { paths } = await candidatePaths(config.psqlCommand, config.stores, order);
     const { chosen, how, passed } = await chooseContext(
       run,
       contextGiven,
@@ -6417,9 +6464,7 @@ async function buildWrittenCases(
     }
     const measure = listingMeasure(listing, read);
     const header = first.header ?? "";
-    const installedDir = header.endsWith(`/${first.file}`)
-      ? header.slice(0, -(first.file.length + 1))
-      : path.posix.dirname(header);
+    const installedDir = installedDirOf(header, first.file) ?? path.posix.dirname(header);
     const target = `skill://${given.skill}`;
     const oldArm: Arm = {
       name: "old",
@@ -6483,7 +6528,7 @@ async function buildWrittenCases(
       const { messages, realStep, violatingStep, criterion } = secrets.value;
       try {
         // The restatement check: the task and the read's call, the read's result left out.
-        const check = restatementWindows(messages, new Set([2]));
+        const check = restatementWindows(messages, new Set([WRITTEN_READ_RESULT]));
         const restatementCheck = { read: 0, before: check.checked, windows: check.windows.length };
         record.restatementCheck = restatementCheck;
         let restated: string | undefined;
@@ -6528,7 +6573,7 @@ async function buildWrittenCases(
           "audit",
           {
             line: task.line.text,
-            before: beforeText({ messages, skill: given.skill, skillReads: [2] }),
+            before: beforeText({ messages, skill: given.skill, skillReads: [WRITTEN_READ_RESULT] }),
             step: stepText(realStep.content ?? []),
           },
           run.gateway
@@ -6562,12 +6607,9 @@ async function buildWrittenCases(
         model: model.model,
         thinking: chosen.thinking,
         context: chosen.context,
-        profile:
-          init === undefined || secrets.value.systemPrompt === undefined
-            ? profiled.profile
-            : { ...profiled.profile, systemPrompt: secrets.value.systemPrompt, tools: init.tools },
+        profile: withRecordedPrompt(profiled.profile, init, secrets.value.systemPrompt),
         messages,
-        skillReads: [2],
+        skillReads: [WRITTEN_READ_RESULT],
         realStep,
         violatingStep,
         source: { store: chosen.store.name, pathHash: contextPathHash, kind: "written" },
@@ -6851,35 +6893,7 @@ function cutOrSetOption(
 
 /** `skill-cuts build-cases`. */
 async function buildCases(argv: readonly string[], io: BuildIo): Promise<number> {
-  const values = parse(
-    argv,
-    {
-      config: { type: "string" },
-      "key-file": { type: "string" },
-      cut: { type: "string" },
-      set: { type: "string" },
-      skill: { type: "string" },
-      old: { type: "string" },
-      sessions: { type: "string" },
-      seed: { type: "string" },
-      copies: { type: "string" },
-      count: { type: "string" },
-      reprofile: { type: "string" },
-      out: { type: "string" },
-      max: { type: "string" },
-      "budget-usd": { type: "string" },
-      concurrency: { type: "string" },
-      "stop-projected-usd": { type: "string" },
-      "stop-after-sessions": { type: "string" },
-      "stop-zero-case-usd": { type: "string" },
-      written: { type: "string" },
-      "context-session": { type: "string" },
-      "session-cases": { type: "string" },
-      "reading-models": { type: "string" },
-      "model-pool": { type: "string", multiple: true },
-    },
-    BUILD_CASES_USAGE
-  );
+  const values = parse(argv, BUILD_CASES_OPTIONS, BUILD_CASES_USAGE);
   if (values.reprofile !== undefined) return reprofileCases(values, io);
   if (values.written !== undefined) return buildWrittenCases(values, io);
   for (const flag of WRITTEN_FLAGS) {
@@ -6892,21 +6906,11 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   );
   // The cases file and its spool hold real session text.
   refuseOutInCheckout(given.out);
-  if (!/^\d+$/.test(given.seed)) throw new Refused(`--seed ${given.seed} is not a whole number`);
+  checkSeed(given.seed);
   const max = values.max === undefined ? Number.POSITIVE_INFINITY : Number(values.max);
   if (values.max !== undefined && (!/^\d+$/.test(values.max) || max < 1)) {
     throw new Refused(`--max ${values.max} is not a whole number of 1 or more`);
   }
-  /** The dollars `text` gives for `--<flag>`, or undefined when it is not given. Throws a refusal
-   *  on a text that is no number of dollars of 0 or more. */
-  const dollars = (flag: string, text: string | undefined): number | undefined => {
-    if (text === undefined) return undefined;
-    const usd = Number(text);
-    if (text.trim() === "" || !(usd >= 0)) {
-      throw new Refused(`--${flag} ${text} is not a number of dollars of 0 or more`);
-    }
-    return usd;
-  };
   const budget = values["budget-usd"];
   const budgetUsd = dollars("budget-usd", budget);
   const concurrency =
@@ -7000,19 +7004,14 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         );
 
   // Paths for the candidates that lack one and are not decided yet, per store.
-  const paths = new Map<string, string>();
-  let sessionQueries = prior?.sessionQueries ?? 0;
-  for (const store of stopAtOnce === undefined ? config.stores : []) {
-    const hashes = order
-      .filter(
-        (each) => each.store === store.name && each.path === undefined && !decided.has(keyOf(each))
-      )
-      .map((each) => each.hash);
-    if (hashes.length === 0) continue;
-    const resolved = await resolvePaths(config.psqlCommand, store.name, hashes);
-    sessionQueries += resolved.queries;
-    for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
-  }
+  const resolved = await candidatePaths(
+    config.psqlCommand,
+    stopAtOnce === undefined ? config.stores : [],
+    order,
+    (each) => !decided.has(keyOf(each))
+  );
+  const paths = resolved.paths;
+  const sessionQueries = (prior?.sessionQueries ?? 0) + resolved.queries;
 
   // The budget counts what the earlier runs spent; the gateway takes as many calls at once as
   // sessions are open.
@@ -9039,7 +9038,7 @@ async function buildControlTasks(
       throw new Refused(`--first-read takes no --${flag}: it stops once --max requests are kept`);
     }
   }
-  if (!/^\d+$/.test(given.seed)) throw new Refused(`--seed ${given.seed} is not a whole number`);
+  checkSeed(given.seed);
   const maxText = values.max;
   const max = typeof maxText === "string" ? Number(maxText) : TASKS_PER_LABEL;
   if (typeof maxText === "string" && (!/^\d+$/.test(maxText) || max < 1)) {
@@ -9128,18 +9127,14 @@ async function buildControlTasks(
   writeWhole(foundFile, [...found.values()].map((row) => `${JSON.stringify(row)}\n`).join(""));
 
   // Paths for the candidates that lack one and are not tried yet, per store.
-  const paths = new Map<string, string>();
-  for (const store of config.stores) {
-    const hashes = order
-      .filter(
-        (each) => each.store === store.name && each.path === undefined && !recorded.has(keyOf(each))
-      )
-      .map((each) => each.hash);
-    if (hashes.length === 0) continue;
-    const resolved = await resolvePaths(config.psqlCommand, store.name, hashes);
-    sessionQueries += resolved.queries;
-    for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
-  }
+  const resolved = await candidatePaths(
+    config.psqlCommand,
+    config.stores,
+    order,
+    (each) => !recorded.has(keyOf(each))
+  );
+  const paths = resolved.paths;
+  sessionQueries += resolved.queries;
 
   // Each session is pulled into one spool file, read from there, and the file is pulled over by
   // the next session.

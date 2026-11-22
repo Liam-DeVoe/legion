@@ -30,7 +30,7 @@
  * whole count.sql result, or a summary row whose mtime range is not its query's. Each gap is
  * named. A store with no rows at all is named as not read.
  *
- * The rule (the plan's D6). A count row counts as the skill S of a set when S is one of the set's
+ * The rule. A count row counts as the skill S of a set when S is one of the set's
  * skills at its pin (sets.ts: the `skills/<name>/SKILL.md` of its repository at the pinned commit)
  * and its `copy` (`copyColumn`):
  *   - is a URL: one that names the set's repository or an upstream of it (its fork parent or
@@ -71,32 +71,56 @@
  * Exit status: 0 the count is written; 1 failed (a GitHub read, a set the dotfiles commit does not
  * pin once, a pin that does not resolve, a set whose skills are not at `skills/`); 2 refused.
  */
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   type CountRead,
+  cell,
   countOnce,
+  daysFrom,
+  HOURS,
   inside,
+  iso,
+  keyStore,
   parseSpans,
   type QueryOutput,
   readCount,
   type Span,
   sessionKey,
+  sessionLines,
+  twoDigits,
 } from "./attribute";
-import { configFrom, GhRetries, json, parse, Refused, required, writeWhole } from "./common";
+import {
+  commandRetries,
+  configFrom,
+  json,
+  parse,
+  Refused,
+  required,
+  sha256,
+  started,
+  writeWhole,
+} from "./common";
 import type { SkillCutsConfig } from "./config";
 import { type Gh, tsv } from "./copies";
 import { mtimeRange } from "./countsql";
-import { type PinChange, type Pins, pinChanges, readPins, type SetAtPin, SetReads } from "./sets";
+import {
+  COMMIT,
+  type PinChange,
+  type Pins,
+  pinChanges,
+  readPins,
+  type SetAtPin,
+  SetReads,
+} from "./sets";
 
-/** The columns of a skill's sessions: the four of its `read` rows, in the order a session takes
- *  the first one it reaches, then the reference reads at its own copy. */
-export const COLUMNS = ["own", "upstream_url", "other_copy", "no_copy", "reference_own"] as const;
-export type Column = (typeof COLUMNS)[number];
 const READ_COLUMNS = ["own", "upstream_url", "other_copy", "no_copy"] as const;
 type ReadColumn = (typeof READ_COLUMNS)[number];
+/** The columns of a skill's sessions: the four of its `read` rows, in the order a session takes
+ *  the first one it reaches, then the reference reads at its own copy. */
+export const COLUMNS = [...READ_COLUMNS, "reference_own"] as const;
+export type Column = (typeof COLUMNS)[number];
 /** Each column's words in exemplar-count.md. */
 const COLUMN_WORDS: Readonly<Record<Column, string>> = {
   own: "Own copy",
@@ -105,13 +129,10 @@ const COLUMN_WORDS: Readonly<Record<Column, string>> = {
   no_copy: "No copy named",
   reference_own: "Reference reads at own copy",
 };
-export const TSV_COLUMNS = ["set", "skill", ...COLUMNS.map((column) => `${column}_sessions`)];
+const TSV_COLUMNS = ["set", "skill", ...COLUMNS.map((column) => `${column}_sessions`)];
 /** The own-copy sessions from which a skill is on the list of the most read. */
 export const AT_LEAST = 20;
 const PLUGIN_CACHE = "/plugins/cache/";
-const DAY_MS = 86_400_000;
-const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
-const COMMIT = /^[0-9a-f]{40}$/;
 const CLI = "bun scripts/skill-cuts/cli.ts";
 
 const USAGE =
@@ -149,7 +170,7 @@ function namesRepository(url: string, repo: string): boolean {
 }
 
 /** The column a `read` row of a skill of `rule` at the copy `copy` goes to (the header's rule). */
-export function copyColumn(rule: SetRule, copy: string): ReadColumn {
+function copyColumn(rule: SetRule, copy: string): ReadColumn {
   if (/^https?:\/\//i.test(copy)) {
     return rule.repos.some((repo) => namesRepository(copy, repo)) ? "upstream_url" : "other_copy";
   }
@@ -196,13 +217,14 @@ export function countSets(
     for (const row of output.rows) {
       for (const tally of bySkill.get(row.skill) ?? []) {
         const column = copyColumn(tally.rule, row.copy);
+        if (row.kind === "reference") {
+          if (column !== "own") continue;
+          for (const hash of row.hashes) tally.references.add(sessionKey(row.store, hash));
+          continue;
+        }
+        const rank = READ_COLUMNS.indexOf(column);
         for (const hash of row.hashes) {
           const key = sessionKey(row.store, hash);
-          if (row.kind === "reference") {
-            if (column === "own") tally.references.add(key);
-            continue;
-          }
-          const rank = READ_COLUMNS.indexOf(column);
           if (rank < (tally.reads.get(key) ?? READ_COLUMNS.length)) tally.reads.set(key, rank);
         }
       }
@@ -221,22 +243,12 @@ export function countSets(
   });
 }
 
-const iso = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
-
 /** Each gap of the rows: for each configured store that has rows, each query file that is not one
  *  whole result or whose summary row is not of its query's range, and each day from the window's
  *  start to its end with no summary row of the day or of each of its 24 hours. */
-export function windowGaps(config: SkillCutsConfig, count: CountRead): string[] {
+function windowGaps(config: SkillCutsConfig, count: CountRead): string[] {
   const gaps: string[] = [];
-  const days: string[] = [];
-  const end = Date.parse(config.windowEnd);
-  for (
-    let at = Math.floor(Date.parse(config.windowStart) / DAY_MS) * DAY_MS;
-    at < end;
-    at += DAY_MS
-  ) {
-    days.push(new Date(at).toISOString().slice(0, 10));
-  }
+  const days = daysFrom(Date.parse(config.windowStart), Date.parse(config.windowEnd) - 1);
   for (const { name: store } of config.stores) {
     const outputs = count.outputs.filter((output) => output.store === store);
     const unreadable = count.unreadable.filter((item) => item.store === store);
@@ -264,7 +276,7 @@ export function windowGaps(config: SkillCutsConfig, count: CountRead): string[] 
     }
     for (const day of days) {
       if (covered.has(day)) continue;
-      const hours = HOURS.filter((hour) => covered.has(`${day}T${String(hour).padStart(2, "0")}`));
+      const hours = HOURS.filter((hour) => covered.has(`${day}T${twoDigits(hour)}`));
       if (hours.length === HOURS.length) continue;
       const missing = HOURS.filter((hour) => !hours.includes(hour));
       gaps.push(
@@ -326,20 +338,27 @@ function skillRows(
   stores: readonly string[]
 ): SkillRow[] {
   const rows = counts.map((count) => {
-    const of = (store?: string) =>
-      Object.fromEntries(
-        COLUMNS.map((column) => [
-          column,
-          [...count.sessions[column]].filter(
-            (key) => store === undefined || key.startsWith(`${store}\t`)
-          ).length,
-        ])
-      ) as Record<Column, number>;
+    const totals = Object.fromEntries(
+      COLUMNS.map((column) => [column, count.sessions[column].size])
+    ) as Record<Column, number>;
+    // One pass over each column's sessions, each counted in its store's numbers.
+    const byStore = new Map(
+      stores.map((store) => [
+        store,
+        Object.fromEntries(COLUMNS.map((column) => [column, 0])) as Record<Column, number>,
+      ])
+    );
+    for (const column of COLUMNS) {
+      for (const key of count.sessions[column]) {
+        const numbers = byStore.get(keyStore(key));
+        if (numbers !== undefined) numbers[column] += 1;
+      }
+    }
     return {
       set: count.set,
       skill: count.skill,
-      totals: of(),
-      byStore: Object.fromEntries(stores.map((store) => [store, of(store)])),
+      totals,
+      byStore: Object.fromEntries(byStore),
       own: [...count.sessions.own].sort(),
     };
   });
@@ -351,9 +370,10 @@ function skillRows(
   );
 }
 
-/** `cells` as one Markdown table row, each `|` and backslash of a cell escaped. */
+/** `cells` as one Markdown table row, each `|` and backslash of a cell escaped (attribute.ts's
+ *  `cell`). */
 function tableRow(...cells: readonly (string | number)[]): string {
-  return `| ${cells.map((cell) => String(cell).replace(/[\\|]/g, (char) => `\\${char}`)).join(" | ")} |`;
+  return `| ${cells.map(cell).join(" | ")} |`;
 }
 
 /** exemplar-count.md's text. */
@@ -645,21 +665,14 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
       );
     }
 
-    const reads = new SetReads(
-      io.gh,
-      new GhRetries(
-        { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
-        "set-count"
-      )
+    const reads = new SetReads(io.gh, commandRetries(io, "set-count"));
+    // The pin changes need nothing of the pins: both are read at once, the pins' failure first.
+    const pinsRead = started(readPins(reads, sets, dotfilesRepo, commit));
+    const changesRead = started(
+      pinChanges(reads, sets, dotfilesRepo, config.windowStart, config.windowEnd)
     );
-    const pins = await readPins(reads, sets, dotfilesRepo, commit);
-    const changes = await pinChanges(
-      reads,
-      sets,
-      dotfilesRepo,
-      config.windowStart,
-      config.windowEnd
-    );
+    const pins = await pinsRead;
+    const changes = await changesRead;
     // A read that a fork and its parent both hold counts in one session, as attribute counts it.
     const once = countOnce(count.outputs).outputs;
     const counts = countSets(setRules(pins.sets), once);
@@ -671,9 +684,9 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
     // Each file's digest is of the bytes readCount parsed, so of the rows counted.
     const files = outputs.map((output) => {
       const file = `${output.store}/${output.name}.txt`;
-      const sha256 = count.digests.get(file);
-      if (sha256 === undefined) throw new Error(`the rows file ${file} has no digest`);
-      return { file, sha256 };
+      const digest = count.digests.get(file);
+      if (digest === undefined) throw new Error(`the rows file ${file} has no digest`);
+      return { file, sha256: digest };
     });
     const stores = config.stores
       .filter(({ name }) => count.outputs.some((output) => output.store === name))
@@ -716,9 +729,7 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
       config,
       rowsLabel: values["rows-label"],
       files,
-      digest: createHash("sha256")
-        .update(files.map((file) => `${file.sha256}  ${file.file}\n`).join(""))
-        .digest("hex"),
+      digest: sha256(files.map((file) => `${file.sha256}  ${file.file}\n`).join("")),
       stores,
       otherDirs: count.otherStores,
       notRead: [
@@ -765,15 +776,7 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
     write("exemplar-count.md", markdown(report));
     write("exemplar-count.tsv", table(report));
     for (const row of skills) {
-      write(
-        path.join("sessions", row.set, `${row.skill}.jsonl`),
-        row.own
-          .map((key) => {
-            const [store = "", hash = ""] = key.split("\t");
-            return `${JSON.stringify({ store, hash })}\n`;
-          })
-          .join("")
-      );
+      write(path.join("sessions", row.set, `${row.skill}.jsonl`), sessionLines(row.own));
     }
     write("summary.json", json(summary(report)));
     io.out(

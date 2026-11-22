@@ -28,13 +28,10 @@ import { readFileSync } from "node:fs";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { textLines } from "./cases";
-import { GhRetries, parse, Refused, required, schemaFaults } from "./common";
+import { commandRetries, OneLine, parse, Refused, required, schemaFaults, started } from "./common";
 import type { Gh } from "./copies";
 import { SetReads } from "./sets";
 
-const OneLine = z
-  .string()
-  .refine((text) => text.trim() !== "" && !text.includes("\n"), "is not one non-blank line");
 const Path = z.string().min(1);
 
 /** A line, or a range of lines, of a set's file that states a property. */
@@ -62,9 +59,11 @@ const ExampleLine = z.strictObject({
   path: Path,
   line: z.int().positive(),
 });
+/** A property's id: `C<n>` (readers.ts's craft and proposal inputs take it too). */
+export const PropertyId = z.string().regex(/^C[1-9]\d*$/, "is not C<n>");
 
 const Property = z.strictObject({
-  id: z.string().regex(/^C[1-9]\d*$/, "is not C<n>"),
+  id: PropertyId,
   property: OneLine,
   checkedBy: z.enum(["reader", "behaviour"]),
   readerLooksFor: z.string().min(1),
@@ -144,6 +143,22 @@ export function parseCraftList(text: string): CraftList {
   return parsed.data;
 }
 
+/** The craft list in the file `file`, and the file's bytes. Throws a refusal when it cannot be read
+ *  or `parseCraftList` refuses it. */
+export function readCraftList(file: string): { bytes: Buffer; list: CraftList } {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(file);
+  } catch (error) {
+    throw new Refused(`cannot read the craft list ${file}: ${messageFor(error)}`);
+  }
+  try {
+    return { bytes, list: parseCraftList(bytes.toString("utf8")) };
+  } catch (error) {
+    throw new Refused(`the craft list ${file} is refused: ${messageFor(error)}`);
+  }
+}
+
 /** The properties of `list` that a reader checks on a skill's text, in the list's order. */
 export function readerProperties(list: CraftList): CraftProperty[] {
   return list.properties.filter((property) => property.checkedBy === "reader");
@@ -168,31 +183,20 @@ function where(cited: CitedLine): string {
   return `${cited.path}:${cited.line}${cited.lineEnd === undefined ? "" : `-${cited.lineEnd}`}`;
 }
 
+/** A cited line as craft-lines shows it: its lines under its heading, and its fault if it has one. */
+interface Shown {
+  readonly text: string;
+  readonly fault: string | undefined;
+}
+
 /** The command. Returns the exit status: 0 (each cited line printed), 1 (a cited line that cannot
  *  be read, or a GitHub read that failed), 2 (refused). */
 export async function main(argv: readonly string[], io: CraftLinesIo): Promise<number> {
   try {
     const values = parse(argv, { list: { type: "string" } }, USAGE);
     const { list: file } = required(values, ["list"], USAGE);
-    let text: string;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch (error) {
-      throw new Refused(`cannot read the craft list ${file}: ${messageFor(error)}`);
-    }
-    let list: CraftList;
-    try {
-      list = parseCraftList(text);
-    } catch (error) {
-      throw new Refused(`the craft list ${file} is refused: ${messageFor(error)}`);
-    }
-    const reads = new SetReads(
-      io.gh,
-      new GhRetries(
-        { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
-        "craft-lines"
-      )
-    );
+    const { list } = readCraftList(file);
+    const reads = new SetReads(io.gh, commandRetries(io, "craft-lines"));
     // Each file once: many properties cite one guide file.
     const files = new Map<string, Promise<string[] | undefined>>();
     const linesOf = (set: string, path: string) => {
@@ -213,7 +217,7 @@ export async function main(argv: readonly string[], io: CraftLinesIo): Promise<n
     );
     /** The lines of `cited`, each `    <n>: <text>`, under its heading, and its fault if it has
      *  one. */
-    const show = async (id: string, label: string, cited: CitedLine) => {
+    const show = async (id: string, label: string, cited: CitedLine): Promise<Shown> => {
       const { repo, commit } = list.sets[cited.set] ?? { repo: "", commit: "" };
       const heading = `  ${label}${cited.set} ${where(cited)}\n`;
       const name = `${id} ${label}${cited.set} ${where(cited)}`;
@@ -236,12 +240,20 @@ export async function main(argv: readonly string[], io: CraftLinesIo): Promise<n
         .map((line, at) => `    ${cited.line + at}: ${line}\n`);
       return { text: heading + shown.join(""), fault: undefined };
     };
-    for (const property of list.properties) {
-      const example = property.example;
-      const shown = await Promise.all([
-        ...property.lines.map((cited) => show(property.id, "", cited)),
-        ...(example === undefined ? [] : [show(property.id, "example ", example)]),
-      ]);
+    // Every property's reads start first, so that they overlap; each property is then shown in
+    // the list's order, the first read that failed in that order thrown.
+    const shows = list.properties.map((property) => ({
+      property,
+      cited: [
+        ...property.lines.map((cited) => started(show(property.id, "", cited))),
+        ...(property.example === undefined
+          ? []
+          : [started(show(property.id, "example ", property.example))]),
+      ],
+    }));
+    for (const { property, cited } of shows) {
+      const shown: Shown[] = [];
+      for (const each of cited) shown.push(await each);
       out.push(
         `\n${property.id} (${property.checkedBy}): ${property.property}\n`,
         ...shown.map((each) => each.text),

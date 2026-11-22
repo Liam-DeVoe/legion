@@ -770,19 +770,19 @@ function chanceAhead(runs: number, a: number, b: number, gap: number): number {
   return sum;
 }
 
-/** Pass rates of the three texts a case runs under: the old text, the compared arm's (`cut`) and
- *  no skill. With no skill compared, `cut` and `none` are one arm's rate. */
+/** Pass rates of the three texts a case runs under: the old text, the compared arm's (`compared`)
+ *  and no skill. With no skill compared, `compared` and `none` are one arm's rate. */
 export interface PassRates {
   readonly old: number;
-  readonly cut: number;
+  readonly compared: number;
   readonly none: number;
 }
 
 /**
  * The chance that the registered rule calls a loss in one case, when each run of the old text
- * passes with chance `old`, of the compared arm (the cut unless given) with `cut` and of no skill
- * with `none`, all runs apart; exact binomial, o, n and z counts of SCREEN_RUNS runs and O and N
- * counts of FRESH_RUNS fresh runs.
+ * passes with chance `old`, of the compared arm (the cut unless given) with `compared` and of no
+ * skill with `none`, all runs apart; exact binomial, o, n and z counts of SCREEN_RUNS runs and O
+ * and N counts of FRESH_RUNS fresh runs.
  *
  * With the cut or a skill of ours compared, in one informative case: it is flagged in the screen
  * (o − n ≥ FLAG_GAP) given that it is informative (o − z ≥ INFORMATIVE_GAP), and then a loss in
@@ -792,13 +792,13 @@ export interface PassRates {
  *
  * With no skill compared, the compared arm is no skill, so informative and flagged are one
  * condition, and the screen's gap counts once: P(o − z ≥ the larger gap) × P(O − Z ≥ LOSS_GAP).
- * Throws when `cut` and `none` differ, since they are one arm.
+ * Throws when `compared` and `none` differ, since they are one arm.
  */
 export function lossChance(rates: PassRates, compared: Compared = "new"): number {
   if (compared === "none") {
-    if (rates.cut !== rates.none) {
+    if (rates.compared !== rates.none) {
       throw new RangeError(
-        `with no skill compared, the compared arm and no skill are one arm: their pass rates ${rates.cut} and ${rates.none} differ`
+        `with no skill compared, the compared arm and no skill are one arm: their pass rates ${rates.compared} and ${rates.none} differ`
       );
     }
     const gap = Math.max(INFORMATIVE_GAP, FLAG_GAP);
@@ -808,7 +808,7 @@ export function lossChance(rates: PassRates, compared: Compared = "new"): number
     );
   }
   const old = binomial(SCREEN_RUNS, rates.old);
-  const cut = atMost(binomial(SCREEN_RUNS, rates.cut));
+  const cut = atMost(binomial(SCREEN_RUNS, rates.compared));
   const none = atMost(binomial(SCREEN_RUNS, rates.none));
   let informative = 0;
   let flagged = 0;
@@ -822,7 +822,7 @@ export function lossChance(rates: PassRates, compared: Compared = "new"): number
       `no case is informative when the old text passes ${rates.old} and no skill ${rates.none} of the runs`
     );
   }
-  return (flagged / informative) * chanceAhead(FRESH_RUNS, rates.old, rates.cut, LOSS_GAP);
+  return (flagged / informative) * chanceAhead(FRESH_RUNS, rates.old, rates.compared, LOSS_GAP);
 }
 
 /** The steps of a smallest drop, in points of pass rate (a point is 1 in 100). */
@@ -853,13 +853,14 @@ export function smallestDrop(
   const old = Math.round((100 * passes.old) / SCREEN_RUNS);
   const none = passes.none / SCREEN_RUNS;
   let largest = { points: 0, chance: 0 };
+  // Whether a case at the old text's rate and no skill's can be informative: the same at every step.
+  const canInform =
+    compared !== "none" && chanceAhead(SCREEN_RUNS, old / 100, none, INFORMATIVE_GAP) > 0;
   for (let points = DROP_STEP_POINTS; points <= old; points += DROP_STEP_POINTS) {
-    const rates = { old: old / 100, cut: (old - points) / 100 };
+    const rates = { old: old / 100, compared: (old - points) / 100 };
     let chance = 0;
-    if (compared === "none") chance = lossChance({ ...rates, none: rates.cut }, "none");
-    else if (chanceAhead(SCREEN_RUNS, rates.old, none, INFORMATIVE_GAP) > 0) {
-      chance = lossChance({ ...rates, none }, compared);
-    }
+    if (compared === "none") chance = lossChance({ ...rates, none: rates.compared }, "none");
+    else if (canInform) chance = lossChance({ ...rates, none }, compared);
     if (chance >= DROP_CHANCE) return { old, points, chance, reaches: true };
     largest = { points, chance };
   }

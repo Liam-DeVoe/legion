@@ -1,5 +1,5 @@
 /**
- * The judge sees no skill name (the plan's D3): in a run with an arm of ours, before the judge
+ * The judge sees no skill name: in a run with an arm of ours, before the judge
  * reads a case's criterion, its line, its history and a step (judge.ts), the case's skill name
  * (theirs) and ours become THE_SKILL. So `skill://<name>` becomes `skill://the-skill`, a path
  * part `/<name>/` becomes `/the-skill/`, and the name as a whole word becomes `the-skill`: three

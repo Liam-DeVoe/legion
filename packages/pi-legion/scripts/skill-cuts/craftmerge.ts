@@ -20,12 +20,11 @@
  * It writes `--out` whole (`merge`) and prints one line: the skill, its merged gaps, how many of
  * them are in n of n readings, n-1 of n, … 1 of n, and the spend.
  */
-import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { json, parse, Refused, required, schemaFaults, writeWhole } from "./common";
+import { json, parse, Refused, required, schemaFaults, sha256, writeWhole } from "./common";
 import { CraftAnswer, type CraftGap } from "./readers";
 
 const USAGE =
@@ -86,7 +85,7 @@ function readEntry(file: string): Reading {
   return {
     file,
     realPath: realpathSync(file),
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sha256: sha256(bytes),
     // CraftEntry read it as an object.
     value: value as Record<string, unknown>,
     entry: entry.data,
@@ -235,7 +234,11 @@ function merge(readings: readonly [Reading, ...Reading[]], answers: readonly Cra
   );
   return {
     entry: "craft-merged",
-    ...{ skill, style, craft, nearest, reader },
+    skill,
+    style,
+    craft,
+    nearest,
+    reader,
     readings: of,
     entries: readings.map((reading) => ({ path: reading.file, sha256: reading.sha256 })),
     gaps: merged,

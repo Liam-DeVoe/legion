@@ -16,7 +16,8 @@
 import { textLines } from "./cases";
 
 /** Where a rule comes from: the order table, the Rules section, or the check before commit. */
-export type StylePart = "order" | "rules" | "check";
+export const STYLE_PARTS = ["order", "rules", "check"] as const;
+export type StylePart = (typeof STYLE_PARTS)[number];
 
 /** One rule of a style text: its id, its first line in the text (from 1), its part, and its text
  *  (a table row, or an item with its indented lines). */

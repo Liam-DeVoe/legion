@@ -980,7 +980,7 @@ const comparedRows: [string, () => unknown, unknown][] = [
   [
     "lossChance with the compared arm none counts the screen's gap once",
     () => {
-      const got = lossChance({ old: 0.9, cut: 0.5, none: 0.5 }, "none");
+      const got = lossChance({ old: 0.9, compared: 0.5, none: 0.5 }, "none");
       const once = ahead(10, 0.9, 0.5, 2) * ahead(40, 0.9, 0.5, 10);
       // The gap counted twice: a flag of o − n and an informative o − z, n and z apart.
       const [o, n, z] = [pmf(10, 0.9), pmf(10, 0.5), pmf(10, 0.5)];
@@ -993,7 +993,7 @@ const comparedRows: [string, () => unknown, unknown][] = [
       const twice = both * ahead(40, 0.9, 0.5, 10);
       let refused = "";
       try {
-        lossChance({ old: 0.9, cut: 0.5, none: 0.1 }, "none");
+        lossChance({ old: 0.9, compared: 0.5, none: 0.1 }, "none");
       } catch (error) {
         refused = String(error);
       }
@@ -1015,11 +1015,11 @@ const comparedRows: [string, () => unknown, unknown][] = [
         none.points,
         none.reaches,
         percent(none.chance),
-        none.chance === lossChance({ old: 0.9, cut: 0.5, none: 0.5 }, "none"),
-        lossChance({ old: 0.9, cut: 0.55, none: 0.55 }, "none") < 0.8,
+        none.chance === lossChance({ old: 0.9, compared: 0.5, none: 0.5 }, "none"),
+        lossChance({ old: 0.9, compared: 0.55, none: 0.55 }, "none") < 0.8,
         cut.points,
         cut.reaches,
-        cut.chance === lossChance({ old: 0.9, cut: 0.5, none: 0.1 }),
+        cut.chance === lossChance({ old: 0.9, compared: 0.5, none: 0.1 }),
         percent(cut.chance),
       ];
     },
@@ -1032,7 +1032,7 @@ const comparedRows: [string, () => unknown, unknown][] = [
       return [
         drop.points,
         drop.reaches,
-        drop.chance === lossChance({ old: 0.1, cut: 0, none: 0 }, "none"),
+        drop.chance === lossChance({ old: 0.1, compared: 0, none: 0 }, "none"),
         drop.chance > 0 && drop.chance < 0.8,
       ];
     },
