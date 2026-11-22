@@ -686,6 +686,34 @@ test("a writer's editor draws the reading of a text the server cannot read as ma
   expect(onSave).toHaveBeenCalledTimes(1);
 });
 
+// INFRA-2947 tester, review round 6's second finding: the server says it cannot read the stored
+// text as markdown while a write of the writer's is out, so the editor keeps the typing in the
+// markdown it was made in. The write then ends without landing - refused, or stopped - and no
+// answer of the server's will bring its text back: the editor draws the stored text's reading at
+// once, rather than holding the writer's markdown until some other text arrives.
+test("a writer's write that ends without landing, after the server said it cannot read the stored text as markdown, leaves the editor on that text's reading", async () => {
+  const { editor, onSave, rerender } = described(PLAN, true, displayTree(PLAN), true);
+  const answer = Promise.withResolvers<boolean>();
+  onSave.mockImplementation(() => answer.promise);
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " Done.");
+    await jump(SAVE_AFTER_MS);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
+    rerender(PLAN, true, PLAN_AS_TEXT, false);
+    expect(box.textContent).toContain("check. Done.");
+    await act(async () => {
+      answer.resolve(false);
+      await answer.promise;
+    });
+    drawsReading(box, PLAN);
+    act(() => handle.view.dom.blur());
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(onSave).toHaveBeenCalledTimes(1);
+});
+
 test("a writer's write answered after the editor drew another person's reading is taken in, and the text kept beside the editor as theirs is the one they wrote, never a reading", async () => {
   const { editor, onSave, rerender, scope } = described(PLAN, true, displayTree(PLAN), true);
   const { box, handle } = await editor();
