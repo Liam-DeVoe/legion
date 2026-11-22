@@ -176,7 +176,7 @@ exit 0
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
-    bound: "short",
+    bound: "legRun",
     cwd: scratch("cwd"),
     env: {
       PATH: bin,
@@ -270,8 +270,8 @@ describe.skipIf(skipWithout("bash", "bun"))(
         }).toMatchObject({ agent: { verdict: "UNKNOWN" } });
         expect(rowsOf(unread.stdout).get("T5-agent")?.got).toContain("got no readable answer");
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -293,8 +293,8 @@ describe.skipIf(skipWithout("bash", "bun"))(
         });
         expect(rowsOf(run.stdout).get("T5-cookie")?.got).toContain("the cookie still answered");
       },
-      // The run, a bounded child under the short bound.
-      rowLimit("short")
+      // The run, a bounded child under the legRun bound.
+      rowLimit("legRun")
     );
   }
 );

@@ -77,6 +77,30 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `legRun`, against 67.38 s: the slowest run, read loaded, of a script of the outside agent's
+ *   acceptance that starts processes: a leg against stand-ins, or the shapes script. It is one of
+ *   the five runs of `e2e/acceptance/outside-agent-public.sh` that a row of
+ *   `outside-agent-public.test.ts` starts at once against its stand-ins, in a run of the harness
+ *   lane under two busy loops on a pod of 2 CPUs, the shape of INFRA-983's k5 runs, at 019690cf
+ *   on 2026-11-22 (Job infra983-outside-leg-r23b-7pdm8, whose lane ran without the contracts
+ *   built, so its 13 Playwright listing rows failed at once); three more of those five read
+ *   66.62 s to 66.99 s. Three more lane runs in that shape (Job infra983-outside-leg-r23c-ftm77)
+ *   read at most 35.99 s for a public leg and 42.87 s for a run of
+ *   `e2e/acceptance/outside-agent-tailnet.sh`, one of the six that a row of
+ *   `outside-agent-acceptance.test.ts` starts at once, and 22.59 s for a run of the shapes script
+ *   that file writes, which starts seven `sleep`s in the background and stops them. Each file run
+ *   alone 10 times under those loops read at most 36.99 s among its 60 public legs and 20.53 s
+ *   among its 560 tailnet legs (Jobs infra983-outside-leg-r23b-7pdm8 and
+ *   infra983-outside-leg-r23-chnw2). For each of those readings the Job's checkout named
+ *   `twoStackBuild` where the two files name `short`, so no leg or script was cut at 60 s. Under
+ *   `short`, a `bun run test` in that shape at 36c6064e (Job infra983-k5-head27-tzq2p) killed a
+ *   tailnet leg of a row that starts five at once after 63.49 s, beside one of 52.29 s in the
+ *   same row. On GitHub's runners the harness legs of the unit-repeat runs 45050430792,
+ *   45050432184, 45056982889 and 45060828826, 20 runs of the lane each, read at most 17.66 s
+ *   among 14 400 tailnet legs and 42.67 s among 1 440 public ones. Three times 67.38 s, rounded
+ *   up to the minute, is 240 s. `runLeg` and `publicStandInRun` run every leg of their files
+ *   under it, the legs given no input or nothing behind their inputs too, which end in under a
+ *   second, and the shapes row runs its script under it as well.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -100,6 +124,7 @@
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
+ * leg or the shapes script of the outside agent's acceptance (`legRun`) after 4 minutes, a
  * listing after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9
  * minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
@@ -137,6 +162,10 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** One run of a script of the outside agent's acceptance that starts processes: a leg,
+   *  `e2e/acceptance/outside-agent-public.sh` or `outside-agent-tailnet.sh`, against the stand-ins
+   *  of its tests or given no input, or the shapes script of `outside-agent-acceptance.test.ts`. */
+  legRun: 240_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
