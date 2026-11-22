@@ -656,3 +656,50 @@ func TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice(t *testing.T) {
 		t.Errorf("a re-mark before the loop's clear lost the gap notice: owed=%q stored=%q", owed, stored)
 	}
 }
+
+// N10: a nak's re-mark whose write fails notes a fresh id in memory, so this listener's next relay
+// run still sends it (owedRepositoryGap). The loop has cleared the frame's own mark as sent, and
+// noteRepositoryGap notes nothing when its write fails, so without the in-memory note the notice is
+// owed nowhere. The write is made to fail by closing the relay's registry connection. Control: with
+// the in-memory note removed, the failed re-mark owes nothing.
+func TestANakReMarkWhoseWriteFailsStillOwesAFreshMark(t *testing.T) {
+	open := func(name string) (*bus.Client, *session.SessionRegistry) {
+		t.Helper()
+		client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect %s: %v", name, err)
+		}
+		t.Cleanup(client.Close)
+		reg, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+		if err != nil {
+			t.Fatalf("open %s's registry: %v", name, err)
+		}
+		return client, reg
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	run := func(sessionID string, failWrite bool) string {
+		client, reg := open(sessionID)
+		m := &sessionRelays{sessions: reg, logger: logging.New("test")}
+		if err := reg.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
+			t.Fatalf("register %s: %v", sessionID, err)
+		}
+		mark, err := m.noteRepositoryGap(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("the loop's mark for %s: %v", sessionID, err)
+		}
+		// The loop publishes frame F carrying the mark, then clears it as sent.
+		m.repositoryGapSent(ctx, sessionID, mark)
+		if failWrite {
+			client.Close() // the re-mark's KV write now fails
+		}
+		m.reMarkWithheldGap(sessionID) // F is nak'd: the re-mark
+		return m.owedRepositoryGap(sessionID)
+	}
+	if owed := run("ses_remark_ok", false); owed == "" {
+		t.Fatal("CONTROL: a working re-mark owed no mark; the row cannot tell")
+	}
+	if owed := run("ses_remark_fail", true); owed == "" {
+		t.Error("a re-mark whose write failed owes no mark, though its next run should send a fresh one it noted")
+	}
+}
