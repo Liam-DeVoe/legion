@@ -419,6 +419,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an escalation's words on a worker-died notice", payload: Notice{Kind: "worker-died", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "an escalation's words on a held notice of no escalation", payload: Notice{Kind: "held", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "an escalation's words on a held notice to the controller of no escalation", payload: ControllerNotice{Kind: "held", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
+		{name: "a stopper on a held notice", payload: Notice{Kind: "held", StoppedBy: "legion-legion-legion-208-architect"}, reason: "only a task-stopped notice does"},
+		{name: "a stopper on a held notice to the controller", payload: ControllerNotice{Kind: "held", StoppedBy: "legion-legion-legion-208-architect"}, reason: "only a task-stopped notice does"},
 		{name: "a tick notice carrying an update round", payload: ControllerNotice{Kind: TickNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice carrying no update round", payload: ControllerNotice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice with no claims", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
@@ -1099,6 +1101,13 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "task-stopped", Role: claim.RoleReviewer, Phase: phase.Reviewing, StoppedBy: "legion-legion-legion-208-architect",
+			Reason: "task a of LEGION-208 was stopped by its owner, the architect legion-legion-legion-208-architect"},
+		{Kind: "plan-not-taken", Role: claim.RoleArchitect,
+			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
+		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
+			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+				StatusNotTakenYet + " " + EndChildRule},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
@@ -1225,7 +1234,7 @@ func TestTheReviewAsksForTheVerdictWhateverMovedTheHead(t *testing.T) {
 			" The old head is c0de, and the new head is d00d. Read what the merge changed since the old head: run `git diff c0de d00d`."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.message.Message("LEGION-208", "acme/widgets")
+			got := tc.message.Message("LEGION-208", PullRequest{Repo: "acme/widgets"})
 			if !strings.HasPrefix(got, tc.opens) || !strings.HasSuffix(got, asked) {
 				t.Fatalf("the review reads %q, want it to open %q and end %q", got, tc.opens, asked)
 			}
@@ -1239,7 +1248,7 @@ func TestTheReviewAsksForTheVerdictWhateverMovedTheHead(t *testing.T) {
 	landed := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main",
 		Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}
 	const held = " Merge the pull request or put it in the merge queue at head d00d only once legion-verdict at that head is success."
-	if got := landed.Message("LEGION-208", "acme/widgets"); !strings.HasSuffix(got, held) {
+	if got := landed.Message("LEGION-208", PullRequest{Repo: "acme/widgets", MergeForward: &MergeForward{ReviewAsked: true}}); !strings.HasSuffix(got, held) {
 		t.Fatalf("the merger's landed reads %q, want it to end %q", got, held)
 	}
 }

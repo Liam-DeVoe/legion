@@ -281,7 +281,7 @@ func TestAHeadThatMovesPastReviewAsksTheRecordedReviewer(t *testing.T) {
 				drainAt(t, runner, 0, "the ask's attempt")
 				_, delivered := publisher.snapshot()
 				if head == "sha-2" {
-					if len(delivered) != 1 || delivered[0].topic != reviewer || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") {
+					if len(delivered) != 1 || delivered[0].topic != reviewer || delivered[0].message != ask.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) {
 						t.Fatalf("delivered %+v, want the ask once to %s", delivered, reviewer)
 					}
 					return
