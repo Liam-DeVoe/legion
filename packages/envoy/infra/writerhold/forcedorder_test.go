@@ -84,7 +84,7 @@ func (f *forcedHub) metaLeader(t *testing.T) int {
 // streamLeader is the index of the member that leads stream.
 func (f *forcedHub) streamLeader(t *testing.T, stream string) int {
 	t.Helper()
-	leader, err := streamLeader(rowContext(t), f.operator, stream)
+	leader, err := streamLeader(rowContext(t), f.operator, stream, "for the row")
 	require.NoError(t, err)
 	i := f.cluster.Member(leader)
 	require.GreaterOrEqual(t, i, 0, "stream %s's leader %q", stream, leader)
@@ -115,12 +115,26 @@ func answer(request func() error) <-chan error {
 // answered fails t unless done answers nil within reachWithin.
 func answered(t *testing.T, done <-chan error, what string) {
 	t.Helper()
+	answeredWithin(t, done, what, reachWithin)
+}
+
+// answeredWithin fails t unless done answers nil within within.
+func answeredWithin(t *testing.T, done <-chan error, what string, within time.Duration) {
+	t.Helper()
 	select {
 	case err := <-done:
 		require.NoError(t, err, what)
-	case <-time.After(reachWithin):
-		t.Fatalf("%s: no answer within %s", what, reachWithin)
+	case <-time.After(within):
+		t.Fatalf("%s: no answer within %s", what, within)
 	}
+}
+
+// readAnswered fails t unless done, a ReadBucket whose read answers within readWithin, answers nil
+// within ReadBucket's own bound (readBucketWithin) and one poll of its retries: the code's own
+// error, which names the step that took the time, comes before this wait ends.
+func readAnswered(t *testing.T, done <-chan error, what string, readWithin time.Duration) {
+	t.Helper()
+	answeredWithin(t, done, what, readBucketWithin(readWithin)+restartPoll)
 }
 
 // unanswered fails t when done answers within held.
@@ -433,7 +447,7 @@ func TestForcedOrderHoldBucketBarrierWithinOneTerm(t *testing.T) {
 	})
 	unanswered(t, done, "the read behind the barrier")
 	holds[0].Release()
-	answered(t, done, "the read behind the barrier")
+	readAnswered(t, done, "the read behind the barrier", noAnswerWithin)
 	read := <-got
 	require.Equal(t, "written", read.value, "the read after the barrier answered %s", read)
 	answered(t, written, "the held write")
@@ -476,12 +490,12 @@ func TestForcedOrderHoldBucketBarrierAcrossTheRestart(t *testing.T) {
 	f.cluster.AwaitReady(t)
 
 	got := make(chan msgGet, 1)
-	answered(t, answer(func() error {
+	readAnswered(t, answer(func() error {
 		return ReadBucket(rowContext(t), f.operator, bucketBarrierBucket, "hold1", func(context.Context) error {
 			got <- f.get("K")
 			return nil
 		})
-	}), "the read behind the barrier, the followers' applies still held")
+	}), "the read behind the barrier, the followers' applies still held", noAnswerWithin)
 	read := <-got
 	require.Equal(t, "written", read.value, "the read after the barrier answered %s", read)
 	back := f.streamLeader(t, kvStreamPrefix+bucketBarrierBucket)
@@ -537,7 +551,7 @@ func TestForcedOrderHoldBucketBarrierLeaderChange(t *testing.T) {
 	case <-time.After(3 * reachWithin):
 		t.Fatal("the leader did not change inside the first read")
 	}
-	answered(t, done, "the read")
+	readAnswered(t, done, "the read", reachWithin+noAnswerWithin)
 	t.Logf("the read after the leader change answered %s", <-reads)
 	again := f.hooks.Events(testnats.ClientPublish, barrierSubject, testnats.After(mark))
 	require.NotEmpty(t, again, "no barrier was written again after the leader change")
@@ -551,7 +565,7 @@ func TestForcedOrderHoldBucketBarrierLeaderChange(t *testing.T) {
 func (f *forcedHub) stepDown(stream string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), reachWithin)
 	defer cancel()
-	before, err := streamLeader(ctx, f.operator, stream)
+	before, err := streamLeader(ctx, f.operator, stream, "before the stepdown")
 	if err != nil {
 		return err
 	}
@@ -560,7 +574,7 @@ func (f *forcedHub) stepDown(stream string) error {
 			time.Sleep(restartPoll)
 			continue
 		}
-		after, err := streamLeader(ctx, f.operator, stream)
+		after, err := streamLeader(ctx, f.operator, stream, "after the stepdown")
 		if err == nil && after != before {
 			return nil
 		}

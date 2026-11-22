@@ -238,7 +238,9 @@ func oneToken(what, token string) error {
 // again (a new leader on nats-server 2.10.29 can answer before it has applied its log). A barrier
 // put that no stream leader takes yet (no responders, or no acknowledgement) is sent again within
 // barrierWithin. It returns read's last error, and is UNKNOWN when the leader changed at each of
-// barrierAttempts reads.
+// barrierAttempts reads. A step that passes its bound is UNKNOWN naming that step and its attempt
+// (the stream's leader before the barrier, the barrier, or the leader after the read), so a read
+// that takes too long says which step took the time; readBucketWithin is the whole run's bound.
 func ReadBucket(ctx context.Context, nc *nats.Conn, bucket, holdID string, read func(context.Context) error) error {
 	if nc == nil {
 		return unknownf(StepBarrier, nil, "the bucket barrier has no operator connection")
@@ -249,16 +251,17 @@ func ReadBucket(ctx context.Context, nc *nats.Conn, bucket, holdID string, read 
 	}
 	stream := kvStreamPrefix + bucket
 	var changed error
-	for range barrierAttempts {
-		before, err := streamLeader(ctx, nc, stream)
+	for attempt := 1; attempt <= barrierAttempts; attempt++ {
+		of := fmt.Sprintf("(attempt %d of %d)", attempt, barrierAttempts)
+		before, err := streamLeader(ctx, nc, stream, "before the barrier "+of)
 		if err != nil {
 			return err
 		}
-		if err := bucketBarrier(ctx, js, bucket, holdID); err != nil {
+		if err := bucketBarrier(ctx, js, bucket, holdID, of); err != nil {
 			return err
 		}
 		readErr := read(ctx)
-		after, err := streamLeader(ctx, nc, stream)
+		after, err := streamLeader(ctx, nc, stream, "after the read "+of)
 		if err != nil {
 			return err
 		}
@@ -270,9 +273,17 @@ func ReadBucket(ctx context.Context, nc *nats.Conn, bucket, holdID string, read 
 	return unknownf(StepBarrier, changed, "bucket %s's leader changed between the barrier and the read at each of %d attempts", bucket, barrierAttempts)
 }
 
+// readBucketWithin is the longest ReadBucket runs, by its own bounds, when its read answers within
+// readWithin: at each of barrierAttempts attempts, the stream's leader before the barrier, the
+// barrier's acknowledgement and the stream's leader after the read, each within barrierWithin, and
+// the read.
+func readBucketWithin(readWithin time.Duration) time.Duration {
+	return barrierAttempts * (3*barrierWithin + readWithin)
+}
+
 // bucketBarrier is holdrecord.Barrier, sent again while no stream leader takes it, within
-// barrierWithin.
-func bucketBarrier(ctx context.Context, js jetstream.JetStream, bucket, holdID string) error {
+// barrierWithin. Its errors name it, with of, its attempt.
+func bucketBarrier(ctx context.Context, js jetstream.JetStream, bucket, holdID, of string) error {
 	within, cancel := context.WithTimeout(ctx, barrierWithin)
 	defer cancel()
 	for {
@@ -281,12 +292,15 @@ func bucketBarrier(ctx context.Context, js jetstream.JetStream, bucket, holdID s
 			return nil
 		}
 		untaken := errors.Is(err, jetstream.ErrNoStreamResponse) || errors.Is(err, nats.ErrNoResponders) || errors.Is(err, context.DeadlineExceeded)
-		if !untaken || within.Err() != nil {
-			return unknownf(StepBarrier, err, "the bucket barrier of %s", bucket)
+		if !untaken {
+			return unknownf(StepBarrier, err, "the bucket barrier of %s %s", bucket, of)
+		}
+		if within.Err() != nil {
+			return unknownf(StepBarrier, err, "the bucket barrier of %s %s was not acknowledged within %s", bucket, of, barrierWithin)
 		}
 		select {
 		case <-within.Done():
-			return unknownf(StepBarrier, err, "the bucket barrier of %s was not acknowledged within %s", bucket, barrierWithin)
+			return unknownf(StepBarrier, err, "the bucket barrier of %s %s was not acknowledged within %s", bucket, of, barrierWithin)
 		case <-time.After(restartPoll):
 		}
 	}
@@ -294,14 +308,15 @@ func bucketBarrier(ctx context.Context, js jetstream.JetStream, bucket, holdID s
 
 // streamLeader is the server_name of stream's leader, from its STREAM.INFO, asked again within
 // barrierWithin while no leader answers it. A lone server's stream has no cluster and reads "".
-func streamLeader(ctx context.Context, nc *nats.Conn, stream string) (string, error) {
+// Its errors name which reading it is.
+func streamLeader(ctx context.Context, nc *nats.Conn, stream, which string) (string, error) {
 	within, cancel := context.WithTimeout(ctx, barrierWithin)
 	defer cancel()
 	for {
 		info, found, err := streamInfoOnce(within, nc, stream)
 		switch {
 		case err == nil && !found:
-			return "", unknownf(StepBarrier, nil, "stream %s is not found", stream)
+			return "", unknownf(StepBarrier, nil, "stream %s is not found, read %s", stream, which)
 		case err == nil && info.Cluster == nil:
 			return "", nil
 		case err == nil && info.Cluster.Leader != "":
@@ -311,7 +326,7 @@ func streamLeader(ctx context.Context, nc *nats.Conn, stream string) (string, er
 		}
 		select {
 		case <-within.Done():
-			return "", unknownf(StepBarrier, err, "stream %s's leader did not answer within %s", stream, barrierWithin)
+			return "", unknownf(StepBarrier, err, "stream %s's leader %s did not answer within %s", stream, which, barrierWithin)
 		case <-time.After(restartPoll):
 		}
 	}
