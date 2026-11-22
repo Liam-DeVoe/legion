@@ -18,8 +18,8 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
-import { storeAddressReference } from "../refs/store-address";
 import type { TextSource } from "../refs/text-references";
+import { storeLinkPath } from "./lenses/store-words";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
@@ -31,7 +31,6 @@ import {
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
-import { storeKindWord } from "./tree-drafts";
 
 /**
  * A node's own text, as its row in the outline draws it (R16, R20, R34),
@@ -474,27 +473,14 @@ function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorEl
   return [...root.querySelectorAll("a")].find((anchor) => anchor.getAttribute(mark) === address);
 }
 
-/** The path of the row a store address in a node's words links to: `lenses/store-words.ts`'s
- *  `namedRuns` gives the name a link mark with the address of a lens, a risk, a constraint or a
- *  finding as its `href`, which the body draws as `data-dispatch-href` and its reference pass
- *  leaves alone, and the row's path, a path of this application with its `?node=`, as its
- *  `title`. Undefined for any other link. */
-function storeRowPath(anchor: HTMLAnchorElement): string | undefined {
-  const address = storeAddressReference(anchor.getAttribute("data-dispatch-href") ?? "");
-  if (address === undefined || storeKindWord(address) === undefined) return undefined;
-  const path = anchor.getAttribute("title");
-  if (path === null || !path.startsWith("/issues/")) return undefined;
-  return new URL(path, window.location.origin).searchParams.has("node") ? path : undefined;
-}
-
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
  *  reference's link once its target answers, a picture once it loads - as they arrive. A reading
  *  that holds the same words as the one painted paints nothing again (`useSameValue`), and a
  *  paint of other words keeps the focus on the link the reader was on: the new link of its
  *  address takes it, where the new words hold one. A store address the words name by its node
- *  is a link to that node's row (`storeRowPath`), followed in place as every other link of the
- *  row is. */
+ *  is a link to that node's row (`lenses/store-words.ts`' `storeLinkPath`), followed in place as
+ *  every other link of the row is. */
 function DrawnText({
   focused,
   markdown,
@@ -515,6 +501,11 @@ function DrawnText({
   /** The link inside the words that took the focus last, until the focus moves to another
    *  element. */
   const focusedLink = useRef<HTMLAnchorElement | null>(null);
+  // The page's address, which the link pass reads at each paint: a store link opens a row of the
+  // issue it names (`storeLinkPath`).
+  const location = useLocation();
+  const page = useRef(location);
+  page.current = location;
   const read = useKnownReferenceNames();
   const ambiguous = useKnownAmbiguousReferences();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
@@ -539,9 +530,11 @@ function DrawnText({
       if (tabStops) anchor.removeAttribute("tabindex");
     }
     // A store address named in the words links to its node's row. The body's reference pass
-    // would read a link to the row's path as one to its issue, so the path waits in the title.
+    // would read a link to the row's path as one to its issue, so the path waits in the title,
+    // and only the path the link names is taken.
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-dispatch-href]")) {
-      const path = storeRowPath(anchor);
+      const href = anchor.getAttribute("data-dispatch-href") ?? "";
+      const path = storeLinkPath(href, anchor.getAttribute("title") ?? "", page.current);
       if (path === undefined) continue;
       anchor.setAttribute("href", path);
       anchor.removeAttribute("title");

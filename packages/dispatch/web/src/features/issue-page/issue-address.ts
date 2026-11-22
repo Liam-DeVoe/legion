@@ -92,6 +92,17 @@ export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
 }
 
+/** The address of the row of the node whose id in the tree read is `readId` on the page of the
+ *  issue `key`: the outline's, at its `?node=` (`issueAddress`), after the words filter `filter`
+ *  (`?q=`) where one is given. A lens chip (`lenses/NodeLink.tsx`), a store address in a row's
+ *  words (`lenses/store-words.ts`) and the landing of a lens just invoked (`lenses/lens-reads.ts`)
+ *  link that row by it, and a store link's path is checked against it. */
+export function outlineRowPath(key: string, readId: string, filter?: string): string {
+  const query = new URLSearchParams(filter === undefined ? {} : { q: filter });
+  query.set("node", readId);
+  return `${presetPath(key, "conversation")}?${query}`;
+}
+
 /** A positive integer `?v=` holds, or undefined for anything else. */
 function pinnedVersion(search: string): number | undefined {
   const value = new URLSearchParams(search).get("v") ?? "";

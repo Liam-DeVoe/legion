@@ -427,8 +427,9 @@ function rowPath(readId: string): string {
 // A statement's words, and a comment's, that cite a lens the answer holds by its own address read
 // the lens by its kind's words, as its chip names it, in a link beside the run's own marks that
 // holds the lens's address and the path of its row. The comment's stored words, which the read
-// sent no reading of, are read to a reading that holds the link, and its row draws its words
-// from it.
+// sent no reading of, are read to one paragraph of their plain words that holds the link, with no
+// emphasis, since a row draws no parse made in the page (R20), and its row draws its words from
+// it.
 test("a statement's and a comment's words read a lens they cite by its kind's words, linked to its row", () => {
   const cited = `dispatch://lens/${FIRST}`;
   const { root } = drawn(
@@ -470,11 +471,7 @@ test("a statement's and a comment's words read a lens they cite by its kind's wo
     {
       content: [
         { text: "See ", type: "text" },
-        {
-          marks: [{ type: "strong" }, { attrs: link, type: "link" }],
-          text: "Trade-off analysis",
-          type: "text",
-        },
+        { marks: [{ attrs: link, type: "link" }], text: "Trade-off analysis", type: "text" },
         { text: " first.", type: "text" },
       ],
       type: "paragraph",
@@ -634,6 +631,225 @@ test("an address in code stays as written", () => {
     (tree.content as DisplayTree[])[1]
   );
   expect(drafts.get(blockNodeId("spec", "r2"))?.tree).toBe(quiet);
+});
+
+/** The row of a statement whose words the server read as one paragraph holding `runs`, which
+ *  cite the risk `risk`, beside the lens and the risk the answer holds. */
+function citingRisk(risk: string, runs: DisplayTree[]): TreeNode {
+  const tree: DisplayTree = { content: [{ content: runs, type: "paragraph" }], type: "doc" };
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0, { text: "Two regions.", text_tree: tree }),
+        lens(FIRST, "r1"),
+        bare(risk, "risk", FIRST, { attributes: { heading: "Failover takes minutes" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  return rowOf(root, blockNodeId("spec", "r1"));
+}
+
+// An autolink to a store address, `<dispatch://risk/<uuid>>`, is a link whose words are its
+// address: it reads as a bare address does, by the node's name in a link to its row where the
+// answer holds the node, and by its kind's word with no link where it does not, so neither the
+// row's words nor its line draw the address.
+test("an autolink to a store address reads as a bare address does", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const unheld = "dispatch://risk/f9000000-0000-4000-8000-000000000009";
+  const autolink = (address: string): DisplayTree => ({
+    marks: [{ attrs: { href: address }, type: "link" }],
+    text: address,
+    type: "text",
+  });
+  const statement = citingRisk(risk, [
+    { text: "Two regions, until ", type: "text" },
+    autolink(cited),
+    { text: " or ", type: "text" },
+    autolink(unheld),
+    { text: ".", type: "text" },
+  ]);
+
+  expect([lineWords(statement), nodeWords(statement)]).toEqual([
+    "Two regions, until Failover takes minutes or risk.",
+    "Two regions, until Failover takes minutes or risk.",
+  ]);
+  expect(linksIn(statement.tree)).toEqual([
+    ["Failover takes minutes", { href: cited, title: rowPath(risk) }],
+  ]);
+});
+
+// An author's own words linked to a store address, `[the risk](dispatch://risk/<uuid>)`, keep
+// their words and their other marks. Where the answer holds the node, the link opens its row as a
+// name's link does, in place of any title the author gave it; where it does not, the link is
+// dropped, since it would go nowhere.
+test("an author's words linked to a store address link the node's row", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const unheld = "dispatch://risk/f9000000-0000-4000-8000-000000000009";
+  const statement = citingRisk(risk, [
+    { text: "Two regions, until ", type: "text" },
+    {
+      marks: [
+        { type: "strong" },
+        { attrs: { href: cited, title: "/issues/OTHER-1?node=x" }, type: "link" },
+      ],
+      text: "the risk",
+      type: "text",
+    },
+    { text: " or ", type: "text" },
+    { marks: [{ attrs: { href: unheld }, type: "link" }], text: "another", type: "text" },
+    { text: ".", type: "text" },
+  ]);
+
+  expect([lineWords(statement), nodeWords(statement)]).toEqual([
+    "Two regions, until the risk or another.",
+    "Two regions, until the risk or another.",
+  ]);
+  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Two regions, until ", type: "text" },
+    {
+      marks: [{ type: "strong" }, { attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
+      text: "the risk",
+      type: "text",
+    },
+    { text: " or ", type: "text" },
+    { text: "another", type: "text" },
+    { text: ".", type: "text" },
+  ]);
+});
+
+// A verdict that cites a risk is drawn in the shape of the same verdict that cites none: one line
+// of the plain words its stored string reads as, a list's items and emphasis among them, the
+// risk's name in place of its address. The one that cites is one paragraph of those words, whose
+// link opens the risk's row; the one that cites none has no reading, and its row draws its words
+// as they are.
+test("a verdict draws one line of plain words whether or not it cites a risk", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const verdict = (last: string) => `Keep _one_ region:\n\n- the cost doubles\n- ${last} first`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z", { attributes: { verdict: verdict(cited) } }),
+        lens(SECOND, "r1", "2026-11-05T10:00:00Z", {
+          attributes: { verdict: verdict("Failover takes minutes") },
+        }),
+        bare(risk, "risk", FIRST, { attributes: { heading: "Failover takes minutes" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id), tuple("has_kind", SECOND, PRE_MORTEM.id)]
+    )
+  );
+  const citing = rowOf(root, FIRST);
+  const plain = rowOf(root, SECOND);
+
+  expect(plain.tree).toBeUndefined();
+  expect(plain.text).toBe("Keep one region: the cost doubles Failover takes minutes first");
+  expect([citing.text, nodeWords(citing), lineWords(citing)]).toEqual([
+    plain.text,
+    plain.text,
+    plain.text,
+  ]);
+  expect(citing.tree?.content).toEqual([
+    {
+      content: [
+        { text: "Keep one region: the cost doubles ", type: "text" },
+        {
+          marks: [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
+          text: "Failover takes minutes",
+          type: "text",
+        },
+        { text: " first", type: "text" },
+      ],
+      type: "paragraph",
+    },
+  ]);
+});
+
+// A verdict's code span that holds a store address keeps it as written, as `plainWords` reads a
+// code span; the same address outside the code is named, linked to its row, and nothing else of
+// the verdict's plain words changes.
+test("a verdict's code span keeps a store address as written while its words name it", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z", {
+          attributes: { verdict: `Run \`dispatch read ${cited}\` before **${cited}**.` },
+        }),
+        bare(risk, "risk", FIRST, { attributes: { heading: "Failover takes minutes" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const verdict = rowOf(root, FIRST);
+
+  expect(verdict.text).toBe(`Run dispatch read ${cited} before Failover takes minutes.`);
+  expect(verdict.tree?.content).toEqual([
+    {
+      content: [
+        { text: `Run dispatch read ${cited} before `, type: "text" },
+        {
+          marks: [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
+          text: "Failover takes minutes",
+          type: "text",
+        },
+        { text: ".", type: "text" },
+      ],
+      type: "paragraph",
+    },
+  ]);
+});
+
+// A comment the read sent no reading of is drawn as stored, its references linked by its row's
+// link pass. Where it cites a node, its reading is one paragraph of its plain words with the store
+// address named, and its other addresses stay as written: the address of a block of the issue is
+// left for the row's link pass to link, while the row's line reads it short.
+test("a comment with no reading keeps its other references as written where it names a risk", () => {
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const cited = `dispatch://risk/${risk}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1"),
+        bare(risk, "risk", FIRST, { attributes: { heading: "Failover takes minutes" } }),
+        commentNode({
+          author: READER_ACTOR,
+          body: `See **${cited}** and dispatch://CORE-1/spec#b-r1 first.`,
+          created_at: "2026-11-05T10:00:00Z",
+          id: "c1",
+          reply_to: null,
+        }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const comment = rowOf(root, "c1");
+
+  expect(lineWords(comment)).toBe("See Failover takes minutes and CORE-1 spec block first.");
+  expect(comment.tree?.content).toEqual([
+    {
+      content: [
+        { text: "See ", type: "text" },
+        {
+          marks: [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
+          text: "Failover takes minutes",
+          type: "text",
+        },
+        { text: " and dispatch://CORE-1/spec#b-r1 first.", type: "text" },
+      ],
+      type: "paragraph",
+    },
+  ]);
 });
 
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose

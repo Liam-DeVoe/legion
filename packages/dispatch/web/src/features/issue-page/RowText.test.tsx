@@ -40,15 +40,16 @@ function row(markdown: string, tree: DisplayTree | undefined): ReactNode {
   );
 }
 
-/** Draws `children` as the page's slots draw a row's parts, inside `NoTooltips`; `redraw` draws
- *  them again in the same tree, as a read of the tree again does. */
+/** Draws `children` as the page's slots draw a row's parts, inside `NoTooltips`, on the page of
+ *  the issue CORE-1; `redraw` draws them again in the same tree, as a read of the tree again
+ *  does. */
 function draw(children: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   const page = (inside: ReactNode) => (
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/issues/CORE-1"]}>
         <NoTooltips>{inside}</NoTooltips>
       </MemoryRouter>
     </QueryClientProvider>
@@ -177,6 +178,135 @@ test("a store address named in a row's words links to its node's row by the node
       expect(links[0]?.hasAttribute("data-dispatch-ref"), "the link is a reference link").toBe(
         false
       );
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A link to a store address takes its title as its address only where the title is the very path
+// a name's link holds: the outline of the page's issue at the `?node=` of that address's node
+// (`lenses/store-words.ts`' `storeLinkPath`). An author's own title on such a link - another
+// issue's page, or this issue's at another node - is no address, and the link opens nothing.
+test("a link to a store address opens no path an author wrote as its title", async () => {
+  const address = "dispatch://risk/d4000000-0000-4000-8000-000000000004";
+  const path = "/issues/CORE-1?node=d4000000-0000-4000-8000-000000000004";
+  const linked = (text: string, title: string): DisplayTree => ({
+    marks: [{ attrs: { href: address, title }, type: "link" }],
+    text,
+    type: "text",
+  });
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          linked("Failover takes minutes", path),
+          { text: ", ", type: "text" },
+          linked("Approve", "/issues/OTHER-1?node=x"),
+          { text: ", ", type: "text" },
+          linked("Approve here", "/issues/CORE-1?node=e5000000-0000-4000-8000-000000000005"),
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const view = draw(row(`${address}, [Approve](${address}), [Approve here](${address})`, reading));
+  try {
+    await waitFor(() => {
+      const hrefs = [...view.container.querySelectorAll("a")].map((anchor) => [
+        anchor.textContent,
+        anchor.getAttribute("href"),
+      ]);
+      expect(hrefs).toEqual([
+        ["Failover takes minutes", path],
+        ["Approve", ""],
+        ["Approve here", ""],
+      ]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A store link to a finding names the finding's row by its read id, which `addressOf` builds the
+// finding's address from: the lens's id and the block id after a `#`, or the block id alone. Both
+// open the row; a read id whose part before its `#` is another lens's opens nothing.
+test("a store link to a finding opens its row by either form of its read id", async () => {
+  const lens = "c3000000-0000-4000-8000-000000000003";
+  const address = `dispatch://lens/${lens}#b-first`;
+  const pathOf = (readId: string) => `/issues/CORE-1?node=${encodeURIComponent(readId)}`;
+  const linked = (text: string, readId: string): DisplayTree => ({
+    marks: [{ attrs: { href: address, title: pathOf(readId) }, type: "link" }],
+    text,
+    type: "text",
+  });
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          linked("By its block", "first"),
+          { text: ", ", type: "text" },
+          linked("By its lens and block", `lens/${lens}#first`),
+          { text: ", ", type: "text" },
+          linked("By another lens", "lens/b2000000-0000-4000-8000-000000000002#first"),
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const view = draw(row(`${address}, ${address}, ${address}`, reading));
+  try {
+    await waitFor(() => {
+      const hrefs = [...view.container.querySelectorAll("a")].map((anchor) => [
+        anchor.textContent,
+        anchor.getAttribute("href"),
+      ]);
+      expect(hrefs).toEqual([
+        ["By its block", pathOf("first")],
+        ["By its lens and block", pathOf(`lens/${lens}#first`)],
+        ["By another lens", ""],
+      ]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A text with no reading of the server's that names a node is read to one paragraph of its plain
+// words, its other addresses as written (`lenses/store-words.ts`): the row's link pass links them,
+// as it links a text drawn as stored.
+test("a block address beside a named store address is linked by the row's link pass", async () => {
+  const address = "dispatch://risk/d4000000-0000-4000-8000-000000000004";
+  const path = "/issues/CORE-1?node=d4000000-0000-4000-8000-000000000004";
+  const block = "dispatch://CORE-1/spec#b-r1";
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "See ", type: "text" },
+          {
+            marks: [{ attrs: { href: address, title: path }, type: "link" }],
+            text: "Failover takes minutes",
+            type: "text",
+          },
+          { text: ` and ${block} first.`, type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const view = draw(row(`See ${address} and ${block} first.`, reading));
+  try {
+    await waitFor(() => {
+      const store = [...view.container.querySelectorAll("a")].find(
+        (anchor) => anchor.textContent === "Failover takes minutes"
+      );
+      expect(store?.getAttribute("href")).toBe(path);
+      const linked = view.container.querySelector(`a[data-row-reference="${block}"]`);
+      expect(linked?.getAttribute("href") ?? "", "the block address is no link").not.toBe("");
     });
   } finally {
     view.unmount();

@@ -14,7 +14,7 @@ import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { issueAddress, presetPath } from "../issue-address";
+import { issueAddress, outlineRowPath } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
 import { dropViews } from "../tree-read/tree-read";
 
@@ -188,12 +188,13 @@ export interface LensInvocation {
  * and would be drawn older than the tree; the one an observer draws is read again. It waits for
  * the tree's read (`readTreeAgain`), so the tree holds the lens's row when the address names it.
  * Then, where Dispatch answered the lens it made and the reader still stands on this issue's
- * outline, it replaces the address with the outline's own at that lens's row (`?node=`), keeping
- * the words filter (`?q=`) and dropping every other part of the address, so the page lands on the
- * new row and a reload lands there too. The address is the one that stands as the read answers
- * (`standing`), whichever row has the focus then. A reader who has left the outline, for another
- * page, another issue or one of this issue's views, is left where they went, and so is one who
- * has come back to it since: the outline drawn again keeps an address of its own.
+ * outline, it replaces the address with the outline's own at that lens's row (`?node=`,
+ * `outlineRowPath`), keeping the words filter (`?q=`) and dropping every other part of the
+ * address, so the page lands on the new row and a reload lands there too. The address is the one
+ * that stands as the read answers (`standing`), whichever row has the focus then. A reader who
+ * has left the outline, for another page, another issue or one of this issue's views, is left
+ * where they went, and so is one who has come back to it since: the outline drawn again keeps an
+ * address of its own.
  */
 export function useInvokeLens(
   issueKey: string,
@@ -237,10 +238,8 @@ export function useInvokeLens(
       const place =
         now === undefined ? undefined : lensPlaceOf(now.location.pathname, now.location.search);
       if (invoked !== null && now !== undefined && place?.issueKey === issueKey && place.outline) {
-        const filter = new URLSearchParams(now.location.search).get("q");
-        const landing = new URLSearchParams(filter === null ? {} : { q: filter });
-        landing.set("node", lensReadId(invoked));
-        now.navigate(`${presetPath(issueKey, "conversation")}?${landing}`, { replace: true });
+        const filter = new URLSearchParams(now.location.search).get("q") ?? undefined;
+        now.navigate(outlineRowPath(issueKey, lensReadId(invoked), filter), { replace: true });
       }
       return invoked;
     },
