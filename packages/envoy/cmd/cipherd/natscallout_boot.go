@@ -37,12 +37,12 @@ func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifier
 		if keys == nil {
 			// A broker that takes no machine's Google token at its exchange read no Google key
 			// set at discovery; the auth service's audience needs one, which logs its changes
-			// as discovery's does.
+			// as discovery's does (logKeySet).
 			read, err := keysFor(ctx, cfg.GoogleOIDCIssuer)
 			if err != nil {
 				return natscallout.PlatformTokens{}, fmt.Errorf("read the Google issuer's keys for BROKER_NATS_GOOGLE_AUDIENCE: %w", err)
 			}
-			keys = newGoogleKeySet(read, cfg.GoogleOIDCIssuer)
+			keys = logKeySet(read, cfg.GoogleOIDCIssuer)
 		}
 		tokens.Google = api.GoogleTokens{Verifier: oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.NATS.GoogleAudience, keys)}
 	}

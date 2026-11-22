@@ -182,6 +182,10 @@ func (d *discovery[T]) logFailure(err error) {
 // ErrIssuerUnavailable.
 type LazyVerifier struct {
 	discovery *discovery[*Verifier]
+	// onKeySetChange is told each change of the issuer's key set (Keys.OnChange) with the key
+	// set's address, once discovery has named it; IssuerSet.OnKeySetChange sets it before any
+	// read, and it is nil for a verifier no caller asked that of.
+	onKeySetChange func(keys string, err error)
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
@@ -193,14 +197,19 @@ func NewLazyVerifier(issuer, audience string) *LazyVerifier {
 // newLazyVerifier is NewLazyVerifier with failureSpacing as its key set's FailureSpacing, for an
 // IssuerSet whose caller chooses the spacing (NewIssuerSet).
 func newLazyVerifier(issuer, audience string, failureSpacing time.Duration) *LazyVerifier {
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+	v := &LazyVerifier{}
+	v.discovery = newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
 			return nil, err
 		}
 		keys.FailureSpacing = failureSpacing
+		if change := v.onKeySetChange; change != nil {
+			keys.OnChange = func(err error) { change(keys.URL(), err) }
+		}
 		return NewWithKeys(issuer, audience, keys), nil
-	})}
+	})
+	return v
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not

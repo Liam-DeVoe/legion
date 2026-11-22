@@ -157,8 +157,8 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 	if want := []string{config.DefaultGoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
-	if found.GoogleKeys == nil || found.GoogleKeys.keys != d.keys[config.DefaultGoogleOIDCIssuer] {
-		t.Fatalf("the exchange's Google key source = %+v, want Google's own, %p", found.GoogleKeys, d.keys[config.DefaultGoogleOIDCIssuer])
+	if found.GoogleKeys == nil || found.GoogleKeys != d.keys[config.DefaultGoogleOIDCIssuer] {
+		t.Fatalf("the exchange's Google key source = %p, want Google's own, %p", found.GoogleKeys, d.keys[config.DefaultGoogleOIDCIssuer])
 	}
 	lines := strings.Count(logged.String(), "google machine identity")
 	wantLine := `msg="google machine identity" issuer=https://accounts.google.com audience=example-vm-audience services=example-fleet fleets=1`
@@ -182,8 +182,8 @@ func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 	if want := []string{cfg.GoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
-	if found.GoogleKeys == nil || found.GoogleKeys.keys != d.keys[cfg.GoogleOIDCIssuer] {
-		t.Fatalf("the exchange's Google key source = %+v, want the stand-in issuer's own, %p", found.GoogleKeys, d.keys[cfg.GoogleOIDCIssuer])
+	if found.GoogleKeys == nil || found.GoogleKeys != d.keys[cfg.GoogleOIDCIssuer] {
+		t.Fatalf("the exchange's Google key source = %p, want the stand-in issuer's own, %p", found.GoogleKeys, d.keys[cfg.GoogleOIDCIssuer])
 	}
 	if !strings.Contains(logged.String(), "issuer=http://127.0.0.1:18080") {
 		t.Fatalf("log = %q, want the stand-in issuer named", logged)

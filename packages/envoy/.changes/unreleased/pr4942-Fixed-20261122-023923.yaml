@@ -13,12 +13,17 @@ body: |-
   token, a machine's actor token and a GitHub workflow run's token whose issuer's key set cannot be
   read are answered that `503` too, where they were `400 invalid_request` as a token the exchange
   could not parse, which the broker's token clients take as final. A token signed by a key its
-  issuer never published is refused as before. The broker logs
-  `broker: google key set cannot be read` at WARN once when a read of Google's key set fails,
-  naming the issuer, and `broker: google key set can be read again` at INFO once when a key of it
-  is read again; the GitHub issuer's key set at the token exchange logs
-  `broker: github key set cannot be read` and `broker: github key set can be read again` the same
-  way.
+  issuer never published is refused as before.
+  The broker logs `broker: key set cannot be read` at WARN once when a read of a key set it checks
+  callers' tokens against fails, and `broker: key set can be read again` at INFO once when a read
+  of it succeeds after that, each naming the issuer and the key set's address, never a token: each
+  cluster issuer's key set, Google's, and the token exchange's GitHub issuer's. The lines follow
+  the reads, so a key set that cannot be read shows in the log while the keys the broker holds
+  from its last good read still answer every token. The first replaces
+  `broker: kubernetes issuer cannot be read`.
+  A token naming a key the broker's cached key set does not hold, arriving just as another token
+  for the same key started the read that finds that key, could be refused as unverified before
+  that read ended. It now waits for that read, or is answered from the set the read found.
   Dispatch's `503 BROKER_UNAVAILABLE`, for a broker token the secrets broker gave no answer for,
   carries `Retry-After: 1`, the Envoy listener's wait for the same fault. That answer and the Envoy
   listener's 503s for a credential it could not check now end "try again after Retry-After", where

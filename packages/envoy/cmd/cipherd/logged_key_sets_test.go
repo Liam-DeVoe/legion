@@ -12,87 +12,78 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// TestAnIssuersKeySetLogsEachChangeOnce: for Google's key set and the token exchange's GitHub
-// issuer's alike, while the key set cannot be read a burst of reads writes one WARN line naming
-// the issuer and the key set it could not read, never a token; once it can be read, one INFO line;
-// and reads while it can be read, or by a caller whose context ended, write nothing. A failure
-// after the recovery writes its own line again.
-func TestAnIssuersKeySetLogsEachChangeOnce(t *testing.T) {
-	for _, kind := range []struct {
-		name                 string
-		build                func(*oidc.Keys, string) *loggedKeySet
-		unreadable, readable string
-	}{
-		{"Google's", newGoogleKeySet, googleKeysUnreadableMessage, googleKeysReadableMessage},
-		{"the GitHub issuer's", newGitHubKeySet, githubKeysUnreadableMessage, githubKeysReadableMessage},
-	} {
-		t.Run(kind.name, func(t *testing.T) {
-			logged := captureLog(t)
-			issuer := oidctest.New(t)
-			issuer.PublishKey(t, "issuer-key")
-			keys, err := oidc.NewKeys(context.Background(), issuer.URL())
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Every Key reads the set, so each step below is the read it says, not a spaced failure.
-			keys.FailureSpacing = 0
-			set := kind.build(keys, issuer.URL())
-			count := func(message string) int { return strings.Count(logged.String(), `msg="`+message+`"`) }
+// TestAKeySetLogsEachChangeItsReadsFindOnce: a key set the broker logs (logKeySet) writes one WARN
+// line when a read of it fails, however many reads fail after it, naming the issuer and the key
+// set's address; one INFO line when a read succeeds after that; nothing while reads keep
+// succeeding; and a WARN line again when a read fails after the recovery. A key the cached set
+// holds, answered while every read behind it fails, writes the WARN line and no INFO line: the key
+// set could not be read, whatever the cache answered.
+func TestAKeySetLogsEachChangeItsReadsFindOnce(t *testing.T) {
+	logged := captureLog(t)
+	issuer := oidctest.New(t)
+	issuer.PublishKey(t, "issuer-key")
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every Key reads the set: no lifetime, no spacing of a miss and none of a failure.
+	keys.Lifetime, keys.MinRefresh, keys.FailureSpacing = 0, 0, 0
+	logKeySet(keys, issuer.URL())
+	lines := func(message string) []string { return logLines(logged, message) }
+	read := func(what string) {
+		t.Helper()
+		if _, err := keys.Key(context.Background(), "issuer-key", "RS256"); err != nil {
+			t.Fatalf("%s: Key of the key the set holds = %v, want the key", what, err)
+		}
+	}
 
-			issuer.FailKeys(http.StatusServiceUnavailable)
-			for range 5 {
-				if _, err := set.Key(context.Background(), "issuer-key", "RS256"); !errors.Is(err, oidc.ErrKeySet) {
-					t.Fatalf("Key while the key set answers 503 = %v, want oidc.ErrKeySet", err)
-				}
-			}
-			if got := count(kind.unreadable); got != 1 {
-				t.Fatalf("log after five failed reads = %q, want one %q line", logged, kind.unreadable)
-			}
-			if line := logged.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "issuer="+issuer.URL()) || !strings.Contains(line, "/keys") {
-				t.Fatalf("log = %q, want a WARN line naming the issuer and the key set it could not read", line)
-			}
+	read("the first read")
+	if got := len(lines(keySetUnreadableMessage)) + len(lines(keySetReadableMessage)); got != 0 {
+		t.Fatalf("a first read that succeeded wrote %d lines, want none:\n%s", got, logged)
+	}
 
-			issuer.FailKeys(0)
-			for range 3 {
-				if _, err := set.Key(context.Background(), "issuer-key", "RS256"); err != nil {
-					t.Fatalf("Key once the key set answers = %v", err)
-				}
-			}
-			if got := count(kind.readable); got != 1 || !strings.Contains(logged.String(), `level=INFO msg="`+kind.readable+`" issuer=`+issuer.URL()) {
-				t.Fatalf("log after the key set answered again = %q, want one INFO %q line naming the issuer", logged, kind.readable)
-			}
+	issuer.FailKeys(http.StatusServiceUnavailable)
+	for range 5 {
+		read("a read that fails, the cached set holding the key")
+	}
+	found := lines(keySetUnreadableMessage)
+	if len(found) != 1 {
+		t.Fatalf("five failed reads wrote %d %q lines, want one:\n%s", len(found), keySetUnreadableMessage, logged)
+	}
+	for _, want := range []string{"level=WARN", "url=" + issuer.URL(), "keys=" + issuer.URL() + "/keys", "key set could not be read"} {
+		if !strings.Contains(found[0], want) {
+			t.Fatalf("the line %q does not carry %q", found[0], want)
+		}
+	}
+	if found := lines(keySetReadableMessage); len(found) != 0 {
+		t.Fatalf("the cached key answered while the reads failed wrote %v, want no %q line", found, keySetReadableMessage)
+	}
 
-			// A key id the cached set does not hold is the read that meets the next failure: the
-			// set read moments ago still answers the key it holds.
-			issuer.FailKeys(http.StatusServiceUnavailable)
-			if _, err := set.Key(context.Background(), "a-key-id-no-set-holds", "RS256"); !errors.Is(err, oidc.ErrKeySet) {
-				t.Fatalf("Key of an unheld key id while the key set answers 503 = %v, want oidc.ErrKeySet", err)
-			}
-			if got := count(kind.unreadable); got != 2 {
-				t.Fatalf("log after the key set failed again = %q, want a second %q line", logged, kind.unreadable)
-			}
+	issuer.FailKeys(0)
+	for range 3 {
+		read("a read once the key set answers")
+	}
+	found = lines(keySetReadableMessage)
+	if len(found) != 1 {
+		t.Fatalf("three good reads after the failures wrote %d %q lines, want one:\n%s", len(found), keySetReadableMessage, logged)
+	}
+	for _, want := range []string{"level=INFO", "url=" + issuer.URL(), "keys=" + issuer.URL() + "/keys"} {
+		if !strings.Contains(found[0], want) {
+			t.Fatalf("the line %q does not carry %q", found[0], want)
+		}
+	}
 
-			// A read whose caller has gone says nothing of the key set, on a set never read before.
-			unread, err := oidc.NewKeys(context.Background(), issuer.URL())
-			if err != nil {
-				t.Fatal(err)
-			}
-			ended, cancel := context.WithCancel(context.Background())
-			cancel()
-			if _, err := kind.build(unread, issuer.URL()).Key(ended, "issuer-key", "RS256"); err == nil {
-				t.Fatal("Key on an ended context answered a key from a set never read")
-			}
-			if got := count(kind.unreadable); got != 2 {
-				t.Fatalf("log after a read whose caller had gone = %q, want still two %q lines", logged, kind.unreadable)
-			}
-		})
+	issuer.FailKeys(http.StatusServiceUnavailable)
+	read("a read that fails after the recovery")
+	if got := len(lines(keySetUnreadableMessage)); got != 2 {
+		t.Fatalf("a failed read after the recovery left %d %q lines, want a second:\n%s", got, keySetUnreadableMessage, logged)
 	}
 }
 
 // TestTheGoogleVerifierDiscoveryBuildsReadsTheLoggedKeySet: the listed caller's Google verifier
-// that discoverVerifiers builds reads Google's key set through the logged set it hands the token
-// exchange (newGoogleKeySet), so a Google token checked while that key set cannot be read writes
-// the WARN line, and is answered oidc.ErrIssuerUnavailable.
+// that discoverVerifiers builds reads Google's key set through the set it logs (logKeySet), so a
+// Google token checked while that key set cannot be read is answered oidc.ErrIssuerUnavailable
+// and writes the WARN line naming Google's issuer.
 func TestTheGoogleVerifierDiscoveryBuildsReadsTheLoggedKeySet(t *testing.T) {
 	logged := captureLog(t)
 	google := oidctest.New(t)
@@ -108,15 +99,15 @@ func TestTheGoogleVerifierDiscoveryBuildsReadsTheLoggedKeySet(t *testing.T) {
 	if _, err := found.GoogleIdentities.Verify(context.Background(), google.Mint(t, key, claims)); !errors.Is(err, oidc.ErrIssuerUnavailable) {
 		t.Fatalf("Verify while Google's key set answers 503 = %v, want oidc.ErrIssuerUnavailable", err)
 	}
-	if got := strings.Count(logged.String(), `msg="`+googleKeysUnreadableMessage+`"`); got != 1 {
-		t.Fatalf("log = %q, want one %q line", logged, googleKeysUnreadableMessage)
+	if found := logLines(logged, keySetUnreadableMessage); len(found) != 1 || !strings.Contains(found[0], "url="+google.URL()) {
+		t.Fatalf("log = %q, want one %q line naming Google's issuer", logged, keySetUnreadableMessage)
 	}
 }
 
 // TestTheExchangesGitHubIssuerReadsALoggedKeySet: the GitHub issuer the broker hands the token
 // exchange (githubExchangeIssuer) names BROKER_EXCHANGE_GITHUB_ISSUER and its audience and reads
-// that issuer's key set through the logged set (newGitHubKeySet), so a workflow token's key read
-// while the key set cannot be read writes the GitHub WARN line once.
+// that issuer's key set through the set it logs (logKeySet), so a workflow token's key read while
+// the key set cannot be read writes the WARN line naming the GitHub issuer.
 func TestTheExchangesGitHubIssuerReadsALoggedKeySet(t *testing.T) {
 	logged := captureLog(t)
 	github := oidctest.New(t)
@@ -135,7 +126,7 @@ func TestTheExchangesGitHubIssuerReadsALoggedKeySet(t *testing.T) {
 			t.Fatalf("Key while the GitHub key set answers 503 = %v, want oidc.ErrKeySet", err)
 		}
 	}
-	if got := strings.Count(logged.String(), `msg="`+githubKeysUnreadableMessage+`"`); got != 1 {
-		t.Fatalf("log = %q, want one %q line", logged, githubKeysUnreadableMessage)
+	if found := logLines(logged, keySetUnreadableMessage); len(found) != 1 || !strings.Contains(found[0], "url="+github.URL()) {
+		t.Fatalf("log = %q, want one %q line naming the GitHub issuer", logged, keySetUnreadableMessage)
 	}
 }
