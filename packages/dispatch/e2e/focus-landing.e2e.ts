@@ -51,7 +51,7 @@ import {
   putAgentState,
 } from "./api";
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { control, controlRow, openFilterPanel } from "./filters";
+import { control, controlRow, listTrigger, openFilterPanel } from "./filters";
 import { nextFrames } from "./frames";
 import { seedAgentThread, seedCommentThread } from "./inbox-threads";
 import {
@@ -466,7 +466,7 @@ async function groupCard({ n, page, scene }: CaseContext): Promise<{
 const DELIVERY_CASES: Scene["cases"] = {
   // A brush window inside the fixture's week, as a drag along the chart's time axis sets it,
   // draws clear brush window in the header's generated line. That line holds no other control,
-  // so its press hands the focus to the Window select above it, in sight at the page's top.
+  // so its press hands the focus to the Window list's trigger above it, in sight at the page's top.
   press: async ({ page, scene }) => {
     const now = Date.now();
     const from = encodeURIComponent(new Date(now - 6 * DAY_MS).toISOString());
@@ -484,8 +484,8 @@ const DELIVERY_CASES: Scene["cases"] = {
       cause: pressEnter(page),
       control: clear,
       landing: {
-        at: header.getByRole("combobox", { exact: true, name: "Window" }),
-        name: 'combobox "Window"',
+        at: listTrigger(header, "Window"),
+        name: "the Window list's trigger",
       },
     };
   },
@@ -696,7 +696,7 @@ const ARTIFACTS_CASES: Scene["cases"] = {
  *   "Select all matching agents".
  *
  * Delivery page:
- * - press: clear brush window, by Enter. Lands on combobox "Window", on the line above it.
+ * - press: clear brush window, by Enter. Lands on the Window list's trigger, on the line above it.
  * - live: a session group's Rename in the Session groups dialog, the group deleted through the
  *   API. Lands on the dialog's own stop, dialog "Session groups".
  * - device: the same, the group deleted by the other device. Lands on dialog "Session groups".

@@ -18,6 +18,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { listTrigger } from "./filters";
 import { selectedRow } from "./inbox-pane";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
@@ -389,7 +390,7 @@ inboxTest(
     // It runs on the page the palette opened over: the bulk picker takes focus, the mark kept.
     await snooze.click();
     await expect(dialog).toHaveCount(0);
-    await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toBeFocused();
+    await expect(listTrigger(bar, "Snooze selected asks")).toBeFocused();
     await expect(bar).toContainText("1 selected");
   }
 );

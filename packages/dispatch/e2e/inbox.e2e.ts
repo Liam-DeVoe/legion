@@ -21,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { listTrigger, pickFromList } from "./filters";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -789,9 +790,10 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
         request.method() === "PUT" &&
         new URL(request.url()).pathname === `/api/v1/me/asks/${ask.id}/snooze`
     );
-    await (await askControls(page, ask.id))
-      .getByLabel(`Snooze ${issue.key}`)
-      .selectOption("tomorrow");
+    await pickFromList(
+      listTrigger(await askControls(page, ask.id), new RegExp(`^Snooze ${issue.key}\\b`)),
+      "Tomorrow"
+    );
     expect(Date.parse((await put).postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
 
     // Folded away, and off both counts: the viewer is not asked about it again until it
@@ -1751,7 +1753,7 @@ for (const refusal of [
       // reading column's head, which carries the controls for the row it is showing.
       const controls = await askControls(page, ask.id);
       await expect(controls).toBeVisible();
-      await controls.getByLabel(`Snooze ${issue.key}`).selectOption("tomorrow");
+      await pickFromList(listTrigger(controls, new RegExp(`^Snooze ${issue.key}\\b`)), "Tomorrow");
 
       const retry = controls.getByRole("button", { name: "Retry" });
       await expect(retry).toBeVisible();

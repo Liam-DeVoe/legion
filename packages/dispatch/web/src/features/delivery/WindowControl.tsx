@@ -1,5 +1,6 @@
-import { type ReactNode, type RefObject, useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import {
   borderStrong,
   dangerText,
@@ -19,6 +20,18 @@ import {
 
 const fieldClass = `rounded border px-2 py-1 text-sm ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
 
+/** The option of the Window list that opens the custom range's fields. */
+const CUSTOM = "custom";
+
+/** The Window list's options: each preset, then the custom range. */
+const WINDOW_OPTIONS: readonly string[] = [...WINDOW_PRESETS, CUSTOM];
+
+const WINDOW_TRIGGER_ATTRIBUTE = "data-delivery-window";
+const WINDOW_MARKS: ListMarks = { trigger: { [WINDOW_TRIGGER_ATTRIBUTE]: "" } };
+/** The Window list's trigger, which the page finds by it: the shared list hands out no element
+ *  of its own. */
+export const WINDOW_TRIGGER_SELECTOR = `[${WINDOW_TRIGGER_ATTRIBUTE}]`;
+
 /** The window a choice names, as one string: two choices of the same window give the same one. */
 function windowKey(value: WindowChoice): string {
   return value.kind === "custom" ? `${value.from}|${value.to}` : value.preset;
@@ -32,26 +45,26 @@ function draftDates(value: WindowChoice): { from: string; to: string } {
 }
 
 /** The Delivery page's window: a rolling preset (the last 7, 14, 28 or 84 days) or a custom range
- *  of whole UTC days. A custom range is applied only once both dates are set and it spans at most
- *  84 days, the server's limit; a longer one is refused here with the limit stated. */
+ *  of whole UTC days, picked from the shared list's single pick (`MultiSelect`), whose text box
+ *  narrows the options as the reader types. A custom range is applied only once both dates are set
+ *  and it spans at most 84 days, the server's limit; a longer one is refused here with the limit
+ *  stated. */
 export function WindowControl({
   value,
   onChange,
-  selectRef,
 }: {
   value: WindowChoice;
   onChange: (next: WindowChoice) => void;
-  /** The Window select, which the page hands the focus to when a control beside it goes. */
-  selectRef?: RefObject<HTMLSelectElement | null>;
 }): ReactNode {
   const id = useId();
+  const [listOpen, setListOpen] = useState(false);
   const [custom, setCustom] = useState(value.kind === "custom");
   const [dates, setDates] = useState(() => draftDates(value));
   const [refused, setRefused] = useState<string | null>(null);
   // A new window - the control's own pick, or the address changing under it - starts the draft
   // again from that window. It is set during render (React's pattern for state derived from
-  // props) rather than by a key on the control: a new key remounted the Window select under the
-  // keyboard reader who picked a preset with an arrow key, and dropped their focus on the body.
+  // props) rather than by a key on the control: a new key would remount the Window list under the
+  // reader who picked a window, and drop their focus on the body.
   const key = windowKey(value);
   const [seeded, setSeeded] = useState(key);
   if (key !== seeded) {
@@ -73,14 +86,15 @@ export function WindowControl({
 
   return (
     <div className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-      <label className="flex items-center gap-2" htmlFor={`${id}-window`}>
-        Window
-      </label>
-      <select
-        className={fieldClass}
-        id={`${id}-window`}
-        onChange={(event) => {
-          const next = event.target.value;
+      {/* The list is named for the field itself, so its words here are for the eye alone. */}
+      <span aria-hidden="true">Window</span>
+      <MultiSelect
+        emptyMessage="No window matches that."
+        label="Window"
+        marks={WINDOW_MARKS}
+        mode="single"
+        onOpenChange={setListOpen}
+        onPick={(next) => {
           const preset = WINDOW_PRESETS.find((candidate) => candidate === next);
           if (preset === undefined) {
             setCustom(true);
@@ -90,16 +104,16 @@ export function WindowControl({
           setRefused(null);
           onChange({ kind: "preset", preset });
         }}
-        ref={selectRef}
-        value={custom ? "custom" : value.kind === "preset" ? value.preset : "custom"}
-      >
-        {WINDOW_PRESETS.map((preset) => (
-          <option key={preset} value={preset}>
-            {PRESET_LABELS[preset]}
-          </option>
-        ))}
-        <option value="custom">Custom range…</option>
-      </select>
+        open={listOpen}
+        optionLabel={(option) => {
+          const preset = WINDOW_PRESETS.find((candidate) => candidate === option);
+          return preset === undefined ? "Custom range…" : PRESET_LABELS[preset];
+        }}
+        options={WINDOW_OPTIONS}
+        searchLabel="Search windows"
+        triggerClassName={`${fieldClass} text-left`}
+        value={custom || value.kind === "custom" ? CUSTOM : value.preset}
+      />
       {custom ? (
         <>
           <label className="flex items-center gap-1" htmlFor={`${id}-from`}>

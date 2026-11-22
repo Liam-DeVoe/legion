@@ -3811,7 +3811,8 @@ function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } 
 }
 
 /** A `<select>` named Window at the end of `parent`, laid out `top` px down the window: the
- *  control a line falls back to, as the Delivery page's header falls back to its Window select. */
+ *  control a line falls back to, as the Delivery page's header falls back to its Window list's
+ *  trigger. */
 function windowSelectIn(parent: Element, top: number): HTMLElement {
   const select = controlOf("select");
   select.setAttribute("aria-label", "Window");
@@ -3865,8 +3866,8 @@ test("a component's hand-off passes over its controls out of sight to the neares
 
 // (ce) Where nothing a component's hand-off can land on is in the reader's sight - the line's own
 // control before the lost one and the line's fallback, each scrolled out above the window, as the
-// Delivery page's Window select is for a reader scrolled below it - the focus goes, with no
-// scroll, to the own stop of the region the line is in: the dialog or panel holding it, else the
+// Delivery page's Window list's trigger is for a reader scrolled below it - the focus goes, with
+// no scroll, to the own stop of the region the line is in: the dialog or panel holding it, else the
 // main content around it, else the page's main content for a line drawn outside it. With no main
 // content in the page, nothing moves, and the focus stays on the page.
 test("a component's hand-off with nothing in sight lands on its region's own stop, scrolling nothing", () => {
@@ -3954,8 +3955,8 @@ test("a component's hand-off lands on a control partly in sight and scrolls it t
 
 // (cg) A control wholly in the reader's sight takes the focus where a component's hand-off has
 // always put it: the control before the lost one, else, where the line holds no other control, the
-// line's fallback, as the Delivery page's Window select takes it from clear brush window. Its
-// landing asks for no scroll but the one to its nearest edge, which moves a control wholly in
+// line's fallback, as the Delivery page's Window list's trigger takes it from clear brush window.
+// Its landing asks for no scroll but the one to its nearest edge, which moves a control wholly in
 // sight not at all.
 test("a component's hand-off lands on a control wholly in sight where it always did, by a scroll that moves nothing", () => {
   // Where each hand-off landed and what it asked of the page, and where it belongs.

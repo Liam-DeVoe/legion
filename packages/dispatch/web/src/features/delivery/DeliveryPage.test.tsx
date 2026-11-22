@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { pickIn } from "../../__tests__/issue-picks";
+import { panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -528,16 +530,15 @@ test("the facet column offers each value with its count, subscribes a pick and k
   await user.click(screen.getByRole("button", { name: "Filter Issue" }));
   expect(screen.getByRole("option", { name: /ACME-1 — Ship widgets/ })).toBeDefined();
 
-  const colorBy = screen.getByLabelText("Color merges by") as HTMLSelectElement;
-  expect([...colorBy.options].map((option) => option.textContent)).toEqual([
-    "Repository",
-    "Author",
-    "Priority",
-    "Component",
-    "Parent agent",
-  ]);
-  await user.selectOptions(colorBy, "component");
-  expect(colorBy.value).toBe("component");
+  const colorBy = screen.getByLabelText("Color merges by");
+  await user.click(colorBy);
+  expect(
+    within(panelOf(colorBy))
+      .getAllByRole("option")
+      .map((option) => option.textContent)
+  ).toEqual(["✓Repository", "Author", "Priority", "Component", "Parent agent"]);
+  await user.click(within(panelOf(colorBy)).getByRole("option", { name: "Component" }));
+  expect(colorBy).toHaveAccessibleName("Color merges by Component");
   // The list's dot follows the colour-by facet, and the row reads its issue with its priority.
   expect(screen.getByText("ACME-1 · P0")).toBeDefined();
 });
@@ -782,14 +783,43 @@ test("colouring by Parent agent offers the values to give their own colour and l
   await user.click(listbox.getByRole("option", { name: /^Reviewer/ }));
   await waitFor(() => expect(currentSearch().getAll("agents")).toEqual(["group:g1", "Reviewer"]));
 
-  await user.selectOptions(screen.getByLabelText("Color merges by"), "repo");
+  await pickIn(user, () => screen.getByLabelText("Color merges by"), "Repository");
   expect(screen.queryByRole("button", { name: /^Own colour and lane/ })).not.toBeInTheDocument();
+});
+
+// R3: every list of options a reader picks from holds a text box that narrows the options. Color
+// merges by is the shared list's single pick of its choices: pressed, it opens with one text box,
+// a typed word leaves the choices it matches, and Enter on the one left colours the merges by it,
+// kept in the URL, as the select's pick did.
+test("the Color merges by list opens with a text box, a typed word narrows the choices, and a pick colours by it", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered(emptyTimeline);
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  expect(colorBy).toHaveAccessibleName("Color merges by Repository");
+  const boxes = textBoxes().length;
+  await user.click(colorBy);
+  const panel = panelOf(colorBy);
+  expect(textBoxes().length).toBe(boxes + 1);
+  expect(within(panel).getByRole("combobox", { name: "Search color choices" })).toHaveFocus();
+  await user.keyboard("agent");
+  expect(
+    within(panel)
+      .getAllByRole("option")
+      .map((option) => option.textContent)
+  ).toEqual(["Parent agent"]);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(currentSearch().get("colorBy")).toBe("parentAgent"));
+  expect(colorBy).toHaveAccessibleName("Color merges by Parent agent");
+  expect(colorBy).toHaveFocus();
+  // Parent agent offers its values their own colour and lane.
+  expect(screen.getByRole("button", { name: /^Own colour and lane/ })).toBeDefined();
 });
 
 test("a malformed custom window falls back to the 28-day preset and removes its bad parameters", async () => {
   renderPage("/delivery?mode=list&from=not-a-date&to=also-not-a-date");
   const window = await screen.findByLabelText("Window");
-  expect((window as HTMLSelectElement).value).toBe("28d");
+  expect(window).toHaveAccessibleName("Window Last 28 days");
   await waitFor(() => {
     expect(currentSearch().has("from")).toBe(false);
     expect(currentSearch().has("to")).toBe(false);
@@ -853,7 +883,8 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   const socket = await openSocket();
   const brushed = await subscription(socket, "measures");
 
-  await user.selectOptions(await screen.findByLabelText("Window"), "7d");
+  const windowList = await screen.findByLabelText("Window");
+  await pickIn(user, () => windowList, "Last 7 days");
   await waitFor(() => expect(currentSearch().get("window")).toBe("7d"));
   expect(currentSearch().has("ws")).toBe(false);
   expect(currentSearch().has("we")).toBe(false);
@@ -861,7 +892,7 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   await subscriptionTo(socket, { kind: "timeline", window: { preset: 7 }, query: "" });
   expect(socket.sent).toContainEqual({ type: "unsubscribe", sub: brushed.sub });
 
-  await user.selectOptions(screen.getByLabelText("Window"), "custom");
+  await pickIn(user, () => screen.getByLabelText("Window"), "Custom range…");
   await user.click(screen.getByLabelText("From"));
   await user.paste("2026-01-01");
   await user.click(screen.getByLabelText("To"));
@@ -878,26 +909,27 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
 });
 
 // A press that takes its own control away hands the focus on, never to the page's body (ruling
-// ff1a60f5). A preset picked on the Window select leaves that select, the same element, holding
-// the focus: the control stays mounted across a change of the window.
-test("a preset picked on the Window select keeps that select, and the focus on it", async () => {
+// ff1a60f5). A preset picked from the Window list leaves the list's trigger, the same element,
+// holding the focus: the control stays mounted across a change of the window.
+test("a preset picked from the Window list keeps its trigger, and the focus on it", async () => {
   const user = userEvent.setup();
   renderPage();
-  const select = await screen.findByLabelText("Window");
-  select.focus();
-  await user.selectOptions(select, "84d");
+  const trigger = await screen.findByLabelText("Window");
+  act(() => trigger.focus());
+  await pickIn(user, () => trigger, "Last 84 days");
   await waitFor(() => expect(currentSearch().get("window")).toBe("84d"));
-  expect(screen.getByLabelText("Window")).toBe(select);
-  expect(select).toHaveFocus();
+  expect(screen.getByLabelText("Window")).toBe(trigger);
+  expect(trigger).toHaveFocus();
 });
 
 /** The page over `DELIVERY_URL`'s window with a brush window set in it, as a drag along the
  *  chart's time axis sets one, so the header draws clear brush window. */
 const BRUSHED_URL = `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`;
 
-// Clear brush window goes with the brush it clears, and its focus goes to the Window select, in
-// the reader's sight as happy-dom draws every box: the line it sits in holds no other control.
-test("clear brush window hands its focus to the Window select", async () => {
+// Clear brush window goes with the brush it clears, and its focus goes to the Window list's
+// trigger, in the reader's sight as happy-dom draws every box: the line it sits in holds no other
+// control.
+test("clear brush window hands its focus to the Window list's trigger", async () => {
   const user = userEvent.setup();
   renderPage(BRUSHED_URL);
   const socket = await openSocket();
@@ -908,14 +940,14 @@ test("clear brush window hands its focus to the Window select", async () => {
   await user.keyboard("{Enter}");
   await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
   expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
-  expect(screen.getByLabelText("Window")).toHaveFocus();
+  expect(screen.getByRole("button", { name: pickNamed("Window") })).toHaveFocus();
 });
 
-// With the page scrolled below the Window select, so that the select stands wholly above the
-// window, clear brush window's focus goes to no control out of the reader's sight: the select is
-// passed over, and the main content around the page takes the focus at its own stop, with no
+// With the page scrolled below the Window list's trigger, so that the trigger stands wholly above
+// the window, clear brush window's focus goes to no control out of the reader's sight: the trigger
+// is passed over, and the main content around the page takes the focus at its own stop, with no
 // scroll, so the reader stays where they scrolled to.
-test("clear brush window with the Window select scrolled out of sight hands its focus to the main content's own stop, scrolling nothing", async () => {
+test("clear brush window with the Window list's trigger scrolled out of sight hands its focus to the main content's own stop, scrolling nothing", async () => {
   const user = userEvent.setup();
   const main = document.createElement("main");
   document.body.append(main);
@@ -924,10 +956,10 @@ test("clear brush window with the Window select scrolled out of sight hands its 
   const timeline = await subscription(socket, "timeline");
   serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
   const clear = await screen.findByRole("button", { name: "clear brush window" });
-  const select = screen.getByLabelText("Window");
+  const trigger = screen.getByLabelText("Window");
   // Wholly above the window's top edge, where the reader's scroll left it: happy-dom lays
   // nothing out.
-  select.getBoundingClientRect = () => new DOMRect(0, -60, 120, 32);
+  trigger.getBoundingClientRect = () => new DOMRect(0, -60, 120, 32);
   clear.focus();
   const focuses = spyOn(HTMLElement.prototype, "focus");
   const scrolls = spyOn(Element.prototype, "scrollIntoView");

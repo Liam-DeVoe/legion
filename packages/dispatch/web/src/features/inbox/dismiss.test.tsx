@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickIn } from "../../__tests__/issue-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -582,9 +583,10 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
     await user.click(asksMark as HTMLElement);
     await screen.findByText("1 selected");
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(
-      screen.getByLabelText("Snooze selected asks"),
-      "tomorrow"
+    await pickIn(
+      userOnFakeClock(),
+      () => screen.getByLabelText("Snooze selected asks"),
+      "Tomorrow"
     );
     await stopTheLateWrite(client);
     await waitFor(() =>

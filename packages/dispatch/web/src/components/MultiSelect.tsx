@@ -119,6 +119,12 @@ interface SharedProps {
   /** Every keystroke in the search input, so a host can drop a message it showed for the
    *  previous query (a rejected create). */
   readonly onQueryChange?: (query: string) => void;
+  /** The focus arriving on the trigger from outside the list, with the element it came from
+   *  (the focus event's `relatedTarget`, null where it came from nowhere): a host that keeps
+   *  where the reader came from, for a way back there, records it here. The list handing the
+   *  focus back to its trigger is no arrival and calls nothing: a pick, Escape, Tab, or a press
+   *  of the trigger while the list is open. So the record outlives the reader's use of the list. */
+  readonly onTriggerFocus?: (from: Element | null) => void;
   readonly open: boolean;
   /** The values the host stores (URL keys, label strings) in list order. */
   readonly options: readonly string[];
@@ -220,6 +226,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     marks,
     onOpenChange,
     onQueryChange,
+    onTriggerFocus,
     open,
     options,
     optionDetail,
@@ -488,6 +495,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         onClick={() => {
           if (open) onOpenChange(false, "trigger");
           else onOpenChange(true);
+        }}
+        onFocus={(event) => {
+          // The focus comes back from the list while the list is open and until its close has
+          // run the effect above, which is while `wasOpen` holds.
+          if (!wasOpen.current) onTriggerFocus?.(event.relatedTarget);
         }}
         onKeyDown={handleTriggerKeyDown}
         ref={triggerRef}

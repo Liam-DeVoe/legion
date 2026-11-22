@@ -66,7 +66,13 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { listedReplies } from "../conversation/conversation-model";
-import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
+import {
+  broadcastDelivery,
+  capabilityLabel,
+  deliveryMode,
+  deliveryModesOf,
+  MODE_LABELS,
+} from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -1196,6 +1202,7 @@ function BroadcastComposer({
 }): ReactNode {
   const { plan } = composed;
   const { excluded, recipients, unchecked } = plan;
+  const [modeListOpen, setModeListOpen] = useState(false);
   // The selection's own mode, named when it is not the broadcast's usual BTW, so the reader knows
   // what their words become: an Aside, because a selected session takes Aside and not BTW.
   const asideOnly =
@@ -1279,18 +1286,24 @@ function BroadcastComposer({
         })}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
-        <select
-          aria-label="Delivery mode"
-          className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-          onChange={(event) => onDelivery(event.target.value as MessageDeliveryMode)}
+        {/* The shared list's single pick of the modes, whose text box narrows them as the reader
+            types; its trigger shows the mode the broadcast sends in. */}
+        <MultiSelect
+          emptyMessage="No mode matches that."
+          label="Delivery mode"
+          mode="single"
+          onOpenChange={setModeListOpen}
+          onPick={(picked) => {
+            const mode = deliveryMode(picked);
+            if (mode !== undefined) onDelivery(mode);
+          }}
+          open={modeListOpen}
+          optionLabel={capabilityLabel}
+          options={DELIVERY_CAPABILITIES}
+          searchLabel="Search delivery modes"
+          triggerClassName={`min-h-11 rounded-lg border px-3 py-2 text-left text-sm ${inputClasses(true)}`}
           value={delivery}
-        >
-          {DELIVERY_CAPABILITIES.map((mode) => (
-            <option key={mode} value={mode}>
-              {MODE_LABELS[mode]}
-            </option>
-          ))}
-        </select>
+        />
       </div>
       <textarea
         aria-label="Broadcast message"

@@ -19,6 +19,7 @@ import {
   listBroadcasts,
   replyToMessageDelivery,
 } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import { distinctKeys } from "./keyed-writes";
 import { navigateInApp } from "./sends";
 import { sessionIds } from "./session-ids";
@@ -86,7 +87,7 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "Send");
     // The Reviewer advertises `aside` only. It stays visible and is left out; no other mode is
     // substituted for it.
     await expect(composer.getByText("Excluded: Reviewer (does not advertise Send)")).toBeVisible();
@@ -176,7 +177,7 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "Send");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill(body);
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();
@@ -322,7 +323,7 @@ test("a session that goes away before the send is excluded by the server and nam
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("btw");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "BTW");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
     const send = composer.getByRole("button", { name: "Send to 3" });
     await expect(send).toBeEnabled();
@@ -377,7 +378,7 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("btw");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "BTW");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();

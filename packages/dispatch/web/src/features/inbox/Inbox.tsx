@@ -22,7 +22,7 @@ import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { MultiSelect } from "../../components/MultiSelect";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
@@ -31,7 +31,6 @@ import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../component
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { capSearchQuery, useAddressNavigate } from "../../lib/page-address";
 import {
-  badgeLow,
   borderDefault,
   checkboxAccent,
   dangerText,
@@ -49,7 +48,6 @@ import {
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -131,7 +129,7 @@ import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
-import { BulkSnoozingContext, SnoozeControl } from "./SnoozeControl";
+import { BulkSnoozingContext, SnoozeControl, SnoozePick } from "./SnoozeControl";
 import {
   EVERYONE_FILTER_VALUE,
   type InboxSection,
@@ -142,7 +140,7 @@ import {
   sectionTitles,
   UNASSIGNED_FILTER_VALUE,
 } from "./sections";
-import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
+import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
@@ -242,8 +240,10 @@ function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
   return null;
 }
 
-/** The bulk bar's snooze picker: `h` hands it focus and Escape takes it back to the list. */
+/** The bulk bar's snooze picker, its list's trigger: `h` hands it focus and Escape takes it back
+ *  to the list. */
 const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
+const BULK_PICKER_MARKS: ListMarks = { trigger: { "data-inbox-bulk-snooze": "" } };
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
@@ -2300,41 +2300,23 @@ function InboxBody({
           and under the Blocked on you narrowing out of the list. A picker unmounted under the
           reader's hand drops their focus. */}
       {selectedAsks.length === 0 && bulkSnoozing.size === 0 ? null : (
-        <span className={badgeSelectWrapper}>
-          <span
-            aria-hidden="true"
-            className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}
-          >
-            Snooze
-          </span>
-          {/* One pick at a time: a second while the first is in the air re-sends every id, and
-              its answer can settle after the live one's and overwrite what the reader was told.
-              It is `aria-disabled` rather than `disabled` because the browser takes focus off a
-              control that disables itself under it - dropping the reader on the document
-              mid-write, with no Escape to leave and no way back to the bar. */}
-          <select
-            aria-disabled={bulkSnoozing.size !== 0}
-            aria-label="Snooze selected asks"
-            className={badgeSelectOverlay}
-            data-inbox-bulk-snooze=""
-            onChange={(event) => {
-              if (bulkSnoozing.size !== 0) return;
-              const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
-              if (preset !== undefined) snoozePick(preset.until(new Date()));
-            }}
-            onFocus={(event) => {
-              pickerOrigin.current = rowAround(event.relatedTarget)?.dataset.inboxRow ?? null;
-            }}
-            value=""
-          >
-            <option value="">Snooze…</option>
-            {SNOOZE_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-        </span>
+        // One pick at a time: a second while the first is in the air re-sends every id, and its
+        // answer can settle after the live one's and overwrite what the reader was told. It is
+        // held by `aria-disabled` rather than `disabled` because the browser takes focus off a
+        // control that disables itself under it - dropping the reader on the document mid-write,
+        // with no Escape to leave and no way back to the bar. The focus arriving on it records
+        // the row it came from, for Escape to go back to; the list handing the focus back to it
+        // records nothing, so the row outlives a pick (`onTriggerFocus`).
+        <SnoozePick
+          badge="Snooze"
+          held={bulkSnoozing.size !== 0}
+          label="Snooze selected asks"
+          marks={BULK_PICKER_MARKS}
+          onPick={snoozePick}
+          onTriggerFocus={(from) => {
+            pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
+          }}
+        />
       )}
       {selectedThreads.length === 0 ? null : (
         <button

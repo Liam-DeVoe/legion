@@ -80,6 +80,7 @@ import {
   listOf,
   listTrigger,
   openFilterPanel,
+  pickFromList,
 } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
@@ -90,6 +91,7 @@ import {
   askControls,
   hasReadingPane,
   inboxRow,
+  paneScroller,
   selectedRow,
   selectRow,
 } from "./inbox-pane";
@@ -1073,9 +1075,9 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     // moved up into the place of the row marked last, the second row now, which the reader sees.
     await mark(inboxBox(2));
     await mark(inboxBox(1));
-    const picker = inboxBar.getByRole("combobox", { name: "Snooze selected asks" });
+    const picker = listTrigger(inboxBar, "Snooze selected asks");
     await picker.focus();
-    await picker.selectOption("later-today");
+    await pickFromList(picker, "Later today");
     await expect(inboxBar, `${where}: the snooze left the bar up`).toHaveCount(0);
     await focusOn(
       where,
@@ -1348,17 +1350,20 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
     await expect(clear).toHaveCount(0);
     await after(`Agents page at ${at}`, "Enter on Clear selection");
 
-    // The Delivery page's Window control: a new preset changes the window under the select the
-    // reader is on, which stays mounted (`WindowControl.tsx`). The seeded window is a custom
-    // range, the last option, so ArrowUp picks the last preset. The focus never leaves the
-    // select, so `after`'s poll ends at once; the read still sees the press's result, because
-    // `toHaveURL` waits for the commit that wrote the new window.
+    // The Delivery page's Window control: a new preset changes the window under the list's
+    // trigger the reader is on, which stays mounted (`WindowControl.tsx`). The seeded window is a
+    // custom range, the last option: ArrowUp opens the list on it, ArrowUp again moves to the last
+    // preset, and Enter picks that. The pick hands the focus back to the trigger, so `after`'s
+    // poll ends at once; the read still sees the press's result, because `toHaveURL` waits for
+    // the commit that wrote the new window.
     await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
-    const windowSelect = main.getByRole("combobox", { name: "Window" });
-    await windowSelect.focus();
+    const windowList = listTrigger(main, "Window");
+    await windowList.focus();
     await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Enter");
     await expect(page).not.toHaveURL(/from=2024-06-01/);
-    await after(`Delivery page at ${at}`, "ArrowUp on the Window select");
+    await after(`Delivery page at ${at}`, "Enter on the Window list's last preset");
 
     // The Delivery page's clear brush window: it goes with the brush.
     await page.goto(
@@ -3236,7 +3241,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(bar, "the x key").toContainText("1 selected");
   await page.keyboard.press("h");
   await expect(
-    peek.getByRole("combobox", { name: "Snooze selected asks" }),
+    listTrigger(peek, "Snooze selected asks"),
     "the h key, with a row marked"
   ).toBeFocused();
   await page.keyboard.press("Escape");
@@ -3274,7 +3279,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
 
   // Snooze selected asks, Dismiss selected threads, and `e` on a thread.
   await rowOf(clock.id).getByRole("checkbox").first().check();
-  await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+  await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
   await expect(rowOf(clock.id), "Snooze selected asks").toHaveCount(0);
   await expect
     .poll(
@@ -4642,11 +4647,9 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // A Snooze pick: the row stays in its band while the snooze saves, and folds into Later,
     // which starts folded, once the snooze lands.
     await page.goto("/");
-    const snooze = (await askControls(page, snoozed.askId)).getByRole("combobox", {
-      name: /^Snooze /,
-    });
+    const snooze = listTrigger(await askControls(page, snoozed.askId), /^Snooze /);
     await snooze.focus();
-    await snooze.selectOption({ index: 1 });
+    await pickFromList(snooze, "Later today");
     await expect(inboxRow(page, snoozed.askId), `${where}: the snooze kept its row`).toHaveCount(0);
     await after(where, "a Snooze pick");
 
@@ -5751,9 +5754,9 @@ test("a Snooze pick in the reading column's head takes none of the reader's next
   await page.goto("/");
   // The Inbox lists newest first: the question the reader snoozes is the first row.
   const snoozed = ids[1] as string;
-  const snooze = (await askControls(page, snoozed)).getByRole("combobox", { name: /^Snooze / });
+  const snooze = listTrigger(await askControls(page, snoozed), /^Snooze /);
   await snooze.focus();
-  await snooze.selectOption({ index: 1 });
+  await pickFromList(snooze, "Later today");
   await expect(inboxRow(page, snoozed)).toHaveCount(0);
   // The page's rescue runs a frame and a task after the loss, so it is done by now.
   await nextFrames(page);
@@ -5897,16 +5900,26 @@ interface PickListSeed {
   /** The issue whose header's Assignee, Repository and Priority to advance are read, assigned to
    *  alice and inheriting CORE's default repository. */
   readonly header: string;
+  /** For each width, three questions waiting on alice that the Inbox lists newest first, one
+   *  after another: the one a row's Snooze defers, the one the selection bar's Snooze defers, and
+   *  the one that moves up into its place. */
+  readonly snoozes: readonly {
+    readonly after: string;
+    readonly bulk: string;
+    readonly row: string;
+  }[];
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
  *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's, the Create
- *  issue dialog's and the Settings page's Project lists hold two projects, OPS names carol as its
- *  default assignee, and the people a question can be handed to, an issue assigned to, or a
- *  project named by, are alice, bob and carol; three epics, the first with a member; a spec and a
- *  second document of one issue, each in two versions; a question for each width; two
- *  repositories mapped to CORE, acme/widgets its default; three priorities; and an issue of CORE
- *  assigned to alice, which names no repository of its own and advances no priority. */
+ *  issue dialog's and the Settings page's Project lists hold more than one project, OPS names
+ *  carol as its default assignee, and the people a question can be handed to, an issue assigned
+ *  to, or a project named by, are alice, bob and carol; three epics, the first with a member; a
+ *  spec and a second document of one issue, each in two versions; a question for each width; two
+ *  repositories mapped to CORE, acme/widgets its default; three priorities; an issue of CORE
+ *  assigned to alice, which names no repository of its own and advances no priority; the
+ *  Delivery page's fixture (`seedDeliveryFixture`), which adds project ACME; and, last, so the
+ *  Inbox lists them first, three questions for each width that the Snoozes defer. */
 async function seedPickLists(): Promise<PickListSeed> {
   await seedAgents();
   await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
@@ -5952,10 +5965,29 @@ async function seedPickLists(): Promise<PickListSeed> {
   }
   const header = await createIssue({ project: "CORE", title: "Harbour crane" });
   await patchIssue(header.key, { assignee: "alice" });
-  return { asks, documented: documented.key, header: header.key, member: member.key };
+  await seedDeliveryFixture();
+  const snoozes: { after: string; bulk: string; row: string }[] = [];
+  for (const width of [1440, 390]) {
+    // Made oldest first, so the Inbox lists the row's question, the bar's, then the one after.
+    const ids: string[] = [];
+    for (const part of ["moves up", "bar", "row"]) {
+      const owner = await createIssue({ project: "CORE", title: `Snooze ${part} at ${width}` });
+      const question = `Defer the ${part} at ${width}?`;
+      ids.push((await createAsk(owner.key, { question }, SURFACE_SESSION)).id);
+    }
+    const [after = "", bulk = "", row = ""] = ids;
+    snoozes.push({ after, bulk, row });
+  }
+  return {
+    asks,
+    documented: documented.key,
+    header: header.key,
+    member: member.key,
+    snoozes,
+  };
 }
 
-/** The eighteen lists, in the order the row reads them at one width; `step` is the width's
+/** The twenty-four lists, in the order the row reads them at one width; `step` is the width's
  *  place, which picks the question it hands on, the issue it addresses, and the person and the
  *  repository the issue header's lists and the Settings page's people lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
@@ -6017,6 +6049,36 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       ? ["gadg", "acme/gadgets", /^acme\/gadgets$/]
       : ["inh", "Inherit", /^acme\/widgets$/];
   const reviewQueue = /^P\d+ Cut the review queue$/;
+  // The Inbox's two Snoozes. With the reading column a row's Snooze is in the column's head, for
+  // the row the column shows; without it, in the row itself.
+  const snoozed = seed.snoozes[step] ?? { after: "", bulk: "", row: "" };
+  const rowSnooze = listTrigger(
+    hasReadingPane(page) ? page.getByTestId("inbox-pane") : inboxRow(page, snoozed.row),
+    /^Snooze /
+  );
+  const bulkSnooze = listTrigger(
+    page.getByRole("toolbar", { name: "Selected rows" }),
+    "Snooze selected asks"
+  );
+  /** Where a reader reads what a Snooze did: how many rows the Inbox's Later band holds, in the
+   *  band's own words, `Later (0)` while there is no band. */
+  const later = async () => {
+    const band = page.getByRole("button", { name: /^Later \(\d+\)/ });
+    if ((await band.count()) === 0) return "Later (0)";
+    return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
+  };
+  // Each Snooze pick defers one more question, two at each width, so Later counts one more.
+  const laterAfter = (picks: number) => new RegExp(`^Later \\(${2 * step + picks}\\)$`);
+  const mode = listTrigger(page.getByRole("region", { name: "Broadcast" }), "Delivery mode");
+  const [modeWord, modeOption] = step === 0 ? ["asi", "Aside"] : ["sen", "Send"];
+  const rowsPerPage = listTrigger(control(main, CONTROL.pager), "Rows per page");
+  const [sizeWord, sizeOption] = step === 0 ? ["250", "250 per page"] : ["100", "100 per page"];
+  // The Delivery page over the fixture's custom range, so the Window starts on Custom range….
+  const deliveryPage = `/delivery?${DELIVERY_WINDOW}&mode=list`;
+  const deliveryWindow = listTrigger(main, "Window");
+  const [windowWord, windowOption] = step === 0 ? ["84", "Last 84 days"] : ["14", "Last 14 days"];
+  const colorBy = listTrigger(main, "Color merges by");
+  const [colorWord, colorOption] = step === 0 ? ["prio", "Priority"] : ["comp", "Component"];
   return [
     {
       name: "the search bar's Project",
@@ -6077,6 +6139,17 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: /^Ledger epic$/,
     },
     {
+      name: "the List's Rows per page",
+      reach: async () => {
+        await openIssuesTab(page, "CORE", "List");
+      },
+      trigger: rowsPerPage,
+      value: shown(rowsPerPage),
+      word: sizeWord,
+      left: [sizeOption],
+      picked: new RegExp(`^${sizeOption}$`),
+    },
+    {
       // Every person's questions, so the question stays listed once it waits on bob. Its list is
       // on its card: the reading column's, for the row selected, or the row's own where the
       // Inbox is too narrow for that column.
@@ -6090,6 +6163,40 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "bo",
       left: ["bob"],
       picked: /^Asked of bob$/,
+    },
+    {
+      // The reader's own questions, newest first. With the reading column the row's question is
+      // selected first, so the column's head draws its Snooze.
+      name: "the Inbox's Snooze of a row",
+      reach: async () => {
+        await page.goto("/");
+        await expect(inboxRow(page, snoozed.row)).toBeVisible();
+        await selectRow(page, snoozed.row);
+      },
+      trigger: rowSnooze,
+      value: later,
+      word: "tom",
+      left: ["Tomorrow"],
+      picked: laterAfter(1),
+      // The pick takes the row away once its write lands. With the reading column the focus goes
+      // to the column's own stop, and without it to the same Snooze in the row that moves up.
+      focusAfterPick: hasReadingPane(page)
+        ? paneScroller(page)
+        : listTrigger(inboxRow(page, snoozed.bulk), /^Snooze /),
+    },
+    {
+      name: "the Inbox's Snooze selected asks",
+      reach: async () => {
+        await inboxRow(page, snoozed.bulk).getByRole("checkbox").first().check();
+      },
+      trigger: bulkSnooze,
+      value: later,
+      word: "week",
+      left: ["Next week"],
+      picked: laterAfter(2),
+      // The bar goes with the row it deferred, and its focus goes to the mark of the row that
+      // moves up into that row's place.
+      focusAfterPick: inboxRow(page, snoozed.after).getByRole("checkbox").first(),
     },
     {
       name: "the Agents composer's Issue",
@@ -6108,6 +6215,22 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       // is one level out, to the row.
       focusAfterPick: agent.getByRole("textbox", { name: "Comment" }),
       focusAfterEscape: agent,
+    },
+    {
+      // The broadcast composer opens with a session ticked for it.
+      name: "the Agents page's Delivery mode",
+      reach: async () => {
+        await page.goto("/agents");
+        await main
+          .getByRole("checkbox", { name: /^Select .* for broadcast$/ })
+          .first()
+          .check();
+      },
+      trigger: mode,
+      value: shown(mode),
+      word: modeWord,
+      left: [modeOption],
+      picked: new RegExp(`^${modeOption}$`),
     },
     {
       name: "the Spec tab's Version",
@@ -6250,35 +6373,59 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["OPS · Ops"],
       picked: /^OPS · Ops$/,
     },
+    {
+      name: "the Delivery page's Window",
+      reach: async () => {
+        await page.goto(deliveryPage);
+      },
+      trigger: deliveryWindow,
+      value: shown(deliveryWindow),
+      word: windowWord,
+      left: [windowOption],
+      picked: new RegExp(`^${windowOption}$`),
+    },
+    {
+      // Read over the fixture's range again, which draws its merges and the list beside them.
+      name: "the Delivery page's Color merges by",
+      reach: async () => {
+        await page.goto(deliveryPage);
+      },
+      trigger: colorBy,
+      value: shown(colorBy),
+      word: colorWord,
+      left: [colorOption],
+      picked: new RegExp(`^${colorOption}$`),
+    },
   ];
 }
 
-// SLOW(>=2s): eighteen lists on eight pages, each list opened three times at each of two widths.
+// SLOW(>=2s): twenty-four lists on nine pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// The row covers the eighteen single picks of the shared list (`components/MultiSelect.tsx`), the
-// lists whose options grow with the project among them: the search bar's Project and Status, the
-// List's Move to epic, an epic's Merge into another epic, the Inbox's Hand this question to
-// (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version (`SpecToolbar`), a document
-// page's Version (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue
-// header's Assignee (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance
-// (`IssuePriorityLine`), the Create issue dialog's Project (`CreateIssueDialog`), and the Settings
-// page's Default assignee of a project and the New project form's Default assignee
-// (`ProjectsSection`), and its Project and Source project (`ProjectSelect`). The short
-// fixed lists - Priority (`PriorityControl`), Snooze (`SnoozeControl`), the Inbox's bulk Snooze,
-// the issue header's Status, the Agents page's Delivery mode, and the Delivery page's Color
-// merges by and Window (`DeliveryPage`,
-// `WindowControl`) - stay native selects by the architect's ruling of 2026-11-17, and the row
-// opens none of them. At each width each list is opened from its trigger: exactly one text box is
-// in the list's own panel - at 390 an `input` of 16 px, the size `styles.css` gives every input
-// below 1280 px and under which iOS Safari zooms the page onto the box - the option a typed word
-// leaves is not the value the list starts on, the word leaves only the options it matches,
-// Escape picks nothing and changes no value, Tab out of the text box (Shift+Tab at the second
-// width) picks nothing and leaves the reader on the trigger, `?` pressed then on the closed
-// trigger opens the list with `?` in its text box and no Keyboard shortcuts, since a character
-// typed on a closed trigger is the list's search (`MultiSelect`), and Enter picks the option the
-// word left - the trigger shows it with the focus back on it, or where the pick takes the trigger
-// away the panel hands the focus on. A list that holds no text box is named and the row goes on,
-// so one run names every such list.
+// The row covers the twenty-four single picks of the shared list (`components/MultiSelect.tsx`),
+// the lists whose options grow with the project among them: the search bar's Project and Status,
+// the List's Move to epic and Rows per page (`Pager`), an epic's Merge into another epic, the
+// Inbox's Hand this question to (`AskHandOn`), a row's Snooze (`SnoozeControl`) and the selection
+// bar's Snooze selected asks (`Inbox`), the Agents composer's Issue, the Agents page's Delivery
+// mode (`AgentsPage`), the Spec tab's Version (`SpecToolbar`), a document page's Version
+// (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
+// (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
+// the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
+// of a project and the New project form's Default assignee (`ProjectsSection`), and its Project
+// and Source project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
+// Color merges by (`DeliveryPage`). Two short fixed lists stay native selects, and the row opens
+// neither: Priority (`PriorityControl`) and the issue header's Status. At each width each list is
+// opened from its trigger: exactly one text box is in the list's own panel - at 390 an `input` of
+// 16 px, the size `styles.css` gives every input below 1280 px and under which iOS Safari zooms
+// the page onto the box - the option a typed word leaves is not the value the list starts on, the
+// word leaves only the options it matches, Escape picks nothing and changes no value, Tab out of
+// the text box (Shift+Tab at the second width) picks nothing and leaves the reader on the
+// trigger, `?` pressed then on the closed trigger opens the list with `?` in its text box and no
+// Keyboard shortcuts, since a character typed on a closed trigger is the list's search
+// (`MultiSelect`), and Enter picks the option the word left - the trigger shows it with the focus
+// back on it, or where the pick takes the trigger away the panel hands the focus on. A Snooze's
+// pick shows in the Inbox's Later band, which holds one more row once the write lands, and the
+// row the pick took away hands the focus on. A list that holds no text box is named and the row
+// goes on, so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
 // list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
@@ -6290,10 +6437,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390", async ({
   page,
 }) => {
-  // Nine page loads and a dialog at each width, with the lists read between them. Measured in
-  // an issue pod (two cores), with each of the eighteen lists opened three times: the row took
-  // 2.3 min in Chromium (2026-11-17), and 41.9 s in CI's Chromium (full-lane run 44206548149).
-  // Six minutes keeps the pod's time under two thirds of the budget.
+  // Fourteen page loads and a dialog at each width, with the lists read between them. Measured in
+  // an issue pod (two cores), with each of the eighteen lists it then read opened three times: the
+  // row took 2.3 min in Chromium (2026-11-17), and 41.9 s in CI's Chromium (full-lane run
+  // 44206548149). Six minutes kept the pod's time under two thirds of the budget then.
   test.setTimeout(360_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or

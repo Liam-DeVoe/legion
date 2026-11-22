@@ -78,7 +78,7 @@ import {
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
 import { SourceFreshness } from "./SourceFreshness";
 import { Timeline, type TimelineSelection } from "./Timeline";
-import { WindowControl } from "./WindowControl";
+import { WINDOW_TRIGGER_SELECTOR, WindowControl } from "./WindowControl";
 
 /** A facet the page's one filter panel holds in both views: the four that are no column of the
  *  list. */
@@ -757,17 +757,18 @@ export function DeliveryPage(): ReactNode {
   }
   // The header's **clear brush window** goes with the brush it clears, and the focus it held goes
   // to the control now at its place in the line it sits in, which holds no other, else to the
-  // Window select while any part of it is in the reader's sight, scrolled the least distance that
-  // shows it whole, else to the main content's own stop with no scroll (`useFocusPlace`). So a
-  // reader scrolled below the select is not pulled back up to it. The Window select itself stays
-  // mounted across a change of the window (`WindowControl`), so a pick keeps the focus where it
-  // was.
-  const windowSelect = useRef<HTMLSelectElement>(null);
+  // Window list's trigger while any part of it is in the reader's sight, scrolled the least
+  // distance that shows it whole, else to the main content's own stop with no scroll
+  // (`useFocusPlace`). So a reader scrolled below the trigger is not pulled back up to it. The
+  // trigger is found in the header by its mark (`WINDOW_TRIGGER_SELECTOR`), since the shared list
+  // hands out no element of its own. The Window list itself stays mounted across a change of the
+  // window (`WindowControl`), so a pick keeps the focus where it was.
   const generatedLine = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
     (element) => (generatedLine.current?.contains(element) ? generatedLine.current : null),
-    () => windowSelect.current
+    (line) => line.closest("header")?.querySelector<HTMLElement>(WINDOW_TRIGGER_SELECTOR) ?? null
   );
+  const [colorListOpen, setColorListOpen] = useState(false);
   // The list's own body is drawn once an answer is in; the control row is drawn before it
   // (`DeliveryControls`), at the one place in the tree, so the answer arriving does not remount
   // it and a link's narrowing has its chip and its way off while the page reads.
@@ -788,7 +789,6 @@ export function DeliveryPage(): ReactNode {
         {notConfigured ? null : (
           <WindowControl
             onChange={(window) => setState({ ...state, window, brush: null })}
-            selectRef={windowSelect}
             value={state.window}
           />
         )}
@@ -853,23 +853,29 @@ export function DeliveryPage(): ReactNode {
                 mode={state.view.mode}
                 onChange={(mode) => setView({ ...state.view, mode })}
               />
-              <label className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
-                Color merges by
-                <select
-                  className={`rounded border px-2 py-1 ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
-                  onChange={(event) => {
-                    const colorBy = COLOR_FACETS.find((facet) => facet === event.target.value);
+              <div className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
+                {/* The list is named for the field itself, so its words here are for the eye
+                    alone. */}
+                <span aria-hidden="true">Color merges by</span>
+                <MultiSelect
+                  emptyMessage="No choice matches that."
+                  label="Color merges by"
+                  mode="single"
+                  onOpenChange={setColorListOpen}
+                  onPick={(picked) => {
+                    const colorBy = COLOR_FACETS.find((facet) => facet === picked);
                     if (colorBy !== undefined) setView({ ...state.view, colorBy });
                   }}
+                  open={colorListOpen}
+                  optionLabel={(facet) =>
+                    COLOR_FACET_OPTIONS.find((option) => option.value === facet)?.label
+                  }
+                  options={COLOR_FACETS}
+                  searchLabel="Search color choices"
+                  triggerClassName={`rounded border px-2 py-1 text-left ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
                   value={state.view.colorBy}
-                >
-                  {COLOR_FACET_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                />
+              </div>
               {state.view.colorBy === "parentAgent" ? (
                 <OwnColourPicker
                   counts={data.color_counts?.parent_agent ?? {}}

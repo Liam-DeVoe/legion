@@ -10,6 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pickIn } from "../../__tests__/issue-picks";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -1043,10 +1044,8 @@ test("the head's Snooze writes through the list's snooze writes, so the list kee
   const { snoozesOut, view } = renderPane({ ask: issueAsk() });
 
   try {
-    await user.selectOptions(
-      await screen.findByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
-    );
+    const snooze = await screen.findByLabelText("Snooze CORE-1: Which approach?");
+    await pickIn(user, () => snooze, "Tomorrow");
     // The optimistic snooze folds the row into Later and the column follows the list, so the
     // head goes with the row it wrote about. The list holds the write, and keeps the row while
     // the write is out.
