@@ -1175,9 +1175,9 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
 	// is not live: a running tree's member keeps what the record says, because the tree is the
 	// thing that says the work is under way, and the row the member holds, or does not hold, says
-	// nothing about it: it keeps that row through every phase up to its review, worked or not
-	// (record.KeepsSlot), holds none past it, and gives it back while it waits on another issue
-	// before then (releaseSlotsForWaits).
+	// nothing about it: it keeps that row in every phase but accepting, retro and merging, worked
+	// or not (record.KeepsSlot), holds none in those three, and gives it back while it waits on
+	// another issue in a phase that keeps one (releaseSlotsForWaits).
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
 			return nil

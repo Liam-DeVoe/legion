@@ -659,8 +659,10 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 	return fmt.Sprintf("%s: the daemon has queued no task of generation %d for this claim, and may queue none (the new run's phase may be another claim's). End this turn without completing and tell the architect; if that task arrives, call the same handoff_complete in its turn", stale, current)
 }
 
-// implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to testing only on a pull request recorded open or merged for it
+// implementationPullRequest is the read of GitHub of an implementer step's completion, the
+// implementer's or the owner's report of an implementer step of its own (completeStep): in
+// implementing, a completion moves its issue on to the task's next step (testing, in the default
+// steps) only on a pull request recorded open or merged for it
 // (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
 // read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
 // the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
@@ -671,10 +673,10 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 //   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
 //     webhook would have carried is applied first, a reopen when the record holds the same pull
 //     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to testing. A failure to apply it is FACT_APPLY_FAILED, with the completion
+//     moves the issue on. A failure to apply it is FACT_APPLY_FAILED, with the completion
 //     not applied.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to testing. The work landed, its merge told the architect (pr-merged), and the
+//     the issue on. The work landed, its merge told the architect (pr-merged), and the
 //     workflow runs on.
 //   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
 //     the same commit is applied once the pull request is open. When the record holds the pull

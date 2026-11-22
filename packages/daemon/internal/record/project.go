@@ -881,9 +881,9 @@ func PastReview(issue Issue) bool {
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
 // with a root that does not linger after its close — and the issue keeps a slot where it stands
-// (KeepsSlot). An issue holds its admission slot from the moment the daemon starts it until its
-// work is past its review, until it is done or until it leaves the workflow, except while it
-// waits on another issue before that point (docs/site/src/content/docs/legion/concepts.md,
+// (KeepsSlot). An issue holds its admission slot from the moment the daemon starts it until it is
+// done or leaves the workflow, in every phase but accepting, retro and merging, except while it
+// waits on another issue in a phase that keeps one (docs/site/src/content/docs/legion/concepts.md,
 // "Admission and the `legion` label"), so the cap counts the
 // issues the daemon has started whose change is still to write, rather than the ones a worker of
 // them is running this second. Nothing of a tree that has left the workflow works until its
@@ -1354,7 +1354,7 @@ func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 // (liveRoots): a lifecycle that stands open says the tree once opened, not that this generation
 // of the root is running, and a root whose tree ran and ended queues again with that row still
 // standing until its cleanup confirms. The slot does not answer it either: a root arriving from
-// another tree in a phase up to its review may carry the row it held there while the tree of
+// another tree in a phase that keeps a slot may carry the row it held there while the tree of
 // its own has still to be opened, which Waiting's queued-root loop states at the skip it guards.
 func QueuedRoot(issue Issue, gate TreeGate) bool {
 	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, gate) {
