@@ -362,6 +362,31 @@ func workTable() []workRow {
 			extracted(func(n int) string {
 				return ":::check{#c}\n" + units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.\n:::\n")(n)
 			})},
+		{"one finding beside one sentence that holds its bare form many times in code font", ruleStopNoSpace, 500,
+			built(KindClaim, func(n int) string {
+				return "It keeps `" + strings.TrimSpace(strings.Repeat("a1.B ", n)) + "` at boot. It reads a1.B."
+			})},
+		{"many findings of one bare form beside one sentence that holds it many times in code font", ruleStopNoSpace, 512,
+			built(KindClaim, func(n int) string {
+				var text strings.Builder
+				for _, mark := range []string{",", ";", ":", ")", "]", "}", "'", "\"", ">", "*", "-", "_"} {
+					fmt.Fprintf(&text, "It reads Web.Config%s now. ", mark)
+				}
+				return text.String() + "It logs" + strings.Repeat(" `Web.Config`", n) + " today."
+			})},
+		{"many findings whose two places a run of open quoted sentences joins", ruleStopNoSpace, 200,
+			built(KindClaim, func(n int) string {
+				var text strings.Builder
+				text.WriteString("It starts.")
+				for index := 1; index <= n; index++ {
+					fmt.Fprintf(&text, ` He said "b%d.C now."`, index)
+				}
+				text.WriteString(strings.Repeat(` He said "go."`, n))
+				for index := n; index >= 1; index-- {
+					fmt.Fprintf(&text, ` He said "b%d.C now."`, index)
+				}
+				return text.String() + " It ends."
+			})},
 	}
 }
 
