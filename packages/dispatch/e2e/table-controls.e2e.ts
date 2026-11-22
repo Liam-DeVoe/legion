@@ -82,7 +82,14 @@ import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
-import { askControls, hasReadingPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
+import {
+  askCard,
+  askControls,
+  hasReadingPane,
+  inboxRow,
+  selectedRow,
+  selectRow,
+} from "./inbox-pane";
 import {
   asSession,
   replyRowId,
@@ -7961,6 +7968,151 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
     if (Math.abs(now.scrollTop - before.scrollTop) > 1 && !listClamped) {
       wrong.push(
         `${where}: after Enter on the first thread's Dismiss the list scrolled ${now.scrollTop - before.scrollTop} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+/** Where the keyboard focus is, read once: the focused element's tag and name, whether it is the
+ *  body, whether it stands inside an element `inside` matches (a CSS selector, or none), whether
+ *  its box stands wholly inside the window, and where the window stands. */
+function focusPlace(
+  page: Page,
+  inside?: string
+): Promise<{ body: boolean; inSight: boolean; inside: boolean; name: string; scrollY: number }> {
+  return page.evaluate((inside) => {
+    const scrollY = Math.round(window.scrollY);
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || focused === document.body) {
+      return { body: true, inSight: false, inside: false, name: "the body", scrollY };
+    }
+    const own = focused.getBoundingClientRect();
+    const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40);
+    return {
+      body: false,
+      inSight:
+        own.top >= -1 &&
+        own.bottom <= window.innerHeight + 1 &&
+        own.left >= -1 &&
+        own.right <= window.innerWidth + 1,
+      inside: inside !== null && focused.closest(inside) !== null,
+      name: `${focused.tagName.toLowerCase()} "${words}"`,
+      scrollY,
+    };
+  }, inside ?? null);
+}
+
+// SLOW(>=2s): three questions seeded and the Inbox opened at each of two widths, and a decline
+// held through a Tab at each.
+// INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-n-h2 and -n-b at 3fce6150
+// and da0804df, and this row in -n-red at 3fce6150): the reader opens a question's Decline to
+// answer from its card in the Inbox, types a note, and presses Enter on the dialog's Decline to
+// answer with the decline held. The dialog's button turns "Declining…" and is natively disabled
+// (`disabled={saving}`, features/inbox/DeclineControl.tsx:150), and so are its Cancel (:142) and
+// its note (:116), so nothing in the dialog can hold the focus. The dialog stays open, modal, and
+// the focus falls to the body: in Chromium and Firefox within 40 ms of the press, in WebKit at its
+// next rendering update, 65 to 1060 ms after it. A Tab then moves the focus out of the open dialog,
+// to the card's Reaches 1 behind it, in Chromium, Firefox and WebKit at 1440x900 and 390x664, at
+// both commits. After the decline lands, with the focus the Tab took on that card's Reaches 1, the
+// focus is on the body at 390 and on a control in sight at 1440, in all three engines at 3fce6150.
+// Without the Tab the landing is the Resize reading pane divider at 1440 at 3fce6150 and the next
+// card's Reaches 1 at da0804df, and at 390 the next card's Ship, with the window scrolled from
+// 641 px to 343, at both. The rules: a control held while the write its press started is out is
+// held through components/held-press.ts, never natively disabled, so it keeps the keyboard focus
+// (packages/dispatch/AGENTS.md:53); a focus never leaves an open modal dialog, whose own stop takes
+// it (the architect's correction of 2026-11-22 02:2xZ); and a landing the reader's press caused is
+// what the press drew in its place, else the control now at the place, else the nearest control in
+// sight before it, else the region's stop (2026-11-22 12:16Z). A focused control disabled under the
+// press, which each engine moves to the body at its own time, and a focused control taken away, for
+// which Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects
+// that names the page-own focus row (e2e/playwright.config.ts).
+test("the Inbox's Decline dialog keeps the keyboard focus inside itself while its write is out, and on a control after it lands @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with three questions seeded and a decline held through a Tab.
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const asker = {
+    actor: { id: "e2e-decline-asker", kind: "session" as const },
+    as: "agent" as const,
+  };
+  // Every decline is held until the row lets it through, so the page is read while it is out.
+  const held: Route[] = [];
+  await page.route("**/api/v1/asks/*/decline", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    held.push(route);
+  });
+  const inDialog = '[role="dialog"][aria-label="Decline to answer"]';
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `Inbox at ${size.width}x${size.height}`;
+    const asks: string[] = [];
+    for (const what of ["lease format", "rollout order", "cache size"]) {
+      const issue = await createIssue({ project: "CORE", title: `The ${what} at ${size.width}` });
+      await patchIssue(issue.key, { assignee: "alice" });
+      const question = `Which ${what} at ${size.width}?`;
+      const ask = await createAsk(
+        issue.key,
+        { options: [{ label: "Ship" }, { label: "Hold" }], question },
+        asker
+      );
+      asks.push(ask.id);
+    }
+    await page.goto("/");
+    for (const id of asks) await expect(inboxRow(page, id)).toBeVisible();
+    const target = asks[0] ?? "";
+    const card = await askCard(page, target);
+    const trigger = card.getByRole("button", { exact: true, name: "Decline to answer" });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Decline to answer" });
+    await expect(dialog).toBeVisible();
+    // The dialog puts the focus in its note a frame after it opens.
+    await expect(dialog.getByLabel("Note (optional)")).toBeFocused();
+    await page.keyboard.type("Not ours to decide.");
+    await dialog.getByRole("button", { exact: true, name: "Decline to answer" }).focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => held.length, `${where}: the decline was never sent`).toBe(1);
+    await expect(dialog.getByRole("button", { name: "Declining…" })).toBeVisible();
+    // The focus fixup of a disabled control runs in a rendering update; two frames hold one.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: the decline is held, and its press's renders have all run.
+    const holding = await focusPlace(page, inDialog);
+    if (!holding.inside) {
+      wrong.push(
+        `${where}: with the decline held the focus is on ${holding.name}, outside the open Decline to answer dialog`
+      );
+    }
+    await page.keyboard.press("Tab");
+    await nextFrames(page);
+    // One read is the answer: the Tab has moved the focus, and its renders have run.
+    const tabbed = await focusPlace(page, inDialog);
+    if (!tabbed.inside) {
+      wrong.push(
+        `${where}: with the decline held a Tab moves the focus to ${tabbed.name}, outside the open Decline to answer dialog`
+      );
+    }
+    for (const route of held.splice(0)) await route.continue();
+    await expect(dialog).toHaveCount(0);
+    await expect(inboxRow(page, target)).toHaveCount(0);
+    await settledScrollTop(page);
+    await nextFrames(page);
+    // One read is the answer: the decline has landed, its row is gone, the window holds still.
+    const landed = await focusPlace(page);
+    if (landed.body) {
+      wrong.push(`${where}: after the decline lands the focus is on the body`);
+    } else if (!landed.inSight) {
+      wrong.push(
+        `${where}: after the decline lands the focus is on ${landed.name}, out of sight (window.scrollY ${landed.scrollY})`
       );
     }
   }
