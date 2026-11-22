@@ -5125,6 +5125,35 @@ describe("health", () => {
     expect(refusal(elsewhere.stderr, old)).toBe(unrecorded(old));
   });
 
+  // Catches: rule 10 reading a name of an ancestor of the run's own directory as a reach out of
+  // its world. The namespace covers the work directory with a tmpfs and mounts the run's own
+  // directory under it, so the ancestors it makes for that mount hold the run alone, and a call
+  // that names one reads nothing the world hides. INFRA-764's round 32 at b281d36d: in run
+  // 189e7ebeb7da (threads-closed, correct, base) a subagent of the reviewer, its cwd
+  // <run>/cwd, ran `find /legion/scratch/tmp/b32/w/runs -maxdepth 3 -name '*.ts'` and found only
+  // its own run's <run>/src and <run>/ws files, and health read "outside its world ... names
+  // /legion/scratch/tmp/b32/w/runs, under /legion/scratch/tmp, which the run's world hides and
+  // does not show again". A name beside that ancestor, which the cover hides, stays a reach out.
+  test("a name of an ancestor of the run's own directory is in its world, and a name beside it is not", () => {
+    const work = "/recorded/scratch/w";
+    const ancestor = worldRun("threads-closed-correct-head-97", {
+      work,
+      steps: [
+        { tool: "bash", args: { command: `find ${work}/runs -maxdepth 3 -name '*.ts'` } },
+        { tool: "bash", args: { command: `ls -la ${work}` } },
+      ],
+    }).dir;
+    const beside = worldRun("threads-closed-correct-head-98", {
+      work,
+      steps: [{ tool: "read", args: { path: `${work}/notes.md` } }],
+    }).dir;
+    const { stdout } = health(ancestor, beside);
+    expect([ancestor, beside].map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-correct-head-97  healthy",
+      `threads-closed-correct-head-98  unhealthy: outside its world: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names ${work}/notes.md, under /recorded/scratch, which the run's world hides and does not show again (rig.sh's world_paths)`,
+    ]);
+  });
+
   // A run recorded before 2026-11-19 holds an `empty` line for its system git configuration
   // (world_paths' old kind: an empty file bound over the host's), and a run since holds a `ro`
   // line for the host's own file, which nothing mounts. Catches: health reading either as a path
