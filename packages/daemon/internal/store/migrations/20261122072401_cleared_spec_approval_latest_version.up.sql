@@ -5,15 +5,15 @@
 -- request on a version older than its latest (workflow's artifactIgnored), so the record needs
 -- that version too. The re-admission writes it from the row's latest version (admit's
 -- recordSpecApproval). A new version of that document raises it while no row stands, and a later
--- approval moves it (workflow's clearedSpecEvent). Each record the table already holds takes its
--- approved version, the lowest latest version a row can have with that approval. A late changes
--- request on a version above it then deletes that record, as the release before deleted it.
+-- approval moves it (workflow's clearedSpecEvent). A record the table holds when this file runs
+-- takes its approved version, the lowest latest version a row can have with that approval. A
+-- late changes request on a version above it then deletes that record. On a database that never
+-- ran this release the table holds no record, since 20261120210115_approval_route_records of this
+-- same release makes it.
 --
--- The release before names each column of cleared_spec_approvals it reads and writes
--- (record.Postgres.ClearedSpecApproval and PutClearedSpecApproval). It reads the records this
--- migration leaves. Its insert names no latest_version, which is not null and has no default, so
--- under it each re-admission of a root whose spec a person approved fails until this way back has
--- run.
+-- The release before has no cleared_spec_approvals table, so no release reads or writes the table
+-- without this column. A rollback runs this way back first, and then the way back of
+-- 20261120210115_approval_route_records, which drops the table.
 --
 -- There is no down file. This directory keeps none, so the way back is the one transaction that
 -- closes this header, its last paragraph (migrations.WayBack), run with this release's daemon
