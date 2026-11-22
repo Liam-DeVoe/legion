@@ -41,9 +41,12 @@ var (
 	// other's place.
 	ErrFork = errors.New("signedrecord: a record at the gen already accepted that is not the one accepted")
 	// ErrBackdated is a verified record at a gen above the one accepted (Floor) that the operator
-	// signed more than SignedAtSkew before the record accepted: a record of an earlier history of
-	// the tables, put back after a reset.
+	// signed more than SignedAtSkew before the latest record accepted: a record of an earlier
+	// history of the tables, put back after a reset, or one signed by a clock far behind.
 	ErrBackdated = errors.New("signedrecord: a gen above the one accepted, signed before it by more than the clock-skew allowance")
+	// ErrSkewed is a record signed more than SignedAtSkew before or after the reader's own clock
+	// (WithinSkewOf).
+	ErrSkewed = errors.New("signedrecord: signed further from the reader's clock than the clock-skew allowance")
 	// ErrBadField is a field holding a line feed, or a value that is not JSON.
 	ErrBadField = errors.New("signedrecord: a field that cannot be signed")
 )
@@ -209,17 +212,20 @@ func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 }
 
 // Floor is the highest gen a reader has accepted of one record, with the digest of the record it
-// accepted there and the time the operator signed it, so an older signed copy that a database
-// writer puts back reads as a replay, a different signed record at the gen already accepted reads
-// as a fork, and a higher gen signed well before the accepted record reads as a record from an
-// earlier history of the tables: the operator can be led to sign a second record at a gen it signed
-// before (a writer who puts an older row back has the operator's next move signed at the gen the
-// older row names), and either one verifies; and after a reset of the tables (a database restore,
-// or an emptied log and a restart) the new history's gens start again below the old history's, so
-// an old row at a higher gen verifies too, but was signed before it. It lives as long as its
-// reader's process: a reader that starts again starts with no floor, which is the residual the
-// hold's design states. The zero Floor has accepted nothing, so it accepts any gen; it is safe for
-// concurrent use.
+// accepted there and the latest time the operator signed a record it accepted, so an older signed
+// copy that a database writer puts back reads as a replay, a different signed record at the gen
+// already accepted reads as a fork, and a higher gen signed well before the latest accepted record
+// reads as a record from an earlier history of the tables: the operator can be led to sign a second
+// record at a gen it signed before (a writer who puts an older row back has the operator's next
+// move signed at the gen the older row names), and either one verifies; and after a reset of the
+// tables (a database restore, a log emptied or cut back, and a restart) the new history's gens start
+// again below the old history's, so an old row at a higher gen verifies too, but was signed before
+// it. After a point-in-time restore the old history's later rows were signed after the restored
+// row, so the check catches them only once the floor accepts a new move signed more than
+// SignedAtSkew after the old history's latest row. It lives as long as its reader's process: a
+// reader that starts again starts with no floor, which is the residual the hold's design states, and
+// is also how a floor that took a wrong time (a clock far fast) is cleared. The zero Floor has
+// accepted nothing, so it accepts any gen; it is safe for concurrent use.
 type Floor struct {
 	mu       sync.Mutex
 	gen      uint64
@@ -228,29 +234,66 @@ type Floor struct {
 	accepted bool
 }
 
-// SignedAtSkew is the clock-skew allowance Floor.Accept grants between the operator processes
-// that sign a record: a higher gen signed more than this before the accepted record is refused
-// (ErrBackdated). Every move of the hold row is signed after the move it follows was read, so in
-// one history a later gen is never signed earlier than this by a process whose clock is right
-// within the allowance.
+// SignedAtSkew is the clock-skew allowance the hold grants: Floor.Accept and Floor.Admits refuse a
+// higher gen signed more than this before the latest accepted record (ErrBackdated), and the hold's
+// routes refuse a row signed more than this before or after the broker's own clock
+// (WithinSkewOf). Every move of the hold row is signed after the move it follows was read, so in
+// one history a later gen is never signed earlier than this, as long as the clocks of the operator
+// processes that sign agree within it. Clocks that are each within this of true time can be twice
+// this apart, so the operator's machines must agree with each other, and with the broker's, within
+// it, not merely each with true time.
 const SignedAtSkew = 5 * time.Minute
 
+// WithinSkewOf answers ErrSkewed, naming both times, when signedAt is more than SignedAtSkew
+// before or after now, the reader's own clock, and nil otherwise. The hold's routes ask it of
+// every row they are asked to write, so a row signed by a clock far fast never reaches a floor.
+func WithinSkewOf(signedAt, now time.Time) error {
+	if signedAt.Before(now.Add(-SignedAtSkew)) || signedAt.After(now.Add(SignedAtSkew)) {
+		return fmt.Errorf("%w: signed at %s, and the reader's clock reads %s", ErrSkewed,
+			signedAt.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// Admits answers ErrBackdated, naming the gens and both times, when gen is above the floor and
+// signedAt is more than SignedAtSkew before the latest accepted record's time, and nil otherwise,
+// as Accept judges a gen's signing time. It moves nothing: the hold's routes ask it of the row a
+// move or restore would write, inside that write's transaction and before it, so a row the floor
+// would refuse is never stored.
+func (f *Floor) Admits(gen uint64, signedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.backdated(gen, signedAt)
+}
+
+// backdated is Admits' judgement, with f.mu held.
+func (f *Floor) backdated(gen uint64, signedAt time.Time) error {
+	if f.accepted && gen > f.gen && signedAt.Before(f.signedAt.Add(-SignedAtSkew)) {
+		return fmt.Errorf("%w: gen %d signed at %s, after gen %d signed at %s", ErrBackdated, gen,
+			signedAt.UTC().Format(time.RFC3339), f.gen, f.signedAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 // Accept records gen, the digest of lines, the record's signed lines, and signedAt, the time the
-// operator signed it, when gen is above the floor and signedAt is no more than SignedAtSkew before
-// the accepted record's, or gen is at the floor with the same lines, and returns nil. It returns
-// ErrReplay for a gen below the floor, ErrFork for other lines at the floor's gen, and ErrBackdated
-// for a higher gen signed more than SignedAtSkew before the accepted record, naming the gens, and
-// leaves the floor where it was.
+// operator signed it (keeping the latest signing time it has accepted), when gen is above the floor
+// and signedAt is no more than SignedAtSkew before that latest time, or gen is at the floor with the
+// same lines, and returns nil. It returns ErrReplay for a gen below the floor, ErrFork for other
+// lines at the floor's gen, and ErrBackdated for a higher gen signed more than SignedAtSkew before
+// the latest accepted record, naming the gens, and leaves the floor where it was.
 func (f *Floor) Accept(gen uint64, signedAt time.Time, lines []string) error {
 	digest := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.backdated(gen, signedAt); err != nil {
+		return err
+	}
 	switch {
-	case f.accepted && gen > f.gen && signedAt.Before(f.signedAt.Add(-SignedAtSkew)):
-		return fmt.Errorf("%w: gen %d signed at %s, after gen %d signed at %s", ErrBackdated, gen,
-			signedAt.UTC().Format(time.RFC3339), f.gen, f.signedAt.UTC().Format(time.RFC3339))
 	case !f.accepted || gen > f.gen:
-		f.gen, f.digest, f.signedAt, f.accepted = gen, digest, signedAt, true
+		if !f.accepted || signedAt.After(f.signedAt) {
+			f.signedAt = signedAt
+		}
+		f.gen, f.digest, f.accepted = gen, digest, true
 		return nil
 	case gen < f.gen:
 		return fmt.Errorf("%w: gen %d, after gen %d", ErrReplay, gen, f.gen)

@@ -13,8 +13,10 @@
 #   - each webhook whose namespaceSelector can match a guarded namespace (webhook-backends.jq): in
 #     the namespace of the Service it calls, every way to run or enter a pod there that a guarded
 #     namespace is asked (RIGHTS_TABLE's namespaced rows and the custom resources), and the writes
-#     to the Service, its Endpoints, EndpointSlices and Secrets (its TLS key); a webhook that calls
-#     a URL outside the cluster is UNKNOWN, as is a refused list;
+#     to the Service, its Endpoints, EndpointSlices, Secrets (its TLS key) and ConfigMaps (an
+#     injector's template); a webhook that calls a URL outside the cluster is UNKNOWN, as is a
+#     refused list, and so is one whose Service is of type ExternalName or has no selector (its
+#     endpoints can point anywhere), or cannot be read;
 #   - each cluster-scoped custom resource of a policy engine (a CRD of kyverno.io, gatekeeper.sh,
 #     kubewarden.io or a subgroup of one, or a group whose name holds "policy" or "policies"):
 #     create, update and patch cluster-wide, as Kyverno's ClusterPolicy and MutatingPolicy or
@@ -28,9 +30,11 @@
 #   - on the operator's cluster (`operator`), GKE Autopilot's workload allowlists: each installed
 #     WorkloadAllowlist admits the privileged workloads it names, which Autopilot otherwise
 #     refuses, so it is UNKNOWN (a refused list too), and create, update and patch of
-#     AllowlistSynchronizers, which install them, are asked cluster-wide.
+#     AllowlistSynchronizers, which install them, are asked cluster-wide;
+#   - Backup for GKE (a CRD of gkebackup.gke.io): a restore, chosen in Google Cloud by a holder of
+#     its restore rights, recreates a backup's workloads and RBAC in the cluster, so it is UNKNOWN.
 admission_power() {
-  local kube="$1" step="$2" guarded id url policies allowlist
+  local kube="$1" step="$2" guarded id url policies allowlist sns sname why
   POWER_RIGHTS='[]'
   guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
   if ! kubectl --kubeconfig "$kube" get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json >"$WORK/webhooks.json" 2>"$WORK/webhooks.err"; then
@@ -43,6 +47,18 @@ admission_power() {
     while IFS=$'\t' read -r id url; do
       unknown "$step" "the webhook $id can match a guarded namespace and calls $url, outside the cluster, whose holders this check cannot read"
     done < <(jq -r '.urls[] | [.id, .url] | @tsv' "$WORK/webhooks.out")
+    # The Service each such webhook calls: an ExternalName, or one with no selector, whose endpoints
+    # are whatever someone wrote, can route admission calls outside what this check reads.
+    while IFS=$'\t' read -r -u 7 id sns sname; do
+      if ! kubectl --kubeconfig "$kube" get service -n "$sns" "$sname" -o json >"$WORK/service.json" 2>"$WORK/service.err"; then
+        unknown "$step" "the webhook $id calls the Service $sns/$sname, which could not be read (it needs get on services there, container.services.get on GKE): $(first_line "$WORK/service.err")"
+        continue
+      fi
+      why="$(jq -r 'if .spec.type == "ExternalName" then "is of type ExternalName (\(.spec.externalName // "")), so admission calls leave the cluster"
+        elif ((.spec.selector // {}) | length) == 0 then "has no selector, so its endpoints can point anywhere, inside the cluster or out"
+        else "" end' "$WORK/service.json" 2>/dev/null)" || why="answered no JSON"
+      [ -z "$why" ] || unknown "$step" "the webhook $id calls the Service $sns/$sname, which $why, whose holders this check cannot read"
+    done 7< <(jq -r '.services | unique_by([.ns, .name])[] | [.id, .ns, .name] | @tsv' "$WORK/webhooks.out")
   fi
   if ! kubectl --kubeconfig "$kube" get customresourcedefinitions -o json >"$WORK/crds.json" 2>"$WORK/crds.err"; then
     unknown "$step" "the API server refused the list of custom resource definitions (it needs list on customresourcedefinitions, container.customResourceDefinitions.list on GKE), so a policy engine's cluster-scoped resources are not reviewed: $(first_line "$WORK/crds.err")"
@@ -54,17 +70,21 @@ admission_power() {
       | {verb: ., group: $g, resource: $p, sub: "", ns: "", name: "", label: "\(.) \($p).\($g) cluster-wide, a policy engine'"'"'s resource"}
       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/crds.json" 2>"$WORK/crds.err")")"; then
     unknown "$step" "the API server's list of custom resource definitions is not JSON: $(first_line "$WORK/crds.err")"
-  elif [ "${3:-}" = operator ] && jq -e 'any(.items[]?; .spec.group == "auto.gke.io" and .spec.names.plural == "workloadallowlists")' "$WORK/crds.json" >/dev/null; then
-    POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$(jq -n -c '[("create", "update", "patch")
-      | {verb: ., group: "auto.gke.io", resource: "allowlistsynchronizers", sub: "", ns: "", name: "",
-         label: "\(.) allowlistsynchronizers.auto.gke.io cluster-wide, which install the workload allowlists Autopilot admits privileged pods by"}
-      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')")"
-    if ! kubectl --kubeconfig "$kube" get workloadallowlists.auto.gke.io -o json >"$WORK/allowlists.json" 2>"$WORK/allowlists.err"; then
-      unknown "$step" "the API server refused the list of workload allowlists (it needs list on workloadallowlists.auto.gke.io), so whether Autopilot admits a privileged pod here is unknown: $(first_line "$WORK/allowlists.err")"
-    else
-      while IFS= read -r allowlist; do
-        unknown "$step" "the workload allowlist $allowlist is installed, so Autopilot admits the privileged workloads it names, which this check does not read"
-      done < <(jq -r '.items[]?.metadata.name' "$WORK/allowlists.json")
+  else
+    ! jq -e 'any(.items[]?; .spec.group == "gkebackup.gke.io")' "$WORK/crds.json" >/dev/null ||
+      unknown "$step" "Backup for GKE is installed (the gkebackup.gke.io API), so a restore can recreate a backup's workloads and RBAC here, chosen in Google Cloud by a holder of its restore rights, which this check does not read"
+    if [ "${3:-}" = operator ] && jq -e 'any(.items[]?; .spec.group == "auto.gke.io" and .spec.names.plural == "workloadallowlists")' "$WORK/crds.json" >/dev/null; then
+      POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$(jq -n -c '[("create", "update", "patch")
+        | {verb: ., group: "auto.gke.io", resource: "allowlistsynchronizers", sub: "", ns: "", name: "",
+           label: "\(.) allowlistsynchronizers.auto.gke.io cluster-wide, which install the workload allowlists Autopilot admits privileged pods by"}
+        | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')")"
+      if ! kubectl --kubeconfig "$kube" get workloadallowlists.auto.gke.io -o json >"$WORK/allowlists.json" 2>"$WORK/allowlists.err"; then
+        unknown "$step" "the API server refused the list of workload allowlists (it needs list on workloadallowlists.auto.gke.io), so whether Autopilot admits a privileged pod here is unknown: $(first_line "$WORK/allowlists.err")"
+      else
+        while IFS= read -r allowlist; do
+          unknown "$step" "the workload allowlist $allowlist is installed, so Autopilot admits the privileged workloads it names, which this check does not read"
+        done < <(jq -r '.items[]?.metadata.name' "$WORK/allowlists.json")
+      fi
     fi
   fi
   policies="$(sed -n 's/^\([a-z]*admissionpolic\(y\|ies\)\(bindings\)\?\)\.admissionregistration\.k8s\.io$/\1/p' "$WORK/admission-resources" 2>/dev/null |

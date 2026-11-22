@@ -20,8 +20,10 @@
 #        secrets in ci, is a finding naming the chain;
 #   (aj) the Group system:unauthenticated bound to create namespaces on another cluster is a
 #        finding for anyone unauthenticated;
-#   (ak) create on a custom resource (sandboxes.agents.x-k8s.io) in envoy-operator is a finding,
-#        create on Kubernetes' own leases is not, and a discovery that cannot be read is UNKNOWN;
+#   (ak) create on a custom resource (sandboxes.agents.x-k8s.io) in envoy-operator is a finding, and
+#        so are update on it and create on workloads.example.k8s.io, a CRD group ending in k8s.io
+#        that is not Kubernetes' own; create on Kubernetes' own leases is not, and a discovery that
+#        cannot be read is UNKNOWN;
 #   (am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it, beside two that
 #        match;
 #   (ao) rights limited by name: legion/worker may impersonate the group system:masters by name,
@@ -71,7 +73,8 @@
 #        cluster, the approval's patch with the client signer (rv13), its update with the kubelet
 #        signer (rv12), the signer kubernetes.io/legacy-unknown, a signer of any name, and on a
 #        fleet member that is no GKE cluster create of certificatesigningrequests/nodeclient or
-#        selfnodeclient alone, each exit 1 naming the chain or the right; create alone exits 0;
+#        selfnodeclient alone, each exit 1 naming the chain or the right; create alone, and create
+#        and patch of the request my-csr by name with no signer (pn6), exit 0;
 #   (bo) legion/worker that may impersonate, by name, a user whose power is IAM's (owner@example.com,
 #        who holds roles/owner on the organization, or admin@example.com, a member of a group holding
 #        roles/container.admin) exits 1 naming that user;
@@ -276,6 +279,24 @@ if row ak; then
   want_line "FINDING system:serviceaccount:legion:worker: create sandboxes.agents.x-k8s.io in envoy-operator" \
     "legion/worker with create on sandboxes in envoy-operator"
   passed "(ak) create on a custom resource in a guarded namespace is a finding"
+
+  # P3-6: update of one, and a custom resource whose CRD group ends in k8s.io without being one of
+  # Kubernetes' own groups.
+  base_world
+  echo sandboxes.agents.x-k8s.io >"$world/clusters/operator-cluster/api-resources"
+  subject_grant operator-cluster "$(sa_subject legion worker)" update agents.x-k8s.io sandboxes "" envoy-operator ""
+  run
+  want_status 1 "legion/worker with update on sandboxes in envoy-operator"
+  want_line "FINDING system:serviceaccount:legion:worker: update sandboxes.agents.x-k8s.io in envoy-operator" \
+    "legion/worker with update on sandboxes in envoy-operator"
+  base_world
+  echo workloads.example.k8s.io >"$world/clusters/operator-cluster/api-resources"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create example.k8s.io workloads "" envoy-operator ""
+  run
+  want_status 1 "legion/worker with create on workloads.example.k8s.io in envoy-operator"
+  want_line "FINDING system:serviceaccount:legion:worker: create workloads.example.k8s.io in envoy-operator" \
+    "legion/worker with create on workloads.example.k8s.io in envoy-operator"
+  passed "(ak) update on a custom resource, and create on one whose group ends in k8s.io but is not Kubernetes' own, are findings (P3-6)"
 
   base_world
   subject_grant operator-cluster "$(sa_subject legion worker)" create coordination.k8s.io leases "" envoy-operator ""
@@ -734,6 +755,14 @@ csr_row() {
       subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "$1" "" ""
       want="create certificatesigningrequests/$1.certificates.k8s.io cluster-wide, which kube-controller-manager approves by itself"
       ;;
+    create-patch-named)
+      # pn6: a create limited by name, beside a patch of that name, is no chain without a signer.
+      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" my-csr
+      subject_grant "$cluster" "$subject" patch certificates.k8s.io certificatesigningrequests "" "" my-csr
+      run
+      want_status 0 "create and patch of the certificate signing request my-csr by name, alone"
+      return
+      ;;
     create-only)
       subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
       run
@@ -746,8 +775,8 @@ csr_row() {
   want_line "FINDING $who: $want$suffix" "a certificate signing chain ($1)"
 }
 if row bj; then
-  each csr_row rv9 wildcard other-cluster rv13 rv12 legacy any-signer nodeclient selfnodeclient create-only
-  passed "(bj) who may write a certificate signing request's approval (update or patch) and approve a client, kubelet, legacy or any signer, on the operator's cluster or another, and who may create a node client request on a non-GKE member, exits 1 naming the chain; create alone exits 0"
+  each csr_row rv9 wildcard other-cluster rv13 rv12 legacy any-signer nodeclient selfnodeclient create-only create-patch-named
+  passed "(bj) who may write a certificate signing request's approval (update or patch) and approve a client, kubelet, legacy or any signer, on the operator's cluster or another, and who may create a node client request on a non-GKE member, exits 1 naming the chain; create alone, or create and patch of one request by name (pn6), exits 0"
 fi
 
 # --- (bo) Impersonating, by name, a user whose power comes from IAM: GKE's IAM authorizer judges an

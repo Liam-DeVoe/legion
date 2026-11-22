@@ -141,6 +141,13 @@ judge_reviews() {
     return 1
   fi
 }
+# seed_named KIND NAMESPACE NAME DETAIL: a system namespace's ServiceAccount a live role allows a right
+# by name (DETAIL) is never a finding itself, but who can become it holds that right, so it seeds
+# FOUND_SAS, as judge_reviews seeds one allowed a right outright; returns 0 when it did.
+seed_named() {
+  [ "$1" = ServiceAccount ] && system_namespace "$2" || return 1
+  [ -n "${FOUND_SAS[$2:$3]:-}" ] || FOUND_SAS[$2:$3]="$4"
+}
 # follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount of FOUND_SAS holds
 # what it holds. In the ServiceAccount's namespace a principal becomes it by any namespaced right of
 # RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its namespace; exec,
@@ -165,7 +172,7 @@ follow_becomes() {
     done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
     [ -s "$WORK/become.tsv" ] || return 0
     rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
-    targets_of=()
+    targets_of=() targets_why=()
     while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
     while IFS=$'\t' read -r why targets; do targets_why[$why]="$targets"; done < <(jq -r '.[] | [.why, (.targets | join(" "))] | @tsv' <<<"$rights")
     if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights"; then
@@ -193,11 +200,15 @@ follow_becomes() {
     done 4<"$WORK/review.rec"
     # The same rights limited by name in a live role, which a review naming nothing never finds.
     [ "${ROLES_OK:-false}" = true ] || continue
-    jq -r -n --argjson rights '[]' --argjson named_rights "$rights" --argjson live true -L "$LIB" -f "$LIB/code-rbac.jq" \
-      "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>/dev/null || continue
+    if ! jq -r -n --argjson rights '[]' --argjson named_rights "$rights" --argjson live true -L "$LIB" -f "$LIB/code-rbac.jq" \
+      "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>"$WORK/become-named.err"; then
+      unknown "$step" "the live roles could not be read for who can become a found ServiceAccount by a right limited by name: $(first_line "$WORK/become-named.err")"
+      continue
+    fi
     while IFS="$US" read -r -u 6 what id detail kind ns name; do
       [ "$what" = grant ] || continue
       k8s_subject "$kind" "$ns" "$name"
+      ! seed_named "$kind" "$ns" "$name" "$detail" || continue
       [ "$SUBJECT_OK" != true ] || continue
       targets=""
       for why in "${!targets_why[@]}"; do
@@ -314,6 +325,7 @@ live_named() {
   while IFS="$US" read -r -u 6 what id detail kind ns name; do
     [ "$what" = grant ] || continue
     k8s_subject "$kind" "$ns" "$name"
+    ! seed_named "$kind" "$ns" "$name" "$detail" || continue
     [ "$SUBJECT_OK" != true ] || continue
     ! csr_part "$SUBJECT" "$detail" "RBAC: $id limits it by name" || continue
     finding "$SUBJECT" "$detail$3" "$detail" "$4" "$detail" "RBAC: $id limits it by name"

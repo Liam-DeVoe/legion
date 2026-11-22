@@ -267,6 +267,13 @@ case "${args[*]}" in
       jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
         | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}]}'
     ;;
+  "get service -n "*" -o json")
+    # One Service: the world's services.json entry for <namespace>/<name>, or a ClusterIP Service
+    # whose selector picks pods labelled app=<name>.
+    { if [ -e "$dir/services.json" ]; then cat "$dir/services.json"; else echo '{}'; fi; } |
+      jq --arg key "${args[3]}/${args[4]}" --arg name "${args[4]}" \
+        '.[$key] // {spec: {type: "ClusterIP", selector: {app: $name}}} | {apiVersion: "v1", kind: "Service"} + .'
+    ;;
   "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
     # The cluster's webhook configurations: the world's webhooks.json (each a configuration object), or none.
     [ ! -e "$dir/refuse-webhooks" ] || forbidden mutatingwebhookconfigurations.admissionregistration.k8s.io 'list resource "mutatingwebhookconfigurations" in API group "admissionregistration.k8s.io"' container.mutatingWebhookConfigurations.list

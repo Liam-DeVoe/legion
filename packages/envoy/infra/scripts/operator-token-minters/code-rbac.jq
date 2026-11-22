@@ -28,6 +28,9 @@ include "rec";
         def named($r): $r.name == "" and (($r.verb == "create" and $r.sub == "") or $r.verb == "deletecollection" | not)
           and ((.resourceNames // []) | length) > 0 and matches_but_name($r);
         def creates_on_update($r): $r.group == "rbac.authorization.k8s.io";
+        # A certificate signing request created by name is no grant alone: csr_chains judges the chain,
+        # which needs no create.
+        def applies($r): $r.verb == "create" and $r.sub == "" and $r.name == "" and $r.group != "certificates.k8s.io";
         # The rules each binding gives, null when the input does not hold its role (or it aggregates).
         def rules_of($b; $objects): ($b.metadata.namespace // "") as $bns
           | ([$objects[] | select(.kind == ($b.roleRef.kind // "") and .metadata.name == $b.roleRef.name
@@ -66,7 +69,7 @@ include "rec";
             | select($b.kind == "ClusterRoleBinding" or ($r.ns != "" and $r.ns == $bns))
             | ([$rules[] | select(named($r)) | .resourceNames[]] | unique) as $names
             # A create this binding limits by name, which the subject's patch (or update) of that name makes.
-            | (if $r.verb == "create" and $r.sub == "" and $r.name == "" then
+            | (if applies($r) then
                  [$rules[] | select(((.resourceNames // []) | length) > 0 and matches_but_name($r)) | .resourceNames[]] | unique
                  | map(select(. as $n | may_write($held; $subject; $r; "patch"; $n)
                                          or (creates_on_update($r) and may_write($held; $subject; $r; "update"; $n))))
