@@ -515,7 +515,8 @@ func TestTheMergerWaitsForTheVerdictAtAHeadAnyPushMovedPastReview(t *testing.T) 
 }
 
 // A round held from reviewing can become stuck on GitHub's merge state while held: the reviewer
-// approved the head, and the read GitHub answers `blocked` for it lands during the hold. The retry
+// approved the head, and the read GitHub answers `behind` for it, a state the round does not end
+// on, lands during the hold. The retry
 // that ends the hold is then the fact that tells the architect, and its review-stuck notice names
 // the round's facts as its summary: the head, the reviewer, and how long ago the reviewer gave its
 // verdict, never an empty summary.
@@ -525,8 +526,8 @@ func TestARetriedRoundStuckOnItsMergeStateTellsTheRoundsFacts(t *testing.T) {
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	apply("verdict", reviewerVerdict("approve", headOne))
 	apply("failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer})
-	apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
-		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
+	apply("behind", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
+		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBehind})
 	if told := reviewStuckNotices(t, pool); len(told) != 0 {
 		t.Fatalf("review-stuck notices before the retry = %+v, want none: the round was held", told)
 	}

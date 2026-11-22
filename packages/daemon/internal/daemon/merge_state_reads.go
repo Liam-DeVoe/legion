@@ -29,11 +29,14 @@ import (
 // them; the daemon's start reads every issue's pull request again and queues a ladder again for
 // each one GitHub still answers `unknown` for (readIssuesAtStart), which climbs and follows in
 // turn. `unknown` is no answer about the head, so nobody is told of it. Every other answer the
-// ladder gets is recorded, and an approval left standing on a head GitHub answers with a state it
-// would not merge from tells the architect that owns the issue and the reviewer, once for that
-// head and state, in the review-stuck notice the round writes - but only once the CI settlement
-// standing for the head says every check GitHub reported on it has concluded, since until then the
-// state says no more than that a check is running (workflow's reviewRound, stuckMergeState).
+// ladder gets is recorded. An approval left standing on a head GitHub answers `blocked` for ends
+// its round once the CI settlement standing for the head says every check GitHub reported on it
+// has concluded, and so does a state GitHub would merge from (classify.RoundWaitsOnMergeState). An
+// approval on a head GitHub answers with any other state it would not merge from - `behind`,
+// `draft`, a `dirty` no second read confirmed - tells the architect that owns the issue and the
+// reviewer, once for that head and state, in the review-stuck notice the round writes - but only
+// once that settlement says every check of the head has concluded, since until then the state
+// says no more than that a check is running (workflow's reviewRound, stuckMergeState).
 //
 // mergeStateLadderReads and mergeStateLadderWait have two more users, the outbox's reads of one
 // pull request: the merge-queue read (merge_queue_removal.go's mergeQueueRead), which reads a pull
@@ -54,7 +57,8 @@ const (
 // queueMergeState is what the workflow asks for when a fact owes a read of GitHub's merge state for
 // an issue's open pull request (workflow's askMergeState and basePush, the engine's
 // Config.ReadMergeState): a review round the fact leaves waiting on GitHub's answer for the head,
-// and, by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
+// or ended by an approval the fact did not move on (a CI settlement, which moves no issue), and,
+// by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
 // implementing through merging and a push to the base of an issue in testing through merging,
 // each of which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon's
 // start asks for it too, for each issue whose start read GitHub answered `unknown`
