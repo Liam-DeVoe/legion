@@ -4091,6 +4091,164 @@ authorization, which replaces a VM hub's instance and reaches a clustered hub on
 reload. This repository's listener runs under this set against the real servers below: it answers
 a registration `consumer` and relays a send on the session's relay subject, with no refusal.
 
+`EdgePermissions(machineID, projects)` is the grant of an edge listener's own NATS user: the
+listener that serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no
+session and no other listener shares. It is `ListenerPermissions(machineID)` with these changes and
+no other. It refuses a machine id that is not one subject token and a project list that is empty
+or not project keys, sorted, each once. In place of `notifications.>` it publishes this list and
+no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
+each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
+(a relay frame); `notifications.envoy.relayreply.>` (every edge machine's relay receipts, since the
+listener serving a session's relay socket answers on the family of the machine holding the
+session's consumer); `notifications.envoy.resume.>` (where a deleted session consumer stopped); and
+`notifications.envoy.exceptions.notifications.agent.>` and
+`notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project (a failed delivery's
+report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
+GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
+that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
+exception lane. A message on a role lane of its own project that
+names a role of another project is the shared listeners' role lane to refuse, which it does once
+the edge mode of #4810 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+`ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
+bucket, so it can change no stream's subjects, limits or republish:
+
+- A republish to a `$JS.API.…` subject is a JetStream API request in the stream's account, with
+  the stored value as its body. On the hub's image an empty value republished to a stream delete
+  deletes the stream, and a non-empty one is refused as that request's body. That is why the edge
+  holds no stream update.
+- The stream itself answers a direct get, on whatever reply subject the request names and with the
+  stored value as its body, so a direct get aimed at `$JS.API.…` is such a request too: on the
+  hub's image a value written as a stream update changes that stream, and an empty one aimed at a
+  stream delete deletes it. So an edge listener reads its buckets with stream message gets
+  (`$JS.API.STREAM.MSG.GET.KV_<bucket>`). Their answer is the API's own, and aimed at the API it
+  takes no action there, nor does a stream info answer or a stored publish's acknowledgement.
+- It can, though, delete any stream of its account without changing it: a `no_wait` pull on a
+  consumer with nothing to deliver is answered a `404 No Messages` status, and a synchronous ack
+  an empty reply, each with no body on whatever reply subject it names and needing no other
+  client, so one aimed at `$JS.API.STREAM.DELETE.<s>` deletes stream `<s>` on the hub's nats-server
+  (2.15.1). That reach is availability only - no message of any project crosses it - accepted for
+  day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
+
+An edge listener reads the stream and its start ends, naming the stream, on a server that has
+none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
+start, naming the refused create or raise, when the server lacks one or holds it at fewer copies
+than `ENVOY_NATS_REPLICAS`. The Legion agent bucket's open logs one ERROR and is retried in the
+background, and so is the known-session bucket's, which raises no bucket it finds with fewer
+copies. Every listener on this build that is not an edge listener creates the DPoP-proof bucket
+`envoy_dpop_proofs` at its start, whether or not it takes broker tokens, so a full listener on
+this build starts before an edge listener does. It subscribes its own machine's inbox prefix
+`_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
+other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
+machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine
+subscribes another machine's receipts, and no stream it reads captures them, and no role lane: every
+connection of an edge listener names its inboxes under that prefix, and a shared listener forwards
+a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
+subject.
+
+The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4819:
+no program at this head uses them. At this head the edge's session relay names a frame's receipt
+under its inbox prefix, which no session's grant publishes, so at this head alone no session
+answers an edge listener's relay frame over NATS. Since every edge machine publishes every
+machine's receipts, one edge machine can forge a receipt for another machine's frame. That adds
+nothing past the reach below: an edge machine can already update or delete any consumer.
+
+An edge listener holds itself to that list. It keeps no role message for a role's next holder and
+hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
+exception, and the shared listeners' sweeps, every five minutes, hand the kept lane of a role held
+at the edge to its holder. A claim at the edge that takes a role from another session writes no
+takeover record and runs no takeover pass, and its session relay copies no role message to a kept
+lane: a frame of a role another session holds goes to the edge session as every frame does. Two
+limits of edge mode follow from that, against the role takeover's promise that a session taking a
+role receives what the previous holder had not read. When a claim lands at the edge, the role's
+new holder does not receive the role messages its previous holder had not read: they stay on the
+previous holder's own subject, which that session receives if it comes back and nothing else
+reads. And a role message forwarded to an edge session that has since lost the role still reaches
+that session, while a takeover pass a shared listener runs for the new holder copies it to the new
+holder too, so both sessions receive it (read from the code, not run). A
+delivery exception whose lane the list does not hold, such as the
+report of a refused GitHub or Dispatch event a session follows, is not published: the message is
+acknowledged undelivered to that session and counted on
+`envoy_edge_exceptions_withheld_total{topic_prefix, reason}`.
+
+What the lists do not hold back:
+
+- The session consumers' calls name the consumer by `*`, since each session's consumer is named
+  for its session. A NATS wildcard matches a whole token and a consumer name is one token, so no
+  permission can hold these calls to the edge's own consumers. The edge can create, update,
+  delete, read and pull any consumer of the stream, every other listener's durable, Dispatch's
+  and every session's consumer among them. By updating another listener's durable it can take
+  that listener's push deliveries, and a consumer it creates on any filter reads any stored
+  message, another project's Dispatch event among them.
+- nats-server checks a push consumer's deliver subject against no permission, only that the
+  stream does not carry it, and delivers only where a client subscribes. A delivery is sent under
+  the message's own stream subject, not the deliver subject: each subscription matching the
+  deliver subject receives it as a message of the stream's subject. So through a consumer it
+  creates, the edge can hand any message it stored, or any message of the stream, to any
+  subscriber of any subject the stream does not carry: every project's role lanes and their
+  exception lanes, any reply inbox, and the agent stream subjects. A deliver subject the stream
+  carries is refused as a cycle: the agent subjects, Dispatch, GitHub, Slack, Legion, Ghostwispr,
+  WhatsApp and team topics, the exception lanes of the agent subjects and of team topics, the
+  kept lane, the resume lane and the takeover lane.
+- A push consumer's delivery takes no JetStream API action: the API's import sees the stream
+  subject, not `$JS.API.`, so a delivery to `$JS.API.STREAM.DELETE`, `PURGE` or `UPDATE` of a
+  stream, or to the delete of a bucket's stream, leaves the stream as it was. A stream whose
+  subjects take the deliver subject - another stream of the account, a key-value bucket's stream
+  among them - stores the delivery under its stream subject, as a message of that stream and
+  never as a key, and counts it toward that stream's limits. Both need some other client to
+  subscribe the deliver subject. A consumer created with an idle heartbeat also sends heartbeats,
+  empty status messages that carry no stored subject, to its deliver subject while a client
+  subscribes it; on the hub's image such a heartbeat aimed at a stream delete deletes the stream
+  (`TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`). No Envoy client
+  subscribes a `$JS.API.` subject, and the edge's own grant subscribes none.
+- nats-server 2.15.1 admits a subscription to `notifications.envoy.deliver.>` under the allow
+  entry `notifications.envoy.deliver.*`, and delivers it a subject two tokens past the prefix. No
+  Envoy program publishes such a subject: a relay subject names its session by one token.
+- Today's agent, relay and resume subjects name no project, so an edge listener can publish on
+  any session's.
+- Its key-value calls write every record of the seven listener buckets: interests, roles,
+  sessions, known sessions, Legion agents, CI state and DPoP proofs. They include a consumer on
+  each bucket's stream, which does not carry the notification subjects, so such a consumer can
+  deliver a bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept, resume and
+  takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
+  notification stream's own consumers. No row creates such a consumer: this one is read from the
+  server's rule above.
+
+Its read is the whole bus until subjects and keys name their project, and its writes through the
+consumer calls are as wide until something other than the edge creates its consumers. The auth
+service answers an `edge-listener` entry of `BROKER_NATS_SERVICES` with the same set for the
+projects the entry lists, and the deployment repository's hub user for an edge listener copies it
+entry for entry from `packages/envoy/natsgrant/testdata/edge.golden.json`, rendered for machine `m`
+and project `PRIV`.
+
+Under the `natslive` tag, against the hub's image, `natsgrant/natsgrant_live_test.go` publishes on
+each subject of the list and on the kept lane, another project's role, a role that names no
+project, the Legion wake topic, a Slack topic and a GitHub exception lane, and the server refuses
+exactly the second group. `TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts`
+there has one edge machine answer another machine's frame on that machine's receipt subject, and
+be refused a subscription to that machine's receipts.
+`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the notification stream's consumer
+reach above: a push consumer of the edge's delivers on another project's role subject, a consumer
+of the edge's reads another project's stored Dispatch event, a deliver subject the stream carries
+is refused as a cycle, the edge updates and deletes another listener's durable, and a subscription
+under `deliver.>` is delivered a two-token subject.
+`TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI` pins the JetStream API and capture
+outcomes on scratch streams and buckets of the edge's account, and the stream subject a delivery
+is received under, and `TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`
+the heartbeat's. `TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI` has the server refuse
+the edge's update of a bucket's stream, and its control has an administrator's republish of an
+empty value delete a stream. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has a
+listener's direct gets aimed at the API change one stream and delete another, the edge's refused,
+and its stream message get, stream info and key write aimed the same way take no action.
+`TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream` has a `no_wait` pull's `404 No Messages`
+status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
+stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
+on its inbox as controls (nats-server 2.15.1; the deletes are refused once the hub runs 2.15.3).
+`cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
+reached by a role message through a shared listener, takes a role another session holds and is
+relayed a role message of a role another session holds, with no refusal, and its start ends,
+naming the prefix, under the set without it. Its relay frames are answered by an observer whose
+grant publishes the edge's inbox prefix, reach no rendered set holds.
+
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get
 `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` (the read `legion state` makes of each durable
@@ -4186,12 +4344,14 @@ a subject nothing else uses, so the probe only shows whether the hub admits a co
 **The operator's clocks.** Every `envoy-infra hold` command signs the row it writes with its own
 machine's clock, and the broker refuses a row signed more than five minutes
 (`signedrecord.SignedAtSkew`) before or after its own clock, or more than five minutes before the
-latest row it has taken: 409 `clock_skew`, naming both times, with nothing stored. So the clocks
+latest signing time it has taken or the log's verified entries hold, which both replicas share:
+409 `clock_skew`, naming both times and the gen compared with, with nothing stored. So the clocks
 of every machine that runs these commands must agree with each other, and with the broker's,
 within five minutes; two clocks each within five minutes of true time can be ten apart, so keep
-them synchronized (NTP), not merely close. A replica whose floor took a wrong time (a row stored
-before this check, say) reads every row after it as unknown; restarting that replica clears its
-floor, and it reads the row again.
+them synchronized (NTP), not merely close. A signing time more than five minutes ahead of the
+broker's clock (a row stored before this check, or read after the broker's clock jumped back) is
+no genuine row's: the broker judges later rows against its own clock instead, so such a time holds
+no correct clock back. A restart does not clear such a time, since the log keeps it, and needs not.
 
 **Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
 command of a hold through the broker's records, one command at a time: while one command's intent
@@ -4235,14 +4395,15 @@ deletes, goes with the operator's signed delete kept beside the records in the s
 (`nats_hold_record_deletes`), so every replica reads it as deleted, refuses a write of its key
 again, and the abort's rerun passes on whichever replica serves it. A cohort gone with no delete
 that verifies, or with one signed over an earlier gen than a replica saw, reads as unknown on each
-replica that saw it, and so does a hold's journal gone: the cohort delete on a released row reads
-a missing journal as no journal only on a replica whose floor never saw that hold's done record.
-The residual: every floor is per replica and lasts as long as its process, so a replica that starts
-again, or one that has not served the row or a record since its newer gen, serves an older signed
-one put back as it would the genuine one; production runs two replicas. Records carry no history
-of their own, unlike the row's signed log: after a database restore, a replica that starts again
-reads the records as the restore left them, an older signed journal or a journal gone included. A
-floor both replicas share, kept outside the database, is the fix if that acceptance changes.
+replica that saw it, and so does a hold's journal gone or older: the cohort delete on a released
+row reads a missing journal as no journal only on a replica whose floor never saw that hold's done
+record, and refuses a journal older than one its floor saw. The residual: every floor is per
+replica and lasts as long as its process, so a replica that starts again, or one that has not
+served the row or a record since its newer gen, serves an older signed one put back as it would
+the genuine one; production runs two replicas. Records carry no history of their own, unlike the
+row's signed log: after a database restore, a replica that starts again reads the records as the
+restore left them, an older signed journal or a journal gone included. A floor both replicas share,
+kept outside the database, is the fix if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
@@ -4276,28 +4437,30 @@ none, would leave the prepared hold's cohort and journal where no command reache
 operator's client: name it and restore again); or after a `held` one whose hold's signed journal
 shows `hold release` or `hold abort` done. After any other `held` entry it refuses
 `bad_transition`, so no restore frees every client while a command of a hold may run. Whatever the
-log shows, it refuses a `released` row, naming a hold or none, while any hold's signed journal
-shows `hold set` done and no end: that hold is held by its own record. It refuses a `released` row
-naming a hold whose journal does not verify (409 `below_floor`). A hold whose release or abort moved
-the row to `released` before its done entry was written (the log's latest entry is that hold's
-`released`) is not held by its record: restore `released` with its id, or with none. The log and
-the floors are per database and per process: a database writer who empties the log, or cuts it
-back to an earlier entry, lets `Bootstrap` or a restore at the gen it names write a row again on a
-replica that has served no row since it started, sent by a client that has seen no row; the
-journals stop a `released` row then only while a hold's journal shows it held.
+latest entry, it refuses a `released` row, naming a hold or none, while a hold the verified log
+does not show ended has a signed journal showing `hold set` done and no end: that hold is held by
+its own record. The log shows a hold ended by a verified `released` entry naming it, at any gen (a
+release or abort cut before its done entry included), or by a later hold's `prepare` after its own
+entries. A journal of a hold the log does not show ended is read against the broker's record floor
+and its signature: an older version than one the broker wrote or served, or one that does not
+verify, is unknown (409 `below_floor`). The log and the floors are per database and per process: a
+database writer who empties the log, or cuts it back to an earlier entry, lets `Bootstrap` or a
+restore at the gen it names write a row again on a replica that has served no row since it
+started, sent by a client that has seen no row; the journals stop a `released` row then only while
+a hold's journal shows it held.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
 mint the token of a guarded ServiceAccount (the operator's, the secrets broker's, and each
-`--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, write
-a binding or a webhook or admission policy, have the cluster sign it a client certificate for any
-user, mint the operator's Google service account's token, make a guarded namespace on another
-cluster of the project or of the workload pool's fleet, register a cluster to that fleet or write
-the namespaces and RBAC its scopes put on the members, set IAM policy over any of these, or write
-the writer hold's tables beside the broker's routes, whether a role grants the right outright or
-limits it to an object by name, and each principal that can become one of those: through IAM
-impersonation, reported as the chain, by minting the token of a Google service
+`--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
+namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
+certificate for any user, mint the operator's Google service account's token, make a guarded
+namespace on another cluster of the project or of the workload pool's fleet, register a cluster to
+that fleet or write the namespaces and RBAC its scopes put on the members, set IAM policy over any
+of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
+right outright or limits it to an object by name, and each principal that can become one of those:
+through IAM impersonation, reported as the chain, by minting the token of a Google service
 account an RBAC finding names, by impersonating a user who holds GKE's IAM permissions, or in
 Kubernetes by running, entering or minting the token of a ServiceAccount that holds such a right. On
 each cluster of the project, of the pool project and of the pool's fleet it reviews every
