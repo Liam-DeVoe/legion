@@ -8,11 +8,14 @@ import { authorText, pageChrome } from "../page-structure";
 import type { LensChip } from "./lens-drafts";
 
 /**
- * One chip of a lens line: a lens, a check or a constraint, by its words. Where a step drafted
+ * One chip of a lens line: a lens, a check or a constraint, by its words; or a node a fact line
+ * names (`LensLines.tsx`'s `FactWords`), by the words the line names it by. Where a step drafted
  * the target, the tree read gives its id, and the words are the link to its row on this issue's
  * page (`?node=`), drawn as `NodeRow.tsx`'s `Chip` draws its link. The issue's key is the
  * route's own (`/issues/:key/*`), so the link works in the outline and in the Spec view alike. A
- * target with no id, or a route with no key, draws the words alone.
+ * target with no id, or a route with no key, draws the words alone. A chip's words, which
+ * `chipWords` cuts, stay on one line; a fact line's name keeps its author's whole words, so with
+ * `wraps` they wrap inside the line, as `NodeRow.tsx`'s `ParentLink` does.
  *
  * A press on the link also focuses the target's row where the tree the chip stands in draws it
  * already (`focusDrawnRow`), at every press: the address puts the focus on its node once, and
@@ -26,19 +29,27 @@ import type { LensChip } from "./lens-drafts";
  * own (`chip.chrome`, the page's word for a lens whose kind has no words), as `NodeRow.tsx`'s
  * `Chip` marks the page's word for a document.
  */
-export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
+export function NodeLink({
+  chip,
+  tabStops,
+  wraps = false,
+}: {
+  chip: LensChip;
+  tabStops: boolean;
+  wraps?: boolean;
+}): ReactNode {
   const { key = "" } = useParams<{ key: string }>();
   const id = chip.id;
   const marks = chip.chrome === true ? pageChrome : authorText;
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
       {id === undefined || key === "" ? (
-        <span className="whitespace-nowrap" data-chip-name="" {...marks}>
+        <span className={wraps ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {chip.words}
         </span>
       ) : (
         <Link
-          className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
+          className={`dispatch-inline-link font-medium ${wraps ? "" : "whitespace-nowrap "}underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
           onClick={(event) => focusDrawnRow(event, id)}
           tabIndex={tabStops ? undefined : -1}

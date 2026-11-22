@@ -66,9 +66,8 @@ export function LensLines({
       lines.push(
         <Line key="early_warning" line="early_warning">
           <FactWords
-            parts={lens.factParts?.earlyWarning}
             tabStops={tabStops}
-            text={lens.earlyWarning}
+            words={lens.factParts?.earlyWarning ?? lens.earlyWarning}
           />
         </Line>
       );
@@ -76,11 +75,7 @@ export function LensLines({
     if (body && filled(lens.prevention)) {
       lines.push(
         <Line key="prevention" line="prevention">
-          <FactWords
-            parts={lens.factParts?.prevention}
-            tabStops={tabStops}
-            text={lens.prevention}
-          />
+          <FactWords tabStops={tabStops} words={lens.factParts?.prevention ?? lens.prevention} />
         </Line>
       );
     }
@@ -106,17 +101,13 @@ export function LensLines({
     if (filled(lens.reference)) {
       lines.push(
         <Line key="reference" line="reference">
-          <FactWords parts={lens.factParts?.reference} tabStops={tabStops} text={lens.reference} />
+          <FactWords tabStops={tabStops} words={lens.factParts?.reference ?? lens.reference} />
         </Line>
       );
     } else if (filled(lens.takenWhere)) {
       lines.push(
         <Line key="taken_at" line="taken_at">
-          <FactWords
-            parts={lens.factParts?.takenWhere}
-            tabStops={tabStops}
-            text={lens.takenWhere}
-          />
+          <FactWords tabStops={tabStops} words={lens.factParts?.takenWhere ?? lens.takenWhere} />
         </Line>
       );
     }
@@ -152,28 +143,27 @@ function Words({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** A fact line's stored string `text`, drawn as `Words`; where the line names a node the tree
- *  read holds, as its parts (`LensFacts.factParts`), which are the same words: each string as
- *  text, and each chip as a link to that node's row (`NodeLink`), as a line's chips are. */
+/** A fact line's words, drawn as `Words`: its stored string, or, where the line names a node the
+ *  tree read holds, its parts (`LensFacts.factParts`), which are the same words: each string as
+ *  text, and each chip as a link to that node's row (`NodeLink`), as a line's chips are, but
+ *  wrapping inside the line, since a name keeps its author's whole words. */
 function FactWords({
-  parts,
   tabStops,
-  text,
+  words,
 }: {
-  parts: FactParts | undefined;
   tabStops: boolean;
-  text: string;
+  words: string | FactParts;
 }): ReactNode {
   return (
     <Words>
-      {parts === undefined
-        ? text
-        : parts.map((part, at) =>
+      {typeof words === "string"
+        ? words
+        : words.map((part, at) =>
             typeof part === "string" ? (
               part
             ) : (
               // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
-              <NodeLink chip={part} key={at} tabStops={tabStops} />
+              <NodeLink chip={part} key={at} tabStops={tabStops} wraps />
             )
           )}
     </Words>

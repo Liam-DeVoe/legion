@@ -10,6 +10,7 @@ import { storedReading } from "../stored-reading";
 import {
   addressesAsShortForms,
   type Draft,
+  lensStoreAddress,
   plainWords,
   storeKindOf,
   storeKindWord,
@@ -268,7 +269,9 @@ function nameLine(draft: Draft, named: DisplayTree | undefined): void {
  * those of a string that names nothing its plain words (`plainRuns`), each only where it names
  * one; and each fact line by the rule `lensDrafts` reads them by (`storedFacts`), as `factWords`
  * reads it: its words, which for a line that names nothing are the plain words `lensDrafts`
- * wrote, and its parts where it names a node the index holds, so the line links the names.
+ * wrote, and its parts where it names a node the index holds, so the line links the names. A
+ * node none of whose attributes holds a `dispatch://` span (`cites`) names nothing, so it is
+ * left as `lensDrafts` drafted it.
  */
 function nameStored(
   draft: Draft,
@@ -276,6 +279,7 @@ function nameStored(
   type: "constraint" | "lens" | "risk",
   index: () => StoreIndex
 ): void {
+  if (!Object.values(node.attributes ?? {}).some(cites)) return;
   if (type === "constraint") {
     let named = false;
     const runs = constraintRuns(node, (raw) => {
@@ -455,8 +459,7 @@ function linkedRuns(
 function linkedAddress(link: DisplayTree): string | undefined {
   if (link.type !== "link") return undefined;
   const href = (link.attrs as { readonly href?: unknown } | undefined)?.href;
-  const address = typeof href === "string" ? storeAddressReference(href) : undefined;
-  return address === undefined || storeKindOf(address) === undefined ? undefined : address;
+  return typeof href === "string" ? lensStoreAddress(href) : undefined;
 }
 
 /** Where the page stands, as the router holds it (`useLocation`). */

@@ -21,12 +21,11 @@ import {
   pageQuietText,
   pageRowAct,
 } from "../../../theme/classes";
-import { storeAddressReference } from "../../refs/store-address";
 import { dialogOpen } from "../../shell/useDialog";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
-import { storeKindOf } from "../tree-drafts";
+import { lensStoreAddress } from "../tree-drafts";
 import {
   lensKindsQuery,
   lensPlaceOf,
@@ -101,7 +100,7 @@ const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
  * Whether a row offers the Lens act: in the outline alone, on a node of a kind the invoke route
  * takes, whose address names this issue - `dispatch://<key>` and then `/` or `#`, so a key that
  * merely starts with this one is another issue - or is a uuid address of the node store that the
- * route takes: a lens, a block of a lens (a finding), a risk or a constraint (`storeKindOf`),
+ * route takes: a lens, a block of a lens (a finding), a risk or a constraint (`lensStoreAddress`),
  * so not an interaction's or a lens kind's. A child issue, a result, the issue, a document, a
  * handoff and a node of another issue get none. A closed issue keeps the act: the server decides.
  */
@@ -110,8 +109,7 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outl
   if (!act.outline || !INVOKED_ON[node.type] || reference === undefined) return false;
   const issue = `dispatch://${act.issueKey}`;
   if (reference.startsWith(`${issue}/`) || reference.startsWith(`${issue}#`)) return true;
-  const stored = storeAddressReference(reference);
-  return stored !== undefined && storeKindOf(stored) !== undefined;
+  return lensStoreAddress(reference) !== undefined;
 }
 
 /**
