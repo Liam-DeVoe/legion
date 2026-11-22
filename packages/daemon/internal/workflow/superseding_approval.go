@@ -44,11 +44,8 @@ type Approval struct {
 // read is made here once. Which reviews a sender asks about is the sender's: of the queued notices,
 // record.ChangesRequest is the one rule for which rows a reader asks again.
 //
-// The news of an approved version is no such sender: it tells a holder of a version a person
-// approved, not of a review, and asks whether that approval is still the gate's
-// (classify.DesignApprovalStands). So a changes request that cleared the approval ends the news,
-// where a gate with no approval leaves a review standing here: only a later approval is the
-// person's word in a review's place.
+// The news of an approved version is no such sender: it asks classify.DesignApprovalStands, whose
+// doc says how the two rules differ.
 //
 // It answers the approval that superseded the review, which a sender may name, and nil when the
 // review stands. The review stands at each of these guards, in the order they are asked, because

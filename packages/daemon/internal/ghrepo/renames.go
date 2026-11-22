@@ -121,9 +121,11 @@ func (r Renames) Same(a, b string) bool {
 // there and they are not one repository (Same). An empty name is one nothing recorded, and an
 // unknown is never a statement that the issue has left anything, so either name empty answers
 // false. It is the one rule every reader of two repository names decides by: a pod built from
-// from against the record that names now (the daemon's repositoryDrift), and a bundle saved as
-// work of from against the repository now of the pod that asks for it, where the restore refuses
-// an empty name of its own accord (store.Store.TakeWorkspaceBundleForRestore).
+// from against the record that names now (the daemon's repositoryDrift), a record that names from
+// against now, the repository Dispatch resolves its issue to, before a preparation reads the
+// correction (the daemon's correctionMoves), and a bundle saved as work of from against the
+// repository now of the pod that asks for it, where the restore refuses an empty name of its own
+// accord (store.Store.TakeWorkspaceBundleForRestore).
 func (r Renames) Left(from, now string) bool {
 	return from != "" && now != "" && !r.Same(from, now)
 }

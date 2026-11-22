@@ -901,8 +901,7 @@ func TestABundleNamesTheRepositoryOfThePodItCameOff(t *testing.T) {
 	})
 	g.eventually("the pod store to hold the pod with a fetch that names no repository", func() bool {
 		pod := g.r.storedPod(loc.Sandbox.Name)
-		_, named := fetchRepository(pod)
-		return pod != nil && string(pod.UID) == loc.Sandbox.PodUID && !named
+		return pod != nil && string(pod.UID) == loc.Sandbox.PodUID && fetchRepositoryName(pod) == ""
 	})
 	unread, err := g.r.BundleWorkspace(g.ctx, testTree, claim.RoleTester)
 	if err != nil {

@@ -125,7 +125,7 @@ func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRea
 	}
 	// Oh My Pi is preparing X's turn: it answers the question that it is not streaming, and answers
 	// any prompt that reaches it now busy.
-	shim.RefusePrompt(carriedBusy)
+	shim.FailPrompt(keptBusy)
 	r.conns.Register(token, shim)
 	r.hello(restored)
 
@@ -163,7 +163,7 @@ func TestAResendAfterALostAnswerTheShimAnswersFromItsRecordRecordsNoNewsTheAgent
 	r.wantTold("at the reopening", pathRoot, record.AudienceHolder, 3, true)
 	// Oh My Pi is preparing X's turn, and answers any prompt that reaches it now busy.
 	shim.lose.Store(false)
-	shim.RefusePrompt(carriedBusy)
+	shim.FailPrompt(keptBusy)
 	r.hello(reviewer)
 
 	earlierPromptsTurn(t, r, reviewer, first.ID)

@@ -58,17 +58,17 @@ func tellBundleRepositoryRefused(st *store.Store, project string, left func(save
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
 		}
+		log := log.With("issue", issue, "pod", podUID,
+			"bundleRepository", bundle.Repo, "podRepository", podRepo,
+			"head", bundle.Head, "saved", bundle.At, "release", bundle.Release)
 		if err := write(ctx, issue, bundleRepositoryMessage(issue, podRepo, bundle)); err != nil {
 			if ctx.Err() == nil {
 				log.Error("supervise: write on the issue that its saved workspace bundle is refused for its repository; the work is kept in workspace_bundles_refused and nothing tells the issue again",
-					"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "podRepository", podRepo,
-					"head", bundle.Head, "saved", bundle.At, "release", bundle.Release, "error", err)
+					"error", err)
 			}
 			return bundle, outcome, nil
 		}
-		log.Warn("supervise: the saved workspace bundle of this issue is refused for its repository, so no pod restores it; the issue is told and the work is kept in workspace_bundles_refused",
-			"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "podRepository", podRepo,
-			"head", bundle.Head, "saved", bundle.At, "release", bundle.Release)
+		log.Warn("supervise: the saved workspace bundle of this issue is refused for its repository, so no pod restores it; the issue is told and the work is kept in workspace_bundles_refused")
 		return bundle, outcome, nil
 	}
 }
@@ -101,17 +101,15 @@ func bundleRepositoryMessage(issue, podRepo string, b runtime.WorkspaceBundle) s
 	if len(lines) > 0 {
 		bookmarks = fmt.Sprintf("The saved work has these bookmarks:\n\n%s", strings.Join(lines, "\n"))
 	}
-	var repository string
-	switch {
-	case b.Repo == "":
-		repository = "The daemon did not record the repository that the work is of. " +
-			"The new pod of this issue can be a clone of a different repository."
-	case podRepo == "":
-		repository = "The work is of the repository `" + b.Repo + "`. " +
-			"The daemon cannot read the repository that the new pod of this issue is a clone of."
-	default:
-		repository = "The work is of the repository `" + b.Repo + "`. " +
-			"The new pod of this issue is a clone of a different repository."
+	repository := "The daemon did not record the repository that the work is of. " +
+		"The new pod of this issue can be a clone of a different repository."
+	if b.Repo != "" {
+		pod := "The new pod of this issue is a clone of a different repository."
+		if podRepo == "" {
+			pod = "The daemon cannot read the repository that " +
+				"the new pod of this issue is a clone of."
+		}
+		repository = "The work is of the repository `" + b.Repo + "`. " + pod
 	}
 	return fmt.Sprintf(`The daemon did not restore the saved work of this issue.
 

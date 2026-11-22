@@ -187,8 +187,12 @@ func TestABundleRefusedForAnUnknownRepositoryIsKeptAndTheIssueTold(t *testing.T)
 			}
 			// The save refuses a bundle that names no repository, so the row an earlier release
 			// left with none is written here.
-			if _, err := pool.Exec(ctx, `update workspace_bundles set repo = $2 where issue = $1`, issue.Key, tc.bundle); err != nil {
-				t.Fatalf("leave the bundle of %s on %q: %v", issue.Key, tc.bundle, err)
+			if tc.bundle == "" {
+				if _, err := pool.Exec(ctx,
+					`update workspace_bundles set repo = $2 where issue = $1`,
+					issue.Key, tc.bundle); err != nil {
+					t.Fatalf("leave the bundle of %s on %q: %v", issue.Key, tc.bundle, err)
+				}
 			}
 			var told []string
 			var logged syncBuffer

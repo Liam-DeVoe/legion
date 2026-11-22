@@ -2728,12 +2728,12 @@ func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.Disp
 // prepareHandover). A resolution that names no repository moves nothing: the engine tells the
 // issue so without a read. Nor does any resolution of a record that holds no repository
 // (record.Issue.Unfilled): the backfill fills it, and the engine corrects none
-// (workflow.Engine.ApplyRepositoryChange). The two names are compared as the engine compares them
-// (repositories.same, the engine's own sameRepository), so a configured rename's other name — the
-// one the rename pass wrote over the record's, or the one Dispatch still names after it — and a
-// spelling that differs in case move nothing.
+// (workflow.Engine.ApplyRepositoryChange). The rule is repositories.left's, which compares the two
+// names as the engine compares them (the engine's own sameRepository), so a configured rename's
+// other name — the one the rename pass wrote over the record's, or the one Dispatch still names
+// after it — and a spelling that differs in case move nothing.
 func (w *workflowRuntime) correctionMoves(resolved string, recorded *record.Issue) bool {
-	return resolved != "" && !recorded.Unfilled() && !w.repositories.same(resolved, recorded.Repo)
+	return w.repositories.left(recorded.Repo, resolved)
 }
 
 // followReads is what one preparation pass read of each repository its issues move onto, by the

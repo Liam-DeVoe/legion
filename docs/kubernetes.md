@@ -7401,7 +7401,7 @@ A pod of a kept Sandbox that was made before an idle release saved its bundle ge
 A pod on a new volume restores a bundle, as a pod with an ephemeral volume does.
 A new volume is the first volume of a Sandbox, or the volume after a reset or after a change of the disk shape.
 
-A bundle of another repository than the one the next pod is built from is the exception, and so is a bundle that names no repository: the daemon does not drop it, and the pod's ask refuses it for its repository ([Idle release](#idle-release)).
+A bundle of another repository than the one the next pod is built from is the exception, and so are a bundle that names no repository and a bundle offered to a pod whose repository the daemon cannot read: the daemon does not drop such a bundle, and the pod's ask refuses it for its repository ([Idle release](#idle-release)).
 A workspace's directory names its repository, `/legion/workspaces/<owner>/<name>/<issue key lowercased>` (`workspace.Location`), and so does its clone.
 So after a correction of the issue's repository, the next pod clones the new repository and provisions a new workspace beside the old one, and no role works in the old workspace again.
 The old clone and workspace stay on the volume, with the work that no role pushed, until a reset or the issue's close deletes the volume.
@@ -7585,7 +7585,8 @@ In the transaction that records it, the daemon moves the bundle out of `workspac
 There the issue's next release cannot write its own save over the work or delete it when it saves nothing, and the end of the issue's work does not delete it either.
 The daemon never sends such a bundle to a pod, even after Dispatch moves the issue back to that repository, and never deletes the row: it is the operator's to delete once the work is carried out.
 The daemon writes on that issue instead, naming the repository the work is of, or saying that it did not record one, the commit the saved working copy sat on, each bookmark that pointed into the work, when the release saved it, and the table, issue and `release_id` of the row that keeps it.
-The message says that the issue's new pod is a clone of a different repository, or that the daemon cannot read which repository that pod is a clone of, and never names the pod's repository, which holds none of the work.
+The message says one of three things of the issue's new pod: that it is a clone of a different repository, that the daemon cannot read which repository it is a clone of, or, for a bundle that names no repository, that it can be a clone of a different repository.
+The message never names the pod's repository, which holds none of the work.
 The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
 A bundle refused for its repository is read the same way from `workspace_bundles_refused`, by the issue and the release the message names: `select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>`, unbundled into a clone of the repository its `repo` column names.
 For a refused row whose `repo` is empty, which an earlier release saved, run `git bundle verify <KEY>.bundle` in a clone of the issue's `issues.repo_before`, and where that is empty or the bundle does not verify there, in a clone of its `issues.repo`, and unbundle it into the clone where it verifies.

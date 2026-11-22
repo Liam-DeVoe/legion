@@ -939,7 +939,7 @@ func TestARefusedBundleOutlivesEveryLaterSaveAndDeleteOfTheIssuesBundle(t *testi
 // repository the asking pod was built from is the ordinary case and is sent. A row that names no
 // repository is not this case (TestABundleWithNoRepositoryIsRefusedAndKept), nor is a pod whose
 // repository the runtime could not read (TestABundleOfARenamedRepositoryIsSent's last case).
-func TestABundleOfTheIssuesOwnRepositoryIsStillSent(t *testing.T) {
+func TestABundleOfThePodsOwnRepositoryIsStillSent(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)

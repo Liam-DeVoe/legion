@@ -1475,10 +1475,8 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // predicate, workflow's SupersedingApproval, asked from the gates as the record holds them at that
 // moment. That predicate's doc lists the guards that choose whether this rule is asked of a review.
 //
-// The news of an approved version is no sender of that kind: it tells a holder of a version a
-// person approved, not of a review, and asks DesignApprovalStands, which drops it once a changes
-// request has cleared that approval. This rule reads only an approval as the person's later
-// word, so a gate with no approval leaves a review standing.
+// The news of an approved version is no sender of that kind: it asks DesignApprovalStands, whose
+// doc says how the two rules differ.
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror
