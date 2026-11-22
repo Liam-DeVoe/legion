@@ -294,8 +294,13 @@ type roundTripReplaced struct {
 // where the row names none; scope, "upload" or "new-document" (contracts.TextRefusalUpload and
 // contracts.TextRefusalNewDocument); and replaced, absent where it is the zero value, with
 // {status, code, words} or {rendering}, each id the parse mints written "minted". Every member but
-// replaced is written on every row. A part is one of these, so the large texts are generated
-// rather than stored:
+// replaced and command is written on every row. command, absent where it is empty, names the ways
+// the dispatch command refuses the text itself, before it asks Dispatch: ["inline"] for a text it
+// refuses given inline, from a --content-file or on stdin, in Dispatch's own code and in words
+// holding the row's words, which the route tests cannot send inline - bytes that are not UTF-8,
+// which no JSON string carries, and which the command reads as bytes. The end-to-end spec runs
+// those ways too; the route tests read command for nothing but its check here. A part is one of
+// these, so the large texts are generated rather than stored:
 //
 //   - {"text": s}: s as written;
 //   - {"repeat": s, "times": n}: s n times;
@@ -309,6 +314,7 @@ type textRefusalRow struct {
 	Name     string            `json:"name"`
 	Text     []textRefusalPart `json:"text"`
 	Sent     []string          `json:"sent"`
+	Command  []string          `json:"command"`
 	Status   int               `json:"status"`
 	Code     string            `json:"code"`
 	Words    string            `json:"words"`
@@ -376,7 +382,8 @@ func textRefusalText(parts []textRefusalPart) (string, error) {
 // code names one, the CI checks' as ciCheckRefusal writes them, and a row whose text or rendering
 // is a value the other tests here use (askAfterOptions, misreadRendering, repeatedCheckID,
 // mintedCheckID and each ciCheckBreaks rule's block) is that value, so the list and those tests
-// cannot drift apart. A row's sent names "inline" and "file" alone.
+// cannot drift apart. A row's sent names "inline" and "file" alone, and its command "inline"
+// alone.
 func roundTripRefusals(t *testing.T) []roundTripRefusal {
 	t.Helper()
 	raw, err := os.ReadFile(textRefusalsFile)
@@ -402,6 +409,11 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 		for _, way := range row.Sent {
 			if way != "inline" && way != "file" {
 				t.Fatalf(`%s gives %q the way %q in sent, want "inline" or "file"`, textRefusalsFile, row.Name, way)
+			}
+		}
+		for _, way := range row.Command {
+			if way != "inline" {
+				t.Fatalf(`%s gives %q the way %q in command, want "inline"`, textRefusalsFile, row.Name, way)
 			}
 		}
 		refusal := roundTripRefusal{

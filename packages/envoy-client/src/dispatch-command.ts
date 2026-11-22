@@ -5,6 +5,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { NotUtf8Error, notUtf8Refusal } from "./dispatch-file-text";
 import { messageFor } from "./errors";
 
 /**
@@ -24,6 +25,9 @@ import { messageFor } from "./errors";
  *   `--options-json <json>` for a list whose labels hold ": " themselves, which `commandLine`
  *   writes for such a list so every list round-trips;
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
+ * A file's or stdin's text is `io.readText`'s, which the `dispatch` entry reads as bytes that must
+ * be UTF-8 (`readFileText`): bytes that are not refuse the command as Dispatch refuses them (an
+ * `unstorable` parse).
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
  * Every command also takes `--help` and `--dry-run`.
@@ -93,6 +97,14 @@ export type ParsedCommand =
       /** False when every problem is a bare `-` given to a text flag, so the refusal lists no
        *  flags. */
       readonly aboutAFlag?: false;
+    }
+  | {
+      /** A file or stdin a flag read holds a byte that is not UTF-8, which Dispatch cannot store:
+       *  `refusal` is Dispatch's own refusal of the first such byte, naming the field the flag
+       *  sets (`notUtf8Refusal`). Any other problem of the argv is a `refused` instead. */
+      readonly kind: "unstorable";
+      readonly tool: string;
+      readonly refusal: Error;
     };
 
 export interface CommandFlagRow {
@@ -407,8 +419,10 @@ export function parseCommand(
   let help = false;
   let dryRun = false;
   let stdinFlag: string | undefined;
+  // Dispatch's refusal of the first file or stdin a flag read that holds a byte that is not UTF-8.
+  let unstorable: Error | undefined;
 
-  const read = (flag: string, path: string): string | undefined => {
+  const read = (flag: string, field: string, path: string): string | undefined => {
     if (path === STDIN) {
       if (stdinFlag !== undefined) {
         problems.push(`${stdinFlag} and ${flag} both read stdin (-); only one flag can`);
@@ -419,6 +433,10 @@ export function parseCommand(
     try {
       return io.readText(path);
     } catch (error) {
+      if (error instanceof NotUtf8Error) {
+        unstorable ??= notUtf8Refusal(field, error);
+        return undefined;
+      }
       problems.push(
         `${flag} could not read ${path === STDIN ? "stdin" : path}: ${messageFor(error)}`
       );
@@ -542,13 +560,13 @@ export function parseCommand(
         break;
       }
       case "file": {
-        const text = read(flag, value);
+        const text = read(flag, field, value);
         if (text !== undefined && claim(field, flag, false)) args[field] = text;
         break;
       }
       case "json":
       case "json-file": {
-        const text = action === "json" ? value : read(flag, value);
+        const text = action === "json" ? value : read(flag, field, value);
         const parsed = text === undefined ? undefined : json(flag, text);
         if (parsed !== undefined && claim(field, flag, false)) args[field] = parsed.value;
         break;
@@ -572,6 +590,7 @@ export function parseCommand(
       ? { kind: "refused", tool, problems, aboutAFlag: false }
       : { kind: "refused", tool, problems };
   }
+  if (unstorable !== undefined) return { kind: "unstorable", tool, refusal: unstorable };
   return { kind: "call", tool, args, dryRun };
 }
 

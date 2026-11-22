@@ -1154,14 +1154,25 @@ hyphens for underscores (`issue-update`), one flag per field
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
 first `: `; a label holding `: ` goes in `--options-json`, which the generated command line uses
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
-stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
+stdin. The command reads each file and stdin as bytes and decodes them as UTF-8, keeping a byte
+order mark as U+FEFF (`readFileText`, `dispatch-file-text.ts`, which `bin/dispatch.ts` hands
+`runDispatchCli`). Bytes that are not UTF-8, which it once stored as U+FFFD, refuse the command,
+for every field and every command, with Dispatch's own refusal of such a byte in a form field and
+exit 1, before anything is sent: `INVALID_UTF8: <field> holds a byte that is not UTF-8 (0xFF) at
+character N, which Dispatch cannot store`, where `<field>` is the argument the flag sets
+(`content` for `--content-file`), the byte is the first that is not UTF-8, and N is where it
+stands, counted from 1 in UTF-16 units, as Dispatch counts it. A value given inline is no such
+case: Bun hands the command its argv already decoded, each such byte written as U+FFFD.
+For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
 names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It stores nothing, and reads no state of this session
-but what a `dispatch result` record's dry run reads (below).
+but what a `dispatch result` record's dry run reads (below). A file or stdin holding bytes that are
+not UTF-8 is refused before that check, by the dry run as by the call, with the same `INVALID_UTF8`
+line and exit 1, so `dispatch artifact` refuses such inline text without asking Dispatch.
 A command whose call asks Dispatch something before it writes asks it in its dry run too, through
 its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
 such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check

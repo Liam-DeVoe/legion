@@ -21,8 +21,8 @@ import { expect, test } from "./test";
  * `textRefusalsFile` in `markdown_round_trip_test.go` says what each member and each part is), is
  * run with the real command, its own process, against the harness's real Dispatch: once with
  * `--dry-run` and once without, in every combination of the way the text is given (inline from a
- * file, inline on stdin, and as a `--path` Markdown file, as the row's `sent` allows), `--force`
- * or not, and a new name or a name the issue already holds.
+ * file, inline on stdin, and as a `--path` Markdown file, as the row's `sent` and `command` allow),
+ * `--force` or not, and a new name or a name the issue already holds.
  *
  * A refusal every upload makes (`scope` upload) is the call's in every combination: the dry run
  * and the call exit 1 and print the same stdout, byte for byte, naming the row's code and words,
@@ -36,6 +36,14 @@ import { expect, test } from "./test";
  * block names. Everywhere else the dry run passes and the call is refused: the one gap the dry run
  * documents ("What the dry run cannot give" in the pull request, and the `--dry-run` help of
  * `dispatch artifact`).
+ *
+ * A way the row's `command` names is one the command refuses the text itself in, before it asks
+ * Dispatch anything: given inline, a file's or stdin's bytes that are not UTF-8, which it reads as
+ * bytes, and which the route tests cannot send inline, since no JSON string carries them. The dry
+ * run and the call are refused alike in every combination of it, exit 1, the same stdout naming
+ * the row's code and words, and nothing is stored. The file and stdin each hand the command the
+ * row's bytes, so a refusal naming the byte (0xFF) is one the command made of that byte, and not of
+ * the U+FFFD a lenient read would have stored in its place.
  */
 
 /** One part of a row's text, as the Go comment above `textRefusalsFile` names the four. */
@@ -50,6 +58,9 @@ interface TextRefusalRow {
   readonly name: string;
   readonly text: readonly TextPart[];
   readonly sent: readonly ("inline" | "file")[];
+  /** The ways the command refuses the text itself in, before it asks Dispatch: absent on most
+   *  rows. */
+  readonly command?: readonly "inline"[];
   readonly status: number;
   readonly code: string;
   readonly words: string;
@@ -96,7 +107,7 @@ function textOf(row: TextRefusalRow): Uint8Array {
   return Buffer.concat(parts);
 }
 
-/** The ways a text is given, each with the member of `sent` that admits it. */
+/** The ways a text is given, each with the member of `sent`, or of `command`, that admits it. */
 const ways = [
   { key: "content-file", sent: "inline", label: "--content-file <file>" },
   { key: "stdin", sent: "inline", label: "--content-file - (stdin)" },
@@ -161,10 +172,16 @@ type Expected =
 async function expectedOf(
   row: TextRefusalRow,
   sent: "inline" | "file",
+  byCommand: boolean,
   force: boolean,
   text: Uint8Array,
   rendering: () => Promise<string>
 ): Promise<Expected> {
+  // A way the row's `command` names: the command refuses the text itself, `--force` or not,
+  // before it asks Dispatch anything, in Dispatch's code and words, naming the field it read.
+  if (byCommand) {
+    return { kind: "refused alike", exit: 1, names: [`${row.code}: content ${row.words}`] };
+  }
   if (row.scope === "upload" || !force) {
     return { kind: "refused alike", exit: 1, names: [`${row.code}: `, row.words] };
   }
@@ -221,7 +238,8 @@ for (const [index, row] of rows.entries()) {
     return rendered;
   };
   for (const way of ways) {
-    if (!row.sent.includes(way.sent)) continue;
+    const byCommand = way.sent === "inline" && row.command?.includes(way.sent) === true;
+    if (!row.sent.includes(way.sent) && !byCommand) continue;
     for (const force of [false, true]) {
       for (const target of ["a new name", "a held name"] as const) {
         // The row, the way, --force and the target, so a failure names all four.
@@ -276,7 +294,7 @@ for (const [index, row] of rows.entries()) {
           const dry = await runDispatch([...args, "--dry-run"], home, { stdin: source.stdin });
           const call = await runDispatch(args, home, { stdin: source.stdin });
           const both = `${shown("the dry run", dry)}\n${shown("the call", call)}`;
-          const expected = await expectedOf(row, way.sent, force, text, renderingOfRow);
+          const expected = await expectedOf(row, way.sent, byCommand, force, text, renderingOfRow);
 
           if (expected.kind === "gap") {
             // The documented limit, "What the dry run cannot give": with --force the dry run

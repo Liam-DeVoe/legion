@@ -57,7 +57,9 @@ export interface DispatchCliIo {
   stdout(text: string): void;
   /** Where a result's warnings go (`DispatchToolResult.warnings`), one line each, beside it. */
   stderr(text: string): void;
-  /** A file's text; `-` is all of stdin. */
+  /** A file's text; `-` is all of stdin. The `dispatch` entry reads it as bytes that must be
+   *  UTF-8 (`readFileText`), and throws `NotUtf8Error` for bytes that are not, which the command
+   *  refuses with Dispatch's own refusal of them. */
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
@@ -74,8 +76,9 @@ export interface DispatchCliIo {
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
  *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
+ *  refusal), or text this CLI refuses in Dispatch's own refusal before it asks (a file or stdin
+ *  holding a byte that is not UTF-8, a document past the bytes one holds); any other argument
+ *  this CLI refuses before any request is USAGE, whether the argv named a command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -334,6 +337,12 @@ export async function runDispatchCli(
           USAGE,
           parsed.tool
         );
+  }
+  if (parsed.kind === "unstorable") {
+    // A file or stdin a flag read holds a byte that is not UTF-8, which Dispatch cannot store: the
+    // dry run and the call refuse it here alike, before either sends anything, with Dispatch's
+    // own refusal of such a byte and its exit code.
+    return refuse(messageFor(parsed.refusal), REFUSED, parsed.tool);
   }
 
   const hostName = ledgerHost();

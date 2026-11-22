@@ -16,6 +16,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { readFileText } from "../dispatch-file-text";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -593,7 +594,8 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  seams: Pick<DispatchCliIo, "fetchImpl" | "nearestAncestorNamed" | "dryRunDeadlineMs"> = {}
+  seams: Pick<DispatchCliIo, "fetchImpl" | "nearestAncestorNamed" | "dryRunDeadlineMs"> &
+    Partial<Pick<DispatchCliIo, "readText">> = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -1488,6 +1490,81 @@ describe("the dispatch CLI", () => {
       ]);
     });
   }
+
+  // INFRA-4224 (spec v27 R3): the command reads every file and stdin a flag names as bytes
+  // (`readFileText`, the `dispatch` entry's reader, run here with stdin's bytes handed to it), and
+  // refuses bytes that are not UTF-8, which a lenient read stored as U+FFFD, with Dispatch's own
+  // refusal of such a byte (`unstorableText`'s INVALID_UTF8): the field the flag sets, the first
+  // such byte, and the character it stands at, counted from 1 in UTF-16 units. The dry run and the
+  // call refuse it alike, for any command: exit 1, the same stdout, and nothing sent. A byte order
+  // mark and multi-byte UTF-8 read as before, the mark kept as U+FEFF.
+  test("a file or stdin holding a byte that is not UTF-8 is refused with Dispatch's INVALID_UTF8 by the dry run as by the call, sending nothing, and UTF-8 reads as before", async () => {
+    const file = join(stateDir, "text");
+    const notUtf8 = (field: string, byte: string, character: number) =>
+      `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (${byte}) at character ${character}, which Dispatch cannot store\n`;
+    const refused: { argv: string[]; file?: Buffer; stdin?: Buffer; stdout: string }[] = [
+      // The text of the list's row "a file holding a byte that is not UTF-8"
+      // (packages/envoy/internal/dispatch/api/testdata/text-refusals.json).
+      {
+        argv: ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content-file", file],
+        file: Buffer.concat([Buffer.from("# Notes\n\nA"), Buffer.from([0xff]), Buffer.from("B\n")]),
+        stdout: notUtf8("content", "0xFF", 11),
+      },
+      // A byte order mark, a two-byte and a four-byte character, and a space before the byte: one,
+      // one, two and one UTF-16 units.
+      {
+        argv: UPLOAD,
+        stdin: Buffer.concat([Buffer.from("\uFEFFé😀 "), Buffer.from([0xff])]),
+        stdout: notUtf8("content", "0xFF", 6),
+      },
+      {
+        argv: ["comment", "--issue", "DSP-1", "--body-file", file],
+        file: Buffer.concat([Buffer.from("Looks good.\n"), Buffer.from([0xff])]),
+        stdout: notUtf8("body", "0xFF", 13),
+      },
+      // A sequence cut short is refused at the byte that opens it, as Go's utf8.DecodeRune reads it.
+      {
+        argv: ["message", "--issue", "DSP-1", "--body-file", "-"],
+        stdin: Buffer.concat([Buffer.from("ab"), Buffer.from([0xe2, 0x82]), Buffer.from("c")]),
+        stdout: notUtf8("body", "0xE2", 3),
+      },
+    ];
+    for (const row of refused) {
+      if (row.file !== undefined) writeFileSync(file, row.file);
+      const reader = {
+        readText: (path: string) => readFileText(path, () => row.stdin ?? Buffer.of()),
+      };
+      const named = row.argv.join(" ");
+      requests.length = 0;
+      const dry = await run([...row.argv, "--dry-run"], omp, "", reader);
+      expect(dry, named).toEqual({ code: 1, stdout: row.stdout, stderr: "" });
+      const call = await run(row.argv, omp, "", reader);
+      expect(call, named).toEqual(dry);
+      expect(requests, named).toEqual([]);
+    }
+
+    const text = "\uFEFFCafé 😀 naïve\n";
+    writeFileSync(file, text);
+    for (const [path, stdin] of [
+      [file, Buffer.of()],
+      ["-", Buffer.from(text)],
+    ] as const) {
+      const argv = ["comment", "--issue", "DSP-1", "--body-file", path];
+      const reader = { readText: (read: string) => readFileText(read, () => stdin) };
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, "", reader);
+      expect(dry, path).toEqual({
+        code: 0,
+        stdout: `${JSON.stringify({ issue: "DSP-1", body: text }, null, 2)}\n`,
+        stderr: "",
+      });
+      expect(requests, path).toEqual([]);
+      const call = await run(argv, omp, "", reader);
+      expect(call.code, call.stdout).toBe(0);
+      const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
+      expect(posted?.body, path).toMatchObject({ body: text });
+    }
+  });
 
   // INFRA-4224: the call of a markdown --path file asks the file round trip about the bytes it
   // would send, with and without --force, as its dry run does, and throws Dispatch's refusal

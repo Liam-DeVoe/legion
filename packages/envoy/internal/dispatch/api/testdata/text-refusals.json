@@ -61,9 +61,10 @@
     "name": "a file holding a byte that is not UTF-8",
     "text": [{ "text": "# Notes\n\nA" }, { "base64": "/w==" }, { "text": "B\n" }],
     "sent": ["file"],
+    "command": ["inline"],
     "status": 400,
     "code": "INVALID_UTF8",
-    "words": "file holds a byte that is not UTF-8 (0xFF) at character 11",
+    "words": "holds a byte that is not UTF-8 (0xFF) at character 11",
     "scope": "upload"
   },
   {
