@@ -43,7 +43,7 @@ jobs:
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
       # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself
-      # and the fifteen subpaths packages/dispatch names (web/vite.config.ts:117-179 aliases each
+      # and the fourteen subpaths packages/dispatch names (web/vite.config.ts:117-176 aliases each
       # of them, and ./dispatch-api beside them) - so the build compiles no module outside the set
       # the dashboard's tsc programs compile, which is what this job's filter lists, and not
       # ./legion-api, which Dispatch never imports. package.json allows no comment, so this is

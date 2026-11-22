@@ -180,10 +180,6 @@ type landingIssuePage struct {
 	// lacks, which the Spec tab draws beside the requirement. It is null for a key that is no
 	// issue, which is the 404 that route answers for one.
 	Coverage *model.IssueCoverage `json:"coverage"`
-	// RepoProjects is GET /api/v1/settings/repo-projects: every repository mapped to a project.
-	// The issue header's repository control reads the whole list and picks out the repositories
-	// of this issue's project, so the landing carries the whole list too.
-	RepoProjects []model.RepoProject `json:"repo_projects"`
 	// ArchitectureSources is GET /api/v1/projects/{key}/architecture-sources for the issue's own
 	// project, which the components line reads to learn whether the project has a model at all.
 	// The project is the one the issue above names, so a caller asking for this landing names
@@ -698,11 +694,6 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 
 	decisions, err := s.loadIssueDecisions(ctx, key, trees)
 	page.Decisions = landingPart(ctx, "issue.decisions", &decisions, err)
-
-	// Every repository mapping there is, which is what the repository control reads whatever the
-	// issue is: it needs no issue and is read even for a key that is none.
-	repos, err := s.loadRepoProjects(ctx)
-	page.RepoProjects = landingPart(ctx, "issue.repo_projects", repos, err)
 
 	if page.Issue != nil {
 		// The coverage route answers 404 for an issue nobody has, so the landing reads it only

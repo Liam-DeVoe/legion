@@ -45,7 +45,6 @@ import {
   projectIssuesQuery,
   projectsQuery,
   readLanding,
-  repoProjectsQuery,
   userAgentStateQuery,
   userStateQuery,
   whoAmIQuery,
@@ -60,7 +59,6 @@ import type {
   LandingShell,
   MyRepliesResponse,
   Priorities,
-  RepoProject,
 } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { comment, issue, specArtifact } from "../features/margin/margin-fixture";
@@ -108,18 +106,6 @@ const coverage: IssueCoverage = {
   spec_artifact_id: specArtifact.id,
 };
 
-/** The repositories this deployment maps to a project, which the repository control picks from. */
-const repoProjects: RepoProject[] = [
-  {
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    default: true,
-    project: "CORE",
-    renamed_to: null,
-    repo: "acme/widgets",
-  },
-];
-
 /** The architecture sources of CORE, which the components line and the project page read. */
 const architectureSources: ArchitectureSource[] = [
   {
@@ -157,6 +143,7 @@ const shell: LandingShell = {
   projects: [
     {
       created_at: "2026-09-09T00:00:00Z",
+      default_repo: "acme/widgets",
       gated_steps: [],
       key: "CORE",
       name: "Core",
@@ -191,7 +178,6 @@ function issueLanding(): LandingResponse {
         text: { markdown: "# Spec\n", token: "t-1", version: 1 },
       },
       issue,
-      repo_projects: repoProjects,
       subscribers: [],
       user_state: {},
     },
@@ -252,7 +238,6 @@ function readsBehindTheLanding() {
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue(
       []
     ),
-    listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),
     getArtifactSubscribers: spyOn(api, "getArtifactSubscribers").mockResolvedValue([]),
   };
   return {
@@ -283,6 +268,8 @@ test("an issue landing seeds every key the issue page reads, so the page reads n
     expect(viewer).toEqual({ event_head: "41", kind: "user", login: "alice" });
     // The shell, which every page draws.
     expect(await client.fetchQuery(inboxQuery())).toEqual([]);
+    // The project list, out of which the header's repository control also takes its project's
+    // default repository (`features/issue/RepoControl.tsx`).
     expect(await client.fetchQuery(projectsQuery())).toEqual(shell.projects ?? []);
     expect(await client.fetchQuery(pinnedIssuesQuery())).toEqual([]);
     expect(await client.fetchQuery(userAgentStateQuery())).toEqual({});
@@ -303,9 +290,6 @@ test("an issue landing seeds every key the issue page reads, so the page reads n
     });
     // What the Spec tab draws beside each requirement (`features/issue/SpecRequirements.tsx`).
     expect(await client.fetchQuery(issueCoverageQuery("CORE-1"))).toEqual(coverage);
-    // The repository mappings the header's control picks this project's out of
-    // (`features/issue/RepoControl.tsx`).
-    expect(await client.fetchQuery(repoProjectsQuery())).toEqual(repoProjects);
     // The sources of the issue's own project, which the components line reads
     // (`features/issue/IssueComponentsLine.tsx`): the issue this landing carries names CORE.
     expect(await client.fetchQuery(projectArchitectureSourcesQuery("CORE"))).toEqual(

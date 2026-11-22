@@ -164,9 +164,6 @@ export default defineConfig({
       "@legion/contracts/related-forms": fileURLToPath(
         new URL("../../contracts/src/related-forms.ts", import.meta.url)
       ),
-      "@legion/contracts/repo": fileURLToPath(
-        new URL("../../contracts/src/repo.ts", import.meta.url)
-      ),
       "@legion/contracts/dispatch-snippet": fileURLToPath(
         new URL("../../contracts/src/dispatch-snippet.ts", import.meta.url)
       ),

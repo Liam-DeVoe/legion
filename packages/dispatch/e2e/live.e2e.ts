@@ -708,10 +708,11 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // the issue this address names (`web/src/api/queries.ts`, `readLanding`). Everything that
     // was a request of its own before and is absent below - the sidebar's Inbox, Pinned and
     // Projects, the viewer's state, the issue's detail, its comments, the margin's own ask list,
-    // its subscribers, the agent registry, the project's architecture sources, the repository
-    // mappings, the Agents badge's state and the Inbox badge's reply count - rides this one
-    // answer and is seeded under the key that read's own reader holds (`seedShell`,
-    // `seedIssuePage`), so the page asks none of those routes at all.
+    // its subscribers, the agent registry, the project's architecture sources, the Agents
+    // badge's state and the Inbox badge's reply count - rides this one answer and is seeded under
+    // the key that read's own reader holds (`seedShell`, `seedIssuePage`), so the page asks none
+    // of those routes at all. The header's repository control shares the Projects list for the
+    // project's default repository, so it asks no route of its own either.
     `/api/v1/landing?page=issue&key=${issue.key}`,
     // The Conversation's own ask list, which asks the same route for each ask's thread
     // (`?thread=1`) and so is a request of its own, not the margin's shared.

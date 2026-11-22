@@ -518,16 +518,6 @@ export const projectsQuery = () =>
     queryFn: () => api.listProjects(),
   });
 
-/** Every repository mapped to a project (`GET /api/v1/settings/repo-projects`): the Settings
- *  page's table, which writes it optimistically as a mapping is saved or removed
- *  (`features/settings/SettingsPage.tsx`), and the issue header's repository control, which picks
- *  the issue's own project's repositories out of it (`features/issue/RepoControl.tsx`). */
-export const repoProjectsQuery = () =>
-  queryOptions({
-    queryKey: ["repo-projects"],
-    queryFn: () => api.listRepoProjects(),
-  });
-
 /** The two settings the bar reads before it offers a person's typed words as a new issue: the
  *  label that issue carries and the session it is routed to. One read for the session: the
  *  deployment changes it only by restarting. */
@@ -973,11 +963,6 @@ function seedIssuePage(client: QueryClient, key: string, page: LandingIssuePage)
   // (`features/issue/SpecRequirements.tsx`).
   if (page.coverage !== null) {
     client.setQueryData(issueCoverageQuery(key).queryKey, page.coverage);
-  }
-  // Every repository mapped to a project, out of which the header's repository control picks
-  // this project's (`repoProjectsQuery`).
-  if (page.repo_projects !== null) {
-    client.setQueryData(repoProjectsQuery().queryKey, page.repo_projects);
   }
   // The sources of the issue's own project, which the components line reads
   // (`features/issue/IssueComponentsLine.tsx`). The project is the one the issue carries, and

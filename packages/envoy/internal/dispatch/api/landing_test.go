@@ -43,7 +43,9 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 	createTestProject(t, handler, "OTHER")
 	addArchitectureSource(t, database, "LAND", "legion/land")
 	addArchitectureSource(t, database, "OTHER", "legion/other")
-	mapRepoToProject(t, handler, "acme/widgets", "LAND")
+	// A default repository, so the projects part carries the member the issue header's repository
+	// control reads its suggestion from (`default_repo`), which a project with none leaves out.
+	setDefaultRepository(t, handler, "LAND", "acme/widgets")
 	// The spec marks two requirements, so the coverage part carries requirements and gap lines
 	// rather than the one line a spec that marks none earns.
 	issue := createSpecIssue(t, handler, "LAND", "# Spec\n\nThe landing reads this document.\n\n"+twoRequirements)
@@ -101,7 +103,6 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 		{"page.issue.subscribers", landing.Issue["subscribers"], "/api/v1/issues/" + issue.Key + "/subscribers"},
 		{"page.issue.decisions", landing.Issue["decisions"], "/api/v1/issues/" + issue.Key + "/decisions"},
 		{"page.issue.coverage", landing.Issue["coverage"], "/api/v1/issues/" + issue.Key + "/coverage"},
-		{"page.issue.repo_projects", landing.Issue["repo_projects"], "/api/v1/settings/repo-projects"},
 		{"page.issue.architecture_sources", landing.Issue["architecture_sources"], "/api/v1/projects/LAND/architecture-sources"},
 		{"page.issue.document.artifact", spec["artifact"], "/api/v1/artifacts/" + issue.PrimaryArtifactID},
 		{"page.issue.document.text", spec["text"], "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text"},
@@ -261,13 +262,9 @@ func TestLandingCoverageCarriesTheTreesTheCoverageRouteAnswers(t *testing.T) {
 // which answers the 404 it already draws. The decisions part is no exception to that rule: its
 // own route answers an issue it has no row of with empty content rather than a refusal
 // (getIssueDecisions), and the landing carries exactly that.
-//
-// The repository mappings are no exception either, the other way about: their route reads no
-// issue at all, so the landing answers them whatever the key was.
 func TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell(t *testing.T) {
 	handler := newTestHandler(t)
 	createTestProject(t, handler, "LAND")
-	mapRepoToProject(t, handler, "acme/widgets", "LAND")
 	landing := readLanding(t, handler, "/api/v1/landing?page=issue&key=LAND-404")
 	issue := landing.partOf(t, "issue")
 	// The coverage and the sources are the issue's own: the coverage route answers 404 for a key
@@ -279,8 +276,6 @@ func TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell(t *testing.T) {
 	}
 	assertSameJSON(t, "page.issue.decisions", issue["decisions"],
 		readRouteBody(t, handler, "/api/v1/issues/LAND-404/decisions"))
-	assertSameJSON(t, "page.issue.repo_projects", issue["repo_projects"],
-		readRouteBody(t, handler, "/api/v1/settings/repo-projects"))
 	assertSameJSON(t, "shell.projects", landing.Shell["projects"], readRouteBody(t, handler, "/api/v1/projects"))
 }
 
@@ -688,17 +683,6 @@ func addArchitectureSource(t *testing.T, database *store.Store, project, repo st
 		values ($1, $2, 'main', 1, '{"kind":"user","id":"alice"}'::jsonb)
 	`, project, repo); err != nil {
 		t.Fatalf("make %s a source of %s: %v", repo, project, err)
-	}
-}
-
-// mapRepoToProject maps a repository to a project, which is one row of what GET
-// /api/v1/settings/repo-projects answers.
-func mapRepoToProject(t *testing.T, handler http.Handler, repo, project string) {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo,
-		map[string]any{"project": project}, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("map %s to %s: status=%d body=%s", repo, project, response.Code, response.Body.String())
 	}
 }
 
