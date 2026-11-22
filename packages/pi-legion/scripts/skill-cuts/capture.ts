@@ -67,11 +67,13 @@
  * reads (arms.ts's `Injection`) reaches the capture in the arm's messages, which carry each
  * arm's own text of it: the Envoy plugin's dispatch-first block, which the plugin itself puts in
  * no capture, Dispatch being off here, and a subagent's autoloaded block. The record lists each
- * (`injections`). A subagent's case whose agent definition (context.ts's `agent`) autoloads the
- * skill, and whose messages hold no autoloaded block of it though no compaction summary opens
- * them, holds the block in a form the runner cannot rebuild: its capture throws InjectionRefused,
- * naming the case, before Oh My Pi runs. A saved capture of an arm with such a block whose record
- * lists none was made before arms gave it their own text, and is refused (`savedCapture`).
+ * (`injections`), and beside them whether the case's session had Dispatch and why (`dispatch`,
+ * arms.ts's `dispatchOf`), which the plugin's block rests on. A subagent's case whose agent
+ * definition (context.ts's `agent`) autoloads the skill, and whose messages hold no autoloaded
+ * block of it though no compaction summary opens them, holds the block in a form the runner
+ * cannot rebuild: its capture throws InjectionRefused of kind `autoload-no-block`, naming the
+ * case, before Oh My Pi runs. A saved capture of an arm with such a block whose record lists none
+ * was made before arms gave it their own text, and is refused (`savedCapture`).
  *
  * **The digests.** The record holds the session's `system-prompt-digest` (`sessionDigest`, from
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
@@ -121,7 +123,14 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import { z } from "zod";
-import { type Arm, type ArmName, ENVOY_PLUGIN, type Injection, InjectionRefused } from "./arms";
+import {
+  type Arm,
+  type ArmName,
+  type DispatchAnswer,
+  ENVOY_PLUGIN,
+  type Injection,
+  InjectionRefused,
+} from "./arms";
 import type { Case } from "./cases";
 import { json, writeWhole } from "./common";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
@@ -449,6 +458,10 @@ export interface CaptureRecord {
   /** Each block of the case's skill that reaches the session beside its listing line and its
    *  reads, and where this arm's messages hold it (arms.ts's `Injection`). */
   readonly injections: readonly Injection[];
+  /** Whether the case's session had Dispatch, and why (the arm's `dispatch`, arms.ts's
+   *  `dispatchOf`): what the plugin's block of `injections` rests on. Null for an arm built from
+   *  no case (a load test's); absent from a capture saved before this field. */
+  readonly dispatch?: DispatchAnswer | null;
 }
 
 /** A saved capture: the body, its record, and their files; `made` is true when this call made it,
@@ -1232,10 +1245,11 @@ function extensionErrors(profileDir: string, stderr: string): string[] {
 }
 
 /** What a capture reads of a case: its id, skill, model and thinking level, its context and
- *  profile, and the session's digest. A load test's task (load.ts) is one of these too. */
+ *  profile, the session's digest, and the evidence context.ts reads whose session it is. A load
+ *  test's task (load.ts) is one of these too. */
 export type CaptureCase = Pick<
   Case,
-  "id" | "skill" | "model" | "thinking" | "context" | "profile" | "sessionDigest"
+  "id" | "skill" | "model" | "thinking" | "context" | "profile" | "sessionDigest" | "evidence"
 >;
 
 /**
@@ -1287,7 +1301,8 @@ export async function captureBody(
     arm.messages[0]?.role !== "compactionSummary"
   ) {
     throw new InjectionRefused(
-      `case ${c.id}: its agent ${agent.name} (${agent.path} of ${agent.repo} at ${agent.commit}) autoloads ${c.skill}, and its messages hold no autoloaded block of it in the form Oh My Pi writes one, though no compaction summary opens them, so its arms cannot each give it their own text`
+      `case ${c.id}: its agent ${agent.name} (${agent.path} of ${agent.repo} at ${agent.commit}) autoloads ${c.skill}, and its messages hold no autoloaded block of it in the form Oh My Pi writes one, though no compaction summary opens them, so its arms cannot each give it their own text`,
+      "autoload-no-block"
     );
   }
   const home = path.join(root, "home");
@@ -1824,6 +1839,7 @@ export async function captureBody(
       },
       hookDropped: hookCounts(hookLog),
       injections: arm.injections ?? [],
+      dispatch: arm.dispatch ?? null,
       exit,
       runs,
       timings: {

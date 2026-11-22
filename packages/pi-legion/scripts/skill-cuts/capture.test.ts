@@ -11,7 +11,7 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Arm, type ArmName, buildArm } from "./arms";
+import { type Arm, type ArmName, buildArm, type DispatchAnswer } from "./arms";
 import {
   armPromptBlocks,
   type Capture,
@@ -1409,10 +1409,11 @@ export default function bootProbe(pi) {
   );
 
   // Catches: a none arm of dispatch-first that removes the file the Envoy plugin reads as it
-  // loads ("Failed to load extension"), and old and new arms whose bodies hold no block of the
-  // skill though the plugin puts it into every request of a session with Dispatch.
+  // loads ("Failed to load extension"), old and new arms whose bodies hold no block of the
+  // skill though the plugin puts it into every request of a session with Dispatch, and a record
+  // that does not say whether the session had Dispatch, which that block rests on.
   test(
-    "a dispatch-first case's none arm loads the Envoy plugin and sends no block of the skill; its old and new arms each send the plugin's block of their own text",
+    "a dispatch-first case's none arm loads the Envoy plugin and sends no block of the skill; its old and new arms each send the plugin's block of their own text; each record says whether the session had Dispatch, and why",
     async () => {
       await captures();
       const plugins = builtPlugins(["pi-envoy"]);
@@ -1472,6 +1473,12 @@ export default function bootProbe(pi) {
         skillReads: [2],
       };
       const sent = new Map<string, string[]>();
+      // Whether the session had Dispatch, which the block rests on: a dev box's session whose
+      // messages show neither the block nor a Dispatch call (arms.ts's `dispatchOf`).
+      const assumed: DispatchAnswer = {
+        from: "assumed",
+        why: "its context is devbox, and none of its messages holds the dispatch-first block or a Dispatch call, so the runner takes it that the session had Dispatch",
+      };
       // none first: the plugin must load without the skill's own copy.
       for (const name of ["none", "old", "new"] as const) {
         const { body, record } = await captureBody(
@@ -1494,6 +1501,7 @@ export default function bootProbe(pi) {
           ["pi-envoy", "extension"],
         ]);
         expect(record.pluginTools.envoy).toContain("envoy_send");
+        expect({ arm: name, dispatch: record.dispatch }).toEqual({ arm: name, dispatch: assumed });
         const blocks = texts(body.messages).filter((text) =>
           text.includes("<dispatch-first-skill>")
         );
@@ -1588,6 +1596,7 @@ export default function bootProbe(pi) {
         if (name === "none") {
           expect(autoloadedTexts).toEqual([]);
           expect(record.injections).toEqual([{ by: "autoload", path: autoloadPath, at: null }]);
+          expect(record.dispatch?.from).toBe("assumed");
           continue;
         }
         const own = name === "old" ? OLD_SKILL : NEW_SKILL;

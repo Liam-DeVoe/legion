@@ -9,7 +9,17 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Arm, type ArmName, buildArm, skillFile } from "./arms";
+import {
+  type Arm,
+  type ArmName,
+  buildArm,
+  type DispatchAnswer,
+  dispatchOf,
+  InjectionRefused,
+  injectionFault,
+  injectionFaults,
+  skillFile,
+} from "./arms";
 import { type Case, pathHash } from "./cases";
 
 // The arms of a case, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch profile with
@@ -704,4 +714,225 @@ test("a case whose messages hold a block of its skill in a form the arms cannot 
   ).toThrow(
     "case c-quoted: its message 3 opens with <dispatch-first-skill> away from where the pi-envoy plugin puts its block (message 0, after the leading compaction summaries)"
   );
+});
+
+// Catches: a refused case whose reasons a caller can tell apart only by their wording.
+test("each reason a case's block cannot be rebuilt has its kind, injectionFault joins their texts as before, and buildArm's refusal sets no kind", () => {
+  const invoked = { ...autoloaded, attribution: "user", display: true };
+  const withArgs = {
+    ...autoloaded,
+    content: [{ type: "text", text: `${autoloadedOf(f1File(2))}\nUser: focus on step 2` }],
+  };
+  const base = autoloadCase("c-kinds", invoked);
+  const c: Case = {
+    ...base,
+    messages: [invoked, withArgs, ...base.messages.slice(1)],
+    skillReads: base.skillReads.map((index) => index + 1),
+  };
+  const form = `not in the form of Oh My Pi's autoloaded block (one text part that ends "Skill: <its details.path>")`;
+  expect(injectionFaults(c)).toEqual([
+    {
+      kind: "user-invoked",
+      text: `its message 0 is a skill-prompt message of alpha, one the user invoked, ${form}`,
+    },
+    { kind: "other-shape", text: `its message 1 is a skill-prompt message of alpha ${form}` },
+  ]);
+  expect(injectionFault(c)).toBe(
+    `its message 0 is a skill-prompt message of alpha, one the user invoked, ${form}; its message 1 is a skill-prompt message of alpha ${form}`
+  );
+  const quoted: SessionMessage = {
+    role: "user",
+    content: [{ type: "text", text: "<dispatch-first-skill>\nA quoted block." }],
+  };
+  const misplaced = dispatchCase("c-misplaced");
+  expect(injectionFaults({ ...misplaced, messages: [...misplaced.messages, quoted] })).toEqual([
+    {
+      kind: "plugin-block-misplaced",
+      text: "its message 3 opens with <dispatch-first-skill> away from where the pi-envoy plugin puts its block (message 0, after the leading compaction summaries)",
+    },
+  ]);
+  expect(injectionFaults(f1Case)).toEqual([]);
+  expect(injectionFault(f1Case)).toBeUndefined();
+  // buildArm's refusal carries no kind (injectionFaults gives each); a capture's carries
+  // `autoload-no-block` (capture.ts).
+  const refusal = (() => {
+    try {
+      buildArm(c, "old", { old: oldDir, new: newDir }, path.join(scratch, "kinds"));
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  })();
+  expect(refusal).toBeInstanceOf(InjectionRefused);
+  expect(refusal instanceof InjectionRefused ? refusal.kind : "not thrown").toBeUndefined();
+  expect(new InjectionRefused("case c: …", "autoload-no-block").kind).toBe("autoload-no-block");
+});
+
+/** A tool call of `name` with `args`, alone in an assistant message. */
+function toolCall(name: string, args: Record<string, unknown>): SessionMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "toolCall", id: `toolu_${name}`, name, arguments: args }],
+  };
+}
+
+/** F1's case in `context`, `more` after its seven messages (from message 7), with `evidence`. */
+function evidenceCase(
+  context: string,
+  more: SessionMessage[] = [],
+  evidence?: Case["evidence"]
+): Case {
+  return {
+    ...structuredClone(f1Case),
+    context,
+    messages: [...structuredClone(f1Case.messages), ...more],
+    ...(evidence === undefined ? {} : { evidence }),
+  };
+}
+
+/** The evidence item build.ts writes for a subagent's session, of the store whose context is
+ *  `store`. */
+function subagentEvidence(store: string): Case["evidence"] {
+  return [
+    {
+      item: "subagent alpha-runner",
+      source: `the session's session_init line names the agent alpha-runner; its parent session is another transcript, and the store's context is ${store}`,
+    },
+  ];
+}
+
+// Catches: a Legion role's case taken to have had Dispatch on the assumption a dev box's rests
+// on, though its context, or its evidence for a subagent, says it is a Legion role's.
+test("a Legion role's session, and a subagent of one by its evidence, had Dispatch from its role", () => {
+  expect(dispatchOf(evidenceCase("legion:acme:implementer"))).toEqual({
+    from: "legion-role",
+    why: "its context legion:acme:implementer is a Legion role's session, and a Legion role works its issue through Dispatch",
+  });
+  expect(
+    dispatchOf(evidenceCase("subagent:alpha-runner", [], subagentEvidence("legion:acme")))
+  ).toEqual({
+    from: "legion-role",
+    why: `it is the session of the subagent alpha-runner of a Legion role's session: its evidence item "subagent alpha-runner" says the store's context is legion:acme`,
+  });
+  // A Legion role's answer comes first, whatever its messages show.
+  const asked = toolCall("bash", { command: "dispatch search --query 'alpha list'" });
+  expect(dispatchOf(evidenceCase("legion:acme:tester", [asked])).from).toBe("legion-role");
+});
+
+// Catches: a dev box's case that shows its Dispatch in its transcript counted as resting on the
+// assumption, and a mention of `dispatch` that runs nothing counted as a call.
+test("a session whose messages hold the dispatch-first block or a Dispatch call had Dispatch from its transcript, and a mention that runs nothing is no call", () => {
+  const hook: SessionMessage = {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: "<system-reminder>\nSessionStart hook additional context: <dispatch-first-skill>\nThis session has Dispatch, so the dispatch-first skill is loaded for it. Follow it.\n</dispatch-first-skill>\n</system-reminder>",
+      },
+    ],
+  };
+  const shows: [SessionMessage, string][] = [
+    [
+      hook,
+      "its message 7 holds the dispatch-first block (<dispatch-first-skill>), which a host puts only into a session with Dispatch",
+    ],
+    [
+      toolCall("dispatch_ask", { issue: "K-1", question: "Ship?" }),
+      "its message 7 calls the Dispatch tool dispatch_ask",
+    ],
+    [
+      toolCall("write", { path: "xd://dispatch_comment", content: '{"issue":"K-1","body":"b"}' }),
+      "its message 7 writes the Dispatch tool device xd://dispatch_comment",
+    ],
+    [
+      toolCall("bash", { command: "cd /work && dispatch search --query 'alpha list'" }),
+      "its message 7 runs `dispatch search` in a bash call",
+    ],
+    [
+      toolCall("bash", { command: "out=$(DISPATCH_HOST=omp dispatch read --issue K-1)" }),
+      "its message 7 runs `dispatch read` in a bash call",
+    ],
+  ];
+  for (const [message, why] of shows) {
+    expect(dispatchOf(evidenceCase("devbox", [message]))).toEqual({ from: "transcript", why });
+  }
+  // A subagent of a dev box's session shows it the same way.
+  expect(
+    dispatchOf(evidenceCase("subagent:alpha-runner", [hook], subagentEvidence("devbox"))).from
+  ).toBe("transcript");
+  const mentions: SessionMessage[] = [
+    // A read of a file that quotes the marker.
+    {
+      role: "toolResult",
+      toolCallId: "toolu_read",
+      toolName: "read",
+      content: [
+        { type: "text", text: 'export const DISPATCH_FIRST_MARKER = "<dispatch-first-skill>";' },
+      ],
+    },
+    toolCall("bash", { command: "kubectl --context dispatch get pods" }),
+    toolCall("bash", { command: 'echo "dispatch read --issue K-1"' }),
+    toolCall("bash", { command: "cat > notes.md <<'EOF'\ndispatch read --issue K-1\nEOF" }),
+    toolCall("bash", { command: "ls /work/dispatch" }),
+    toolCall("read", { path: "skill://dispatch-first" }),
+  ];
+  for (const message of mentions) {
+    expect(dispatchOf(evidenceCase("devbox", [message])).from).toBe("assumed");
+  }
+});
+
+// Catches: a dev box's case that shows no Dispatch given an answer that hides that it rests on
+// the runner's assumption.
+test("a dev box's session that shows neither is assumed to have had Dispatch, and says so", () => {
+  expect(dispatchOf(f1Case)).toEqual({
+    from: "assumed",
+    why: "its context is devbox, and none of its messages holds the dispatch-first block or a Dispatch call, so the runner takes it that the session had Dispatch",
+  });
+  const assumed: DispatchAnswer = {
+    from: "assumed",
+    why: "it is the session of the subagent alpha-runner, whose evidence names no Legion store, and none of its messages holds the dispatch-first block or a Dispatch call, so the runner takes it that the session had Dispatch",
+  };
+  expect(dispatchOf(evidenceCase("subagent:alpha-runner", [], subagentEvidence("devbox")))).toEqual(
+    assumed
+  );
+  expect(dispatchOf(evidenceCase("subagent:alpha-runner"))).toEqual(assumed);
+});
+
+// Catches: an arm that does not carry its case's answer, so a capture cannot record what the
+// plugin's block rests on, or a block left out on an answer other than the assumption.
+test("each arm carries its case's answer, and the plugin's block goes in on each of the three answers", () => {
+  const dirs = {
+    old: path.join(dispatchScratch, "old"),
+    new: path.join(dispatchScratch, "new"),
+  };
+  mkdirSync(dirs.old, { recursive: true });
+  mkdirSync(dirs.new, { recursive: true });
+  writeFileSync(path.join(dirs.old, "SKILL.md"), DISPATCH_FIRST);
+  writeFileSync(path.join(dirs.new, "SKILL.md"), DISPATCH_FIRST_CUT);
+  const asked = toolCall("bash", { command: "dispatch search --query 'made-up change'" });
+  const cases: [Case, DispatchAnswer["from"]][] = [
+    [{ ...dispatchCase("c-legion"), context: "legion:acme:implementer" }, "legion-role"],
+    [dispatchCase("c-transcript", [asked]), "transcript"],
+    [dispatchCase("c-assumed"), "assumed"],
+  ];
+  for (const [c, from] of cases) {
+    for (const name of ["old", "new", "minus", "twin", "none"] as const) {
+      const built = buildArm(c, name, dirs, path.join(dispatchScratch, `answer-${c.id}-${name}`));
+      expect({ arm: name, dispatch: built.dispatch }).toEqual({
+        arm: name,
+        dispatch: dispatchOf(c),
+      });
+      expect(built.dispatch?.from).toBe(from);
+      expect(built.injections).toEqual([
+        {
+          by: "plugin",
+          plugin: "pi-envoy",
+          name: "dispatch-first",
+          at: name === "none" ? null : 0,
+        },
+      ]);
+    }
+  }
+  // Every case gets its answer, a skill no plugin puts in included.
+  expect(arm("old").dispatch).toEqual(dispatchOf(f1Case));
 });

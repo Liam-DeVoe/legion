@@ -30,6 +30,7 @@ import {
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
+  subagentDefinition,
   UnreadableDirectory,
 } from "./context";
 
@@ -1646,4 +1647,203 @@ test("a subagent's context names the agent definition of the profile's plugins i
   expect(await agentOf("subagent:nameless")).toBeNull();
   expect(await agentOf("subagent:task")).toBeNull();
   expect(await agentOf("devbox")).toBeNull();
+}, 120_000);
+
+/** A made-up dotfiles repository's installers, as a dev box's link its agents for Oh My Pi:
+ *  installers/omp.sh links `omp/agents` as `~/.omp/agent/agents` on line 9, after a commented-out
+ *  link and a link of another directory. */
+const DOTFILES: Record<string, string> = {
+  "installers/lib.sh": [
+    "#!/bin/bash",
+    `DOTFILES_DIR="\${DOTFILES_DIR:-$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)}"`,
+    'ensure_link() { ln -sfn "$1" "$2"; }',
+    "",
+  ].join("\n"),
+  "installers/omp.sh": [
+    "#!/bin/bash",
+    "set -euo pipefail",
+    `source "$(dirname "\${BASH_SOURCE[0]}")/lib.sh"`,
+    "",
+    `OMP_AGENT_DIR="\${HOME}/.omp/agent"`,
+    'mkdir -p "$OMP_AGENT_DIR"',
+    `# ensure_link "\${DOTFILES_DIR}/omp/old-agents" "\${OMP_AGENT_DIR}/agents"`,
+    `ensure_link "\${DOTFILES_DIR}/omp/hooks"       "\${OMP_AGENT_DIR}/hooks"`,
+    `ensure_link "\${DOTFILES_DIR}/omp/agents"      "\${OMP_AGENT_DIR}/agents"`,
+    "",
+  ].join("\n"),
+  "omp/agents/reviewer.md":
+    "---\nname: alpha-reviewer\ndescription: Reviews, the dev box's own way.\n---\n\nReview.\n",
+  "omp/hooks/post/note.ts": "export default function hook(): void {}\n",
+  "skills/gamma/SKILL.md": "---\nname: gamma\ndescription: Use for the gamma notes.\n---\n",
+};
+
+/** A made-up plugin of agents whose `alpha-reviewer` autoloads alpha and beta, its profile entry,
+ *  and that agent's definition as the record names it. */
+const PLUGIN_AGENTS = {
+  "packages/agents-pack/agents/reviewer.md":
+    "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha, beta]\n---\n\nReview.\n",
+  "packages/agents-pack/agents/listed.md":
+    "---\nname: listed\ndescription: Lists.\nautoloadSkills: [beta]\n---\n\nList.\n",
+};
+const AGENTS_PACK = [
+  { repo: "acme/legion", commit: COMMIT, path: "packages/agents-pack", name: "agents-pack" },
+];
+const PLUGIN_REVIEWER = {
+  name: "alpha-reviewer",
+  repo: "acme/legion",
+  commit: COMMIT,
+  path: "packages/agents-pack/agents/reviewer.md",
+  autoloadSkills: ["alpha", "beta"],
+};
+
+/** The evidence item build.ts writes for the session of the subagent of `context`, of the store
+ *  whose context is `store`. */
+function subagentItem(context: string, store: string): { item: string; source: string } {
+  const agent = context.slice("subagent:".length);
+  return {
+    item: `subagent ${agent}`,
+    source: `the session's session_init line names the agent ${agent}; its parent session is another transcript, and the store's context is ${store}`,
+  };
+}
+
+// Catches: a dev box's subagent read as running the agent definition of a plugin of its profile,
+// though the dev box's installers link the box's own agents as Oh My Pi's user agents, which Oh
+// My Pi reads first, so a plugin's agent of the same name that autoloads a skill is not the one
+// the subagent ran.
+test("a dev box's subagent runs the user agent its installers link as ~/.omp/agent/agents before a plugin's of the same name; a Legion subagent, or a profile of two such repositories, reads the plugins'", async () => {
+  const root = path.join(dir, "user-agents");
+  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  const delta = { repo: "acme/box", commit: COMMIT, path: "skills/delta", name: "delta" };
+  const built = async (
+    name: string,
+    context: string,
+    store: string | undefined,
+    extra: (typeof gamma)[] = []
+  ) => {
+    const base = aCase(context, { plugins: AGENTS_PACK, contextFiles: [] });
+    const c: Case = {
+      ...base,
+      id: `case-${name}`,
+      profile: { ...base.profile, skills: [...base.profile.skills, gamma, ...extra] },
+      ...(store === undefined ? {} : { evidence: [subagentItem(context, store)] }),
+    };
+    const where = path.join(root, name);
+    const { options, arm } = setUp(where, c);
+    writeTree(path.join(where, "repos", "acme", "legion", COMMIT), PLUGIN_AGENTS);
+    writeTree(path.join(where, "repos", "acme", "dotfiles", COMMIT), DOTFILES);
+    writeTree(path.join(where, "repos", "acme", "box", COMMIT), {
+      "installers/setup.sh": `#!/bin/bash\nROOT="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"\nln -f "$ROOT/agents" ~/.omp/agent/agents\nln -sfn "$ROOT/agents" ~/.omp/agent/agents\n`,
+      "agents/reviewer.md": "---\nname: alpha-reviewer\ndescription: The box's.\n---\n",
+      "skills/delta/SKILL.md": "---\nname: delta\ndescription: Use for delta.\n---\n",
+    });
+    return { c, arm, options, context: await buildContext(c, arm, options) };
+  };
+  const userAgent = {
+    name: "alpha-reviewer",
+    repo: "acme/dotfiles",
+    commit: COMMIT,
+    path: "omp/agents/reviewer.md",
+    linkedBy: "installers/omp.sh:9",
+    autoloadSkills: [],
+  };
+  const devbox = await built("devbox", "subagent:alpha-reviewer", "devbox");
+  expect(devbox.context.record.agent).toEqual(userAgent);
+  expect(await subagentDefinition(devbox.c, devbox.options)).toEqual(userAgent);
+  expect(devbox.context.record.leftOut).toEqual([]);
+  // Each repository's installers/ and the linked omp/agents, each read once and kept: a build
+  // again reads all four from the cache.
+  const again = await buildContext(devbox.c, devbox.arm, devbox.options);
+  expect(again.record.agent).toEqual(userAgent);
+  expect(
+    again.record.builds.filter((build) => build.kind === "dir").map((build) => build.hit)
+  ).toEqual([true, true, true, true]);
+  // A case with no evidence of its store reads them too.
+  expect(
+    (await built("no-evidence", "subagent:alpha-reviewer", undefined)).context.record.agent
+  ).toEqual(userAgent);
+  // An agent only the plugin defines is the plugin's.
+  expect((await built("listed", "subagent:listed", "devbox")).context.record.agent).toEqual({
+    name: "listed",
+    repo: "acme/legion",
+    commit: COMMIT,
+    path: "packages/agents-pack/agents/listed.md",
+    autoloadSkills: ["beta"],
+  });
+  // A Legion pod runs no dev box's installers.
+  const legion = await built("legion", "subagent:alpha-reviewer", "legion:acme");
+  expect(legion.context.record.agent).toEqual(PLUGIN_REVIEWER);
+  expect(await subagentDefinition(legion.c, legion.options)).toEqual(PLUGIN_REVIEWER);
+  // Two repositories whose installers each link one: neither is read, and the record says so.
+  const two = await built("two", "subagent:alpha-reviewer", "devbox", [delta]);
+  expect(two.context.record.agent).toEqual(PLUGIN_REVIEWER);
+  expect(two.context.record.leftOut).toEqual([
+    "the user agents of a dev box: acme/dotfiles's installers/omp.sh:9 and acme/box's installers/setup.sh:4 each link a directory as Oh My Pi's user agents directory, and a dev box runs one repository's installers, so the context reads none of them",
+  ]);
+}, 120_000);
+
+// Catches: a dev box's subagent whose profile holds its dotfiles at two commits, the root's last
+// prompt build (its plugin lists and installers) and the subagent's start (its pool
+// directories), read at the first, though Oh My Pi reads the user agents the installers link at
+// the subagent's start, from the dotfiles checkout as it is then.
+test("a dev box's subagent reads its user agents, and the installer line that links them, at the commit of its start that its read-times evidence names; a profile of two commits with no such evidence reads none", async () => {
+  const root = path.join(dir, "user-agents-at-start");
+  const START = "fedcba9876543210fedcba9876543210fedcba98";
+  // At the root's build the box's alpha-reviewer autoloads alpha; by the subagent's start the
+  // installer has a line more and the agent autoloads nothing.
+  const atBuild = {
+    ...DOTFILES,
+    "omp/agents/reviewer.md":
+      "---\nname: alpha-reviewer\ndescription: Reviews, as the box did.\nautoloadSkills: [alpha]\n---\n",
+  };
+  const atStart = {
+    ...DOTFILES,
+    "installers/omp.sh": (DOTFILES["installers/omp.sh"] ?? "").replace(
+      "set -euo pipefail\n",
+      "set -euo pipefail\n# The agents are this repository's.\n"
+    ),
+    "omp/agents/reviewer.md":
+      "---\nname: alpha-reviewer\ndescription: Reviews, as the box does now.\n---\n",
+    "skills/epsilon/SKILL.md": "---\nname: epsilon\ndescription: Use for the epsilon pool.\n---\n",
+  };
+  // gamma is a unit of the root's build, epsilon a skill of a pool at the subagent's start.
+  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  const epsilon = { repo: "acme/dotfiles", commit: START, path: "skills/epsilon", name: "epsilon" };
+  const readTimes = {
+    item: "read times of acme/dotfiles",
+    source: `its plugin lists, installers and settings at ${COMMIT} (the root's last prompt build 2026-11-20T00:59:00Z), its pool directories at ${START}, the last commit of main at or before the subagent's start 2026-11-20T01:00:00Z: Oh My Pi 18.18.6 gives a subagent the skills its parent loaded`,
+  };
+  const built = async (name: string, evidence: Case["evidence"]) => {
+    const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
+    const c: Case = {
+      ...base,
+      id: `case-${name}`,
+      profile: { ...base.profile, skills: [...base.profile.skills, gamma, epsilon] },
+      evidence,
+    };
+    const where = path.join(root, name);
+    const { options, arm } = setUp(where, c);
+    writeTree(path.join(where, "repos", "acme", "legion", COMMIT), PLUGIN_AGENTS);
+    writeTree(path.join(where, "repos", "acme", "dotfiles", COMMIT), atBuild);
+    writeTree(path.join(where, "repos", "acme", "dotfiles", START), atStart);
+    return { c, options, context: await buildContext(c, arm, options) };
+  };
+  const subagent = subagentItem("subagent:alpha-reviewer", "devbox");
+  const userAgent = {
+    name: "alpha-reviewer",
+    repo: "acme/dotfiles",
+    commit: START,
+    path: "omp/agents/reviewer.md",
+    linkedBy: "installers/omp.sh:10",
+    autoloadSkills: [],
+  };
+  const timed = await built("timed", [subagent, readTimes]);
+  expect(timed.context.record.agent).toEqual(userAgent);
+  expect(await subagentDefinition(timed.c, timed.options)).toEqual(userAgent);
+  expect(timed.context.record.leftOut).toEqual([]);
+  // With no read-times item, which of the two commits the box was at is not known.
+  const untimed = await built("untimed", [subagent]);
+  expect(untimed.context.record.agent).toEqual(PLUGIN_REVIEWER);
+  expect(untimed.context.record.leftOut).toEqual([
+    `the user agents of a dev box: the profile holds acme/dotfiles at ${COMMIT} and ${START}, its installers/omp.sh:9 at ${COMMIT} and installers/omp.sh:10 at ${START} each link a directory as Oh My Pi's user agents directory, and no evidence item "read times of acme/dotfiles" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`,
+  ]);
 }, 120_000);
