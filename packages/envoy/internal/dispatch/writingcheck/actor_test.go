@@ -20,10 +20,10 @@ func TestChecksFollowsTheActorRule(t *testing.T) {
 		{"system with an act", "system", "importer", "01a1d1e8-0000-7000-8000-000000000003", false, ExemptSystem},
 		{"no kind", "", "", "", false, ExemptSystem},
 	} {
-		checked, exemption := Checks(tc.kind, tc.id, tc.act)
-		if checked != tc.checked || exemption != tc.exemption {
-			t.Errorf("%s: Checks(%q, %q, %q) = %v, %q, want %v, %q",
-				tc.name, tc.kind, tc.id, tc.act, checked, exemption, tc.checked, tc.exemption)
+		exemption := Exemption(tc.kind, tc.id, tc.act)
+		if checked := exemption == ""; checked != tc.checked || exemption != tc.exemption {
+			t.Errorf("%s: Exemption(%q, %q, %q) = %q (checked %v), want %q (checked %v)",
+				tc.name, tc.kind, tc.id, tc.act, exemption, checked, tc.exemption, tc.checked)
 		}
 	}
 }

@@ -178,8 +178,8 @@ func TestTheWritingCheckActorRule(t *testing.T) {
 		{"a person's token acting for the daemon", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{Session: "legion-daemon:WCK"}}, false, writingcheck.ExemptDaemon},
 		{"Dispatch itself", model.Actor{Kind: "system", ID: "dispatch"}, false, writingcheck.ExemptSystem},
 	} {
-		checked, exemption := writingCheckReads(probe.actor)
-		if checked != probe.checked || exemption != probe.exemption {
+		exemption := writingCheckExemption(probe.actor)
+		if checked := exemption == ""; checked != probe.checked || exemption != probe.exemption {
 			t.Errorf("%s: checked %t (%q), want %t (%q)", probe.name, checked, exemption, probe.checked, probe.exemption)
 		}
 	}

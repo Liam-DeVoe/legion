@@ -163,7 +163,7 @@ func (x *extractor) cases(ctx context.Context, ev event) ([]Case, string, error)
 		return nil, "", nil
 	}
 	act := ev.Actor.actSession()
-	if checked, exemption := writingcheck.Checks(ev.Actor.Kind, ev.Actor.ID, act); !checked {
+	if exemption := writingcheck.Exemption(ev.Actor.Kind, ev.Actor.ID, act); exemption != "" {
 		return nil, exemption, nil
 	}
 	issue := deref(ev.IssueKey)

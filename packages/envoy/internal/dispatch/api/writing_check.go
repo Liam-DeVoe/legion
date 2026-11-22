@@ -125,15 +125,16 @@ func (s *server) recordPersonTyped(r *http.Request, actor model.Actor, input any
 // check: it runs as the reviewer's detector rule set (Decision 11 of INFRA-3231's plan).
 var writingChecker = writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules})
 
-// writingCheckReads applies the actor rule: the check reads a write when an agent session that is
-// not a project's Legion daemon makes it, or when a person's credential makes it for such a
-// session, and reads no other write.
-func writingCheckReads(actor model.Actor) (checked bool, exemption string) {
+// writingCheckExemption applies the actor rule (writingcheck.Exemption): the check reads a write
+// when an agent session that is not a project's Legion daemon makes it, or when a person's
+// credential makes it for such a session, and reads no other write, whose exemption this names; ""
+// for a write the check reads.
+func writingCheckExemption(actor model.Actor) string {
 	actSession := ""
 	if actor.Act != nil {
 		actSession = actor.Act.Session
 	}
-	return writingcheck.Checks(actor.Kind, actor.ID, actSession)
+	return writingcheck.Exemption(actor.Kind, actor.ID, actSession)
 }
 
 // unreadUploadCarrier is an upload whose file the check does not read: unreadUpload answers the
@@ -143,10 +144,10 @@ type unreadUploadCarrier interface{ unreadUpload() string }
 // writingCheck runs the writing check over the prose input carries (proseFieldsOf), for the write
 // actor makes, and keeps its decision for the record of the write once it took place
 // (keepWritingCheck). It refuses no write, so the write goes on whatever it finds. It reads a
-// write only when the actor rule says an agent makes it (writingCheckReads), a person reads it
-// (writingCheckReader) and no plugin generated it (generatedText), and it records that person on
-// every row. Call it once input is decoded and actor resolved, and before any transaction, lock
-// or write.
+// write only when the actor rule says an agent makes it (writingCheckExemption), a person reads
+// it (writingCheckReader) and no plugin generated it (generatedText), and it records that person
+// on every row. Call it once input is decoded and actor resolved, and before any transaction,
+// lock or write.
 func (s *server) writingCheck(r *http.Request, actor model.Actor, input any) {
 	if personTypedWrite(r) {
 		s.recordPersonTyped(r, actor, input, "")
@@ -180,10 +181,10 @@ func (s *server) writingCheck(r *http.Request, actor model.Actor, input any) {
 		event.Detail = "the reader could not be decided: " + err.Error()
 	}
 	event.Reader = readerOf
-	switch checked, exemption := writingCheckReads(actor); {
+	switch exemption := writingCheckExemption(actor); {
 	case generatedText(r, method+" "+route):
 		event.Outcome = writingCheckGenerated
-	case !checked:
+	case exemption != "":
 		event.Outcome = exemption
 	case readerOf == "":
 		event.Outcome = writingCheckNoReader

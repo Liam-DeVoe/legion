@@ -21,7 +21,7 @@ import (
 
 // reviewAfterSave starts the review of a text the write r made and committed, once the write's
 // answer no longer waits on it: text, of kind, under id, where subject places it. It reviews only
-// an agent's write (writingCheckReads; the Legion daemon's session is left out) that a person
+// an agent's write (writingCheckExemption; the Legion daemon's session is left out) that a person
 // reads (writingCheckReader, on input), that no person typed in a session (personTypedWrite),
 // with the kind's setting other than off. Call it after the write's transaction committed.
 func (s *server) reviewAfterSave(r *http.Request, actor model.Actor, input any, kind reviewer.Kind, id string, text reviewer.Text, subject reviewer.Subject) {
@@ -34,7 +34,7 @@ func (s *server) afterSaveReview(r *http.Request, actor model.Actor, input any, 
 	if s.deps.Store == nil || s.deps.Reviewer.setting(kind) == ReviewOff || personTypedWrite(r) {
 		return nil
 	}
-	if checked, _ := writingCheckReads(actor); !checked {
+	if writingCheckExemption(actor) != "" {
 		return nil
 	}
 	ctx := r.Context()

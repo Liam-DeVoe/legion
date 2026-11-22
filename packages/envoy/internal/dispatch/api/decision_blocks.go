@@ -72,7 +72,7 @@ func (rv *Reviewer) heldDecisionBlockBound() time.Duration {
 // its documents, rather than from the row: a settlement that opens the block has only queued its
 // row (docs.AskBlockReviewer), so no read of it answers yet.
 func (s *server) decisionBlockReview(ctx context.Context, q queryer, ask model.Ask, author model.Actor) (reader, project string, reads bool, err error) {
-	if checked, _ := writingCheckReads(author); !checked {
+	if writingCheckExemption(author) != "" {
 		return "", "", false, nil
 	}
 	if reader, err = askWaitingOnPerson(ctx, q, ownerOf(ask.IssueKey, ask.ArtifactID), ask.AskedOf); err != nil {
@@ -118,7 +118,7 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 	s := d.s
 	rv := s.deps.Reviewer
 	if personTyped {
-		if checked, _ := writingCheckReads(author); !checked {
+		if writingCheckExemption(author) != "" {
 			return nil, nil
 		}
 		reader, project, _, err := s.decisionBlockReview(ctx, tx, ask, author)
@@ -228,7 +228,7 @@ func (d decisionBlockReviewer) AskBlockReworded(ctx context.Context, tx pgx.Tx, 
 // phase (queueEndHeldDecisionBlockForPerson).
 func (s *server) personTypedBlockEdit(ctx context.Context, tx pgx.Tx, ask model.Ask, editor model.Actor) (func(), error) {
 	var record *store.WritingCheckEvent
-	if checked, _ := writingCheckReads(editor); checked {
+	if writingCheckExemption(editor) == "" {
 		reader, project, _, err := s.decisionBlockReview(ctx, tx, ask, editor)
 		if err != nil {
 			return nil, err

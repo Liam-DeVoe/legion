@@ -267,6 +267,12 @@ func handlerRefusalOf(err error) handlerRefusal {
 	if errors.Is(err, pmdoc.ErrTableWidth) {
 		return refuse("TABLE_WIDTH", http.StatusBadRequest, err.Error())
 	}
+	// A new anchor whose mark the schema allows nowhere its quote stands is the caller's anchor to
+	// fix, as anchorInputError's refusals are, in its own words (docs.AnchorNotAllowedError).
+	var anchorNotAllowed *docs.AnchorNotAllowedError
+	if errors.As(err, &anchorNotAllowed) {
+		return refuse("INVALID_ANCHOR", http.StatusBadRequest, anchorNotAllowed.Error())
+	}
 	if errors.Is(err, docs.ErrAnchorMissing) {
 		return refuse("ANCHOR_MISSING", http.StatusConflict, err.Error())
 	}

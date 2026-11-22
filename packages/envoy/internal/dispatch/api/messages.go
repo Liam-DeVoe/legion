@@ -382,7 +382,7 @@ func (s *server) writeMessage(ctx context.Context, create messageCreate, actor m
 		// A held message's post answers nobody.
 		if held.answers() {
 			advice = s.writeAdvice(
-				ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, adviceAsks{}, status, eventType, false,
+				ctx, tx, routeIssueMessage, *issueKey, actor, adviceAsks{}, status, eventType, false,
 			)
 		}
 	}

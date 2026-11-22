@@ -199,9 +199,9 @@ type postedReview struct {
 }
 
 // reviewWrite is the reviewer's hook on a write of a kind it may hold. It reads the write when an
-// agent session makes it (writingCheckReads; the Legion daemon's session is left out), no plugin
-// generated it (generatedText), no person typed it in a session (personTypedWrite) and a person
-// reads it (writingCheckReader), by the kind's setting: hold stores the write as a held text,
+// agent session makes it (writingCheckExemption; the Legion daemon's session is left out), no
+// plugin generated it (generatedText), no person typed it in a session (personTypedWrite) and a
+// person reads it (writingCheckReader), by the kind's setting: hold stores the write as a held text,
 // answers the write's own response shape built from the held row with an added `held` object,
 // starts the review in the background and answers false; after answers true with the review the
 // handler starts once its write committed (reviewPosted); off leaves the write to the writing
@@ -241,7 +241,7 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 	setting := rv.setting(write.kind)
 	reader, project := "", write.project
 	reviews := false
-	if checked, _ := writingCheckReads(actor); checked && !typed && setting != ReviewOff && !generatedText(r, method+" "+route) {
+	if writingCheckExemption(actor) == "" && !typed && setting != ReviewOff && !generatedText(r, method+" "+route) {
 		if parent != nil {
 			reader = parent.reader
 		} else if reader, err = s.writingCheckReader(ctx, r, method+" "+route, actor, input); err != nil {

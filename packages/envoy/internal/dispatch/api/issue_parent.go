@@ -201,18 +201,15 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
 //
 // A caller whose credential names one project is refused a target outside it here, before any
-// lock is taken: the pre-handler check reads the project of the object the path names and no key
-// of the body (project_scope.go), so this is the first point at which a target's project is
-// known, and a caller that may not write at all would otherwise take the deployment-wide lock
-// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
-// both word it through refuseBlockedByOutsideCallerProject.
+// lock is taken (callerForeignTargets): the pre-handler check reads the project of the object the
+// path names and no key of the body (project_scope.go), so this is the first point at which a
+// target's project is known, and a caller that may not write at all would otherwise take the
+// deployment-wide lock first. writeBlockedBy refuses it again under the locks, which is the
+// authoritative refusal; both word it through refuseBlockedByOutsideCallerProject.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
-	foreign, err := foreignTargets(ctx, tx, project, targets)
+	foreign, err := callerForeignTargets(ctx, tx, project, caller, targets)
 	if err != nil {
 		return err
-	}
-	if caller != "" && len(foreign) > 0 {
-		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
 	}
 	projects := make([]string, 0, len(foreign)+1)
 	projects = append(projects, project)
@@ -253,6 +250,22 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 		var target foreignTarget
 		return target, row.Scan(&target.key, &target.project)
 	})
+}
+
+// callerForeignTargets is foreignTargets, refused for a caller whose credential names one project,
+// caller ("" for none), where one of them belongs to another project: the first step of a
+// dependency write (lockIssueDependencyWrite), which a new issue beside a held parent takes at its
+// hold first too (heldIssueCreateError), where its dry run would take it after the checks of its
+// held parent.
+func callerForeignTargets(ctx context.Context, q queryer, project, caller string, targets []string) ([]foreignTarget, error) {
+	foreign, err := foreignTargets(ctx, q, project, targets)
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" && len(foreign) > 0 {
+		return nil, refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	}
+	return foreign, nil
 }
 
 // refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
@@ -362,7 +375,7 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent st
 		return err
 	}
 	if parentProject != project {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
+		return parentOtherProject()
 	}
 	// parent and the issues above it, parent first: the server's one ancestor walk
 	// (refs.IssueAncestors) with parent itself at its head, since a parent key already stands

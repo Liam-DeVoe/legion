@@ -13,14 +13,17 @@ body: |-
   and the near-copy check included, and a near copy the check refuses is refused at once, with
   nothing held. A write beside a held text it names (an ask, a comment or a message on a held
   issue, a reply to a held comment or ask, a child of a held issue, a follow-up to a held reply)
-  answers what its post will write, read off the held texts it waits on: whom an ask waits on and
-  the quote its anchor names, a comment's thread, turn and `ask_waiting_on`, the block a reply
-  names in a held comment, ask or message (its id, reference and text, all but its node id), the
-  reply a follow-up is filed under, and the advice of its issue as that post will find it, and is
-  refused at once, with the answer its post would give, where that post would refuse it (a reply
-  to a held text on another issue, a block or an anchor quote the held text does not hold, a
-  child the depth cap or its own create refuses); and a held text that waits only for its turn
-  counts the held texts before it in its advice. A review that finds nothing posts the text.
+  answers what its post will write, read off the held texts it waits on: whom an ask waits on, the
+  text an ask's or a comment's anchor covers in a held issue's spec, a comment's thread, turn and
+  `ask_waiting_on`, the block a reply names in a held comment, ask or message (its id, reference
+  and text, all but its node id), the reply a follow-up is filed under, and the advice of its
+  issue as that post will find it, a child's spec read as its seed renders it, and is refused at
+  once, with the answer its post would give, where that post would refuse it (a reply to a held
+  text on another issue, a block or an anchor quote the held text does not hold, an anchor whose
+  mark may not stand where its quote does, a child the depth cap or its own create refuses). An
+  anchor in a held issue's document is left to its post where a write kept beside that issue
+  posts first, since that write can make the document. A held text counts in its advice the held
+  texts that post before it. A review that finds nothing posts the text.
   Otherwise the findings and the
   reviewer's rewrite go to the writer session as a turn of their own, and the writer edits the text
   or posts it as written.
@@ -39,11 +42,12 @@ body: |-
   while the first is held is answered the first's held answer, with no `ask_waiting_on`, as a
   reply sent again after its post is answered, and nothing more is held. A held reply from the
   live holder of the role its delivery went to posts on what the listener said when it was
-  written. Any other held ask, comment, message or reply waits on the same session's newest held
-  text, not yet posted, at the place it posts to: its issue or document, the session or role a
-  message goes to, the issue or document of the comment a reply answers, or the session that sent
-  the message a reply answers. It is reviewed at once, its answer's `held.waits_on` names that
-  text, and it posts only after it, so the session's held texts there post in the order written. A
+  written. Any other held ask, comment, message, reply or new issue waits on the same session's
+  newest held text, not yet posted, at the place it posts to: its issue or document, the session
+  or role a message goes to, the issue or document of the comment a reply answers, the session
+  that sent the message a reply answers, or a new issue's project. It is reviewed at once, its
+  answer's `held.waits_on` names that text, and it posts only after it, so the session's held
+  texts there post in the order written. A
   write that posts at once, such as one a person typed, a generated one, or one of a kind whose
   setting is not `hold`, does not wait for them.
   With `after`, the text posts at once, and the findings of the review after it go to the writer.

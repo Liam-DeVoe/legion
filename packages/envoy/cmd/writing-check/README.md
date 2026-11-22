@@ -122,7 +122,7 @@ when `--out` could not take a record, when it stopped (an interrupt) with fewer 
 event after `--after` through `--through`. It writes one case for each prose field of each write
 that the actor rule checks.
 
-The actor rule is `writingcheck.Checks`, the function the server calls:
+The actor rule is `writingcheck.Exemption`, the function the server calls:
 
 - A `session` actor is checked, except a daemon session (`legion-daemon:<PROJECT>`).
 - A `user` actor is checked only when its act names a session (`act.session`) that is not a
@@ -1005,7 +1005,7 @@ is that text (`direct_reply`). When there is none, it is the first agent text af
 its thread or its conversation.
 
 The text of a document version is the blocks that the version before it does not hold, as `fetch`
-reads them. An agent's text is a text that `writingcheck.Checks` checks.
+reads them. An agent's text is a text for which `writingcheck.Exemption` names no exemption.
 
 ### build
 

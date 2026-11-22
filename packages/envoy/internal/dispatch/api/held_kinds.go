@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
@@ -43,11 +45,30 @@ type heldRequest interface {
 	rewritten(kind reviewer.Kind, rewrite reviewer.Text) (reviewedWrite, bool)
 	// place is where the text posts, for the order of one writer's held texts there
 	// (heldBeforeOf): the issue or the document of an ask or a comment, the session or the role a
-	// message goes to, else its issue; for a held reply, the place its hold stored
-	// (heldReplay.Place). It is "" for a write whose order something else keeps: a new issue, by
-	// the parent it names; a write kept beside a held text, by the held text its path names
-	// (awaitHeldTarget); a decision block, by its place in its document.
+	// message goes to, else its issue; a new issue's project; for a held reply, the place its hold
+	// stored (heldReplay.Place). It is "" for a write whose order something else keeps: a write
+	// kept beside a held text, by the held text its path names (awaitHeldTarget); a decision
+	// block, by its place in its document. A new issue whose parent is held waits on that parent
+	// instead, as any write that names a held text does (reviewWrite).
 	place() string
+	// beside is what the post of the write, held beside a held parent, writes and answers, read
+	// off the held texts it waits on as hold reads them, or the refusal that post gives, in its
+	// order (heldBeside).
+	beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error)
+	// postEvent is the event the post of the write, held under id, appends, as a session's write
+	// advice names it (sessionWriteTypes), and, for an ask, the ask it opens to its writer, as
+	// your_open_asks names it; "" and nil for a post that appends none of them (countWaited, and
+	// what a write beside a held parent counts as its own, heldIssueAdvice).
+	postEvent(id string) (string, *adviceAsk)
+	// messageIssue is the issue the post of the held message writes it on, read on q where another
+	// text holds it: a new message's own, and a reply to a delivery the delivered message's; ""
+	// for a text that is no message (heldLink.messageIssue).
+	messageIssue(ctx context.Context, q queryer) (string, error)
+	// climb is where the climb of a reply to the held text, of kind, goes next on owner
+	// (heldThreadHead): the comment the text replies to, or the ask whose thread it is in, both ""
+	// where it heads its thread; refused where it is no comment on owner, as loadOwnedComment
+	// refuses a posted one.
+	climb(kind reviewer.Kind, owner owner) (replyTo, askID string, err error)
 }
 
 // placeOf is the place of a text on o (heldRequest.place): its issue, else its document.
@@ -200,6 +221,50 @@ func (c askCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (reviewedWr
 
 func (c askCreate) place() string { return placeOf(c.Owner) }
 
+// beside reads, beside a held parent, whom the ask waits on - on a held issue, the assignee that
+// issue's post writes (heldIssueAssignee) - and its anchor in that issue's spec (heldSpecAnchor),
+// refused as the ask's post refuses it, with the document it quotes; and the advice of its issue
+// (heldIssueAdvice).
+func (c askCreate) beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error) {
+	key := deref(c.Owner.IssueKey)
+	ask := &model.Ask{}
+	var err error
+	if issue, actor, held := hold.waited.issue(key); held {
+		if ask.Anchor, err = heldSpecAnchor(issue, c.Anchor, docs.MarkAsk, hold.waited.keptBeside(key)); err != nil {
+			return nil, err
+		}
+		if ask.Anchor != nil {
+			ask.AnchorArtifact = &model.AskAnchorArtifact{Project: issue.Project, Slug: "spec", Name: "spec.md", Primary: true}
+		}
+		assignee, err := s.heldIssueAssignee(ctx, hold.tx, issue, actor, hold.waited)
+		if err != nil {
+			return nil, err
+		}
+		ask.WaitingOnPerson = deref(assignee)
+	} else if ask.WaitingOnPerson, err = askWaitingOnPerson(ctx, hold.tx, c.Owner, nil); err != nil {
+		return nil, err
+	}
+	appending, _ := c.postEvent(hold.id)
+	advice, err := s.heldIssueAdvice(ctx, hold, key, routeOpenAsk, appending, adviceAsks{excluded: []string{hold.id}}, true)
+	if err != nil {
+		return nil, err
+	}
+	return &heldDryRun{ask: ask, advice: advice}, nil
+}
+
+// postEvent is ask.opened, and the ask its post opens.
+func (c askCreate) postEvent(id string) (string, *adviceAsk) {
+	return "ask.opened", &adviceAsk{ID: id, Question: c.Question}
+}
+
+// messageIssue is none: an ask is no message.
+func (c askCreate) messageIssue(context.Context, queryer) (string, error) { return "", nil }
+
+// climb refuses: an ask is no comment a reply's reply_to names.
+func (c askCreate) climb(reviewer.Kind, owner) (string, string, error) {
+	return "", "", replyToNotOnOwner()
+}
+
 // The new issue.
 
 func (c issueCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time.Time, dry *heldDryRun, _ bool) any {
@@ -224,18 +289,12 @@ func (c issueCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at ti
 }
 
 // advice is the issue's write advice with its related-item check, run here, before the id is
-// reserved, over the spec as the dry run's seed stored it (as sent where no dry run seeded it),
-// and what the near-copy gate told its create (issueCreate.gate), the note of a check not made
+// reserved, over the spec as its seed stores it (dry.markdown, which a dry run's seed made), and
+// what the near-copy gate told its create (issueCreate.gate), the note of a check not made
 // included.
 func (c issueCreate) advice(s *server, r *http.Request, actor model.Actor, advice *writeAdvice, dry *heldDryRun, _ *heldParent) any {
 	ctx := r.Context()
-	markdown := ""
-	switch {
-	case dry != nil:
-		markdown = dry.markdown
-	case c.Spec != nil && strings.TrimSpace(*c.Spec) != "":
-		markdown = *c.Spec
-	}
+	markdown := dry.markdown
 	trees := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(ctx, relatedInput{
 		project: c.Project,
@@ -256,7 +315,7 @@ func (c issueCreate) dryRun(s *server, ctx context.Context, actor model.Actor, _
 	}
 	defer tx.Rollback(ctx)
 	written, err := s.writeIssue(ctx, tx, c, actor, 0, held)
-	return dryRunEnded(heldDryRun{advice: written.advice, markdown: written.markdown, issue: &written.issue}, err)
+	return dryRunEnded(heldDryRun{advice: written.advice, markdown: written.markdown, issue: &written.issue, assignee: written.issue.Assignee}, err)
 }
 
 // post files the issue under the number its hold reserved, after the near-copy gate's second
@@ -317,7 +376,41 @@ func (c issueCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (reviewed
 	return c.reviewed(), true
 }
 
-func (c issueCreate) place() string { return "" }
+// place is the issue's project: one writer's new issues there, filed under keys reserved in the
+// order written, post in that order.
+func (c issueCreate) place() string { return "project " + c.Project }
+
+// beside reads, beside its held parent, what the new issue's post writes: the refusals of its
+// blockers, its parent and every other check of that post, with its spec as its seed renders it,
+// off its dry run (heldIssueCreateError); the assignee its post files it under
+// (heldIssueAssignee); and the advice of a new issue in triage under its labels and parent chain
+// (heldIssueRow), with the blocks of its spec its dry run read off that rendering.
+func (c issueCreate) beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error) {
+	ran, err := s.heldIssueCreateError(ctx, hold.tx, c, hold.actor, hold.id, hold.waited)
+	if err != nil {
+		return nil, err
+	}
+	assignee, err := s.heldIssueAssignee(ctx, hold.tx, c, hold.actor, hold.waited)
+	if err != nil {
+		return nil, err
+	}
+	advice := s.writeAdviceBefore(ctx, hold.tx, "POST /api/v1/issues", "", hold.actor, model.IssueStatusTriage, heldIssueRow(c, hold.waited), adviceAsks{})
+	if advice != nil && ran.advice != nil {
+		advice.documentBlocks = ran.advice.documentBlocks
+	}
+	return &heldDryRun{markdown: ran.markdown, assignee: assignee, advice: advice}, nil
+}
+
+// postEvent is none a session's write advice counts: a new issue's advice is a new issue's.
+func (c issueCreate) postEvent(string) (string, *adviceAsk) { return "", nil }
+
+// messageIssue is none: an issue is no message.
+func (c issueCreate) messageIssue(context.Context, queryer) (string, error) { return "", nil }
+
+// climb refuses: an issue is no comment a reply's reply_to names.
+func (c issueCreate) climb(reviewer.Kind, owner) (string, string, error) {
+	return "", "", replyToNotOnOwner()
+}
 
 // The comment.
 
@@ -375,6 +468,75 @@ func (c commentCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (review
 
 func (c commentCreate) place() string { return placeOf(c.Owner) }
 
+// beside reads, beside a held parent, what the comment's post writes, in the order that post
+// checks it: its thread fields (commentThreadInputError) and an ask_id that is no ask id
+// (askIDInputError); the thread it joins (heldBesideThread); the block reply_to_block names in the
+// comment reply_to names, else in the ask ask_id names, one of which a request naming a block
+// names (heldNamedBlock); its turn (commentTurnError); its anchor in a held issue's spec, as the
+// mark its post writes takes it (heldSpecAnchor); whom its ask waits on once it posts; and the
+// advice of its issue (heldIssueAdvice).
+func (c commentCreate) beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error) {
+	if err := commentThreadInputError(c.Input); err != nil {
+		return nil, err
+	}
+	if c.Input.AskID != nil {
+		if err := s.askIDInputError(ctx, hold.tx, c.Owner, *c.Input.AskID); err != nil {
+			return nil, err
+		}
+	}
+	thread, err := s.heldBesideThread(ctx, hold.tx, c.Owner, c.Input, hold.waited)
+	if err != nil {
+		return nil, err
+	}
+	comment := &model.Comment{ReplyTo: thread.ReplyTo, AskID: thread.AskID, Answers: thread.Answers}
+	if c.Input.ReplyToBlock != nil {
+		kind, item := refs.ItemComment, c.Input.ReplyTo
+		if item == nil {
+			kind, item = refs.ItemAsk, c.Input.AskID
+		}
+		block, err := s.heldNamedBlock(ctx, hold.tx, kind, *item, *c.Input.ReplyToBlock, "reply_to_block", "INVALID_COMMENT", hold.waited)
+		if err != nil {
+			return nil, err
+		}
+		issueKey, project, slug, err := s.ownerAddress(ctx, hold.tx, c.Owner)
+		if err != nil {
+			return nil, err
+		}
+		comment.ReplyBlock = block.replyBlock(issueKey, project, slug)
+	}
+	if err := commentTurnError(c.Input.Turn, thread.AskID); err != nil {
+		return nil, err
+	}
+	key := deref(c.Owner.IssueKey)
+	if issue, _, held := hold.waited.issue(key); held {
+		if comment.Anchor, err = heldSpecAnchor(issue, c.Input.Anchor, commentMarkKind(c.Input), hold.waited.keptBeside(key)); err != nil {
+			return nil, err
+		}
+	}
+	comment.Turn = thread.replyTurn(hold.actor, c.Input.Turn)
+	appending, _ := c.postEvent(hold.id)
+	advice, err := s.heldIssueAdvice(ctx, hold, key, routeIssueComment, appending, adviceAsks{}, false)
+	if err != nil {
+		return nil, err
+	}
+	return &heldDryRun{comment: comment, askWaitingOn: thread.waitingOnAfter(comment.Turn), advice: advice}, nil
+}
+
+// postEvent is comment.created.
+func (c commentCreate) postEvent(string) (string, *adviceAsk) { return "comment.created", nil }
+
+// messageIssue is none: a comment is no message.
+func (c commentCreate) messageIssue(context.Context, queryer) (string, error) { return "", nil }
+
+// climb is the comment the comment replies to and the ask whose thread it joins, refused where it
+// is on another owner than the reply.
+func (c commentCreate) climb(_ reviewer.Kind, on owner) (string, string, error) {
+	if !sameOwner(c.Owner, on) {
+		return "", "", replyToNotOnOwner()
+	}
+	return deref(c.Input.ReplyTo), deref(c.Input.AskID), nil
+}
+
 // The message.
 
 func (c messageCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
@@ -425,6 +587,47 @@ func (c messageCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (review
 
 func (c messageCreate) place() string {
 	return messagePlaceOf(deref(c.Input.Target), deref(c.IssueKey))
+}
+
+// beside reads, beside a held parent, what the message's post writes, in the order that post
+// checks it: the message it answers (heldReplyParentError), the block in_reply_to_block names in
+// that message (heldNamedBlock), and the advice of its issue (heldIssueAdvice).
+func (c messageCreate) beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error) {
+	if err := heldReplyParentError(ctx, hold.tx, c, hold.waited); err != nil {
+		return nil, err
+	}
+	dry := &heldDryRun{}
+	if c.Input.InReplyToBlock != nil {
+		block, err := s.heldNamedBlock(ctx, hold.tx, refs.ItemMessage, deref(c.Input.InReplyTo), *c.Input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", hold.waited)
+		if err != nil {
+			return nil, err
+		}
+		dry.message = &model.Message{ReplyBlock: block.replyBlock(c.IssueKey, "", "")}
+	}
+	appending, _ := c.postEvent(hold.id)
+	var err error
+	if dry.advice, err = s.heldIssueAdvice(ctx, hold, deref(c.IssueKey), routeIssueMessage, appending, adviceAsks{}, false); err != nil {
+		return nil, err
+	}
+	return dry, nil
+}
+
+// postEvent is message.answered for a reply, else message.created.
+func (c messageCreate) postEvent(string) (string, *adviceAsk) {
+	if c.Input.InReplyTo != nil {
+		return "message.answered", nil
+	}
+	return "message.created", nil
+}
+
+// messageIssue is the message's own issue.
+func (c messageCreate) messageIssue(context.Context, queryer) (string, error) {
+	return deref(c.IssueKey), nil
+}
+
+// climb refuses: a message is no comment a reply's reply_to names.
+func (c messageCreate) climb(reviewer.Kind, owner) (string, string, error) {
+	return "", "", replyToNotOnOwner()
 }
 
 // The write kept whole: a reply, or a write that names a held text.
@@ -498,6 +701,35 @@ func (c heldReplay) rewritten(kind reviewer.Kind, rewrite reviewer.Text) (review
 
 func (c heldReplay) place() string { return c.Place }
 
+// beside reads, for a follow-up whose attempt its writer's earlier held reply answers, what its
+// post writes under that reply (heldFollowUpBeside); its answer carries no write advice, as a
+// write kept whole carries none. No other write kept whole is held beside a held text without
+// running its dry run (heldWaitedBeside).
+func (c heldReplay) beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error) {
+	return s.heldFollowUpBeside(ctx, hold.tx, c, hold.waited)
+}
+
+// postEvent is none a session's write advice counts: a reply's post appends comment.answered or
+// message.answered (sessionWriteTypes counts neither), and a write kept whole names no issue its
+// record keeps.
+func (c heldReplay) postEvent(string) (string, *adviceAsk) { return "", nil }
+
+// messageIssue is, for a reply to a delivered message, that message's issue, which the reply's
+// post carries over (deliveredMessage).
+func (c heldReplay) messageIssue(ctx context.Context, q queryer) (string, error) {
+	issue, _, err := deliveredMessage(ctx, q, c.Subject.InReplyTo)
+	return deref(issue), err
+}
+
+// climb is, for a reply to a mention, the comment it answers, on that comment's owner, which the
+// climb reads next; any other write kept whole is no comment.
+func (c heldReplay) climb(kind reviewer.Kind, _ owner) (string, string, error) {
+	if kind != reviewer.KindComment {
+		return "", "", replyToNotOnOwner()
+	}
+	return c.Subject.ReplyTo, "", nil
+}
+
 // The decision block's hold: the block is in its document already, so its hold answers nothing,
 // runs no dry run, takes no edit and no rewrite of its request; its post ends the hold
 // (releaseDecisionBlock).
@@ -528,3 +760,20 @@ func (c decisionBlockHold) rewritten(reviewer.Kind, reviewer.Text) (reviewedWrit
 }
 
 func (c decisionBlockHold) place() string { return "" }
+
+// beside is never asked: a decision block's hold answers no write, and none waits beside a held
+// text.
+func (c decisionBlockHold) beside(*server, context.Context, besideHold) (*heldDryRun, error) {
+	return nil, errors.New("a decision block's hold answers no write held beside a held text")
+}
+
+// postEvent is none: a decision block's post ends its hold, appending no event of a session's.
+func (c decisionBlockHold) postEvent(string) (string, *adviceAsk) { return "", nil }
+
+// messageIssue is none: a decision block is no message.
+func (c decisionBlockHold) messageIssue(context.Context, queryer) (string, error) { return "", nil }
+
+// climb refuses: a decision block is no comment a reply's reply_to names.
+func (c decisionBlockHold) climb(reviewer.Kind, owner) (string, string, error) {
+	return "", "", replyToNotOnOwner()
+}

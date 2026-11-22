@@ -281,11 +281,8 @@ func (s *server) normalizeCommentThreadTarget(
 	if input.AskID == nil {
 		return commentThreadTarget{}, nil
 	}
-	if strings.TrimSpace(*input.AskID) == "" {
-		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, owner)
-	}
-	if _, err := uuid.Parse(*input.AskID); err != nil {
-		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, owner)
+	if err := s.askIDInputError(ctx, tx, owner, *input.AskID); err != nil {
+		return commentThreadTarget{}, err
 	}
 	target, err := s.describeAsk(ctx, tx, owner, input.AskID)
 	if err != nil || input.ReplyToBlock == nil {
@@ -326,6 +323,27 @@ func commentThreadInputError(input commentInput) error {
 		}
 	}
 	return nil
+}
+
+// askIDInputError is the refusal of an ask_id that is no ask id, blank or not a uuid, read off
+// askID alone but for the asks open on owner that it names (askIDInputForOwner, read on q):
+// normalizeCommentThreadTarget's check, which a comment beside a held parent makes at its hold
+// too (commentCreate.beside), where no dry run makes it. Nil for an ask_id shaped as one.
+func (s *server) askIDInputError(ctx context.Context, q queryer, owner owner, askID string) error {
+	if _, err := uuid.Parse(askID); err != nil || strings.TrimSpace(askID) == "" {
+		return s.askIDInputForOwner(ctx, q, owner)
+	}
+	return nil
+}
+
+// commentMarkKind is the mark a comment's anchor takes in its document: a suggestion's, else a
+// comment's (writeComment, and a comment anchored in a held issue's spec at its hold,
+// heldSpecAnchor).
+func commentMarkKind(input commentInput) docs.MarkKind {
+	if input.Suggestion != nil {
+		return docs.MarkSuggestion
+	}
+	return docs.MarkComment
 }
 
 // commentTurnError is the refusal of a comment's turn: one on a comment in no ask's thread, askID
@@ -862,10 +880,7 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	// (destinations.leftTo); publishFallbackCopies in internal/dispatch/outbox is the one
 	// description.
 	turn := threadTarget.replyTurn(actor, input.Turn)
-	markKind := docs.MarkComment
-	if input.Suggestion != nil {
-		markKind = docs.MarkSuggestion
-	}
+	markKind := commentMarkKind(input)
 	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
 	// write queue their writes on the ledger, in the order made, and Commit sends them as one
 	// batch. Write advice is read here, before the first write is queued, so its queries hold no
@@ -874,7 +889,7 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil && held.answers() {
 		advice = s.writeAdvice(
-			ctx, tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, adviceAsks{}, *status, "comment.created", false,
+			ctx, tx, routeIssueComment, *owner.IssueKey, actor, adviceAsks{}, *status, "comment.created", false,
 		)
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, markKind, id, actor)

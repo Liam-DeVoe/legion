@@ -358,6 +358,39 @@ func TestOneWritersHeldTextsAtOnePlacePostInTheOrderWritten(t *testing.T) {
 	}
 }
 
+// One writer's two held new issues in one project, neither under a held parent, post in the order
+// written, the order their keys were reserved in: the second's review runs at once and passes
+// while the first waits on its writer, and the second posts only once the first has, as its answer
+// says (`waits_on`).
+func TestOneWritersHeldIssuesInOneProjectPostInTheOrderWritten(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	first := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the first held issue")
+	rig.waitHeld(first.ID, heldAwaitingWriter)
+	second := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Bellows valve chatter at idle", "spec": "The bellows valve chatters while the pump idles.\n",
+	}), "the second held issue")
+	if second.Held.WaitsOn != first.ID {
+		t.Fatalf("the second issue's answer waits on %q, want the first, %s", second.Held.WaitsOn, first.ID)
+	}
+	pollUntil(t, 20*time.Second, "the second's review to end", func() bool {
+		return rig.heldRow(second.ID).outcome != ""
+	})
+	rig.served.detached.wait()
+	rig.served.postReady()
+	if row := rig.heldRow(second.ID); row.state != heldPosting || row.outcome != reviewPassed {
+		t.Fatalf("the second issue is %s %s (%s) while the first waits on its writer, want it passed and waiting to post", row.state, row.outcome, row.detail)
+	}
+	rig.postHeldAsWritten(first.ID)
+	secondPosted := rig.waitHeld(second.ID, heldPosted)
+	if firstPosted := rig.heldRow(first.ID); firstPosted.postedAt == nil || secondPosted.postedAt.Before(*firstPosted.postedAt) {
+		t.Fatalf("the second issue posted at %v, the first at %v, want the order written", secondPosted.postedAt, firstPosted.postedAt)
+	}
+}
+
 // A held text that waits on its writer's earlier held text at its place only for its turn posts
 // when that text's post is refused: the writer's held message on an issue waits on its held ask
 // there, the issue closes, the ask's post is refused, and the message, which a closed issue still

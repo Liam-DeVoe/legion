@@ -41,12 +41,16 @@ type adviceDeclinedAsk struct {
 }
 
 // The routes of the two writes whose author may be about to put a question to a person: the ask
-// route, and a document edit, whose ops can add the ask blocks that settle into asks. Each names
-// itself in its own writeAdvice call, which is where the log line of an omitted advice query
-// gets its route, and routeEditDocument names the same write to supersededApprovalAdvice.
+// route, and a document edit, whose ops can add the ask blocks that settle into asks; and of the
+// two other writes to an issue a held text's advice is worked out for, a comment and a message.
+// Each names itself in its own writeAdvice call, which is where the log line of an omitted advice
+// query gets its route, as a text held beside a held parent names its own (heldIssueAdvice), and
+// routeEditDocument names the same write to supersededApprovalAdvice.
 const (
 	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
 	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
+	routeIssueComment = "POST /api/v1/issues/{key}/comments"
+	routeIssueMessage = "POST /api/v1/issues/{key}/messages"
 )
 
 type writeAdvice struct {

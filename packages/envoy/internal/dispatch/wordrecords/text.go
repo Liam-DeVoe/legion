@@ -48,10 +48,9 @@ func (a eventActor) actSession() string {
 }
 
 // agent is whether the writing check reads the actor's writes: an agent session that is not a
-// project's daemon, or a person's credential acting for one (writingcheck.Checks).
+// project's daemon, or a person's credential acting for one (writingcheck.Exemption).
 func (a eventActor) agent() bool {
-	checked, _ := writingcheck.Checks(a.Kind, a.ID, a.actSession())
-	return checked
+	return writingcheck.Exemption(a.Kind, a.ID, a.actSession()) == ""
 }
 
 // writtenBy answers the person who wrote an event's text, and whether a person wrote it. A person

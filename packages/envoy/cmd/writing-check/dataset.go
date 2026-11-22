@@ -525,7 +525,7 @@ func newDSIndex(owner, namingIssue string) *dsIndex {
 // actor's writes, a person's own when a person wrote it with no session acting for them.
 func (ix *dsIndex) newText(ev event, key, kind, family, sourceID string) *dsText {
 	act := ev.Actor.actSession()
-	checked, _ := writingcheck.Checks(ev.Actor.Kind, ev.Actor.ID, act)
+	checked := writingcheck.Exemption(ev.Actor.Kind, ev.Actor.ID, act) == ""
 	t := &dsText{
 		Key: key, EventID: ev.ID, EventType: ev.Type, Time: ev.CreatedAt, Project: ev.Project,
 		Issue: deref(ev.IssueKey), Kind: kind, Family: family, SourceID: sourceID,

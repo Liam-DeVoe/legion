@@ -747,8 +747,9 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 	}, nil
 }
 
-// parentOtherProject is the refusal of a new issue whose parent is in another project (writeIssue,
-// and a new issue beside its held parent at its hold, heldIssueCreateError).
+// parentOtherProject is the refusal of an issue whose parent is in another project (writeIssue, a
+// reparent's validateIssueParent, and a new issue beside its held parent at its hold,
+// heldIssueCreateError).
 func parentOtherProject() error {
 	return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -383,6 +384,32 @@ func TestAHeldIssueUnderAHeldIssueAnswersItsPostsAdvice(t *testing.T) {
 	}
 }
 
+// A held issue whose parent is a held issue answers the advice its post answers off its spec as
+// the seed renders it, not as sent: a spec written with CR LF line endings around an ask block,
+// which the seed reads as the ask block it is (decision_blocks), answers as its post's answer
+// does, but for the related items, which the held answer's check, run while the parent is held,
+// cannot find the parent among: only the parent's post indexes it.
+func TestAHeldIssueUnderAHeldIssueReadsItsSpecAsItsSeedRendersIt(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	parent := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held parent").ID
+	child := map[string]any{
+		"project": "RVW", "title": "Bellows valve chatter at idle", "parent": parent,
+		"spec": "The bellows valve chatters while the pump idles.\r\n\r\n" +
+			":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\r\nReseat the valve first?\r\n:::\r\n\r\n" + vacuousPhrase,
+	}
+	held := rig.asWriter(http.MethodPost, "/api/v1/issues", child)
+	id := rig.held(held, "the held child of the held issue").ID
+	rig.postedAsWritten(parent)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, "/api/v1/issues", child)
+	requireHeldAnswerAsPostedLess(t, "the child of the held issue", held, posted, map[string]string{id: "the issue"}, map[string]string{postedID(t, posted): "the issue"},
+		[]string{"advice.suggestions"})
+}
+
 // A held text that waits only for its turn behind its writer's earlier held text at its place
 // answers as its post's answer does: its post finds that text posted, counted among the session's
 // writes in its advice.
@@ -400,6 +427,30 @@ func TestAHeldTextWaitingForItsTurnAnswersAsItsPost(t *testing.T) {
 	rig.postedAsWritten(first)
 	posted := rig.asWriterTyped(http.MethodPost, comments, comment)
 	requireHeldAnswerAsPosted(t, "the comment behind the held one", held, posted, map[string]string{answer.ID: "the comment"}, map[string]string{postedID(t, posted): "the comment"})
+}
+
+// Two held comments on one held issue both wait on that issue, and the second posts after the
+// first: the second's held answer counts the first among the session's writes in its advice, as
+// its post finds it posted.
+func TestTheSecondHeldCommentOnAHeldIssueAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	comments := "/api/v1/issues/" + issue + "/comments"
+	first := rig.held(rig.asWriter(http.MethodPost, comments, map[string]any{"body": "Status\nWe reseat the gnomon. " + vacuousPhrase}), "the first held comment").ID
+	comment := map[string]any{"body": "Status\nThe offset is gone. " + vacuousPhrase}
+	held := rig.asWriter(http.MethodPost, comments, comment)
+	answer := rig.held(held, "the second held comment")
+	if answer.Held.WaitsOn != issue {
+		t.Fatalf("the second comment waits on %q, want the held issue %s", answer.Held.WaitsOn, issue)
+	}
+	rig.postedAsWritten(issue)
+	rig.postedAsWritten(first)
+	rig.waitHeld(answer.ID, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, comments, comment)
+	requireHeldAnswerAsPosted(t, "the second comment on the held issue", held, posted, map[string]string{answer.ID: "the comment"}, map[string]string{postedID(t, posted): "the comment"})
 }
 
 // A held ask on a held issue whose anchor quotes that issue's spec answers as its post's answer
@@ -426,6 +477,56 @@ func TestAHeldAnchoredAskOnAHeldIssueAnswersAsItsPost(t *testing.T) {
 		[]string{"anchor.artifact_id", "anchor.block_id", "anchor.version"})
 }
 
+// A held comment on a held issue whose anchor quotes that issue's spec answers as its post's
+// answer does: the quote its mark covers, not orphaned, less what that issue's post makes, the
+// document's id, the block and the version.
+func TestAHeldAnchoredCommentOnAHeldIssueAnswersAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	comments := "/api/v1/issues/" + issue + "/comments"
+	comment := map[string]any{
+		"body":   "Status\nThe offset is the gnomon's. " + vacuousPhrase,
+		"anchor": map[string]any{"artifact": "spec", "quote": "constant offset"},
+	}
+	held := rig.asWriter(http.MethodPost, comments, comment)
+	id := rig.held(held, "the held anchored comment on the held issue").ID
+	rig.postedAsWritten(issue)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, comments, comment)
+	requireHeldAnswerAsPostedLess(t, "the anchored comment on the held issue", held, posted, map[string]string{id: "the comment"}, map[string]string{postedID(t, posted): "the comment"},
+		[]string{"anchor.artifact_id", "anchor.block_id", "anchor.version"})
+}
+
+// A held ask on a held issue whose anchor's quote differs from the text it covers in that issue's
+// spec, by the inline markdown its search reads against the text's marks, answers the text its
+// post's mark covers as the anchor's quote, as its post's answer does.
+func TestAHeldAskOnAHeldIssueAnswersTheQuoteItsMarkCovers(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a `constant` offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	asks := "/api/v1/issues/" + issue + "/asks"
+	ask := map[string]any{
+		"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase,
+		"anchor":   map[string]any{"artifact": "spec", "quote": "a `constant` offset"},
+	}
+	held := rig.asWriter(http.MethodPost, asks, ask)
+	id := rig.held(held, "the held ask quoting inline markdown").ID
+	if quote := decodeBody[model.Ask](t, held).Anchor; quote == nil || quote.Quote != "a constant offset" {
+		t.Errorf("the held ask's anchor = %#v, want the text its mark covers, \"a constant offset\"", quote)
+	}
+	rig.postedAsWritten(issue)
+	rig.waitHeld(id, heldAwaitingWriter)
+	posted := rig.asWriterTyped(http.MethodPost, asks, ask)
+	requireHeldAnswerAsPostedLess(t, "the ask quoting inline markdown", held, posted, map[string]string{id: "the ask"}, map[string]string{postedID(t, posted): "the ask"},
+		[]string{"anchor.artifact_id", "anchor.block_id", "anchor.version"})
+}
+
 // A held follow-up that waits on its writer's held reply to the same delivery answers as its
 // post's answer does: filed under that reply, on the delivery's issue and to its target.
 func TestAHeldFollowUpBesideAHeldReplyAnswersAsItsPost(t *testing.T) {
@@ -444,6 +545,42 @@ func TestAHeldFollowUpBesideAHeldReplyAnswersAsItsPost(t *testing.T) {
 	requireHeldAnswerAsPosted(t, "the follow-up beside the held reply", held, posted,
 		map[string]string{answer.ID: "the follow-up", heldReply: "the reply", first: "the message"},
 		map[string]string{postedID(t, posted): "the follow-up", postedID(t, postedReply): "the reply", second: "the message"})
+}
+
+// A held follow-up beside its writer's held reply to the same delivery is answered off the one
+// reading of the held texts it waits on that chose to read what its post writes rather than run
+// its dry run (heldWaitedBeside): the reply posting between that reading and the answer
+// (heldBeside) still has the answer file the follow-up under that reply, to the delivery's target,
+// as its post files it, not the hold's own answer alone.
+func TestAHeldFollowUpIsAnsweredOffTheReadingThatChoseToReadIt(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	delivered := rig.messageToWriter("Is the first node up?")
+	reply := rig.held(rig.asWriter(http.MethodPost, "/api/v1/messages/"+delivered+"/reply", map[string]any{
+		"body": "Status\nWe spin up the node. " + vacuousPhrase, "attempt": 1,
+	}), "the held reply").ID
+	followUp := rig.held(rig.asWriter(http.MethodPost, "/api/v1/messages/"+delivered+"/reply?follow_up=true", map[string]any{
+		"body": "Status\nWe spin up the second node. " + vacuousPhrase, "attempt": 1,
+	}), "the held follow-up").ID
+	row := rig.heldRow(followUp)
+	write, err := row.write()
+	if err != nil {
+		t.Fatalf("read the held follow-up's write: %v", err)
+	}
+	ctx := context.Background()
+	waited, err := rig.served.heldWaitedBeside(ctx, write, reply)
+	if err != nil || waited == nil {
+		t.Fatalf("the held texts the follow-up waits on: %v, %v; want the held reply read", waited, err)
+	}
+	rig.postedAsWritten(reply)
+	rig.waitHeld(reply, heldPosted)
+	var target *string
+	if err := rig.database.Pool.QueryRow(ctx, `select target from messages where id = $1`, delivered).Scan(&target); err != nil {
+		t.Fatalf("read the delivered message's target: %v", err)
+	}
+	dry, err := rig.served.heldBeside(ctx, write, row.actor, followUp, *waited)
+	if err != nil || dry == nil || dry.message == nil || deref(dry.message.InReplyTo) != reply || target == nil || deref(dry.message.Target) != *target {
+		t.Errorf("the follow-up read beside the reply that posted meanwhile: %#v, %v; want it filed under %s to %v", dry, err, reply, target)
+	}
 }
 
 // heldBlockPostOnly are the fields of a reply's answer that only the post of the held text whose
@@ -627,6 +764,99 @@ func TestAnAskOnAHeldIssueIsRefusedAtItsHoldAsItsPost(t *testing.T) {
 		{"an anchor naming a mark", asks, anchored(map[string]any{"artifact": "spec", "mark_id": "m1"})},
 		{"an anchor naming a quote and a mark", asks, anchored(map[string]any{"artifact": "spec", "quote": "gnomon offset", "mark_id": "m1"})},
 	}, issue)
+}
+
+// A text held beside a held issue whose anchor quotes text in that issue's spec where the schema
+// allows no mark of its kind - an ask's in a code block, a comment's in the front matter - is
+// refused at once, with the 400 its post answers once that issue has posted: the mark its post
+// writes is checked at its hold as that post writes it, not only its quote's search.
+func TestAMarkTheSpecAllowsNowhereIsRefusedAtItsHoldAsItsPost(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "---\ntitle: Gnomon offsets\n---\n\nThe astrolabe reads a constant offset.\n\n```\nreseat the gnomon\n```\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	rig.requireRefusedBeside([]besideWrite{
+		{"an ask quoting a code block", "/api/v1/issues/" + issue + "/asks", map[string]any{
+			"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase,
+			"anchor":   map[string]any{"artifact": "spec", "quote": "reseat the gnomon"},
+		}},
+		{"a comment quoting the front matter", "/api/v1/issues/" + issue + "/comments", map[string]any{
+			"body":   "Status\nThe title names the offsets. " + vacuousPhrase,
+			"anchor": map[string]any{"artifact": "spec", "quote": "Gnomon offsets"},
+		}},
+	}, issue)
+}
+
+// An ask anchored in a document a write kept beside a held issue makes, whose anchor its hold
+// leaves to its post, is failed at its post where that document holds its quote only where an
+// ask's mark may not stand: the post's 400 INVALID_ANCHOR is a refusal no later post clears, so the
+// held ask fails and its writer is told, as for any other refusal of a post.
+func TestAHeldAskWhoseMarkMayNotStandFailsAtItsPostAndItsWriterIsTold(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	upload := rig.held(rig.asKeptWriter(http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{
+		"name": "notes", "content": "The gnomon notes.\n\n```\nreseat the gnomon\n```\n",
+	}), "the upload kept beside the held issue").ID
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
+		"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase,
+		"anchor":   map[string]any{"artifact": "notes", "quote": "reseat the gnomon"},
+	}), "the ask anchored in a code block of the kept document").ID
+	rig.postedAsWritten(issue)
+	rig.waitHeld(upload, heldPosted)
+	rig.waitHeld(ask, heldAwaitingWriter)
+	rig.postHeldAsWritten(ask)
+	if failed := rig.waitHeld(ask, heldFailed); !strings.Contains(failed.detail, "the post was refused: INVALID_ANCHOR") || !strings.HasSuffix(failed.detail, "; its writer was told") {
+		t.Fatalf("the failed ask's detail reads %q", failed.detail)
+	}
+	if body := rig.waitOneFrameAbout(ask, "did not post"); !strings.Contains(body, "Its post was refused: INVALID_ANCHOR") {
+		t.Errorf("the failed ask's frame reads %q", body)
+	}
+}
+
+// A document uploaded to a held issue is kept beside it and posts right after it, before an ask
+// held beside that issue later: the ask anchored in that document, which no record of the hold
+// holds, is held, its anchor left to its post, and it posts anchored in the document the upload
+// wrote.
+func TestAnAskAnchoredInADocumentKeptBesideAHeldIssueIsHeldAndPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	issue := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held issue").ID
+	upload := rig.held(rig.asKeptWriter(http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{
+		"name": "notes", "content": "The gnomon sits a degree off true.\n",
+	}), "the upload kept beside the held issue").ID
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
+		"question": "Reseat the gnomon before the next reading?\n" + vacuousPhrase,
+		"anchor":   map[string]any{"artifact": "notes", "quote": "a degree off true"},
+	}), "the ask anchored in the kept document").ID
+	rig.postedAsWritten(issue)
+	rig.waitHeld(upload, heldPosted)
+	rig.postedAsWritten(ask)
+	rig.waitHeld(ask, heldPosted)
+	read := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+ask, nil, "alice")
+	var posted struct {
+		Ask struct {
+			Anchor *model.Anchor `json:"anchor"`
+		} `json:"ask"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &posted); err != nil {
+		t.Fatalf("decode the posted ask %s: %v", read.Body.String(), err)
+	}
+	var notes string
+	if err := rig.database.Pool.QueryRow(context.Background(), `select id::text from artifacts where issue_key = $1 and slug = 'notes'`, issue).Scan(&notes); err != nil {
+		t.Fatalf("read the kept document's id: %v", err)
+	}
+	if anchor := posted.Ask.Anchor; read.Code != http.StatusOK || anchor == nil || anchor.ArtifactID != notes || anchor.Quote != "a degree off true" {
+		t.Errorf("the posted ask: %d %s, want it anchored on \"a degree off true\" in %s", read.Code, read.Body.String(), notes)
+	}
 }
 
 // A message held beside a held text is refused at once wherever its post would refuse the message

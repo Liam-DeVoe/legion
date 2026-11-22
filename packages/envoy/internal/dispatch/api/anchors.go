@@ -85,7 +85,7 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 
 // anchorInputError is the refusal of an anchor read off input alone: no document named, neither a
 // quote nor a mark id, or an empty one. It is resolveAnchor's first check, which a text beside a
-// held issue makes at its hold too (heldAnchorError), where no dry run makes it.
+// held issue makes at its hold too (heldSpecAnchor), where no dry run makes it.
 func anchorInputError(input *model.AnchorInput) error {
 	if strings.TrimSpace(input.Artifact) == "" {
 		return errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor artifact is required")
