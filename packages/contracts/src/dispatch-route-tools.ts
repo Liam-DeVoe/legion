@@ -631,7 +631,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_issue_references",
     example: { issue: "DSP-1" },
     description:
-      "Read the documents an issue's content references, up to eight hops away, each with its depth and the node it was reached through. versions latest keeps only each document's latest version.",
+      "Read an issue's references one hop in each direction: links, every node the issue's own content (its documents, asks, comments and messages) links to, and linked_from, every node that links to the issue or to its content, each row with the node, its name, the kinds of its links and the issue's node at the near end; members, the documents of links with their versions. A parent or a child is in neither list. versions latest keeps only each member's latest version.",
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_KEY),
       versions: z
@@ -1221,7 +1221,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_document_references",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Read the documents a document's content references, up to eight hops away, each with its depth and the node it was reached through.",
+      "Read a document's references one level in each direction: outgoing, every item or document its content mentions, a block with the document that holds it, and referenced_by, every item or document that mentions the document or one of its current blocks, each once.",
     arguments: (z) => ({ document: z.string().describe(DOCUMENT_ID) }),
     strict: true,
     routes: get("/api/v1/artifacts/{id}/references", { params: { id: "document" } }),
