@@ -475,8 +475,10 @@ func TestReadOutputEndsWhenItsContextEndsAfterTheChildExited(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("the child's process id %q: %w", line, err)
 			}
-			if !testwait.Holds(hangGuard, testwait.Poll, func() bool { return syscall.Kill(pid, 0) != nil }) {
-				return fmt.Errorf("the child, process %d, was not reaped within %s", pid, hangGuard)
+			// Half of within's own bound, so a child not reaped fails with this message rather
+			// than within's, which would name another cause.
+			if !testwait.Holds(hangGuard/2, testwait.Poll, func() bool { return syscall.Kill(pid, 0) != nil }) {
+				return fmt.Errorf("the child, process %d, was not reaped within %s", pid, hangGuard/2)
 			}
 			cancel()
 			_, err = io.ReadAll(r)
