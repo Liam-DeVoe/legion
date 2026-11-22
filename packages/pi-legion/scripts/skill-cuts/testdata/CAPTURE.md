@@ -748,12 +748,13 @@ Every other byte is as captured.
 
 ## The canned reader answers
 
-The answers of the `craft`, `nearest`, `claim`, `proposal-target`, `proposal` and `written-case`
-readers are made up and written in the tests, as the other readers' are: `readers.test.ts`'s rows,
-each valid answer and each refused one with why, and the stand-ins of `cli.test.ts`,
-`proposals.test.ts` and `build.test.ts`, which answer each request by its prompt (and, in
-`proposals.test.ts`, by its item's id; in `build.test.ts`, the `written-case` reader with its
-canned tasks).
+The answers of the `craft`, `nearest`, `claim`, `proposal-target`, `proposal`, `written-case` and
+`navigation` readers are made up and written in the tests, as the other readers' are:
+`readers.test.ts`'s rows, each valid answer and each refused one with why, and the stand-ins of
+`cli.test.ts`, `proposals.test.ts` and `build.test.ts`, which answer each request by its prompt
+(and, in `proposals.test.ts`, by its item's id; in `build.test.ts`, the `written-case` reader with
+its canned tasks, and the `navigation` reader and the case reader of the made-up sessions
+`nav-step` and `nav-line` by their text).
 
 ## The scan
 

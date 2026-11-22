@@ -65,12 +65,12 @@
  *       (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n>
  *       --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
  *       [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>]
- *       [--stop-zero-case-usd <n>]
+ *       [--stop-zero-case-usd <n>] [--drop-navigation]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file>
  *       (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir>
  *       --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>)
  *       --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>]
- *       [--model-pool <file>]... [--budget-usd <n>]
+ *       [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --old <dir> --copies <dir>
  *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
@@ -308,7 +308,6 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
-import { readCalls } from "../skill-scenarios/transcript";
 import {
   type Arm,
   type ArmDirs,
@@ -330,7 +329,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, caseKind, loadCases, skillReadFile, Thinking, textLines } from "./cases";
+import { type Case, caseKind, loadCases, stepSkillFiles, Thinking, textLines } from "./cases";
 import {
   configFrom,
   fileDigests,
@@ -3553,19 +3552,12 @@ function shapesLine(b: Behaviour, score: SkillScore): string {
 }
 
 /** The files of `files` (paths inside `old` of its files other than SKILL.md) that case `c`'s
- *  real step reads, each once, in order, as the arms tell a read of a file of the skill: a `read`
- *  of `skill://<skill>/<path>` (cases.ts's `skillReadFile`) or of a path that ends with
- *  `<installed dir>/<path>`, the installed directory the arms show (`buildArm`'s, of the arm with
- *  no skill, which reads no directory and writes nothing). */
+ *  real step reads, each once, in order, as the arms tell a read of a file of the skill (cases.ts's
+ *  `stepSkillFiles`), at the installed directory the arms show (`buildArm`'s, of the arm with no
+ *  skill, which reads no directory and writes nothing). */
 function stepSkillReads(c: Case, old: string, files: readonly string[]): string[] {
   const arm = buildArm(c, "none", { old }, path.join(tmpdir(), SCRATCH_DIR));
-  const read = readCalls([{ message: c.realStep }]).flatMap(({ target }) => {
-    const file =
-      skillReadFile(arm.skill, target) ??
-      files.find((each) => target.endsWith(`${arm.installedDir}/${each}`));
-    return file !== undefined && files.includes(file) ? [file] : [];
-  });
-  return [...new Set(read)];
+  return stepSkillFiles(c.realStep, arm.skill, arm.installedDir, files);
 }
 
 /** The report's line of the screened cases whose real step reads a file of the skill under `old`
@@ -4321,8 +4313,8 @@ const USAGE = [
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",
   "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
-  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
-  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",

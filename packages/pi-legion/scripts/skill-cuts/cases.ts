@@ -16,7 +16,7 @@ import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { readTargets, SessionMessage } from "../skill-scenarios/transcript";
+import { readCalls, readTargets, SessionMessage } from "../skill-scenarios/transcript";
 import { schemaFaults } from "./common";
 import { CaseKind } from "./score";
 
@@ -202,6 +202,26 @@ export function skillReadFile(skill: string, target: string): string | undefined
   }
   if (file === "") return "SKILL.md";
   return file.includes(":") || !InsidePath.safeParse(file).success ? undefined : file;
+}
+
+/** The files of `files` (paths inside the skill's directory) that the `read` calls of `step` read,
+ *  each once, in order, as the arms tell a read of a file of the skill: a read of
+ *  `skill://<skill>/<path>` (`skillReadFile`), or of a path that ends `<installedDir>/<path>`, the
+ *  directory the skill is installed at. The rule of the behaviour report's line on such steps
+ *  (cli.ts) and of build-cases' `--drop-navigation` (build.ts). */
+export function stepSkillFiles(
+  step: SessionMessage,
+  skill: string,
+  installedDir: string,
+  files: readonly string[]
+): string[] {
+  const read = readCalls([{ message: step }]).flatMap(({ target }) => {
+    const file =
+      skillReadFile(skill, target) ??
+      files.find((each) => target.endsWith(`${installedDir}/${each}`));
+    return file !== undefined && files.includes(file) ? [file] : [];
+  });
+  return [...new Set(read)];
 }
 
 /** The lines of a file's text: a final newline ends the last line, it does not start one. */

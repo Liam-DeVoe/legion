@@ -34,6 +34,9 @@
  * - `audit`: a case's line, the messages before its step as the judge reads them, and its
  *   real step, never its criterion; whether the step follows the line, breaks it, or is not a
  *   step the line governs, with a reason. The case builder keeps a case only when it follows.
+ * - `navigation`: one line of a skill's files, the path of its file and the paths of the skill's
+ *   files; whether the line's only instruction a step could show is to read or open a file of the
+ *   skill, with a reason. `build-cases --drop-navigation` gives no case of such a line.
  * - `map`: a skill's base and cut texts and the rule-by-rule audit of the cut, if any; each rule
  *   of the base text with its line in the cut text or why it is gone, called kept, narrowed,
  *   widened or lost, with the audit's words where the audit answers it.
@@ -566,6 +569,32 @@ const auditReader: Reader<AuditInput, AuditAnswer> = {
       `<line>\n${input.line}\n</line>`,
       `<before>\n${input.before}\n</before>`,
       `<step>\n${input.step}\n</step>`,
+    ].join("\n\n"),
+};
+
+// The navigation reader: whether a line only sends the agent to a file of the skill.
+
+/** A line of the skill's files, the path of its file, and the path of each file of the skill. */
+const NavigationInput = z.strictObject({
+  line: OneLine,
+  file: z.string().min(1),
+  files: z.array(z.string().min(1)).min(1),
+});
+type NavigationInput = z.infer<typeof NavigationInput>;
+export const NavigationAnswer = z.strictObject({
+  navigation: z.boolean(),
+  reason: z.string().min(1),
+});
+export type NavigationAnswer = z.infer<typeof NavigationAnswer>;
+
+const navigationReader: Reader<NavigationInput, NavigationAnswer> = {
+  input: NavigationInput,
+  answer: () => NavigationAnswer,
+  render: (input) =>
+    [
+      `<files>\n${input.files.join("\n")}\n</files>`,
+      `<file>\n${input.file}\n</file>`,
+      `<line>\n${input.line}\n</line>`,
     ].join("\n\n"),
 };
 
@@ -1689,6 +1718,7 @@ export const READERS = {
   case: caseReader,
   restate: restateReader,
   audit: auditReader,
+  navigation: navigationReader,
   map: mapReader,
   attack: attackReader,
   "same-job": sameJobReader,

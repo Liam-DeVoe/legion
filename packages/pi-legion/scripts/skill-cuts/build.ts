@@ -13,11 +13,12 @@
  *       --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
  *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
  *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *       [--drop-navigation]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir>
  *       --count <count dir> --written <n> (--context-session <store>:<hash> | --sessions <file>
  *       --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>]
- *       [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>]
+ *       [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
  *       the cut's base> --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
@@ -369,6 +370,29 @@
  * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
  * is refused (exit 2), since it would read neither `--sessions` nor `--seed`.
  *
+ * **--drop-navigation** (both forms; README.md, "build-cases and build-tasks") gives no case of a
+ * step that only reads a file of the skill, or of a line that only sends the agent to one: the arm
+ * with no skill lacks that file, so it fails such a step whatever the skill's text teaches. In the
+ * session form, a step the case reader proposes whose `read` calls read a file of `--old`
+ * (SKILL.md among them), as cases.ts's `stepSkillFiles` tells one (the arms' and the behaviour
+ * report's rule, at the installed directory the session's reads before the step show), is passed
+ * over: a navigation step. So is a proposal whose line the `navigation` reader (given the line,
+ * its file and the path of each file of `--old`) calls one whose only instruction a step could
+ * show is to read or open a file of the skill: a navigation line. The case reader then goes on
+ * from the window that starts after that step (after the window, for a step before it), within
+ * READER_WINDOWS; a step it proposes again is passed over again and counted once. The lines it is
+ * offered are those of every read its windows can reach (step 4), so the file a navigation step
+ * read is offered in the windows after it, and a later step a line of that file governs is a case
+ * whose `baseFile` is that file. The session's record names each step passed over (`navigation`:
+ * its message index, `kind` `step` or `line`, the file read or the line's file, and a line's
+ * reason), the summary counts them (`navigation: {steps, lines}`), and so does the last line
+ * printed; a session whose windows run out after passing over steps is dropped as one with no step
+ * is, and one whose navigation reader fails is dropped (`navigation-failed`). In the `--written`
+ * form, a task whose following step reads a file of the skill, or whose line the navigation reader
+ * calls navigation, is dropped (`written-navigation`). The summary's inputs record the flag
+ * (`dropNavigation`), so a run that goes on with the other value is refused; a summary written
+ * before the flag reads as one without it.
+ *
  * **build-tasks** (the load test's tasks): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
  * per store and per UTC day of the configuration's window for first user messages holding them;
@@ -515,6 +539,7 @@ import {
   type ProfileSkill,
   pathHash,
   skillReadFile,
+  stepSkillFiles,
   Thinking,
   testedCopy,
   textLines,
@@ -599,6 +624,7 @@ import {
   AuditAnswer,
   CaseAnswer,
   type CaseInput,
+  NavigationAnswer,
   ReaderFailed,
   RestateAnswer,
   runReader,
@@ -729,6 +755,8 @@ export const DROP_REASONS = {
   "audit-not-governed":
     "the audit, which reads no criterion, finds that the line does not govern the real step",
   "audit-failed": "the audit reader's every reply was refused, or its call failed",
+  "navigation-failed":
+    "the navigation reader's every reply was refused, or its call failed (build-cases --drop-navigation)",
   "no-model": "no model_change or thinking_level_change before the step",
   "model-not-served":
     "no route of the gateway serves the session's model before the step (its id is the id of none of the configuration's servedModels), or none of its models from the skill's read on",
@@ -738,6 +766,8 @@ export const DROP_REASONS = {
     "the restatement check finds that a written task states the line's instruction, in any wording (build-cases --written)",
   "written-not-followed":
     "the audit, which reads no criterion, does not find that a written task's following step follows the line: it breaks it, or the line does not govern it (build-cases --written)",
+  "written-navigation":
+    "a written task's following step reads a file of the skill, or the navigation reader calls its line one that only sends the agent to a file of the skill (build-cases --written --drop-navigation)",
 } as const;
 export type DropReason = keyof typeof DROP_REASONS;
 
@@ -4517,7 +4547,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 /** The flags only `build-cases --written` takes. */
 const WRITTEN_FLAGS = ["context-session", "session-cases", "reading-models", "model-pool"] as const;
 /** build-cases' options, of each of its forms. */
@@ -4545,6 +4575,7 @@ const BUILD_CASES_OPTIONS = {
   "session-cases": { type: "string" },
   "reading-models": { type: "string" },
   "model-pool": { type: "string", multiple: true },
+  "drop-navigation": { type: "boolean" },
 } as const;
 /** build-cases' options as `parse` reads them. */
 type BuildCasesValues = OptionValues<typeof BUILD_CASES_OPTIONS>;
@@ -4601,6 +4632,18 @@ function dollars(flag: string, text: string | undefined): number | undefined {
 function mustBeFile(file: string, what: string): void {
   if (!statSync(file, { throwIfNoEntry: false })?.isFile())
     throw new Refused(`${what} ${file} is not a file`);
+}
+
+/** The path of each file of the skill directory `dir`, inside it (SKILL.md and every other file,
+ *  at any depth), SKILL.md first and the rest by path: the files `--drop-navigation` tells a read
+ *  of. */
+function skillPaths(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)))
+    .sort(
+      (a, b) => Number(b === "SKILL.md") - Number(a === "SKILL.md") || (a < b ? -1 : a > b ? 1 : 0)
+    );
 }
 
 /** The skill in `dir` as build-tasks reads it: its SKILL.md's frontmatter name (its directory's
@@ -4705,6 +4748,10 @@ interface CaseRun {
   readonly old: string;
   /** The skill's base files (`--old`). */
   readonly files: readonly { readonly path: string; readonly text: string }[];
+  /** The path of each file of `--old` (`skillPaths`). */
+  readonly skillPaths: readonly string[];
+  /** `--drop-navigation`: a navigation step or line gives no case. */
+  readonly dropNavigation: boolean;
   readonly copies: Copies;
   readonly github: GithubReads;
   readonly gateway: Gateway;
@@ -4717,10 +4764,12 @@ interface CaseRun {
 /** One session's record in the summary. `model`: the session's model as its last `model_change`
  *  names it, before the step once a step is found, else before the skill's first successful read
  *  (absent when there is none). `windows`: how many windows of the session the case reader read.
- *  `restatementCheck`, once a step is found and the case's messages are known: how many of the
- *  messages before the step the restatement check must read (the case's messages less the skill's
- *  own read results), how many it read whole, and in how many windows; a case is kept only when
- *  `read` is `before`. `audit`: the audit's verdict on the real step and its reason. */
+ *  `navigation`, under `--drop-navigation`: each step the case reader proposed that was passed
+ *  over, in order (absent when none was). `restatementCheck`, once a step is found and the case's
+ *  messages are known: how many of the messages before the step the restatement check must read
+ *  (the case's messages less the skill's own read results), how many it read whole, and in how
+ *  many windows; a case is kept only when `read` is `before`. `audit`: the audit's verdict on the
+ *  real step and its reason. */
 interface SessionRecord {
   store: string;
   hash: string;
@@ -4733,8 +4782,65 @@ interface SessionRecord {
   context?: string;
   model?: string;
   windows?: number;
+  navigation?: NavigationPass[];
   restatementCheck?: { read: number; before: number; windows: number };
   audit?: { verdict: string; reason: string };
+}
+
+/** A step the case reader proposed that `--drop-navigation` passed over: its message index, and
+ *  either its own `read` calls read a file of the skill (`step`, with the first file it reads) or
+ *  the navigation reader calls its line one that only sends the agent to a file of the skill
+ *  (`line`, with the line's file and the reader's reason). */
+interface NavigationPass {
+  readonly messageIndex: number;
+  readonly kind: "step" | "line";
+  readonly file?: string;
+  readonly reason?: string;
+}
+
+/**
+ * Whether `--drop-navigation` passes over the case reader's proposal `proposal`, whose step is the
+ * message `step`: the step's `read` calls read a file of the skill (cases.ts's `stepSkillFiles`,
+ * the arms' rule, at the installed directory of the first of the session's skill reads `reads`
+ * before the step whose header shows one, else `/skills/<skill>`, as the arms take it), or else the
+ * `navigation` reader calls its line navigation. Undefined when neither, so the proposal goes on
+ * to the case's checks; the drop when the navigation reader fails. Adds the reader's dollars to
+ * `record`, and throws NotNeeded before its call once `session.stopped` is set.
+ */
+async function navigationOf(
+  run: CaseRun,
+  step: SessionMessage,
+  reads: readonly SkillRead[],
+  proposal: Exclude<CaseAnswer, { step: null }>,
+  record: SessionRecord,
+  session: { readonly stopped: boolean }
+): Promise<NavigationPass | { readonly drop: DropReason; readonly detail: string } | undefined> {
+  const messageIndex = proposal.step.messageIndex;
+  const installedDir =
+    reads
+      .filter((read) => read.index < messageIndex)
+      .map((read) => installedDirOf(read.header, read.file))
+      .find((dir) => dir !== undefined) ?? path.posix.join("/skills", run.skill);
+  const [file] = stepSkillFiles(step, run.skill, installedDir, run.skillPaths);
+  if (file !== undefined) return { messageIndex, kind: "step", file };
+  if (session.stopped) throw new NotNeeded();
+  let judged: NavigationAnswer;
+  try {
+    const result = await runReader(
+      "navigation",
+      { line: proposal.line.text, file: proposal.line.file, files: run.skillPaths },
+      run.gateway
+    );
+    record.readerUsd += usdOf(result.spent);
+    judged = NavigationAnswer.parse(result.answer);
+  } catch (error) {
+    if (error instanceof BudgetSpent) throw error;
+    if (error instanceof ReaderFailed) record.readerUsd += usdOf(error.spent);
+    return { drop: "navigation-failed", detail: messageFor(error) };
+  }
+  return judged.navigation
+    ? { messageIndex, kind: "line", file: proposal.line.file, reason: judged.reason }
+    : undefined;
 }
 
 /** A store as a session's context reads it: its name and its context. */
@@ -5302,19 +5408,42 @@ async function caseOf(
       }
       return drop("reader-error", messageFor(error));
     }
+    let next = (windowMessages.at(-1)?.index ?? start) + 1;
     if (given.step === null) noStep = given.reason;
-    else answer = given;
-    start = (windowMessages.at(-1)?.index ?? start) + 1;
+    else if (!run.dropNavigation) answer = given;
+    else {
+      // A navigation step or line is passed over, and the next window starts after its step when
+      // the step is in this window. A step passed over already, which the reader may propose
+      // again from the messages before the window, is passed over again and counted once.
+      const stepIndex = given.step.messageIndex;
+      const seen = record.navigation?.find((each) => each.messageIndex === stepIndex);
+      const passed =
+        seen ?? (await navigationOf(run, t.message(stepIndex), reads, given, record, session));
+      if (passed === undefined) answer = given;
+      else if ("drop" in passed) return drop(passed.drop, passed.detail);
+      else {
+        if (seen === undefined) record.navigation = [...(record.navigation ?? []), passed];
+        if (stepIndex >= start) next = stepIndex + 1;
+      }
+    }
+    start = next;
   }
   if (answer === undefined) {
     const extent = `${windows} window${windows === 1 ? "" : "s"} read, to message ${start - 1} of ${allMessages.length}`;
+    const passedOver = record.navigation?.length ?? 0;
+    const why = [
+      noStep,
+      passedOver === 0 ? "" : `${passedOver} navigation proposals passed over (--drop-navigation)`,
+    ]
+      .filter((each) => each !== "")
+      .join("; ");
     if (boundaryAfterRead >= 0 && start >= readable.length) {
       return drop(
         "read-before-compaction",
-        `the case reader found no step before the ${t.branch[boundaryAfterRead]?.type} after the skill's read, and a step after it would follow a skill read that precedes it (${extent}): ${noStep}`
+        `the case reader found no step before the ${t.branch[boundaryAfterRead]?.type} after the skill's read, and a step after it would follow a skill read that precedes it (${extent}): ${why}`
       );
     }
-    return drop("no-step", `${noStep} (${extent})`);
+    return drop("no-step", `${why} (${extent})`);
   }
   const stepIndex = answer.step.messageIndex;
   if (stepIndex <= first.index) {
@@ -5562,6 +5691,16 @@ function byModel(sessions: readonly SessionRecord[]): Record<string, ModelCounts
   return counts;
 }
 
+/** How many steps of `sessions` `--drop-navigation` passed over, of each kind. */
+function navigationCounts(sessions: readonly SessionRecord[]): { steps: number; lines: number } {
+  const counts = { steps: 0, lines: 0 };
+  for (const pass of sessions.flatMap((session) => session.navigation ?? [])) {
+    if (pass.kind === "step") counts.steps += 1;
+    else counts.lines += 1;
+  }
+  return counts;
+}
+
 /** The copies output under `copiesDir` as the profile reads it (attribute.ts's `readR4`, the one
  *  reader of it), and attribute.ts's placing of reads for the count under `countDir` and that
  *  output, the two attribute.ts made the sessions files from. Throws a refusal when that output
@@ -5680,6 +5819,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
     "stop-projected-usd",
     "stop-after-sessions",
     "stop-zero-case-usd",
+    "drop-navigation",
     ...WRITTEN_FLAGS,
     "written",
   ] as const) {
@@ -6329,6 +6469,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     skill: given.skill,
     old: given.old,
     files,
+    skillPaths: skillPaths(given.old),
+    dropNavigation: values["drop-navigation"] === true,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),
     gateway: readerGateway(config, given["key-file"], budgetUsd),
@@ -6366,6 +6508,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         : { ...digestOf(path.dirname(casesFile), [path.basename(casesFile)]), path: casesFile },
     readingModels: readingFile ?? null,
     modelPool: poolFiles,
+    dropNavigation: run.dropNavigation,
   };
 
   const spools = spoolDir(given.out, io);
@@ -6526,6 +6669,41 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         criterion: task.criterion,
       });
       const { messages, realStep, violatingStep, criterion } = secrets.value;
+      // Under --drop-navigation, a following step that reads a file of the skill (the arms' rule,
+      // at the installed directory the case's read shows), or a line the navigation reader calls
+      // one that only sends the agent to a file of the skill, gives no case.
+      if (run.dropNavigation) {
+        const read = stepSkillFiles(realStep, given.skill, installedDir, run.skillPaths);
+        if (read.length > 0) {
+          dropTask(
+            "written-navigation",
+            `its following step reads ${read.join(" and ")}, a file of the skill`
+          );
+          return true;
+        }
+        try {
+          const result = await runReader(
+            "navigation",
+            { line: task.line.text, file: task.line.file, files: run.skillPaths },
+            run.gateway
+          );
+          const judged = NavigationAnswer.parse(result.answer);
+          if (judged.navigation) {
+            dropTask(
+              "written-navigation",
+              `the navigation reader calls its line one that only sends the agent to a file of the skill: ${judged.reason}`
+            );
+            return true;
+          }
+        } catch (error) {
+          if (error instanceof BudgetSpent) {
+            budgetStop = stopped();
+            return false;
+          }
+          dropTask("navigation-failed", messageFor(error));
+          return true;
+        }
+      }
       try {
         // The restatement check: the task and the read's call, the read's result left out.
         const check = restatementWindows(messages, new Set([WRITTEN_READ_RESULT]));
@@ -6695,7 +6873,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
 
 /** What a build-cases run is made from, as its summary records it: a resumed run must be made
  *  from the same. The texts are digests of what the run read (`digestOf`); the paths are only
- *  for a reader of the summary. */
+ *  for a reader of the summary. `dropNavigation` is absent from a summary written before
+ *  `--drop-navigation`, which a run without the flag goes on from. */
 const CasesInputs = z.strictObject({
   cut: z.string(),
   skill: z.string(),
@@ -6704,6 +6883,7 @@ const CasesInputs = z.strictObject({
   sessions: Digested,
   copies: Digested,
   count: Digested,
+  dropNavigation: z.boolean().optional(),
 });
 type CasesInputs = z.infer<typeof CasesInputs>;
 
@@ -6749,6 +6929,13 @@ function inputsDiffer(was: CasesInputs, now: CasesInputs): string[] {
         `--${key} was ${was[key].path} (sha256 ${was[key].sha256.slice(0, 12)}), now ${now[key].path} (sha256 ${now[key].sha256.slice(0, 12)})`
       );
     }
+  }
+  if ((was.dropNavigation === true) !== (now.dropNavigation === true)) {
+    differ.push(
+      now.dropNavigation === true
+        ? "--drop-navigation was not given, now given"
+        : "--drop-navigation was given, now not given"
+    );
   }
   return differ;
 }
@@ -6963,6 +7150,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         config.stores.map((store) => store.name)
       )
     ),
+    dropNavigation: values["drop-navigation"] === true,
   };
   // The spool, held before anything at --out is read or written: a second run of this --out is
   // refused while this one runs.
@@ -7021,6 +7209,8 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     skill: given.skill,
     old: given.old,
     files,
+    skillPaths: skillPaths(given.old),
+    dropNavigation: inputs.dropNavigation === true,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),
     gateway: readerGateway(
@@ -7079,6 +7269,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         sessionsTried: sessions.length,
         casesBuilt,
         drops,
+        navigation: navigationCounts(sessions),
         byModel: byModel(sessions),
         sessions,
         cases: caseRecords,
@@ -7326,8 +7517,12 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   // The file must load as the behaviour commands load it.
   loadCases(given.out, given.old);
   const usd = addSpend(priorSpend, run.gateway.spend()).usd;
+  const passed = navigationCounts(sessions);
+  const navigation = run.dropNavigation
+    ? `, ${passed.steps} navigation steps and ${passed.lines} navigation lines passed over (--drop-navigation)`
+    : "";
   io.out(
-    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
+    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried${navigation}, $${usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
   );
   if (stopped !== undefined) {
     io.err(`build-cases: stopped: ${stopped}`);

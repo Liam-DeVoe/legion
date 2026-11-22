@@ -331,7 +331,7 @@ was made before this rule and is refused.
 
 ```
 bun scripts/skill-cuts/cli.ts read --config <skill-cuts.json> --key-file <file> \
-  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks|craft|nearest|claim|written-case|proposal-target|proposal> \
+  --prompt <case|restate|audit|navigation|map|attack|same-job|sentence|names|tasks|craft|nearest|claim|written-case|proposal-target|proposal> \
   --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>] \
   [--concurrency <n>]
 ```
@@ -978,13 +978,14 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
   (--cut <id> | --set <id>) --skill <name> --old <skill dir at the cut's base> \
   --sessions <sessions.jsonl> --seed <n> --copies <copies out dir> --count <count dir> \
   --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] \
-  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] \
+  [--drop-navigation]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
   (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir> \
   --count <count dir> --written <n> \
   (--context-session <store>:<hash> | --sessions <sessions.jsonl> --seed <n>) --out <cases.jsonl> \
   [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... \
-  [--budget-usd <n>]
+  [--budget-usd <n>] [--drop-navigation]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -1393,6 +1394,35 @@ are there at once. When the build ends, each session still open is stopped befor
 reader call and recorded with what it spent, as `not-needed` (or, at the budget or the memory
 stop, as stopped by it).
 
+`--drop-navigation` (both forms above; without it every build is as before) gives no case of a
+step that only reads a file of the skill, or of a line that only sends the agent to one: the arm
+with no skill does not have that file, so it fails such a step whatever the skill's text teaches.
+In the session form, a step the `case` reader proposes whose `read` calls read a file of `--old`
+(SKILL.md among them) is passed over as a navigation step. A read is told by the rule the arms
+and `behaviour report` use (`cases.ts`'s `stepSkillFiles`): a read of `skill://<skill>/<path>`, or
+of a path that ends with `<installed dir>/<path>`, the installed directory being the one the
+session's first read before the step shows. Each other proposal goes to the `navigation` reader
+(`prompts/navigation.md`, the audit's model and settings), which reads the line, its file's path
+and the path of each file of `--old`, and answers `{"navigation": true|false, "reason": "..."}`:
+`true` when the only instruction of the line that a step could show is to read or open a file of
+the skill. Such a line is passed over as a navigation line. After a navigation step or line the
+`case` reader goes on from the window that starts after that step (after the window, for a step
+in the messages before it), within the 6 windows; a step it proposes again is passed over again
+and counted once. It is offered the lines of every read its windows can reach, so the file a
+navigation step read is offered in each later window, and a later step that a line of that file
+governs gives a case whose `baseFile` is that file. Each session record names the steps it
+passed over (`navigation: [{messageIndex, kind: "step"|"line", file, reason}]`, `reason` for a
+line), the summary counts them (`navigation: {steps, lines}`), and the last line printed says
+`<n> navigation steps and <n> navigation lines passed over (--drop-navigation)`. A session whose
+windows run out after it passed over steps is dropped as one with no step is (`no-step`, or
+`read-before-compaction`), and its record keeps what it passed over; a session whose navigation
+reader fails is dropped (`navigation-failed`). In the `--written` form, a task whose following
+step reads a file of the skill, or whose line the `navigation` reader calls navigation, is dropped
+(`written-navigation`), before its restatement check. The navigation reader's spend is counted in
+`readerSpend` with the other readers'. Both summaries record the flag in their inputs
+(`dropNavigation`), and a run that goes on from one of the other value is refused (exit 2); a
+summary written before the flag goes on as one without it.
+
 `build-cases --written <n>` (the second form above) writes up to n written cases of one skill, for
 a skill whose session cases give fewer than 6 informative cases in the screen.
 
@@ -1460,10 +1490,11 @@ about 145 MiB a call, and one profile can start a read for every repository at o
 environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
-skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and
-the count's query outputs. Run again with the same `--out` and the same inputs, `build-cases` keeps
-every session already decided (dropped, or a case the cases file holds), with no pull and no
-reader call, and goes on in the same order from the first session not decided, until `--max`
+skill, the seed, whether `--drop-navigation` is given, and the SHA-256 of `--old`'s files, the
+sessions file, the copies files read and the count's query outputs. Run again with the same
+`--out` and the same inputs, `build-cases` keeps every session already decided (dropped, or a case
+the cases file holds), with no pull and no reader call, and goes on in the same order from the
+first session not decided, until `--max`
 cases in all; the budget counts the dollars already spent, and the summary's spend adds the runs,
 while its `peakRssBytes` is the last run's own (a summary written before that field goes on as
 well). A session `not-needed` or stopped by the budget or the memory stop is not decided, so it is
