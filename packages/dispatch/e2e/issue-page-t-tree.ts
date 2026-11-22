@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
-import type { IssueDecisions, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
 import type { Filter } from "../web/src/features/issue-page/presets";
 import {
   mergeTreePages,
@@ -561,14 +561,6 @@ export function drawnNodes(page: Page): Promise<DrawnNode[]> {
       })
     )
   );
-}
-
-/** The id the row of a decision node carries: `<slug>#b-<block id>` for a block of a
- *  document, which every decision node is, by its block id (`block_id`). */
-export function decisionRowId(node: IssueTreeNode): string {
-  return node.document === undefined
-    ? node.id
-    : blockNode(node.document.slug, node.block_id ?? node.id);
 }
 
 /** Whether the link `href` goes to a node `names` holds: a block by its fragment (`#b-<id>`), a
