@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestAStoredFieldThisBuildDoesNotKnowSurvivesAHeartbeatOnAPodWhoseCacheTrail
 		t.Fatalf("the session registers through pod B: %v", err)
 	}
 	b.StopWatch()
-	if _, err := a.watcher.KV().Put(sessionID, []byte(`{"machine_id":"box-a","dir":"/work","future_field":{"kept":true}}`)); err != nil {
+	if _, err := a.watcher.KV().Put(sessionID, fmt.Appendf(nil, `{"session_id":%q,"machine_id":"box-a","dir":"/work","updated_at":%d,"projects":null,"future_field":{"kept":true}}`, sessionID, time.Now().UnixMilli())); err != nil {
 		t.Fatalf("a newer build's pod stores the registration: %v", err)
 	}
 	if err := b.Put(sessionID, SessionEntry{MachineID: "box-a", Dir: "/work", Title: "planner"}); err != nil {
@@ -121,7 +122,7 @@ func TestASessionWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 func TestAHeartbeatKeepsARegistrationFieldThisBuildDoesNotKnow(t *testing.T) {
 	a, _ := podRegistries(t)
 	const sessionID = "ses_newer_build"
-	if _, err := a.watcher.KV().Put(sessionID, []byte(`{"port":4242,"machine_id":"box-a","dir":"/work","future_field":{"kept":true}}`)); err != nil {
+	if _, err := a.watcher.KV().Put(sessionID, fmt.Appendf(nil, `{"session_id":%q,"port":4242,"machine_id":"box-a","dir":"/work","updated_at":%d,"projects":null,"future_field":{"kept":true}}`, sessionID, time.Now().UnixMilli())); err != nil {
 		t.Fatalf("store a newer build's registration: %v", err)
 	}
 	waitFor(t, 5*time.Second, func() bool {

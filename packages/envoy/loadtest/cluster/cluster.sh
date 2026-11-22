@@ -1736,10 +1736,12 @@ IDENTITY_PROBE_SCRIPT='printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUN
 # taken the mark from Dispatch's principal, the role's name 400, naming the field role. A build
 # from before role marks reads no mark: it refuses the missing target 400, naming target_session,
 # which says it admitted the token and neither takes nor refuses the mark. A 503 is a listener
-# still starting (/v1 closed; its /healthz answers 503 "starting" until /v1 serves, so its readiness
-# probe fails until then) or one that cannot read its issuer, so the send is made again every 3 s
-# for IDENTITY_CHECK_SECONDS before it counts. A listener whose Deployment names no
-# ENVOY_DISPATCH_PRINCIPAL takes no mark from anyone, so there is nothing to check, and it says so.
+# still starting (/v1 closed; its /healthz answers 503 "starting", so its readiness probe fails,
+# until NATS is connected, its webhook and /v1 routes are open, its receive loop has started and
+# its interest copy has read its bucket, which may come after /v1 opens) or one that cannot read
+# its issuer, so the send is made again every 3 s for IDENTITY_CHECK_SECONDS before it counts. A
+# listener whose Deployment names no ENVOY_DISPATCH_PRINCIPAL takes no mark from anyone, so there is
+# nothing to check, and it says so.
 IDENTITY_CHECK_SECONDS=120
 check_dispatch_identity() {
   local principal pod answer status body ran deadline=$(($(now) + IDENTITY_CHECK_SECONDS))

@@ -903,7 +903,8 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // entry with the moment it was made (stampClaim), so a reader weighing the route's freshness
 // (ClaimStaleAfter) reads the latest heartbeat, and it is written by compare-and-set (write), so
 // the registration it ran on is the one replaced. The entry written carries the gap mark of the
-// registration it replaces (SessionEntry.RepositoryGap), whatever entry's own field says (write).
+// registration it replaces (SessionEntry.RepositoryGap), whatever entry's own field says (write),
+// and the fields this build does not know of a registration bound to sessionID (stampClaim).
 // Every other field is entry's, so against another listener's write it is last-writer-wins, as it
 // always was.
 //
@@ -916,7 +917,7 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // while this registry's own copy held it until its watcher delivered it (write).
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	return r.write(ctx, sessionID, func(cur SessionEntry, found bool, now int64) SessionEntry {
-		return stampClaim(cur, found, entry, now)
+		return stampClaim(sessionID, cur, found, entry, now)
 	})
 }
 
@@ -939,12 +940,19 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 // ErrWriteConflict, having written nothing.
 //
 // The first attempt's record, the cache's or a direct get's, cannot be told from a RePublish whose
-// body names the key, a machine, a time and projects: where the write lands at that record's
-// revision (an edge listener, whose direct get is a stream message get, reports a RePublish at the
-// sequence it is stored at), the registration carries that record's gap mark and the keys this
-// build does not know. That is main's window for the gap mark, kept on this path alone; every other
-// field written is the registration's own, and a role claim's refresh, which decides from the
-// leader's read and writes at its revision, carries nothing of such a record (PutClearingGap).
+// body names the key, a machine, a time and projects, and the write can land at that record's
+// revision on any listener: the copy holds each record at the sequence its watcher delivered it at,
+// the one it is stored at (kvwatch.Copy.FenceFor), and so does an edge listener's direct get, a
+// stream message get. Another listener's direct get reports a RePublish at its source stream's
+// sequence, from the Nats-Sequence header it carries first, so a write at that is refused and the
+// next attempt reads the leader, which answers it as no record. Where the write lands, the
+// registration carries that record's gap mark, which every relay reads (cmd/listener's
+// sessionRelays.owedRepositoryGap): the session's next frame then carries a false gap marked
+// repository_withheld, and the mark is cleared once that frame is sent (repositoryGapSent). The
+// keys this build does not know ride only from a record bound to the key, one naming it and a
+// machine (stampClaim), so a RePublish whose body names no key carries none. Every other field
+// written is the registration's own, and a role claim's refresh, which decides from the leader's
+// read and writes at its revision, carries nothing of such a record (PutClearingGap).
 //
 // Each bucket call waits no longer than ctx (bus.BoundedOn). A write ctx abandoned may still land after
 // this answer. That is safe: it is a compare-and-set on the very entry it read, a marker or no entry
@@ -1182,6 +1190,14 @@ func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machine
 		if err != nil {
 			return fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
 		}
+		// Every record but the two the switch keeps - none at all, a marker, one the server wrote -
+		// is written bare: the machine, the self-subscription and the claim token's projects, and
+		// no delivery set. Until the session's next heartbeat (contracts.SessionHeartbeat, 90 s)
+		// registers it again, its relay stops (cmd/listener's sessionRelays.wanted relays only a
+		// record on consumer delivery), and a message sent to it stays on its consumer - or, where
+		// a reap took that consumer, in the stream for the one the registration creates at its
+		// resume point; the registration writes the full record and the relay delivers the message
+		// then (cmd/listener's TestARoleClaimOverAMissingRecordHoldsAMessageUntilTheHeartbeat).
 		entry := SessionEntry{MachineID: machineID, SelfSubscribed: selfSubscribed, Projects: projects}
 		switch {
 		case found && stored.SessionID == sessionID:
@@ -1392,7 +1408,9 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // RefreshFromLeader is Refresh with the leader of the session bucket's stream answering the read
 // (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches: it
 // applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
-// every error the same way, ctx's end included.
+// every error the same way, ctx's end included. It is bounded as Refresh is (bus.BoundedOn):
+// nats.go fails no request its connection drops, so a leader read lost with its connection ends
+// at the loss, with bus.ErrRequestLostWithConnection, rather than holding its caller until ctx ends.
 //
 // It is the read for the caller that cannot afford a stale miss, because a miss makes it take
 // something away from the session on the strength of the session having no record at all: the
@@ -1404,7 +1422,10 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // copy that is near enough to current, where this read is one more thing for the leader to do.
 func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, err := kv.GetFromLeader(ctx, sessionID)
+	got, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.GetFromLeader(ctx, sessionID) })
+	if !answered {
+		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

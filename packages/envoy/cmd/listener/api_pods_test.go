@@ -224,7 +224,7 @@ func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 		kv         nats.KeyValue
 		key, value string
 	}{
-		{sessionKV, sessionID, fmt.Sprintf(`{"port":0,"machine_id":"test-machine","dir":"/work","updated_at":%d,"future_field":"session"}`, registered)},
+		{sessionKV, sessionID, fmt.Sprintf(`{"session_id":"ses_newer_build","port":0,"machine_id":"test-machine","dir":"/work","updated_at":%d,"projects":null,"future_field":"session"}`, registered)},
 		{interestKV, sessionID, fmt.Sprintf(`{"session_id":"ses_newer_build","machine_id":"test-machine","dir":"/work","topics":["notifications.agent.ses_newer_build"],"updated_at":%d,"future_field":"interest"}`, registered)},
 		{roleKV, "keeper", `{"holder_session_id":"ses_before","claimed_at":1,"future_field":"claim"}`},
 	} {

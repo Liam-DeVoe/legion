@@ -308,7 +308,9 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	listener, port := startCopysListener(t, binary, issuer, testDispatchSubject+","+testRunnerSubject)
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
 	// /healthz answers 503 "starting" from the moment the listener serves it, before NATS connects,
-	// until /v1 serves; only "healthy" says /v1 serves.
+	// until NATS is connected, its webhook and /v1 routes are open, its receive loop has started and
+	// its interest copy has read its bucket, which may come after /v1 opens; a 200 "degraded"
+	// listener serves /v1 too. Only "healthy" says all of that and that every dependency answers.
 	deadline := time.Now().Add(90 * time.Second)
 	answer := "none"
 	for {

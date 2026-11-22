@@ -1410,9 +1410,11 @@ and so reads the same files.
 
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
-The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the ten outputs the eleven slow suites run behind. On a pull request without that
-label each of those ten is `false` whether its paths matched or not, so a reader of the
+The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<output>'))`) rewrites
+the ten outputs the eleven slow suites run behind. On a pull request carrying neither that
+label nor the output's own `lane:<output>` label, which turns on that one slow suite (A lane
+label turns on one slow suite on a pull request, above), each of those ten is `false`
+whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
 (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
