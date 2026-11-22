@@ -166,12 +166,14 @@ func OpeningStartStands(run record.RoleRun, root record.Issue, current phase.Pha
 // before the claims, and the outbox writes a claim before it deletes the start row, so such a close
 // reads the start row or the claim the start wrote. A start in that time is one a lane runs. A
 // start that no lane runs reads the closed gate at its next attempt, and waits. The work hold's
-// close stops the claim of any start under way, since a stop that finds no launch makes nothing
-// (workHoldClose). The merge hold's close waits for the session of a merger whose start runs
-// alone (tellGateMoved's mergersToWake), since a message that waits holds the issue's pod. The
-// outbox reads it too, for such a close message whose merger has no claim yet, or a claim that
-// runs nothing and is not released: the message waits only while a start of the merger is under
-// way (internal/daemon's closeWaitsForAMerger).
+// close stops the claim of any start under way of a worker that is not a merger: the stop holds
+// the launch the start makes until the agent's ready, and makes nothing where no launch comes. It
+// marks its close message to a merger with a start under way to wait for the merger's session,
+// so the stop follows the message (workHoldClose). The merge hold's close waits for the session
+// of a merger whose start runs alone (tellGateMoved's mergersToWake), since a message that waits
+// holds the issue's pod. The outbox reads it too, for such a close message whose merger has no
+// claim yet, or a claim that runs nothing and is not released: the message waits only while a
+// start of the merger is under way (internal/daemon's closeWaitsForAMerger).
 func StartUnderWay(run record.RoleRun, root record.Issue) (underWay, running bool) {
 	stop := actingStop(run, root)
 	for _, queued := range run.Queued {

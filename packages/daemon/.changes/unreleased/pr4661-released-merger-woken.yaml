@@ -7,8 +7,10 @@ body: |-
   Before, the daemon dropped that message, and the merge queue could merge the pull request under
   a version of the design that no person had approved. This wake is the one start of a merger that
   a closed gate lets through. Under `merge`, a hook prompt to a released merger now waits while the
-  tree's design gate is closed, where before it woke the merger. Under `merge`, the close message
-  to a merger that is launching, or whose start read the gate open just before the close, waits for
-  the merger's session too. Under both words, no message of the design gate's close is sent when
+  tree's design gate is closed, where before it woke the merger. Under both words, the close
+  message to a merger that is launching, or whose start read the gate open just before the close,
+  waits for the merger's session too. Under `work`, the daemon stops the merger only after the
+  close message reached it, and the message waits while the listener reports the merger's session
+  unresponsive. Under both words, no message of the design gate's close is sent when
   the gate opened again before the daemon could send it, the architect's message included, so no
   role reads "closed" after the gate opened.

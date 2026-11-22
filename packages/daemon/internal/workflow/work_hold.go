@@ -250,27 +250,35 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //
 //   - every live architect, the root's and each member's own, the close and "Your own work goes
 //     on.": the hold stops no architect;
-//   - every live phase worker (planner, implementer, tester, reviewer, merger), idle claims of a
-//     finished phase among them, the close and "End your turn now.", carrying its stop
+//   - every live phase worker that is not a merger (planner, implementer, tester, reviewer), idle
+//     claims of a finished phase among them, the close and "End your turn now.", carrying its stop
 //     (record.RoleMessage.Stop), which the outbox posts once the message reached the claim, with
 //     the deadline HoldStopGrace on;
-//   - a released merger the same message, marked to wake it (record.RoleMessage.Wake), so it can
-//     take its pull request out of the merge queue;
+//   - every merger it reaches the same message, marked to wait for the merger's session
+//     (record.RoleMessage.Wake): a live merger, a released one, which the message wakes, and one
+//     that is neither while a start of it is under way (StartUnderWay), which may launch the
+//     merger with its task after this close. The merger takes its pull request out of the merge
+//     queue only on this message, so the message waits while the claim is not gone and its
+//     session does not hold the role's topic yet, or while its holder is unresponsive. The outbox
+//     posts the stop once the message ended, so the stop follows the message (internal/daemon's
+//     deliverRoleMessage, closeWaitsForAMerger, postHoldStop);
 //   - a released worker that is not a merger nothing: a wake would bring its pod back only to stop
 //     it, so its stop is written at once, with the deadline HoldStopGrace after this close and no
 //     turn, and the hold takes its `released` source over with its bundle and its pending task
 //     kept. A wake that passed the fence before this close may launch the claim after it: the
 //     stop then holds the launch until its ready, and cuts a turn at the deadline where a restart
 //     or a failed attempt of the stop lets the ready come first;
-//   - a phase worker that is neither live nor released, and whose run holds a start under way
-//     (StartUnderWay), nothing, and its stop is written at once, with the deadline HoldStopGrace
-//     after this close and no turn: the start read the gate open before this close, and it may
-//     create, resume or retry the claim after it. The stop's row is newer than the start's, so it
-//     still acts on the claim that start launches (StopActs), and the outbox runs it once the
-//     start's lease ends: it stops the launching claim at its ready, before the claim takes any
-//     task (supervise's holdSuspendUntilReady). That hold lives in memory alone, so where a
-//     restart or a failed attempt of the stop lets the ready come first, the stop's next attempt
-//     stops a ready or idle claim at once and cuts a turn at the deadline. A stop that finds no
+//   - a phase worker that is not a merger, neither live nor released, and whose run holds a start
+//     under way (StartUnderWay), nothing, and its stop is written at once, with the deadline
+//     HoldStopGrace after this close and no turn: the start read the gate open before this close,
+//     and it may create, resume or retry the claim after it. The stop's row is newer than the
+//     start's, so it still acts on the claim that start launches (StopActs), and the outbox runs
+//     it once the start's lease ends: it stops the launching claim at its ready, before the claim
+//     takes any task (supervise's holdSuspendUntilReady). That hold lives in memory alone, so
+//     where a restart or a failed attempt of the stop lets the ready come first, the stop's next
+//     attempt stops a ready or idle claim at once and cuts a turn at the deadline. A stop that
+//     finds a claim with no launch yet, queued or with a launch a restart left uncertain, waits on
+//     its row's backoff for the launch (internal/daemon's holdStop). Any other stop that finds no
 //     launch makes nothing: a claim that runs nothing is not stopped again, and an operator's or
 //     the daemon's suspension stands;
 //   - and any other claim an operator or the daemon suspended, or a failed or retired one,
@@ -307,18 +315,21 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 			continue
 		case c.role == claim.RoleArchitect:
 			continue
+		case c.role == claim.RoleMerger && (c.live() || c.state().Released() || underWay):
+			how = "told to end its turn once its session holds its topic"
+			if c.state().Released() {
+				how = "woken from its release to end its turn"
+			}
+			stop := stopOf(c)
+			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose,
+				Close: true, Wake: true, Stop: &stop}); err != nil {
+				return err
+			}
+			told++
 		case c.live():
 			how = "told to end its turn"
 			stop := stopOf(c)
 			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose, Close: true, Stop: &stop}); err != nil {
-				return err
-			}
-			told++
-		case c.role == claim.RoleMerger && c.state().Released():
-			how = "woken from its release to end its turn"
-			stop := stopOf(c)
-			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose,
-				Close: true, Wake: true, Stop: &stop}); err != nil {
 				return err
 			}
 			told++
