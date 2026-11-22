@@ -56,6 +56,8 @@ export const BOB: Actor = { id: "bob", kind: "user" };
  *  words as the server matches a quote against them (`wordsOf`). */
 export const STATEMENT_WORDS = "The page draws **one** box.\n\nIt sits at the foot.";
 export const STATEMENT_QUOTE = "The page draws one box. It sits at the foot.";
+/** The statement's words as a new version of the spec writes them. */
+export const STATEMENT_REWRITTEN = "The page draws **one** box, at the foot.";
 
 /** The record a statement's words are a block of: the issue's spec (`tree-drafts.ts`). */
 export const SPEC_SOURCE = { id: "artifact-spec", issue: KEY, kind: "artifact" } as const;

@@ -199,17 +199,14 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
 /** The key of a draft kept for another address than the composer shows, as its line or its offer
  *  is drawn: its whole address - the words a margin compose was at, the reply it answers and the
  *  statement the issue page's box was on - which no two drafts kept under one name share. Two the
- *  box keeps on one statement's row, its words before a new version and after, share the row. */
+ *  box keeps on one statement's row, its words before a new version and after, share the row. The
+ *  key names each field of `AwayAddress`, so the compiler asks for a field the address gains. */
 function awayKey({ anchor, replyTo, statement }: AwayAddress): string {
-  return JSON.stringify([
-    anchor?.artifact,
-    anchor?.mark_id,
-    anchor?.quote,
-    anchor?.occurrence,
-    replyTo?.id,
-    statement?.artifact,
-    statement?.quote,
-  ]);
+  return JSON.stringify({
+    anchor: [anchor?.artifact, anchor?.mark_id, anchor?.quote, anchor?.occurrence],
+    replyTo: replyTo?.id,
+    statement: [statement?.artifact, statement?.quote],
+  } satisfies Record<keyof AwayAddress, unknown>);
 }
 
 /** One kind the issue page's line writes, as a chip before its Send, in the host's own words

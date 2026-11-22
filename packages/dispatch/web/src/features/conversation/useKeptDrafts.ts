@@ -510,10 +510,9 @@ export function useKeptDrafts({
   // from the replies, since it answers none (`goneStatements`). Other composers draw none.
   const undrawn = (away: AwayDraft): away is GoneStatementDraft =>
     away.statement !== undefined && listsStatement?.(away.statement) === false;
-  const otherTargets = keptByAddress.filter((away) => !sameTarget(away, { replyTo, statement }));
-  const goneStatements = listsStatement === undefined ? [] : otherTargets.filter(undrawn);
-  const keptElsewhere =
-    goneStatements.length === 0 ? otherTargets : otherTargets.filter((away) => !undrawn(away));
+  const otherTargets = keptByAddress.filter((away) => !sameTarget(away, here));
+  const goneStatements = otherTargets.filter(undrawn);
+  const keptElsewhere = otherTargets.filter((away) => !undrawn(away));
   const goneAway = keptElsewhere.filter(unlisted);
   const keptAway = keptElsewhere.filter((away) => !unlisted(away));
   // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the
@@ -818,11 +817,11 @@ export function useKeptDrafts({
     // re-address the same compose. A newer compose on the document is a composer of its own
     // (`MarginSheet` keys the margin's composer by its compose), whose draft stays kept for its
     // own words.
-    const targetMoved = !sameTarget(before.address, { replyTo, statement });
+    const targetMoved = !sameTarget(before.address, here);
     const sendOut = holdsSend && heldRefusal === undefined;
     const kept =
       targetMoved && awayName !== undefined && !sendOut
-        ? unsent.readAway(awayName, here.replyTo, here.anchor, here.statement)
+        ? unsent.readAway(awayName, replyTo, anchor, statement)
         : undefined;
     const arrivesAtOwn = targetMoved && !sendOut && (refusalAt(address) || kept !== undefined);
     if (before.moves !== moves && !arrivesAtOwn) {

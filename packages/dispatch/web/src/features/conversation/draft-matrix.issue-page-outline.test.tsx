@@ -122,6 +122,7 @@ import {
   type Place,
   READER,
   STATEMENT_QUOTE,
+  STATEMENT_REWRITTEN,
   writeField,
 } from "../issue-page/composer-fixture";
 import type { TreeNode } from "../issue-page/issue-tree";
@@ -499,9 +500,6 @@ test(`${HOST} · a reply kept for a row, then a read drops that row · typed`, a
   });
 });
 
-/** The statement's words as a new version of the spec writes them. */
-const REWRITTEN = "The page draws **one** box, at the foot.";
-
 // A new version that rewrites the statement's words makes its Reply aim the box at the new words,
 // so a comment typed on the old words and kept there loses the way back its line names: the box
 // draws it whole beside the line, and at rest on the issue its Use it here puts it back in the
@@ -513,7 +511,7 @@ test(`${HOST} · a statement's comment kept, then a new version rewrites it · t
   await writerFocused();
   await waitFor(() => expect(aimedAt(box)).toBeNull());
   const away = { kept: keptLines(), ...writeHeld() };
-  box.redrawOutline(outlineRewritten(REWRITTEN));
+  box.redrawOutline(outlineRewritten(STATEMENT_REWRITTEN));
   const take = await within(composerBox()).findByRole("button", { name: "Use it here" });
   await box.user.click(take);
   await waitFor(() => expect(writeField().value).toBe(BODY));

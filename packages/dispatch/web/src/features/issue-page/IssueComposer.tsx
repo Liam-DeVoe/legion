@@ -63,6 +63,7 @@ import {
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { TAB_STOP_ROW } from "./tree-focus";
+import { nodesInOrder } from "./tree-keys";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
@@ -376,12 +377,12 @@ function WriteLine({
     }
     finish(writer, place, { to: "self", under });
   };
-  // What the outline draws (`drawnTargets`), so a draft the line keeps for an entry or a statement
-  // it no longer draws - a comment, a message or a question deleted, a statement a new version
-  // took out or rewrote - is drawn beside the line with Discard my draft and Use it here, rather
-  // than named with a way back that is gone. None until the foot hands the line a tree whose
-  // reads have all answered, so no draft is drawn as gone while a read is out.
-  const drawn = useMemo(() => (tree === undefined ? undefined : drawnTargets(tree)), [tree]);
+  // The targets the outline draws (`drawnTargets`), so a draft the line keeps for an entry or a
+  // statement it no longer draws - a comment, a message or a question deleted, a statement a new
+  // version took out or rewrote - is drawn beside the line with Discard my draft and Use it here,
+  // rather than named with a way back that is gone. None until the foot hands the line a tree
+  // whose reads have all answered, so no draft is drawn as gone while a read is out.
+  const targets = useMemo(() => (tree === undefined ? undefined : drawnTargets(tree)), [tree]);
   const look: OutlineLook = {
     anchor,
     cancelReply: CONTROL_LABELS.write_on_issue,
@@ -399,20 +400,20 @@ function WriteLine({
     send: CONTROL_LABELS.send,
     sending: ANSWER_LINES.sending,
     statementTwice: ANSWER_LINES.statement_twice,
+    statements:
+      targets === undefined
+        ? undefined
+        : {
+            drawn: (kept) => targets.statements.get(kept.artifact)?.has(kept.quote) === true,
+            gone: ANSWER_LINES.kept_statement_gone,
+            goneWaits: ANSWER_LINES.kept_statement_gone_waits,
+          },
     target:
       reply !== null ? (
         <ReplyTargetLine issueKey={issueKey} reply={reply} />
       ) : statement === undefined ? undefined : (
         <StatementTargetLine statement={statement} />
       ),
-    statements:
-      drawn === undefined
-        ? undefined
-        : {
-            drawn: (shown) => drawn.statements.get(shown.artifact)?.has(shown.quote) === true,
-            gone: ANSWER_LINES.kept_statement_gone,
-            goneWaits: ANSWER_LINES.kept_statement_gone_waits,
-          },
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
   };
@@ -421,7 +422,7 @@ function WriteLine({
       box="issue-page-composer"
       closed={isClosed}
       kind={writesKinds ? writer.kind : "comment"}
-      listed={drawn?.entries}
+      listed={targets?.entries}
       mutationKey={writer.sendKey}
       onClose={place.giveBack}
       onKindChange={(next) => {
@@ -450,7 +451,7 @@ function drawnTargets(root: TreeNode): {
 } {
   const entries = new Set<string>();
   const statements = new Map<string, Set<string>>();
-  const walk = (node: TreeNode): void => {
+  for (const node of nodesInOrder(root)) {
     const item = replyItemOf(node);
     if (item?.kind === "statement") {
       const { artifact, quote } = statementTargetOf(item);
@@ -460,9 +461,7 @@ function drawnTargets(root: TreeNode): {
     } else if (item !== undefined) {
       entries.add(item.id);
     }
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
+  }
   return { entries, statements };
 }
 

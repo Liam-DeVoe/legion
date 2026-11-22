@@ -56,6 +56,7 @@ import {
   rowOf,
   SPEC_SOURCE,
   STATEMENT_QUOTE,
+  STATEMENT_REWRITTEN,
   statementNode,
   targetWords,
   writeField,
@@ -405,8 +406,7 @@ test("a Reply on another row keeps the reply typed for its own row, and that row
 /** What the reader writes in the box for a target the cases below take away. */
 const KEPT_WORDS = "Words for a target that goes";
 
-/** The statement's words as a new version of the spec writes them, and as a later one does. */
-const REWRITTEN = "The page draws **one** box, at the foot.";
+/** The statement's words as a later version writes them, after `STATEMENT_REWRITTEN`. */
 const REWRITTEN_AGAIN = "The page draws **a single** box, at the foot.";
 
 /** The outline with a message of bob's after its other rows. */
@@ -446,7 +446,7 @@ const GONE_TARGETS = [
   },
   {
     drawn: outline,
-    gone: () => outlineRewritten(REWRITTEN),
+    gone: () => outlineRewritten(STATEMENT_REWRITTEN),
     kept: KEPT_FOR_STATEMENT,
     lead: ANSWER_LINES.kept_statement_gone,
     name: "a comment kept for a statement whose words a new version changes",
@@ -526,7 +526,7 @@ test("two drafts kept on one statement's row, for its words before a new version
   const errors = stub(spyOn(console, "error"));
   const page = renderPage();
   await keepFor(user, page, "spec#b-r1", "On the first words");
-  page.redrawOutline(outlineRewritten(REWRITTEN));
+  page.redrawOutline(outlineRewritten(STATEMENT_REWRITTEN));
   await waitFor(() => expect(goneDrafts()).toHaveLength(1));
   await keepFor(user, page, "spec#b-r1", "On the second words");
   const once = { gone: goneDrafts().map(({ draft }) => draft), kept: keptLines() };
