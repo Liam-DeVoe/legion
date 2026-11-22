@@ -4,9 +4,10 @@ package leakguardtest
 // path with no file. A guard that has no curl does not make its read through curl. It refuses that
 // read as one it cannot make, names this path, runs no curl and reads no token for it. Then it goes
 // on as a guard with no curl does. A `legion` that runs the system's /usr/bin/curl sends the read's
-// token to api.github.com. That happens where a test's stand-in gh is stopped by the guard's own
-// bound on its REST read, which a loaded machine can make it, and GitHub's answer then decides
-// the row (INFRA-3904).
+// token to api.github.com. That happens where the guard's REST read through a test's stand-in gh
+// fails on its connection, or where the guard's own bound stops it, which a loaded machine could
+// do before that bound took the test's deadline. GitHub's answer then decides the row
+// (INFRA-3904).
 //
 // Two kinds of `legion` take it:
 //   - cmd/legion's test binary, in its own process and in each run of it as `legion`, takes it in

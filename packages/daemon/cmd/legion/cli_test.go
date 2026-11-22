@@ -29,12 +29,12 @@ var legionBuildDir string
 // invocation table drive. Every test that runs it only runs it, so one build serves them all. It
 // links leakguardtest.NoCurl as its guards' curl (leakguardtest.NoCurlLinked), as TestMain gives
 // this binary's own: the built binary reads no LEGION_CMD_TEST_CURL, and without the link its
-// guards would run the system's /usr/bin/curl, with a token of the test's bundle, wherever a
-// stand-in gh is stopped by the guard's bound on its REST read (INFRA-3904). It also links in this
-// test binary's deadline (programbound's linkedDeadline, from testDeadlineEnv), so each wait the
-// built binary bounds on a program it starts takes what is left of that deadline, as this binary's
-// own runs as `legion` do; under -timeout 0 it links none, and the product's bounds hold. The two
-// go in one -ldflags, since go build takes only the last.
+// guards would run the system's /usr/bin/curl, with a token of the test's bundle, wherever their
+// REST read through a stand-in gh fails on its connection or is stopped by its bound (INFRA-3904).
+// It also links in this test binary's deadline (programbound's linkedDeadline, from
+// testDeadlineEnv), so each wait the built binary bounds on a program it starts takes what is left
+// of that deadline, as this binary's own runs as `legion` do; under -timeout 0 it links none, and
+// the product's bounds hold. The two go in one -ldflags, since go build takes only the last.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
 	ldflags := leakguardtest.NoCurlLinked
@@ -250,8 +250,8 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 		// A pod's gh (packages/daemon/docker/gh's shape) runs `legion gh`, which runs the real gh
 		// (LEGION_GH_PATH), here a stand-in that prints its arguments.
 		//
-		// The guard's reads of acme/widgets stay on this machine. When the guard's bound stops
-		// its REST read through the stand-in gh, as a loaded machine can make it, the guard reads
+		// The guard's reads of acme/widgets stay on this machine. When the guard's REST read
+		// through the stand-in gh fails on its connection, or its bound stops it, the guard reads
 		// through curl, and then with ls-remote. The built legion has no curl (legionBuild), and a
 		// stand-in git answers the ls-remote. A guard that reads through curl first asks `gh auth
 		// git-credential get` for the token, and `legion gh` writes each such request to its call
