@@ -1191,8 +1191,9 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
 // head will change until the implementer merges the base forward, and the issue's move into
-// accepting is what asks for that merge (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read
-// here, the state build shows no mergeWait for the round the engine has just ended.
+// accepting, retro or merging is what asks for that merge (dispatch://INFRA-4374 R0,
+// record.ConflictMergeNext): in the default steps, the move into accepting that the approval
+// makes. Read here, the state build shows no mergeWait for the round the engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1350,8 +1351,9 @@ func GreenContexts(pr record.PullRequest) []string {
 // (record.PullRequest.ConflictingHead, which only the second CONFLICTING read of that head writes,
 // workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
 // rather than on the cause, because every way back out of a conflicting head is the same round of
-// work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
-// implementer answers each of them with the one forward merge the conflict needs. That merge moves
+// work - a reviewer's request for changes, a tester's fail, a worker's backward move to any
+// earlier step of its task - and what the conflict needs is the one forward merge, which the
+// implementer makes. That merge moves
 // the recorded head, the mark no longer equals it, and the next rejection counts, which is how the
 // exemption ends without a write of its own. The same mark is what says a head needs merging
 // forward before it can merge at all: an approval of it ends its review round (workflow's
