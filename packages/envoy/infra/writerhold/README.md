@@ -235,6 +235,11 @@ reads "no suitable peers for placement" alone.
   of the records starts empty, a database admin who deletes a set hold's journal and puts back its
   signed `prepare` row makes the abort release it. This is the plan's stated residual for the
   database admin (§3a, "A stated residual").
+- The census and hub-restore's abort read ConfigMap `envoy-operator/envoy-operator-retired-stores`
+  (`KubeDaemonDeployments`) with the operator's own Kubernetes identity, which needs `get` on it.
+  That grant is the deployment's, beside the one on the accepted minters' ConfigMap. Until it
+  applies, the read is refused, so a census or an abort with any `daemon/<P>` cutover row ends
+  UNKNOWN and changes no store: it fails closed.
 
 ## Refusals and exit codes
 
