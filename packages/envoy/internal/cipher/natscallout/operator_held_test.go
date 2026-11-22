@@ -246,7 +246,7 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	require.EqualValues(t, 20, backup.messages)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE.ENVOY_MEASURE", measure)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+sessions, nil)
-	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE."+sessions, created)
+	createsAfterDelete(t, operator.Conn, "$JS.API.STREAM.CREATE."+sessions, created)
 	updated := streamConfig(t, operator.Conn, sessions)
 	updated["description"] = "updated under the hold"
 	succeeds(t, operator.Conn, "$JS.API.STREAM.UPDATE."+sessions, updated)
@@ -293,6 +293,28 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	}
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, seen+1), natsgrant.OperatorPhaseReleased)
 	operator.refused(t, "$JS.API.STREAM.LIST", nil)
+}
+
+// storeFailed is nats-server's answer to a stream create it could not make a file store for.
+const storeFailed = "error creating store for stream"
+
+// createsAfterDelete requires a create, through nc, of a stream deleted just before to succeed.
+// nats-server answers a delete before a goroutine of its own has removed the account's streams
+// directory, and a create that arrives first is answered 10049, storeFailed; no API says when that
+// goroutine has run (testnats.RecreateKeyValue's doc gives the server's code). So the create is
+// sent again on exactly that answer, every 100 ms, its one bound the test binary's deadline
+// (testwait.UntilPolling); any other refusal fails the test at once.
+func createsAfterDelete(t *testing.T, nc *nats.Conn, subject string, body any) {
+	t.Helper()
+	testwait.UntilPolling(t, 100*time.Millisecond, subject+" to be answered with no store failure", func() (string, bool) {
+		answer := answered(t, nc, subject, body)
+		if answer.Error != nil && answer.Error.ErrCode == 10049 && answer.Error.Description == storeFailed {
+			t.Logf("%s answered %s; asking again", subject, answer.raw)
+			return string(answer.raw), false
+		}
+		require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
+		return string(answer.raw), true
+	})
 }
 
 // consumerRead bounds one read of a stream's consumer listing in awaitConsumerGone. A read that
