@@ -1958,6 +1958,8 @@ type Fact =
       readonly npm: string;
       readonly skills: readonly string[];
       readonly other: string;
+      /** The commit a `url`, `git` or `github` source pins (`sha`, else `ref`), or `""`. */
+      readonly ref: string;
     }
   | {
       readonly type: "plugin-manifest";
@@ -1991,6 +1993,14 @@ type Fact =
       readonly action: "enables" | "disables" | "installs";
     }
   | { readonly type: "marketplace-source"; readonly marketplace: string; readonly repo: string }
+  | {
+      readonly type: "gh-skill";
+      /** `gh skill install <repo> <skill> … --pin <ref>`: the repository, the skill's name and
+       *  the ref (`""` for none). */
+      readonly repo: string;
+      readonly skill: string;
+      readonly ref: string;
+    }
   | { readonly type: "ignores"; readonly patterns: readonly string[] }
   | {
       readonly type: "loads";
@@ -2097,6 +2107,8 @@ const MarketplaceFile = z.looseObject({
           repo: z.string().optional(),
           package: z.string().optional(),
           url: z.string().optional(),
+          sha: z.string().optional(),
+          ref: z.string().optional(),
         }),
       ]),
       skills: StringList,
@@ -2175,6 +2187,7 @@ function parseMarketplace(file: string, text: string): ParsedManifest {
     let repo = "";
     let npm = "";
     let other = "";
+    let ref = "";
     if (typeof source === "string" && !source.includes("://")) {
       root = joinPath(
         base,
@@ -2190,6 +2203,7 @@ function parseMarketplace(file: string, text: string): ParsedManifest {
       else if (source.source === "url" || source.source === "git")
         repo = githubRepository(source.url ?? "");
       if (repo === "" && npm === "") other = JSON.stringify(source);
+      if (repo !== "") ref = source.sha ?? source.ref ?? "";
     }
     const plugin = entry.name;
     facts.push({
@@ -2201,6 +2215,7 @@ function parseMarketplace(file: string, text: string): ParsedManifest {
       npm,
       skills: strings(entry.skills),
       other,
+      ref,
     });
     const from =
       root !== undefined
@@ -2539,9 +2554,14 @@ function parseInstaller(file: string, text: string): ParsedManifest {
     for (const match of line.matchAll(
       /(?<![\w.@/$%{-])([A-Za-z0-9][\w.-]*)@([A-Za-z0-9][\w-]*)(?![\w.@-])/g
     )) {
-      const host: Host = /\bomp\b/.test(line)
+      // The host the line installs into, by its words less the plugin@marketplace pairs and the
+      // repositories it names (a marketplace named claude-plugins-official names no host).
+      const words = line
+        .replace(/(?<![\w.@/$%{-])[A-Za-z0-9][\w.-]*@[A-Za-z0-9][\w-]*(?![\w.@-])/g, " ")
+        .replace(/\b[A-Za-z0-9][\w-]*\/[\w.-]+/g, " ");
+      const host: Host = /\bomp\b/.test(words)
         ? "omp"
-        : /\bclaude\b/.test(line)
+        : /\bclaude\b/.test(words)
           ? "claude-code"
           : scriptHost;
       const plugin = match[1] ?? "";
@@ -2598,6 +2618,28 @@ function parseInstaller(file: string, text: string): ParsedManifest {
     const { dir } = shellPath(source, vars);
     facts.push({ type: "links-config", file: dir });
     says.push(`links ${dir} as the Oh My Pi config.yml`);
+  }
+  // `gh skill install <repo> <skill> … [--pin <ref>]`: GitHub CLI installs the skill of that name
+  // of <repo> (`skills/<skill>`) at <ref>; with `--agent universal --scope user`, into
+  // ~/.agents/skills/<skill>, which Oh My Pi's agents provider reads (`resolveInstallers`).
+  // A repository, skill or ref given by a variable the script sets (`NAME="value"`) is read so.
+  for (const raw of lines) {
+    const call = /^\s*gh\s+skill\s+install\s+(\S+)\s+(\S+)(.*)$/.exec(raw);
+    if (call === null) continue;
+    const resolve = (word: string) => {
+      const bare = unquote(word);
+      const named = /^\$\{?(\w+)\}?$/.exec(bare)?.[1];
+      return named === undefined ? bare : unquote(vars.get(named) ?? "");
+    };
+    const repo = resolve(call[1] ?? "");
+    const skill = resolve(call[2] ?? "");
+    const ref = resolve(/--pin\s+(\S+)/.exec(call[3] ?? "")?.[1] ?? "");
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || skill === "" || /[$`\s]/.test(`${skill}${ref}`))
+      continue;
+    facts.push({ type: "gh-skill", repo, skill, ref });
+    says.push(
+      `installs the skill ${skill} of ${repo} at ${ref || "its default branch"} into ~/.agents/skills (gh skill install)`
+    );
   }
   // `ensure_vendor <url> <name> [<ref>]`: as a dotfiles repository's installers/lib.sh defines it,
   // a clone of <url> at `$DOTFILES_DIR/vendor/<name>`, DOTFILES_DIR the root of the installer's
@@ -2928,8 +2970,10 @@ function factsOf<T extends Fact["type"]>(
   );
 }
 
-/** A repository an installer pins: a `github:` dependency of an Oh My Pi plugins package.json, or
- *  an `ensure_vendor` clone of an installer script, with the ref it names (`""` for none) and the
+/** A repository an installer pins: a `github:` dependency of an Oh My Pi plugins package.json, an
+ *  `ensure_vendor` clone or a `gh skill install` of an installer script, the marketplace
+ *  repository an installer installs a plugin from, and the source repository of each plugin an
+ *  installer installs from a marketplace read; with the ref it names (`""` for none) and the
  *  manifest that names it. */
 export interface InstallerPin {
   readonly repository: string;
@@ -2938,14 +2982,40 @@ export interface InstallerPin {
 }
 
 /** The repositories the installers of `manifests` pin, in the manifests' order. copies.ts reads
- *  each at its ref, and build.ts at the ref the installer names at a session's start. */
+ *  each at its ref, and build.ts at the ref the installer names at a session's start. A plugin's
+ *  source repository is pinned only once its marketplace is among `manifests`, so a caller reads
+ *  the pins again after reading them (`readPinned`). */
 export function installerPins(manifests: readonly Manifest[]): InstallerPin[] {
+  const installed = new Set(
+    factsOf(manifests, "plugin-switch")
+      .filter(({ fact }) => fact.action === "installs")
+      .map(({ fact }) => `${fact.plugin}@${fact.marketplace}`)
+  );
+  const marketplaces = new Set(
+    factsOf(manifests, "plugin-switch")
+      .filter(({ fact }) => fact.action === "installs")
+      .map(({ fact }) => fact.marketplace)
+  );
   return manifests.flatMap((manifest) =>
-    manifest.facts.flatMap((fact) =>
-      (fact.type === "installs-package" || fact.type === "vendors") && fact.repo !== ""
-        ? [{ repository: fact.repo, ref: fact.ref, manifest }]
-        : []
-    )
+    manifest.facts.flatMap((fact): InstallerPin[] => {
+      if (
+        (fact.type === "installs-package" || fact.type === "vendors" || fact.type === "gh-skill") &&
+        fact.repo !== ""
+      ) {
+        return [{ repository: fact.repo, ref: fact.ref, manifest }];
+      }
+      if (fact.type === "marketplace-source" && marketplaces.has(fact.marketplace)) {
+        return [{ repository: fact.repo, ref: "", manifest }];
+      }
+      if (
+        fact.type === "marketplace-plugin" &&
+        fact.repo !== "" &&
+        installed.has(`${fact.plugin}@${fact.marketplace}`)
+      ) {
+        return [{ repository: fact.repo, ref: fact.ref, manifest }];
+      }
+      return [];
+    })
   );
 }
 
@@ -3198,6 +3268,32 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
       members: index.membersAt(manifest.repository, fact.root, ["skills", ...fact.skills]),
       locations: [],
       note: "no marketplace read names this plugin, so where it is installed is not known",
+    });
+  }
+
+  // A skill `gh skill install` puts in ~/.agents/skills/<skill>: Oh My Pi 18.18.6's agents
+  // provider lists each skill of ~/.agent/skills and ~/.agents/skills (discovery/agents.ts,
+  // getUserPathCandidates, lines 123-127, and loadSkills, lines 158-170). Its copy is the
+  // repository's skills/<skill>, else its one copy of that name.
+  for (const { manifest, fact } of factsOf(manifests, "gh-skill")) {
+    const repository = index.spelling(fact.repo);
+    const named = index.copies.filter(
+      (copy) => copy.repository === repository && copy.name === fact.skill
+    );
+    const copy =
+      index.at(repository, joinPath("skills", fact.skill)) ??
+      (named.length === 1 ? named[0] : undefined);
+    units.push({
+      id: `gh-skill:${fact.skill}`,
+      host: "omp",
+      manifest,
+      action: "installs",
+      members: copy === undefined ? [] : [{ copy, rel: fact.skill }],
+      locations: ["**/.agents/skills/"],
+      note:
+        copy === undefined
+          ? `no SKILL.md of ${fact.skill} in ${repository} was read`
+          : `gh skill install ${fact.repo} ${fact.skill}${fact.ref === "" ? "" : ` --pin ${fact.ref}`}`,
     });
   }
 
@@ -4750,7 +4846,10 @@ const RepositoryInfo = z.looseObject({
  * when no listing gave it (its marks and default branch from `repos/<r>`, that branch read when
  * the pin names no ref). A listed repository that a pin names with no ref or at its own branch
  * keeps its listed read, and so does one whose read at the pin fails, which `failures` names. The
- * first pin of a repository decides its ref; another at another ref goes to `failures`.
+ * first pin of a repository decides its ref; another at another ref goes to `failures`. A
+ * marketplace read at its pin names the plugins an installer installs from it, whose source
+ * repositories it pins in turn (`installerPins`), so the pins are read again until no new
+ * repository is pinned.
  */
 async function readPinned(
   github: Github,
@@ -4766,82 +4865,92 @@ async function readPinned(
   const named = (pin: InstallerPin) => `${pin.manifest.repository}:${pin.manifest.path}`;
   const at = (ref: string) => (ref === "" ? "its default branch" : ref);
   const pins = new Map<string, InstallerPin>();
-  const manifests = repositories.flatMap((repo) => reads.get(repo)?.manifests ?? []);
-  for (const pin of installerPins(manifests)) {
-    const first = pins.get(pin.repository.toLowerCase());
-    if (first === undefined) pins.set(pin.repository.toLowerCase(), pin);
-    else if (first.ref !== pin.ref)
-      failures.push(
-        `${named(pin)} pins ${pin.repository} at ${at(pin.ref)}; this list reads it at ${at(first.ref)}, as ${named(first)} pins it`
-      );
-  }
-  await mapLimit([...pins.values()], options.repositoryJobs ?? REPOSITORY_JOBS, async (pin) => {
-    const listed = repositories.find(
-      (repo) => repo.repository.toLowerCase() === pin.repository.toLowerCase()
-    );
-    if (listed !== undefined && (pin.ref === "" || pin.ref === listed.branch)) return;
-    let marks: Pick<Repository, "fork" | "archived" | "parent" | "branch"> | undefined = listed;
-    let error = "";
-    if (marks === undefined) {
-      try {
-        const info =
-          cache.get("repository-info", pin.repository, RepositoryInfo) ??
-          (await github.api(`repos/${pin.repository}`, RepositoryInfo, pin.repository));
-        cache.put("repository-info", pin.repository, info);
-        marks = {
-          fork: info.fork,
-          archived: info.archived,
-          parent: info.parent?.full_name ?? "",
-          branch: info.default_branch,
-        };
-      } catch (failed) {
-        rethrowStop(failed);
-        error = `repository read failed: ${(failed as Error).message}`;
+  const said = new Set<string>();
+  for (;;) {
+    const manifests = repositories.flatMap((repo) => reads.get(repo)?.manifests ?? []);
+    const fresh: InstallerPin[] = [];
+    for (const pin of installerPins(manifests)) {
+      const first = pins.get(pin.repository.toLowerCase());
+      if (first === undefined) {
+        pins.set(pin.repository.toLowerCase(), pin);
+        fresh.push(pin);
+      } else if (first.ref !== pin.ref) {
+        const failure = `${named(pin)} pins ${pin.repository} at ${at(pin.ref)}; this list reads it at ${at(first.ref)}, as ${named(first)} pins it`;
+        if (!said.has(failure)) {
+          said.add(failure);
+          failures.push(failure);
+        }
       }
     }
-    const repo: Repository = {
-      repository: listed?.repository ?? pin.repository,
-      owner: listed?.owner ?? pin.repository.split("/")[0] ?? "",
-      fork: marks?.fork ?? false,
-      archived: marks?.archived ?? false,
-      parent: marks?.parent ?? "",
-      branch: pin.ref === "" ? (marks?.branch ?? "") : pin.ref,
-      commit: "",
-      tree: [],
-      treeEntries: 0,
-      treeRead: "",
-      forkRead: "",
-      changed: undefined,
-      error,
-    };
-    const started = io.now();
-    const step =
-      error === ""
-        ? await readRepositoryStep(github, cache, repo, options.at, config.excludePaths)
-        : { read: undefined, calls: 0, cached: false };
-    const seconds = Math.round((io.now() - started) / 1000);
-    io.err(
-      repo.error === ""
-        ? `copies: pinned ${repo.repository} at ${repo.branch} (${named(pin)}): ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
-        : `copies: pinned ${repo.repository} at ${at(pin.ref)} (${named(pin)}): failed (${repo.error}), ${seconds} s`
-    );
-    if (listed !== undefined && step.read === undefined) {
-      failures.push(
-        `${repo.repository} at ${pin.ref}, which ${named(pin)} pins: ${repo.error}; its read at ${listed.branch} stands`
+    if (fresh.length === 0) return;
+    await mapLimit(fresh, options.repositoryJobs ?? REPOSITORY_JOBS, async (pin) => {
+      const listed = repositories.find(
+        (repo) => repo.repository.toLowerCase() === pin.repository.toLowerCase()
       );
-      return;
-    }
-    if (step.read !== undefined) {
-      reads.set(repo, step.read);
-      searches.add(step.read.copies.map((copy) => copy.name));
-    }
-    if (listed === undefined) {
-      repositories.push(repo);
-    } else {
-      reads.delete(listed);
-      repositories[repositories.indexOf(listed)] = repo;
-    }
-  });
+      if (listed !== undefined && (pin.ref === "" || pin.ref === listed.branch)) return;
+      let marks: Pick<Repository, "fork" | "archived" | "parent" | "branch"> | undefined = listed;
+      let error = "";
+      if (marks === undefined) {
+        try {
+          const info =
+            cache.get("repository-info", pin.repository, RepositoryInfo) ??
+            (await github.api(`repos/${pin.repository}`, RepositoryInfo, pin.repository));
+          cache.put("repository-info", pin.repository, info);
+          marks = {
+            fork: info.fork,
+            archived: info.archived,
+            parent: info.parent?.full_name ?? "",
+            branch: info.default_branch,
+          };
+        } catch (failed) {
+          rethrowStop(failed);
+          error = `repository read failed: ${(failed as Error).message}`;
+        }
+      }
+      const repo: Repository = {
+        repository: listed?.repository ?? pin.repository,
+        owner: listed?.owner ?? pin.repository.split("/")[0] ?? "",
+        fork: marks?.fork ?? false,
+        archived: marks?.archived ?? false,
+        parent: marks?.parent ?? "",
+        branch: pin.ref === "" ? (marks?.branch ?? "") : pin.ref,
+        commit: "",
+        tree: [],
+        treeEntries: 0,
+        treeRead: "",
+        forkRead: "",
+        changed: undefined,
+        error,
+      };
+      const started = io.now();
+      const step =
+        error === ""
+          ? await readRepositoryStep(github, cache, repo, options.at, config.excludePaths)
+          : { read: undefined, calls: 0, cached: false };
+      const seconds = Math.round((io.now() - started) / 1000);
+      io.err(
+        repo.error === ""
+          ? `copies: pinned ${repo.repository} at ${repo.branch} (${named(pin)}): ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
+          : `copies: pinned ${repo.repository} at ${at(pin.ref)} (${named(pin)}): failed (${repo.error}), ${seconds} s`
+      );
+      if (listed !== undefined && step.read === undefined) {
+        failures.push(
+          `${repo.repository} at ${pin.ref}, which ${named(pin)} pins: ${repo.error}; its read at ${listed.branch} stands`
+        );
+        return;
+      }
+      if (step.read !== undefined) {
+        reads.set(repo, step.read);
+        searches.add(step.read.copies.map((copy) => copy.name));
+      }
+      if (listed === undefined) {
+        repositories.push(repo);
+      } else {
+        reads.delete(listed);
+        repositories[repositories.indexOf(listed)] = repo;
+      }
+    });
+  }
 }
 
 /** Reads the repositories, skills, manifests and loaders of one run. */

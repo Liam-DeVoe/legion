@@ -8,6 +8,7 @@ import {
   type CountRow,
   checkoutRule,
   copyPrefix,
+  countOnce,
   type InstallersRow,
   MODELS_BY_CUT_COLUMNS,
   MODELS_BY_SKILL_COLUMNS,
@@ -49,6 +50,7 @@ import {
   type SkillCopy,
   tsv,
 } from "./copies";
+import { psqlRows } from "./psql-rows";
 
 // attribute.ts on F7, count.sql's and models.sql's own output under the store command's flags
 // (testdata/F7-count-first.txt and F7-count-second.txt, whose capture commands psql-rows.test.ts's
@@ -62,7 +64,10 @@ import {
 // - H2 (F4's session): a read of alpha at F3/marketplace/plugins/acme-tools/skills/alpha/SKILL.md,
 //   and of beta at F3/config/plugins/cache/acme-market/acme-tools/0.1.0/skills/beta/SKILL.md;
 // - H3 (F1's subagent): a read of beta at F1_PROFILE/beta/SKILL.md.
-// F7-count-second.txt holds H1B (F1b's session) reading alpha at F1_PROFILE/alpha/SKILL.md.
+// F7-count-second.txt holds H1B (F1b's session) reading alpha at F1_PROFILE/alpha/SKILL.md, and
+// of its references/x.md. F1b is F1's session with its alpha read copied a day later, so it holds
+// each of H1's reads (the same keys) and one of its own: in one count with F7-count-first.txt,
+// H1's reads count in H1B, whose hash sorts first, and H1 is no session.
 // F7-models-first.txt gives H1 and H3 their model_change model and H2 its first assistant
 // message's (from its second part); F7-models-second.txt gives F1c (F1's subagent without its
 // model_change line) its session_init model and F1d (F1b's first two lines) none;
@@ -123,7 +128,8 @@ const summaryRow = (store: string) => ({
   shared_call_ids: 0,
 });
 
-/** A count.sql result of `store` for the query `name`, in F7's shape. */
+/** A count.sql result of `store` for the query `name`, in F7's shape. A file's one key is its own
+ *  hash unless the row's `calls` gives its keys, so no two files hold a key. */
 function queryText(
   store: string,
   name: string,
@@ -131,10 +137,14 @@ function queryText(
     readonly hashes: readonly string[];
     readonly kind?: CountRow["kind"];
     readonly files?: number;
+    readonly calls?: CountRow["calls"];
     readonly unpaired?: number;
     readonly unpaired_hashes?: readonly string[];
+    readonly unpaired_calls?: CountRow["calls"];
   })[]
 ): string {
+  const own = (hashes: readonly string[]) =>
+    Object.fromEntries(hashes.map((hash) => [hash, [hash]]));
   return psqlTable([
     ...rows.map((row) => ({
       row: "count",
@@ -142,8 +152,10 @@ function queryText(
       day: name.slice(0, 10),
       kind: "read",
       files: row.hashes.length,
+      calls: own(row.hashes),
       unpaired: 0,
       unpaired_hashes: [],
+      unpaired_calls: own(row.unpaired_hashes ?? []),
       ...row,
     })),
     summaryRow(store),
@@ -645,10 +657,129 @@ test("a file hash seen in two queries of a store counts once, and in two stores 
   const attribution = attribute(TWO_STORES, [F7_FIRST(), again, otherStore], f7World());
   expect(countOf(attribution, ALPHA).sessions).toBe(3);
   expect(attribution.stores.map((store) => store.readSessions)).toEqual([3, 1]);
-  // F7-count-second's session (F1b) is another file, so another session.
+  // F7-count-second's session, F1b, is F1's session with its alpha read copied a day later: it
+  // holds each read of F1 (the same call ids and timestamps) and a read of its own. So F1's reads
+  // count in F1b, whose hash sorts first, and the alpha sessions are F1b's and F4's, not F1's.
   const second = F7_SECOND();
   expect(second.rows.map((row) => row.hashes)).toEqual([[H1B], [H1B]]);
-  expect(countOf(attribute(CONFIG, [F7_FIRST(), second], f7World()), ALPHA).sessions).toBe(3);
+  expect(H1B < H1).toBe(true);
+  expect(countOf(attribute(CONFIG, [F7_FIRST(), second], f7World()), ALPHA).readSessions).toEqual(
+    new Set([sessionKey("store_a", H2), sessionKey("store_a", H1B)])
+  );
+});
+
+// Forks of one session, each holding a copy of its one alpha read (PARENT_KEY), each on its own
+// mtime day and so in its own query: H3 the session (its hash sorts first), H1 a fork with the
+// copy only, H4 a fork with a read of its own as well (OWN_KEY), and H2 a fork whose copy of the
+// call has no result in it.
+const PARENT_KEY = "a0a0a0a0a0a0a0a0";
+const OWN_KEY = "b1b1b1b1b1b1b1b1";
+const ALPHA_PATH = `${F1_PROFILE}/alpha/SKILL.md`;
+const forkQueries = () => [
+  query("store_a", "2026-11-20", [
+    { skill: "alpha", copy: ALPHA_PATH, hashes: [H3], calls: { [H3]: [PARENT_KEY] } },
+  ]),
+  query("store_a", "2026-11-21", [
+    { skill: "alpha", copy: ALPHA_PATH, hashes: [H1], calls: { [H1]: [PARENT_KEY] } },
+  ]),
+  query("store_a", "2026-11-22", [
+    { skill: "alpha", copy: ALPHA_PATH, hashes: [H4], calls: { [H4]: [PARENT_KEY, OWN_KEY] } },
+  ]),
+  query("store_a", "2026-11-23", [
+    {
+      skill: "alpha",
+      copy: "skill://alpha",
+      hashes: [],
+      unpaired: 1,
+      unpaired_hashes: [H2],
+      unpaired_calls: { [H2]: [PARENT_KEY] },
+    },
+  ]),
+];
+
+test("a read that files of two queries hold counts in the file whose hash sorts first: a fork with the copy only, its call answered or not, is no session, and one with a read of its own is", () => {
+  const outputs = forkQueries();
+  const counted = countOnce(outputs);
+  expect(
+    counted.outputs.map((output) =>
+      output.rows.map((row) => [row.files, row.hashes, row.unpaired, row.unpaired_hashes])
+    )
+  ).toEqual([[[1, [H3], 0, []]], [[0, [], 0, []]], [[1, [H4], 0, []]], [[0, [], 0, []]]]);
+  // The first query's rows lose no file, and come back as they are.
+  expect(counted.outputs[0]).toBe(outputs[0]);
+  // Each row keeps its calls, so the rule applied again gives the same rows.
+  expect(counted.outputs[1]?.rows[0]?.calls).toEqual({ [H1]: [PARENT_KEY] });
+  expect(countOnce(counted.outputs)).toEqual(counted);
+  // Four files of four queries hold one key: six pairs of them.
+  expect(counted.acrossQueries.get("store_a")).toEqual({ keys: 1, pairs: 6 });
+  const attribution = attribute(CONFIG, outputs, f7World());
+  expect(countOf(attribution, ALPHA).sessions).toBe(2);
+  expect(attribution.stores[0]).toMatchObject({
+    readSessions: 2,
+    unpairedSessions: 0,
+    sharedCallIds: 0,
+    sharedAcrossQueries: 1,
+    filePairsAcrossQueries: 6,
+  });
+  // The rule holds inside each store: another store's file that lists the key is its session.
+  const otherStore = query("store_b", "2026-11-20", [
+    { skill: "alpha", copy: ALPHA_PATH, hashes: [H1], calls: { [H1]: [PARENT_KEY] } },
+  ]);
+  const twoStores = attribute(TWO_STORES, [...outputs, otherStore], f7World());
+  expect(
+    twoStores.stores.map((store) => [
+      store.readSessions,
+      store.sharedAcrossQueries,
+      store.filePairsAcrossQueries,
+    ])
+  ).toEqual([
+    [2, 1, 6],
+    [1, 0, 0],
+  ]);
+});
+
+test("rows no key of which files of two queries hold come back as they are", () => {
+  const outputs = [
+    F7_FIRST(),
+    query("store_a", "2026-11-21", [{ skill: "alpha", copy: ALPHA_PATH, hashes: [H1, H4] }]),
+  ];
+  const counted = countOnce(outputs);
+  expect(counted.outputs.map((output, at) => output === outputs[at])).toEqual([true, true]);
+  expect(counted.acrossQueries.get("store_a")).toEqual({ keys: 0, pairs: 0 });
+});
+
+test("a count whose rows name no calls, made by an earlier count.sql, is refused, naming the field", () => {
+  const earlier = psqlTable(
+    psqlRows(f7("F7-count-first.txt")).map((value) => {
+      const { calls: _calls, unpaired_calls: _unpaired, ...row } = value as Record<string, unknown>;
+      return row;
+    })
+  );
+  const fault =
+    'the count query store_a 2026-11-20: row 1 has no "calls" and no "unpaired_calls" field, so an earlier count.sql made it';
+  expect(() => parseQueryOutput("store_a", "2026-11-20", earlier)).toThrow(fault);
+  const root = path.join(dir, "earlier-count");
+  const countDir = tree(path.join(root, "count"), {
+    "store_a/2026-11-20.txt": earlier,
+    "store_a/2026-11-21.txt": f7("F7-count-second.txt"),
+    "run.log": "",
+  });
+  expect(() => readCount(countDir, ["store_a"])).toThrow(fault);
+  const result = run([
+    "--config",
+    CONFIG_FILE,
+    "--count",
+    countDir,
+    "--copies",
+    r4Dir(path.join(root, "copies"), f7World()),
+    "--spans",
+    path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl"),
+    "--out",
+    path.join(root, "out"),
+  ]);
+  expect(result.code).toBe(1);
+  expect(result.err).toContain(fault);
+  expect(existsSync(path.join(root, "out"))).toBe(false);
 });
 
 // The hosts of a copy. Oh My Pi installs it when an Oh My Pi session read it, when a store's
@@ -1123,7 +1254,8 @@ test("a cut's ranking is its changed skills by the sessions of its repository's 
     cut: "skills-1",
     repository: "acme/skills",
     rows: [
-      { skill: "alpha", path: "src/alpha", sessions: 3 },
+      // H2 and H1B: H1's alpha read counts in H1B, which holds it as well.
+      { skill: "alpha", path: "src/alpha", sessions: 2 },
       { skill: "beta", path: "src/beta", sessions: 0 },
       { skill: "gone", path: "skills/gone", sessions: 0 },
     ],
@@ -1148,10 +1280,10 @@ test("each ranked skill's sessions file holds the copy's reading sessions after 
       {
         name: "sessions/alpha.jsonl",
         text: [
-          // store_a: H1 by the prefix table, H2 by its context, H1B by the prefix table.
+          // store_a: H2 by its context, H1B by the prefix table; H1's alpha read counts in H1B,
+          // which holds it as well.
           { store: "store_a", hash: H2 },
           { store: "store_a", hash: H1B },
-          { store: "store_a", hash: H1 },
           { store: "store_b", hash: H2 },
           { store: "store_b", hash: H4 },
         ]
@@ -1245,8 +1377,9 @@ test("the command writes the count, its report, each cut's ranking and the model
   ]);
   expect(result.err).toBe("");
   expect(result.code).toBe(0);
+  // F1b (H1B) holds each of F1's (H1's) reads, so H1's reads count in H1B and H1 is no session.
   expect(result.out).toContain(
-    "2 query outputs, 3 copies (2 read), 4 read sessions (1 unattributed), 2 unmapped prefixes, 0 queries failed, split or without output; 2 models query outputs, 0 failed, split or without output"
+    "2 query outputs, 3 copies (2 read), 3 read sessions (1 unattributed), 2 unmapped prefixes, 0 queries failed, split or without output; 2 models query outputs, 0 failed, split or without output"
   );
 
   const tsvText = readFileSync(path.join(out, "skill-read-count.tsv"), "utf8");
@@ -1256,8 +1389,8 @@ test("the command writes the count, its report, each cut's ranking and the model
       repository: "acme/skills",
       path: "src/alpha",
       name: "alpha",
-      sessions: "3",
-      reference_sessions: "2",
+      sessions: "2",
+      reference_sessions: "1",
       unattributed_sessions: "0",
       tie: "",
       loaded: "no",
@@ -1287,20 +1420,20 @@ test("the command writes the count, its report, each cut's ranking and the model
     },
   ]);
   expect(JSON.parse(readFileSync(path.join(out, "skills-1", "ranking.json"), "utf8"))).toEqual([
-    { skill: "alpha", sessions: 3 },
+    { skill: "alpha", sessions: 2 },
     { skill: "beta", sessions: 0 },
     { skill: "gone", sessions: 0 },
   ]);
   const sessionsOf = (skill: string) =>
     readFileSync(path.join(out, "skills-1", "sessions", `${skill}.jsonl`), "utf8");
   expect(sessionsOf("alpha")).toBe(
-    [H2, H1B, H1].map((hash) => `${JSON.stringify({ store: "store_a", hash })}\n`).join("")
+    [H2, H1B].map((hash) => `${JSON.stringify({ store: "store_a", hash })}\n`).join("")
   );
   expect([sessionsOf("beta"), sessionsOf("gone")]).toEqual(["", ""]);
   expect(result.out).toContain(`${path.join(out, "skills-1", "sessions")}/ (3 files)`);
 
-  // H1 (model_change) and H2 (Claude Code's first assistant message) ran on a served Anthropic
-  // model; H1B on another family's model the gateway does not serve.
+  // H2 (Claude Code's first assistant message) ran on a served Anthropic model; H1B on another
+  // family's model the gateway does not serve.
   const sonnet = "anthropic/claude-sonnet-5-5";
   const other = "acme-gateway/gpt-6.1";
   const bySkill = readFileSync(path.join(out, "models-by-skill.tsv"), "utf8");
@@ -1311,12 +1444,12 @@ test("the command writes the count, its report, each cut's ranking and the model
       repository: "acme/skills",
       path: "src/alpha",
       name: "alpha",
-      sessions: "3",
-      by_model: `${sonnet}=2; ${other}=1`,
+      sessions: "2",
+      by_model: `${other}=1; ${sonnet}=1`,
       ...none,
       not_anthropic_sessions: "1",
-      not_anthropic_share: "0.333",
-      served_sessions: "2",
+      not_anthropic_share: "0.500",
+      served_sessions: "1",
       not_served_sessions: "1",
       not_served_models: `${other}=1`,
     },
@@ -1360,7 +1493,7 @@ test("the command writes the count, its report, each cut's ranking and the model
       row.served_sessions,
     ])
   ).toEqual([
-    ["skills-1", "1", "alpha", "3", `${sonnet}=2; ${other}=1`, "0.333", "2"],
+    ["skills-1", "1", "alpha", "2", `${other}=1; ${sonnet}=1`, "0.500", "1"],
     ["skills-1", "2", "beta", "0", "", "", "0"],
     ["skills-1", "3", "gone", "0", "", "", "0"],
   ]);
@@ -1371,16 +1504,16 @@ test("the command writes the count, its report, each cut's ranking and the model
       JSON.parse(readFileSync(path.join(out, "skills-1", "models", `${skill}.json`), "utf8"))
     );
   expect(modelsOf("alpha")).toEqual({
-    sessions: 3,
+    sessions: 2,
     byModel: [
-      { model: sonnet, anthropic: true, served: true, sessions: 2 },
       { model: other, anthropic: false, served: false, sessions: 1 },
+      { model: sonnet, anthropic: true, served: true, sessions: 1 },
     ],
     noModel: 0,
     notQueried: 0,
     notAnthropic: 1,
-    served: 2,
-    withModel: 3,
+    served: 1,
+    withModel: 2,
   });
   const empty = {
     sessions: 0,
@@ -1397,27 +1530,29 @@ test("the command writes the count, its report, each cut's ranking and the model
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
   for (const line of [
     "End time 2026-11-22T00:00:00Z. The window is [2026-11-20T00:00:00Z, 2026-11-22T00:00:00Z), 2 days.",
-    "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 4 | 2 | 4 | 205503 | 0 | 0 |",
+    "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 3 | 2 | 4 | 205503 | 0 | 0 | 2 | 1 |",
     "- store_a starts after the window's start: its records span 2026-11-20T02:00:00Z to the end time, 1.9 of the window's 2 days.",
     '- The transcript store is not read: the cluster store that a pod reads holds no Claude Code transcript until the Claude Code transcripts are moved into it, so this count holds no Claude Code session. "Claude Code" below lists the skills that leaves out.',
     "None: each query of the window has its output, and the run log lists no failure.",
     "- store_a (devbox):",
-    `  - ${via(USER_SKILLS)}: 2 sessions read from it; it holds 2 copies`,
+    `  - ${via(USER_SKILLS)}: 1 session read from it; it holds 2 copies`,
     `| \`${F3}/marketplace/plugins/acme-tools/skills/alpha/\` | alpha | 1 | 0 | store_a: context: to acme/skills src/alpha, the one copy of alpha its context installs (1 session) |`,
-    `| \`${F1_PROFILE}/beta/\` | beta | 1 | 0 | store_a: unattributed: no copy's skill directory ends the path, and its context installs 2 copies of beta (acme/skills src/beta, acme/tools plugins/acme-tools/skills/beta) (1 session) |`,
+    // The context's copies come in the order their units first give a session: the acme-tools
+    // plugin's (H2, day 2026-11-20) before the user skills' (H1B, day 2026-11-21).
+    `| \`${F1_PROFILE}/beta/\` | beta | 1 | 0 | store_a: unattributed: no copy's skill directory ends the path, and its context installs 2 copies of beta (acme/tools plugins/acme-tools/skills/beta, acme/skills src/beta) (1 session) |`,
     `| \`${F1_PROFILE}/alpha/\` | acme/skills src/alpha |`,
     "- beta: acme/skills src/beta (0 sessions) ties with acme/tools plugins/acme-tools/skills/beta; the name has 1 unattributed session.",
     "- beta (src/beta): no read; 1 session read beta unattributed",
     "| acme/skills | 0123456789abcdef0123456789abcdef01234567 | 2 | 9 | 40 | 49 |",
-    "- skills-1 (acme/skills): 3 changed skills, in `skills-1/ranking.json`, with each one's reading sessions in `skills-1/sessions/<skill>.jsonl`; first: alpha (3), beta (0), gone (0). The copies output holds no copy at `skills/gone`: ranked with 0 sessions.",
+    "- skills-1 (acme/skills): 3 changed skills, in `skills-1/ranking.json`, with each one's reading sessions in `skills-1/sessions/<skill>.jsonl`; first: alpha (2), beta (0), gone (0). The copies output holds no copy at `skills/gone`: ranked with 0 sessions.",
     "### Skills read that no copy in the copies output has",
     "A skill that code, an agent definition or an installer loads into a session: its text reaches the session with no read, so its read count leaves out each session that loads it so.",
-    "The models queries read 4 files; the head of 4 of them names a model. The 3 read sessions of the copies: with a model 3; whose file's head names none 0; in no models query's rows 0. Sessions two queries give two models for (the first day's is kept): 0.",
+    "The models queries read 4 files; the head of 4 of them names a model. The 2 read sessions of the copies: with a model 2; whose file's head names none 0; in no models query's rows 0. Sessions two queries give two models for (the first day's is kept): 0.",
     "The gateway serves a model when its id is the id of one of the configuration's `servedModels`: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol.",
-    `| ${sonnet} | yes | yes | 2 |`,
+    `| ${sonnet} | yes | yes | 1 |`,
     `| ${other} | no | no | 1 |`,
     "#### skills-1 (acme/skills)",
-    `| 1 | alpha | 3 | 3 | 1 | 0.333 | 2 | 1 | 0 | 0 | ${sonnet} (2), ${other} (1, not served) |`,
+    `| 1 | alpha | 2 | 2 | 1 | 0.500 | 1 | 1 | 0 | 0 | ${other} (1, not served), ${sonnet} (1) |`,
     "| 2 | beta | 0 | 0 | 0 | none | 0 | 0 | 0 | 0 | none |",
   ]) {
     expect(report).toContain(line);

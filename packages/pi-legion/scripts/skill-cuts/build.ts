@@ -1893,8 +1893,8 @@ export class GithubReads {
   }
 
   /** The default branch of `repo`: repositories.tsv's, else GitHub's. */
-  async branch(repo: string): Promise<{ branch: string; from: string }> {
-    const known = this.branches.get(repo);
+  async branch(repo: string, fromGithub = false): Promise<{ branch: string; from: string }> {
+    const known = fromGithub ? undefined : this.branches.get(repo);
     if (known !== undefined && known !== "") return { branch: known, from: "repositories.tsv" };
     const branch = (await this.ok(["api", `repos/${repo}`, "--jq", ".default_branch"])).trim();
     if (branch === "") throw new Error(`GitHub names no default branch of ${repo}`);
@@ -2713,15 +2713,28 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const projectDirs = PROJECT_SKILLS.flatMap((kind) =>
     levels.map((level) => ({ ...kind, dir: level === "" ? kind.dir : `${level}/${kind.dir}` }))
   );
-  /** The commit of `repo` at the session's start, and the evidence for it. */
+  /** The commit of `repo` at the session's start, and the evidence for it. repositories.tsv names
+   *  the ref the copies output read, a pin's tag for a pinned repository; a tag made after the
+   *  session's start has no commit at or before it, and then the default branch's is read (an
+   *  installer's pin at the session's start, below, takes its place where one names the
+   *  repository). */
   const readCommit = async (repo: string): Promise<{ sha: string; line: Evidence }> => {
-    const { branch, from } = await github.branch(repo);
-    const sha = await github.commitAt(repo, branch, input.sessionStart);
+    let { branch, from } = await github.branch(repo);
+    let younger = "";
+    let sha: string;
+    try {
+      sha = await github.commitAt(repo, branch, input.sessionStart);
+    } catch (error) {
+      if (transientFailure(error) || from !== "repositories.tsv") throw error;
+      younger = `${branch}, the ref repositories.tsv names, has no commit at or before the session's start; `;
+      ({ branch, from } = await github.branch(repo, true));
+      sha = await github.commitAt(repo, branch, input.sessionStart);
+    }
     return {
       sha,
       line: {
         item: `commit ${sha} of ${repo}`,
-        source: `the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
+        source: `${younger}the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
       },
     };
   };
@@ -2794,9 +2807,13 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         .filter((row) => row.host === "omp")
         .map((row) => `${row.unit} (${row.manifest_repository}:${row.manifest_path})`)
     );
+    // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
+    // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
+    const imageRepositories = new Set<string>();
     for (const row of copies.prefixes) {
       if (!(row.prefix ?? "").startsWith(IMAGE_ROOT)) continue;
       for (const via of vias(row.via ?? "")) {
+        imageRepositories.add(via.repository);
         if (units.has(viaKey(via)) || !ompUnits.has(viaKey(via))) continue;
         units.set(viaKey(via), {
           via,
@@ -2804,8 +2821,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         });
       }
     }
+    const otherLists = new Set<string>();
     for (const row of copies.installers) {
       if (row.kind !== "omp-plugins") continue;
+      if (!imageRepositories.has(row.manifest_repository ?? "")) {
+        const list = `${row.manifest_repository}:${row.manifest_path}`;
+        if (!otherLists.has(list)) {
+          otherLists.add(list);
+          evidence.push({
+            item: `left out: the plugin list ${list}`,
+            source: `a Legion pod installs the plugins of its worker image, whose packages come from ${[...imageRepositories].sort().join(", ") || "no repository"} (the prefix-table.tsv rows under ${IMAGE_ROOT}); ${row.manifest_repository} is none of them`,
+          });
+        }
+        continue;
+      }
       const via = {
         unit: row.unit ?? "",
         repository: row.manifest_repository ?? "",
@@ -2912,35 +2941,46 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     };
   }
   // A repository the dev box's installers pin at the session's start that no unit of the copies
-  // output names (a clone an installer made then and removed since) is read at that ref too.
+  // output names (a clone an installer made then and removed since, a marketplace and the source
+  // of a plugin installed from it) is read at that ref too, again until no new one is pinned.
   if (home !== undefined) {
-    const manifests = values.find((value) => value.repo === home)?.at.manifests ?? [];
-    for (const pin of installerPins(manifests)) {
-      const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
-      if (values.some((value) => known(value.repo))) continue;
-      const pinned = `${pin.manifest.repository}:${pin.manifest.path}`;
-      try {
-        const ref = pin.ref === "" ? (await github.branch(pin.repository)).branch : pin.ref;
-        const sha = await github.commitAt(pin.repository, ref, input.sessionStart);
-        repositories.add(pin.repository);
-        values.push({
-          repo: pin.repository,
-          commit: {
-            sha,
-            line: {
-              item: `commit ${sha} of ${pin.repository}`,
-              source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "clones (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${input.sessionStart}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${input.sessionStart}`,
+    const tried = new Set<string>();
+    for (let fresh = true; fresh; ) {
+      fresh = false;
+      const manifests = values.flatMap((value) =>
+        repositories.has(value.repo) || value.repo === home ? value.at.manifests : []
+      );
+      for (const pin of installerPins(manifests)) {
+        const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
+        if (values.some((value) => known(value.repo)) || tried.has(pin.repository.toLowerCase())) {
+          continue;
+        }
+        tried.add(pin.repository.toLowerCase());
+        const pinned = `${pin.manifest.repository}:${pin.manifest.path}`;
+        try {
+          const ref = pin.ref === "" ? (await github.branch(pin.repository)).branch : pin.ref;
+          const sha = await github.commitAt(pin.repository, ref, input.sessionStart);
+          repositories.add(pin.repository);
+          values.push({
+            repo: pin.repository,
+            commit: {
+              sha,
+              line: {
+                item: `commit ${sha} of ${pin.repository}`,
+                source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${input.sessionStart}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${input.sessionStart}`,
+              },
             },
-          },
-          at: await github.at(pin.repository, sha, run.config.excludePaths),
-          reads: 0,
-        });
-      } catch (error) {
-        if (transientFailure(error)) throw error;
-        evidence.push({
-          item: `left out: ${pin.repository}, which ${pinned} pins at the session's start`,
-          source: messageFor(error),
-        });
+            at: await github.at(pin.repository, sha, run.config.excludePaths),
+            reads: 0,
+          });
+          fresh = true;
+        } catch (error) {
+          if (transientFailure(error)) throw error;
+          evidence.push({
+            item: `left out: ${pin.repository}, which ${pinned} pins at the session's start`,
+            source: messageFor(error),
+          });
+        }
       }
     }
   }

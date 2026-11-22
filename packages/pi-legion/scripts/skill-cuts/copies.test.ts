@@ -1316,6 +1316,113 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
       `acme/one-skill ${pin}`,
     ]);
   });
+
+  /** A manifest of `repository` at `file`, parsed as `kind`. */
+  const madeManifest = (
+    repository: string,
+    file: string,
+    kind: ManifestKind,
+    text: string
+  ): Manifest => ({
+    repository,
+    path: file,
+    kind,
+    source: "tree",
+    ...parseManifest(kind, file, text),
+    error: "",
+    rows: 0,
+  });
+  /** A made-up copy of `repository` at `dir`, with a description. */
+  const madeCopy = (repository: string, dir: string): SkillCopy => ({
+    repository,
+    path: dir,
+    file: `${dir}/SKILL.md`,
+    blob: sha1(`${repository} ${dir}`),
+    fork: false,
+    archived: false,
+    parent: "",
+    name: path.posix.basename(dir),
+    nameFrom: "frontmatter",
+    description: "Use when a made-up skill is needed.",
+    descriptionBytes: 34,
+    fault: "",
+  });
+
+  test("an installer that installs a plugin from a marketplace into Oh My Pi pins the marketplace, and the marketplace pins the plugin's source at its sha; a marketplace whose name holds the word claude names no host", () => {
+    const pin = sha1("chat plugin pin");
+    const installer = madeManifest(
+      "acme/pkgs",
+      "installers/omp.sh",
+      "installer-script",
+      [
+        OMP_INSTALLER_TEXT.trimEnd(),
+        "install_marketplace_plugin acme/claude-market chat@claude-market",
+        "",
+      ].join("\n")
+    );
+    expect(installerPins([installer]).map((each) => `${each.repository} ${each.ref}`)).toEqual([
+      "acme/claude-market ",
+    ]);
+    const marketplace = madeManifest(
+      "acme/claude-market",
+      ".claude-plugin/marketplace.json",
+      "claude-marketplace",
+      JSON.stringify({
+        name: "claude-market",
+        plugins: [
+          {
+            name: "chat",
+            source: { source: "url", url: "https://github.com/acme/chat-plugin.git", sha: pin },
+          },
+          {
+            name: "other",
+            source: { source: "url", url: "https://github.com/acme/other-plugin.git", sha: pin },
+          },
+        ],
+      })
+    );
+    // Only the plugin an installer installs is pinned, at the sha its marketplace names.
+    expect(
+      installerPins([installer, marketplace]).map((each) => `${each.repository} ${each.ref}`)
+    ).toEqual(["acme/claude-market ", `acme/chat-plugin ${pin}`]);
+    const rows = resolveInstallers(
+      [installer, marketplace],
+      new CopyIndex([madeCopy("acme/chat-plugin", "skills/chat-one")])
+    ).rows.filter((row) => row.manifestPath === "installers/omp.sh");
+    expect(rows.map((row) => `${row.action} ${row.unit} ${row.host} ${row.skill}`)).toEqual([
+      "installs plugin:chat@claude-market omp chat-one",
+    ]);
+  });
+
+  test("`gh skill install <repo> <skill> --pin <ref>` installs that repository's skills/<skill> at the ref into ~/.agents/skills, which Oh My Pi lists", () => {
+    const pin = sha1("tool skill pin");
+    const installer = madeManifest(
+      "acme/pkgs",
+      "installers/omp.sh",
+      "installer-script",
+      [
+        OMP_INSTALLER_TEXT.trimEnd(),
+        `TOOL_PIN="${pin}"`,
+        'gh skill install acme/cli tool --agent universal --scope user --pin "$TOOL_PIN" --force || true',
+        "",
+      ].join("\n")
+    );
+    expect(installerPins([installer]).map((each) => `${each.repository} ${each.ref}`)).toEqual([
+      `acme/cli ${pin}`,
+    ]);
+    const resolved = resolveInstallers(
+      [installer],
+      new CopyIndex([madeCopy("acme/cli", "skills/tool"), madeCopy("acme/cli", ".github/skills/x")])
+    );
+    expect(
+      resolved.rows.map(
+        (row) => `${row.action} ${row.unit} ${row.host} ${row.skill} ${row.copyPath}`
+      )
+    ).toEqual(["installs gh-skill:tool omp tool skills/tool"]);
+    expect(resolved.prefixes.map((row) => `${row.prefix} ${row.repository} ${row.path}`)).toEqual([
+      "**/.agents/skills/tool/ acme/cli skills/tool",
+    ]);
+  });
 });
 
 // An omp-plugins `github:` dependency and an `ensure_vendor` clone, each read at the ref it names:

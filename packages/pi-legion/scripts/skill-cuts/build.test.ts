@@ -970,6 +970,20 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/delta/SKILL.md": skillMd("delta"),
     "installers/skills.sh": INSTALLER,
   },
+  // A dev box's own repository (it holds an installer and Claude Code's settings): its installer
+  // links each skill of skills/ into Oh My Pi's user skills, its Oh My Pi config ignores dropped,
+  // and quiet and shy hide themselves from the listing. No session reads any of them.
+  "acme/home": {
+    "installers/omp.sh": INSTALLER,
+    ".claude/settings.json": "{}\n",
+    "omp/config.yml": "skills:\n  ignoredSkills:\n    - dropped\n",
+    "skills/unread/SKILL.md": skillMd("unread"),
+    "skills/dropped/SKILL.md": skillMd("dropped"),
+    "skills/quiet/SKILL.md":
+      "---\nname: quiet\ndescription: Use for quiet work.\ndisable-model-invocation: true\n---\n\n# quiet\n",
+    "skills/shy/SKILL.md":
+      "---\nname: shy\ndescription: Use for shy work.\nhide: true\n---\n\n# shy\n",
+  },
   "acme/skills": {
     "skills/alpha/SKILL.md": skillMd("alpha"),
     "skills/alpha/references/x.md": "Step notes.\n",
@@ -1069,6 +1083,9 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/pack-later/SKILL.md": skillMd("pack-later"),
   },
 };
+
+/** The ref the copies output read acme/pack at, later than the sessions (repositories.tsv). */
+const PACK_LATER = "5".repeat(40);
 
 /** The made-up repositories at a commit other than SHA, by `<repository>@<ref>`: the commit the
  *  stand-in gh gives for that ref, and the files there. acme/dots's installer pins acme/pack at
@@ -1170,6 +1187,9 @@ const io = (lines: string[]): BuildIo => ({
     if (commits !== null) {
       const ref = new URLSearchParams(commits[2]).get("sha");
       const repo = (commits[1] ?? "").slice("repos/".length);
+      // acme/pack's later ref, the one repositories.tsv names, was made after the sessions'
+      // start: GitHub gives no commit of it at or before then, and `--jq .[0].sha` prints null.
+      if (repo === "acme/pack" && ref === PACK_LATER) return ok("null\n");
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
@@ -1509,8 +1529,8 @@ beforeAll(() => {
       ["acme/dual", "main", SHA, "no", "no", "", 10, "recursive", 0, ""],
       ["acme/powers", "v1.2.0", SHA, "no", "no", "", 3, "whole", 2, ""],
       ["acme/dots", "main", SHA, "no", "no", "", 4, "whole", 0, ""],
-      // Read later at another ref than PACK_PIN, which the stand-in answers with SHA.
-      ["acme/pack", "5".repeat(40), SHA, "no", "no", "", 2, "whole", 2, ""],
+      // Read later at another ref than PACK_PIN, made after the sessions' start.
+      ["acme/pack", PACK_LATER, SHA, "no", "no", "", 2, "whole", 2, ""],
     ])
   );
   writeFileSync(
@@ -1550,8 +1570,10 @@ beforeAll(() => {
         kind: "read",
         files: 1,
         hashes: ["0123456789abcdef"],
+        calls: { "0123456789abcdef": ["0123456789abcdef"] },
         unpaired: 0,
         unpaired_hashes: [],
+        unpaired_calls: {},
       },
       {
         row: "summary",
@@ -2782,6 +2804,7 @@ describe("build-cases over every made-up session", () => {
 test("a dev-box session that read a skill of a github: dependency's package and one of a cloned pool gets a profile that holds each unit's skills, the pool's at the commit its installer pins at the session's start", async () => {
   const out = path.join(scratch, "pinned-units", "cases.jsonl");
   const lines: string[] = [];
+  const callsBefore = ghCalls.length;
   const sessions = sessionsFile("pinned-units.jsonl", ["pinned-units"]);
   expect(await main(buildArgs(sessions, out, "1"), io(lines))).toBe(EXIT.ok);
   const [c] = loadCases(out, old);
@@ -2813,6 +2836,74 @@ test("a dev-box session that read a skill of a github: dependency's package and 
   expect(evidence["left out: skill pack-later (acme/pack skills/pack-later)"]).toContain(
     "does not ship it at the session's start"
   );
+  // acme/pack's later ref (repositories.tsv's) has no commit at the session's start, so its
+  // default branch is read before its installer's pin takes its place.
+  expect(
+    ghCalls
+      .slice(callsBefore)
+      .flat()
+      .some((arg) => arg.startsWith(`repos/acme/pack/commits?sha=${PACK_LATER}&`))
+  ).toBe(true);
+  expect(
+    ghCalls
+      .slice(callsBefore)
+      .flat()
+      .some((arg) => arg.startsWith("repos/acme/pack/commits?sha=main&"))
+  ).toBe(true);
+});
+
+test("a dev-box profile installs the units its dev box's own installers install though the session read none of them, leaves out a skill its Oh My Pi config ignores, and installs a skill that hides itself as not listed", async () => {
+  // The copies output of the suite, with acme/home named as the dev box's repository: it holds an
+  // installer script and Claude Code's settings.
+  const copies = path.join(setupDir, "copies-home");
+  mkdirSync(copies, { recursive: true });
+  for (const file of [
+    "prefix-table.tsv",
+    "installers.tsv",
+    "loaders.tsv",
+    "skill-copies.tsv",
+    "repositories.tsv",
+  ]) {
+    writeFileSync(path.join(copies, file), readFileSync(path.join(copiesDir, file)));
+  }
+  writeFileSync(
+    path.join(copies, "manifests.tsv"),
+    `${readFileSync(path.join(copiesDir, "manifests.tsv"), "utf8")}${[
+      ["acme/home", "installers/omp.sh", "installer-script", "tree", 4, "links skills", ""],
+      ["acme/home", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+    ]
+      .map((row) => `${row.join("\t")}\n`)
+      .join("")}`
+  );
+  const out = path.join(scratch, "devbox-home", "cases.jsonl");
+  const sessions = sessionsFile("devbox-home.jsonl", ["good"]);
+  const lines: string[] = [];
+  expect(await main(buildArgs(sessions, out, "1", "--copies", copies), io(lines))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  const names = (c?.profile.skills ?? []).map((skill) => `${skill.name} ${skill.repo}`);
+  // The session read none of acme/home's skills; the dev box installs them all but dropped.
+  expect(names).toEqual(
+    expect.arrayContaining(["unread acme/home", "quiet acme/home", "shy acme/home"])
+  );
+  expect(names).not.toContain("dropped acme/home");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence["unit user-skills:omp (acme/home:installers/omp.sh)"]).toStartWith(
+    "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it"
+  );
+  expect(evidence["left out: skill dropped (acme/home skills/dropped)"]).toContain(
+    "acme/home:omp/config.yml at "
+  );
+  expect(evidence["left out: skill dropped (acme/home skills/dropped)"]).toContain(
+    "names dropped in skills.ignoredSkills"
+  );
+  // quiet and shy are installed, so skill:// reads them, and not listed; unread is listed.
+  expect(evidence["not listed: skill quiet"]).toContain("disable-model-invocation: true");
+  expect(evidence["not listed: skill shy"]).toContain("hide: true");
+  expect(evidence["not listed: skill unread"]).toBeUndefined();
+  const measure = ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE] ?? "{}"));
+  expect(measure.added).toContain("unread");
+  expect(measure.added).not.toContain("quiet");
+  expect(measure.added).not.toContain("shy");
 });
 
 test("the seed fixes the order the sessions are taken in, and --max stops at that many cases", async () => {

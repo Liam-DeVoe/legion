@@ -63,25 +63,35 @@ SET LOCAL statement_timeout = '15min';
 --   A call whose every answer is an error (`isError`, `is_error`) is no read and is not counted.
 --   A call with no answer in its file is unpaired: it is counted apart, in `unpaired`, with its own
 --   path as the copy.
---   A call whose toolCallId and timestamp are both in two files of this query is one read (a forked
---   session copies its parent's lines): it counts in the file whose path sorts first, and
---   `shared_call_ids` counts such calls.
+--   A file's hash is `md5(path)` cut to 16 hex characters. A read's key is md5 of its call's id
+--   (the `toolCallId`, or the `tool_use` id), one space and its call line's timestamp in UTC to
+--   the microsecond (`YYYY-MM-DDTHH:MI:SS.ffffffZ`), cut to 16 hex characters; a call with no id
+--   takes its file's path in place of the id, so no other file holds its key.
+--   A key that two files of this query hold is one read (a forked session copies its parent's
+--   lines): it counts in the file whose hash sorts first (in byte order), and `shared_call_ids`
+--   counts such keys. A file counts for a skill name, copy and kind when one of its keys there
+--   counts in it. A fork written on another mtime day than its parent is in another query, so the
+--   client applies the same rule to the keys of every query of a store.
 --   Each (file, skill name, copy, kind) counts once, on the UTC day of its first read in the
---   window; a file's paired reads and unpaired calls are kept apart.
+--   window that counts in it; a file's paired reads and unpaired calls are kept apart.
 --
 -- Rows: one JSON value per row (psql prints each on one line), ordered by day, skill, copy, kind,
 -- then the summary:
 --   {"row": "count", "store", "day" (first read, YYYY-MM-DD), "skill", "copy", "kind",
---    "files" (distinct files with a paired read), "hashes", "unpaired" (distinct files with an
---    unpaired call), "unpaired_hashes"}
+--    "files" (distinct files with a paired read), "hashes", "calls" (each file of `hashes`, by
+--    its hash, with the keys of its paired reads that put it in the row), "unpaired" (distinct
+--    files with an unpaired call), "unpaired_hashes", "unpaired_calls" (each file of
+--    `unpaired_hashes` with the keys of its unpaired calls that put it in the row)}
 --   {"row": "summary", "store", "mtime_from", "mtime_to", "files" (files read), "parts", "bytes"
 --    (bytes read: the file rows' content and every part), "lines_parsed", "bad_lines",
 --    "shared_call_ids"}
--- Why the rows carry hashes beside the totals: a session can be written again while the count
--- runs (a resumed session), so its mtime_ms day can move after its first day was queried and the
--- same file can be in two queries' rows. Each row names its files as `md5(path)` cut to 16 hex
--- characters, sorted, in a JSON array, so the client counts distinct hashes across queries. No
--- path or line text leaves the database.
+-- Why the rows carry hashes and keys beside the totals: a session can be written again while the
+-- count runs (a resumed session), so its mtime_ms day can move after its first day was queried and
+-- the same file can be in two queries' rows; and a fork written on another day than its parent
+-- holds the parent's reads in another query. Each row names its files by hash, sorted, in a JSON
+-- array, and in `calls` (and `unpaired_calls`) a JSON object from each file's hash to its keys,
+-- sorted, so the client counts distinct hashes across queries and applies the rule above to the
+-- keys of all of them. No path, call id or line text leaves the database.
 WITH
 -- Per file, one file at a time: its totals and the events of its lines that hold a target. Each
 -- such line is joined whole, parsed, read into its events and dropped inside the file's LATERAL;
@@ -338,30 +348,41 @@ answers AS (
   WHERE e.ev IN ('result', 'base') AND e.id IS NOT NULL
   GROUP BY e.path, e.id
 ),
+-- Each read and unpaired call of the window, with its file's hash and its key (the header's).
 reads AS MATERIALIZED (
-  SELECT c.path, c.id, c.ts, c.skill, c.kind,
+  SELECT left(md5(c.path), 16) AS hash, c.ts, c.skill, c.kind,
     a.ok IS TRUE AS paired,
-    CASE WHEN a.ok THEN coalesce(a.header, a.base, c.own) ELSE c.own END AS copy
+    CASE WHEN a.ok THEN coalesce(a.header, a.base, c.own) ELSE c.own END AS copy,
+    left(
+      md5(
+        coalesce(c.id, c.path) || ' '
+          || to_char(c.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+      ),
+      16
+    ) AS key
   FROM calls c
   LEFT JOIN answers a ON a.path = c.path AND a.id = c.id
   WHERE c.ts >= {{window_start}}::timestamptz AND c.ts < {{window_end}}::timestamptz
     AND a.ok IS DISTINCT FROM false
 ),
+-- Each key that two files hold.
 shared AS (
-  SELECT r.id, r.ts
+  SELECT r.key
   FROM reads r
-  WHERE r.id IS NOT NULL
-  GROUP BY r.id, r.ts
-  HAVING count(DISTINCT r.path) > 1
+  GROUP BY r.key
+  HAVING count(DISTINCT r.hash) > 1
 ),
+-- Per file, skill name, copy, kind and pairing: the reads whose key counts in the file (no file
+-- whose hash sorts before its hash holds the key), the first of them, and their keys.
 firsts AS (
-  SELECT r.path, r.skill, r.copy, r.kind, r.paired, min(r.ts) AS first_ts
+  SELECT r.hash, r.skill, r.copy, r.kind, r.paired, min(r.ts) AS first_ts,
+    json_agg(DISTINCT r.key COLLATE "C" ORDER BY r.key COLLATE "C") AS keys
   FROM reads r
   WHERE NOT EXISTS (
     SELECT 1 FROM reads o
-    WHERE o.id = r.id AND o.ts = r.ts AND o.path COLLATE "C" < r.path COLLATE "C"
+    WHERE o.key = r.key AND o.hash COLLATE "C" < r.hash COLLATE "C"
   )
-  GROUP BY r.path, r.skill, r.copy, r.kind, r.paired
+  GROUP BY r.hash, r.skill, r.copy, r.kind, r.paired
 ),
 totals AS (
   SELECT
@@ -370,9 +391,11 @@ totals AS (
     f.copy,
     f.kind,
     count(*) FILTER (WHERE f.paired) AS files,
-    coalesce(json_agg(left(md5(f.path), 16) ORDER BY left(md5(f.path), 16)) FILTER (WHERE f.paired), '[]'::json) AS hashes,
+    coalesce(json_agg(f.hash ORDER BY f.hash) FILTER (WHERE f.paired), '[]'::json) AS hashes,
+    coalesce(json_object_agg(f.hash, f.keys ORDER BY f.hash) FILTER (WHERE f.paired), '{}'::json) AS calls,
     count(*) FILTER (WHERE NOT f.paired) AS unpaired,
-    coalesce(json_agg(left(md5(f.path), 16) ORDER BY left(md5(f.path), 16)) FILTER (WHERE NOT f.paired), '[]'::json) AS unpaired_hashes
+    coalesce(json_agg(f.hash ORDER BY f.hash) FILTER (WHERE NOT f.paired), '[]'::json) AS unpaired_hashes,
+    coalesce(json_object_agg(f.hash, f.keys ORDER BY f.hash) FILTER (WHERE NOT f.paired), '{}'::json) AS unpaired_calls
   FROM firsts f
   GROUP BY 1, 2, 3, 4
 )
@@ -381,8 +404,9 @@ FROM (
   SELECT 0 AS pos, t.day, t.skill, t.copy, t.kind,
     json_build_object(
       'row', 'count', 'store', {{store}}, 'day', t.day, 'skill', t.skill, 'copy', t.copy,
-      'kind', t.kind, 'files', t.files, 'hashes', t.hashes, 'unpaired', t.unpaired,
-      'unpaired_hashes', t.unpaired_hashes
+      'kind', t.kind, 'files', t.files, 'hashes', t.hashes, 'calls', t.calls,
+      'unpaired', t.unpaired, 'unpaired_hashes', t.unpaired_hashes,
+      'unpaired_calls', t.unpaired_calls
     )::text AS total
   FROM totals t
   UNION ALL

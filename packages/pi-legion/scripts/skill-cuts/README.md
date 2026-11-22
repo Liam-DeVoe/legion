@@ -210,6 +210,12 @@ Prints `count.sql` filled for one store and one UTC day (or hour), the same as
 `bun scripts/skill-cuts/countsql.ts`. `--query models` prints `models.sql` instead: each session
 file's model, read from the first 256 Ki characters of the file, as one row per file hash.
 
+Each count row also names, for each file, the keys of the reads that put it in the row (`calls`,
+and `unpaired_calls` for calls with no result). A key is md5 of the call's id, a space and the
+call line's UTC timestamp to the microsecond, cut to 16 hex characters. Inside one query, a key
+that two files hold counts in the file whose path hash sorts first, and `shared_call_ids` counts
+such keys.
+
 ### `load`
 
 ```
@@ -301,7 +307,7 @@ for one repository and 8 in all. It prints one line per repository read (`copies
 <owner/repo>: <entries> entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25
 searches, so the log gives the rate.
 
-Three install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
+Five install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
 the list, read as Oh My Pi 18.18.6 reads it:
 
 - An Oh My Pi plugin package (a `package.json` whose `omp` or `pi` field is set; `pi` counts only
@@ -318,13 +324,29 @@ the list, read as Oh My Pi 18.18.6 reads it:
   entry the installer's `find … -name … -exec rm` removes from the pool. A clone made as one entry
   of a pool's skills directory (`ensure_vendor <url> <pool>/skills/<name> <ref>`, a repository that
   is one skill, its `SKILL.md` at its root) gives that repository's root skill under `<name>`.
+- A plugin an installer script installs from a marketplace into Oh My Pi's own plugin tree
+  (`omp plugin install <plugin>@<marketplace>`, or a helper given the marketplace's repository and
+  `<plugin>@<marketplace>`): the marketplace's repository is read at its default branch, and the
+  plugin's source at the commit its marketplace entry pins (`sha`, else `ref`). Oh My Pi lists
+  such a plugin's skills from its manifest's `skills` entries, else its `skills/`
+  (discovery/claude-plugins.ts, loadSkills, lines 226-275; an install of Oh My Pi's own is not
+  Claude Code's registry, so no setting gates it: lines 44-53). A line's host is read from its
+  words less its `<plugin>@<marketplace>` and `<owner>/<name>` words, so a marketplace named
+  `claude-plugins-official` names no host.
+- A `gh skill install <repo> <skill> … --pin <ref>` of an installer script (each `$NAME` the
+  script sets read so): the repository's `skills/<skill>` at that ref, installed at
+  `~/.agents/skills/<skill>`, which Oh My Pi's agents provider lists (discovery/agents.ts, lines
+  123-127 and 158-170).
 
-Each repository a pin names (the dependency's, the clone's) is read at the pin's ref, in place of
-its default branch's commit when an owner's listing holds it too; `repositories.tsv`'s `branch`
-names the ref. A repository with no pinned ref is read at its default branch. The prefix rows of
-these units reach the table only when the configuration's `targets` name their repositories.
-`build-cases` and `build-tasks` read a pinned repository at the ref its installer names at the
-session's start.
+Each repository a pin names (the dependency's, the clone's, the marketplace's, a marketplace
+plugin's source, a `gh skill install`'s) is read at the pin's ref, in place of its default
+branch's commit when an owner's listing holds it too; `repositories.tsv`'s `branch` names the
+ref. A repository with no pinned ref is read at its default branch. A marketplace read at its pin
+pins its plugins' sources in turn, so the pins are read again until no new one appears. The prefix
+rows of these units reach the table only when the configuration's `targets` name their
+repositories. `build-cases` and `build-tasks` read a pinned repository at the ref its installer
+names at the session's start; where `repositories.tsv` names a ref (a pin's tag) made after the
+session's start, they read the repository's default branch then.
 
 ### `attribute`
 
@@ -350,6 +372,13 @@ A path inside a copy of another repository that an installer writes (`<dir>/vend
 package under `node_modules/`, a plugin under `plugins/cache/`) is a checkout only of a repository
 the copy's own directories name, and a read inside an `ensure_vendor` clone that no prefix row
 maps goes to no copy by the context rule either: it is unattributed.
+A read that two files of a store hold (the same call id and timestamp: a forked session copies
+its parent's lines) counts in one of them, the file whose path hash sorts first, whichever queries
+hold the two, since a fork written on another mtime day than its parent is in another query. A
+file stays a session of a skill when one of its reads of it counts in it. `build-cases` reads the
+count by the same rule. A count made by an earlier `count.sql`, whose rows have no `calls`, is
+refused. The report's store table gives the call ids two files of one query hold, the call ids
+files of two queries hold, and the pairs of files of two queries that hold one.
 
 ### `build-cases` and `build-tasks`
 
@@ -454,7 +483,10 @@ installed, so `skill://` reads it, and the evidence marks it `not listed`: Oh My
 leaves it out of the prompt's listing (extensibility/skills.ts, line 494; system-prompt.ts,
 lines 961-983). Oh My Pi lists a second skill of one name and other text as
 `<namespace>/<name>` (extensibility/skills.ts, lines 164-223); a profile installs one copy of a
-name, so such a recorded line is counted missing.
+name, so such a recorded line is counted missing. A Legion profile installs the plugin lists
+(`omp-plugins` manifests) of the repositories its worker image's packages come from (those of the
+prefix rows under `/opt/legion/`) and no other: a dev box's own plugin list is no pod's, and the
+evidence names each list left out.
 
 Each case and each load task's profile carries a `listing measure` evidence item, whose source
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives

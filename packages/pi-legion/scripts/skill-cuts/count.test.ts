@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { SQL } from "bun";
 import { z } from "zod";
+import { attribute, parseQueryOutput, type R4Tables } from "./attribute";
 import { pullTranscript } from "./build";
 import { loadConfig } from "./config";
 import {
@@ -35,7 +36,7 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // The fixture proof of count.sql (the read count) and of models.sql, and the pieces they stand on:
 // countsql.ts's filling and fixturedb.ts's loading. The proof needs the pod's test server
 // (LEGION_TEST_PG_DSN) and psql, and runs each query with the store command's own flags; without
-// the server it is skipped with a printed line (the pi-legion CI job has none). It makes six
+// the server it is skipped with a printed line (the pi-legion CI job has none). It makes seven
 // databases of its own on that server and drops them at the end:
 // F1's session, its subagent and F4 in the first; F1b in the second; F1's session in the third,
 // cut into three parts inside its `alpha` read call line; and, for models.sql, in the fourth: F1c
@@ -43,7 +44,8 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // after its session_init line, F1d (F1b's first two lines, with no model line) and F1b cut inside
 // its first line, so that its model_change line is in its second part; in the fifth a file made
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
-// Ki; and in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe.
+// Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; and
+// in the seventh a made-up session and three forks of it, which the fork tests describe.
 // The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
 // databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
 // capture commands), so a change to one of those queries that changes such a result fails here
@@ -86,6 +88,12 @@ const ALPHA_CALL = '"path":"skill://alpha"';
 /** A file's hash as count.sql names it. */
 function fileHash(stored: string): string {
   return createHash("md5").update(stored).digest("hex").slice(0, 16);
+}
+
+/** A read's key as count.sql names it: md5 of its call's id, a space and its call line's
+ *  timestamp in UTC to the microsecond (`at`), cut to 16 hex characters. */
+function callKey(id: string, at: string): string {
+  return createHash("md5").update(`${id} ${at}`).digest("hex").slice(0, 16);
 }
 
 /** The fields of a count row the proof reads. */
@@ -363,6 +371,7 @@ describe.skipIf(serverDsn === undefined)(
       models: `skill_cuts_count_${stamp}_models`,
       big: `skill_cuts_count_${stamp}_big`,
       pull: `skill_cuts_count_${stamp}_pull`,
+      fork: `skill_cuts_count_${stamp}_fork`,
     };
     /** The DSN of one of this run's databases on the server LEGION_TEST_PG_DSN names. */
     const dsnOf = (name: string) => {
@@ -466,6 +475,89 @@ describe.skipIf(serverDsn === undefined)(
         message: { role: "user", content: "Fixture task: write the made-up report." },
       }) + jsonLine({ type: "pad", pad: "y".repeat(MIB + 200_000) });
 
+    // The seventh database's made-up sessions: PARENT reads alpha once, and three forks of it each
+    // hold a copy of that read (its call and result lines byte for byte: the same toolCallId and
+    // timestamp). Each is stored as one file row of the mtime given: PARENT and SAME_DAY of the
+    // mtime day 2026-11-20, COPY of 2026-11-21, and OWN of 2026-11-22, which also reads alpha
+    // itself after the copy. PARENT's path hash sorts before the forks' path hashes, and
+    // SAME_DAY's path sorts before PARENT's path, so the rule (the file whose path hash sorts
+    // first) and the path order pick different files.
+    const FORK = {
+      parent: "made-up/fork/parent.jsonl",
+      sameDay: "made-up/fork/child-same-day.jsonl",
+      copy: "made-up/fork/child-copy.jsonl",
+      own: "made-up/fork/child-own.jsonl",
+    };
+    /** The call line and the result line of a read of skill://alpha whose call is `id`, at `at`. */
+    const alphaRead = (id: string, at: string) =>
+      jsonLine({
+        type: "message",
+        id: `c-${id}`,
+        parentId: null,
+        timestamp: at,
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id, name: "read", arguments: { path: "skill://alpha" } }],
+        },
+      }) +
+      jsonLine({
+        type: "message",
+        id: `r-${id}`,
+        parentId: `c-${id}`,
+        timestamp: new Date(Date.parse(at) + 1000).toISOString(),
+        message: {
+          role: "toolResult",
+          toolCallId: id,
+          toolName: "read",
+          isError: false,
+          content: [{ type: "text", text: "[Skill file: /skills/alpha/SKILL.md]\n# alpha\n" }],
+        },
+      });
+    const PARENT_CALL = "toolu_made_up_parent";
+    const parentRead = alphaRead(PARENT_CALL, "2026-11-20T02:00:01.000Z");
+    /** A session's header line; a fork's names its parent's file. */
+    const sessionLine = (id: string, at: string, parent?: string) =>
+      jsonLine({
+        type: "session",
+        version: 3,
+        id,
+        timestamp: at,
+        cwd: "/work",
+        ...(parent === undefined ? {} : { parentSession: parent }),
+      });
+    const forkFiles = [
+      {
+        path: FORK.parent,
+        mtime: "2026-11-20T02:00:05.000Z",
+        text: sessionLine("made-up-parent", "2026-11-20T02:00:00.000Z") + parentRead,
+      },
+      {
+        path: FORK.sameDay,
+        mtime: "2026-11-20T05:00:00.000Z",
+        text: sessionLine("made-up-same-day", "2026-11-20T05:00:00.000Z", FORK.parent) + parentRead,
+      },
+      {
+        path: FORK.copy,
+        mtime: "2026-11-21T03:00:00.000Z",
+        text: sessionLine("made-up-copy", "2026-11-21T03:00:00.000Z", FORK.parent) + parentRead,
+      },
+      {
+        path: FORK.own,
+        mtime: "2026-11-22T00:30:00.000Z",
+        text:
+          sessionLine("made-up-own", "2026-11-21T22:00:00.000Z", FORK.parent) +
+          parentRead +
+          alphaRead("toolu_made_up_own", "2026-11-21T23:00:00.000Z"),
+      },
+    ];
+    /** No copies: the fork tests count sessions, and place no read. */
+    const NO_COPIES: R4Tables = {
+      copies: [],
+      prefixes: [],
+      installers: [],
+      loaders: [],
+      repositories: [],
+    };
     /** psql's output of `sql` run in the database `name` with the store command's psql flags. */
     function output(name: string, sql: string): string {
       const psql = Bun.spawnSync(
@@ -553,6 +645,20 @@ describe.skipIf(serverDsn === undefined)(
         `;
       } finally {
         await pull.close();
+      }
+      // No file to load: this makes the fork database's tables.
+      await loadFixtures(dsnOf(names.fork), [], { parts: 2 });
+      const fork = new SQL(dsnOf(names.fork));
+      try {
+        for (const file of forkFiles) {
+          await fork`
+            INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+            VALUES (${file.path}, ${file.text}, ${Date.parse(file.mtime)},
+              ${Buffer.byteLength(file.text)})
+          `;
+        }
+      } finally {
+        await fork.close();
       }
       writeFileSync(
         STORE,
@@ -724,8 +830,12 @@ describe.skipIf(serverDsn === undefined)(
           kind: "read",
           files: 1,
           hashes: [fileHash(IMPORTED)],
+          calls: {
+            [fileHash(IMPORTED)]: [callKey("toolu_made_up", "2026-11-20T03:00:01.500000Z")],
+          },
           unpaired: 0,
           unpaired_hashes: [],
+          unpaired_calls: {},
         },
         {
           row: "summary",
@@ -743,6 +853,65 @@ describe.skipIf(serverDsn === undefined)(
           shared_call_ids: 0,
         },
       ]);
+    });
+
+    /** count.sql's output on the fork database for the mtime day `day`, read by attribute.ts. */
+    const forkQuery = (day: string) =>
+      parseQueryOutput("store_a", day, output(names.fork, countSql(CONFIG, "store_a", day)));
+    /** attribute.ts's count of the fork database's queries of the mtime days `days`. */
+    const forkCount = (...days: string[]) => attribute(CONFIG, days.map(forkQuery), NO_COPIES);
+
+    test("a fork written on another mtime day than its parent, whose only read is a copy of the parent's, counts once across the two days' queries", () => {
+      // The fork's day query holds the fork and not its parent, so it counts the fork.
+      const copyDay = forkQuery("2026-11-21");
+      expect(copyDay.rows.map((row) => row.hashes)).toEqual([[fileHash(FORK.copy)]]);
+      const count = attribute(CONFIG, [forkQuery("2026-11-20"), copyDay], NO_COPIES);
+      expect(count.readSessions).toBe(1);
+      expect(count.stores[0]?.readSessions).toBe(1);
+    });
+
+    test("a fork with a read of its own as well counts as its own session, and the client counts the call id its parent and it hold across two queries", () => {
+      expect(forkCount("2026-11-20", "2026-11-22").stores[0]).toMatchObject({
+        readSessions: 2,
+        sharedCallIds: 1,
+        sharedAcrossQueries: 1,
+        filePairsAcrossQueries: 1,
+      });
+    });
+
+    test("the shared call id is reported: by the query that holds two files of it, which counts it in the file whose path hash sorts first, and by the client across the queries, with the file pairs", () => {
+      // SAME_DAY's path sorts before PARENT's, and PARENT's path hash before SAME_DAY's.
+      expect(FORK.sameDay < FORK.parent).toBe(true);
+      expect(fileHash(FORK.parent) < fileHash(FORK.sameDay)).toBe(true);
+      const parentDay = forkQuery("2026-11-20");
+      const key = callKey(PARENT_CALL, "2026-11-20T02:00:01.000000Z");
+      expect(parentDay.rows).toEqual([
+        {
+          row: "count",
+          store: "store_a",
+          day: "2026-11-20",
+          skill: "alpha",
+          copy: "/skills/alpha/SKILL.md",
+          kind: "read",
+          files: 1,
+          hashes: [fileHash(FORK.parent)],
+          calls: { [fileHash(FORK.parent)]: [key] },
+          unpaired: 0,
+          unpaired_hashes: [],
+          unpaired_calls: {},
+        },
+      ]);
+      expect(parentDay.summary.shared_call_ids).toBe(1);
+      // PARENT on its day, COPY and OWN each on theirs: three files of three queries hold the key,
+      // three pairs of them.
+      const count = forkCount("2026-11-20", "2026-11-21", "2026-11-22");
+      expect(count.readSessions).toBe(2);
+      expect(count.stores[0]).toMatchObject({
+        readSessions: 2,
+        sharedCallIds: 1,
+        sharedAcrossQueries: 1,
+        filePairsAcrossQueries: 3,
+      });
     });
 
     /** The model rows of a models.sql result, each `[hash, model, source]`, and its summary. */
