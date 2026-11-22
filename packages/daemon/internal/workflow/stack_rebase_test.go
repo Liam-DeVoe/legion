@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +20,9 @@ import (
 // the issue is past its review, that move sends nothing back: the head is recorded, the phase
 // stays, no review round or pass is counted, no role is started or told and the architect is
 // told nothing. The move reaches the daemon as a synchronize whose push may arrive before it,
-// after it, or never (dispatch://INFRA-5217, Acceptance).
+// after it, or never. The daemon then reads GitHub's merge state of the new head, as it does
+// for any moved head, and a clean answer moves nothing either; in merging, the merge GitHub then
+// reports at the rebased head closes the issue.
 func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 	rebase := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 		Before: "head", Sender: "web-flow", HeadSHA: "rebased", Base: "main"}
@@ -47,7 +50,15 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", HandoffCommit: "head"})
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1",
 					HandoffVersion: 1, Summary: "reviewed", Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
-				applyRefusingNothing(t, pool, mergingEngine(), tc.facts...)
+				engine := mergingEngine()
+				var reads []string
+				engine.cfg.ReadMergeState = func(issue string) { reads = append(reads, issue) }
+				applyRefusingNothing(t, pool, engine, tc.facts...)
+				if !slices.Contains(reads, "LEGION-208") {
+					t.Fatalf("after the rebase the daemon asked a merge-state read of %v, want LEGION-208's", reads)
+				}
+				applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main",
+					HeadSHA: "rebased", Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
 
 				if got := recordedPR(t, pool, "LEGION-208"); got.HeadSHA != "rebased" || got.Base != "main" || got.MergeForward != nil {
 					t.Fatalf("after the rebase the pull request is at %q on %q with merge forward %+v, want rebased on main and none", got.HeadSHA, got.Base, got.MergeForward)
@@ -61,10 +72,17 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 				if got := phaseRowOf(t, pool, claim.RoleImplementer); got.Pass != 0 {
 					t.Fatalf("after the rebase the implementer's row counts %d passes, want none", got.Pass)
 				}
-				// The rebase queues nothing at all: no message to a role or to the architect, no
-				// worker start, no write to Dispatch.
+				// The rebase and the read queue nothing at all: no message to a role or to the
+				// architect, no worker start, no write to Dispatch.
 				if got := outboxKinds(t, pool); len(got) != 0 {
 					t.Fatalf("after the rebase the outbox holds %v, want nothing", got)
+				}
+				if at.phase != phase.Merging {
+					return
+				}
+				applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42", HeadSHA: "rebased"})
+				if got := issuePhase(t, pool); got != phase.Done {
+					t.Fatalf("after the merge at the rebased head the issue is in %s, want done", got)
 				}
 			})
 		}

@@ -477,7 +477,7 @@ RUN set -eu; \
     install -m 0755 "$t/gh_${gh_version}_linux_amd64/bin/gh" /opt/tools/gh; \
     install -D -m 0755 "$t/gh-stack" /opt/tools/gh-extensions/gh-stack/gh-stack; \
     rm -rf "$t"; \
-    /opt/omp/bin/omp --version && /opt/tools/jj --version && /opt/tools/gh --version; \
+    /opt/omp/bin/omp --version; /opt/tools/jj --version; /opt/tools/gh --version; \
     stack="$(/opt/tools/gh-extensions/gh-stack/gh-stack --version)"; echo "tools: gh-stack: $stack"; \
     [ "$stack" = "gh stack version ${stack_version}" ] || { echo "tools: gh-stack: the binary says '$stack', and ARG GH_STACK_TOOL pins ${stack_version}" >&2; exit 1; }
 
