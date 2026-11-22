@@ -101,6 +101,7 @@ const (
 	// base block matches its start.
 	w5NoHolderFinish = "outbox role message finished undelivered: its role has no live holder"
 	w5PhaseChanged   = "workflow: phase changed"
+	w5NoticeReheld   = "outbox notice re-held: the listener could not forward it to its architect's session"
 	w5R2Note         = "Your previous turn was interrupted."
 	// The cause the daemon's cut-turn note names for its own relaunch of a claim Envoy could not
 	// reach (internal/daemon's relaunchedByDaemon), as the resumed session's transcript shows it:
@@ -135,7 +136,10 @@ type w5Run struct {
 
 	roleRow, hookRow int64
 
-	// The facts the later steps read of the first block.
+	// The facts the later steps read of the first block. seenAtBlock is each blocked claim's last
+	// registration as the listener's list showed it a minute into the block, before any relaunch
+	// let a new process register again.
+	seenAtBlock                       map[string]time.Time
 	fifthMessageRow, fourthMessageRow int64
 	fourthRetired, fifthJobEnded      time.Time
 	ninthHeld                         time.Time
@@ -463,6 +467,24 @@ func (r *w5Run) lastSeenOf(session string) time.Time {
 	return r.lastSeen[session]
 }
 
+// registeredLast is session's last registration as the listener's own list shows it now, read
+// straight from the listener (not watchEnvoy's copy, which a slow read leaves behind), every 10 s
+// until a read answers with the session, for up to 2 minutes; the zero time where none did. A
+// step reads it once the rig has blocked the session's registrations, so it is the last
+// registration before the block, which no relaunch's new registration has moved yet.
+func (r *w5Run) registeredLast(session string) time.Time {
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if s, ok := r.envoySessions()[session]; ok && !s.lastSeen.IsZero() {
+			return s.lastSeen
+		}
+		if time.Now().After(deadline) {
+			return time.Time{}
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
 // session is the session token's claim records now.
 func (r *w5Run) session(token claim.Token) string {
 	if held := r.claimOrNil(token); held != nil {
@@ -656,9 +678,11 @@ func (r *w5Run) firstBlock() {
 	r.record("first block: the daemon's outbox holds a role message (row %d) and a hook prompt (row %d) for %s", r.roleRow, r.hookRow, impl.token)
 
 	sleepUntil(t0.Add(time.Minute))
+	r.seenAtBlock = map[string]time.Time{}
 	for _, name := range w5FirstBlock {
 		session := r.session(r.c(name).token)
-		r.record("first block: %s's last registration as the listener's own list shows it: %s", name, clockAt(r.lastSeenOf(session)))
+		r.seenAtBlock[name] = r.registeredLast(session)
+		r.record("first block: %s's last registration as the listener's own list shows it: %s", name, clockAt(r.seenAtBlock[name]))
 	}
 	if os.Getenv(w5BaseRunEnv) != "" {
 		r.baseFirstBlock()
@@ -703,23 +727,24 @@ func (r *w5Run) firstBlock() {
 
 // checkMarked reads name's mark: between 20 and 22 minutes after its session's last registration,
 // shown in read_state with that time, and its state kept, as the daemon's line of the mark names
-// it, since a claim the daemon relaunches at its mark leaves that state at once.
+// it, since a claim the daemon relaunches at its mark leaves that state at once. The last
+// registration lies between the one the rig's list read showed a minute into the block and the
+// block itself, which no registration passes (markedInTime).
 func (r *w5Run) checkMarked(name string, before w5Snapshot, from time.Time) {
 	c := r.c(name)
 	mark := r.markOf(c.token, from)
-	seen := r.lastSeenOf(r.session(c.token))
+	seen := r.seenAtBlock[name]
 	if mark == nil {
 		r.check("marked-20-to-22m-"+name, false, "the daemon wrote no out-of-reach line for %s", c.token)
 		return
 	}
-	gap := mark.at.Sub(seen)
-	r.check("marked-20-to-22m-"+name, !seen.IsZero() && gap >= w5Unreachable && gap <= w5MarkWindow,
-		"%s marked at %s, %s after its session's last registration %s (the daemon logged since %v, lastSeen %v)",
-		c.token, clockAt(mark.at), gap.Round(time.Second), clockAt(seen), mark.Attrs["since"], mark.Attrs["lastSeen"])
+	r.check("marked-20-to-22m-"+name, markedInTime(mark.at, seen, from),
+		"%s marked at %s, %s after its session's last registration the rig read, %s, and %s after the block at %s (the daemon logged since %v, lastSeen %v)",
+		c.token, clockAt(mark.at), mark.at.Sub(seen).Round(time.Second), clockAt(seen), mark.at.Sub(from).Round(time.Second), clockAt(from), mark.Attrs["since"], mark.Attrs["lastSeen"])
 	v, shown := r.firstMark(c.token)
 	sinceAt, _ := time.Parse(time.RFC3339Nano, v.since)
-	r.check("reads-unreachable-with-that-time-"+name, shown && absDuration(sinceAt.Sub(seen)) < 2*time.Second,
-		"read_state first showed %s %s; its session's last registration was %s", c.token, v, clockAt(seen))
+	r.check("reads-unreachable-with-that-time-"+name, shown && !sinceAt.Before(seen.Add(-2*time.Second)) && !sinceAt.After(from),
+		"read_state first showed %s %s; its session's last registration the rig read was %s, and the block came at %s", c.token, v, clockAt(seen), clockAt(from))
 	r.check("keeps-its-state-"+name, fmt.Sprint(mark.Attrs["state"]) == before.views[c.token].state,
 		"%s was %s before the block and %v at its mark, as the daemon's line names it", c.token, before.views[c.token].state, mark.Attrs["state"])
 }
@@ -749,24 +774,37 @@ func (r *w5Run) checkNoControllerNotice(names []string, from time.Time, label st
 	r.check(label+"-no-controller-notice-names-a-claim-out-of-reach", len(naming) == 0, "controller notices from %s that name one of %v: %v", clockAt(from), names, naming)
 }
 
-// checkArchitectRows reads the architect's notice rows the outbox wrote from from: one names the
-// implementer's claim, and none names the architect's own.
+// checkArchitectRows reads the architect's notice rows the outbox wrote from from, and what the
+// architect's role topic stored: the architect is told of the implementer's claim once, and never
+// of its own. One telling may take more than one row: the daemon relaunches the architect at its
+// own mark, and a notice the listener could not hand to the relaunching session in time is
+// re-held as a copy (the outbox's "re-held" line, reason receipt_timeout), whose row's payload
+// names the row it copies (resend_of) and which goes out under that row's key. So exactly one row
+// naming the implementer copies no other; every other such row copies an earlier row of the same
+// claim and kind, after a re-held line for that row's key with reason receipt_timeout; and the
+// architect's role topic stored that notice exactly once.
 func (r *w5Run) checkArchitectRows(from time.Time) {
 	arch, impl := r.c("architect").token, r.c("implementer").token
+	type implRow struct {
+		id, resendOf int64
+		written      time.Time
+	}
 	var names []string
-	namesImpl, namesOwn := 0, 0
+	var rows []implRow
+	namesOwn := 0
 	for _, life := range r.rowLives("reach_notice") {
 		var payload struct {
-			Kind  string `json:"kind"`
-			Claim string `json:"claim"`
+			Kind     string `json:"kind"`
+			Claim    string `json:"claim"`
+			ResendOf int64  `json:"resend_of"`
 		}
 		_ = json.Unmarshal([]byte(life.payload), &payload)
 		if payload.Kind != w5NoticeClaimOutOfReach || life.written.Before(from) {
 			continue
 		}
-		names = append(names, fmt.Sprintf("row %d %s written %s finished %s", life.id, payload.Claim, clockAt(life.written), clockAt(life.finished)))
+		names = append(names, fmt.Sprintf("row %d %s written %s finished %s resend_of %d", life.id, payload.Claim, clockAt(life.written), clockAt(life.finished), payload.ResendOf))
 		if payload.Claim == string(impl) {
-			namesImpl++
+			rows = append(rows, implRow{id: life.id, resendOf: payload.ResendOf, written: life.written})
 		}
 		if payload.Claim == string(arch) {
 			namesOwn++
@@ -774,7 +812,35 @@ func (r *w5Run) checkArchitectRows(from time.Time) {
 	}
 	sort.Strings(names)
 	r.record("first block: the architect's claim-out-of-reach notice rows: %v", names)
-	r.check("architect-row-names-the-implementer", namesImpl == 1, "%d architect rows name %s", namesImpl, impl)
+	tellings := map[int64]time.Time{}
+	for _, row := range rows {
+		if row.resendOf == 0 {
+			tellings[row.id] = row.written
+		}
+	}
+	var strays []string
+	for _, row := range rows {
+		if row.resendOf == 0 {
+			continue
+		}
+		told, copied := tellings[row.resendOf]
+		reheld := r.logs(func(rec loggedRecord) bool {
+			return strings.HasPrefix(rec.Message, w5NoticeReheld) && fmt.Sprint(rec.Attrs["key"]) == fmt.Sprintf("legion-outbox:%d", row.resendOf) &&
+				fmt.Sprint(rec.Attrs["reason"]) == "receipt_timeout" && !rec.at.After(row.written)
+		})
+		if !copied || !told.Before(row.written) || len(reheld) == 0 {
+			strays = append(strays, fmt.Sprintf("row %d resend_of %d (a telling of the implementer: %t; re-held lines with receipt_timeout before it: %d)", row.id, row.resendOf, copied, len(reheld)))
+		}
+	}
+	var stored []string
+	for _, n := range r.roleNotices(arch) {
+		if n.kind == w5NoticeClaimOutOfReach && n.claim == string(impl) && !n.at.Before(from) {
+			stored = append(stored, n.String())
+		}
+	}
+	r.check("architect-row-names-the-implementer", len(tellings) == 1 && len(strays) == 0,
+		"%d rows tell the architect of %s and copy no other; %d rows are copies; copies that do not copy an earlier telling after its receipt timeout: %v", len(tellings), impl, len(rows)-len(tellings), strays)
+	r.check("architect-receives-the-implementers-notice-once", len(stored) == 1, "the architect's role topic stored %d notices naming %s: %v", len(stored), impl, stored)
 	r.check("no-architect-row-names-its-own-claim", namesOwn == 0, "%d architect rows name the architect's own claim %s", namesOwn, arch)
 }
 
@@ -812,32 +878,47 @@ func (r *w5Run) checkRelaunchedAtTheMark(before w5Snapshot, from time.Time) {
 // third, whose worker stream shows steps, the fourth, whose open call is not a wait, the fifth,
 // whose activity report shows background work, the eighth, whose report shows a subagent, and the
 // ninth, which has no activity report since its launch. The daemon asks the runtime nothing of any
-// of them, and its guard line for each names its reason. The third's registrations then go
-// through again: its process still takes its steps, and nothing of the check waits on it.
+// of them, and its guard line names the reason of its first refusal. The fifth and the eighth were
+// frozen in their waits just after a step, so that first refusal may be the step rule, naming a
+// step from before the block, which lapses within the minute after the mark; that they are then
+// held for background work their flows read, each relaunched only after its job or subagent ends.
+// The third's registrations then go through again: its process still takes its steps, and nothing
+// of the check waits on it.
 func (r *w5Run) guardHolds() {
 	cases := []struct {
 		name, want string
+		frozen     bool
 	}{
-		{"third", "worker stream showed a step"},
-		{"fourth", "open call is bash"},
-		{"fifth", "background work"},
-		{"eighth", "background work"},
-		{"ninth", "no activity report"},
+		{"third", "worker stream showed a step", false},
+		{"fourth", "open call is bash", false},
+		{"fifth", "background work", true},
+		{"eighth", "background work", true},
+		{"ninth", "no activity report", false},
 	}
 	for _, tc := range cases {
 		c := r.c(tc.name)
 		line := r.guardLineOf(c.token, r.t0)
 		calls := r.pods.relaunchCalls(c.token, r.t0)
-		r.check("at-25m-guard-holds-"+tc.name, line != nil && len(calls) == 0 && strings.Contains(reasonOf(line), tc.want),
-			"the daemon's guard line for %s: %s; its relaunch calls from the block: %v; want none and a reason naming %q", c.token, describeLine(line), describeCalls(calls), tc.want)
+		reason := reasonOf(line)
+		named := strings.Contains(reason, tc.want) || (tc.frozen && r.stepBeforeTheBlock(reason))
+		r.check("at-25m-guard-holds-"+tc.name, line != nil && len(calls) == 0 && named,
+			"the daemon's guard line for %s: %s; its relaunch calls from the block: %v; want none and a reason naming %q%s", c.token, describeLine(line), describeCalls(calls), tc.want,
+			map[bool]string{true: ", or the step rule for a step before the block", false: ""}[tc.frozen])
 		if tc.name == "ninth" && line != nil {
 			r.ninthHeld = line.at
 		}
-		if tc.name == "eighth" {
-			r.check("eighth-hold-names-a-subagent", strings.Contains(strings.ToLower(reasonOf(line)), "agent"), "the eighth's guard line: %s", describeLine(line))
+		if tc.name == "eighth" && strings.Contains(reason, tc.want) {
+			r.check("eighth-hold-names-a-subagent", strings.Contains(strings.ToLower(reason), "agent"), "the eighth's guard line: %s", describeLine(line))
 		}
 	}
 	r.unblock("third")
+}
+
+// stepBeforeTheBlock is whether reason is the guard's step rule naming a step from before the
+// first block.
+func (r *w5Run) stepBeforeTheBlock(reason string) bool {
+	named, ok := namedAt(reason, "its worker stream showed a step at ")
+	return ok && named.Before(r.t0)
 }
 
 // twelfthHeld reads the twelfth claim, in a live wait on a named bash service the rig never
@@ -1273,9 +1354,8 @@ func (r *w5Run) implementerAgain(f *w5Flows) {
 
 // tenthFlow blocks the tenth claim's registrations while it owes no task, kills its process so the
 // daemon's own supervision relaunches it, and reads its marks, its launches, its charges and the
-// daemon's relaunch guard for 25 minutes: none of its processes sends an activity report, so the
-// guard holds the daemon's relaunch of it, whose R6 line comes 60 minutes after the guard's first
-// hold, as the ninth's does.
+// daemon's own relaunch of it for 25 minutes: it is marked once, stays marked, is charged nothing,
+// and the daemon relaunches it at most once, at or after its mark.
 func (r *w5Run) tenthFlow(f *w5Flows) {
 	tenth := r.c("tenth")
 	time.Sleep(2 * time.Minute)
@@ -1285,6 +1365,11 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	launchesBefore := len(r.runtime.launchesOf(tenth.token))
 	_ = killGroup(launch.pane.pid)
 	r.record("tenth: killed its process group (pid %d, generation %d) at %s", launch.pane.pid, launch.spec.Generation, clockAt(time.Now()))
+	// Its last registration before the block, read a minute into it, before any launch the block
+	// keeps from registering could have moved it.
+	sleepUntil(start.Add(time.Minute))
+	seen := r.registeredLast(session)
+	r.record("tenth: its last registration as the listener's own list shows it a minute into the block: %s", clockAt(seen))
 	var series []string
 	maxDeaths := 0
 	var markedAt time.Time
@@ -1306,7 +1391,7 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	relaunches := len(r.runtime.launchesOf(tenth.token)) - launchesBefore
 	mark := r.markOf(tenth.token, start)
 	r.recordEmptyReads("tenth", start)
-	seen := r.lastSeenOf(session)
+	r.record("tenth: the listener's list read %s as its last registration at the end of the 25 minutes", clockAt(r.lastSeenOf(session)))
 	r.record("tenth: %d launches by the daemon's supervision in %s; its readings: %s", relaunches, w5ReadFor, strings.Join(series, "; "))
 	r.observe(f, "tenth-relaunch-count", relaunches > 0, "the daemon's supervision launched the tenth %d times in the 25 minutes", relaunches)
 	r.observe(f, "tenth-nets-no-charge", maxDeaths == 0 && final.launchFailures == 0 && final.state != string(supervise.StateFailed),
@@ -1314,15 +1399,14 @@ func (r *w5Run) tenthFlow(f *w5Flows) {
 	if mark == nil {
 		r.observe(f, "tenth-marked-20m-after-last-registration", false, "no out-of-reach line for the tenth")
 	} else {
-		gap := mark.at.Sub(seen)
-		r.observe(f, "tenth-marked-20m-after-last-registration", gap >= w5Unreachable && gap <= w5MarkWindow,
-			"marked at %s, %s after its last registration %s", clockAt(mark.at), gap.Round(time.Second), clockAt(seen))
+		r.observe(f, "tenth-marked-20m-after-last-registration", markedInTime(mark.at, seen, start),
+			"marked at %s, %s after its last registration the rig read, %s, and %s after the block at %s (the daemon logged since %v)",
+			clockAt(mark.at), mark.at.Sub(seen).Round(time.Second), clockAt(seen), mark.at.Sub(start).Round(time.Second), clockAt(start), mark.Attrs["since"])
 	}
 	r.observe(f, "tenth-stays-marked-through-relaunches", !markedAt.IsZero() && !unmarkedAfterMark, "first read marked at %s; unmarked again after: %t", clockAt(markedAt), unmarkedAfterMark)
-	line := r.guardLineOf(tenth.token, start)
-	calls := r.pods.relaunchCalls(tenth.token, start)
-	r.observe(f, "tenth-guard-holds-the-daemons-relaunch", line != nil && (mark == nil || !line.at.Before(mark.at)) && strings.Contains(reasonOf(line), "activity report") && len(calls) == 0,
-		"the daemon's guard line for the tenth: %s; its relaunch calls from the block: %v", describeLine(line), describeCalls(calls))
+	stops := r.relaunchStops(tenth.token, start)
+	r.observe(f, "tenth-relaunched-by-the-daemon-at-most-once-after-its-mark", len(stops) <= 1 && (len(stops) == 0 || (mark != nil && !stops[0].at.Before(mark.at))),
+		"the daemon's relaunch stops of the tenth from the block: %v; its mark %s", describeCalls(stops), describeLine(mark))
 	r.unblock("tenth")
 	waitFor(5*time.Minute, func() bool {
 		v := r.snapshot().views[tenth.token]
@@ -1346,6 +1430,12 @@ func (r *w5Run) eighthFlow(f *w5Flows) {
 		return !at.IsZero() && at.After(time.Now().Add(-time.Minute)) && !background
 	})
 	r.observe(f, "eighth-subagent-ends", ended, "the eighth's activity report shows no background work: %t", ended)
+	// The guard held it for its subagent: no relaunch from the block until its session's first
+	// activity report that shows no background work running, read from the reports the front passed.
+	quiet := r.api.firstQuietFrom(eighth.token, r.t0)
+	held := r.relaunchStops(eighth.token, r.t0)
+	r.observe(f, "eighth-held-until-its-subagent-ends", !quiet.IsZero() && len(held) == 0,
+		"the eighth's first activity report from the block showing no background work reached the daemon at %s; the daemon's relaunch stops of it from the block until then: %v", clockAt(quiet), describeCalls(held))
 	// It stays in the wait call of its loop that is open once its subagent has ended.
 	waitAt, ok := r.nextOpenWait(eighth.token, r.eighthWait, 10*time.Minute)
 	if !ok {
@@ -1377,8 +1467,9 @@ func (r *w5Run) eighthFlow(f *w5Flows) {
 		r.observe(f, "eighth-relaunched-once-its-guard-lets-it-through", false, "the daemon made no relaunch of the eighth within 45 minutes of %s", clockAt(backInWait))
 		return
 	}
-	r.observe(f, "eighth-relaunched-once-its-guard-lets-it-through", true, "the daemon stopped its process for a relaunch at %s, %s after it was frozen in its wait",
-		clockAt(stop.at), stop.at.Sub(backInWait).Round(time.Second))
+	r.observe(f, "eighth-relaunched-once-its-guard-lets-it-through", !quiet.IsZero() && stop.at.After(quiet),
+		"the daemon stopped its process for a relaunch at %s, %s after it was frozen in its wait and after its report showing no background work at %s",
+		clockAt(stop.at), stop.at.Sub(backInWait).Round(time.Second), clockAt(quiet))
 	var series []string
 	failed := waitFor(40*time.Minute, func() bool {
 		v := r.snapshot().views[eighth.token]
@@ -1469,10 +1560,11 @@ func (r *w5Run) fifthFlow(f *w5Flows) {
 	}
 	time.Sleep(time.Minute)
 	after := r.held(fifth.token)
-	r.observe(f, "fifth-relaunched-with-no-charge-once-its-job-ends", stop.at.After(r.fifthJobEnded) && after.Generation > before.Generation &&
+	quiet := r.api.firstQuietFrom(fifth.token, r.t0)
+	r.observe(f, "fifth-relaunched-with-no-charge-once-its-job-ends", !quiet.IsZero() && stop.at.After(quiet) && stop.at.After(r.fifthJobEnded) && after.Generation > before.Generation &&
 		after.Budgets.LaunchFailures == before.Budgets.LaunchFailures && after.Budgets.Deaths == before.Budgets.Deaths,
-		"its job ended at %s; the daemon stopped its process for a relaunch at %s; generation before %d, a minute after %d; budgets before %+v, a minute after %+v",
-		clockAt(r.fifthJobEnded), clockAt(stop.at), before.Generation, after.Generation, before.Budgets, after.Budgets)
+		"its job ended at %s and its first activity report from the block showing no background work reached the daemon at %s; the daemon stopped its process for a relaunch at %s; generation before %d, a minute after %d; budgets before %+v, a minute after %+v",
+		clockAt(r.fifthJobEnded), clockAt(quiet), clockAt(stop.at), before.Generation, after.Generation, before.Budgets, after.Budgets)
 	select {
 	case at := <-r.fifthMoved:
 		r.record("the resumed fifth's turn called request_backward_move at %s", clockAt(at))
@@ -1553,14 +1645,20 @@ func (r *w5Run) podsFlow(f *w5Flows) {
 	time.Sleep(2 * time.Minute)
 	snap := r.snapshot()
 	r.record("pods: %s %s, %s %s", sixth.token, snap.views[sixth.token], tenth.token, snap.views[tenth.token])
+	// The tenth was relaunched by the daemon in its own flow, less than 6 hours before, so its line
+	// is the second-time line, which the daemon reads before the pod; the sixth's names the pod.
 	for _, c := range []*w5Claim{sixth, tenth} {
-		lines := r.claimLines(w5CaseClaimRefused, c.token, start)
+		lines := append(r.claimLines(w5CaseClaimRefused, c.token, start), r.claimLines(w5CaseClaimGone, c.token, start)...)
 		reason := ""
 		if len(lines) > 0 {
 			reason = reasonOf(&lines[0])
 		}
-		r.observe(f, "pod-of-two-r6-line-naming-the-pod-"+c.name, len(lines) == 1 && strings.Contains(reason, snap.views[c.token].pod) && strings.Contains(reason, w5PodReason),
-			"%d %s lines name %s; the reason: %q", len(lines), w5CaseClaimRefused, c.token, reason)
+		named := strings.Contains(reason, snap.views[c.token].pod) && strings.Contains(reason, w5PodReason)
+		if c.name == "tenth" && len(r.relaunchStops(tenth.token, r.t0)) > 0 {
+			named = named || strings.Contains(reason, w5SecondTime)
+		}
+		r.observe(f, "pod-of-two-r6-line-naming-the-pod-"+c.name, len(lines) == 1 && named,
+			"%d R6 lines name %s; the reason: %q", len(lines), c.token, reason)
 	}
 	sixthCalls, tenthCalls := r.pods.relaunchCalls(sixth.token, start), r.pods.relaunchCalls(tenth.token, start)
 	nothingStopped := sixthLaunch.running() && tenthLaunch.running() && r.runtime.current(sixth.token) == sixthLaunch &&
@@ -1838,8 +1936,9 @@ func (r *w5Run) covers(snap w5Snapshot) bool {
 // totals reads what holds over the whole run: no notice to the controller names a claim of the
 // run, and R6's lines are exactly these, each starting with the fixed text and naming its case and
 // project: one for the list with no live session, one for the 25 minutes of failed reads, the
-// ninth's after 60 minutes of the guard's hold, one for each claim of the pod of two, one for each
-// of the sixth's three runs, and the implementer's, out of reach a second time within 6 hours.
+// ninth's after 60 minutes of the guard's hold, one for each claim of the pod of two (the tenth's
+// the second-time line where the daemon relaunched it in its own flow), one for each of the sixth's
+// three runs, and the implementer's, out of reach a second time within 6 hours.
 func (r *w5Run) totals() {
 	for _, n := range r.controllerNoticesW5() {
 		r.record("controller notice %s", n)
@@ -1863,11 +1962,15 @@ func (r *w5Run) totals() {
 			"%s", w5Describe(rec))
 	}
 	r.record("R6 lines: %v", described)
+	tenthCase := w5CaseClaimRefused
+	if len(r.relaunchStops(r.c("tenth").token, r.t0)) > 0 {
+		tenthCase = w5CaseClaimGone
+	}
 	want := map[string]int{
 		w5CaseNoLive:                     1,
 		w5CaseListUnreadable:             1,
 		w5CaseClaimRefused + " ninth":    1,
-		w5CaseClaimRefused + " tenth":    1,
+		tenthCase + " tenth":             1,
 		w5CaseClaimRefused + " sixth":    4,
 		w5CaseClaimGone + " implementer": 1,
 	}

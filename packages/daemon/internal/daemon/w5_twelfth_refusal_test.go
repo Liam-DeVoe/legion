@@ -65,6 +65,41 @@ func (h twelfthHold) inWindow(named time.Time) bool {
 	return !named.After(h.at) && h.at.Sub(named) < guardWindow+time.Second
 }
 
+// markedInTime is whether a mark at at came 20 to 22 minutes after a session's last registration,
+// which lies between seen, the last registration a read of the listener's list showed once the
+// rig had blocked the session, and blocked, when the rig stopped every registration of it: at
+// least 20 minutes after seen, and at most 22 minutes after blocked. w5 reads its marks with it.
+func markedInTime(at, seen, blocked time.Time) bool {
+	return !seen.IsZero() && at.Sub(seen) >= guardWindow && at.Sub(blocked) <= guardWindow+2*time.Minute
+}
+
+// TestAMarkIsInTimeOnlyTwentyToTwentyTwoMinutesAfterTheLastRegistration holds w5's mark clauses to
+// their bounds: a mark under 20 minutes after the last registration the rig read fails, as does
+// one more than 22 minutes after the block, and a mark with no registration read fails too.
+func TestAMarkIsInTimeOnlyTwentyToTwentyTwoMinutesAfterTheLastRegistration(t *testing.T) {
+	seen := time.Date(2026, 11, 22, 6, 1, 48, 855_000_000, time.UTC)
+	blocked := seen.Add(75 * time.Second)
+	cases := []struct {
+		name string
+		at   time.Time
+		seen time.Time
+		want bool
+	}{
+		{"20m54s after the registration, as the daemon marked the implementer", seen.Add(20*time.Minute + 54*time.Second), seen, true},
+		{"exactly 20 minutes after the registration", seen.Add(20 * time.Minute), seen, true},
+		{"a second under 20 minutes after the registration", seen.Add(20*time.Minute - time.Second), seen, false},
+		{"a minute under 20 minutes, inside 22 minutes of the block", seen.Add(19 * time.Minute), seen, false},
+		{"exactly 22 minutes after the block", blocked.Add(22 * time.Minute), seen, true},
+		{"a second past 22 minutes after the block", blocked.Add(22*time.Minute + time.Second), seen, false},
+		{"no registration read", seen.Add(21 * time.Minute), time.Time{}, false},
+	}
+	for _, c := range cases {
+		if got := markedInTime(c.at, c.seen, blocked); got != c.want {
+			t.Errorf("%s: markedInTime = %t, want %t", c.name, got, c.want)
+		}
+	}
+}
+
 // seenAs is whether named, a daemon's stamp cut to the second, can be the stamp of one of seen,
 // the times the rig saw the same frames or reports: the daemon stamps each at or after the rig did,
 // within seenWithin, so named lies from that time cut to the second to seenWithin after it.

@@ -974,8 +974,10 @@ type daemonFront struct {
 	drop    map[claim.Token]bool
 	dropped map[claim.Token]int
 	passed  map[claim.Token]int
-	// reports is when each passed report of a claim reached the front.
+	// reports is when each passed report of a claim reached the front, and quiet when each passed
+	// report that showed no background work running did.
 	reports map[claim.Token][]time.Time
+	quiet   map[claim.Token][]time.Time
 }
 
 func newDaemonFront(t *testing.T, daemonURL string) *daemonFront {
@@ -985,7 +987,7 @@ func newDaemonFront(t *testing.T, daemonURL string) *daemonFront {
 		t.Fatal(err)
 	}
 	f := &daemonFront{proxy: httputil.NewSingleHostReverseProxy(target), drop: map[claim.Token]bool{},
-		dropped: map[claim.Token]int{}, passed: map[claim.Token]int{}, reports: map[claim.Token][]time.Time{}}
+		dropped: map[claim.Token]int{}, passed: map[claim.Token]int{}, reports: map[claim.Token][]time.Time{}, quiet: map[claim.Token][]time.Time{}}
 	server := httptest.NewServer(f)
 	t.Cleanup(server.Close)
 	f.url = server.URL
@@ -1000,9 +1002,7 @@ func (f *daemonFront) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "read the request", http.StatusBadRequest)
 			return
 		}
-		var named struct {
-			ClaimToken claim.Token `json:"claimToken"`
-		}
+		var named claim.ActivityRequest
 		_ = json.Unmarshal(body, &named)
 		f.mu.Lock()
 		drop := f.drop[named.ClaimToken]
@@ -1011,6 +1011,9 @@ func (f *daemonFront) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			f.passed[named.ClaimToken]++
 			f.reports[named.ClaimToken] = append(f.reports[named.ClaimToken], time.Now())
+			if !named.Activity.BackgroundWork.Running {
+				f.quiet[named.ClaimToken] = append(f.quiet[named.ClaimToken], time.Now())
+			}
 		}
 		f.mu.Unlock()
 		if drop {
@@ -1047,6 +1050,19 @@ func (f *daemonFront) reportsFrom(token claim.Token, from time.Time) []time.Time
 		}
 	}
 	return out
+}
+
+// firstQuietFrom is when the first report of token the front passed on at or after from that
+// showed no background work running reached it, the zero time for none.
+func (f *daemonFront) firstQuietFrom(token claim.Token, from time.Time) time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, at := range f.quiet[token] {
+		if !at.Before(from) {
+			return at
+		}
+	}
+	return time.Time{}
 }
 
 // envoyListFront is the address the daemon alone reaches Envoy at: a reverse proxy carrying every
