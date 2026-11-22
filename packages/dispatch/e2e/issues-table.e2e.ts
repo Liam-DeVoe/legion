@@ -1,7 +1,8 @@
 import type { Issue } from "../web/src/api/types";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
-import { setLiveSessions } from "./agents";
+import { type FakeSession, setLiveSessions, setSessionLive } from "./agents";
 import {
+  createAgentMessage,
   createIssue,
   createMessage,
   createPriority,
@@ -10,6 +11,7 @@ import {
   listIssueMessages,
   listIssues,
   patchIssue,
+  replyToMessageDelivery,
 } from "./api";
 import { filterPicker } from "./filters";
 import { nextFrames } from "./frames";
@@ -377,18 +379,63 @@ test("with a refused change pending, New epic from these and Clear selection sti
 
 // The selection bar from the sm width up, Pending changes and the update banner all sit at the
 // foot of the window, each in a layer of the foot (`web/src/hooks/useFootInset.ts`), so none
-// lies over another; below sm the bar sits under the header. In one page the row walks every
-// combination of the three that shows any. The banner comes first: a browser that focuses a new
-// page itself asks for the builds then, and the page asks again only a minute later, so the
-// answer that shows the banner has to be the one the page reads at its load. The banner is
-// dismissed once no combination left shows it, and the refused change is discarded for the last.
-// In each combination, at the project's own size and, from 640 px wide, at three desktop sizes,
-// every control of each element shown takes a press, and no two of the elements' boxes meet. A
-// trial press only checks that the control would take it and presses nothing, so no dialog opens
-// between one control and the next.
-test("the selection bar, Pending changes and the update banner, in every combination, each take every press and cover none of the others @phone", async ({
+// lies over another; below sm the bar sits under the header. The Agents page's broadcast
+// composer sits in the bar's layer, the page's own. On the issues table the row walks, in one
+// page, every combination of the bar, Pending changes and the banner that shows any. The banner
+// comes first: a browser that focuses a new page itself asks for the builds then, and the page
+// asks again only a minute later, so the answer that shows the banner has to be the one the page
+// reads at its load. The banner is dismissed once no combination left shows it, and the refused
+// change is discarded for the last. Each combination is read at the project's own size and, from
+// 640 px wide, at three desktop sizes.
+// Then a refused change is pending again, and the Agents page loads with the banner shown and
+// three agents selected for broadcast. Scrolled to its end in a short window, the page leaves the
+// composer resting above the section of ended sessions, where Pending changes once lay over its
+// message box, its mode and Send. At four short sizes the row reads the composer with Pending
+// changes and the banner, then with Pending changes discarded, then alone.
+// Each reading is that no two of the elements' boxes meet, and that the element at the centre of
+// every control of each is that control or inside it, never another element over it. A reading is
+// taken again until it holds, since the foot moves a frame or more after a resize or a press. A
+// trial press is no such reading: one passed with Pending changes lying over the composer.
+// SLOW(>=2s): two pages, the issues table's seven combinations at up to three sizes each and the
+// Agents page's three at four, each a settled reading of every control shown.
+test("no two of the selection bar, the broadcast composer, Pending changes and the update banner meet, and nothing covers the centre of a control of any of them @phone", async ({
   browser,
 }) => {
+  /** A live session for the Agents page to list. Each id is a UUID, which Dispatch's agent
+   *  routes require. */
+  const session = (sessionID: string, title: string): FakeSession => ({
+    capabilities: ["aside", "btw"],
+    dir: `/workspaces/${title.toLowerCase()}`,
+    last_seen: Date.now() - 5_000,
+    machine_id: `${title.toLowerCase()}-host`,
+    roles: [title.toLowerCase()],
+    session_id: sessionID,
+    title,
+  });
+  // The setup of `agents-groups.e2e.ts`'s row for the composer: fourteen live sessions, which run
+  // the Agents page's list past a short window, and one that has ended with an unread reply to
+  // the reader, which keeps it a row of the section of ended sessions under them.
+  const titles = Array.from(
+    { length: 14 },
+    (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
+  );
+  const endedSession = "01a04731-0c07-7000-8000-000000000200";
+  await setLiveSessions([
+    ...titles.map((title, index) =>
+      session(`01a04731-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`, title)
+    ),
+    session(endedSession, "Ended"),
+  ]);
+  const asked = await createAgentMessage(endedSession, {
+    body: "How far along?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Done and gone." },
+    { id: endedSession, kind: "session" }
+  );
+  await setSessionLive(endedSession, false);
   await createProject({ key: "CORE", name: "Core" });
   const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
   await patchIssue(epic.key, { labels: ["epic"] });
@@ -413,44 +460,144 @@ test("the selection bar, Pending changes and the update banner, in every combina
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
     const toolbar = page.getByRole("toolbar");
-    const epics = toolbar.getByRole("combobox", { name: "Move to epic" });
     const pending = pendingWrites(page);
     const banner = page.getByRole("status", { name: "A new version is available" });
+    const broadcast = page.getByRole("region", { name: "Broadcast" });
+    /** A control of a foot element, under a name the row gives it rather than one it reads off
+     *  the page. With `every`, it stands for each control the locator matches, numbered in the
+     *  order the page draws them, since an element shows as many of those as it holds. */
+    type FootControl = { name: string; control: Locator; every?: true };
     /** One element at the foot of the window: its name, its box, and every control it shows. */
-    type FootElement = { name: string; box: Locator; controls: () => Promise<Locator[]> };
+    type FootElement = { name: string; box: Locator; controls: FootControl[] };
+    const buttons = (scope: Locator, names: string[]): FootControl[] =>
+      names.map((name) => ({ name, control: scope.getByRole("button", { name, exact: true }) }));
     const bar: FootElement = {
       name: "the selection bar",
       box: toolbar,
-      controls: async () => {
-        // Move takes a press only once an epic is picked, and picking one sends nothing.
-        await epics.selectOption(epic.key);
-        const buttons = toolbar.getByRole("button");
-        await expect(buttons).toHaveText([
-          /^Select all \d+ matching$/,
+      controls: [
+        {
+          name: "Select all matching",
+          control: toolbar.getByRole("button", { name: /^Select all \d+ matching$/ }),
+        },
+        { name: "Move to epic", control: toolbar.getByRole("combobox", { name: "Move to epic" }) },
+        ...buttons(toolbar, [
           "Start next",
           "Move",
           "Take out of epic",
           "New epic from these",
           "Clear selection",
-        ]);
-        return [...(await buttons.all()), epics];
-      },
+        ]),
+      ],
     };
     const pendingChanges: FootElement = {
       name: "Pending changes",
       box: pending,
-      controls: async () => [
-        pending.getByRole("button", { name: "Retry", exact: true }),
-        pending.getByRole("button", { name: "Discard", exact: true }),
-      ],
+      controls: buttons(pending, ["Retry", "Discard"]),
     };
     const update: FootElement = {
       name: "the update banner",
       box: banner,
-      controls: async () => [
-        banner.getByRole("button", { name: "Reload", exact: true }),
-        banner.getByRole("button", { name: "Dismiss update notice", exact: true }),
+      controls: buttons(banner, ["Reload", "Dismiss update notice"]),
+    };
+    const composer: FootElement = {
+      name: "the broadcast composer",
+      box: broadcast,
+      controls: [
+        {
+          name: "the message box",
+          control: broadcast.getByRole("textbox", { name: "Broadcast message" }),
+        },
+        {
+          name: "Delivery mode",
+          control: broadcast.getByRole("combobox", { name: "Delivery mode" }),
+        },
+        ...buttons(broadcast, ["Send to 3"]),
+        {
+          name: "chip",
+          control: broadcast.getByRole("list", { name: "Selected agents" }).getByRole("button"),
+          every: true,
+        },
+        { name: "link", control: broadcast.getByRole("link"), every: true },
       ],
+    };
+    /**
+     * Fails unless, at each of `sizes`, no two of the elements `shown` meet and nothing covers
+     * the centre of a control of theirs. `arrive` brings the page to where a size is read. Each
+     * size is one reading, taken again until it holds: the list of what is wrong there.
+     */
+    const expectFootClear = async (
+      shown: FootElement[],
+      sizes: { width: number; height: number }[],
+      arrive?: () => Promise<void>
+    ) => {
+      for (const size of sizes) {
+        await page.setViewportSize(size);
+        await arrive?.();
+        const at = `${size.width}x${size.height}`;
+        await expect
+          .poll(
+            async () => {
+              const problems: string[] = [];
+              const boxes: { name: string; box: Box }[] = [];
+              for (const { box, name } of shown) {
+                const found = await box.boundingBox({ timeout: 1_000 }).catch(() => null);
+                if (found === null) problems.push(`${name} has no box at ${at}`);
+                else boxes.push({ box: found, name });
+              }
+              for (const [index, first] of boxes.entries()) {
+                for (const second of boxes.slice(index + 1)) {
+                  if (!boxesApart(first.box, second.box)) {
+                    problems.push(`${first.name} meets ${second.name} at ${at}`);
+                  }
+                }
+              }
+              for (const element of shown) {
+                for (const { control: matching, every, name: named } of element.controls) {
+                  const controls =
+                    every === true
+                      ? (await matching.all()).map((control, index) => ({
+                          control,
+                          name: `${named} ${index + 1}`,
+                        }))
+                      : [{ control: matching, name: named }];
+                  for (const { control, name } of controls) {
+                    const label = `${name} in ${element.name}`;
+                    // The short timeout lets a control missing from the page fail this reading
+                    // and leave the next one to the poll, rather than hold the poll whole.
+                    const covered = await control
+                      .evaluate(
+                        (target) => {
+                          // A control the reader scrolls to, such as one past the end of the
+                          // selection bar, which scrolls sideways on a phone, is read where
+                          // that scroll brings it, as a press brings it. A control already in
+                          // view moves nothing.
+                          target.scrollIntoView({ block: "nearest", inline: "nearest" });
+                          const { height, left, top, width } = target.getBoundingClientRect();
+                          const hit = document.elementFromPoint(left + width / 2, top + height / 2);
+                          if (hit === null) return "has its centre off the screen";
+                          if (target.contains(hit)) return null;
+                          const tag = hit.tagName.toLowerCase();
+                          const holder = hit.closest("[aria-label], [data-testid]");
+                          if (holder === null) return `is covered by ${tag}`;
+                          const called =
+                            holder.getAttribute("aria-label") ?? holder.getAttribute("data-testid");
+                          const owner = `${holder.tagName.toLowerCase()} "${called}"`;
+                          return `is covered by ${holder === hit ? owner : `${tag} in ${owner}`}`;
+                        },
+                        undefined,
+                        { timeout: 1_000 }
+                      )
+                      .catch((error: Error) => `cannot be read: ${error.message.split("\n")[0]}`);
+                    if (covered !== null) problems.push(`${label} ${covered} at ${at}`);
+                  }
+                }
+              }
+              return problems;
+            },
+            { message: `the foot of the window at ${at}` }
+          )
+          .toEqual([]);
+      }
     };
     const own = page.viewportSize();
     if (!own) throw new Error("The project gave the page no viewport");
@@ -459,58 +606,76 @@ test("the selection bar, Pending changes and the update banner, in every combina
       { width: 1600, height: 1000 },
       { width: 1920, height: 1080 },
     ].filter((size) => size.width !== own.width || size.height !== own.height);
-    const expectEachTakesEveryPress = async (shown: FootElement[]) => {
-      const controls: Locator[] = [];
-      for (const element of shown) controls.push(...(await element.controls()));
-      for (const size of own.width >= 640 ? [own, ...desktops] : [own]) {
-        await page.setViewportSize(size);
-        const at = `${size.width}x${size.height}`;
-        // A press that another element takes fails here, as in the row above.
-        for (const control of controls) await control.click({ trial: true, timeout: 5_000 });
-        await nextFrames(page);
-        const boxes: { name: string; box: Box }[] = [];
-        for (const { box, name } of shown) {
-          const found = await box.boundingBox();
-          if (found === null) throw new Error(`${name} has no box at ${at}`);
-          boxes.push({ box: found, name });
-        }
-        for (const [index, first] of boxes.entries()) {
-          for (const second of boxes.slice(index + 1)) {
-            expect(
-              boxesApart(first.box, second.box),
-              `${first.name} meets ${second.name} at ${at}`
-            ).toBe(true);
-          }
-        }
-      }
-    };
+    const tableSizes = own.width >= 640 ? [own, ...desktops] : [own];
 
     await expect(banner).toBeVisible();
-    await expectEachTakesEveryPress([update]);
+    await expectFootClear([update], tableSizes);
 
     await select(refused.key).check();
-    await expectEachTakesEveryPress([bar, update]);
+    await expectFootClear([bar, update], tableSizes);
 
     await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
     await expect(pending).toContainText(refused.key);
     await select(refused.key).setChecked(false);
     await select(other.key).check();
-    await expectEachTakesEveryPress([bar, pendingChanges, update]);
+    await expectFootClear([bar, pendingChanges, update], tableSizes);
 
     await toolbar.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
     await expect(toolbar).toHaveCount(0);
-    await expectEachTakesEveryPress([pendingChanges, update]);
+    await expectFootClear([pendingChanges, update], tableSizes);
 
     await banner.getByRole("button", { name: "Dismiss update notice" }).click({ timeout: 5_000 });
     await expect(banner).toHaveCount(0);
-    await expectEachTakesEveryPress([pendingChanges]);
+    await expectFootClear([pendingChanges], tableSizes);
 
     await select(other.key).check();
-    await expectEachTakesEveryPress([bar, pendingChanges]);
+    await expectFootClear([bar, pendingChanges], tableSizes);
 
     await pending.getByRole("button", { name: "Discard", exact: true }).click({ timeout: 5_000 });
     await expect(pending).toHaveCount(0);
-    await expectEachTakesEveryPress([bar]);
+    await expectFootClear([bar], tableSizes);
+
+    // The refused change pending again, kept across the load, and the banner shown on the new
+    // page, which reads the builds the route still answers.
+    await select(other.key).setChecked(false);
+    await select(refused.key).check();
+    await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
+    await expect(pending).toContainText(refused.key);
+    await page.goto("/agents");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(banner).toBeVisible();
+    await expect(pending).toContainText(refused.key);
+    for (const title of titles.slice(0, 3)) {
+      await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
+    }
+    await expect(
+      broadcast.getByRole("list", { name: "Selected agents" }).getByRole("listitem")
+    ).toHaveCount(3);
+    const ended = page.getByRole("region", { name: "Replied, no longer connected" });
+    const agentSizes = [
+      { width: 800, height: 600 },
+      { width: 1024, height: 500 },
+      { width: 640, height: 480 },
+      { width: 360, height: 640 },
+    ];
+    // The list sets its height from the rows it measures, a frame or more after a resize or a
+    // scroll draws them, which can grow the page past a scroll to its end made before that: at
+    // 640x480 the section once stayed out of view. So the scroll is made until the section shows.
+    const toEnd = async () => {
+      await expect(async () => {
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await expect(ended).toBeInViewport({ timeout: 1_000 });
+      }).toPass({ timeout: 15_000 });
+    };
+    await expectFootClear([composer, pendingChanges, update], agentSizes, toEnd);
+
+    await pending.getByRole("button", { name: "Discard", exact: true }).click({ timeout: 5_000 });
+    await expect(pending).toHaveCount(0);
+    await expectFootClear([composer, update], agentSizes, toEnd);
+
+    await banner.getByRole("button", { name: "Dismiss update notice" }).click({ timeout: 5_000 });
+    await expect(banner).toHaveCount(0);
+    await expectFootClear([composer], agentSizes, toEnd);
   } finally {
     await context.close();
   }
