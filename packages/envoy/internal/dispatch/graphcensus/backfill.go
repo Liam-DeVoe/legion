@@ -299,7 +299,7 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 // written. Each writes in a transaction of its own per run, under the lock order the frame path
 // takes (api's appendGoingEvent), and reads again under its locks whether the run still owes it,
 // so a pass beside a live server, and a second run of the backfill, writes nothing it does not
-// owe. A run an erase removed has neither row nor node, so no pass writes it back.
+// owe.
 //
 // Its input is each row's own content - a run's row and its frames - or, for the third, the
 // absence of the row a node projects, which an older process's delete leaves: the store is never
@@ -499,9 +499,8 @@ func writeRunFrames(ctx context.Context, database *store.Store, run string) (int
 
 // backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
 // is gone (runRowHeld): a run a process of the release before deleted an hour old, frames with it,
-// whose node it left standing. The store keeps the node, as it keeps every node an erase has not
-// removed, and the census reads a gone node with no row as no difference. A run an erase removed
-// has no node either, so this states nothing of it.
+// whose node it left standing. The store keeps the node, and the census reads a gone node with no
+// row as no difference.
 func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "interaction_gone"}
 	after := ""
@@ -551,12 +550,12 @@ func readRowlessRuns(ctx context.Context, database *store.Store, after string, l
 }
 
 // writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
-// of its own, and answers whether it did. It takes the node's row first, as a frame and an erase
-// of the run do, then reads under that lock the node and whether its row stands: the going POST
-// commits a run's node and its row together, so a node it reads has its row whenever the run has
-// one, and a node an erase removed meanwhile is read as none. The write is the node as the store
-// holds it but for its state, a plain write that moves the row and appends the state tuple, made
-// by the run (backfillActor) now, as api's writeNodeState moves a node's state.
+// of its own, and answers whether it did. It takes the node's row first, as a frame of the run
+// does, then reads under that lock the node and whether its row stands: the going POST commits a
+// run's node and its row together, so a node it reads has its row whenever the run has one. The
+// write is the node as the store holds it but for its state, a plain write that moves the row and
+// appends the state tuple, made by the run (backfillActor) now, as api's writeNodeState moves a
+// node's state.
 func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

@@ -30,22 +30,24 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // graph_tuples from outside that package goes through, a fresh slice for each caller: Write and
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
 // queued on a write phase's batch; WriteState, Write of the state of nodes, with what stands
-// beneath each node it takes gone; WriteArms and WriteArmsUncaused spliced into a caller's
-// statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
+// beneath each node it takes gone; Retarget, the move of one pointer tuple of a node from one far
+// end to another; QueueFrameTuple, Write's append of one frame value of a run queued on a caller's
+// batch; WriteRun, the write of a run's node from its row; WriteArms and WriteArmsUncaused spliced
+// into a caller's statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue
+// those arms for the
 // writers that record an author, a reached session and a session an ask names; EraseNode, the
-// erase's delete of a node and its tuples; FillScopes, the backfill's fill of the project of a
-// node stored with none; Retarget, the move of one pointer tuple of a node from one far end to
-// another; QueueFrameTuple, Write's append of one frame value of a run queued on a caller's batch;
-// and WriteRun, the write of a run's node from its row. Each is a function of the package, never a
-// method, so a call of one is named by the package wherever it is made. It is the one list the
-// source scans that hold the store's writers read: graphstore's register of their call sites
+// erase's delete of a node and its tuples; and FillScopes, the backfill's fill of the project of a
+// node stored with none. Each is a function of the package, never a method, so a
+// call of one is named by the package wherever it is made. It is the one list the source scans
+// that hold the store's writers read: graphstore's register of their call sites
 // (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
 // (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteState", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
-		"EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteRun"}
+		"Retarget", "QueueFrameTuple", "WriteRun",
+		"EraseNode", "FillScopes"}
 }
 
 // NamesAsAWord is whether text names each of names as words of its own: text split on spaces and

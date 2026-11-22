@@ -214,16 +214,14 @@ type derivedRows struct {
 	where   string
 }
 
-// derivedTables is every table holding rows that derive from a node and may hold its text, by
-// name, each with the rows of it that do: the node's own rows, its tuples, its projections, its
-// own document's rows, its embedding rows, its keyword versions and the search vector of each
-// keyword version of its spec issue that names a version the run deletes, the events about it and
-// its project's term statistics, which the run counts again. The rows that cannot exist without a
-// projection row are added by leftDerived, from the foreign keys into the projections. A run of
-// the command bar's own rows (runTables) are here too, by the run's uuid, which is its node's id
-// (runDerived): its going_requests row holds the words readTexts reads off its node, and its
-// going_events rows its answer, and apply deletes both with the node.
-var derivedTables = runDerived(map[string][]derivedRows{
+// derivedTables is every table holding rows that derive from a node, by name, each with the rows
+// of it that do. It is the same derivation apply writes by, row set for row set: the node's own
+// rows, its tuples, its projections, its own document's rows, its embedding rows, its keyword
+// versions and the search vector of each keyword version of its spec issue that names a version
+// the run deletes, the events about it and its project's term statistics, which the run counts
+// again. The rows that cannot exist without a projection row are added by leftDerived, from the
+// foreign keys into the projections.
+var derivedTables = map[string][]derivedRows{
 	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
 	"comments":     {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
@@ -251,17 +249,6 @@ var derivedTables = runDerived(map[string][]derivedRows{
 	"refs":              {{where: `bound.document <> '' and held.from_kind = 'artifact' and held.from_id = bound.document and (held.excerpt_block_id = bound.block or held.excerpt_block_id = any(bound.ancestors))`}},
 	"events":            {{where: `held.id = any(bound.events)`}},
 	"search_term_stats": {{where: `bound.project <> '' and held.project_key = bound.project`}},
-})
-
-// runDerived is tables with the rows of a run of the command bar in each of runTables: those whose
-// Column names the run, for a node that is an interaction.
-func runDerived(tables map[string][]derivedRows) map[string][]derivedRows {
-	for _, run := range runTables {
-		tables[run.Table] = []derivedRows{{
-			where: `bound.kind = '` + graphstore.KindInteraction + `' and held.` + run.Column + `::text = bound.id`,
-		}}
-	}
-	return tables
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so

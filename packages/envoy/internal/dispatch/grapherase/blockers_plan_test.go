@@ -129,12 +129,12 @@ func blockersStatement(t *testing.T, ctx context.Context, database *store.Store,
 // stating node and of the test of its state.
 func blockersBefore(t *testing.T, sql string) []explaintest.Part {
 	t.Helper()
-	state := explaintest.Parameter(t, sql, regexp.MustCompile(`where n\.state <> (\$[0-9]+) and`))
+	state := explaintest.Parameter(t, sql, regexp.MustCompile(`where n\.state = (\$[0-9]+) and`))
 	return []explaintest.Part{
 		{Name: "the read's test that a value is no node", Opens: " and t.to_kind <> '" + graphstore.KindValue + "'", Closes: "and not (", Text: " "},
 		{
 			Name: "the join to graph_nodes", Opens: "cross join lateral (", Closes: "t.asserted and (",
-			Text: "join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state <> " + state + "\n\t\twhere ",
+			Text: "join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state = " + state + "\n\t\twhere ",
 		},
 	}
 }

@@ -902,7 +902,7 @@ type heldLink struct{ kind, toKind, toID string }
 // text[] parameter bound to what BlockRefKinds read by a statement of its own in the caller's
 // transaction, holds, and a decision's ties, its decided_by, from_ask and shaped (typedKinds,
 // TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
-// (graphcensus's DigestedTuple).
+// (graphcensus's blockRefKinds and tieKinds).
 func heldLinkKinds(blockRefKinds string) string {
 	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
 }

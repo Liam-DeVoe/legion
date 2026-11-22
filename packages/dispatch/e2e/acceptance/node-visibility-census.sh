@@ -107,11 +107,6 @@
 #       store's columns alone.
 #   M   Each .census.sql of the migrations this head applied over the base, the select the
 #       repository runs before a deploy, reading 0.
-#   E   With no server running, `envoy-dispatch erase --node interaction:<uuid>` of the run the edit
-#       was made under, as cybermonklabs/legion#3178's erase runs: a listing, then --confirm with its
-#       digest. The block's changed_by_run tuple blocks nothing and goes with the node; no row and no
-#       node of the run is left, the backfill writes none back, and the census, run whole, exits 0
-#       and reads zero again, the fourteen kinds above each over more than zero rows.
 #
 # The identity table is written into this driver by a person, and no code the server runs produces
 # it: each row is a form a record can hold of a person's identity, the node its run's authored_by
@@ -124,7 +119,7 @@
 # lib-baseline.sh in full; it has no default; a base whose tree
 # lacks the migration 20261109013400_graph_store is refused, exit 2, naming it), and optionally
 # DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which serves and runs backfill-graph-store,
-# census, lens-kind-add and erase, default $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE
+# census and lens-kind-add, default $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE
 # (lib-baseline.sh's checkout). It starts the two fakes run-server.sh needs, the fake Envoy and the
 # fake GitHub, a NATS server with JetStream, packages/envoy's natsd (internal/testnats/cmd/natsd),
 # which it builds and which this head's boots alone are handed (run-server.sh's

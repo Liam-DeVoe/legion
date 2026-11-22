@@ -428,10 +428,10 @@ func requireTheRunFramesLockOrder(t *testing.T) {
 }
 
 // requireTheGoneRunLockOrder holds writeGoneRun to its steps. It takes no owner row and starts at
-// the run's interaction node row, `for no key update`, the lock a frame and the erase of the run
-// take it at or above, and reads the node and whether its row stands only under that lock; then it
-// moves the node to gone, which appends the state tuple. While it waits at the node row it has
-// appended no tuple. The run is one this build gave its node, whose row an older pod deleted.
+// the run's interaction node row, `for no key update`, the lock a frame of the run takes it at,
+// and reads the node and whether its row stands only under that lock; then it moves the node to
+// gone, which appends the state tuple. While it waits at the node row it has appended no tuple.
+// The run is one this build gave its node, whose row an older pod deleted.
 func requireTheGoneRunLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	run := olderPodRun(t, database, model.Actor{Kind: "user", ID: "carol"}, "", "asked and deleted an hour on", "Gone ")

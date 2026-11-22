@@ -491,11 +491,12 @@ var projections = []projection{{
 	table: "comments.author, going_requests.author, comment_deliveries, message_deliveries, comment_fallback_copies," +
 		" asks.author, ask_followers, block_refs.decided_by, events.actor, events.payload, graph_nodes.made_by",
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
-		" as askers, as followers and as who wrote a decision or a reading, every session an ask.opened event" +
+		" as askers, as followers and as who wrote a decision or a reading, the author of each run, the author of" +
+		" each lens, finding, risk and constraint, and of each run whose row is gone, that states its" +
+		" authored_by, every session an ask.opened event" +
 		" named as the asker, an ask.follower_added event named or a comment.delivery receipt says the listener" +
-		" took an attempt to, the author of every comment the erase took, as the actor of the event that" +
-		" stored it names it, the author of each run, and the author of each lens, finding, risk and" +
-		" constraint, and of each run whose row is gone, that states its authored_by",
+		" took an attempt to, and the author of every comment the erase took, as the actor of the event that" +
+		" stored it names it",
 	names:    `select s.id from (` + recordedSessions(censusAuthors) + `) s`,
 	authored: true,
 	rows: `
@@ -696,22 +697,17 @@ var projections = []projection{{
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
 
-// The tuple kinds each projection row states of its node, which the census digests against the
-// tuples of those kinds the node states now (currentLinks, placedLinks, heldTuples): a comment's
-// anchor, its owner and its author; a block's document and the block or document holding it;
-// a run's author; the ties of a decision that block_refs projects; and an ask's relations, which
-// its asks and ask_followers rows project - its documents and its author, its followers and the
-// person its answer names. A block_refs row of a block states the kinds blockRefKinds reads out
-// of the store. A tuple of any other kind out of such a node is no part of any row.
+// The tuple kinds a comment's, a block's and a run's projection rows state of their node, which
+// the census digests against the tuples of those kinds the node states now (currentLinks,
+// placedLinks): a comment's anchor, its owner and its author; a block's document and the block or
+// document holding it; and a run's author. tieKinds are the ties of a decision that block_refs
+// projects, which kinds of their own hold triple by triple (tieProjection). A block_refs row of a
+// block states the kinds blockRefKinds reads out of the store.
 var (
 	commentLinkKinds    = []string{graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleAuthoredBy}
 	blockPlacementKinds = []string{refs.TupleInDocument, graphstore.TuplePartOf}
 	runLinkKinds        = []string{graphstore.TupleAuthoredBy}
 	tieKinds            = []string{refs.TupleShaped, refs.TupleFromAsk, graphstore.TupleDecidedBy}
-	askLinkKinds        = []string{
-		graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
-		graphstore.TupleFollowedBy, graphstore.TupleAnsweredBy, graphstore.TupleDecidedBy, refs.TupleShaped,
-	}
 )
 
 // blockRefKinds is a select of every tuple kind the block_ref kind holds a block's rows and its
@@ -726,31 +722,6 @@ var blockRefKinds = `select linked.kind from (` + refs.BlockRefKindsSQL + `) lin
 // kindIn is true of the tuple kind column whose value is one of kinds.
 func kindIn(column string, kinds []string) string {
 	return column + ` in ('` + strings.Join(kinds, `', '`) + `')`
-}
-
-// DigestedTuple is true of a tuple t (an alias of graph_tuples) of a kind a projection row of the
-// node it goes out of states, so of a kind this census digests against that row: a comment's
-// anchored_to, owned_by and authored_by, a document block's in_document and part_of, every kind
-// block_refs projects and a decision's ties, a run's authored_by, and an ask's relations. It is
-// the one definition the census's projections read their link kinds from (commentLinkKinds,
-// blockPlacementKinds, tieKinds, runLinkKinds, askLinkKinds) and the erase reads its blockers by
-// (grapherase's readBlockers): a tuple of any other kind into a node - a requirement's
-// constrained_by to a constraint, a changed_by_run to a run - is no row's to state, so erasing the
-// node it points at, and the tuple with it, leaves no row stating a link the store no longer
-// holds.
-//
-// blockRefKinds is a text[] expression of the kinds block_refs projects, which the store's type
-// nodes declare (refs.BlockRefKindsSQL): `array(` + refs.BlockRefKindsSQL + `)` reads them inside
-// the statement, and a parameter bound to what that select answered earlier in the same
-// transaction keeps their graph_nodes rows out of it, as a statement whose plan may read
-// graph_nodes only by its key needs (grapherase's readBlockers).
-func DigestedTuple(t, blockRefKinds string) string {
-	return `((` + t + `.from_kind = '` + graphstore.KindComment + `' and ` + kindIn(t+".kind", commentLinkKinds) + `)
-		or (` + t + `.from_kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL(t+".from_id") + `
-		    and (` + kindIn(t+".kind", blockPlacementKinds) + ` or ` + kindIn(t+".kind", tieKinds) + `
-		         or ` + t + `.kind = any(` + blockRefKinds + `)))
-		or (` + t + `.from_kind = '` + graphstore.KindInteraction + `' and ` + kindIn(t+".kind", runLinkKinds) + `)
-		or (` + t + `.from_kind = '` + graphstore.KindAsk + `' and ` + kindIn(t+".kind", askLinkKinds) + `))`
 }
 
 // baseAttributeCensus is the census of the visibility and the state each node of one kind - a
@@ -1215,14 +1186,14 @@ var commentWriters = `
 // at the time the record was written. It holds where an erase of that node ran at or after at
 // (graph_erasures.ran_at). Two records outlive what they record and still name who wrote it: the
 // events of a comment the erase took, which keep the actor that wrote it (commentWriters), and an
-// erase's own record of who wrote or answered the node it took (erasedWriters). The erase takes a
-// person once nothing of the store names them, and both records name them after it, so counting
-// them would hold the store to the node the operator removed, for good. A person who writes again
-// after it is held by what they wrote then, which is newer. The erase dates itself by the clock of
-// the host it ran on and an event is dated by the database's, but every record this leaves out was
-// written no later than the erase of the node it records, which committed before the erase of its
-// writer could begin: that erase refuses while anything of the store still names the person. No
-// erase takes a session, so every record of one stands.
+// erase's own record of who wrote or answered the ask, decision or reading it took
+// (erasedWriters). The erase takes a person once nothing of the store names them, and both records
+// name them after it, so counting them would hold the store to the node the operator removed, for
+// good. A person who writes again after it is held by what they wrote then, which is newer. The
+// erase dates itself by the clock of the host it ran on and an event is dated by the database's,
+// but every record this leaves out was written no later than the erase of the node it records,
+// which committed before the erase of its writer could begin: that erase refuses while anything
+// of the store still names the person. No erase takes a session, so every record of one stands.
 func erasedSince(kind, id, at string) string {
 	return `exists (
 		select 1 from graph_erasures erased
@@ -1419,11 +1390,7 @@ var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteracti
 //
 // The authors of the reasoning nodes and of the runs whose row is gone (reasoningAuthored,
 // goneRunsAuthored) are read here too, so the person and session row sides read them bound as
-// well and read the log for them no more than for the rest. An erase of a run, a lens, a finding,
-// a risk or a constraint takes the authored_by these read and, of a run, the going_requests row
-// that names its author, which commentPeople reads a person off and recordedSessions a session,
-// and records that author (erasedWriters), so an author whose only record was the erased node is
-// held to their node still.
+// well and read the log for them no more than for the rest.
 var storedAuthors = `
 	select r.to_kind as kind, r.to_id as id, r.created_at as at
 	from block_refs r
@@ -1478,15 +1445,14 @@ var writtenHistory = `select writer.kind, writer.id, writer.made_at
 		  and t.kind in ('` + graphstore.TupleDecidedBy + `', '` + graphstore.TupleAuthoredBy + `', '` + refs.TupleKeptBy + `')
 		  and t.from_kind = '` + refs.BlockNodeKind + `')`
 
-// erasedWriters are the people and sessions an erase took the authored_by, decided_by,
-// answered_by or kept_by of, as (kind, id, at): the writers `envoy-dispatch erase` records in its
-// graph_erasures row (grapherase's Erasure.Writers) of an ask, a decision, a reading, a finding of
-// a lens, a run of the command bar, a lens, a risk or a constraint, each dated by that erase. The
-// erase deletes the node's tuples in both directions, and of a run its going_requests row, and
-// nothing else names who wrote, answered or kept it once those are gone, while that writer's node
-// stands: a session's always, since no erase removes one, and a person's until an erase of that
-// person. So a writer is read here unless an erase of that same node ran after the one that
-// recorded it (erasedSince): an erased person is held by no record an erase before theirs wrote.
+// erasedWriters are the people and sessions an erase of an ask, a decision or a reading took the
+// authored_by, decided_by, answered_by or kept_by of, as (kind, id, at): the writers
+// `envoy-dispatch erase` records in its graph_erasures row (grapherase's Erasure.Writers), each
+// dated by that erase. The erase deletes the node's tuples in both directions, and nothing else
+// names who wrote, answered or kept it once its rows are gone, while that writer's node stands: a
+// session's always, since no erase removes one, and a person's until an erase of that person. So a
+// writer is read here unless an erase of that same node ran after the one that recorded it
+// (erasedSince): an erased person is held by no record an erase before theirs wrote.
 var erasedWriters = `
 	select written->>'kind' as kind, written->>'id' as id, erasure.ran_at as at
 	from graph_erasures erasure

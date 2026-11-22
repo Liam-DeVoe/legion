@@ -296,13 +296,15 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // settle, a reply to a mention whose send was refused, a targeted message's delivery, an ask a
 // session opens, a follow of it, the spec's approval request renewed on a retry and handed back, a
 // settlement opening an ask a session wrote as a block, the tick indexing a version a build
-// without the block index wrote, a run of the command bar alice asks, a run an older pod recorded
-// that the boot pass ends, the issue's title, the question of an ask alice opens and a comment of
-// alice's each written for a run she asked, a lens with a finding, a finding, a risk and a
-// constraint, a pointer appended and one retargeted, the lens's state, and the erase of the
-// issue's comment, which appends nothing. The comment path's drives name the sites the path runs
-// in turn (comment): the path itself, which writes the comment's node and its tuples under its
-// event, and who wrote it.
+// without the block index wrote, and the erase of the issue's comment, which appends nothing. The
+// comment path's drives name the sites the path runs in turn (comment): the path itself, which
+// writes the comment's node and its tuples under its event, and who wrote it.
+//
+// The drives of a run's writes and of the reasoning kinds run right after the tick's, in this
+// order: a run of the command bar alice asks, a run an older pod recorded that the boot pass ends,
+// the issue's title, the question of an ask alice opens and a comment of alice's each written for
+// a run she asked, a lens with a finding, a finding, a risk and a constraint, a pointer appended
+// and one retargeted, and the lens's state.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)

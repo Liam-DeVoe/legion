@@ -574,8 +574,8 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	}
 }
 
-// Another pod's delete - an erase, or during a roll a process of the release before deleting a run
-// an hour old - may remove a run between the sweep's read of the overdue ids and its write of
+// Another pod's delete - during a roll, a process of the release before deleting a run an hour
+// old - may remove a run between the sweep's read of the overdue ids and its write of
 // that run's ending, and the run's interaction node still stands then. The sweep ends each run in
 // a transaction of its own, so that write stores nothing - no frame value and no row
 // (errGoingRunGone) - and the pass goes on: the run read after it keeps its ending, and a run two

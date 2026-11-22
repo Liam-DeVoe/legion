@@ -1,8 +1,8 @@
 -- pgmigrate:non-transactional
 -- 20261116232634_going_requests_ends_at_index.up.sql — the index the sweep of overdue runs reads.
 --
--- This release keeps every run of the command bar, its going_requests row, its frames and
--- its interaction node, until an erase removes it, where the release before deleted a run an hour
+-- This release keeps every run of the command bar, its going_requests row, its frames and its
+-- interaction node, and no command removes one, where the release before deleted a run an hour
 -- old. So going_requests grows with every question asked, and the maintenance pass reads it once a
 -- minute for the runs past their ends_at that hold no terminal frame (api/going.go,
 -- sweepGoingRequests). That read takes only the runs whose ends_at passed within a day of now

@@ -69,8 +69,7 @@ const BlockRefKindsSQL = `select 'mentions'
 // graph_nodes only by its key reads them here first, by a statement of its own in the caller's
 // transaction, and binds them as a text[] parameter (`t.kind = any($N::text[])`), so the read of
 // the store's attribute nodes is no part of its plan: the store's held statement of a document
-// (heldDocumentBlocks) and the erase's read of the nodes stating a tuple into the node it erases
-// (grapherase's readBlockers). An attribute node that names no attribute is no kind.
+// (heldDocumentBlocks). An attribute node that names no attribute is no kind.
 func BlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
 	var kinds []string
 	if err := q.QueryRow(ctx, `select array_agg(linked.kind) from (`+BlockRefKindsSQL+`) linked (kind)

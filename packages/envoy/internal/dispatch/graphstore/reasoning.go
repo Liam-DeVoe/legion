@@ -112,8 +112,8 @@ func AddressKindSQL(kindExpr, idExpr string) string {
 // FindingID is the store id of the finding blockID of the lens whose uuid is lens: the id of a
 // node of kind block that names its lens, `lens/<uuid>#<block id>`. It is the one rule of that
 // id: ParseFindingID reads it back, and FindingIDSQL tells it in SQL, so the author-only
-// admission, the erase, the census and every read of a finding tell a finding from any other
-// block by the same test. Migration 20261117020856 spells the same test in its own text.
+// admission, the census and every read of a finding tell a finding from any other block by the
+// same test. Migration 20261117020856 spells the same test in its own text.
 func FindingID(lens, blockID string) string { return KindLens + "/" + lens + "#" + blockID }
 
 // ParseFindingID is the uuid of the lens and the block id that the id of a block node names

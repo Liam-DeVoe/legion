@@ -182,9 +182,11 @@ type RunWritten struct {
 // It is the step the frame path (api's lockGoingRun) takes for a run with no node, before it
 // takes the node's row. The node this writes is its transaction's own, which no other transaction
 // can see until it commits, let alone hold; a node another write committed first, which this
-// writes nothing of, may be held by then - an erase of the run takes the node's row and then the
-// run's - so the frame takes that node's row without waiting and, where another holds it, lets its
-// transaction go and begins again, taking the node's row first.
+// writes nothing of, may be held by then - by a frame of the run, or by the backfill's pass over
+// its frames - so the frame takes that node's row without waiting and, where another holds it,
+// lets its transaction go and begins again, taking the node's row first. Neither holder waits on
+// the run's row the frame holds, so that restart costs the frame one more transaction and avoids
+// no deadlock.
 func WriteRun(ctx context.Context, tx pgx.Tx, id string) (RunWritten, error) {
 	var run Interaction
 	var author []byte

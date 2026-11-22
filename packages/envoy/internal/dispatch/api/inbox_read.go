@@ -554,13 +554,13 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // recorded with no node gets its node there first: graphstore.WriteRun takes the run's
 // going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
 // and the frame then takes the node's row, which is its own and no other transaction's. Where
-// another write committed the node in between and another transaction holds it - an erase of the
-// run, which takes the node's row and then the run's (grapherase's lockProjectionRows) - the frame
-// takes that row without waiting, finds it held, lets its transaction go and begins again once,
-// taking the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's
-// row while it holds the run's. Then the frame takes the run's going_requests row `for key share`,
-// the lock the going_events foreign key takes, appends the frame value tuple and writes the
-// going_events row. No frame takes the revision fence.
+// another write committed the node in between and another transaction holds it, the frame takes
+// that row without waiting, finds it held, lets its transaction go and begins again once, taking
+// the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's row
+// while it holds the run's; no writer holding a node's row waits on that hold of the run's row, so
+// this costs such a frame one more transaction and avoids no deadlock. Then the frame takes the
+// run's going_requests row `for key share`, the lock the going_events foreign key takes, appends
+// the frame value tuple and writes the going_events row. No frame takes the revision fence.
 //
 // A write made for a run (store.WithRun, which withinGoingRun puts on a request that names its
 // run, and which every write phase built for that request carries) adds no statement and no

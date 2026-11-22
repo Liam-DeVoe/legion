@@ -76,7 +76,7 @@ body: |-
   node is marked gone and keeps no `changed_by_run` tuple, so a document made again under the same
   title is not listed under the old run. The sweep ends the overdue runs whose
   deadline passed in the last day, and one pass at each boot ends every older overdue run.
-  `envoy-dispatch erase` removes a run with its frames. After the rollout, run
+  A run is kept, with its frames and its node, and no command removes one. After the rollout, run
   `envoy-dispatch backfill-graph-store`, which gives each run recorded before this release its node.
 
   `envoy-dispatch premortem-convert` and

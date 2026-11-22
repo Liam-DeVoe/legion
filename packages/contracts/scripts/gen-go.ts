@@ -484,9 +484,8 @@ const GoingWordsMax = ${GOING_WORDS_MAX}
 const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
 
 // GoingRequestTTL is the age past which a process of the release before still deletes a run
-// during a roll. This build reads it nowhere: a run is kept until an erase removes it, since a
-// node of the store is removed by erasure alone. Generated from GOING_REQUEST_TTL_MS in
-// packages/contracts.
+// during a roll. This build reads it nowhere: a run is kept, its row, its frames and its node,
+// and no command removes one. Generated from GOING_REQUEST_TTL_MS in packages/contracts.
 const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
 
 // GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
