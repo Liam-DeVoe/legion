@@ -722,9 +722,10 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,
 //     the rule the promotion itself reads per kind) and the promotion starts it under the cap
 //     (capLets, the cap's half the promotion reads too): it takes a row the
-//     project holds fewer than the cap of, or it takes none at all, as a queued root past its
-//     review takes none and opens its tree whatever the cap says. The promotion this same pass
-//     runs after the measure starts that entry's work. A slot comes free without a worker
+//     project holds fewer than the cap of, or it takes none at all, as a queued root in
+//     accepting, retro or merging takes none and opens its tree whatever the cap says. The
+//     promotion this same pass runs after the measure starts that entry's work. A slot comes
+//     free without a worker
 //     where a started issue gives its row back to wait on another issue (releaseSlotsForWaits),
 //     which runs on this pass before the measure, so the two terms above can both fail on a
 //     project whose line is about to move; without this term such a project read as a deadlock

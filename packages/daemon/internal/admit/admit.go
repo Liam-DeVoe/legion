@@ -1540,14 +1540,15 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
 // whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
 // order. Each release is logged once the fact commits. A tree leaving the workflow, a root
-// finishing, an issue whose work passes its review, an issue reaching its done, and a linger all
-// read the same predicate, so one rule says when an issue stops needing a slot where it stands.
+// finishing, an issue moving into accepting, retro or merging, an issue reaching its done, and a
+// linger all read the same predicate, so one rule says when an issue stops needing a slot where
+// it stands.
 // The daemon makes one other release, releaseSlotsForWaits, judged by blockers.waitsOf rather
 // than by record.NeedsSlot, which frees the row of an issue that goes on working and waits on
 // another issue; the two are apart because they free rows for opposite reasons — this one
 // because the issue's phase holds no row, that one because the work is held — and only that one
-// leaves a mark, since only its issue stands in the line for the row again. An issue past its
-// review is never one it frees (blockers.waitsOf says why).
+// leaves a mark, since only its issue stands in the line for the row again. An issue in
+// accepting, retro or merging is never one it frees (blockers.waitsOf says why).
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -2122,20 +2123,23 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // predicate, so no pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses the three phases past an
-// issue's review — accepting, retro and merging — a phase of done and a Dispatch status out of
-// the workflow, and no promotion moves an issue into or out of any of them. A first phase
-// starts at phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase it ran in the tree it left.
+// it in, and the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
+// merging (in the default steps, the phases after the review), a phase of done and a Dispatch
+// status out of the workflow, and no promotion moves an issue into or out of any of them. A first
+// phase starts at the phase of the task's first step from a record standing at admitted —
+// planning or implementing, since every tester, reviewer and acceptance step stands after the
+// implementer — an answered root goes from awaiting_person back to admitted, a returning issue
+// keeps the worker phase it stands in, and a root whose tree is opened keeps the phase it ran in
+// the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
-// and is intended: the work of such a root is its sign-off, its retro and its merge, which
-// write no more of the change, and the cap counts the issues whose change is still to write.
-// The tree opens, the phase's own worker starts on a row the outbox holds for no slot
-// (workflow.StartOrOwe), and the root takes a row again only where its architect sends the work
-// back to a phase that keeps one.
+// and is intended: the work of such a root in those phases is its sign-off, its retro and its
+// merge, which write no more of the change, and the cap counts the issues whose change is still
+// to write. The tree opens, the phase's own worker starts on a row the outbox holds for no slot
+// (workflow.StartOrOwe), and the root takes a row again only where its work moves to a phase
+// that keeps one: its architect sends the work back, or a step after its acceptance whose phase
+// keeps a slot starts, and it waits for that row in the line.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
