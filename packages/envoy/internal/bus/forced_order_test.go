@@ -160,12 +160,20 @@ func (r *forcedRig) restart(t *testing.T) {
 	r.conn = r.Restart(t, Stream)
 }
 
-// publish stores n messages on subject and answers their stream sequences.
+// publish stores n messages on subject and answers their stream sequences. A publish no server
+// answers is sent again until one does, within forcedLed: after a restart (forcedorder's Restart
+// waits until the stream and its consumers answer on a connection of its own) the owner's
+// connection can still reach a member that holds no interest in the stream's subjects yet, which
+// answers no responders, and on a loaded machine past nats.go's two retries at 250 ms ("nats: no
+// response from stream": TestForcedOrderARelayRestartUnderAHeldWriteDeliversEveryRequestedMessage/R3
+// at load 1,600, its first publish after the same-name control's restart). A publish no server
+// answered was stored by none, so the sequences are the stream's own.
 func (r *forcedRig) publish(t *testing.T, subject string, n int) []uint64 {
 	t.Helper()
 	seqs := make([]uint64, n)
 	for i := range seqs {
-		ack, err := r.owner.JS().Publish(subject, fmt.Appendf(nil, "m%d", i+1))
+		ack, err := r.owner.JS().Publish(subject, fmt.Appendf(nil, "m%d", i+1),
+			natsgo.AckWait(forcedLed), natsgo.RetryAttempts(-1), natsgo.RetryWait(100*time.Millisecond))
 		if err != nil {
 			t.Fatalf("publish message %d: %v", i+1, err)
 		}
