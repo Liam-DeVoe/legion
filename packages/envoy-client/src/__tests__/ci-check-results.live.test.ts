@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   CI_CHECK,
@@ -332,12 +333,13 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("a role's argument under the job's placeholder is refused before any request, naming its flag", async () => {
       const at = commit("8");
-      // The command as `agent-secrets result-grant` starts it, with a placeholder of the grant's
-      // shape and Dispatch at no server: a command that sent anything would fail to connect, and
-      // exit 1 saying so.
+      // The command as `agent-secrets result-grant` starts it, with the placeholder's variable set
+      // (the command reads only that it is set, `isJobResult`; the value is a random fixture, as a
+      // held secret must be) and Dispatch at no server: a command that sent anything would fail to
+      // connect, and exit 1 saying so.
       const env = {
         DISPATCH_URL: NOWHERE,
-        DISPATCH_RESULTS_TOKEN: "agent-secrets-placeholder-result-Run4242abcdefghijklmnopqrstu",
+        DISPATCH_RESULTS_TOKEN: fixtureSecret("result"),
       };
       const ran = await recordOnIssue(pushAt(at, 207), at, CI_CHECK, ["--role", "tester"], env);
 
