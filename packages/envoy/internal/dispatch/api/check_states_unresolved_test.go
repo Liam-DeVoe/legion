@@ -6,7 +6,11 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,4 +111,107 @@ func TestTheBootstrapObligationLastsUntilItsCandidatesAreVerified(t *testing.T) 
 	}
 	wantHandoff(t, rig, "once the install's candidate is accepted", rig.issue, http.StatusCreated)
 	wantHandoff(t, rig, "once #71's candidate is accepted", other, http.StatusCreated)
+}
+
+// fenceMarksOf is the ids of the marks of issue a test handoff that starts now waits for, read
+// by the fence's own predicate (awaitCheckStatesSettled), lowest first.
+func fenceMarksOf(t *testing.T, rig *checkStatesRig, issue string) []int64 {
+	t.Helper()
+	var marks []int64
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select coalesce(array_agg(id order by id), '{}') from check_states_owed
+		where issue_key = $1 and (due_at <= now() or reads_from is not null)`, issue).Scan(&marks); err != nil {
+		t.Fatalf("read the marks of %s a handoff waits for: %v", issue, err)
+	}
+	return marks
+}
+
+// TestNoMarkCommittedLateReleasesATestHandoffWhileAReadIsUnresolved: #70 stood at H1, where the
+// tester passed k1 and k2 and the settler published both yes, which a reader holds, and moved on
+// to H2. A writer's transaction draws a mark and holds it uncommitted; the tester then records k2
+// failing at H1, whose marks are drawn after it, the install leaves H1 as #70's candidate, and
+// GitHub fails the read of #70's commits. The test handoff reads the marks it waits for, which
+// the uncommitted mark is not among, and only then does that mark commit: the settle that follows
+// reads it with the others, a lower id than every mark the handoff waits for, while the read that
+// would replace k2's old yes at H1 is unresolved. However the settle combines the marks it read,
+// none the handoff waits for may go while that read is unresolved, so the handoff answers 503.
+// The neighbour commits the mark before the handoff reads its marks, so the handoff waits for it
+// too, and answers 503 the same.
+func TestNoMarkCommittedLateReleasesATestHandoffWhileAReadIsUnresolved(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		name := "every mark commits before the handoff reads the marks it waits for"
+		if late {
+			name = "a lower mark commits after the handoff read the marks it waits for"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newCheckStatesRig(t, checkStatesTwoChecks)
+			upsertHead(t, rig, 70, eachHeadH1, rig.issue, "A change")
+			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+			eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "pass", eachHeadH1)
+			settleOwed(t, rig)
+			if got := stateAt(t, rig, rig.issue, eachHeadH1, "k2"); got != model.PassStandsYes {
+				t.Fatalf("k2 at H1 is published %q, want yes: this test holds no old pass", got)
+			}
+			upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+			forgetCandidates(t, rig)
+			settleOwed(t, rig)
+
+			ctx := context.Background()
+			writer, err := rig.database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the writer's transaction: %v", err)
+			}
+			defer writer.Rollback(ctx)
+			var lower int64
+			if err := writer.QueryRow(ctx, `insert into check_states_owed (issue_key) values ($1) returning id`, rig.issue).Scan(&lower); err != nil {
+				t.Fatalf("draw the writer's mark: %v", err)
+			}
+			if !late {
+				if err := writer.Commit(ctx); err != nil {
+					t.Fatalf("commit the writer's mark: %v", err)
+				}
+			}
+			eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "fail", eachHeadH1)
+			seedInstallCandidates(t, rig, eachHeadH1)
+			rig.github.failPullCommits(http.StatusBadGateway)
+			rig.served.checkStatesSchedule.fenceWait = 10 * time.Second
+			rig.served.checkStatesSchedule.fencePoll = 5 * time.Millisecond
+			entered, release := make(chan struct{}), make(chan struct{})
+			releaseOnce := sync.OnceFunc(func() { close(release) })
+			defer releaseOnce()
+			rig.served.checkStatesFenceWaits = func(string) {
+				close(entered)
+				<-release
+			}
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- postHandoff(t, rig.handler, rig.issue, "test", `{"tested":"H1"}`) }()
+			ciAwait(t, "the handoff read the marks it waits for", entered)
+			waited := fenceMarksOf(t, rig, rig.issue)
+			if late {
+				if len(waited) == 0 || slices.Contains(waited, lower) || lower > waited[0] {
+					t.Fatalf("the handoff waits for %v and the uncommitted mark is %d, want a lower mark it does not wait for: this test holds no late mark", waited, lower)
+				}
+				if err := writer.Commit(ctx); err != nil {
+					t.Fatalf("commit the writer's mark: %v", err)
+				}
+			} else if !slices.Contains(waited, lower) {
+				t.Fatalf("the handoff waits for %v, want the committed mark %d among them", waited, lower)
+			}
+			settleOwed(t, rig)
+			if got := candidatesOf(t, rig); len(got) != 1 || got[eachHeadH1] {
+				t.Fatalf("#70 holds the former heads %v after the failed read, want H1 unverified: this test holds nothing unresolved", got)
+			}
+			releaseOnce()
+			var response *httptest.ResponseRecorder
+			select {
+			case response = <-done:
+			case <-time.After(15 * time.Second):
+				t.Fatal("the handoff did not answer in 15 s")
+			}
+			if response.Code != http.StatusServiceUnavailable {
+				t.Fatalf("the handoff waiting for %v answered %d %s while #70's read is unresolved and the marks %v are held, want 503",
+					waited, response.Code, response.Body.String(), fenceMarksOf(t, rig, rig.issue))
+			}
+		})
+	}
 }

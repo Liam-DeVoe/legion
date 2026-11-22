@@ -18,10 +18,15 @@ import (
 // it, a pass of a run that has since failed, and nothing published says so; and while a read of
 // which commits are a pull request's is unresolved, failed or left to another settle, a candidate
 // is no former head, so nothing published replaces the state a reader holds at that commit. The
-// settle that has read each such head, or resolved each such read, deletes it. A mark that waits
-// for its retry after a failed read of check runs is not due and not kept, so that outage does
-// not hold the handoff: its state reads read_failed, which a reader waits on. Past fenceWait it
-// refuses with 503 CHECK_STATES_UNSETTLED, and the caller writes the handoff again.
+// settle that has read each such head, or resolved each such read, deletes the mark. A settle
+// keeps each mark it read for as long as such a read is unresolved, not one in the others' place:
+// a mark can commit after this read of the ids, with an id lower than theirs, and this wait reads
+// only the ids it read here. A mark that waits for its retry after a failed read of check runs is
+// not due and not kept, so that outage does not hold the handoff: its state reads read_failed,
+// which Legion's daemon judges conclusive and not yes: its testing move sends the issue back to
+// implementing naming that check, so a read that fails while the tester's results settle costs
+// the issue a round. Past fenceWait it refuses with 503 CHECK_STATES_UNSETTLED, and the caller
+// writes the handoff again.
 func (s *server) awaitCheckStatesSettled(ctx context.Context, issue string) (serial int64, err error) {
 	pool, err := s.readyPool()
 	if err != nil {

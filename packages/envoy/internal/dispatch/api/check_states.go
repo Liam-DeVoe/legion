@@ -816,12 +816,15 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // A membership verifyFormerHeads left unresolved is another matter, since no state says so: a
 // candidate a read GitHub did not answer left undecided (reads.unverified), or one another
 // settle's claim holds or whose answer applied nothing (reads.pending), is no former head, so
-// nothing published replaces the state a reader holds at that commit. Such a settle keeps the
-// round's least mark, the obligation that asked for the read, with reads_from, so the fence waits
-// for it whatever its backoff, due after retryAfter for a failed read and a minimum gap otherwise;
-// the settle that resolves the membership deletes it. Only the settler writes check_states, under
-// the issue's lease, so the rows it reads here are the newest published. It answers the events,
-// which the caller publishes once the transaction has committed.
+// nothing published replaces the state a reader holds at that commit. Such a settle keeps every
+// mark it read, each an obligation that asked for the read, with reads_from, so the fence waits
+// for each whatever its backoff, due after retryAfter for a failed read and a minimum gap
+// otherwise; the settle that resolves the membership deletes them. It keeps them all, not one for
+// the rest: a handoff waits for the marks it read when it began, and a mark of a lower id can
+// commit after that, so a mark kept in the others' place may be one no handoff waits for, and the
+// marks it waits for would go while the read is unresolved. Only the settler writes check_states,
+// under the issue's lease, so the rows it reads here are the newest published. It answers the
+// events, which the caller publishes once the transaction has committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
 	reads formerHeadsReads,
@@ -951,17 +954,17 @@ func (c *checkStatesSettler) publish(
 			return nil, fmt.Errorf("read the marks of %s a head this settle did not read holds: %w", issue, err)
 		}
 	}
-	// A membership left unresolved (reads.unverified, reads.pending) keeps the round's least mark,
-	// the obligation that asked for it, where no mark is kept above: a candidate no answer decided
-	// is no former head yet, so nothing published replaces a state a reader holds at that commit, a
-	// pass among them, and only the fence's wait keeps that state from deciding. Empty, not nil, as
-	// above.
-	fenced := []int64{}
-	if (reads.unverified || reads.pending) && len(unsettled) == 0 {
-		fenced = []int64{slices.Min(marks)}
+	// A membership left unresolved (reads.unverified, reads.pending) keeps every mark the round
+	// read: a candidate no answer decided is no former head yet, so nothing published replaces a
+	// state a reader holds at that commit, a pass among them, and only the fence's wait keeps that
+	// state from deciding. A handoff waits for the marks it read when it began, and a mark of a
+	// lower id can commit after that, so no one of the marks stands for the others: each stays
+	// until a settle resolves the read.
+	held := unsettled
+	if reads.unverified || reads.pending {
+		held = marks
 	}
-	if _, err := tx.Exec(ctx, `delete from check_states_owed where id = any($1) and not id = any($2) and not id = any($3)`,
-		marks, unsettled, fenced); err != nil {
+	if _, err := tx.Exec(ctx, `delete from check_states_owed where id = any($1) and not id = any($2)`, marks, held); err != nil {
 		return nil, fmt.Errorf("delete the settled marks of %s: %w", issue, err)
 	}
 	// Each row of a head neither open nor former is deleted above, so a row read here that reads
@@ -977,25 +980,20 @@ func (c *checkStatesSettler) publish(
 		counted++
 	}
 	switch {
-	case len(unsettled) > 0:
-		if _, err := tx.Exec(ctx, `
-			update check_states_owed set reads_from = coalesce(reads_from, now()),
-				due_at = now() + make_interval(secs => $2), failures = $3
-			where id = any($1)`, unsettled, c.schedule.minGap.Seconds(), counted); err != nil {
-			return nil, fmt.Errorf("keep the marks of %s a head this settle did not read holds: %w", issue, err)
-		}
-	case len(fenced) > 0:
-		// The backoff only spaces the reads: reads_from keeps the mark in the fence's wait however
-		// late it falls due, and any settle of the issue reads it again (dueMarksOf).
+	case len(held) > 0:
+		// The backoff only spaces the reads: reads_from keeps each mark in the fence's wait however
+		// late it falls due, and any settle of the issue reads it again (dueMarksOf). A head this
+		// settle did not read is read again after a minimum gap; a read of a pull request's commits
+		// that failed alone, after the backoff.
 		wait := c.schedule.minGap
-		if reads.unverified {
+		if len(unsettled) == 0 && reads.unverified {
 			wait = c.retryAfter(failures)
 		}
 		if _, err := tx.Exec(ctx, `
 			update check_states_owed set reads_from = coalesce(reads_from, now()),
 				due_at = now() + make_interval(secs => $2), failures = $3
-			where id = any($1)`, fenced, wait.Seconds(), counted); err != nil {
-			return nil, fmt.Errorf("keep the mark of %s whose candidates no answer decided: %w", issue, err)
+			where id = any($1)`, held, wait.Seconds(), counted); err != nil {
+			return nil, fmt.Errorf("keep the marks of %s a read this settle did not finish holds: %w", issue, err)
 		}
 	case readFailed || unresolved:
 		if _, err := tx.Exec(ctx, `
