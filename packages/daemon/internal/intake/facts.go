@@ -1026,7 +1026,10 @@ func (f ReviewVerdict) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three.
+// lock (ArchitectRequest, EnteredRequest). Commit is that request's too: the head the owner sends
+// back, which the workflow takes only where it is the pull request's current head and records as
+// the owner's acceptance's changes there (VERDICT_HEAD_NOT_CURRENT otherwise). A phase worker's
+// move carries none of the four.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1035,6 +1038,7 @@ type BackwardMove struct {
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	Commit     string
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -1086,12 +1090,15 @@ func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 // SignOff records the architect's post-production-check approval: the claim of the architect, and
 // the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
 // accepting) as the route read them (api's signOff), which the workflow judges again under the
-// fact lock (ArchitectRequest, EnteredRequest).
+// fact lock (ArchitectRequest, EnteredRequest). Commit is the head the owner accepts, which the
+// workflow takes only where it is the pull request's current head and records as the owner's
+// acceptance's approve there (VERDICT_HEAD_NOT_CURRENT otherwise).
 type SignOff struct {
 	Issue      string
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	Commit     string
 }
 
 func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }

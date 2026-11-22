@@ -1391,19 +1391,41 @@ func (e *Engine) reviewStepRefusal(ctx context.Context, tx pgx.Tx, issue record.
 		place.Place, issue.Key, role, named, fact.Claim)}, nil
 }
 
+// acceptanceHeadRefusal is the refusal of the owner's call from accepting, what (sign_off or its
+// request_backward_move), that names commit where the record holds issue's pull request pr at
+// another head: VERDICT_HEAD_NOT_CURRENT (spec R5: the owner's acceptance is its verdict at the
+// head it names, and a head the pull request has moved off, by a merge forward among others, is
+// code the call does not accept). It is judged under the fact's lock, before the call records or
+// moves anything, so a refused call changes nothing. nil where commit is the current head, and
+// where the record holds no pull request: there is no head to judge, and no verdict is recorded.
+func acceptanceHeadRefusal(issue record.Issue, pr *record.PullRequest, what, commit string) *intake.Result {
+	if pr == nil || commit == pr.HeadSHA {
+		return nil
+	}
+	named := "names " + commit
+	if commit == "" {
+		named = "names no commit"
+	}
+	result := refused("VERDICT_HEAD_NOT_CURRENT", fmt.Sprintf(
+		"this %s of %s %s, and the head of its pull request #%d is %s: read that head and call %s again naming it; nothing was recorded",
+		what, issue.Key, named, pr.Number, pr.HeadSHA, what))
+	return &result
+}
+
 // recordAcceptance records the owner's acceptance as the verdict of its review step (spec R5):
-// by's sign_off as approve, and its request_backward_move as changes, word either, at the head the
-// record holds for issue's pull request pr, which is the head the owner accepted or sent back. An
-// issue that does not stand in accepting, a request that names no claim, a pull request not
-// recorded or at no head, and a tree that lingers, whose request changes nothing, record nothing.
-func (e *Engine) recordAcceptance(ctx context.Context, tx pgx.Tx, issue record.Issue, by claim.Token, word store.VerdictWord, pr *record.PullRequest) error {
-	if issue.Phase != phase.Accepting || by == "" || pr == nil || pr.HeadSHA == "" {
+// by's sign_off as approve, and its request_backward_move as changes, word either, at commit, the
+// head the owner accepted or sent back, which its caller has held to the pull request's current
+// head (acceptanceHeadRefusal). An issue that does not stand in accepting, a request that names no
+// claim, a pull request not recorded, and a tree that lingers, whose request changes nothing,
+// record nothing.
+func (e *Engine) recordAcceptance(ctx context.Context, tx pgx.Tx, issue record.Issue, by claim.Token, word store.VerdictWord, pr *record.PullRequest, commit string) error {
+	if issue.Phase != phase.Accepting || by == "" || pr == nil || commit == "" {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	return e.recordStepVerdict(ctx, tx, issue, pr, phase.Accepting, by, string(word), pr.HeadSHA)
+	return e.recordStepVerdict(ctx, tx, issue, pr, phase.Accepting, by, string(word), commit)
 }
 
 // recordStepVerdict records the verdict of the review step issue runs at at on the walk of its run,

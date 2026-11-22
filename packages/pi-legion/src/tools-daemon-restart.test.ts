@@ -271,7 +271,11 @@ test("the daemon's own 502 or 503, which carries its code, is its answer and is 
   const clock = virtualClock();
   const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 0), clock);
 
-  const { result, updates } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
+  const { result, updates } = await run(tool, {
+    op: "sign_off",
+    issue: "LEGION-208",
+    commit: "c0ffee",
+  });
 
   expect(result.isError).toBe(true);
   expect(live.answered).toEqual(["/legion/v1/grants", "/legion/v1/signoff"]);
@@ -345,7 +349,7 @@ test("an aborted call stops waiting and sends nothing more, even with the daemon
 
   const result = await tool.execute(
     "",
-    { op: "sign_off", issue: "LEGION-208" },
+    { op: "sign_off", issue: "LEGION-208", commit: "c0ffee" },
     abort.signal,
     undefined,
     context
@@ -395,7 +399,11 @@ test("sign_off waits out a restarting daemon with a fresh grant on each attempt,
   const clock = virtualClock();
   const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 2), clock);
 
-  const { result, updates } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
+  const { result, updates } = await run(tool, {
+    op: "sign_off",
+    issue: "LEGION-208",
+    commit: "c0ffee",
+  });
 
   expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
   expect(live.answered).toEqual(["/legion/v1/grants", "/legion/v1/signoff"]);
@@ -414,7 +422,7 @@ test("sign_off waits out a restarting daemon with a fresh grant on each attempt,
   const quiet = virtualClock();
   const refused = await run(
     toolFor("architect", restartingClient(refusing.url, refusingOrigin(), 0), quiet),
-    { op: "sign_off", issue: "LEGION-208" }
+    { op: "sign_off", issue: "LEGION-208", commit: "c0ffee" }
   );
   expect(refused.result.isError).toBe(true);
   expect(refused.result.content[0]).toMatchObject({
@@ -450,7 +458,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
     clock
   );
 
-  const { result } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
+  const { result } = await run(tool, { op: "sign_off", issue: "LEGION-208", commit: "c0ffee" });
 
   expect(result.isError).toBeUndefined();
   expect(answered).toEqual([
@@ -467,7 +475,11 @@ test("a daemon that stays down past the ten-minute budget fails the call with th
   const clock = virtualClock();
   const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 1_000), clock);
 
-  const { result, updates } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
+  const { result, updates } = await run(tool, {
+    op: "sign_off",
+    issue: "LEGION-208",
+    commit: "c0ffee",
+  });
 
   expect(result.isError).toBe(true);
   const [block] = result.content;

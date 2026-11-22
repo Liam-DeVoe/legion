@@ -250,8 +250,9 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
   "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
-  "counts a review round. " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing, and names in `commit` " +
+  "the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
+  "current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. " +
   "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
   "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +
   "passed: the reviewer, and the owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` " +
@@ -309,12 +310,14 @@ const STOP_TASK_TERMS = {
 const SIGN_OFF_TERMS = {
   opens: "sign_off ",
   names: [
+    "`commit`",
     "(SIGNOFF_OUTSIDE_ACCEPTING)",
     "(SIGNOFF_CHILD_IN_WORKFLOW",
     "(ISSUE_NOT_OWNED",
     "ISSUE_OUTSIDE_TREE",
     "SIGNOFF_STALE_GENERATION",
     "SIGNOFF_STALE_ENTRY",
+    "VERDICT_HEAD_NOT_CURRENT",
   ],
 } as const;
 
@@ -806,11 +809,18 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
       to: "testing",
       reason: "the proof is thin",
       issue: "LEGION-209",
+      commit: "c0ffee",
     })
   ).resolves.toMatchObject({ details: {} });
   expect(calls.at(-1)).toEqual([
     "phaseBackward",
-    { grantId: "grant-208", to: "testing", reason: "the proof is thin", issue: "LEGION-209" },
+    {
+      grantId: "grant-208",
+      to: "testing",
+      reason: "the proof is thin",
+      issue: "LEGION-209",
+      commit: "c0ffee",
+    },
   ]);
   await expect(
     run(architect, { op: "release_children", issues: ["LEGION-209"] })
@@ -823,10 +833,21 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     "phaseRetry",
     { grantId: "grant-208", issue: "LEGION-208", decision: "retry" },
   ]);
+  await expect(
+    run(architect, { op: "sign_off", issue: "LEGION-208", commit: "c0ffee" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "signOff",
+    { grantId: "grant-208", issue: "LEGION-208", commit: "c0ffee" },
+  ]);
+  // The owner's sign-off is its approve at the head it names, so one that names none is refused
+  // before any request.
+  const beforeUnnamed = calls.length;
   await expect(run(architect, { op: "sign_off", issue: "LEGION-208" })).resolves.toMatchObject({
-    details: {},
+    isError: true,
+    content: [{ type: "text", text: "sign_off requires commit" }],
   });
-  expect(calls.at(-1)).toEqual(["signOff", { grantId: "grant-208", issue: "LEGION-208" }]);
+  expect(calls).toHaveLength(beforeUnnamed);
   await expect(
     run(architect, { op: "close_root", issue: "LEGION-208", reason: "no change" })
   ).resolves.toMatchObject({ details: {} });
@@ -956,8 +977,8 @@ test("rerun_child refuses a reason before any grant, naming issue and the dispat
     ],
     // Every field the operation does not take is named, as a phase op's refusal names them.
     [
-      { op: "sign_off", issue: "LEGION-208", reason: "approved", note: "x" },
-      'sign_off does not accept field "reason"; sign_off does not accept field "note"; it takes issue',
+      { op: "sign_off", issue: "LEGION-208", commit: "c0ffee", reason: "approved", note: "x" },
+      'sign_off does not accept field "reason"; sign_off does not accept field "note"; it takes issue, commit',
     ],
     [
       { op: "release_children", issues: ["LEGION-209"], reason: "wave 2" },
@@ -1271,7 +1292,13 @@ test("a workflow refusal tells the agent both its code and message", async () =>
   });
 
   await expect(
-    tool.execute("", { op: "sign_off", issue: "LEGION-208" }, undefined, undefined, context())
+    tool.execute(
+      "",
+      { op: "sign_off", issue: "LEGION-208", commit: "c0ffee" },
+      undefined,
+      undefined,
+      context()
+    )
   ).resolves.toMatchObject({
     content: [{ type: "text", text: expect.stringContaining("SIGNOFF_OUTSIDE_ACCEPTING") }],
     isError: true,

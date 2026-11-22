@@ -48,20 +48,37 @@ func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, engine *Engine, key st
 	return claim.Token(treeRoleToken(t, issue.Tree, claim.RoleArchitect)), issue.Generation, entry
 }
 
+// ownersHead is the head the record holds for key's pull request, "" where it holds none: the
+// commit the owner names when it accepts or sends back the head it read (api's signOff,
+// phaseBackward).
+func ownersHead(t *testing.T, pool *pgxpool.Pool, key string) string {
+	t.Helper()
+	var head string
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		pr, err := record.NewStore().PullRequest(t.Context(), tx, key)
+		if pr != nil {
+			head = pr.HeadSHA
+		}
+		return err
+	})
+	return head
+}
+
 // rootsSignOff is the sign_off of key by its tree root's architect, as the route of engine's daemon
-// builds it.
+// builds it, naming the head of key's pull request.
 func rootsSignOff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) intake.SignOff {
 	t.Helper()
 	by, generation, entry := treeArchitectsRead(t, pool, engine, key)
-	return intake.SignOff{Issue: key, By: by, Generation: generation, Entry: entry}
+	return intake.SignOff{Issue: key, By: by, Generation: generation, Entry: entry, Commit: ownersHead(t, pool, key)}
 }
 
 // rootsMoveBack is the request_backward_move of key to to by its tree root's architect, as the
-// route of engine's daemon builds it.
+// route of engine's daemon builds it, naming the head of key's pull request.
 func rootsMoveBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, to phase.Phase, reason string) intake.BackwardMove {
 	t.Helper()
 	by, generation, entry := treeArchitectsRead(t, pool, engine, key)
-	return intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: to, Reason: reason, By: by, Generation: generation, Entry: entry}
+	return intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: to, Reason: reason, By: by, Generation: generation, Entry: entry,
+		Commit: ownersHead(t, pool, key)}
 }
 
 // otherRoot is the root LEGION-300 of a tree of its own, standing at admitted, generation 1: the

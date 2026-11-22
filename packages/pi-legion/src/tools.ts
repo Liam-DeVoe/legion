@@ -100,7 +100,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   stop_task: ["issue", "task"],
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
-  sign_off: ["issue"],
+  sign_off: ["issue", "commit"],
   close_root: ["issue", "reason"],
   rerun_child: ["issue"],
   read_build: [],
@@ -544,7 +544,9 @@ export function createLegionTool(deps: {
         "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "sign_off is the architect's acceptance of an issue in accepting at the head it names in `commit`, moving it to retro: it is the " +
+        "acceptance's approve at that head, which the daemon takes only at the pull request's current head (VERDICT_HEAD_NOT_CURRENT). " +
+        "The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
@@ -895,11 +897,15 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "sign_off": {
-            // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // A repeat after a sign-off that landed finds the issue in retro and changes nothing. The
+            // sign-off is the owner's approve at the head it names, which the daemon takes only at the
+            // pull request's current head (VERDICT_HEAD_NOT_CURRENT).
             const issue = requiredString(parameters, operation, "issue");
+            const commit = requiredString(parameters, operation, "commit");
             await retryWhileDaemonRestarts(
               "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              async () =>
+                client.signOff({ grantId: await mintClaimGrant(client, active), issue, commit }),
               restart
             );
             return jsonSuccess({});

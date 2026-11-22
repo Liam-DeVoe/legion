@@ -583,7 +583,8 @@ func (r *admissionIssuesLive) sendBackFromAccepting() {
 		r.t.Fatalf("decode the grant of %s's architect: %v", r.accepting, err)
 	}
 	status, body = r.d.request(http.MethodPost, "/legion/v1/phase/backward",
-		api.PhaseBackwardRequest{GrantID: granted.GrantID, Issue: r.accepting, To: phase.Implementing, Reason: "the acceptance round asks for one more change"}, false)
+		api.PhaseBackwardRequest{GrantID: granted.GrantID, Issue: r.accepting, To: phase.Implementing, Reason: "the acceptance round asks for one more change",
+			Commit: admissionIssuesHead}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("request_backward_move of %s = %d %s, want 200", r.accepting, status, body)
 	}

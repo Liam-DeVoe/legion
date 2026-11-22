@@ -2316,9 +2316,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The owner's move back from accepting is its acceptance's changes at the head (recordAcceptance).
+	// The owner's move back from accepting is its acceptance's changes at the head it names
+	// (recordAcceptance), and only at the pull request's current head (acceptanceHeadRefusal).
 	if fact.Requester == claim.RoleArchitect {
-		if err := e.recordAcceptance(ctx, tx, *issue, fact.By, store.VerdictChanges, pr); err != nil {
+		if refusal := acceptanceHeadRefusal(*issue, pr, "request_backward_move", fact.Commit); refusal != nil {
+			return *refusal, nil
+		}
+		if err := e.recordAcceptance(ctx, tx, *issue, fact.By, store.VerdictChanges, pr, fact.Commit); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -2372,8 +2376,12 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The sign-off is the owner's acceptance's approve at the head (recordAcceptance).
-	if err := e.recordAcceptance(ctx, tx, *issue, fact.By, store.VerdictApprove, pr); err != nil {
+	// The sign-off is the owner's acceptance's approve at the head it names (recordAcceptance), and
+	// only at the pull request's current head (acceptanceHeadRefusal).
+	if refusal := acceptanceHeadRefusal(*issue, pr, "sign_off", fact.Commit); refusal != nil {
+		return *refusal, nil
+	}
+	if err := e.recordAcceptance(ctx, tx, *issue, fact.By, store.VerdictApprove, pr, fact.Commit); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", review, pr, "")

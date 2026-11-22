@@ -173,8 +173,9 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       .filter((f) => f !== "op")
   );
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
-  // The exact fields, in the order the ops first take them: no completion and no verdict names the
-  // commit of a tester's pass, since the check states at each head decide each testing step there.
+  // The exact fields, in the order the ops first take them: no completion names a commit, which the
+  // architect's move back and a verdict past review name, since the check states at each head
+  // decide each testing step there.
   expect(Object.keys(phaseOpParameters(z))).toEqual([
     "issue",
     "since",
@@ -186,8 +187,8 @@ test("the phase ops' fields, as a host declares them, are every field of every o
     "return_to",
     "to",
     "reason",
-    "round",
     "commit",
+    "round",
   ]);
 });
 
@@ -207,7 +208,7 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing, and names in `commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -1331,7 +1332,7 @@ test("wake_at is a check report's: a phase completion carrying one is refused, s
   expect(lookups).toEqual([]);
 });
 
-test("request_backward_move names the issue an architect returns from accepting, and only a phase worker's own issue", async () => {
+test("request_backward_move names the issue and the head an architect returns from accepting, and only a phase worker's own issue", async () => {
   const posted: Record<string, unknown>[] = [];
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
@@ -1351,8 +1352,8 @@ test("request_backward_move names the issue an architect returns from accepting,
       throw new Error("no branch-head lookup expected");
     },
   });
-  // The tree's architect (its grant serves the whole tree) names the child it sends back; a
-  // sub-architect's role is architect too.
+  // The tree's architect (its grant serves the whole tree) names the child it sends back and the
+  // head it sends back, its acceptance's changes there; a sub-architect's role is architect too.
   for (const architect of [
     { ...implementer, role: "architect" as const },
     { ...implementer, role: "architect" as const, issue: "LEGION-209" },
@@ -1363,6 +1364,7 @@ test("request_backward_move names the issue an architect returns from accepting,
         to: "testing",
         reason: "the proof is thin",
         issue: "LEGION-210",
+        commit: "c0ffee",
       })
     ).resolves.toEqual({});
     expect(posted.at(-1)).toEqual({
@@ -1370,17 +1372,28 @@ test("request_backward_move names the issue an architect returns from accepting,
       to: "testing",
       reason: "the proof is thin",
       issue: "LEGION-210",
+      commit: "c0ffee",
     });
     await expect(
       executePhaseOp(runtimeFor(architect), {
         op: "request_backward_move",
         to: "testing",
         reason: "the proof is thin",
+        commit: "c0ffee",
       })
     ).rejects.toThrow(new Error("request_backward_move requires issue"));
+    await expect(
+      executePhaseOp(runtimeFor(architect), {
+        op: "request_backward_move",
+        to: "testing",
+        reason: "the proof is thin",
+        issue: "LEGION-210",
+      })
+    ).rejects.toThrow(new Error("request_backward_move requires commit"));
   }
   // A phase worker leaves the issue out, or names its own; another issue is refused before any
-  // request, as the daemon would refuse it (ISSUE_NOT_GRANTS).
+  // request, as the daemon would refuse it (ISSUE_NOT_GRANTS). Its move is no verdict, so it names
+  // no head.
   const before = posted.length;
   await expect(
     executePhaseOp(runtimeFor(implementer), {
@@ -1417,6 +1430,18 @@ test("request_backward_move names the issue an architect returns from accepting,
     })
   ).rejects.toThrow(
     new Error("a phase worker moves only its own issue LEGION-208, not LEGION-209")
+  );
+  await expect(
+    executePhaseOp(runtimeFor(implementer), {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "test failed",
+      commit: "c0ffee",
+    })
+  ).rejects.toThrow(
+    new Error(
+      "a phase worker's request_backward_move names no commit: only the architect that owns an issue in accepting names the head it sends back"
+    )
   );
   expect(posted).toHaveLength(before + 4);
 });

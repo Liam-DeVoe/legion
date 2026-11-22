@@ -394,13 +394,14 @@ func (r *stepRecordsRig) accept() {
 }
 
 // signOff is the tree architect answering in a turn of its own and signing off issue, a member of
-// its tree, through its own route; issue then reaches its retro.
+// its tree, through its own route, at the head its pull request stands at (headOf); issue then
+// reaches its retro.
 func (r *stepRecordsRig) signOff(issue string) {
 	t := r.t
 	t.Helper()
 	c := r.worker(claim.RoleArchitect)
 	c.ownTurn()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": issue}, false)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": issue, "commit": r.headOf(issue)}, false)
 	if status != http.StatusOK {
 		t.Fatalf("the architect's sign-off of %s = %d %s, want 200", issue, status, body)
 	}
@@ -444,6 +445,16 @@ func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
 	}) {
 		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
 	}
+}
+
+// headOf is the head the daemon's state shows for issue's pull request, the commit the owner names
+// when it accepts that head; "" where it shows none.
+func (r *stepRecordsRig) headOf(issue string) string {
+	r.t.Helper()
+	if pr := r.d.state().Issues[issue].PullRequest; pr != nil {
+		return pr.Head
+	}
+	return ""
 }
 
 // token is the claim token of role on the walk's issue, as the daemon spells it.

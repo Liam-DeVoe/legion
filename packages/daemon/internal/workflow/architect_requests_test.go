@@ -81,25 +81,27 @@ func personsTodoOnChild(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, p
 
 // architectsRequest is one of sign_off, request_backward_move and retry_or_escalate as its route
 // builds its fact from its read (api's signOff, phaseBackward and phaseRetry): the issue, the
-// claim of the architect, the generation and, for a request about accepting, the run of accepting.
+// claim of the architect, the generation, for a request about accepting the run of accepting, and
+// for the owner's acceptance the head it names, the head the record holds for the issue's pull
+// request when the route read it.
 type architectsRequest struct {
 	name string
 	at   phase.Phase
-	fact func(by claim.Token, read record.Issue, entry record.StepEntry) intake.Fact
+	fact func(by claim.Token, read record.Issue, entry record.StepEntry, head string) intake.Fact
 	// moved says whether the request moved the issue from where it stood: the sign-off to retro,
 	// the move back to implementing, the retry out of its hold.
 	moved func(record.Issue) bool
 }
 
 var architectsRequests = []architectsRequest{
-	{"sign_off", phase.Accepting, func(by claim.Token, read record.Issue, entry record.StepEntry) intake.Fact {
-		return intake.SignOff{Issue: read.Key, By: by, Generation: read.Generation, Entry: entry}
+	{"sign_off", phase.Accepting, func(by claim.Token, read record.Issue, entry record.StepEntry, head string) intake.Fact {
+		return intake.SignOff{Issue: read.Key, By: by, Generation: read.Generation, Entry: entry, Commit: head}
 	}, func(issue record.Issue) bool { return issue.Phase == phase.Retro }},
-	{"request_backward_move", phase.Accepting, func(by claim.Token, read record.Issue, entry record.StepEntry) intake.Fact {
+	{"request_backward_move", phase.Accepting, func(by claim.Token, read record.Issue, entry record.StepEntry, head string) intake.Fact {
 		return intake.BackwardMove{Issue: read.Key, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "the evidence does not cover the migration",
-			By: by, Generation: read.Generation, Entry: entry}
+			By: by, Generation: read.Generation, Entry: entry, Commit: head}
 	}, func(issue record.Issue) bool { return issue.Phase == phase.Implementing }},
-	{"retry_or_escalate", phase.Held, func(by claim.Token, read record.Issue, _ record.StepEntry) intake.Fact {
+	{"retry_or_escalate", phase.Held, func(by claim.Token, read record.Issue, _ record.StepEntry, _ string) intake.Fact {
 		return intake.RetryOrEscalate{Issue: read.Key, Decision: intake.RetryDecision, Reason: "go on", By: by, Generation: read.Generation}
 	}, func(issue record.Issue) bool { return issue.Phase == phase.Implementing }},
 }
@@ -163,7 +165,7 @@ func TestAnArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 				engine := returnEngine()
 				read := subTreeTarget(t, pool, engine, request.at)
 				readEntry := openStepOf(t, pool, engine, read.Key)
-				fact := request.fact(subArchitect(t, "LEGION-209"), read, readEntry)
+				fact := request.fact(subArchitect(t, "LEGION-209"), read, readEntry, ownersHead(t, pool, read.Key))
 				if window.between != nil {
 					window.between(t, pool, engine)
 				}

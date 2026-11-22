@@ -253,6 +253,15 @@ export const PhaseOpArguments = z.discriminatedUnion(
             : "request_backward_move requires to",
       }),
       reason: requiredString("request_backward_move", "reason"),
+      // The head an architect sends back from accepting, its acceptance's changes there, which the
+      // daemon takes only at the pull request's current head (VERDICT_HEAD_NOT_CURRENT). A phase
+      // worker's move is no verdict and names none. Which is the executor's to hold, by the role.
+      // It gives no description of its own: a host declares `commit` once, in review_verdict's
+      // words (phaseOpParameters), and the move's sentence says what it names
+      // (PHASE_OP_SENTENCES.requestBackwardMove).
+      commit: z
+        .string({ error: "request_backward_move's commit is the head you send back" })
+        .optional(),
     }),
     // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
@@ -382,7 +391,9 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing, and names in `commit` " +
+    "the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
+    "current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. ",
   reviewVerdict:
     "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
     "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +
@@ -741,21 +752,33 @@ export async function executePhaseOp(
     }
     case "request_backward_move": {
       // An architect's move names the issue it returns from accepting, and a phase worker's leaves
-      // it out (`issueToSend`). The tester's move out of testing is the daemon's to refuse
-      // (BACKWARD_REFUSED), and the refusal's sentence reaches the agent: a testing step ends by
-      // its checks' states alone, so the tester records a fail of each check it cannot verify and
-      // completes. The issue's phase is the daemon's record, which this call does not read.
+      // it out (`issueToSend`). The architect's names the head it sends back too, its acceptance's
+      // changes there, and a phase worker's names none. The tester's move out of testing is the
+      // daemon's to refuse (BACKWARD_REFUSED), and the refusal's sentence reaches the agent: a
+      // testing step ends by its checks' states alone, so the tester records a fail of each check
+      // it cannot verify and completes. The issue's phase and its pull request's head are the
+      // daemon's record, which this call does not read (VERDICT_HEAD_NOT_CURRENT).
       const issue = issueToSend(
         "request_backward_move",
         claim,
         args.issue,
         (named) => `a phase worker moves only its own issue ${claim.issue}, not ${named}`
       );
+      const commit = args.commit?.trim() ?? "";
+      if (claim.role === "architect" && commit === "") {
+        throw new Error("request_backward_move requires commit");
+      }
+      if (claim.role !== "architect" && commit !== "") {
+        throw new Error(
+          "a phase worker's request_backward_move names no commit: only the architect that owns an issue in accepting names the head it sends back"
+        );
+      }
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
         to: args.to,
         reason: args.reason,
         ...(issue === undefined ? {} : { issue }),
+        ...(commit === "" ? {} : { commit }),
       });
       return {};
     }
