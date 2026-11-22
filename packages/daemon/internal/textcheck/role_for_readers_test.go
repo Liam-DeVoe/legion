@@ -57,7 +57,8 @@ type roleForReader struct {
 // a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask,
 // Engine.restartViewed and Engine.startReady, which read their task's first step: a planner's, an
 // implementer's or a role of the deployment's, as plan.Supported takes the acceptance only after
-// an implementer), or reads the retro's own
+// an implementer, and Engine.handOn, which reads the step a freed agent's waiting task stands at,
+// a step place, since only a step waits for its agent), or reads the retro's own
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which
@@ -133,6 +134,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole",
 		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing",
 		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
+	// The role of the step a freed agent's waiting task stands at.
+	{file: "internal/workflow/run_end.go", fn: "Engine.handOn"}: {calls: 1, tests: []string{
+		"TestAFreedAgentTakesTheStepThatWaitedLongest", "TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter"}},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
