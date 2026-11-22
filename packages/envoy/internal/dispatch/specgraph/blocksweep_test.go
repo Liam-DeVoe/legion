@@ -88,11 +88,11 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 			}
 			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "texts", name, n)
-			t.Logf("%d texts inside a block: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
+			t.Logf("%d texts inside a block: %d refused, %d read", n.inputs, n.refused, n.read)
 			n = sweepAgainst(t, p, name, base, leftOutAttributes(t, base, tree))
 			atFloor(t, "attributes", name, n)
-			t.Logf("%d attributes left out: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
-				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
+			t.Logf("%d attributes left out: %d refused, %d read, %d of them toward true by right: %q",
+				n.inputs, n.refused, n.read, n.byRight, n.rights)
 		})
 	}
 }

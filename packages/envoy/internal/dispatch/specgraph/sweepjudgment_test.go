@@ -172,7 +172,7 @@ func movesBeyond(whole, got map[string]string, hasRight bool, allowed map[string
 }
 
 // judgeAnswer is the judgment of the reader's answer to one input, as sweepAgainst hands it over,
-// unchanged, for each input that reads another state than its base: whole, the states of the base;
+// unchanged, for each input that the reader reads: whole, the states of the base;
 // got, the input's; hasRight, whether the input has a right; and allowed, each place that its right
 // names with the one state that it allows there (nil for a right that names no place). Of a right it
 // reads whether there is one and its places, and no words. It gives toward, the line of each place

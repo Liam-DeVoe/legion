@@ -123,8 +123,8 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 					legs++
 				}
 			}
-			t.Logf(`%d inputs: %d refused, %d read as the whole scenario, %d read another state, %d of them toward true by right; %d of them a leg written as ""`,
-				n.inputs, n.refused, n.same, n.moved, n.byRight, legs)
+			t.Logf(`%d inputs: %d refused, %d read, %d of them toward true by right; %d of them a leg written as ""`,
+				n.inputs, n.refused, n.read, n.byRight, legs)
 		})
 	}
 }
@@ -142,25 +142,25 @@ func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]st
 
 // sweepCount is what a sweep read: the inputs that it built, and of those that sweepAgainst judged,
 // comparing each one's states with what the sweep wants of them, how many the reader or the
-// derivation refused, how many read as the base, how many read another state with no state moved
-// toward true or with a state moved by the input's right, how many of those moved a state toward
-// true by a right, with what each of them changed; and judged, the key of the base's line, the bytes
-// that the reader's process read of the base (readerLine), then each judged input's key, kind ('r'
-// read, 'x' refused), right and allowed places (counted), in the order of the inputs. An input that
-// fails the comparison fails the test and is counted nowhere. So the floors (atFloor), which count
-// the inputs judged and hold the digest of judged, fail by name where the sweep skips an input that
-// it built, drops one that it judged, writes an input's bytes otherwise, reads a base of other bytes,
-// or judges an input by another right. known holds the lines that the sweep reported of each of its
-// known positives (knownPositives), by its words, which no floor counts: a sweep that skips the
-// judgment (judgeAnswer) for them or counts one as read, hands the judgment the base's states for the
-// reader's answer, or hands it a right wider than the input's at the places that a known positive
-// moves, fails by that known positive's name (sweepAgainst); one that hands it no right, or a right
-// narrower than the input's, fails by the inputs that move a state toward true by their right.
+// derivation refused, how many it read with no state moved toward true or with a state moved by the
+// input's right, how many of those moved a state toward true by a right, with what each of them
+// changed; and judged, the key of the base's line, the bytes that the reader's process read of the
+// base (readerLine), then each judged input's key, kind ('r' read, 'x' refused), right and allowed
+// places (counted), in the order of the inputs. An input that fails the comparison fails the test and
+// is counted nowhere. So the floors (atFloor), which count the inputs judged and hold the digest of
+// judged, fail by name where the sweep skips an input that it built, drops one that it judged, writes
+// an input's bytes otherwise, reads a base of other bytes, or judges an input by another right. known
+// holds the lines that the sweep reported of each of its known positives (knownPositives), by its
+// words, which no floor counts: a sweep that skips the judgment (judgeAnswer) for them, hands the
+// judgment the base's states for the reader's answer, or hands it a right wider than the input's at
+// the places that a known positive moves, fails by that known positive's name (sweepAgainst); one that
+// hands it no right, or a right narrower than the input's, fails by the inputs that move a state toward
+// true by their right.
 type sweepCount struct {
-	inputs, refused, same, moved, byRight int
-	rights                                []string
-	judged                                []byte
-	known                                 map[string][]string
+	inputs, refused, read, byRight int
+	rights                         []string
+	judged                         []byte
+	known                          map[string][]string
 }
 
 // counted counts the judged input in, whose key is key, as of the kind kind, and is whether it
@@ -202,8 +202,11 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 // sweepAgainst derives each input of base, the base name, in the reader's process p and compares its
 // states with those of the base, as the process reads it: an input that moves a state toward true
 // fails the test, unless the input has a right to it, by the judgment (judgeAnswer), which it hands,
-// for each input that reads another state than the base, the base's states and the input's as the
-// process reads them and the input's right, in one call, unchanged.
+// for each input that the process reads, the base's states and the input's as the process reads them,
+// whether the input has a right and the places that its right names, in one call, unchanged. No branch
+// of it decides an answer that the process read apart from the judgment: what it does with the answer
+// is that call, and with the call's result, the report of each line beyond the input's right and the
+// count of the rest as read.
 // The floor's digest holds the key of the base's line, the bytes that the process read of it
 // (sweepCount.judged), so a base that a writer or code of the sweep changed, whose change the sweep
 // would read both as its input's and as its want's, fails by the base's name. A right with allowed
@@ -246,30 +249,25 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 		}
 		seen[key] = in.what
 		got, err := reader.ask(t, line)
-		switch {
-		case err != nil:
+		if err != nil {
 			if n.counted(in, key, 'x') {
 				n.refused++
 			}
-		case maps.Equal(got, whole):
-			if n.counted(in, key, 'r') {
-				n.same++
-			}
-		default:
-			toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
-			switch {
-			case err != nil:
-				t.Errorf("%s: %v", in.what, err)
-			case len(beyond) > 0 && in.right != "":
-				n.report(t, in, beyond, fmt.Sprintf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(beyond, "; ")))
-			case len(beyond) > 0:
-				n.report(t, in, beyond, fmt.Sprintf("%s: %s", in.what, strings.Join(beyond, "; ")))
-			case n.counted(in, key, 'r'):
-				n.moved++
-				if len(toward) > 0 {
-					n.byRight++
-					n.rights = append(n.rights, in.what)
-				}
+			continue
+		}
+		toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
+		switch {
+		case err != nil:
+			t.Errorf("%s: %v", in.what, err)
+		case len(beyond) > 0 && in.right != "":
+			n.report(t, in, beyond, fmt.Sprintf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(beyond, "; ")))
+		case len(beyond) > 0:
+			n.report(t, in, beyond, fmt.Sprintf("%s: %s", in.what, strings.Join(beyond, "; ")))
+		case n.counted(in, key, 'r'):
+			n.read++
+			if len(toward) > 0 {
+				n.byRight++
+				n.rights = append(n.rights, in.what)
 			}
 		}
 	}
@@ -355,8 +353,8 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 			}
 			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "refusals", name, n)
-			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
-				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
+			t.Logf("%d refusals added: %d refused, %d read, %d of them toward true by right: %q",
+				n.inputs, n.refused, n.read, n.byRight, n.rights)
 		})
 	}
 }
@@ -556,7 +554,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 			}
 			n := sweepAgainst(t, p, name, base, inputs)
 			atFloor(t, "members", name, n)
-			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
+			t.Logf("%d members added: %d refused, %d read", n.inputs, n.refused, n.read)
 		})
 	}
 }

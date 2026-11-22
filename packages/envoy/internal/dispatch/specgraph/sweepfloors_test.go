@@ -206,13 +206,13 @@ const markReadingsFloor = 82
 func atFloor(t *testing.T, sweep, name string, n sweepCount) {
 	t.Helper()
 	floor, held := sweepFloors()[sweep][name]
-	if read := n.same + n.moved; !held || read < floor.read || n.refused < floor.refused {
+	if read := n.read; !held || read < floor.read || n.refused < floor.refused {
 		t.Errorf("the %s sweep judged %d inputs of %s that the reader read and %d that it refused, and its floor is %d read and %d refused (held %t; sweepFloors)",
 			sweep, read, name, n.refused, floor.read, floor.refused, held)
 	}
 	if digest := fmt.Sprintf("%x", sha256.Sum256(n.judged)); held && digest != floor.digest {
 		t.Errorf("the %s sweep judged the %d inputs of %s, in their order, as bytes, kinds and rights whose digest is %s, and its floor's digest is %s (sweepFloors): the base's bytes or an input's bytes changed, an input moved from one kind to the other, an input is judged by another right, or the sweep judged other inputs",
-			sweep, n.same+n.moved+n.refused, name, digest, floor.digest)
+			sweep, n.read+n.refused, name, digest, floor.digest)
 	}
 }
 
