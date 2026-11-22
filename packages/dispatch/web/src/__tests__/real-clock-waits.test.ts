@@ -260,6 +260,22 @@ test("a timer that settles a promise is found however it is reached, and one tha
   expect(none.map((text) => realWaits("none.test.tsx", text).length)).toEqual(none.map(() => 0));
 });
 
+// docs/testing.md says this scan fails a `Bun.sleep` and an awaited timer. Bun's sleep is also
+// imported by name from "bun", and the standard way to wait in Node, which Bun implements, is the
+// promise `setTimeout` of "node:timers/promises", often imported under another name. Each of these
+// waits 50 ms of real time.
+test("Bun's sleep imported by name and the promise setTimeout of node:timers/promises are found", () => {
+  const imported = [
+    'import { sleep } from "bun";\nawait sleep(50);',
+    'import { sleep as pause } from "bun";\nawait pause(50);',
+    'import { setTimeout } from "node:timers/promises";\nawait setTimeout(50);',
+    'import { setTimeout as delay } from "node:timers/promises";\nawait delay(50);',
+  ];
+  expect(imported.map((text) => realWaits("imported.test.ts", text).length)).toEqual(
+    imported.map(() => 1)
+  );
+});
+
 // The timer a row sets for an answer it stands in for (`afterOnFakeClock`) is no wait of real
 // time: it refuses the real clock, and on the fake one it runs once the clock has moved its delay.
 test("afterOnFakeClock refuses the real clock and runs once the fake one has moved its delay", async () => {
