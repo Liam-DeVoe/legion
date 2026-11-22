@@ -945,7 +945,7 @@ func populatedState(t *testing.T) State {
 			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
 		},
 		AgentSecretsLogin: &AgentSecretsLoginView{State: "issued"},
-		// A deployment under dispatch_token_broker in its move (contract 212): two launches since
+		// A deployment under dispatch_token_broker in its move (contract 221): two launches since
 		// this boot kept pods built before the setting and carried the transition token, and three
 		// live generations still hold a Dispatch token, one of them started before this boot.
 		DispatchCredential: &DispatchCredentialView{
@@ -956,11 +956,19 @@ func populatedState(t *testing.T) State {
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
 		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// stale. Its one repository cache, acme/widgets' (Ready and read, as `repositories` below
+		// says), last answered its health with a repack that failed for lack of space, so the
+		// repository-cache-room row is open too, with the third source, `caches`, which a caller
+		// below cachesSourceContract is served without.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
+			Caches: []capabilities.Cache{{
+				Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
+				VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
+				RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
+			}},
 		}.Report()),
 		// Five repositories the live records name, of three owners, sorted by name, each showing
 		// an answer the block carries: acme/gadgets, the review App not installed on it, which

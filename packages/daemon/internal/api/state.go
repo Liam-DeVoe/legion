@@ -101,7 +101,7 @@ type State struct {
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
 	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
 	// the two counts a deployment reads before it removes dispatch_token_transition_file
-	// (DispatchCredentialView), absent when the setting is off (contract 212).
+	// (DispatchCredentialView), absent when the setting is off (contract 221).
 	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
@@ -431,8 +431,10 @@ func (r RepositoriesView) at152() repositoriesAt152 {
 // reach the state); Detail is the row's evidence whatever the status; Decision is the operator's
 // reason on a decided row; ConfigLine is, on an open deployment row, the legion.yaml line that
 // records a decision (`capabilities.decided.<name>: "<reason>"`); an open live row has none.
-// Source is, on a deployment row, "configuration" (what legion.yaml alone decides) or "boot"
-// (what boot measured); absent on every other row.
+// Source is, on a deployment row, "configuration" (what legion.yaml alone decides), "boot" (what
+// boot measured) or "caches" (what the repository caches' last health reads said of their room,
+// served without the word to a caller whose stated contract, else its pod's lowest, is below
+// cachesSourceContract: withoutUnadmittedCapabilitySources); absent on every other row.
 type CapabilityState struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`

@@ -2170,8 +2170,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2216,18 +2218,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2578,9 +2596,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it; `dispatchCredential`, which the state golden carries under
-  // `dispatch_token_broker`, is set aside from the golden too, since every caller below 212 is
-  // served the state without it (`withoutDispatchCredential`).
+  // no other key. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them.
+  // `dispatchCredential`, which the state golden carries under `dispatch_token_broker`, is set
+  // aside from the golden too, since every caller below 221 is served the state without it
+  // (`withoutDispatchCredential`).
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2598,7 +2619,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     dispatchCredential: _credential,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
@@ -2840,11 +2870,11 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The daemon's Dispatch credential under `dispatch_token_broker` (contract 212): the golden names
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 221): the golden names
 // the daemon's session and the two counts a deployment reads before it removes
 // `dispatch_token_transition_file`, and the time of the last transition launch is null before the
 // first. The key is not required: a daemon without the setting writes none, and a daemon at this
-// contract leaves it off the state it serves a caller older than 212, whether the caller states
+// contract leaves it off the state it serves a caller older than 221, whether the caller states
 // its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
 // reads a field of it, so each field is optional; what is refused is a count that is not a whole
 // number of launches, or an empty session.

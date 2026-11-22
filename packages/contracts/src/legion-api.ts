@@ -1056,7 +1056,7 @@ const legionAgentSecretsLoginView = z.object({
 });
 
 /** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
- * (contract 212): `session`, the session its own Dispatch calls run under
+ * (contract 221): `session`, the session its own Dispatch calls run under
  * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
  * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
  * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
@@ -1081,15 +1081,18 @@ const legionDispatchCredentialView = z.object({
  * `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `present` or `open` from the
  * sessions' reports (`legionCapabilityReportView`), and carries no `configLine`; `live` is no
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
- * alone decides) or `boot` (what boot measured); absent on every other row (contract 25). A gap is
- * reported here, never refused (contract 16). */
+ * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
+ * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
+ * room (contract 213). A caller below 213 is served that row without `source`, since the enum it
+ * was built with names two words: a value follows the contract the caller states, else its pod's
+ * lowest recorded contract. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
   name: nonEmptyString.optional(),
   status: z.enum(["present", "unchecked", "withheld", "decided", "open"]).optional(),
   detail: nonEmptyString.optional(),
   decision: nonEmptyString.optional(),
   configLine: nonEmptyString.optional(),
-  source: z.enum(["configuration", "boot"]).optional(),
+  source: z.enum(["configuration", "boot", "caches"]).optional(),
 });
 
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
@@ -1324,8 +1327,8 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither.
  * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
- * tokens its launches hand out, written only under `dispatch_token_broker` (contract 212); the
- * route strips it for a caller below 212, read the same way (`api.stateFor`,
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 221); the
+ * route strips it for a caller below 221, read the same way (`api.stateFor`,
  * `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
