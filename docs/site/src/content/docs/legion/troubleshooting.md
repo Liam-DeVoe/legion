@@ -530,8 +530,8 @@ any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
 waits for the compaction's end instead, as everything the claim is owed does. An update round
-waits for none of this: the daemon publishes the round's message to the role's own topic, and the
-round ends at its bound whether or not a turn of that role succeeds.
+waits for none of this: the daemon publishes the round's message to the topic of each claim it
+asks, and the round ends at its bound whether or not a turn of that claim succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -792,12 +792,13 @@ start spawns a fresh session. To replace a session of a claim that is still live
 the command refuses every live claim and any `--session` that does not equal the recorded session.
 The resumed claim starts fresh with its pending task.
 
-To see why the launches failed, read the failed role's lines of the `roles` container's log in the
-issue's pod. The launcher prefixes each role's lines with the role's name:
+To see why the launches failed, read the failed claim's lines of the `roles` container's log in the
+issue's pod. The launcher prefixes each slot's lines with the slot's name, which is the name of the
+agent whose claim runs in it, the last part of its claim token, whatever role its step is on:
 
 ```sh
 kubectl -n legion get pods -l legion.dev/issue=<KEY>
-kubectl -n legion logs <pod> -c roles | grep '^<role>: '   # e.g. '^implementer: '
+kubectl -n legion logs <pod> -c roles | grep '^<agent>: '   # e.g. '^implementer: '
 kubectl -n legion describe pod <pod>     # scheduling, image pulls, mounts
 ```
 
@@ -917,7 +918,8 @@ legion state --config legion.yaml --json | jq '.strandedClaims'
 ```
 
 Act only on the claims this list names, and leave out any you suspended on purpose. A claim's token
-is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
+is `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows: it ends in the
+name of the claim's agent, the role of that agent's first step, whatever role its step is on now.
 
 - **`resume`** (a suspended architect): resume it. Once it is ready the daemon sends it a catch-up
   of what changed while it was away:
@@ -1120,7 +1122,7 @@ The daemon does not send a phase task while another claim of the same issue is i
 It sends the task when that turn ends, and the adoption runs then.
 
 **Four lines in the daemon's log show what each adoption did.**
-Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
+Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<agent>`, the name of the claim's agent at its end, for example `legion-widgets-widgets-12-implementer`.
 So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
 Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
 
@@ -1154,8 +1156,8 @@ A search that finds no line for a time before the first line does not show that 
   The task stays queued.
 
 Compare the time of the commit with these lines.
-An adoption line for another role of the issue just before the commit shows that the adoption moved the author.
-On a daemon that carries the rule, every adoption line names a phase, and its `claim` is the claim of the role that owns that phase.
+An adoption line for another claim of the issue just before the commit shows that the adoption moved the author.
+On a daemon that carries the rule, every adoption line names a phase, and its `claim` is the claim of the agent that works that phase's step.
 
 A daemon from a release before `legion-v20.5.0` (cybermonklabs/legion#2539) adopts the working copy before every task that it sends, and it holds no task for the turn of another role.
 On such a daemon, an update round or a message wake can take the author of the commit that the implementer works on.
@@ -1440,15 +1442,16 @@ These arrive as messages on the Dispatch issue:
   decision that needs your authority.
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
-  move back and fired: the daemon wrote the hook's words to each role the line names, on that
-  role's own topic, and posted this record of it. Nothing is held: the phase the move opened
-  started its worker, and each role answers in its own turn. No hook writes to an architect: the
-  daemon's own wake to an architect is a notice.
+  move back and fired: the daemon wrote the hook's words once for each role the line names, on the
+  topic of the claim of the agent that works that role's step, and posted this record of it. Nothing
+  is held: the phase the move opened started its worker, and each agent answers in its own turn. No
+  hook writes to an architect: the daemon's own wake to an architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
-  conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
-  of the issue's current phase and the implementer, and judges none of them. Re-run a check that
-  failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
-  holds the merge under the base branch's own required checks.
+  conclusion GitHub gave it, in one message to each agent among the architect that owns the issue,
+  the worker of the issue's current phase and the implementer, and judges none of them: an agent
+  that works two of those roles gets one message. Re-run a check that failed on itself, have the
+  implementer fix code that is at fault, or leave it to GitHub, which holds the merge under the base
+  branch's own required checks.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
