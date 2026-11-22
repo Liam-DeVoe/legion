@@ -61,10 +61,10 @@ func TestAnInformationalAnswerCarriesNoAirlockHeader(t *testing.T) {
 	if answer.StatusCode != http.StatusProxyAuthRequired || answer.Header.Get(forwardedHeader) != "true" || answer.Header.Get(codeHeader) != "" {
 		t.Errorf("[%s] the final answer is %d with Airlock-Forwarded %q and Airlock-Code %q; want the service's 407, true and none", r.protocol, answer.StatusCode, answer.Header.Get(forwardedHeader), answer.Header.Get(codeHeader))
 	}
-	calls := r.logs.lines(callMessage)
-	if len(calls) == 0 {
-		t.Fatal("the proxy logged no call line")
-	}
+	// The call's line is written once the answer is carried, which can be after the command has
+	// its head: read it once it is there (callsAtLeast), as every row that reads a call line does.
+	_, _ = io.Copy(io.Discard, answer.Body)
+	calls := r.logs.callsAtLeast(t, 1)
 	if status := calls[len(calls)-1].fields["status"]; status != int64(http.StatusProxyAuthRequired) {
 		t.Errorf("[%s] the call's line names the status %v; want the final 407", r.protocol, status)
 	}
