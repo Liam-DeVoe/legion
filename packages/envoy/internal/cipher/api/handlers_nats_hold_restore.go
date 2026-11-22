@@ -314,15 +314,18 @@ func runningCommand(d holdrecord.Done) string {
 // entries by gen, does not hold as a verified entry at that gen with that signing time, or that
 // names no row. The operator's client names the row of every entry it writes, and every such row
 // is a log entry of the history the journal was written in, so a journal of another history put
-// in this one's place without the log entries it names names a row this log does not hold when
-// that history moved the row; so does a journal whose hold's log entries a writer cut back or
-// deleted, which the restore cannot tell from it. A journal from a fork taken while the row was
-// held, put back together with that history's later log entries, binds: every row its entries name
-// is then in the log (infra/README.md states that case among those that still store). An entry
-// whose row is in the log but does not verify names that log entry's Verify error, and the key id
-// of a key the list no longer holds with the step-4 repair (keyRepair): a log entry a retired key
-// signed is not a missing one. This PR writes the first journals, so no journal the routes wrote
-// names no row.
+// in this one's place without the log entries it names names a row this log does not hold once
+// that history wrote an entry under a row it moved to (its release's done entry, written under
+// its released row); so does a journal whose hold's log entries a writer cut back or deleted,
+// which the restore cannot tell from it. A journal of a history cut after its row's move and
+// before that done entry names only the held row the histories share, so it binds even put back
+// alone, and heldByRecord then refuses it 400 for showing hold set done and no end. A journal from
+// a fork taken while the row was held, put back together with that history's later log entries,
+// binds: every row its entries name is then in the log (infra/README.md states that case among
+// those that still store). An entry whose row is in the log but does not verify names that log
+// entry's Verify error, and the key id of a key the list no longer holds with the step-4 repair
+// (keyRepair): a log entry a retired key signed is not a missing one. This PR writes the first
+// journals, so no journal the routes wrote names no row.
 func boundToLog(holdID string, d holdrecord.Done, ix logIndex) error {
 	for i, o := range d.Ops {
 		entry := fmt.Sprintf("hold %q's journal entry %d (%s %s)", holdID, i, o.Command, o.State)

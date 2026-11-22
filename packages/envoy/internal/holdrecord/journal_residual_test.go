@@ -67,9 +67,14 @@ func residualRows(t *testing.T) {
 			// runs on the first replica, which never saw history 1. A database writer puts back
 			// history 1's journal and its log entries above the fork, and deletes the row. Every
 			// entry history 1 wrote while the row sat at held names the held row both histories
-			// share, and its later entries name its released row, which the writer put back, so
-			// the journal binds. Nothing in the database tells this state from history 1's own
-			// lost row.
+			// share, and the entry it wrote under a row it moved to, its release's done entry,
+			// names its released row, which the writer put back, so the journal binds. Cut before
+			// that done entry, history 1 wrote no entry under a row it moved to, so its journal
+			// binds even put back alone (and is then refused 400 for showing hold set done and no
+			// end); put back with its released entry it stores, not because of the binding but
+			// because that entry ends the hold by the strict-end rule, the journal showing hold
+			// release's intent as that command's latest entry. Nothing in the database tells this
+			// state from history 1's own lost row.
 			readmeSays(t, forkWholeResidual)
 			readmeSays(t, forkWholeRemedy)
 			r := newRig(t)

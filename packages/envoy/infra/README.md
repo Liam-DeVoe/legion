@@ -4420,10 +4420,12 @@ served the row or a record since its newer gen, serves an older signed one put b
 the genuine one; production runs two replicas. Records carry no signed history of their own, but
 a journal is bound to the row's signed log: each of its entries names the hold row it was written
 under, so the restore reads a journal as unknown when an entry names a row this log does not hold
-as a verified entry, as another history's journal put back alone does once that history moved the
-row. It does not refuse a journal from a fork taken while the row was `held` when the writer also
-puts back that history's later log entries: every row its command entries name is the `held` row
-both histories share, so it binds (one of the cases that still store, below). The other records (a
+as a verified entry, as another history's journal put back alone does once that history wrote an
+entry under a row it moved to (its release's done entry, written under its `released` row). It
+does not refuse a journal from a fork taken while the row was `held` when the writer also puts
+back that history's later log entries: every row its entries name is then the `held` row both
+histories share or a row of that history's the writer put back, so it binds (one of the cases
+that still store, below). The other records (a
 cohort, a conversion's saved set, the selection inputs) carry no such binding: after a database
 restore, a replica that starts again reads them as the restore left them, an older signed version
 or one gone included. A floor both replicas share, kept outside the database, is the fix if that
@@ -4501,11 +4503,18 @@ each disk with the done prove's record, and may write a stop, before it moves th
 would refuse a genuine end cut after its intent. Second, the live hold's `held` entry deleted while
 `hold set` runs, which makes the log look like an abort from `prepare`. Third, another history's
 journal of the live hold put back together with the log entries it names, from a fork taken while
-the row was `held`: every row its command entries name is the `held` row both histories share, and
-its later entries name that history's own rows, its `released` entry among them, which the writer
-puts back too, so the journal binds, with no restart; nothing in the database tells that state
-from that history's own lost row. Any copy of the hold tables taken while a hold was live is that
-input, so a saved copy of them from mid-hold is as sensitive as a writer's access. A floor both
+the row was `held`: every entry that history wrote while the row sat at `held` names the `held`
+row both histories share, and each entry it wrote under a row it moved to, its release's done
+entry, names that history's own `released` row, which the writer puts back too, so the journal
+binds, with no restart; nothing in the database tells that state from that history's own lost
+row. A history cut after its row's move and before its release's done entry wrote no entry under
+a row it moved to: every entry of its journal names the shared `held` row, so the journal binds
+even put back alone, and the restore is then refused 400 `bad_transition`, since the journal
+shows `hold set` done and no end. Put back with that history's `released` entry, it stores, not
+because of the binding but because that entry ends the hold by the rule for a `released` entry
+above: its journal shows `hold release`'s intent as that command's latest entry, cut before its
+done entry. Any copy of the hold tables taken while a hold was live is the third case's input, so
+a saved copy of them from mid-hold is as sensitive as a writer's access. A floor both
 replicas share, kept outside the database, is the remedy for this case (the floors above).
 
 The residual: a database writer can leave the operator no restore on any route, and that lasts

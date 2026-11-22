@@ -29,10 +29,12 @@ const (
 // carries the command's inputs, a `done` entry its outputs, and a `stop` entry its reason in
 // Outputs["reason"] and, when AppendStopLeft wrote it, what the command left in Outputs["left"]:
 // LeftUnchanged, or what it changed. Done.Latest and Entry.Left read them. Row names the hold row
-// the entry was written under, which binds the journal to its history of the tables: the row
-// Admit read for an `intent`, and the row read when a `done` or `stop` entry is written. The
-// restore route reads a journal as unknown when an entry's row is not in its verified log, or an
-// entry names none.
+// the entry was written under, which binds the journal to the log entries it names: the row Admit
+// read for an `intent`, and the row read when a `done` or `stop` entry is written. The restore
+// route reads a journal as unknown when an entry's row is not in its verified log, as another
+// history's journal put back alone does once that history wrote an entry under a row it moved to,
+// or an entry names none. Histories that share a row share the binding of the entries written
+// under it, so it does not tell them apart.
 type Operation struct {
 	Command string            `json:"command"`
 	State   string            `json:"state"`
