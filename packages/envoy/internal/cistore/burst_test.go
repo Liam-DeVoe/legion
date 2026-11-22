@@ -199,14 +199,13 @@ func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *w
 }
 
 // record records one observation of a head as the webhook handler does, a check when CheckName is
-// set and a suite otherwise, failing after 10 s rather than hanging (within).
+// set and a suite otherwise. A record that never answers fails by the test's deadline, which
+// openStore gives the store's record wait.
 func record(s *Store, observation contracts.CIObservation) error {
-	return within(func() error {
-		if observation.CheckName == "" {
-			return s.RecordSuite(context.Background(), observation)
-		}
-		return s.Record(context.Background(), observation)
-	})
+	if observation.CheckName == "" {
+		return s.RecordSuite(context.Background(), observation)
+	}
+	return s.Record(context.Background(), observation)
 }
 
 type head struct{ owner, repo, number, sha string }
