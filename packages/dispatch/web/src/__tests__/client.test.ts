@@ -859,7 +859,7 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
     ["POST", "/api/v1/artifacts/artifact-1/comments"],
     ["GET", "/api/v1/artifacts/artifact-1/blocks"],
     ["GET", "/api/v1/issues/CORE-1/artifacts/design%20notes.md/text"],
-    ["GET", "/api/v1/issues/CORE-1/references"],
+    ["GET", "/api/v1/issues/CORE-1/references?versions=latest"],
   ]);
   expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({
     content: "# Design notes\n",
