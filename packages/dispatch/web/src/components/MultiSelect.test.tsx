@@ -527,10 +527,10 @@ test("Enter, Escape and Tab that end or move an IME composition leave a single p
   }
 });
 
-/** Makes the document keep naming a focused element once it has left the page, as an engine that
- *  moves the focus off a removed element only at its next rendering update does (the HTML spec's
- *  focus fixup, `focusLost`); happy-dom names the body at once, as Chromium does. Answers what
- *  puts the document back. */
+/** Makes the document keep naming a focused element once it has left the page: an engine that
+ *  keeps a removed element active, which `focusLost`'s `!isConnected` check is for. None of
+ *  Playwright's Chromium, Firefox and WebKit does so (`focusLost`), and happy-dom names the body
+ *  at once, as they do. Answers what puts the document back. */
 function keepRemovedFocus(): () => void {
   let prototype: object | null = Object.getPrototypeOf(document);
   let accessor: PropertyDescriptor | undefined;
@@ -559,10 +559,11 @@ function keepRemovedFocus(): () => void {
 }
 
 // INFRA-3135, round 12: the close returned the focus to the trigger only where it had fallen to
-// the body, and an engine that moves the focus off a removed element only at its next rendering
-// update still names the text box the close took away when the close runs, so there Tab or
-// Shift+Tab out of the box left the focus to the page's rescue. A close the list makes itself puts
-// the reader on the trigger in every engine; a press outside still leaves them where it put them.
+// the body, so in an engine that keeps naming a removed element focused, as `keepRemovedFocus`
+// makes happy-dom do, Tab or Shift+Tab out of the text box the close took away left the focus to
+// the page's rescue. None of the three engines measured does so (`focusLost`); a close the list
+// makes itself puts the reader on the trigger either way, and a press outside still leaves them
+// where it put them.
 test("where the engine still names a removed text box focused, Tab out of it puts the focus on the trigger and a press outside leaves it where it landed", async () => {
   const user = userEvent.setup();
   const restore = keepRemovedFocus();
@@ -1260,11 +1261,12 @@ test("a focused row that its pick takes off the page gives the focus to the sear
   }
 });
 
-// Only a press of the row that holds the focus is noted, so a press of a row the focus is not on
-// moves no focus, though its pick takes the row off the page. A pointer press focuses nothing
-// (`onMouseDown`) and leaves the focus in the search box. A click with no pointer press, which the
-// panel's taking of the focus on a pointer press inside it (`AnchoredPanel`) does not see, leaves
-// the focus on the page's body, where a focused row that new options took away left it.
+// Only the press of a row that holds the focus gives the search box the focus, so a press of a
+// row the focus is not on moves no focus, though its pick takes the row off the page. A pointer
+// press focuses nothing (`onMouseDown`) and leaves the focus in the search box. A click with no
+// pointer press, which the panel's taking of the focus on a pointer press inside it
+// (`AnchoredPanel`) does not see, leaves the focus on the page's body, where a focused row that
+// new options took away left it.
 test("a press of a row the focus is not on, which its pick takes off the page, leaves the focus where it is", async () => {
   const user = userEvent.setup();
   const view = render(<OpenHost dropPicked options={["api", "bug", "docs"]} />);
@@ -1298,9 +1300,9 @@ test("a press of a row the focus is not on, which its pick takes off the page, l
 });
 
 // A host can keep the pick as a row is pressed, so the press changes nothing it draws. The press
-// of a focused row still asks for a commit of its own, which forgets the press, so the press
-// answers no later loss: new options that then take that row away are no press of the reader's,
-// and its focus stays on the page's body.
+// of a focused row is answered in its own click handler and kept nowhere after it, so it answers
+// no later loss: new options that then take that row away are no press of the reader's, and its
+// focus stays on the page's body.
 test("a focused row's press that changes nothing drawn answers no later loss: new options that drop the row leave the focus on the page's body", async () => {
   const user = userEvent.setup();
   const picker = (options: string[]) => (

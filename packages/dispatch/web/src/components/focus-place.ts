@@ -264,10 +264,15 @@ function countBefore(controls: readonly Element[], node: Node): number {
 }
 
 /** Whether the keyboard focus is lost: on the body, or still on an element that has left the
- *  page. WebKit and Firefox move the focus off a removed element only at the next rendering
- *  update (the HTML spec's focus fixup), so until then the document still names it. The one
- *  check for a removed focus: the rescue below asks it, and so does `MultiSelect`, both for a
- *  list closing over its own text box and for a row a press takes off the page. */
+ *  page. In Playwright's Chromium, Firefox and WebKit, removing the focused element moves
+ *  `document.activeElement` to the body at once, and it is still the body after a microtask, a
+ *  task and a frame; only a focused element that turns hidden or disabled stays the active
+ *  element, until the task after the next frame, in all three engines (INFRA-3135's builds Jobs
+ *  `infra-3135-removed-4qsm9` and `infra-3135-removed2-nkzh5`, 2026-11-22). The
+ *  `!focused.isConnected` check is for an engine that keeps a removed element active, which none
+ *  of the three measured does. The one check for a removed focus: the rescue below asks it, and
+ *  so does `MultiSelect`, both for a list closing over its own text box and for a row a press
+ *  takes off the page. */
 export function focusLost(): boolean {
   const focused = document.activeElement;
   return focused === null || focused === document.body || !focused.isConnected;
