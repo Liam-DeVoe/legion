@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ackFloorAt takes the state writes whose ack floor is seq.
@@ -109,28 +110,18 @@ func leadOn(t *testing.T, hub *freshHub, consumer string, server *testnats.Serve
 		}
 		return c.Leader == want
 	}
-	within := func(d time.Duration, ok func() bool) bool {
-		for deadline := time.Now().Add(d); ; time.Sleep(100 * time.Millisecond) {
-			if ok() {
-				return true
-			}
-			if time.Now().After(deadline) {
-				return false
-			}
-		}
-	}
 	var refused string
 	var seen []string
 	for range 20 {
 		var now string
-		if !within(30*time.Second, func() bool { now = leader(); return now != "" }) {
+		if !testwait.Holds(30*time.Second, 100*time.Millisecond, func() bool { now = leader(); return now != "" }) {
 			return "the consumer " + consumer + " had no leader for 30 s"
 		}
 		if now == want {
 			return ""
 		}
 		seen = append(seen, now)
-		if !within(60*time.Second, current) {
+		if !testwait.Holds(60*time.Second, 100*time.Millisecond, current) {
 			return fmt.Sprintf("the replica of %s on %s was not current 60 s after its restart (leaders seen %v)", consumer, want, seen)
 		}
 		reply, err := conn.Request("$JS.API.CONSUMER.LEADER.STEPDOWN."+bus.Stream+"."+consumer, nil, 10*time.Second)
@@ -144,7 +135,7 @@ func leadOn(t *testing.T, hub *freshHub, consumer string, server *testnats.Serve
 			time.Sleep(time.Second)
 			continue
 		}
-		if !within(15*time.Second, func() bool { next := leader(); return next != "" && next != now }) {
+		if !testwait.Holds(15*time.Second, 100*time.Millisecond, func() bool { next := leader(); return next != "" && next != now }) {
 			refused = "the leader " + now + " stayed after a step-down answered success"
 		}
 	}
