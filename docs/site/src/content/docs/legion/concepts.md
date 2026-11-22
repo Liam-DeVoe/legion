@@ -333,8 +333,9 @@ header or from the approval question in your Dispatch Inbox; **Request changes**
 your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
-approves the new version. Your answer to an ask block writes no version, so it neither closes
-the gate nor approves the spec. When the architect adds an ask to an approved spec, that version
+approves the new version. Your answer to an ask block writes one version, whose only change is
+the block's `state`, answerer and time, and Dispatch carries an approval across it, so it neither
+closes the gate nor approves the spec. When the architect adds an ask to an approved spec, that version
 closes the gate. After you answer, the architect writes what the answer changes and asks you to
 approve again, naming what changed since your approval. Work already in flight carries on,
 through its merge: the gate holds a tree's start, and nothing after it. The daemon only reads

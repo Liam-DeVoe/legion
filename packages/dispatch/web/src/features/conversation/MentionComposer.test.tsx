@@ -4146,7 +4146,7 @@ test("a new composer's draft that comes to name a #id does not ask a failed spec
   }
 });
 
-// ST1 row 3 (dispatch://INFRA-4948 R1): a held Send (`heldSend`, the Inbox's reply boxes) is
+// ST1 row 3 (the own-answer rule, R1): a held Send (`heldSend`, the Inbox's reply boxes) is
 // `aria-disabled` while its send is out, so the focus Enter put on it stays there, and nothing is
 // disabled under it. A refusal gives Send back at once, pressable, with its error shown and the
 // draft kept, and the focus is still on Send.

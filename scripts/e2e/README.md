@@ -2288,8 +2288,8 @@ Tree 1's document leaves one choice (where the smoke file goes) to the human.
 It then fails unless the architect's approval request at the approved version carries a summary after `Approve spec.md (version N)?`, a human answered at least one of the spec's ask blocks, and no approval request on the spec was early by either of two rules ([`lib/design-gate-verdict.jq`](lib/design-gate-verdict.jq), tested by `bun test scripts/e2e/lib`).
 The version rule judges every hand-back:
 the version its event records in `requested_version` must hold none of the spec's blocks open at the hand-back, each block read from the version by the block ids of the spec's block asks.
-A block the version holds is open when its ask held no answer and no resolution at the hand-back (the asks row's `answer.at` and `resolution.at` are each absent or later), since a person's answer is held on the ask alone and a version this release writes records no state on a block;
-a version the release before wrote records it, and a block that version records `state="open"` is open whatever its ask's times.
+A block the version holds is open when its ask held no answer and no resolution at the hand-back (the asks row's `answer.at` and `resolution.at` are each absent or later), since a person's answer is held on the ask alone and a version this release writes records a block's state only once its ask is answered or resolved, and none while it is open;
+a version the release before wrote records it always, and a block that version records `state="open"` is open whatever its ask's times.
 The ask's own `created_at` is never read, because Dispatch indexes a block as an ask only when it settles the document, after the edit that wrote it.
 An approval row follows versions in place, so `ask.opened` records its first hand-back and each `ask.handed_back` a later one;
 an `ask.edited` only rewords the request.
@@ -6417,7 +6417,7 @@ A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: 
 `untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s, the bound of `lib/claude-backend-guards.test.ts`'s `await_child`: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
-`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
+`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
 
 ## lib/arg-max-force.sh
 
@@ -6473,7 +6473,8 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone, and one recorded `gone`, whose process ended before its start was read, is left alone with no word.
   A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing.
   The Envoy session-states `stop_agent` reads its agent's descendants while the agent is held stopped and ends each that outlives the TERM by its start (`kill_held`), since Claude Code's mid-run stop is followed by a `--resume` of the same session id; otherwise a member that outlived its leader is the run's sweep's (`stop_marked_processes`), which the Envoy session-states and clean-session-stop cleanups run.
-  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own and with a pid recorded `gone`, `stop_agent` with a member that ignores TERM, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
+  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own where the host has perl, since `ownGroup`'s perl starts that process; a host without perl skips that row by name.
+  It also holds them with a pid recorded `gone`, `stop_agent` with a member that ignores TERM, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
   That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name; and the row fails if the host's `pid_max` ever moves across it, naming the value it read, the restore's exit status and stderr, and the value it reads after the restore
 
 - `signalable PID`

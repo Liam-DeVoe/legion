@@ -151,19 +151,230 @@ func blockRefListed(alias, target string) string {
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
-// numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
-// block has no row, so the edges at it drop out of every list until a version holds its id again.
+// numbered parameter param: the set an "in" read of the document reads once, and then reads the
+// links into each of its blocks by, one id at a time (keyedBlockArm). A deleted block has no row,
+// so the edges at it drop out of every list until a version holds its id again.
 func documentBlockIDs(param string) string {
 	return `(select d.node_id from document_blocks d join artifacts a on a.id = d.artifact_id where a.ref_key = ` + param + `)`
 }
 
 // itemBlockIDs is the node id of every current block of the item of kind whose uuid is the
-// numbered parameter param, the set an "in" arm reads an item's blocks' edges by. A removed block
-// keeps its row with no position, and the edges at it drop out of every list until a revision
-// holds its id again.
+// numbered parameter param: the set an "in" read of the item reads once, and then reads the links
+// into each of its blocks by, one id at a time (keyedBlockArm), and the set the read's replies
+// rule and answers fold test a reply's block against. A removed block keeps its row with no
+// position, and the edges at it drop out of every list until a revision holds its id again.
 func itemBlockIDs(kind ItemKind, param string) string {
 	tables, _ := kind.tables()
-	return `(select b.node_id from ` + tables.blocks + ` b where b.` + tables.item + ` = ` + param + `::uuid and b.position is not null)`
+	return `(select b.node_id from ` + tables.blocks + ` b where b.` + tables.item + ` = ` + param + `::uuid and ` + itemBlockCurrent + `)`
+}
+
+// itemBlockLinks and itemBlockCurrent are the rule that a link a block of an item holds stands
+// while that block is one of the item's current ones. itemBlockLinks is the from of a read of
+// the links the blocks of an item of kind hold, its link table aliased r joined to its blocks
+// table aliased b by the item and the block id, and itemBlockCurrent the condition on b. A
+// removed block keeps its row with no position, so the links it held drop out until a revision
+// holds the block again. The words are graph_edges' own for its three arms over these tables; the
+// caller selects its columns and writes its own conditions beside itemBlockCurrent. An ask's own
+// refs row holds the links of its question alone, so a link written in an option or in the answer
+// is in ask_block_refs and in no edge of the ask's row, where a comment's or a message's row holds
+// every link its blocks hold.
+func itemBlockLinks(kind ItemKind) string {
+	tables, _ := kind.tables()
+	return tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id`
+}
+
+// itemBlockCurrent is the condition that the item's block aliased b is one of its item's current
+// ones: itemBlockLinks' reader writes it on the block holding a link, and itemBlockIDs on the
+// blocks it selects.
+const itemBlockCurrent = `b.position is not null`
+
+// keyedBlockArm is the arm of an "in" read over the current blocks of the node read, of storage
+// kind blockKind, whose node ids ids selects (documentBlockIDs, itemBlockIDs): each edge that
+// ends at one of those blocks, at that block, narrowed by source, the read's filter of a source
+// written over the arm's rows aliased g. It reads the ids once, and then, for each id, every arm
+// of graph_edges that can end at a block of that kind through its own index of targets, keyed by
+// to_kind and to_id (a reply by replies_to_block), each with the view's own rule for a current
+// block (migration 20261105014808): a block's pointer while block_ref_listed lists it, a link an
+// item's block holds while that block is current (itemBlockLinks), and a reply to an ask's part
+// told from one to a comment's block by its prefix. Each projection table the view reads is read
+// twice by the row's target, as the view answers it: its rows the store does not answer, by the
+// marker the view's arm over the table tests (rowNamesNoNode, a refs row's tuples_stored false,
+// repliesNotStored), and its rows the store does answer, through the newest tuple each stands for
+// (keyedTupleArm, keyedCitationArm, keyedItemBlockTupleArm, keyedReplyTupleArm), which are the
+// view's store arms that can end at a block. Each edge comes once: a node's block ids are
+// distinct, document_blocks being keyed by document and block and an item's blocks table holding
+// one row for each item and block id.
+func keyedBlockArm(blockKind, ids, source string) string {
+	arms := []string{
+		`select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
+				from refs r where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id and not r.tuples_stored`,
+		`select 'block', b.from_node, b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq
+				from block_refs b where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id
+				and (b.to_types is null or block_ref_listed(b.to_types, b.to_id)) and ` + rowNamesNoNode(`b.node_kind`),
+		keyedTupleArm(blockKind),
+		keyedCitationArm(blockKind),
+	}
+	for _, item := range itemKinds {
+		arms = append(arms, `select '`+item.BlockKind()+`', r.from_node, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
+				from `+itemBlockLinks(item)+`
+				where r.to_kind = '`+blockKind+`' and r.to_id = k.node_id and `+itemBlockCurrent+` and `+rowNamesNoNode(`r.node_kind`),
+			keyedItemBlockTupleArm(item, blockKind))
+	}
+	// A reply names a block of an item, never a document's block.
+	for _, item := range itemKinds {
+		if item.BlockKind() == blockKind {
+			arms = append(arms, blockRepliesArm(item), keyedReplyTupleArm(item))
+		}
+	}
+	return `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
+			from ` + ids + ` k (node_id)
+			cross join lateral (
+				` + strings.Join(arms, `
+				union all
+				`) + `
+			) g (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
+			where ` + source
+}
+
+// newestTuple is the lateral that reads, aliased newest, the newest tuple of the one relation a
+// projection row stands for, (fromKind, fromID, kind, toKind, toID), each an expression over that
+// row: its at, its legacy_source_seq and whether it asserts (graphstore.CurrentTupleRead, the
+// reading currentTuple makes). A keyed tuple arm keeps its row while newest.asserted holds and
+// answers the edge at that tuple's time and sequence, as the view's store arms answer it.
+func newestTuple(fromKind, fromID, kind, toKind, toID string) string {
+	return `cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`,
+		`t.at, t.legacy_source_seq, t.asserted`,
+		`t.from_kind = `+fromKind+` and t.from_id = `+fromID+` and t.kind = `+kind+`
+					and t.to_kind = `+toKind+` and t.to_id = `+toID+` and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+				) newest`
+}
+
+// storeNodeStands is the view's test of the node a store arm's edge comes from: the store holds
+// it and its state is not gone, as the view's join to graph_nodes keeps it.
+func storeNodeStands(kind, id string) string {
+	return `exists (select 1 from graph_nodes live
+					where live.kind = ` + kind + ` and live.id = ` + id + ` and live.state <> '` + graphstore.StateGone + `')`
+}
+
+// keyedTupleArm is graph_edges' tuple arm (migration 20261121034242) for the edges that end at
+// the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
+// node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
+// that name none. Such a row is the projection of the tuple of the node it names (node_kind and
+// node_address), a block's link or an answered ask's shaped, and while the row stands the view
+// answers the edge from that node, as the tuple states it: while the newest tuple of its relation
+// asserts (newestTuple), while the node is not gone (storeNodeStands), and, for a pointer, while
+// block_ref_listed lists its target among the targets its attribute declares now. Its time and its
+// sequence are that tuple's, as the view answers them. The source's visibility is the read's
+// filter of a source, as for every other arm.
+func keyedTupleArm(blockKind string) string {
+	return `select b.node_kind, b.node_address, b.kind, b.to_kind, b.to_id, newest.at, newest.legacy_source_seq
+				from block_refs b
+				` + newestTuple(`b.node_kind`, `b.node_address`, `b.kind`, `b.to_kind`, `b.to_id`) + `
+				where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id and b.node_kind is not null and newest.asserted
+				and (b.kind = 'mentions' or block_ref_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
+				and ` + storeNodeStands(`b.node_kind`, `b.node_address`)
+}
+
+// keyedCitationArm is the store's own arm of graph_edges (its citation, migration 20261121120000)
+// for an item's mention that ends at the block k.node_id: the refs rows of an ask, a comment or a
+// message that hold tuples_stored, read by target through refs_to as the refs arm beside it reads
+// the rows that hold it false. Such a row is the projection of the mention its item's node states
+// (citationCarries), and the view answers the edge from that node while the newest tuple of the
+// relation asserts (newestTuple) and the node is not gone (storeNodeStands), at that tuple's time
+// and sequence. A row of any other source or kind that holds tuples_stored is no edge of the view,
+// and none of this arm.
+func keyedCitationArm(blockKind string) string {
+	sources := make([]string, len(itemKinds))
+	for index, item := range itemKinds {
+		sources[index] = `'` + string(item) + `'`
+	}
+	return `select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, newest.at, newest.legacy_source_seq
+				from refs r
+				` + newestTuple(`r.from_kind`, `r.from_id`, `r.kind`, `r.to_kind`, `r.to_id`) + `
+				where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id and r.tuples_stored
+				and r.from_kind in (` + strings.Join(sources, ", ") + `) and r.kind = '` + graphstore.TupleMentions + `' and newest.asserted
+				and ` + storeNodeStands(`r.from_kind`, `r.from_id`)
+}
+
+// keyedItemBlockTupleArm is the view's store arm of every item's blocks (migration
+// 20261116140008, restated by 20261121120000) for the links a block of an item of kind holds
+// that end at the block k.node_id: the rows of the kind's link table that name their block's
+// node, read by target as the arm over the rows that name none reads them, while the block
+// holding the link stands at a position (itemBlockLinks, itemBlockCurrent). Such a row is the
+// projection of the link its block's node states (itemLinkCarries), whose address the item kind's
+// prefix names, and the view answers the edge from that block, under the item's block kind, while
+// the newest tuple of the relation asserts (newestTuple) and the node is not gone
+// (storeNodeStands), at that tuple's time and sequence.
+func keyedItemBlockTupleArm(item ItemKind, blockKind string) string {
+	return `select '` + item.BlockKind() + `', r.node_address, r.kind, r.to_kind, r.to_id, newest.at, newest.legacy_source_seq
+				from ` + itemBlockLinks(item) + `
+				` + newestTuple(`r.node_kind`, `r.node_address`, `r.kind`, `r.to_kind`, `r.to_id`) + `
+				where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id and ` + itemBlockCurrent + `
+				and r.node_kind = '` + BlockNodeKind + `' and r.node_address like '` + string(item) + `/%' and newest.asserted
+				and ` + storeNodeStands(`r.node_kind`, `r.node_address`)
+}
+
+// blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
+// by the block's node id k.node_id through the replies' partial index on replies_to_block
+// (comments_replies_to_block, messages_replies_to_block), over the replies whose pointers the
+// store does not hold (repliesNotStored). A comment answers a comment's block and an ask's part,
+// both named in comments.replies_to_block, and the node id's prefix tells the two apart, as the
+// view's two arms over comments tell them (repliesPrefix); a message answers a message's block.
+func blockRepliesArm(owner ItemKind) string {
+	replies := repliesFrom(owner)
+	tables, _ := replies.tables()
+	return `select '` + string(replies) + `', x.id::text, 'replies_to', '` + owner.BlockKind() + `', x.replies_to_block, x.created_at, null::bigint
+				from ` + tables.items + ` x where x.replies_to_block = k.node_id` + repliesPrefix(owner) + ` and ` + repliesNotStored(replies, "x")
+}
+
+// keyedReplyTupleArm is the view's store arm of the replies to a block of an item of kind owner
+// (migrations 20261116114517 and 20261116124448, restated by 20261121120000): the replies whose
+// pointers the store holds (repliesStored), read by the block they name through the replies'
+// partial index on replies_to_block as blockRepliesArm reads the rest. Such a row is the
+// projection of the replies_to tuple its node states to the block's node, of kind block, which
+// the view renders under owner's block kind, and the view answers the edge while the newest tuple
+// of the relation asserts (newestTuple) and the node is not gone (storeNodeStands), at that
+// tuple's time and sequence.
+func keyedReplyTupleArm(owner ItemKind) string {
+	replies := repliesFrom(owner)
+	tables, _ := replies.tables()
+	return `select '` + string(replies) + `', x.node_address, '` + graphstore.TupleRepliesTo + `', '` + owner.BlockKind() + `', x.replies_to_block, newest.at, newest.legacy_source_seq
+				from ` + tables.items + ` x
+				` + newestTuple(`x.node_kind`, `x.node_address`, `'`+graphstore.TupleRepliesTo+`'`, `'`+BlockNodeKind+`'`, `x.replies_to_block`) + `
+				where x.replies_to_block = k.node_id` + repliesPrefix(owner) + ` and ` + repliesStored(replies, "x") + ` and newest.asserted
+				and ` + storeNodeStands(`x.node_kind`, `x.node_address`)
+}
+
+// repliesPrefix is the test of the block a reply names that tells a reply to a block of an item
+// of kind owner from a reply to a block of another kind the same column names: an ask's part
+// starts ask/, and a comment's block does not; a message's replies name a message's block alone.
+func repliesPrefix(owner ItemKind) string {
+	switch {
+	case owner == ItemAsk:
+		return ` and x.replies_to_block like 'ask/%'`
+	case repliesFrom(owner) == ItemComment:
+		return ` and x.replies_to_block not like 'ask/%'`
+	}
+	return ""
+}
+
+// repliesNotStored and repliesStored are the markers the view's arms over the replies of kind
+// replies test, on the row aliased alias: a comment's pointers are the store's while the row holds
+// tuples_stored (pointersNotStored), and the store's arm reads them from the comment's node; a
+// message's replies are the store's from the moment its row names its node (rowNamesNoNode).
+func repliesNotStored(replies ItemKind, alias string) string {
+	if replies == ItemComment {
+		return pointersNotStored(alias)
+	}
+	return rowNamesNoNode(alias + `.node_kind`)
+}
+
+func repliesStored(replies ItemKind, alias string) string {
+	stored := alias + `.node_kind = '` + string(replies) + `'`
+	if replies == ItemComment {
+		stored += ` and ` + alias + `.tuples_stored`
+	}
+	return stored
 }
 
 // repliesToABlockOf is true of a graph_edges row alias that is the replies_to edge of a reply of
@@ -291,6 +502,15 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // block holding it (heldByABlock). A whole-document read lists each citer by its item instead,
 // an ask citing the document from a part included (asksCitingTheDocument).
 //
+// An inbound read's arm over the node's blocks reads the node's current block ids once, and then
+// each link table by its index of targets for each id (keyedBlockArm), never graph_edges with
+// to_id in those ids: the planner does not push that set into the view's arms, so that form read
+// refs by to_kind alone and hash-joined every block of that kind before a semi-join kept the
+// node's own. Measured at --scale 1 with jit off, it took 165 of the 166 ms of the statement for
+// the seed's root message with the most replies and 205 of the 261 ms of the one for the seed's
+// anchored document, and it grew with every block link of that kind in the database. The arm over
+// the node itself reads graph_edges by to_kind and to_id, which reach each arm's index.
+//
 // Every arm carries the visibility predicate of the end it answers, bound from the registry
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
@@ -350,9 +570,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case document:
 			arms += `
 			union all
-			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
-			from graph_edges g where g.to_kind = 'block' and g.to_id in ` + documentBlockIDs(id) + `
-			and ` + VisibleKind("block", "g.to_id", seen) + ` and ` + source
+			` + keyedBlockArm("block", documentBlockIDs(id), VisibleKind("block", "g.to_id", seen)+` and `+source)
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -363,9 +581,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
-			from graph_edges g where g.to_kind = '` + item.BlockKind() + `' and g.to_id in ` + itemBlockIDs(item, blocks) + `
-			and ` + VisibleKind(item.BlockKind(), "g.to_id", seen) + ` and ` + source
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), VisibleKind(item.BlockKind(), "g.to_id", seen)+` and `+source)
 		}
 	case query.Direction == "out" && document:
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
@@ -382,8 +598,8 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
-			from ` + tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id
-			where r.` + tables.item + ` = ` + blocks + `::uuid and b.position is not null
+			from ` + itemBlockLinks(item) + `
+			where r.` + tables.item + ` = ` + blocks + `::uuid and ` + itemBlockCurrent + `
 			and ` + VisibleKind(item.BlockKind(), "r.from_node", seen) + ` and ` + VisibleEnd("r.to_kind", "r.to_id", true, seen)
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
@@ -530,14 +746,14 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		entry, known := nodeRegistry[kind]
-		if !known || entry.load == nil {
+		load := nodeRegistry[kind]
+		if load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
 			// longer exists is. A kind the registry resolves no nodes of is omitted the same way.
 			continue
 		}
-		if err := entry.load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
+		if err := load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
 			return nil, err
 		}
 	}
@@ -618,6 +834,18 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
 // document that would take it.
 const RetiredDecisionsSlug = "decisions-md"
+
+// DecisionsDocumentOf is the FROM and WHERE of a read of the issue's decisions document while it
+// stands, issue the SQL that names the issue's key (a parameter, or a column of an outer query),
+// with the document's artifacts row aliased `a`: of the documents decisions_documents() answers
+// for the issue, the oldest, by created_at and then id. Every read that names the issue's decisions
+// document - the issue's decisions_artifact_id, the Decisions read's `document` and the decisions
+// step's restore - selects through it, so for an issue that holds two they name the same one.
+// kept for one release: decisions-documents-fn
+func DecisionsDocumentOf(issue string) string {
+	return `from decisions_documents() d join artifacts a on a.id = d.id
+		where d.issue_key = ` + issue + ` order by a.created_at, a.id limit 1`
+}
 
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
@@ -715,13 +943,22 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // id again. A block is made by the authors of the version that first held it, when Dispatch knows
 // that version (blockFirstVersion); its last change is its changed version, by that version's
 // authors. It belongs to its document at its changed version.
+//
+// Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
 		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
+		from document_blocks d
+		cross join lateral (
+			select a.id, a.issue_key, a.project_key, a.session_id, a.slug, a.kind, a.is_primary
+			from artifacts a where a.id = d.artifact_id limit 1
+		) a
+		left join lateral (
+			select changed.authors from artifact_versions changed
+			where changed.artifact_id = d.artifact_id and changed.number = d.changed_version limit 1
+		) changed on true
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
 		where `+held+` and `+VisibleKind("block", "d.node_id", "$2"), args...)
 	if err != nil {
@@ -820,6 +1057,8 @@ func anchorVersion(alias string) string {
 //
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
+//
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
 	rows, err := q.Query(ctx, `
@@ -831,14 +1070,18 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		         else k.written_version
 		       end
 		from asks k
-		left join issues i on i.key = k.issue_key
-		left join artifacts a on a.id = k.artifact_id
-		left join artifacts doc on doc.id = case
-		  when `+anchorArtifact+` is not null then `+anchorArtifact+`
-		  when k.block_artifact_id is not null then k.block_artifact_id
-		  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
-		  else k.artifact_id
-		end
+		left join lateral (select i.project_key from issues i where i.key = k.issue_key limit 1) i on true
+		left join lateral (select a.project_key, a.slug from artifacts a where a.id = k.artifact_id limit 1) a on true
+		left join lateral (
+			select doc.id, doc.issue_key, doc.project_key, doc.session_id, doc.slug, doc.kind, doc.is_primary
+			from artifacts doc where doc.id = case
+			  when `+anchorArtifact+` is not null then `+anchorArtifact+`
+			  when k.block_artifact_id is not null then k.block_artifact_id
+			  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
+			  else k.artifact_id
+			end
+			limit 1
+		) doc on true
 		left join lateral (
 			select e.payload->'edited_by' as edited_by from events e
 			where e.type in ('ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited') and e.type = 'ask.edited'
@@ -884,15 +1127,20 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // at the version current when it was written (written_version). A comment written on no document
 // belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
 // reference of the block it names, are written under.
+//
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
 		       c.author, c.created_at, c.edited_at, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
 		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end
 		from comments c
-		left join issues i on i.key = c.issue_key
-		left join artifacts a on a.id = c.artifact_id
-		left join artifacts doc on doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id)
+		left join lateral (select i.project_key from issues i where i.key = c.issue_key limit 1) i on true
+		left join lateral (select a.project_key, a.slug from artifacts a where a.id = c.artifact_id limit 1) a on true
+		left join lateral (
+			select doc.id, doc.issue_key, doc.project_key, doc.session_id, doc.slug, doc.kind, doc.is_primary
+			from artifacts doc where doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) limit 1
+		) doc on true
 		where c.id::text = any($1) and `+VisibleKind("comment", "c.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load comment nodes: %w", err)
@@ -935,11 +1183,13 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // it. A reply that names a block it answers belongs to that block, another reply to the message
 // it answers, which shares its issue, and another message to its issue; a direct message belongs
 // to no node.
+//
+// Its join to issues is a lateral probe by key (nodeLoader).
 func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block
 		from messages m
-		left join issues i on i.key = m.issue_key
+		left join lateral (select i.project_key from issues i where i.key = m.issue_key limit 1) i on true
 		where m.id::text = any($1) and `+VisibleKind("message", "m.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load message nodes: %w", err)

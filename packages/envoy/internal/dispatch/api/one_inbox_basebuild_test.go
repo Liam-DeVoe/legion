@@ -31,7 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
-// The base build every base-build check of dispatch://INFRA-1152 boots beside this one: the
+// The base build every base-build check of this child boots beside this one: the
 // commit BASELINE_SHA names, checked out as a worktree at the path the check names, built with the
 // stamp the image build gives a server, and booted over the database the check names, which that
 // build migrates itself. What it serves is read back over loopback as a person and as the agent

@@ -33,8 +33,9 @@ const storeStepWait = 20 * time.Second
 // and tuple store's writers, beside the test that drives each site's lock steps. Thirteen of them
 // live here, and this test drives them all:
 //
-//   - the comment path (createCommentFor, with the node its writeNode queues and the tuples its
-//     caused queues, then graphstore.QueueAuthored), run on an issue and on a project document;
+//   - the comment path (createCommentFor, with the node it queues through graphstore.QueueNodes
+//     and the tuples through graphstore.QueueCaused, then graphstore.QueueAuthored), run on an
+//     issue and on a project document;
 //   - a session's reply to a mention (replyComment, through the same three, and then
 //     queueAnsweredDelivery, which records the session the answered attempt reached: that session
 //     is the reply's author, whose node row the reply already holds, and its delivered_to tuple is
@@ -225,11 +226,11 @@ type storeWriterRun struct {
 // Each statement head a step is read at. pg_stat_activity holds the statement as the writer sent
 // it, and normalizedStatement lowers it and folds its whitespace before it is compared.
 const (
-	// nodeWriteStatement is graphstore's node write (queueNodes), which writeNode queues through
-	// graphstore.QueueNodes and the block index through BlockIndexing.Queue.
+	// nodeWriteStatement is graphstore's node write (queueNodes), which the comment path queues
+	// through graphstore.QueueNodes and the block index through BlockIndexing.Queue.
 	nodeWriteStatement = "insert into graph_nodes ("
-	// armsStatement is graphstore.WriteArms spliced into a statement of its own, as Authored and
-	// Reached run it: the node arm and the tuple arms after it, in one statement.
+	// armsStatement is graphstore.WriteArms spliced into a statement of its own, as QueueAuthored
+	// and QueueSessionRecorded queue it: the node arm and the tuple arms after it, in one statement.
 	armsStatement = "with graph_nodes_written as ("
 	// commentInsertStatement writes a comments row, a comment's or a reply's.
 	commentInsertStatement = "insert into comments ("
@@ -238,6 +239,9 @@ const (
 	// tupleAppendStatement is graphstore's tuple append for a write that wrote nodes, which states
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	tupleAppendStatement = "with written as ("
+	// plainTupleAppendStatement is graphstore's tuple append for a write that wrote no nodes, a
+	// plain insert with nothing to move onto the cause (queueAppend).
+	plainTupleAppendStatement = "insert into graph_tuples ("
 	// followStatement is asks' follow statement: the follower row, with the store's node arm
 	// spliced in after it (graphstore.WriteArms, WriteArmsUncaused).
 	followStatement = "with followed as ("
@@ -263,16 +267,17 @@ const (
 
 // commentCreate is the comment path, through route. It takes its owner's lock, the issue's or the
 // project document's (lockCommentOwner), and in its write phase writes the comment's node
-// (writeNode) before the comments row that names it, takes the comment's block state row, writes
-// the block nodes of its body before the block rows that name them (bodyBlockSteps), appends
-// comment.created, then appends the tuples that event caused (caused) and, in one statement, the
-// author's node and the authored_by tuple under that event (graphstore.QueueAuthored). Last it
-// records the comment in its thread: every user_threads row of the thread in one pass, then its
-// writer's own row, a comment that opens its own thread reaching nobody else. The comment's id is
-// drawn inside its own transaction, so no other transaction can hold its node, its row or its
-// tuples before they exist: those steps are held as the tables they are written to, and its
-// block's node by the key its row's insert names (holdFirstBlockNode). Each run's author is a
-// person no write has recorded, so the author's node is new and is held as its row.
+// (graphstore.QueueNodes) before the comments row that names it, takes the comment's block state
+// row, writes the block nodes of its body before the block rows that name them (bodyBlockSteps),
+// appends comment.created, then appends the tuples that event caused (graphstore.QueueCaused)
+// and, in one statement, the author's node and the authored_by tuple under that event
+// (graphstore.QueueAuthored). Last it records the comment in its thread: every user_threads row
+// of the thread in one pass, then its writer's own row, a comment that opens its own thread
+// reaching nobody else. The comment's id is drawn inside its own transaction, so no other
+// transaction can hold its node, its row or its tuples before they exist: those steps are held as
+// the tables they are written to, and its block's node by the key its row's insert names
+// (holdFirstBlockNode). Each run's author is a person no write has recorded, so the author's node
+// is new and is held as its row.
 func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) storeWriter {
 	steps := []storeStep{
 		owner,
@@ -338,7 +343,7 @@ func (r *storeWriterRig) mentionReply() storeWriter {
 			// The attempt's settle made the node of s1, the session it reached. The attempt is
 			// pinned here to a session no write has recorded, and failed, as a send to a session
 			// its resolution found leaves it when the send does not land: the reply is then that
-			// session's first write, and its author's node is new (graphstore.Authored).
+			// session's first write, and its author's node is new (graphstore.QueueAuthored).
 			session := r.fresh("lock-steps-session")
 			if _, err := r.database.Pool.Exec(ctx, `
 				update comment_deliveries
@@ -486,7 +491,7 @@ func (r *storeWriterRig) askFollow() storeWriter {
 // owner's lock, and in its write phase writes the ask's node and its asker's in one write, at the
 // sentinel and before the asks row (graphstore.AskFacts, which states the ask's author beside it
 // through AuthorFacts, queued through graphstore.QueueNodes), writes the ask, follows it for its
-// asker, whose node that follow finds there (asks.QueueFollowAuthor), appends ask.opened, and
+// asker, whose node that follow finds there (asks.PlanFollowAuthor), appends ask.opened, and
 // then moves both nodes onto that event and appends what their write stated under it
 // (graphstore.QueueCaused). The ask's id is drawn inside its own transaction, so its node and its
 // row are not held; the session is new, so its node is held as a row another transaction inserted
@@ -820,8 +825,8 @@ func tupleAppendStep() storeStep {
 	}
 }
 
-// authorNodeStep is graphstore.Authored: the author's node and the authored_by tuple under the
-// event, in one statement.
+// authorNodeStep is graphstore.QueueAuthored: the author's node and the authored_by tuple under
+// the event, in one statement.
 func authorNodeStep() storeStep {
 	return storeStep{
 		name: "the author's node", order: nodeStep, caused: true,
@@ -917,8 +922,8 @@ func newFenceStep() storeStep {
 }
 
 // blockNodesStep is the block index's node write: the nodes of the blocks the version changed, in
-// one statement and in ascending (kind, id) (graphstore.WriteUncaused). Their ids are the
-// document's, and the write is the first to name them, so the table is held.
+// one statement and in ascending (kind, id) (graphstore.QueueNodes). Their ids are the document's,
+// and the write is the first to name them, so the table is held.
 func blockNodesStep() storeStep {
 	return storeStep{
 		name: "the block nodes", order: nodeStep, fenced: true,
@@ -1115,7 +1120,7 @@ func (s *statementStarts) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBat
 // naming it, the event before every step appending tuples that carry it, and the revision fence's
 // row before every step of the block statement it guards. A path skips the steps it does not take,
 // and is checked on the order of those it does. The fourth invariant, several nodes of one write
-// in ascending (kind, id), is graphstore's own (writeNodes, WriteArms): every node step here is
+// in ascending (kind, id), is graphstore's own (queueNodes, WriteArms): every node step here is
 // one statement, which writes one node, or a version's block nodes in that order. A user_threads
 // row of the write's thread comes after the event, as the one writer of a thread runs right after
 // it (inboxwrite.Recording.Queue). The project's owner lock a write takes shared to read the

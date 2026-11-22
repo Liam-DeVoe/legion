@@ -743,6 +743,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
+		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+		// over an open child of another project (refuseOpenForeignChildren).
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -753,8 +756,10 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
+	// An issue's references read answers issueReferencesRead, whose rows carry their names'
+	// trees, so the row names that read for the reason the architecture row above gives.
 	"GET /api/v1/issues/{key}/references": {
-		Status: http.StatusOK, Response: model.IssueReferences{}, Params: issueReferencesQuery{},
+		Status: http.StatusOK, Response: issueReferencesRead{}, Params: issueReferencesQuery{},
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},

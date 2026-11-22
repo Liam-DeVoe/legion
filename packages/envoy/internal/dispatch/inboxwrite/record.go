@@ -1,5 +1,5 @@
 // Package inboxwrite is the one writer of the threads a person takes part in and of what reaches
-// them there (dispatch://INFRA-1152 D3, R2, R4 and R9). Every write path that stores a comment, a
+// them there (this child's D3, R2, R4 and R9). Every write path that stores a comment, a
 // message, an ask or an answer records it after its event, in that write's own transaction, and
 // the record appends the participation and delivery tuples of the write through graphstore and
 // writes the user_threads projection of them. The triggers of migrations 0095-0097, which wrote
@@ -78,7 +78,7 @@ type Write struct {
 	Starter string
 	// OwnWrite says the handler that took the write marks it as its writer's own: a person's answer
 	// or reply made at that moment (Own). Such a write takes its thread out of the writer's Inbox
-	// where PlanRecord's four conditions hold (dispatch://INFRA-4948 R1, D5). A write that is no
+	// where PlanRecord's four conditions hold (the own-answer rule, R1, D5). A write that is no
 	// person's act at that moment - the carried approval answer, the restore of a retracted ask, the
 	// seed's writes, the backfill's - leaves it false.
 	OwnWrite bool
@@ -94,6 +94,8 @@ type Write struct {
 	// mentioned is, for a comment or a message, the login of each person a mention of its text
 	// newly names (ReachesMentioned), in the order the text first names them.
 	mentioned []string
+	// unstored is a write whose head pointers the store holds no tuple of (Unstored).
+	unstored bool
 }
 
 // Comment is a comment's write, a reply in the thread its head pointers name.
@@ -139,6 +141,28 @@ func (w Write) Own() Write {
 // it answers (in_reply_to). A write that names none is the root of its own thread.
 func (w Write) RepliesTo(kind, id string) Write {
 	w.parent = &thread{kind: kind, id: id}
+	return w
+}
+
+// Unstored is w, a comment or a message whose head pointers the store holds no tuple of: one past
+// the store's address bound - a comment left whole out of the store (api's commentStoreWrite
+// .unprojected), a comment whose pointer the bound cannot key (pointersStored false), a message
+// whose replies_to end it cannot key (graphstore.MessageFacts' projected false) - whose row the
+// old arms of graph_edges answer. Such a write states no delivered_to: the census reads the
+// thread a delivery was written in off the write's own head pointers (graphcensus's
+// deliveryThread), so a delivery of a write with none is a delivery into no thread, and a row of
+// its thread moved beside none would break R6's equation on a marked row. So its record is the
+// projection the trigger body user_threads_record wrote of it, written here in the write's own
+// transaction after its event (Recording.Queue): each row of its thread but its writer's moves
+// and gives up its marker, as an update of that body's did (migration 20261116160000), the
+// writer keeps a row of their own, also unmarked, and a session's reply to a message ends its
+// root's Agent dismissals, as the trigger user_agent_thread_dismissed_clear did. Each row it
+// leaves unmarked is the backfill's thread pass's, which marks it under the thread's lock. Its
+// row carries threads_recorded (migrations 20261116124447 and 20261116114515), which the triggers
+// pass it by (20261116160001), so the triggers write nothing of it while they stand and the
+// root's drop of them finds no row of this release they would still write for.
+func (w Write) Unstored() Write {
+	w.unstored = true
 	return w
 }
 
@@ -291,10 +315,10 @@ func (w Write) keptLogin() (string, bool) {
 //     marked_seq at the log position of this moment (migration 20261116160000); then, where the
 //     upsert moved the mark, A's read_through to T at the moment that row's read mark stands at
 //     once the upsert ran, stated by the same statement (queueKeepRow, graphstore.MarkArm), as
-//     every writer of a read mark states it (dispatch://INFRA-1152 R6). Where the write dismisses
+//     every writer of a read mark states it (the spec's R6). Where the write dismisses
 //     (PlanRecord), the same statement also sets the row's dismissed_at to the write's moment, on a
 //     row it begins and on one already there, whatever the row's read mark and version: the
-//     dismissal takes no version guard (dispatch://INFRA-4948 R1). Before that statement, A's
+//     dismissal takes no version guard (the own-answer rule, R1). Before that statement, A's
 //     dismissed tuple to T's root, at the write's moment and under its event
 //     (graphstore.QueueFromPerson), so the row and the tuple commit together;
 //  6. where the write dismisses and is a reply under an Agent thread - a message on no issue,
@@ -379,14 +403,16 @@ func (r Recording) AgentDismissal() (string, bool) {
 	return r.thread.id, true
 }
 
-// ownDismissal is D5's rule (dispatch://INFRA-4948 R1): whether w takes its thread, rooted at
+// ownDismissal is D5's rule (the own-answer rule, R1): whether w takes its thread, rooted at
 // root, out of its writer's Inbox, and whether it does so under an Agent thread. It does when its
 // handler marked it its writer's own (Write.OwnWrite), its writer is a person (person, the login
 // PlanRecord read, "" for anybody else), its tuples' writer acts as itself with no agent acting
 // for them (Who.Act), and it is an answer or a reply - not the write that starts the thread. An
-// Agent thread is a message thread on no project, which keeps no user_threads row.
+// Agent thread is a message thread on no project, which keeps no user_threads row. An Unstored
+// write dismisses nothing: its record is the trigger body's projection, which states no tuple and
+// never dismissed (Recording.queueUnstored), so its writer takes no Agent root for it either.
 func ownDismissal(w Write, person string, root thread) (dismisses, agent bool) {
-	dismisses = w.OwnWrite && person != "" && w.Who.Act == nil && (w.ask != nil || w.NodeID != root.id)
+	dismisses = w.OwnWrite && !w.unstored && person != "" && w.Who.Act == nil && (w.ask != nil || w.NodeID != root.id)
 	return dismisses, dismisses && w.NodeKind == graphstore.KindMessage && w.Project == ""
 }
 
@@ -429,6 +455,11 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	if w.NodeKind == graphstore.KindMessage && r.authorKind == graphstore.KindSession && thread.id != w.NodeID {
 		r.clears = true
 		r.failClear = failpoint.Planned(ctx, failpoint.AgentDismissalClear)
+	}
+	// A write the store holds no head pointer of moves its thread's rows as the trigger body did,
+	// all of them but its writer's, and delivers nothing (Unstored): there is no set to read.
+	if w.unstored {
+		return r, nil
 	}
 	members, err := readMembers(ctx, tx, thread)
 	if err != nil {
@@ -491,22 +522,24 @@ func withOwedParticipants(members []member, owed []graphstore.Tuple) []member {
 // Queue queues the record on a write phase's batch, right after the write's event, whose id the
 // tuples carry as event (graphstore.LatestEvent for an event the batch appends right before, which
 // nothing between them may follow with another), in Record's steps and order. Each tuple an
-// answer's catch-up owes carries the event of the write it belongs to instead.
+// answer's catch-up owes carries the event of the write it belongs to instead. The store's queue
+// writers it calls answer nothing, their refusals failing Send (graphstore.QueueWrite); its error
+// is that of a step of its own that cannot be queued.
 func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	w, thread := r.w, r.thread
+	if w.unstored {
+		r.queueUnstored(b, event)
+		return nil
+	}
 
 	// 0. What an answer owes of an ask an older build wrote: its participation and its
 	// citations now, its deliveries with step 3's.
 	if r.owed.cites {
 		queueMarkCitations(b, w.NodeID)
 	}
-	if err := graphstore.QueueToPerson(b, r.owed.people); err != nil {
-		return fmt.Errorf("record what ask %s owes of its create and its older answer: %w", w.NodeID, err)
-	}
+	graphstore.QueueToPerson(b, r.owed.people)
 	if len(r.owed.others) > 0 {
-		if err := graphstore.QueueWrite(b, nil, r.owed.others); err != nil {
-			return fmt.Errorf("record what ask %s owes of its create: %w", w.NodeID, err)
-		}
+		graphstore.QueueWrite(b, nil, r.owed.others)
 	}
 
 	// 1. A takes part in T. An ask's create also reaches the person the ask waits on, who takes
@@ -520,16 +553,14 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		}
 		if r.person != "" {
 			people = append(people, taking)
-		} else if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{taking}); err != nil {
-			return fmt.Errorf("record that %s/%s takes part in %s/%s: %w", r.authorKind, r.authorID, thread.kind, thread.id, err)
+		} else {
+			graphstore.QueueWrite(b, nil, []graphstore.Tuple{taking})
 		}
 	}
 	if w.Arm == Opens {
 		people = append(people, waitingOnTuples(w.NodeID, r.waiting, r.person, w.At, w.Who, event)...)
 	}
-	if err := graphstore.QueueToPerson(b, people); err != nil {
-		return fmt.Errorf("record who takes part in %s/%s by %s/%s: %w", thread.kind, thread.id, w.NodeKind, w.NodeID, err)
-	}
+	graphstore.QueueToPerson(b, people)
 	if w.Arm == TakesPart {
 		return nil
 	}
@@ -537,9 +568,7 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	if w.Arm == Replies {
 		// A session's reply to a message brings its root back to everyone who dismissed it.
 		if r.clears {
-			if err := queueAgentDismissalsClear(b, thread.id, r.failClear, w, event); err != nil {
-				return err
-			}
+			queueAgentDismissalsClear(b, thread.id, r.failClear, w, event)
 		}
 
 		// 2. Every row of T, locked in one pass.
@@ -563,17 +592,13 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		if r.starter != "" && r.starter != r.person && !starterDelivered {
 			delivered(r.starter)
 		}
-		if err := graphstore.QueueToPerson(b, deliveries); err != nil {
-			return fmt.Errorf("deliver %s/%s to the participants of %s/%s: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
-		}
+		graphstore.QueueToPerson(b, deliveries)
 		failpoint.Queue(b, r.failThreads)
 
 		// 4. Each of their dismissals of T that stands ends, and each row of T those people hold
 		// moves.
 		if len(r.delivered) > 0 {
-			if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, thread.kind, thread.id, graphstore.MarkedBy(r.delivered), w.At, w.Who, event); err != nil {
-				return fmt.Errorf("retract the dismissals of %s/%s: %w", thread.kind, thread.id, err)
-			}
+			graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, thread.kind, thread.id, graphstore.MarkedBy(r.delivered), w.At, w.Who, event)
 		}
 		queueMoveRows(b, thread, w, r.moved)
 	}
@@ -591,9 +616,7 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	// then the replies under the root A has not read, each marked read by id with its reply_read,
 	// as a Dismiss press marks them.
 	if r.agentDismiss {
-		if err := graphstore.QueueFromPerson(b, w.At, []graphstore.Tuple{dismissalOf(r.person, thread, w, event)}); err != nil {
-			return fmt.Errorf("record %s's dismissal of message %s: %w", r.person, thread.id, err)
-		}
+		graphstore.QueueFromPerson(b, w.At, []graphstore.Tuple{dismissalOf(r.person, thread, w, event)})
 		queueAgentDismissal(b, r.person, thread.id, w)
 		read, params, err := graphstore.MarkArm(4, "replies_read", graphstore.TupleReplyRead, graphstore.KindMessage, w.Who, event)
 		if err != nil {
@@ -627,4 +650,29 @@ func dismissalsEnded(logins []string, thread thread, w Write, event int64) []gra
 		})
 	}
 	return ended
+}
+
+// queueUnstored is the record of an Unstored write: its root's Agent dismissals, for a session's
+// reply to a message, cleared as Record clears them; then, for a thread whose owner resolves to a
+// project - the only one that holds rows, and the only one user_threads_record wrote any row of -
+// every row of the thread locked in Record's one pass, each row of it but its writer's moved and
+// unmarked (queueMoveUnmarked), and its writer's own row kept, unmarked (queueKeepUnmarkedRow).
+// It states nothing else: no participation, no delivery and no read mark, since no row it writes
+// is marked, and the backfill's thread pass states what each row says when it marks it.
+func (r Recording) queueUnstored(b *store.WriteBatch, event int64) {
+	w, thread := r.w, r.thread
+	if r.clears {
+		queueAgentDismissalsClear(b, thread.id, r.failClear, w, event)
+	}
+	if w.Project == "" {
+		return
+	}
+	queueThreadLock(b, thread)
+	// The trigger body leaves out of its move the row of a person writer, by their canonical login
+	// (user_threads_record's v_writer), and keeps them a row; r.person is that login where it fits
+	// the store's bound, which keptLogin holds a row to as well.
+	queueMoveUnmarked(b, thread, w, r.person)
+	if login, keeps := w.keptLogin(); keeps {
+		queueKeepUnmarkedRow(b, thread, w, login)
+	}
 }

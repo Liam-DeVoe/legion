@@ -1226,7 +1226,7 @@ test("a reply that is nothing but a reference shows its card", async () => {
 });
 
 /** A card drawn in an Inbox, as the reading pane draws one: the Inbox's own answer writes around
- *  it (`AskAnswerWritesContext`), where R1 holds the answer's Send (dispatch://INFRA-4948). Where
+ *  it (`AskAnswerWritesContext`), where the own-answer rule, R1, holds the answer's Send. Where
  *  `read` is given, the page holds a read of the Inbox that it answers. */
 function InInbox({
   children,
@@ -1279,7 +1279,7 @@ async function answerWithEnter(
   return { ...rendered, card, send };
 }
 
-// ST1 row 3 (dispatch://INFRA-4948 R1): in an Inbox the answer's Send is held by `aria-disabled`
+// ST1 row 3 (the own-answer rule, R1): in an Inbox the answer's Send is held by `aria-disabled`
 // while its write is out, not `disabled`, so the focus Enter put on it stays there. A refusal gives
 // it back at once, pressable, with its error shown, and the focus is still on it.
 test("the answer's Send comes back enabled with its error", async () => {

@@ -227,9 +227,9 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
 }
 
 /** Waits until the ask of the example's block reads answered with the example's pick, which is
- *  what the block's card reads to show the answer. A person's answer is held on the ask
- *  alone and writes no version of the spec, so an approval asked for next is asked of the version
- *  the architect wrote. */
+ *  what the block's card reads to show the answer. A person's answer is held on the ask, and the
+ *  one version it writes changes only the block's `state`, answerer and time, so an approval asked
+ *  for next is asked of the text the architect wrote. */
 export async function decisionAnswered(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await expect
@@ -267,10 +267,17 @@ export async function requestSpecApproval(issue: Tracked, example: Example): Pro
   return requested.ask.id;
 }
 
-/** The human approves the spec. */
+/** The human approves the spec, confirming the request as it now reads: the version the person's
+ *  answer settled into moves the request in place, quietly, which rewords its question and sets
+ *  its `edited_at`, and the answer route refuses an answer to a version the person was not shown
+ *  (`ASK_EDITED`). */
 export async function approve(approval: string): Promise<void> {
   const api = await dispatchApi();
-  await api.answerAsk(approval, { expected_edited_at: null, selected: ["Approve"] });
+  const read = await api.getAsk(approval);
+  await api.answerAsk(approval, {
+    expected_edited_at: read.ask.edited_at ?? null,
+    selected: ["Approve"],
+  });
 }
 
 /** The implementer links the pull request it opened. */

@@ -10,20 +10,39 @@
 -- It is the row's marker for those relations, and graph_edges reads it (migration
 -- 20261116124448): the store's arms answer the pointers of a row that holds true, and the five old
 -- arms over comments the pointers of a row that holds false. comments.node_kind cannot be that
--- marker. INFRA-1149 already names the node on rows whose pointers are no tuples - every comment
+-- marker. The node store's build names the node on rows whose pointers are no tuples - every comment
 -- that build and its backfill write - so a test on node_kind would answer an older reply from
 -- neither arm. Every writer of this release sets the column in the insert that writes the row,
 -- which is where the trigger on that insert (user_threads_comment, migration 0095) sees it. A row
 -- a build of the release before this one inserts, during a roll or after a rollback, names no such
 -- column and takes the default, so its old arms answer it until the backfill takes it once.
 --
+-- And comments learns whether this release recorded the comment in its thread:
+--   threads_recorded   true for every row this release writes (api's createCommentFor and its
+--                      reply to a mention, the seed), which recorded the comment's participation,
+--                      deliveries and user_threads rows in the transaction that wrote it
+--                      (inboxwrite.Record), or, for a comment whose pointers are no tuples, its
+--                      user_threads rows alone, as the trigger body would have (inboxwrite's
+--                      Write.Unstored); and true of a row an older build wrote past the store's
+--                      bound once the backfill marks it, the trigger having recorded its rows when
+--                      that build wrote it (graphcensus's pastBoundRowsPass).
+--
+-- The trigger user_threads_comment passes a row that holds either marker (migration
+-- 20261116160001), and the root's drop of that trigger reads the same test: a
+-- comment past the store's address bound never holds tuples_stored, and without this column would
+-- stand unmarked for good. Nothing else reads it, so the root drops it with the trigger. A row a
+-- build of the release before inserts takes the default, and the trigger records it, as it does
+-- today.
+--
 -- A column with a constant default and no constraint beyond `not null` is a catalog change on
 -- PostgreSQL 11 and later: no stored row is rewritten or read, and every existing row reads false,
--- which is true of it, since no writer before this one stated a comment's pointers. The ALTER takes
--- ACCESS EXCLUSIVE on comments for its catalog write and no lock on any other table, so it closes
--- no cycle with a comment write of the release still serving, which takes comments after the nodes
--- it writes; the runner's lock_timeout bounds its wait (pgmigrate.LockTimeout), and the runner
--- applies it again on a timeout (pgmigrate.LockTimeoutAttempts). The release before this one reads
--- and writes comments by naming its columns, so the two roll side by side; rolling back past this
--- migration is an image rollback alone, and the column left behind is read by nothing.
-alter table comments add column tuples_stored boolean not null default false;
+-- which is true of it, since no writer before this one stated a comment's pointers or recorded its
+-- thread. The ALTER takes ACCESS EXCLUSIVE on comments for its catalog write and no lock on any
+-- other table, so it closes no cycle with a comment write of the release still serving, which
+-- takes comments after the nodes it writes; the runner's lock_timeout bounds its wait
+-- (pgmigrate.LockTimeout), and the runner applies it again on a timeout
+-- (pgmigrate.LockTimeoutAttempts). The release before this one reads and writes comments by naming
+-- its columns, so the two roll side by side; rolling back past this migration is an image rollback
+-- alone, and the columns left behind are read by nothing.
+alter table comments add column tuples_stored boolean not null default false,
+  add column threads_recorded boolean not null default false;

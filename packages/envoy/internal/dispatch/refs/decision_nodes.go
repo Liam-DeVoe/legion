@@ -332,11 +332,10 @@ func DecisionWords(decision *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
 
-// TypedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
-// rendering writes it (pmdoc.BlockPointers).
+// TypedBlockID is a typed block's id as the block index keys it (storedBlockID).
 func TypedBlockID(node *pmdoc.Node) string {
 	id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-	return strings.ReplaceAll(id, "\x00", "\uFFFD")
+	return storedBlockID(id)
 }
 
 // decisionOf is decision block node as decisionFact holds it.
@@ -866,9 +865,7 @@ func (d DecisionIndexing) Held() BlockIndex {
 // then the projection of its blocks' parents and the reconcile of its ties' rows, each of which
 // names a node that write wrote or the store holds.
 func (d DecisionIndexing) Queue(batch *store.WriteBatch) error {
-	if err := graphstore.QueueNodes(batch, d.stated); err != nil {
-		return fmt.Errorf("write the decisions and readings of version %d of %s: %w", d.version, d.artifactID, err)
-	}
+	graphstore.QueueNodes(batch, d.stated)
 	if d.blocks.scope == nil {
 		return nil
 	}

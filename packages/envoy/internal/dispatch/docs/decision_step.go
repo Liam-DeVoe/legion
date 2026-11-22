@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -94,6 +96,7 @@ type DecisionStep struct {
 	// catchUpOwed is whether phase 2 owes a pass on a tick that finds the fleet one build: true
 	// until the first such tick runs it, and again after any tick that finds another build live or
 	// on which an ask failed.
+	// kept for one release: catch-up
 	catchUpOwed bool
 	// horizon marks the event log for the catch-up and the count (writerFloor), and marks are the
 	// marks their passes took, newest first and at most decisionStepMarksKept of them.
@@ -102,8 +105,10 @@ type DecisionStep struct {
 	// caughtUpThrough and caughtUpAbove are the catch-up's high-water mark: every event of the
 	// window at or below caughtUpThrough, and each event above it whose id caughtUpAbove holds,
 	// was read by a pass on which no ask failed, and so applied or found to need nothing.
+	// kept for one release: catch-up
 	caughtUpThrough int64
-	caughtUpAbove   []int64
+	// kept for one release: catch-up
+	caughtUpAbove []int64
 	// backfillUnknown is whether a tick reads graphcensus.AsksOwed even where it owes no
 	// catch-up: true until a read of it finds nothing owed with no other build live, and again
 	// once a tick sees another build live.
@@ -168,7 +173,7 @@ func (s *DecisionStep) OwedTotal() *int64 {
 func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionStepOwed, error) {
 	var owed DecisionStepOwed
 	if err := q.QueryRow(ctx, `
-		select (select count(*) from decisions_documents()),
+		select (select count(*) from decisions_documents()), -- kept for one release: decisions-documents-fn
 		       (select count(*) from projects p where 'decisions' = any(p.gated_steps))
 	`).Scan(&owed.DecisionsDocuments, &owed.GatedStepsLists); err != nil {
 		return DecisionStepOwed{}, fmt.Errorf("count what the decisions step owes: %w", err)
@@ -208,32 +213,96 @@ const decisionStepLock int64 = 0x4444454349534E53
 // process waits for while phase 1 owes a row (Boot).
 const decisionRestoreLock int64 = 0x44524553544F5245
 
-// decisionStepApplication is what pg_stat_activity names the connection the step holds its lock
-// on.
-const decisionStepApplication = "dispatch-decision-step"
+// stepConn is the connection the step holds its session locks on, one of the shared pool's, so it
+// is one store.ConnectionsPerProcess already counts, and held names the lock it may hold there
+// now: decisionStepLock, decisionRestoreLock, or 0 for none.
+type stepConn struct {
+	conn *pgxpool.Conn
+	held int64
+}
+
+// acquireStepConn takes the shared pool's connection the step holds its locks on, for one pass,
+// which gives it back (release). The acquire marks nothing on ctx (store.Pool.Acquire), so the
+// pass's own transactions take connections of the same pool beside it, as the migration runner's
+// transactions do beside its lock's: no caller in the process waits for a lock of the step's -
+// a tick tries the lock, and a booting process of another server waits for it on a pool of its
+// own - so the two connections cannot close the cycle the nested-acquire guard exists for.
+func (s *DecisionStep) acquireStepConn(ctx context.Context) (*stepConn, error) {
+	conn, err := s.database.Pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("take the decision step's connection: %w", err)
+	}
+	return &stepConn{conn: conn}, nil
+}
+
+// lock takes key, waiting for it where wait and otherwise trying it once, and reports whether the
+// connection holds it. key counts as held from before the statement, so a statement that fails
+// leaves release to unlock it, or to close the connection where Postgres does not answer that the
+// unlock freed it.
+func (c *stepConn) lock(ctx context.Context, key int64, wait bool) (bool, error) {
+	c.held = key
+	if wait {
+		if _, err := c.conn.Exec(ctx, `select pg_advisory_lock($1)`, key); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	var locked bool
+	if err := c.conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
+		return false, err
+	}
+	if !locked {
+		c.held = 0
+	}
+	return locked, nil
+}
+
+// release gives the connection back to the pool: at once where it holds no lock, and otherwise
+// through duty.FreeSessionLock, which returns it only once Postgres answers that the unlock freed
+// the lock and closes it otherwise, so a pooled connection that may still hold a lock of the step's
+// serves no later caller and keeps no other process's boot waiting.
+func (c *stepConn) release(logger *slog.Logger) {
+	if c.held == 0 {
+		c.conn.Release()
+		return
+	}
+	err := duty.FreeSessionLock(c.conn, `select pg_advisory_unlock($1)`, c.held)
+	switch {
+	case err == nil:
+	case errors.Is(err, duty.ErrSessionClosed):
+		logger.Info("dispatch: the decisions step's connection was closed before its unlock; its session ended the lock",
+			"key", c.held, "error", err)
+	default:
+		logger.Error("dispatch: the decisions step's lock was not released; its connection leaves the pool",
+			"key", c.held, "error", err)
+	}
+}
 
 // Boot is the step's pass at boot: it runs phase 1 where a row stands unmarked, and waits for the
 // step's lock only then. It first reads whether phase 1 owes a row (graphcensus.AsksOwed) on the
-// shared pool, holding no lock. Where nothing is owed it answers at once, having opened no
-// connection of its own and taken no lock, so a tick that holds the lock for phase 2, or a process
-// stalled while it holds it, keeps no boot waiting. A row the release before writes after that
+// shared pool, holding no lock. Where nothing is owed it answers at once, having held no
+// connection of the step's (acquireStepConn) and taken no lock, so a tick that holds the lock for
+// phase 2, or a process stalled while it holds it, keeps no boot waiting. A row the release before writes after that
 // read is a tick's work, as a row written after a read under the lock would be. Where a row is
 // owed, it waits for the step's lock and reads AsksOwed again, since the holder may have stated
 // the row meanwhile, and runs phase 1 where one still stands. It answers a failure of any of
 // these, which stops the boot. It reads nothing else - not whether another build is live, which
 // phase 1 does not wait on, and not what the restore and the conversion owe, which the process's
-// first tick counts (probe) - so the boot waits on no table phase 1 does not read.
+// first tick counts (probe) - so the boot waits on no table phase 1 does not read. Its context is
+// marked for the pool's nested-acquire guard (store.WithTransactionTracking), as every entry point
+// of the pool's transactions marks its own.
 func (s *DecisionStep) Boot(ctx context.Context) error {
+	ctx = store.WithTransactionTracking(ctx)
 	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
 	if err != nil || !owed {
 		return err
 	}
-	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
+	conn, err := s.acquireStepConn(ctx)
 	if err != nil {
-		return fmt.Errorf("open the decision step's connection: %w", err)
+		return err
 	}
-	defer closeDecisionStepConn(conn)
-	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
+	defer conn.release(s.logger)
+	if _, err := conn.lock(ctx, decisionStepLock, true); err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
 	if owed, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil || !owed {
@@ -244,17 +313,21 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 
 // Tick is one pass of the step on its tick. It probes what each phase owes first (probe), on the
 // shared pool, so a tick with no work - every tick once the fleet is one build and every row is
-// stated - costs those probes and dials no connection. Otherwise it takes the step's lock on a
-// connection of its own, skips where another process holds it, since the holder is doing the
-// work, and runs each of phases 1 and 2 with work; then, where phase 3 has work and no catch-up
+// stated - costs those probes and holds no connection past them. Otherwise it takes the step's
+// lock on the shared pool's connection it holds for the pass (acquireStepConn), skips where
+// another process holds it, since the holder is doing the work, and runs each of phases 1 and 2
+// with work; then, where phase 3 has work and no catch-up
 // of this tick failed, it releases the step's lock and takes phase 3's (takeRestoreLock), and
 // runs phase 3, or skips it where another process holds that lock. A failure of a phase is logged
-// and tried again at the next tick; it answers a failure of the probes or of a lock.
+// and tried again at the next tick; it answers a failure of the probes or of a lock. Its context is
+// marked for the pool's nested-acquire guard, as Boot's is.
 func (s *DecisionStep) Tick(ctx context.Context) error {
+	ctx = store.WithTransactionTracking(ctx)
 	work, err := s.probe(ctx)
 	if err != nil {
 		return err
 	}
+	// kept for one release: catch-up
 	catchUp := work.other || s.catchUpOwed
 	// Phase 3 has work while the last count found something owed, and runs only on a fleet of
 	// this one build.
@@ -263,13 +336,13 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 	if !work.backfill && !catchUp && !restore {
 		return nil
 	}
-	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
+	conn, err := s.acquireStepConn(ctx)
 	if err != nil {
-		return fmt.Errorf("open the decision step's connection: %w", err)
+		return err
 	}
-	defer closeDecisionStepConn(conn)
-	var locked bool
-	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, decisionStepLock).Scan(&locked); err != nil {
+	defer conn.release(s.logger)
+	locked, err := conn.lock(ctx, decisionStepLock, false)
+	if err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
 	if !locked {
@@ -283,6 +356,7 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 			s.logger.Error("dispatch: decisions step backfill; the next tick tries again", "error", err)
 		}
 	}
+	// kept for one release: catch-up
 	if catchUp {
 		failed, err := s.catchUp(ctx)
 		if err != nil {
@@ -297,7 +371,7 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 	if !restore {
 		return nil
 	}
-	if restoring, err := takeRestoreLock(ctx, conn, false); err != nil || !restoring {
+	if restoring, err := conn.takeRestoreLock(ctx, false); err != nil || !restoring {
 		return err
 	}
 	if _, failures, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
@@ -311,22 +385,17 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 	return nil
 }
 
-// takeRestoreLock releases the step's lock (decisionStepLock), which conn holds, and takes phase
-// 3's (decisionRestoreLock) on conn, so the pass of phase 3 it is taken for holds no lock a
-// booting process waits for: it waits for the lock where wait, as a command run by hand does, and
+// takeRestoreLock releases the step's lock (decisionStepLock), which c holds, and takes phase 3's
+// (decisionRestoreLock) on c, so the pass of phase 3 it is taken for holds no lock a booting
+// process waits for: it waits for the lock where wait, as a command run by hand does, and
 // otherwise tries once, reporting whether it took it, as a tick does.
-func takeRestoreLock(ctx context.Context, conn *pgx.Conn, wait bool) (bool, error) {
-	if _, err := conn.Exec(ctx, `select pg_advisory_unlock($1)`, decisionStepLock); err != nil {
+func (c *stepConn) takeRestoreLock(ctx context.Context, wait bool) (bool, error) {
+	if _, err := c.conn.Exec(ctx, `select pg_advisory_unlock($1)`, decisionStepLock); err != nil {
 		return false, fmt.Errorf("release the decision step's lock: %w", err)
 	}
-	if wait {
-		if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionRestoreLock); err != nil {
-			return false, fmt.Errorf("take the lock of the decision step's third phase: %w", err)
-		}
-		return true, nil
-	}
-	var locked bool
-	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, decisionRestoreLock).Scan(&locked); err != nil {
+	c.held = 0
+	locked, err := c.lock(ctx, decisionRestoreLock, wait)
+	if err != nil {
 		return false, fmt.Errorf("take the lock of the decision step's third phase: %w", err)
 	}
 	return locked, nil
@@ -383,6 +452,7 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	if err := s.recountOwed(ctx, work.other); err != nil {
 		return decisionStepWork{}, err
 	}
+	// kept for one release: catch-up
 	if s.backfillUnknown || s.catchUpOwed {
 		if work.backfill, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil {
 			return decisionStepWork{}, err
@@ -466,15 +536,18 @@ func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
 
 // caughtUpAsk is the ask an event of the catch-up's read names, aliased e: a follower event names
 // it as ask_id, every other as the ask's own id.
+// kept for one release: catch-up
 const caughtUpAsk = `case when e.type like 'ask.follower_%' then e.payload->>'ask_id' else e.payload->>'id' end`
 
 // caughtUpTypes is the type list of every read of the catch-up, written out so the planner can
 // match it against a partial index's own: an answer, a resolution (a decline is one), an opening
 // (a reopen, or settlement's restoration), a follower added or removed.
+// kept for one release: catch-up
 const caughtUpTypes = `('ask.answered', 'ask.resolved', 'ask.opened', 'ask.follower_added', 'ask.follower_removed')`
 
 // caughtUpColumns is the event's own columns each row of a catch-up read starts with, in the order
 // scanCaughtUpEvent takes them; the ask it names and its owner follow.
+// kept for one release: catch-up
 const caughtUpColumns = `e.id, e.type, e.payload, e.actor, e.created_at`
 
 // caughtUpRead is the catch-up's one read of a pass: every event of the window above $1 of
@@ -491,6 +564,7 @@ const caughtUpColumns = `e.id, e.type, e.payload, e.actor, e.created_at`
 // anti-join over every tuple of every ask, read once and kept beside the events (copied_asks.go's
 // owedCopiesQuery meets the same with a hashed subplan); the subquery runs once for each event,
 // each run one probe of the index.
+// kept for one release: catch-up
 const caughtUpRead = `
 	select ` + caughtUpColumns + `, coalesce(` + caughtUpAsk + `, '') as ask,
 	       coalesce(e.issue_key, ''), coalesce(e.artifact_id::text, ''),
@@ -513,6 +587,7 @@ const caughtUpRead = `
 // the owner's events through the owner's unique (key, seq) index from $2 on, so it reads only
 // what the owner appended in that gap, follower events among them, which name their ask as
 // ask_id where events_ask_payload_id keys only on id.
+// kept for one release: catch-up
 func caughtUpSince(owner string) string {
 	return `
 	select ` + caughtUpColumns + `, $3::text, coalesce(e.issue_key, ''), coalesce(e.artifact_id::text, ''), e.seq
@@ -529,12 +604,14 @@ func caughtUpSince(owner string) string {
 // caughtUpSinceOnIssue and caughtUpSinceOnDocument are caughtUpSince of an ask an issue owns, read
 // through events_issue_key_seq_key, and of one a document no issue owns, read through
 // events_artifact_id_seq_key.
+// kept for one release: catch-up
 var (
 	caughtUpSinceOnIssue    = caughtUpSince(`e.issue_key = $1`)
 	caughtUpSinceOnDocument = caughtUpSince(`e.artifact_id = $1::uuid`)
 )
 
 // scanCaughtUpEvent reads one row of caughtUpRead or caughtUpSince.
+// kept for one release: catch-up
 func scanCaughtUpEvent(row pgx.CollectableRow) (caughtUpEvent, error) {
 	var event caughtUpEvent
 	var actor []byte
@@ -659,6 +736,7 @@ func (s *DecisionStep) writerFloor(ctx context.Context) (int64, int64, error) {
 // keepCaughtUp moves the high-water mark over what a pass on which no ask failed read: every event
 // at or below floor, and the ids of what it read above it, beside those an earlier pass read above
 // the mark that it has not passed yet.
+// kept for one release: catch-up
 func (s *DecisionStep) keepCaughtUp(floor int64, read []caughtUpEvent) {
 	through := max(s.caughtUpThrough, floor)
 	above := s.caughtUpAbove[:0]
@@ -678,6 +756,7 @@ func (s *DecisionStep) keepCaughtUp(floor int64, read []caughtUpEvent) {
 // caughtUpEvent is one event a catch-up read (caughtUpRead, caughtUpSince): the event, the ask it
 // names, and its owner's key - its issue, or the document it belongs to - with ownerSeq, for a row
 // of caughtUpRead the owner's last_seq as that read saw it.
+// kept for one release: catch-up
 type caughtUpEvent struct {
 	id              int64
 	eventType       string
@@ -713,6 +792,7 @@ type caughtUpEvent struct {
 // asks.Settle writes the event's own state, answer and resolution, under the event, by its actor at
 // its time; a follower event is stated as the row stands (asks.CatchUpFollower). It answers how
 // many events it applied.
+// kept for one release: catch-up
 func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []caughtUpEvent) (int, []caughtUpEvent, error) {
 	if askID == "" {
 		return 0, nil, nil
@@ -787,6 +867,7 @@ func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []
 
 // applyCaughtUpEvent applies one event a pass read, in catchUpAsk's transaction, and reports
 // whether it stated anything.
+// kept for one release: catch-up
 func applyCaughtUpEvent(ctx context.Context, tx pgx.Tx, askID string, event caughtUpEvent) (bool, error) {
 	if event.eventType == "ask.follower_added" || event.eventType == "ask.follower_removed" {
 		var payload model.AskFollowerEventPayload
@@ -823,6 +904,7 @@ func applyCaughtUpEvent(ctx context.Context, tx pgx.Tx, askID string, event caug
 
 // newestSource is the source_event of the newest tuple out of askID's node that narrow keeps, 0
 // where there is none.
+// kept for one release: catch-up
 func newestSource(ctx context.Context, tx pgx.Tx, narrow string, askID string, args ...any) (int64, error) {
 	var newest int64
 	if err := tx.QueryRow(ctx, `
@@ -833,12 +915,4 @@ func newestSource(ctx context.Context, tx pgx.Tx, narrow string, askID string, a
 		return 0, fmt.Errorf("read the newest tuple of ask %s: %w", askID, err)
 	}
 	return newest, nil
-}
-
-// closeDecisionStepConn closes the step's connection, which releases its lock, bounded so a
-// connection gone half-open cannot hold the caller.
-func closeDecisionStepConn(conn *pgx.Conn) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = conn.Close(ctx)
 }

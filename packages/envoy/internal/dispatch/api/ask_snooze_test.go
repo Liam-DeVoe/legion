@@ -388,7 +388,7 @@ func TestAskSnoozeRefusesBadInputAndACredentialWithoutThePersonScope(t *testing.
 }
 
 // TestTwoSnoozesOfOneRowLeaveItAndItsTupleAgreeing races two snoozes of one Inbox row
-// (dispatch://INFRA-1152 R6): the row holds the first moment; a second snooze moves it to another
+// (the spec's R6): the row holds the first moment; a second snooze moves it to another
 // and has not committed when a third, snoozing it back to the first, starts its statement. The
 // third reads the row the second leaves once it commits, so it moves the row back and states its
 // tuple under its event, and the row and the person's current snoozed tuple both say the first

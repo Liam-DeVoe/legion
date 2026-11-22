@@ -502,9 +502,7 @@ func (s *server) writeBroadcast(
 		if err := queueRequestKeyRecovery(ctx, b, broadcastRecovery{BroadcastID: sent.ID, Excluded: excluded}); err != nil {
 			return err
 		}
-		if err := planned.queue(b); err != nil {
-			return err
-		}
+		planned.queue(b)
 		for position := range copies {
 			if err := s.queueBroadcastCopy(b, copies[position], position, sent, author, delivery, actor, planned,
 				&events[position], &attempts[position]); err != nil {
@@ -574,7 +572,7 @@ func (s *server) planBroadcastCopy(
 	if planned.stored, err = planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, Target: target, BroadcastID: sent.ID}, actor, sent.CreatedAt, pages); err != nil {
 		return broadcastCopy{}, err
 	}
-	if _, planned.index, planned.indexed, err = s.planPendingItem(ctx, tx, refs.ItemMessage, messageID, body, refs.PendingSource{},
+	if _, planned.index, planned.indexed, err = s.planPendingItem(ctx, tx, actor, refs.ItemMessage, messageID, body, refs.PendingSource{},
 		refs.WrittenItem(planned.stored.node), sent.CreatedAt, false); err != nil {
 		return broadcastCopy{}, err
 	}
@@ -618,13 +616,11 @@ func (s *server) queueBroadcastCopy(
 	b *store.WriteBatch, copied broadcastCopy, position int, sent broadcastRead, author []byte, delivery string, actor model.Actor,
 	pages broadcastPages, event *model.Event, attempt *model.MessageDelivery,
 ) error {
-	if err := graphstore.QueueNodes(b, copied.stored.written); err != nil {
-		return err
-	}
+	graphstore.QueueNodes(b, copied.stored.written)
 	nodeKind, nodeAddress := copied.stored.rowNode()
 	b.Queue("", `
-		insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address)
-		values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9)
+		insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address, threads_recorded)
+		values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, true)
 	`, copied.message.ID, author, copied.message.Body, *copied.message.Target, sent.ID, position, sent.CreatedAt, nodeKind, nodeAddress)
 	if err := copied.index(b); err != nil {
 		return err
@@ -638,16 +634,10 @@ func (s *server) queueBroadcastCopy(
 	}); err != nil {
 		return err
 	}
-	if err := graphstore.QueueCaused(b, copied.stored.written, graphstore.LatestEvent); err != nil {
-		return err
-	}
-	if err := pages.queueCause(b, copied.page); err != nil {
-		return err
-	}
+	graphstore.QueueCaused(b, copied.stored.written, graphstore.LatestEvent)
+	pages.queueCause(b, copied.page)
 	// What the copy's body is in the store, under the same event (planPendingItem).
-	if err := graphstore.QueueCaused(b, copied.indexed, graphstore.LatestEvent); err != nil {
-		return err
-	}
+	graphstore.QueueCaused(b, copied.indexed, graphstore.LatestEvent)
 	if copied.stored.projected {
 		if err := graphstore.QueueAuthored(b, graphstore.KindMessage, copied.message.ID, actor, sent.CreatedAt, graphstore.LatestEvent); err != nil {
 			return err
@@ -656,9 +646,7 @@ func (s *server) queueBroadcastCopy(
 			return err
 		}
 	}
-	if err := graphstore.QueueNodes(b, copied.attemptOpened); err != nil {
-		return err
-	}
+	graphstore.QueueNodes(b, copied.attemptOpened)
 	b.Queue("", `
 		insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, node_kind, node_address)
 		values ($1, 1, $2, $3, 'pending', $4, $5, $6)
@@ -668,10 +656,9 @@ func (s *server) queueBroadcastCopy(
 		*attempt = written
 		return err
 	})
-	if err := graphstore.QueueCaused(b, copied.attemptOpened, graphstore.LatestEvent); err != nil {
-		return err
-	}
-	return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, copied.attemptKey)
+	graphstore.QueueCaused(b, copied.attemptOpened, graphstore.LatestEvent)
+	graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, copied.attemptKey)
+	return nil
 }
 
 // broadcastPages is the pages of a broadcast's recipients as its read phase planned them: each
@@ -715,25 +702,22 @@ func planBroadcastPages(ctx context.Context, tx pgx.Tx, recipients []broadcastTa
 }
 
 // queue queues the write of every page's node, in ascending id.
-func (p broadcastPages) queue(b *store.WriteBatch) error {
+func (p broadcastPages) queue(b *store.WriteBatch) {
 	for _, page := range p.order {
-		if err := graphstore.QueueNodes(b, p.written[page]); err != nil {
-			return fmt.Errorf("write page %s of a broadcast's recipient: %w", page, err)
-		}
+		graphstore.QueueNodes(b, p.written[page])
 	}
-	return nil
 }
 
 // queueCause queues the cause of page's write under the event the batch appended last, the
 // event of the first copy that hangs from it, and nothing for a page an earlier copy caused
 // already or for no page.
-func (p broadcastPages) queueCause(b *store.WriteBatch, page string) error {
+func (p broadcastPages) queueCause(b *store.WriteBatch, page string) {
 	held, owed := p.written[page]
 	if !owed {
-		return nil
+		return
 	}
 	delete(p.written, page)
-	return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+	graphstore.QueueCaused(b, held, graphstore.LatestEvent)
 }
 
 // deliverBroadcast sends each recipient's owed attempt, broadcastDeliveryWorkers at a time, and

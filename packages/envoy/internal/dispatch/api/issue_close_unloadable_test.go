@@ -135,11 +135,12 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 // the withdrawn block its resolved state, and the copy who answered and when, and the ask and
 // document it was copied from, without the answer's words, which the rebuild weighs no room for
 // (docs' answeredCopyWrite); the settlement the rebuild leaves owed writes them, in step with the
-// row. On a fleet of one build every reader reads them from the store, and the rebuilt document
-// holds none of the seven attributes a version can store, live or in the version its settlement
-// writes, while the asks member of the text an agent reads still holds
-// both blocks' states from the store.
-func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBuildServes(t *testing.T) {
+// row. On a fleet of one build each block keeps what a version keeps for the release before's
+// readers (docs' keptAskState), live and in the version its settlement writes: the withdrawn
+// block its resolved state, and the copy who answered and when and its source, with none of the
+// answer's words; the asks member of the text an agent reads still holds both blocks' states
+// from the store.
+func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesAsTheFleetStands(t *testing.T) {
 	for _, twoBuilds := range []bool{false, true} {
 		name := "a fleet of one build"
 		if twoBuilds {
@@ -182,17 +183,21 @@ func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBu
 			live := liveTree(t, f.documents, notes)
 			ownRow, sourceRow := readBlockAsk(t, f.handler, own), readBlockAsk(t, f.handler, source)
 			if !twoBuilds {
-				requireNoAnswerAttributes(t, "the rebuilt notes' live tree", live)
-				awaitSettled(t, f.database, notes)
-				_, version := documentTexts(t, f.handler, notes)
-				requireNoAnswerAttributes(t, "the rebuilt notes' latest version", version)
+				requireAskAttributesInStep(t, live, "rebuilt-decision", ownRow, "", false)
+				requireAskAttributesInStep(t, live, "close-decision", sourceRow, "dispatch://"+issue.Key+"/spec", false)
 			} else {
 				requireAskAttributesInStep(t, live, "rebuilt-decision", ownRow, "", true)
 				requireAskAttributesInStep(t, live, "close-decision", sourceRow, "dispatch://"+issue.Key+"/spec", false)
-				if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
-					t.Fatalf("settle the rebuilt notes: %v", err)
-				}
-				awaitSettled(t, f.database, notes)
+			}
+			if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+				t.Fatalf("settle the rebuilt notes: %v", err)
+			}
+			awaitSettled(t, f.database, notes)
+			if !twoBuilds {
+				_, version := documentTexts(t, f.handler, notes)
+				requireAskAttributesInStep(t, version, "rebuilt-decision", ownRow, "", false)
+				requireAskAttributesInStep(t, version, "close-decision", sourceRow, "dispatch://"+issue.Key+"/spec", false)
+			} else {
 				requireAskAttributesInStep(t, liveTree(t, f.documents, notes), "close-decision", sourceRow, "dispatch://"+issue.Key+"/spec", true)
 			}
 			requireLiveText(t, f.handler, notes,

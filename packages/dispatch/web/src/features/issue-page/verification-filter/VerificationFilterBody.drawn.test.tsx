@@ -13,28 +13,20 @@ import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { displayTree } from "../../../__tests__/display-trees";
+import { countEngineParses, displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type {
-  ArtifactBlock,
-  CheckBlock,
-  IssueCheckResults,
-  IssueCoverage,
-} from "../../../api/types";
+import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import {
-  PublishedReferenceNames,
-  type PublishedReferences,
-  ReferenceNamesProvider,
-} from "../../refs/reference-names";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
-import { firstWordedBlock, type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
+import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
@@ -53,10 +45,10 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
-import { Publisher } from "../projection-fixture";
+import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
-import { blockNodeId, treeContext } from "../tree-drafts";
+import { treeContext } from "../tree-drafts";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -73,7 +65,6 @@ import {
   node,
   OTHER_COMMIT,
   result,
-  SPEC_SLUG,
   statementNode,
   verificationView,
 } from "./verification-fixtures";
@@ -102,7 +93,8 @@ beforeAll(async () => {
  *  the slot builds it, whether the body is drawn inside the stage the page draws a view in
  *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
  *  tree itself takes it (`ViewStage`), and what the page publishes of its batched names read
- *  (`published`), where a case gives one. */
+ *  (`published`), which is what it publishes for the issue's statements where a case gives
+ *  nothing else (`publishedStatements`). */
 interface DrawOptions {
   readonly named?: readonly string[];
   readonly published?: PublishedReferences;
@@ -112,43 +104,21 @@ interface DrawOptions {
   readonly whole?: TreeNode;
 }
 
-/** The reads the page names `statements` from, as its own reads hold them (`IssueTreeReads`):
- *  the issue, whose spec they are blocks of; the spec's blocks read, which gives each its kind,
- *  so one whose words hold none is named by the page's word for that kind; and the batched read's
- *  answer for each statement whose node holds a reading of its words, as that read answers a
- *  block (`text_tree`). A statement whose node holds no reading has no answer, as one the read
- *  has not answered for yet. */
-function statementReads(statements: readonly TreeNode[]): IssueTreeReads {
-  const issue = issueDetails();
-  const blocks = statements.map((statement): ArtifactBlock => {
-    const id = statement.id.slice(blockNodeId(SPEC_SLUG, "").length);
-    return {
-      attributes: [],
-      from: 0,
-      id,
-      references: { asks: 0, comments: 0 },
-      to: 1,
-      token: id,
-      type: "requirement",
-    };
-  });
-  return {
-    documents: [{ artifactId: issue.primary_artifact_id, blocks }],
-    issue,
-    targets: statements.flatMap(({ reference, text, tree }) =>
-      reference === undefined || tree === undefined
-        ? []
-        : [{ gone: false, kind: "block", name: text, ref: reference, text_tree: tree }]
-    ),
-  };
+/** Every statement `root` holds, at any depth, that has an address. */
+function statementsOf(root: TreeNode): TreeNode[] {
+  return [
+    ...(root.statement === true && root.reference !== undefined ? [root] : []),
+    ...root.children.flatMap(statementsOf),
+  ];
 }
 
 /** What the page publishes for `statements`: what its batched read names them by, by the page's
- *  own rule (`targetNaming`) over the reads a case built its chips from, and every statement's
- *  address as one the page asks for, answered or not yet. */
+ *  own rule (`targetNaming`) over the reads it names them from (`blockReads`, over the issue the
+ *  statements are blocks of, unless a case hands the reads it built its chips from), and every
+ *  statement's address as one the page asks for, answered or not yet. */
 function publishedStatements(
   statements: readonly TreeNode[],
-  reads: IssueTreeReads
+  reads: IssueTreeReads = blockReads(issueDetails(), statements)
 ): PublishedReferences {
   return {
     ...targetNaming(reads),
@@ -171,15 +141,15 @@ function testClient(): QueryClient {
  *  query that is not empty once trimmed, as `presetView` reads it. It is drawn inside
  *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
  *  `staged` inside `ViewStage` around that, as the page's stage draws the slot; under the names
- *  store, with `published` published to it and handed to the body in the render that draws it,
- *  as the slot hands it (`PublishedReferenceNames`). A case that draws the body again with other
- *  reads passes it to `rerender` with the same `client`. */
+ *  store, with `published` published to it and handed to the body, as the slot hands it, and no
+ *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed. A case
+ *  that draws the body again with other reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   {
     named = [],
-    published,
+    published: givenPublished,
     query = "",
     reads = { state: "answered" },
     staged = false,
@@ -192,18 +162,19 @@ function bodyOf(
   const whole =
     given ??
     (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
+  const published = givenPublished ?? publishedStatements(statementsOf(issue));
   const slot = (
     <NoTooltips>
-      {published === undefined ? null : <Publisher published={published} />}
-      <PublishedReferenceNames published={published}>
-        <VerificationFilterBody
-          checks={checks}
-          context={view.context}
-          reads={reads}
-          view={view.root}
-          whole={whole}
-        />
-      </PublishedReferenceNames>
+      <Publisher published={published} />
+      <VerificationFilterBody
+        checks={checks}
+        context={view.context}
+        namesLine={NO_FAILED_READS}
+        published={published}
+        reads={reads}
+        view={view.root}
+        whole={whole}
+      />
     </NoTooltips>
   );
   return (
@@ -849,9 +820,9 @@ test("a statement is marked as context, with its words and the node they came fr
 });
 
 // A statement's parent line is the link a reader follows to the node its words came from where
-// that node has an address, as the outline's parent line is (`NodeRow.tsx`'s `ParentLink`), and
-// the link is a tab stop, since the tree's keys move between rows and reach no link inside one. A
-// parent with no address is named by its words alone.
+// that node has an address, as the outline's parent line is (`node-line.tsx`'s
+// `NodeParentLine`), and the link is a tab stop, since the tree's keys move between rows and
+// reach no link inside one. A parent with no address is named by its words alone.
 test("a statement's parent line links the node it came from where that node has an address", () => {
   const served = passing("c-one");
   const other = passing("c-two");
@@ -2174,14 +2145,115 @@ test("a check's words draw their links from the results read's tree", async () =
   }
 });
 
+// R8 and INFRA-1196 decision 350 over a statement's parent line, which the view draws as the
+// outline draws a parent line (`node-line.tsx`'s `NodeParentLine`): a reference in the parent's
+// words reads as the words its author wrote while the page's batched read has not answered for
+// it, and as its target's name once it has, and the line reads none itself.
+test("a statement's parent line reads a reference as its target's name, and as its author's words until it resolves", async () => {
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const words = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const served = passing("c-one");
+  const statement = statementNode("r1", "The page draws it.", [checkNode(served)]);
+  const parent = node({ children: [statement], id: "comment-1", text: words, type: "comment" });
+  const client = testClient();
+  const drawn = (published: PublishedReferences) =>
+    bodyOf([parent], [served], { published }, client);
+  const view = render(drawn(publishedNames(new Map(), { asked: [address] })));
+  const line = () => view.container.querySelector("[data-node-parent-line]")?.textContent;
+  try {
+    expect(line(), "the parent line drew the reference before its name came").toBe(
+      `${NODE_TYPE_NAMES.comment}${words}`
+    );
+    expect(
+      getReferences,
+      "the parent line read the reference the page asks for"
+    ).not.toHaveBeenCalled();
+    view.rerender(drawn(publishedNames(new Map([[address, name]]))));
+    await waitFor(() =>
+      expect(line(), "the parent line did not name the target").toBe(
+        `${NODE_TYPE_NAMES.comment}See ${name} first.`
+      )
+    );
+    expect(
+      getReferences,
+      "the parent line read the reference the page named"
+    ).not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// The body hands its rows what the page publishes of its batched names read in the render that
+// draws them (`published`), as the outline does, and the page publishes to the names store only
+// after the rows have rendered (`Publisher`): so a reference the page asks for waits on the
+// page's answer from a row's first render, drawn as its author wrote it meanwhile, and is never
+// read by the row; a row that read the store alone read it itself first.
+test("a row of the view waits on the page's read for a reference the page asks for", async () => {
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const words = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const served = passing("c-one");
+  const statement = statementNode("r1", words, [checkNode(served)]);
+  const client = testClient();
+  const drawn = (published: PublishedReferences) =>
+    bodyOf([statement], [served], { published }, client);
+  const view = render(drawn(publishedNames(new Map(), { asked: [address] })));
+  const statementWords = () =>
+    view.container.querySelector("[data-verification-card] [data-node-words]")?.textContent ?? "";
+  try {
+    await waitFor(() => expect(statementWords()).toContain(words));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.rerender(drawn(publishedNames(new Map([[address, name]]))));
+    await waitFor(() => expect(statementWords()).toContain(`See ${name} first.`));
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// A result's observed words are drawn from the results read's reading of them (`observed_tree`),
+// as every stored text of the view is drawn from its tree where its read sent one, so the page
+// parses none of them on its own thread.
+test("a result's observed words are drawn from the results read's reading, with no parse of their own", () => {
+  const observed = "41 passed, **2** skipped.";
+  const block = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [result({ check_block_id: "c-one", id: "result-c-one", observed })],
+  });
+  const built = checkNode(block);
+  const read = (one: TreeNode): TreeNode => ({ ...one, tree: displayTree(one.text) });
+  const checked = { ...read(built), children: built.children.map(read) };
+  const statement = read(statementNode("r1", "The page draws it.", [checked]));
+  const parses = countEngineParses();
+  try {
+    const view = drawBody([statement], [block]);
+    try {
+      expect(
+        view.container.querySelector("[data-verification-result] [data-node-words]")?.textContent
+      ).toBe("41 passed, 2 skipped.");
+      expect(parses.count(), "the page parsed a stored text the read sent a reading of").toBe(0);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    parses.restore();
+  }
+});
+
 // A check that serves two statements is drawn under each and names the other as every chip of
-// the page names a block: by the name the page publishes for that statement from its batched
-// read, projected from its first block that holds words, cut at a word within 32 characters, with
-// no mark the author typed and no markdown pass over the words, so words that open on "1." keep
-// it, and an address inside them read as its short form, since a name inside a name resolves
-// nothing. A statement that reads as no words, one whose words are a picture alone, is named by
-// nothing, with no comma for it, as is one the view holds no statement for; and a check whose
-// only other statement is such a one draws no "Also under" at all.
+// the page names a block: by the line the names store projects from the reading the page
+// published for that statement, its first block that holds words, cut at a word within 32
+// characters, with no mark the author typed and no markdown pass over the words, so words that
+// open on "1." keep it, and an address inside them read as its short form, since a name inside a
+// name resolves nothing. A statement that reads as no words, one whose words are a picture
+// alone, is named by nothing, with no comma for it, as is one the view holds no statement for;
+// and a check whose only other statement is such a one draws no "Also under" at all.
 test("a check under two statements names the other by its words with no mark of markdown", async () => {
   const summary = readsCore2();
   const twice = passing("c-one");
@@ -2207,8 +2279,8 @@ test("a check under two statements names the other by its words with no mark of 
   // the others it serves as the tree names them, from those reads: each chip is the page's own
   // for its target (`treeContext`), and the page publishes from the same reads.
   const all = [plain, marked, picture, numbered, stranger];
-  const reads = statementReads(all);
-  const { chipOf } = treeContext(reads, firstWordedBlock);
+  const reads = blockReads(issueDetails(), all);
+  const { chipOf } = treeContext(reads);
   const under = (block: CheckBlock, others: readonly TreeNode[]): TreeNode => ({
     ...checkNode(block),
     alsoUnder: others.map((other) => chipOf(other.reference ?? "")),

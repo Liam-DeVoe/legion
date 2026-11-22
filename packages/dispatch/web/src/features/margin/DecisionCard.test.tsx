@@ -8,10 +8,11 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
 import type { AskRead, DecisionEntry } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { DecisionCard } from "./DecisionCard";
+import { DecisionCard, DecisionList } from "./DecisionCard";
 import type { DecisionMarginItem } from "./useMarginItems";
 
 beforeAll(async () => {
@@ -38,6 +39,7 @@ function item(decision: Partial<DecisionEntry>): DecisionMarginItem {
       block_id: "d-1",
       ref: "dispatch://CORE-1/artifact/choices-md",
     },
+    from_ask: [],
     kept: null,
     kept_by: null,
     kept_text_sum: null,
@@ -229,5 +231,40 @@ test("selecting a decision card selects its margin item", async () => {
     expect(selected).toEqual(["decision:CORE-1/choices-md#d-1:CORE-1/spec#p-plan"]);
   } finally {
     view.unmount();
+  }
+});
+
+// The decisions' region stands as tall as its lowest card and follows a card's height the moment
+// the card resizes, with no render of the list: a region that read the cards' heights at render
+// kept a card's earlier height until an unrelated render - a hover - read it again, and the
+// margin's scroll moved under the reader's press, as the anchored comments' did.
+test("the decisions' region follows its card's height when the card resizes, with no render", () => {
+  const resize = installResizeObserver();
+  let height = 300;
+  const decision = item({});
+  const view = render(
+    <MemoryRouter>
+      <DecisionList
+        blockPlacements={new Map([["p-plan", { pos: 5, top: 120 }]])}
+        decisions={[decision]}
+        hoveredItemId={undefined}
+        onSelect={() => {}}
+        selectedItemId={undefined}
+      />
+    </MemoryRouter>
+  );
+  try {
+    const region = screen.getByRole("region", { name: "Decisions" });
+    const wrapper = region.firstElementChild;
+    if (!(wrapper instanceof HTMLElement)) throw new Error("the card has no wrapper");
+    Object.defineProperty(wrapper, "offsetHeight", { configurable: true, get: () => height });
+    resize.resize(wrapper);
+    expect(region.style.minHeight).toBe(`${120 + 300 + 8}px`);
+    height = 250;
+    resize.resize(wrapper);
+    expect(region.style.minHeight).toBe(`${120 + 250 + 8}px`);
+  } finally {
+    view.unmount();
+    resize.restore();
   }
 });

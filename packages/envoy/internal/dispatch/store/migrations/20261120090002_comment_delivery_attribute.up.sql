@@ -24,7 +24,7 @@
 --
 -- Every row is written out as a literal, because the pre-deploy census admits only literal rows on
 -- a table above pgmigrate.CensusTableLimit (its bounded-write rule), and graph_tuples is above it
--- in production once INFRA-1149's backfill has run. The file is four `insert ... values`
+-- in production once the node store's backfill has run. The file is four `insert ... values`
 -- statements, as 20261116102759 is: the node, then its visibility and state tuples, its
 -- `attribute_of` tuple and its value tuples. No earlier migration writes this id and no code outside
 -- a migration writes a node of kind `attribute`, so the node does not exist when this runs and every

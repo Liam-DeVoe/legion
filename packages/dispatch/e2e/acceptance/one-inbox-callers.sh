@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives dispatch://INFRA-1152's c-callers-moved at this branch's head: every caller of the three
+# Drives the check c-callers-moved at this branch's head: every caller of the three
 # reads the one read replaced moved, the comparison and the opt-in are gone, and a page of the
 # release before still works, because the three reads answer this head as they answer that
 # release.
@@ -16,10 +16,18 @@
 #               Envoy at the same fake Envoy listener (FAKE_ENVOY_PORT), so both builds read one set
 #               of rows and one listener; the two people sign in; and the rows the later sections
 #               read are written, through this head alone.
-#   callers     packages/dispatch/web/src, packages/envoy-client/src, packages/pi-envoy/src and
-#               packages/claude-envoy/src hold no read of the three paths, a send to
-#               /api/v1/agents/{session_id}/messages aside; a scratch copy of those trees with a
-#               planted read of each path, and a planted send, is searched first.
+#   callers     packages/dispatch/web/src, packages/envoy-client/src, packages/pi-envoy/src,
+#               packages/claude-envoy/src and packages/dispatch/e2e hold no read of the three
+#               paths, a send to /api/v1/agents/{session_id}/messages aside, written in any way a
+#               caller writes one: a literal, a template, a route pattern or glob, a regex with
+#               escaped slashes, string pieces joined by `+`, or envoy-client's segment list. The
+#               e2e suite is read beyond the four trees the check names: its specs wait for, stub
+#               and hold the page's requests by their paths, and a wait on a path the page no
+#               longer reads fails only in a browser run, as two did in a browser lane of this
+#               branch. A few of its files read a kept route on purpose and are spared, each by
+#               its exact path (callers_spared says why), and its recorded HARs by their
+#               extension. A scratch copy of the five trees, with a planted read of each path in
+#               each of those forms and two planted sends, is searched first.
 #   gone        no tracked file but frozen history names the comparison (its command
 #               `inbox-compare`, its package, its table, its route and page, its types) or the
 #               opt-in (its query key `one=1` and its browser preference `inbox.one_read`); a
@@ -392,27 +400,70 @@ setup_section() {
   return "$failed"
 }
 
-# --- callers: no read of the three paths in the four trees --------------------------------------
+# --- callers: no read of the three paths in the four trees and the e2e suite ----------------------
 
-readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packages/pi-envoy/src packages/claude-envoy/src)
-# Each path the three reads answer at, spelled as a string - a literal, a template, a route
-# pattern - or as the segment list envoy-client's dispatch-http.ts builds a URL from.
-readonly path_inbox='/api/v1/inbox([^/A-Za-z0-9_-]|$)|"api", *"v1", *"inbox" *\]'
-readonly path_replies='/api/v1/me/replies([^/A-Za-z0-9_-]|$)|"api", *"v1", *"me", *"replies" *\]'
-readonly path_messages='/api/v1/agents/[^/[:space:]"'"'"'`]+/messages([^/A-Za-z0-9_-]|$)|"api", *"v1", *"agents", *[^],]+, *"messages" *\]'
+# The four trees the check names, and the e2e suite beside them. A spec of that suite reads no
+# route itself; it waits for, stubs or holds the page's own request by its path. A wait on a path
+# the page no longer reads compiles and lints clean, and fails only in a browser run, where it
+# times out. Two did, in a browser lane of this branch: heavy-bodies.e2e.ts and
+# refresh-freshness.e2e.ts each waited for GET /api/v1/inbox, written as a regex with escaped
+# slashes. So the search reads the suite too, beyond the four trees the check names.
+readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packages/pi-envoy/src packages/claude-envoy/src packages/dispatch/e2e)
+# The files of the suite that name a read of the three on purpose, each by its exact path:
+# - inbox-unchanged.e2e.ts reads the base build's GET /api/v1/inbox?assignee= to compare the
+#   head's read of the open asks with it;
+# - this file and one-inbox-kinds.sh, acceptance drivers whose checks have the kept reads as their
+#   subject: old_routes here reads all three from both builds, and kinds reads
+#   GET /api/v1/agents/{session_id}/messages beside the session's conversation;
+# - __tests__/stub-recording.test.ts, whose GET /api/v1/inbox is a sample URL the recorder's own
+#   test writes and normalises, and no page asks.
+# And the suite's recordings: each HAR under __recordings__ holds the requests a page made when it
+# was recorded, data that calls nothing, and is recorded again against this branch's server before
+# the hand-off. They are spared by their extension, so a script or spec under that directory is
+# still read.
+readonly callers_spared=(
+  ':(exclude)packages/dispatch/e2e/inbox-unchanged.e2e.ts'
+  ":(exclude)$self"
+  ':(exclude)packages/dispatch/e2e/acceptance/one-inbox-kinds.sh'
+  ':(exclude)packages/dispatch/e2e/__tests__/stub-recording.test.ts'
+  ':(exclude)packages/dispatch/e2e/__recordings__/*.har'
+)
+# Each path the three reads answer at, in every way a caller writes it: a literal, a template, a
+# route pattern or a glob; a regex, its slashes escaped (`\/`, or `\\/` in the string a RegExp is
+# built from); string pieces joined by `+` ("/api/v1/" + "inbox"); or the segment list
+# envoy-client's dispatch-http.ts builds a URL from. Neither a regex's alternation nor a prefix
+# held in a variable of its own is followed.
+readonly quote='["'"'"'`]'
+readonly slash='\\*/'
+readonly joint="(${quote}[[:space:]]*\\+[[:space:]]*${quote})?"
+readonly sep="${joint}${slash}${joint}"
+readonly lead='(^|[^-A-Za-z0-9_])api'
+# Where a path ends: at anything but a further segment. A slash is a further segment unless it
+# closes a regex literal (flags and all), and a backslash unless it escapes something else, as
+# `\?` does.
+readonly path_end='([^-/A-Za-z0-9_\\]|/[dgimsuvy]*([^-/A-Za-z0-9_{$:*.[\\]|$)|\\+[^/\\]|\\*$)'
+# A session id in the sessions' path: a template's `${...}`, a shell's `$(...)`, a route
+# pattern's `{session_id}`, a glob's `*`, a regex's class (`[^/]+`, which holds a slash) or escape
+# (`\w+`), or an expression joined in by `+` ("/api/v1/agents/" + id + "/messages").
+readonly session_segment='([^/[:space:]"'"'"'`\\]|\\[^/]|\[[^]]*\]|\$\{[^}]*\}|\$\([^)]*\)|'"$quote"'[[:space:]]*\+[^"'"'"'`]*\+[[:space:]]*'"$quote"')+'
+readonly path_inbox="${lead}${sep}v1${sep}inbox${path_end}"'|"api", *"v1", *"inbox" *\]'
+readonly path_replies="${lead}${sep}v1${sep}me${sep}replies${path_end}"'|"api", *"v1", *"me", *"replies" *\]'
+readonly path_messages="${lead}${sep}v1${sep}agents${sep}${session_segment}${sep}messages${path_end}"'|"api", *"v1", *"agents", *[^],]+, *"messages" *\]'
 # A send is what names the POST: its method, the web client's send (createAgentMessage) or a send
-# helper, on the line of the path or within six lines of it. A line that names a read itself is a
-# read whatever is near it.
-readonly names_a_send='\bPOST\b|["'"'"']post["'"'"']|\.post\(|createAgentMessage|\bsend[A-Z][A-Za-z0-9_]*\(|\bsend\('
+# helper, on the line of the path or within six lines of it. In the e2e suite that is also one of
+# its send helpers (sends.ts's refusePosts and holdPosts, a `posted(` wait), the `delivery` field
+# only a message's body carries, or `sent`, the name the suite gives a send it waits on. A line
+# that names a read itself is a read whatever is near it.
+readonly names_a_send='\bPOST\b|["'"'"']post["'"'"']|\.post\(|createAgentMessage|\bsend[A-Z][A-Za-z0-9_]*\(|\bsend\(|[a-z]Posts\b|\bposted\(|\bdelivery"?:|\b(const|let) sent\b|\bawait sent\b'
 readonly names_a_read='\bGET\b|["'"'"']get["'"'"']|\.get\(|\.read\(|#json\("GET"'
 readonly a_comment='^[[:space:]]*(//|\*|/\*|#)'
 
-# callers_in ROOT: every read of the three paths under ROOT's four trees, one `path:line: <read>`
-# each. A comment line names a path and calls nothing; a hit of the sessions' path is a send, and
-# no read, where the send's words stand near it.
+# callers_in ROOT: every read of the three paths under ROOT's five trees, the spared files aside,
+# one `path:line: <read>` each. A comment line names a path and calls nothing; a hit of the
+# sessions' path is a send, and no read, where the send's words stand near it.
 callers_in() {
   local root="$1" hits file line text read from
-  hits="$(grep_tree "$root" -e "$path_inbox" -e "$path_replies" -e "$path_messages" -- "${caller_trees[@]}")" ||
+  hits="$(grep_tree "$root" -e "$path_inbox" -e "$path_replies" -e "$path_messages" -- "${caller_trees[@]}" "${callers_spared[@]}")" ||
     return 1
   [[ -n "$hits" ]] || return 0
   while IFS= read -r hit; do
@@ -441,7 +492,7 @@ callers_section() {
   local section=callers plant="$work/plant-callers" found
   mkdir -p "$plant"
   git -C "$repo" ls-files -z -- "${caller_trees[@]}" | tar -C "$repo" --null -T - -cf - | tar -C "$plant" -xf - ||
-    fail "$section" "copy the four trees" "tar failed"
+    fail "$section" "copy the five trees" "tar failed"
   # A read of each path, and a send far enough below them that no read is within its six lines.
   cat >"$plant/packages/pi-envoy/src/planted-caller.ts" <<'TS'
 export async function planted(base: string, session: string, client: { json: Function }) {
@@ -459,20 +510,53 @@ export async function planted(base: string, session: string, client: { json: Fun
   return [replies, asks, thread];
 }
 TS
+  # A spec's waits on each path as regexes with escaped slashes - in a literal, and in the string
+  # a RegExp is built from - and two reads of string pieces joined by `+`; then a send helper
+  # given an escaped regex, as far below them.
+  cat >"$plant/packages/dispatch/e2e/planted-caller.e2e.ts" <<'TS'
+export async function planted(page: Page, base: string, session: string) {
+  await page.waitForRequest(/\/api\/v1\/inbox(\?|$)/);
+  await page.route(new RegExp("\\/api\\/v1\\/me\\/replies(\\?.*)?$"), (route) => route.continue());
+  await page.waitForResponse(/\/api\/v1\/agents\/[^/]+\/messages$/);
+  const split = await fetch(base + "/api/v1/" + "inbox");
+  const joined = await fetch(base + "/api/v1/agents/" + session + "/messages");
+  return [split, joined];
+}
+
+
+
+
+
+export async function plantedSend(page: Page) {
+  await refusePosts(page, /\/api\/v1\/agents\/[^/]+\/messages$/);
+}
+TS
+  # A script beside the recordings, which their sparing by extension still reads.
+  printf '%s\n' 'await fetch("/api/v1/inbox");' >"$plant/packages/dispatch/e2e/__recordings__/planted-caller.ts"
   found="$(callers_in "$plant")" || fail "$section" "search the scratch copy" "git grep failed"
   local want
-  for want in "planted-caller.ts:2: GET /api/v1/me/replies" "planted-caller.ts:3: GET /api/v1/inbox" \
-    "planted-caller.ts:4: GET /api/v1/agents/{session_id}/messages"; do
-    [[ "$found" == *"$want"* ]] ||
-      fail "$section" "the search finds a planted read (${want##*: }) in a scratch copy of the four trees" "it found: ${found:-nothing}"
+  local -a wants=(
+    "packages/pi-envoy/src/planted-caller.ts:2: GET /api/v1/me/replies"
+    "packages/pi-envoy/src/planted-caller.ts:3: GET /api/v1/inbox"
+    "packages/pi-envoy/src/planted-caller.ts:4: GET /api/v1/agents/{session_id}/messages"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:2: GET /api/v1/inbox"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:3: GET /api/v1/me/replies"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:4: GET /api/v1/agents/{session_id}/messages"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:5: GET /api/v1/inbox"
+    "packages/dispatch/e2e/planted-caller.e2e.ts:6: GET /api/v1/agents/{session_id}/messages"
+    "packages/dispatch/e2e/__recordings__/planted-caller.ts:1: GET /api/v1/inbox"
+  )
+  for want in "${wants[@]}"; do
+    [[ "$found" == *"$want:"* ]] ||
+      fail "$section" "the search finds a planted read ($want) in a scratch copy of the five trees" "it found: ${found:-nothing}"
   done
-  [[ "$(grep -c . <<<"$found")" == 3 ]] ||
-    fail "$section" "the search finds the three planted reads in the scratch copy, and nothing else" "it found: $found"
-  pass "$section" "the search finds the three planted reads in a scratch copy of the four trees, and not the planted send or anything else"
+  [[ "$(grep -c . <<<"$found")" == "${#wants[@]}" ]] ||
+    fail "$section" "the search finds the ${#wants[@]} planted reads in the scratch copy, and nothing else" "it found: $found"
+  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch copy of the five trees - plain, in a template, in a segment list, regex-escaped and joined by + - and not the two planted sends, the spared files or anything else"
 
-  found="$(callers_in "$repo")" || fail "$section" "search the four trees" "git grep failed"
+  found="$(callers_in "$repo")" || fail "$section" "search the five trees" "git grep failed"
   [[ -z "$found" ]] || fail "$section" "no read of the three paths in ${caller_trees[*]}" "$found"
-  pass "$section" "no read of GET /api/v1/inbox, GET /api/v1/me/replies or GET /api/v1/agents/{session_id}/messages in ${caller_trees[*]}"
+  pass "$section" "no read of GET /api/v1/inbox, GET /api/v1/me/replies or GET /api/v1/agents/{session_id}/messages in ${caller_trees[*]}, the spared files aside"
 }
 
 # --- gone: the comparison and the opt-in ----------------------------------------------------------

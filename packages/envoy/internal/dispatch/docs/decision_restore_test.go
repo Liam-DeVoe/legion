@@ -3,12 +3,15 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -295,10 +298,13 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 	spec := issue.latest(issue.spec)
 	part := spec[strings.Index(spec, "## Decisions"):]
+	// Each restored ask is answered, so its opener keeps what a version keeps of it on a fleet of
+	// one build - its state, who answered and when (keptAskState) - and none of the answer's words.
 	for _, want := range []string{
-		`#q-store urgency="high" multiple="false" shaped="dispatch://DOC-1/spec#b-r1"}`,
+		`#q-store urgency="high" multiple="false" state="answered" answered_by="alice" answered_at="`,
+		`" shaped="dispatch://DOC-1/spec#b-r1"}`,
 		"we add that it stays small",
-		`#q-format urgency="med" multiple="false"}`,
+		`#q-format urgency="med" multiple="false" state="answered" answered_by="`,
 		`uncertainty="high" uncertainty_reason="a reader who wants a file export would change this."`,
 		"We write no file beside the database",
 		`replaced="true"`,
@@ -308,7 +314,7 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 			t.Errorf("the spec's Decisions part holds no %q:\n%s", want, part)
 		}
 	}
-	for _, gone := range []string{pointer, "Unsure:", "one line  for each", `state="answered"`} {
+	for _, gone := range []string{pointer, "Unsure:", "one line  for each", "selected=", ` answer="`} {
 		if strings.Contains(spec, gone) {
 			t.Errorf("the converted spec still holds %q:\n%s", gone, spec)
 		}
@@ -338,6 +344,142 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 	if work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool); err != nil || len(work) != 0 {
 		t.Errorf("the restore leaves work %+v (%v), want none", work, err)
+	}
+}
+
+// A section under `## Replaced` becomes a decision with replaced="true" whichever ask it is about
+// (the spec's R9): that rule comes before the reading rule. A section under it that cites a
+// person's answered ask - whose block the spec holds, or whose block left the spec and the
+// restore returns - becomes a decision in the spec's `## Decisions` part that keeps the section's
+// heading block id, takes the section's links as shaped and the ask as its one from_ask; no
+// reading stands under the ask, the ask takes none of the section's links, and the heading's
+// moved_to reaches the decision, not the ask's block; a person's approval of the spec carries to
+// the conversion's version, whose one change is that decision under the heading it adds. One that
+// holds an open ask block and nothing else, which moves into the spec, becomes a decision too,
+// settling no ask, rather than being dropped onto that block. Each time the document retires and
+// the step owes nothing.
+func TestTheConversionMakesASectionUnderReplacedADecisionWhicheverAskItIsAbout(t *testing.T) {
+	const title = "microVM pods with a cgroup per command"
+	const words = "We first ran each command in a microVM pod with a cgroup of its own."
+	const asked = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n" +
+		":::ask{#q-pods urgency=\"high\" multiple=\"false\"}\nWhere does each command run?\n:::\n"
+	replacedCiting := func(ask string) string {
+		return "# Decisions\n\n## Replaced\n\n### " + title + "\n\n" + words + " The person ruled it in dispatch://DOC-1/ask/" + ask +
+			", which shapes dispatch://DOC-1/spec#b-r1.\n"
+	}
+	for _, test := range []struct {
+		name string
+		// prepare writes the decisions document and answers its id and the ask its section is
+		// about: the answered ask it cites, or the open ask whose block it holds.
+		prepare func(issue *restoreIssue) (string, string)
+		// settles is whether the decision settles that ask (from_ask), shaped the spec blocks it
+		// takes the section's links as, words what the spec's newest version holds of the section,
+		// restored how many asks the restore writes into the spec, and approval what becomes of
+		// the spec's approval ("" for a spec nobody approved).
+		settles  bool
+		shaped   []string
+		words    []string
+		restored int
+		approval string
+	}{
+		{
+			name: "a section citing an answered ask whose block the spec holds",
+			prepare: func(issue *restoreIssue) (string, string) {
+				ask := issue.answer(issue.spec, "q-pods", "Each command runs in a microVM pod.")
+				issue.approveLatest(issue.spec)
+				return issue.document("decisions-md", "decisions.md", false, "decisions", replacedCiting(ask)), ask
+			},
+			settles: true, shaped: []string{"r1"}, words: []string{words}, approval: "carried",
+		},
+		{
+			name: "a section citing an answered ask whose block left the spec",
+			prepare: func(issue *restoreIssue) (string, string) {
+				ask := issue.answer(issue.spec, "q-pods", "Each command runs in a microVM pod.")
+				issue.replace(issue.spec, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+				return issue.document("decisions-md", "decisions.md", false, "decisions", replacedCiting(ask)), ask
+			},
+			settles: true, shaped: []string{"r1"}, words: []string{words}, restored: 1,
+		},
+		{
+			name: "a section holding an open ask block and nothing else",
+			prepare: func(issue *restoreIssue) (string, string) {
+				decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## Replaced\n\n### "+title+"\n\n"+
+					":::ask{#q-region urgency=\"low\" multiple=\"false\"}\nWhich region went first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n")
+				return decisions, blockAskOn(issue.t, issue.service, decisions, "q-region").ID
+			},
+			words: []string{title, "#q-region "}, restored: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			issue := newRestoreIssue(t, asked)
+			decisions, ask := test.prepare(issue)
+			heading := issue.headingID(decisions, title)
+
+			result := issue.run(true)
+			markdown := issue.latest(issue.spec)
+			tree, err := pmdoc.ParseRendering(markdown)
+			if err != nil {
+				t.Fatalf("read the spec's newest version: %v", err)
+			}
+			pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+				if node.Type == readingType {
+					t.Errorf("the spec's newest version holds the reading %v %q, want none: the section under `## Replaced` is a decision, not a reading of ask %s",
+						node.Attrs[pmdoc.BlockIDAttr], pmdoc.TextContent(node), ask)
+				}
+				return true
+			})
+			if result.Decisions != 1 || result.Readings != 0 || result.Dropped != 0 || result.Removed != 0 || result.Left != 0 ||
+				len(result.Restored) != test.restored || !result.Retired || result.SpecApproval != test.approval {
+				t.Errorf("the conversion did %+v, want the section a decision, %d asks restored, nothing else, the spec's approval %q, the document retired",
+					result, test.restored, test.approval)
+			}
+			decision := issue.refKey(issue.spec) + "#" + heading
+			if moved := issue.movedTo(decisions)[issue.refKey(decisions)+"#"+heading]; moved != decision {
+				t.Errorf("the heading %s moves to %q, want the decision %s that keeps its block id", heading, moved, decision)
+			}
+			if replaced := issue.value(decision, refs.ValueReplaced); replaced != "true" {
+				t.Errorf("the decision %s states replaced %q, want true", decision, replaced)
+			}
+			tuples, err := graphstore.CurrentOut(ctx, issue.database.Pool, refs.BlockNodeKind, decision, []string{refs.TupleShaped, refs.TupleFromAsk})
+			if err != nil {
+				t.Fatalf("read the ties of the decision %s: %v", decision, err)
+			}
+			var gotShaped, fromAsk []string
+			for _, tuple := range tuples {
+				switch {
+				case !tuple.Asserted:
+				case tuple.Kind == refs.TupleShaped:
+					gotShaped = append(gotShaped, tuple.ToID)
+				case tuple.Kind == refs.TupleFromAsk:
+					fromAsk = append(fromAsk, tuple.ToID)
+				}
+			}
+			var wantShaped, wantFrom []string
+			for _, block := range test.shaped {
+				wantShaped = append(wantShaped, issue.refKey(issue.spec)+"#"+block)
+			}
+			if test.settles {
+				wantFrom = []string{ask}
+			}
+			if !slices.Equal(gotShaped, wantShaped) || !slices.Equal(fromAsk, wantFrom) {
+				t.Errorf("the decision %s shaped %v and is from_ask %v, want shaped %v and from_ask %v", decision, gotShaped, fromAsk, wantShaped, wantFrom)
+			}
+			if tuples, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, ask, []string{refs.TupleShaped}); err != nil ||
+				slices.ContainsFunc(tuples, func(tuple graphstore.Tuple) bool { return tuple.Asserted }) {
+				t.Errorf("ask %s shaped %+v (%v), want nothing: the decision takes the section's links", ask, tuples, err)
+			}
+			fromAskAttribute := `from_ask="dispatch://DOC-1/ask/` + ask + `"`
+			for _, want := range append([]string{"#" + heading + " ", `replaced="true"`}, test.words...) {
+				if !strings.Contains(markdown, want) {
+					t.Errorf("the spec's newest version holds no %q:\n%s", want, markdown)
+				}
+			}
+			if strings.Contains(markdown, fromAskAttribute) != test.settles {
+				t.Errorf("the spec's newest version holding %q is %v, want %v:\n%s", fromAskAttribute, !test.settles, test.settles, markdown)
+			}
+			issue.requireRetiredAndOwedNothing(decisions)
+		})
 	}
 }
 
@@ -504,6 +646,292 @@ func TestTheRestoreWritesAClosedIssuesSpec(t *testing.T) {
 	}
 }
 
+// A block that has no ask row and is no copy of an ask holds none of the eight server-owned
+// attributes (askServerAttributeNames) in any version the restore writes, whatever its live tree
+// gives it (R10). No release's API makes such a block: alice's browser, connected to the document's
+// room while DOC-1 is open, writes it there, and the block opens no ask and copies none. In each
+// case the restore runs on a fleet of one build and writes a version of the document holding the
+// block, and every version it writes holds that block, if it holds it, with none of the eight:
+//   - settled on a fleet of one build: alice writes the block into the spec after DOC-1 closed in
+//     the database alone, a minute ahead, so the store's close margin admits it
+//     (observedBeforeClose), and the closed issue's settlement saves it with no row and no state.
+//     The spec's answered ask lost its block to the release before's agent, so the restore writes
+//     a version of the spec.
+//   - settled resolved while the release before served: the same, but the release before still
+//     serves when the closed issue's settlement saves the block, which it writes state="resolved"
+//     for that release's pages (resolveUnindexedAskBlock); the fleet is then one build.
+//   - left in the decisions document, resolved by the close's sweep while the release before
+//     served: alice writes the block into the decisions document beside an answered ask block,
+//     which the restore moves into the spec, while DOC-1 is open and the release before serves;
+//     no settlement runs, so the document's block index never holds the block, and the close's
+//     final sweep writes it state="resolved" (WriteIssueAskStates, markUnindexed). The fleet is
+//     then one build, and the restore, which moves only the blocks the index holds, leaves the
+//     block in the decisions document, whose version it writes.
+func TestEveryVersionTheRestoreWritesHoldsNoneOfTheEightOnABlockWithNoAskRowThatIsNoCopy(t *testing.T) {
+	const head = "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n"
+	const rowless = "q-closed"
+	const block = "\n:::ask{#" + rowless + " urgency=\"med\" multiple=\"false\"}\nWas this asked after the close?\n:::\n"
+	const resolved = `state="resolved"`
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	closeAMinuteAhead := func(t *testing.T, issue *restoreIssue) {
+		t.Helper()
+		if _, err := issue.database.Pool.Exec(context.Background(), `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+			t.Fatalf("close DOC-1 in the database alone: %v", err)
+		}
+	}
+	// serveOneBuild takes the two processes serveTwoBuilds registered out of the fleet.
+	serveOneBuild := func(t *testing.T, issue *restoreIssue) {
+		t.Helper()
+		if _, err := issue.database.Pool.Exec(context.Background(), `delete from server_processes where commit in ('the-release-before', 'this-release')`); err != nil {
+			t.Fatalf("leave a fleet of one build: %v", err)
+		}
+	}
+	// droppedSpec is DOC-1 whose spec's answered ask lost its block to the release before's agent,
+	// with alice's browser connected to the spec's room.
+	droppedSpec := func(t *testing.T) (*restoreIssue, *docstest.Peer) {
+		t.Helper()
+		issue := newRestoreIssue(t, head+"\n:::ask{#q-left urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
+		issue.answer(issue.spec, "q-left", "The base release.")
+		issue.replace(issue.spec, head)
+		return issue, connectBrowser(t, newTestServer(t, issue.service).URL, issue.spec, "alice")
+	}
+	for _, test := range []struct {
+		name string
+		// write builds DOC-1 and alice's block, and answers the issue and the document holding it.
+		write func(t *testing.T) (*restoreIssue, string)
+	}{
+		{"settled on a fleet of one build", func(t *testing.T) (*restoreIssue, string) {
+			issue, browser := droppedSpec(t)
+			closeAMinuteAhead(t, issue)
+			editAsBrowser(t, issue.service, issue.spec, browser, head+block)
+			settleCurrentGeneration(t, issue.service, issue.spec)
+			if settled := openerOf(issue.latest(issue.spec), rowless); settled == "" || strings.Contains(settled, "state=") {
+				t.Fatalf("the closed issue's settlement saved alice's block as %q, want it held with no state", settled)
+			}
+			return issue, issue.spec
+		}},
+		{"settled resolved while the release before served", func(t *testing.T) (*restoreIssue, string) {
+			issue, browser := droppedSpec(t)
+			closeAMinuteAhead(t, issue)
+			serveTwoBuilds(t, issue.database)
+			editAsBrowser(t, issue.service, issue.spec, browser, head+block)
+			settleCurrentGeneration(t, issue.service, issue.spec)
+			if settled := openerOf(issue.latest(issue.spec), rowless); !strings.Contains(settled, resolved) {
+				t.Fatalf("the closed issue's settlement saved alice's block as %q while the release before served, want it %s", settled, resolved)
+			}
+			serveOneBuild(t, issue)
+			return issue, issue.spec
+		}},
+		{"left in the decisions document, resolved by the close's sweep while the release before served", func(t *testing.T) (*restoreIssue, string) {
+			const section = "\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n"
+			issue := newRestoreIssue(t, head)
+			decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n"+section)
+			issue.answer(decisions, "q-doc", "The census names each move.")
+			browser := connectBrowser(t, newTestServer(t, issue.service).URL, decisions, "alice")
+			serveTwoBuilds(t, issue.database)
+			editAsBrowser(t, issue.service, decisions, browser, "# Decisions\n"+block+section)
+			waitForLandedAppends(t, issue.service, decisions)
+			closeAMinuteAhead(t, issue)
+			if err := joinedWrite(issue.service, func(ctx context.Context) error {
+				tx, _ := txFromContext(ctx)
+				if _, _, err := lockArtifactOwner(ctx, tx, decisions); err != nil {
+					return err
+				}
+				_, err := issue.service.WriteIssueAskStates(ctx, "DOC-1", nil, alice, true)
+				return err
+			}); err != nil {
+				t.Fatalf("run the close's final sweep: %v", err)
+			}
+			if live := openerOf(residentRoomMarkdown(t, issue.service, decisions), rowless); !strings.Contains(live, resolved) {
+				t.Fatalf("the close's sweep left alice's block as %q in the decisions document's room, want it %s", live, resolved)
+			}
+			serveOneBuild(t, issue)
+			return issue, decisions
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			issue, document := test.write(t)
+			if rows := askRowCount(t, issue.service, document, rowless); rows != 0 {
+				t.Fatalf("alice's block has %d ask rows, want none", rows)
+			}
+			var copies int
+			if err := issue.database.Pool.QueryRow(ctx, `
+				select count(*) from document_blocks d
+				join graph_tuples t on t.from_kind = d.node_kind and t.from_id = d.node_address
+				where d.artifact_id = $1 and d.block_id = $2 and t.kind = $3 and t.asserted
+			`, document, rowless, graphstore.TupleCopiedFrom).Scan(&copies); err != nil {
+				t.Fatalf("read the copied_from of alice's block: %v", err)
+			}
+			if copies != 0 {
+				t.Fatalf("alice's block holds %d copied_from tuples, want none: it copies no ask", copies)
+			}
+			// The versions the restore writes are every version of DOC-1's documents past the
+			// newest each held before it, and each is one the restore reports.
+			before := map[string]int{}
+			slugs := map[string]string{}
+			documents, err := issue.database.Pool.Query(ctx, `
+				select a.id::text, a.slug, coalesce(max(v.number), 0) from artifacts a
+				left join artifact_versions v on v.artifact_id = a.id
+				where a.issue_key = 'DOC-1' group by a.id, a.slug
+			`)
+			if err != nil {
+				t.Fatalf("read the documents of DOC-1: %v", err)
+			}
+			for documents.Next() {
+				var id, slug string
+				var newest int
+				if err := documents.Scan(&id, &slug, &newest); err != nil {
+					t.Fatal(err)
+				}
+				before[id], slugs[id] = newest, slug
+			}
+			documents.Close()
+			if err := documents.Err(); err != nil {
+				t.Fatal(err)
+			}
+			result := issue.run(false)
+			reported := map[string]int{issue.spec: result.SpecVersion}
+			if document != issue.spec {
+				reported[document] = result.DecisionsVersion
+			}
+			if len(result.Restored) != 1 || result.OtherVersions != 0 || reported[document] <= before[document] {
+				t.Fatalf("the restore did %+v, want one ask restored, a version of the document holding alice's block past %d and none of another document", result, before[document])
+			}
+			held := 0
+			for id, newest := range before {
+				rows, err := issue.database.Pool.Query(ctx, `
+					select number, markdown from artifact_versions where artifact_id = $1 and number > $2 order by number
+				`, id, newest)
+				if err != nil {
+					t.Fatalf("read the versions the restore wrote of %s: %v", slugs[id], err)
+				}
+				var numbers []int
+				for rows.Next() {
+					var number int
+					var markdown string
+					if err := rows.Scan(&number, &markdown); err != nil {
+						t.Fatal(err)
+					}
+					numbers = append(numbers, number)
+					held += blocksHoldingNoneOfTheEight(t, fmt.Sprintf("version %d of %s the restore wrote", number, slugs[id]), markdown, rowless)
+				}
+				rows.Close()
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				var want []int
+				if number := reported[id]; number > 0 {
+					want = []int{number}
+				}
+				if !slices.Equal(numbers, want) {
+					t.Fatalf("%s holds versions %v past %d, want the restore's versions %v alone", slugs[id], numbers, newest, want)
+				}
+			}
+			if held != 1 {
+				t.Fatalf("the versions the restore wrote hold %d blocks %s, want alice's one in the version of %s", held, rowless, slugs[document])
+			}
+		})
+	}
+}
+
+// blocksHoldingNoneOfTheEight answers how many ask blocks id markdown holds, and fails t for each
+// of the eight server-owned attributes (askServerAttributeNames) one of them holds, naming what
+// markdown is and printing the block's opening line and markdown: a block that has no ask row and
+// is no copy of an ask holds none of the eight (R10).
+func blocksHoldingNoneOfTheEight(t *testing.T, what, markdown, id string) int {
+	t.Helper()
+	held := 0
+	for _, line := range strings.Split(markdown, "\n") {
+		kind, attrs, opens := pmdoc.ParseTypedDirectiveOpen(strings.TrimLeft(line, " \t>"))
+		if !opens || kind != "ask" || attrs[pmdoc.BlockIDAttr] != id {
+			continue
+		}
+		held++
+		for _, name := range askServerAttributeNames {
+			if value, holds := attrs[name]; holds {
+				t.Errorf("%s holds %s=%v on the block with no ask row that is no copy:\n%s\nwant none of the eight; it reads:\n%s",
+					what, name, value, line, markdown)
+			}
+		}
+	}
+	return held
+}
+
+// A version written without settling its document first, once the fleet is one build, holds none
+// of the eight server-owned attributes on a block that has no ask row and is no copy of an ask
+// (R10, storableVersionTree), though the document holds the state="resolved" a closed issue's
+// settlement wrote on that block while the release before served. alice's browser, connected to
+// the spec's room while DOC-1 is open, writes the block after DOC-1 closed in the database alone, a
+// minute ahead, so the store's close margin admits it (observedBeforeClose), and the closed
+// issue's settlement saves it with no row, resolved for the release before's pages
+// (resolveUnindexedAskBlock). The fleet is then one build. alice types over the spec's title,
+// which the margin admits too, and bob comments on the closed issue: his comment's anchor pins a
+// version (WithCommentMarks, SnapshotVersion), the write of a version a closed issue still takes,
+// which takes the stored document, alice's keystroke in it, without settling it. That version
+// holds alice's block once, with none of the eight.
+func TestAVersionWrittenOnAFleetOfOneBuildHoldsNoneOfTheEightOnABlockWithNoAskRowThatIsNoCopy(t *testing.T) {
+	ctx := context.Background()
+	const head = "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n"
+	const rowless = "q-closed"
+	const retitled = "Spec, retitled once the fleet is one build"
+	issue := newRestoreIssue(t, head)
+	alice := connectBrowser(t, newTestServer(t, issue.service).URL, issue.spec, "alice")
+	if _, err := issue.database.Pool.Exec(ctx, `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+		t.Fatalf("close DOC-1 in the database alone: %v", err)
+	}
+	serveTwoBuilds(t, issue.database)
+	editAsBrowser(t, issue.service, issue.spec, alice, head+"\n:::ask{#"+rowless+" urgency=\"med\" multiple=\"false\"}\nWas this asked after the close?\n:::\n")
+	settleCurrentGeneration(t, issue.service, issue.spec)
+	if settled := openerOf(issue.latest(issue.spec), rowless); !strings.Contains(settled, `state="resolved"`) {
+		t.Fatalf("the closed issue's settlement saved alice's block as %q while the release before served, want it resolved", settled)
+	}
+	if rows := askRowCount(t, issue.service, issue.spec, rowless); rows != 0 {
+		t.Fatalf("alice's block has %d ask rows, want none", rows)
+	}
+	if _, err := issue.database.Pool.Exec(ctx, `delete from server_processes where commit in ('the-release-before', 'this-release')`); err != nil {
+		t.Fatalf("leave a fleet of one build: %v", err)
+	}
+	typeOver(t, alice, "Spec", retitled)
+	waitFor(t, roomWait(t), "the spec's room to take alice's keystroke", func() bool {
+		return strings.Contains(residentRoomMarkdown(t, issue.service, issue.spec), retitled)
+	})
+	waitForLandedAppends(t, issue.service, issue.spec)
+
+	before := latestVersionNumber(t, issue.service, issue.spec)
+	if _, err := commentAnchor(issue.service, issue.spec, "c1", "The corpus is written once.", model.Actor{Kind: "user", ID: "bob"}); err != nil {
+		t.Fatalf("bob's comment on the closed issue: %v", err)
+	}
+	rows, err := issue.database.Pool.Query(ctx, `
+		select number, markdown from artifact_versions where artifact_id = $1 and number > $2 order by number
+	`, issue.spec, before)
+	if err != nil {
+		t.Fatalf("read the versions of the spec past %d: %v", before, err)
+	}
+	written := 0
+	for rows.Next() {
+		var number int
+		var markdown string
+		if err := rows.Scan(&number, &markdown); err != nil {
+			t.Fatal(err)
+		}
+		written++
+		if !strings.Contains(markdown, retitled) {
+			t.Errorf("version %d of the spec reads:\n%s\nwant alice's keystroke in it, which the store holds", number, markdown)
+		}
+		if held := blocksHoldingNoneOfTheEight(t, fmt.Sprintf("version %d of the spec bob's comment pinned", number), markdown, rowless); held != 1 {
+			t.Errorf("version %d of the spec holds %d blocks %s, want alice's one; it reads:\n%s", number, held, rowless, markdown)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if written != 1 {
+		t.Fatalf("bob's comment left %d versions of the spec past %d, want the one its anchor pins", written, before)
+	}
+}
+
 // partOf is the address of the document the current part_of tuple of ask's node names, "" for
 // none.
 func (issue *restoreIssue) partOf(ask string) string {
@@ -564,22 +992,26 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 		settle func(issue *restoreIssue, decisions, ask string)
 		// held is whether a section held the ask block, and becomes a decision of its own.
 		held bool
+		// state is the state the restored block's stored opener keeps, as its node holds it
+		// (keptAskState): none for an ask its node holds open, the release before's answer on
+		// its row alone among them.
+		state string
 	}{
 		{"a section holding an open ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-open") + lean, "q-open",
-			func(*restoreIssue, string, string) {}, true},
+			func(*restoreIssue, string, string) {}, true, ""},
 		{"a section holding a declined ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-declined") + lean, "q-declined",
 			func(issue *restoreIssue, decisions, held string) {
 				at := time.Now().UTC()
 				change := asks.Resolved(model.AskResolution{Kind: model.AskResolutionDeclined, Reason: "Not ours to rule.", Actor: alice, At: at})
 				change.Who, change.At = alice, at
 				settleAskAs(issue.t, issue.service, decisions, "q-declined", held, alice, change)
-			}, true},
+			}, true, asks.StateResolved},
 		{"a section holding an ask the release before answered on its row alone", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-skipped") + lean, "q-skipped",
 			func(issue *restoreIssue, _, held string) {
 				answerAsThePreviousBuild(issue.t, issue.database, "DOC-1", held, "East")
-			}, true},
+			}, true, ""},
 		{"an open ask block outside every section", "# Decisions\n\n" + ask("q-loose") + "\n" + plain, "q-loose",
-			func(*restoreIssue, string, string) {}, false},
+			func(*restoreIssue, string, string) {}, false, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -616,6 +1048,9 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 			}
 			if markdown := issue.latest(issue.spec); !strings.Contains(markdown, "#"+test.block+" ") {
 				t.Errorf("the spec's newest version holds no ask block %s:\n%s", test.block, markdown)
+			} else if opener := openerOf(markdown, test.block); test.state == "" && strings.Contains(opener, " state=") ||
+				test.state != "" && !strings.Contains(opener, ` state="`+test.state+`"`) || strings.Contains(opener, "answered_by=") {
+				t.Errorf("the restored block of %s opens %q, want it keeping the state %q its node holds and no answerer", test.block, opener, test.state)
 			}
 			if markdown := issue.latest(decisions); strings.Contains(markdown, "#"+test.block+" ") {
 				t.Errorf("the decisions document's newest version still holds the ask block %s:\n%s", test.block, markdown)
@@ -819,5 +1254,232 @@ func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t 
 	}
 	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") {
 		t.Errorf("the restored spec holds no block of the ask:\n%s", spec)
+	}
+}
+
+// openerOf is the opening line of the ask block id that markdown holds, "" where it holds none.
+func openerOf(markdown, id string) string {
+	start := strings.Index(markdown, "ask{#"+id+" ")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(markdown[start:], "\n")
+	if end < 0 {
+		return markdown[start:]
+	}
+	return markdown[start : start+end]
+}
+
+// approveLatest records alice's approval of document's newest version, and answers its number.
+func (issue *restoreIssue) approveLatest(document string) int {
+	issue.t.Helper()
+	approved := latestVersionNumber(issue.t, issue.service, document)
+	approveStoredVersion(issue.t, issue.database, document, approved, "alice")
+	return approved
+}
+
+// The restore writes back the ask block it moves byte for byte (R7): an answered ask whose block
+// a person approved with a link and a code span in its question and a sub-list under an option,
+// which an agent then removed from the spec, comes back holding every one of them, and the
+// restore's version reads approved, since it changed where the block stands and not its bytes.
+// Where an agent changed the block's link after the approval and then removed the block, the
+// restore writes the block back as the spec last held it: its words are the approved ones and
+// its bytes are not, so the restore supersedes the approval and reports it with the ask.
+func TestTheRestoreWritesBackTheBytesOfTheAskBlockAPersonApproved(t *testing.T) {
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	const approvedLink = "https://example.com/archive"
+	block := func(link string) string {
+		return ":::ask{#q-bytes urgency=\"med\" multiple=\"false\"}\nWhich store holds the corpus, [the archive](" + link + ") or `pg_dump` files?\n\n" +
+			"- Archive: The cold tier.\n  - Its restores take a day.\n- Files: A nightly dump.\n:::\n"
+	}
+	for _, test := range []struct {
+		name string
+		// link is the block's link as the agent left it before removing the block.
+		link     string
+		approval string
+	}{
+		{"a block unchanged since the approval", approvedLink, "carried"},
+		{"a block whose link an agent changed since the approval", "https://example.com/elsewhere", "superseded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block(approvedLink))
+			ask := blockAskOn(t, issue.service, issue.spec, "q-bytes")
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			at := time.Now().UTC()
+			change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Archive"}, At: at})
+			change.Who, change.At = alice, at
+			settleAskAs(t, issue.service, issue.spec, "q-bytes", ask.ID, alice, change)
+			approved := issue.approveLatest(issue.spec)
+			if test.link != approvedLink {
+				issue.replace(issue.spec, head+block(test.link))
+			}
+			issue.replace(issue.spec, head)
+
+			result := issue.run(false)
+			if len(result.Restored) != 1 || result.SpecApproval != test.approval {
+				t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d %s", result, approved, test.approval)
+			}
+			spec := issue.latest(issue.spec)
+			heading := strings.Index(spec, "## Decisions\n")
+			if heading < 0 {
+				t.Fatalf("the restored spec holds no Decisions part:\n%s", spec)
+			}
+			part := spec[heading:]
+			for _, want := range []string{"[the archive](" + test.link + ")", "`pg_dump` files", "Its restores take a day."} {
+				if !strings.Contains(part, want) {
+					t.Errorf("the restored block holds no %q, which the spec last held:\n%s", want, part)
+				}
+			}
+			if test.approval == "superseded" {
+				reported := false
+				for _, superseded := range result.Superseded {
+					reported = reported || superseded.Approval.ApprovedVersion == approved && slices.Contains(superseded.Asks, "dispatch://DOC-1/ask/"+ask.ID)
+				}
+				if !reported {
+					t.Errorf("the restore reported %+v, want the approval of version %d superseded with the ask %s", result.Superseded, approved, ask.ID)
+				}
+			}
+		})
+	}
+}
+
+// An ask block moved out of a standing decisions document keeps its `shaped` ties (R6: "its
+// `shaped` tuples stay intact"): the block of q-a, which shaped the spec's r1 and the decisions
+// document's q-b, moves into the spec with q-b, and holds a pointer to r1 and one to q-b where q-b
+// now stands, the spec; its ask's node states both ties, and none to the decisions document.
+func TestAnAskBlockMovedOutOfTheDecisionsDocumentKeepsItsShapedTies(t *testing.T) {
+	ctx := context.Background()
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+
+		"## Which store holds the corpus\n\n:::ask{#q-a urgency=\"med\" multiple=\"false\" "+
+		"shaped=\"dispatch://DOC-1/spec#b-r1 dispatch://DOC-1/artifact/decisions-md#b-q-b\"}\nWhich store holds the corpus?\n:::\n\n"+
+		"## Which reader reads it first\n\n:::ask{#q-b urgency=\"low\" multiple=\"false\"}\nWhich reader reads it first?\n:::\n")
+	askA := blockAskOn(t, issue.service, decisions, "q-a").ID
+	if ties, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, askA, []string{refs.TupleShaped}); err != nil || len(ties) != 2 {
+		t.Fatalf("before the restore q-a's node holds the shaped ties %+v (%v), want two", ties, err)
+	}
+
+	result := issue.run(false)
+	if len(result.Restored) != 2 {
+		t.Fatalf("the restore did %+v, want both ask blocks moved", result.Restored)
+	}
+	const want = `shaped="dispatch://DOC-1/spec#b-r1 dispatch://DOC-1/spec#b-q-b"`
+	if opener := openerOf(issue.latest(issue.spec), "q-a"); !strings.Contains(opener, want) {
+		t.Fatalf("the restored block of q-a opens %q, want it holding %s", opener, want)
+	}
+	ties, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, askA, []string{refs.TupleShaped})
+	if err != nil {
+		t.Fatalf("read q-a's shaped ties: %v", err)
+	}
+	held := map[string]bool{}
+	for _, tie := range ties {
+		if tie.Asserted {
+			held[tie.ToID] = true
+		}
+	}
+	spec := issue.refKey(issue.spec)
+	if len(held) != 2 || !held[refs.BlockAddress(spec, "r1")] || !held[refs.BlockAddress(spec, "q-b")] {
+		t.Fatalf("after the restore q-a's node holds the shaped ties %+v, want one to %s and one to %s", ties,
+			refs.BlockAddress(spec, "r1"), refs.BlockAddress(spec, "q-b"))
+	}
+}
+
+// The restore takes out of the spec's `## Decisions` part only its pointer line to the decisions
+// document, a paragraph whose one content is the citation of that document (isPointerLine). A
+// person's paragraph that cites the document among other words is the person's prose, which the
+// restore keeps wherever it stands in the part: before the pointer line, the ask takes the
+// pointer line's place after it; with no pointer line, the ask stands after the part's last
+// block. So is a paragraph that names the decisions and says they are in the document with words
+// of its own between, which no pointer line's lead holds (pointerLineLead). Each restore changed
+// nothing else, so the approval carries, and no carry takes the person's paragraph out of the
+// version they approved.
+func TestTheRestoreKeepsAPersonsParagraphCitingTheDecisionsDocumentAmongOtherWords(t *testing.T) {
+	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
+	const prose = "We chose the base release because backups are cheap; the trade-offs are in dispatch://DOC-1/artifact/decisions-md."
+	const qualified = "The decisions the board rejected twice are in dispatch://DOC-1/artifact/decisions-md."
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	const block = ":::ask{#q1 urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n\n"
+	for _, test := range []struct {
+		name, prose, part string
+	}{
+		{"before the pointer line", prose, prose + "\n\n" + pointer + "\n"},
+		{"with no pointer line", prose, prose + "\n"},
+		{"naming the decisions with words of its own before `are in`, with no pointer line", qualified, qualified + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block+"## Decisions\n\n"+test.part)
+			issue.answer(issue.spec, "q1", "The base release.")
+			approved := issue.approveLatest(issue.spec)
+			issue.replace(issue.spec, head+"## Decisions\n\n"+test.part)
+			issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## The base release writes the corpus\n\nIts corpus is the one we measured.\n")
+
+			result := issue.run(false)
+			if len(result.Restored) != 1 || result.SpecApproval != "carried" {
+				t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d carried", result, approved)
+			}
+			spec := issue.latest(issue.spec)
+			part := spec[strings.Index(spec, "## Decisions"):]
+			if !strings.Contains(part, test.prose) {
+				t.Fatalf("the restored spec's Decisions part reads\n%s\nwant the person's paragraph citing the decisions document kept", part)
+			}
+			if strings.Contains(spec, pointer) || strings.Index(part, "#q1 urgency=") < strings.Index(part, test.prose) {
+				t.Errorf("the restored spec's Decisions part reads\n%s\nwant the ask after the person's paragraph, in place of any pointer line", part)
+			}
+		})
+	}
+}
+
+// The `## Decisions` heading is no change to what a person approved where the decisions step made
+// it, and an empty heading the person approved is theirs. A spec approved with no Decisions part,
+// whose answered ask an agent then removed, reads approved at the restore's version, which returns
+// the ask under a heading it adds. A spec approved with an empty Decisions heading, whose answered
+// ask a decisions section restates, reads approved at the conversion's version, which writes the
+// section's links and words into the ask and keeps the heading; where an agent deleted that empty
+// heading after the approval, the conversion's version, which holds no heading, supersedes it.
+func TestTheStepCarriesAnApprovalAcrossOnlyTheDecisionsHeadingItMade(t *testing.T) {
+	const head = "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n\n"
+	const block = ":::ask{#q-h urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n"
+	t.Run("a spec approved with no Decisions part, its ask returned under the heading the restore adds", func(t *testing.T) {
+		issue := newRestoreIssue(t, head+block)
+		issue.answer(issue.spec, "q-h", "The base release.")
+		approved := issue.approveLatest(issue.spec)
+		issue.replace(issue.spec, head)
+		result := issue.run(false)
+		if len(result.Restored) != 1 || result.SpecApproval != "carried" {
+			t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d carried", result, approved)
+		}
+		if spec := issue.latest(issue.spec); strings.Count(spec, "## Decisions\n") != 1 || !strings.Contains(spec[strings.Index(spec, "## Decisions\n"):], "#q-h urgency=") {
+			t.Fatalf("the restored spec holds no one Decisions part with the ask under it:\n%s", spec)
+		}
+	})
+	for _, test := range []struct {
+		name, written, approval string
+	}{
+		{"a spec approved with an empty Decisions heading, which the conversion's version keeps", head + block + "\n## Decisions\n", "carried"},
+		{"a spec approved with an empty Decisions heading an agent deleted, which the conversion's version lacks", head + block, "superseded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block+"\n## Decisions\n")
+			ask := issue.answer(issue.spec, "q-h", "The base release.")
+			approved := issue.approveLatest(issue.spec)
+			if test.written != head+block+"\n## Decisions\n" {
+				issue.replace(issue.spec, test.written)
+			}
+			issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+
+				"## The base release writes the corpus\n\nIts corpus is the one we measured. This shapes dispatch://DOC-1/spec#b-r1. "+
+				"Decided in dispatch://DOC-1/ask/"+ask+".\n")
+
+			result := issue.run(true)
+			if result.Readings != 1 || result.SpecVersion == 0 || result.SpecApproval != test.approval {
+				t.Fatalf("the conversion did %+v, want one reading written into the spec and the approval of version %d %s", result, approved, test.approval)
+			}
+			spec := issue.latest(issue.spec)
+			if opener := openerOf(spec, "q-h"); !strings.Contains(opener, `shaped="dispatch://DOC-1/spec#b-r1"`) {
+				t.Fatalf("the converted spec's ask opens %q, want the section's link as its shaped pointer:\n%s", opener, spec)
+			}
+			if held := strings.Contains(spec, "## Decisions"); held != (test.approval == "carried") {
+				t.Fatalf("the converted spec holds a Decisions heading %t:\n%s", held, spec)
+			}
+		})
 	}
 }

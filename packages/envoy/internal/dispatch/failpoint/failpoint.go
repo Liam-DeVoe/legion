@@ -1,5 +1,5 @@
 // Package failpoint is the seam a test injects a failure through between one writer's store write
-// and its projection write (dispatch://INFRA-1152 R9, c-census). A server whose test hooks are on
+// and its projection write (the spec's R9, c-census). A server whose test hooks are on
 // carries one Armed set on every request it serves (With); PUT
 // /api/v1/writes/_test/fail-between/{writer} arms it for the next write of one writer; and each
 // writer below calls Between at the point between its two writes, which answers ErrInjected once
@@ -23,7 +23,7 @@ import (
 )
 
 // The writers a failure can be injected into, by the name the route arms them under: each writer
-// of a projection of dispatch://INFRA-1152 the census names.
+// of a projection of the one inbox the census names.
 const (
 	// Comment is the comment route (api's createCommentFor): between the comment's node and the
 	// comments row that names it.

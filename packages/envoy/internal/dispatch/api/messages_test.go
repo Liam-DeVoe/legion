@@ -899,7 +899,7 @@ func TestAgentConversationReplyStaysInThatAgentsConversation(t *testing.T) {
 // sent once while the listener took it and once while it took nothing. An issue message is in the
 // conversation through its target or its attempt whatever that attempt's state, and never through
 // a delivered_to tuple: an attempt the listener has not taken states none (R7 of
-// dispatch://INFRA-1152's spec).
+// the spec).
 func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
 	taking := true
 	const session = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`

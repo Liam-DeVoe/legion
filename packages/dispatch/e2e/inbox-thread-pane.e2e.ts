@@ -357,7 +357,7 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     // wait is for the thread on the page and then for the box holding what was typed, never
     // for the box alone - a draft written while the thread is still landing goes with the
     // mount that lands it. The reader's own reply takes the thread out of their Inbox
-    // (dispatch://INFRA-4948 R1), so its row leaves, and the reply is read in the Dismissed
+    // (the own-answer rule, R1), so its row leaves, and the reply is read in the Dismissed
     // view's thread.
     //
     // Every body is matched exactly: the column draws the thread's newest line twice, once as
@@ -428,7 +428,7 @@ test("a reply the session takes as its own turn says so and links the live view"
   });
   // The reader's own follow-up into the same conversation, which the session takes as a turn of
   // its live conversation. The follow-up is the reader's own reply, so it takes the thread out of
-  // their Inbox (dispatch://INFRA-4948 R1), and the row stands in the Dismissed view: the root was
+  // their Inbox (the own-answer rule, R1), and the row stands in the Dismissed view: the root was
   // never accepted, so the row is still listed there.
   const followUp = await createAgentMessage(THREAD_SESSION.session_id, {
     body: "Then hold the mirror.",

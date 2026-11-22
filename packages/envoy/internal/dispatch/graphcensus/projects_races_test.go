@@ -54,11 +54,11 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	`, id, at); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := readCommentRows(ctx, database, zeroUUID)
-	if err != nil || len(batch) != 1 {
-		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(batch), err)
+	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(ids), err)
 	}
-	first, _, _, err := writeCommentBatch(ctx, database, batch)
+	first, _, _, err := writeCommentBatch(ctx, database, ids, causes)
 	if err != nil {
 		t.Fatalf("write the first run's batch: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("erase the first run's comment: %v", err)
 	}
-	written, _, _, err := writeCommentBatch(ctx, database, batch)
+	written, _, _, err := writeCommentBatch(ctx, database, ids, causes)
 	if err != nil {
 		t.Fatalf("write the second run's cached batch: %v", err)
 	}
@@ -115,23 +115,23 @@ func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	batch, err := readCommentRows(ctx, database, zeroUUID)
-	if err != nil || len(batch) != 2 || batch[0].id != removed || batch[1].id != standing {
-		t.Fatalf("read the two unmarked comments: %+v, %v; want %s then %s", batch, err, removed, standing)
+	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID)
+	if err != nil || len(ids) != 2 || ids[0] != removed || ids[1] != standing {
+		t.Fatalf("read the two unmarked comments: %v, %v; want %s then %s", ids, err, removed, standing)
 	}
 	if _, err := database.Pool.Exec(ctx, `delete from comments where id = $1`, removed); err != nil {
 		t.Fatal(err)
 	}
-	written, _, _, err := writeCommentBatch(ctx, database, batch)
+	written, _, _, err := writeCommentBatch(ctx, database, ids, causes)
 	if err != nil || written != 1 {
 		t.Fatalf("the batch counts %d row(s) written (%v), want the standing comment alone", written, err)
 	}
 	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, standing); err != nil || !held {
 		t.Errorf("the standing comment holds no node (held %t, %v)", held, err)
 	}
-	if batch[0].id != removed || batch[1].id != standing {
+	if ids[0] != removed || ids[1] != standing {
 		t.Errorf("after the write the caller's batch lists %s then %s, want %s then %s, as it read them",
-			batch[0].id, batch[1].id, removed, standing)
+			ids[0], ids[1], removed, standing)
 	}
 }
 

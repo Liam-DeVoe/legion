@@ -18,7 +18,10 @@
 # default: only the caller knows which release that is. Once the base server has booted, the
 # commit it is stamped with (the `commit` of its /healthz, the one it registers in
 # server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
-# naming both, so that a binary built from another commit never stands in for that release.
+# naming both, so that a binary built from another commit never stands in for that release. In
+# the same way this head's server must be stamped with the commit this checkout stands on (`git
+# rev-parse HEAD`, which the Verification preamble stamps HEAD_BINARY with), so that a binary left
+# from an earlier head never stands in for the head the result is recorded at.
 #
 # Before this head boots it captures, through the base server, what each of R8's three resolvers
 # answers: GET /api/v1/references?to=<old address> (blockReferenceNode), GET
@@ -33,15 +36,19 @@
 # collision census, the three resolvers and the counter (the dangling_citations line of
 # `envoy-dispatch census --store --verbose`): moved=0, and returning equal to the captured
 # citations of the main shape's old spec address, which answers 404 NOT_FOUND. It reads the
-# restore's dry run listing the second shape's asks as about to move. It runs the restore
-# (`envoy-dispatch restore-answered-asks --project SEED`) and reads the citation again three ways:
-# the references read and the block-links leg answer the restored ask's block at its new address
-# with the captured text, and the closure answers the spec as the member the citation reaches. A
-# text is held to the captured one character for character with two differences and no other,
-# each printed: the eight server-owned ask attributes are absent, and a block that took a new id
-# carries it. It reads one moved_to tuple for the move, with its time, and no second row; one for
-# the colliding ask, to its new id; none for an ask of the main shape, whose old spec address now
-# answers the restored ask block. The counter then reads zero in both sets.
+# restore's dry run listing the second shape's asks as about to move, and writing nothing: no
+# moved_to tuple, no version of a document of the project and no asks row's block. It runs the
+# restore (`envoy-dispatch restore-answered-asks --project SEED`) and reads the citation again
+# three ways: the references read and the block-links leg answer the restored ask's block at its
+# new address with the captured text, and the closure answers the spec as the member the citation
+# reaches. A text is held to the captured one character for character with two differences and no
+# other, each printed: the attributes R10 takes out of markdown, `selected` and `answer`, are
+# absent, and a block that took a new id carries it; its `state`, `answered_by` and `answered_at`,
+# which R10 keeps, written from the same ask node, equal the captured ones, each printed. A
+# `selected` or an `answer` still in the text fails. It reads one moved_to tuple for the move, with
+# its time, and no second row; one for the colliding ask, to its new id; none for an ask of the
+# main shape, whose old spec address now answers the restored ask block. The counter then reads
+# zero in both sets.
 #
 # Then it plants one state, for one census. A healthy run never leaves a citation of the first set
 # dangling, so that set reads zero before the restore and after it, as a counter that watched no
@@ -58,7 +65,7 @@
 # dropped by the plain-answer rule, and a section that held an ask block, to that ask's block.
 #
 # Last it reads every migration this branch adds over BASELINE_SHA and the statement with which
-# the backfill marks asks rows (graphcensus/backfill.go): no `create table` names block_moves, and
+# the backfill marks asks rows (graphcensus/backfill*.go): no `create table` names block_moves, and
 # no `update` sets the body of a comment or a message, block_refs.to_id, asks.block_id or
 # asks.block_artifact_id. The same matcher runs first over planted statements of each kind, which
 # it must flag, and one it must not.
@@ -116,8 +123,15 @@ base_sha="$(git -C "$checkout" rev-parse --verify --quiet "${BASELINE_SHA}^{comm
   exit 2
 }
 readonly base_sha
+# The commit this checkout stands on, in full: the one this head's server must be stamped with.
+head_sha="$(git -C "$checkout" rev-parse --verify --quiet HEAD)" || {
+  printf '%s stands on no commit (git rev-parse HEAD)\n' "$checkout" >&2
+  exit 2
+}
+readonly head_sha
 readonly project=SEED
-# The eight server-owned ask attributes R10 takes out of markdown.
+# The eight server-owned ask attributes. R10 takes `selected` and `answer` out of markdown, keeps
+# the others a version can store in the form keptAskState writes, and no rendering writes `invalid`.
 readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
 
 work_dir
@@ -224,26 +238,48 @@ resolve() {
   want_status 200 "$1" "resolve $2"
 }
 
+# attribute_of OPENING NAME: the attribute NAME as the opening line OPENING of an ask block holds
+# it, `NAME="<value>"`, or `NAME=` and what follows up to a space or a brace where its value is not
+# quoted; nothing where OPENING holds no such attribute.
+attribute_of() {
+  if [[ "$1" =~ \ $2=\"([^\"]*)\" ]]; then
+    printf '%s="%s"' "$2" "${BASH_REMATCH[1]}"
+  elif [[ "$1" =~ \ $2=([^ }]*) ]]; then
+    printf '%s=%s' "$2" "${BASH_REMATCH[1]}"
+  fi
+}
+
 # same_text SECTION WHAT CAPTURED GOT OLD_ID NEW_ID: GOT, the text a citation resolves to now,
 # equals CAPTURED, the text it resolved to before the upgrade, character for character but for two
-# differences, each printed: the eight server-owned ask attributes are absent from GOT, and where
-# NEW_ID is not OLD_ID the block carries NEW_ID in place of OLD_ID. A server-owned attribute still
-# in GOT fails, as does any other difference.
+# differences, each printed: the attributes R10 takes out of markdown, `selected` and `answer`, are
+# absent from GOT, and where NEW_ID is not OLD_ID the block carries NEW_ID in place of OLD_ID. GOT
+# holds every other server-owned ask attribute as CAPTURED holds it - `state`, `answered_by` and
+# `answered_at`, which R10 keeps, written from the same ask node - each printed. A `selected` or an
+# `answer` still in GOT fails, as does a kept attribute that differs, and any other difference.
 same_text() {
-  local section="$1" what="$2" captured="$3" got="$4" old="$5" new="$6" name opening
+  local section="$1" what="$2" captured="$3" got="$4" old="$5" new="$6" name opening captured_opening want held
   printf '%s: the captured text:\n%s\n%s: the text now:\n%s\n' "$what" "$(<"$captured")" "$what" "$(<"$got")"
   opening="$(head -n 1 "$got")"
-  for name in "${server_attributes[@]}"; do
-    [[ "$opening" != *" $name=\""* ]] ||
-      fail "$section" "$what" "the server-owned attribute $name is still in the text: $opening"
-  done
+  captured_opening="$(head -n 1 "$captured")"
   cp "$captured" "$work/expected.txt"
-  opening="$(head -n 1 "$captured")"
   for name in "${server_attributes[@]}"; do
-    if [[ "$opening" =~ \ $name=\"[^\"]*\" ]]; then
-      printf '%s: allowed difference: the server-owned attribute %s is absent\n' "$what" "${BASH_REMATCH[0]# }"
-      sed -i -E "1s/ $name=\"[^\"]*\"//" "$work/expected.txt"
-    fi
+    want="$(attribute_of "$captured_opening" "$name")"
+    held="$(attribute_of "$opening" "$name")"
+    case "$name" in
+      selected | answer)
+        [[ -z "$held" ]] ||
+          fail "$section" "$what" "the attribute $name, which R10 takes out of markdown, is still in the text: $opening"
+        if [[ -n "$want" ]]; then
+          printf '%s: allowed difference: the attribute %s is absent\n' "$what" "$want"
+          sed -i -E "1s/ $name=\"[^\"]*\"//" "$work/expected.txt"
+        fi
+        ;;
+      *)
+        [[ "$held" == "$want" ]] ||
+          fail "$section" "$what" "the text holds ${held:-no $name} and the captured text ${want:-no $name}: R10 keeps it, written from the same ask node"
+        [[ -z "$want" ]] || printf '%s: kept as captured: %s\n' "$what" "$want"
+        ;;
+    esac
   done
   if [[ "$old" != "$new" ]]; then
     printf '%s: allowed difference: the block took the id %s in place of %s\n' "$what" "$new" "$old"
@@ -366,9 +402,10 @@ server="$baseline_boot_url"
 send agent GET /healthz
 want_status 200 head "read this head's /healthz"
 head_commit="$(jq -r '.commit // ""' "$work/body")"
-[[ -n "$head_commit" && "$head_commit" != "$base_commit" ]] ||
-  fail head "this head is stamped with a commit of its own" "it serves '$head_commit', the base '$base_commit'"
-pass head "this head serves $head_commit over the base release's database, the decisions step held"
+[[ "$head_commit" == "$head_sha" && "$head_commit" != "$base_commit" ]] ||
+  fail head "this head is stamped with the commit this checkout stands on, not the base's" \
+    "it serves '$head_commit', $checkout stands on '$head_sha', the base serves '$base_commit'"
+pass head "this head serves $head_commit, the commit this checkout stands on, over the base release's database, the decisions step held"
 
 dispatch_command backfill backfill-graph-store
 [[ "$command_code" == 0 ]] || fail before "envoy-dispatch backfill-graph-store" "exited $command_code: $(<"$work/backfill.out")"
@@ -401,12 +438,26 @@ want_status 404 before "$returning_address answers 404 before the restore"
 expect before "$returning_address answers NOT_FOUND" '"NOT_FOUND"' '.code'
 pass before "the three resolvers answer, and $returning_address answers 404 NOT_FOUND, before one ask moves"
 
+# What the restore writes: the moved_to tuples, the versions of the project's documents, and the
+# block each of the project's asks rows names, one line, so a dry run that writes any of them reads
+# otherwise after it than before.
+readonly restore_writes="select (select count(*) from graph_tuples where kind = 'moved_to')
+  || ' ' || (select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.project_key = '$project')
+  || ' ' || (select md5(coalesce(string_agg(k.id::text || ':' || coalesce(k.block_artifact_id::text, '') || ':' || coalesce(k.block_id, ''), ',' order by k.id), ''))
+             from asks k join issues i on i.key = k.issue_key where i.project_key = '$project')"
+query before "read what the restore writes, before its dry run" "$restore_writes"
+writes_before="$answer"
 dispatch_command dry restore-answered-asks --project "$project" --dry-run
 grep '^restore-answered-asks: ' "$work/dry.out" | sed 's/^/  /' || true
 [[ "$command_code" == 0 ]] || fail before "the restore's dry run" "exited $command_code: $(<"$work/dry.out")"
 grep -q "^restore-answered-asks: issue=$issue_a restored=4 moved=2 new_ids=2 .* dry_run=true\$" "$work/dry.out" ||
   fail before "the dry run lists the second shape's two asks of $issue_a as about to move" "$(grep "issue=$issue_a " "$work/dry.out" || echo 'no line')"
-pass before "the dry run lists the second shape's two asks as about to move, and wrote nothing"
+query before "read what the restore writes, after its dry run" "$restore_writes"
+[[ "${answer%% *}" == 0 ]] || fail before "the dry run writes no moved_to tuple" "the store holds ${answer%% *}"
+[[ "$answer" == "$writes_before" ]] ||
+  fail before "the dry run writes no version of a document of $project and no asks row's block" \
+    "moved_to tuples, versions and the asks rows' blocks read '$writes_before' before it and '$answer' after"
+pass before "the dry run lists the second shape's two asks as about to move, and wrote no moved_to tuple, no version and no asks row's block"
 
 # ---------------------------------------------------------------------------------------------
 # The restore, and the citation read again.
@@ -603,13 +654,16 @@ done
   fail migrations "no migration of this branch creates block_moves or rewrites a citation's address" "$findings findings, each printed above"
 pass migrations "the ${#added[@]} migrations this branch adds over $base_sha ($read_statements statements) create no block_moves table and set no comment or message body, block_refs.to_id, asks.block_id or asks.block_artifact_id"
 
-# The backfill's statement that marks asks rows.
-backfill_go="$checkout/packages/envoy/internal/dispatch/graphcensus/backfill.go"
+# The backfill's statement that marks asks rows, in whichever of the backfill's files holds it: the
+# backfill is split by pass (graphcensus/backfill.go, backfill_asks.go), and the asks pass is not in
+# the first.
+mapfile -t backfill_go < <(find "$checkout/packages/envoy/internal/dispatch/graphcensus" -maxdepth 1 -name 'backfill*.go' ! -name '*_test.go' | sort)
+[[ "${#backfill_go[@]}" -gt 0 ]] || fail backfill "find the backfill's files in graphcensus" "no graphcensus/backfill*.go"
 mapfile -t marking < <(awk '
   /`/ { n = split($0, parts, "`"); for (i = 1; i <= n; i++) { if (i > 1) inside = !inside; if (inside) text = text " " parts[i]; if (i > 1 && !inside && text != "") { print text; text = "" } } next }
   inside { text = text " " $0 }
-' "$backfill_go" | grep -i 'update asks ' || true)
-[[ "${#marking[@]}" -gt 0 ]] || fail backfill "find the statement that marks asks rows in graphcensus/backfill.go" "no update of asks read"
+' "${backfill_go[@]}" | grep -i 'update asks ' || true)
+[[ "${#marking[@]}" -gt 0 ]] || fail backfill "find the statement that marks asks rows in graphcensus/backfill*.go" "no update of asks read in ${backfill_go[*]##*/}"
 for statement in "${marking[@]}"; do
   found="$(rewrites "$statement")"
   printf 'the backfill marks asks rows with: %s\n' "$(tr -s ' ' <<<"$statement")"

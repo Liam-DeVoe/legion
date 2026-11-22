@@ -1792,6 +1792,18 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	return nil
 }
 
+// decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
+// value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
+// them.
+func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return nil, err
+	}
+	logUndeclaredMembers(r, value, body)
+	return body, nil
+}
+
 // decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only
 // under Deps.TestHooksEnabled. No page or command of another build reaches one, so a member the
 // hook does not declare is a mistake in the test that sent it, and is refused by name rather than
@@ -1879,7 +1891,8 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 // it paid for the event alone.
 func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
 	return s.appendEventThen(ctx, tx, event, func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		return nil
 	})
 }
 

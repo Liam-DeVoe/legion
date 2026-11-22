@@ -35,7 +35,7 @@
 -- answer, a moment an answer an older build writes is told apart by (20261116140001), so none of
 -- them takes the trigger.
 --
--- The read-state tables (INFRA-1152's T9) and user_threads' marked_version and marked_seq (T7)
+-- The read-state tables (the plan's T9) and user_threads' marked_version and marked_seq (T7)
 -- take the same treatment when their markers land: a trigger of their own before each update,
 -- clearing their marker where the setting is not `on`, through a function of their marker's shape
 -- beside this one.

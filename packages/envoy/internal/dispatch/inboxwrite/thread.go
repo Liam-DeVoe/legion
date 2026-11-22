@@ -218,6 +218,41 @@ func queueMoveRows(b *store.WriteBatch, thread thread, w Write, logins []string)
 	`, thread.id, logins, w.At, w.NodeID)
 }
 
+// queueMoveUnmarked is the move of an Unstored write (Recording.queueUnstored): every row of the
+// thread but writer's, "" for a writer who keeps no row, every one of which the thread's lock
+// took, moved by user_threads_record's own update - `login is distinct from v_writer`, so every
+// row, not only a participant's - and each given up its marker in the same statement, as that
+// update did when the trigger body ran it (migration 20261116160000's depth test): no
+// delivered_to stands beside its version's move, so the row is the backfill's thread pass's
+// until that pass marks it again under the thread's lock.
+func queueMoveUnmarked(b *store.WriteBatch, thread thread, w Write, writer string) {
+	b.Queue(fmt.Sprintf("move the rows of thread %s/%s, unmarked", thread.kind, thread.id), `
+		update user_threads
+		set replied_at = greatest(replied_at, $3),
+		    last_reply_id = case when replied_at is null or $3 >= replied_at then $4::uuid else last_reply_id end,
+		    dismissed_at = null,
+		    version = version + 1,
+		    marked_version = null,
+		    marked_seq = null
+		where thread_id = $1::uuid and login is distinct from nullif($2::text, '')
+	`, thread.id, writer, w.At, w.NodeID)
+}
+
+// queueKeepUnmarkedRow is the row of login, an Unstored write's writer, on the thread: the
+// trigger body's upsert, its read mark moved to the write's moment where it stood earlier, and the
+// row unmarked, as that upsert left a row it began and an update of the body's left one already
+// there, since no read_through stands beside the mark it moved.
+func queueKeepUnmarkedRow(b *store.WriteBatch, thread thread, w Write, login string) {
+	b.Queue(fmt.Sprintf("keep the row of %s on thread %s/%s, unmarked", login, thread.kind, thread.id), `
+		insert into user_threads (login, thread_id, kind, project_key, issue_key, artifact_id, read_through)
+		values ($1, $2::uuid, $3, $4, $5, case when $5::text is null then $6::uuid end, $7)
+		on conflict (login, thread_id) do update
+			set read_through = greatest(user_threads.read_through, excluded.read_through),
+			    marked_version = null,
+			    marked_seq = null
+	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At)
+}
+
 // queueKeepRow is step 5 of Record: the row of login, w's writer, on the thread, its read mark
 // moved to the write's moment where it stood earlier, and, in the same statement, the
 // read_through tuple that mark stands for (graphstore.MarkArm), stated where the upsert moved the
@@ -263,9 +298,7 @@ func queueKeepRow(b *store.WriteBatch, thread thread, w Write, login string, eve
 		`, args...)
 		return nil
 	}
-	if err := graphstore.QueueFromPerson(b, w.At, []graphstore.Tuple{dismissalOf(login, thread, w, event)}); err != nil {
-		return fmt.Errorf("record %s's dismissal of %s/%s: %w", login, thread.kind, thread.id, err)
-	}
+	graphstore.QueueFromPerson(b, w.At, []graphstore.Tuple{dismissalOf(login, thread, w, event)})
 	b.Queue(fmt.Sprintf("keep and dismiss the row of %s on thread %s/%s", login, thread.kind, thread.id), `
 		with held_before as (
 			select read_through from user_threads where login = $1 and thread_id = $2::uuid
@@ -355,14 +388,11 @@ const agentRepliesRead = `
 // the reply waited for the root among them - ends with the reply, as the trigger ends it; and no
 // dismissal of the root can commit between the two, since the route marks one only under the
 // root's `for update`.
-func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) error {
+func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) {
 	b.Queue(fmt.Sprintf("take the root message %s", root), `select 1 from messages where id = $1::uuid for key share`, root)
 	dismissed := graphstore.MarkedIn(`select login from user_agent_thread_dismissed where message_id = $4::uuid`, root)
-	if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event); err != nil {
-		return fmt.Errorf("retract the dismissals of message %s: %w", root, err)
-	}
+	graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event)
 	failpoint.Queue(b, fail)
 	b.Queue(fmt.Sprintf("clear the dismissals of message %s", root),
 		`delete from user_agent_thread_dismissed where message_id = $1::uuid`, root)
-	return nil
 }

@@ -161,6 +161,24 @@ type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
 const TITLE_HEADLINE_MAX = 60;
 
+/** How many characters a link to `route` titles its target in (`useReferenceTarget`): a target
+ *  a link titles by its own text - an ask, a comment, a message and a block - in the first
+ *  `TITLE_HEADLINE_MAX` of it and an ellipsis, as `useMarkdownHeadline` cuts a headline, and any
+ *  other - an issue, a document, a component, a party - by its whole title. A surface that names
+ *  a target from another read (`reference-names.tsx`) cuts its name by this, so a name reads as
+ *  a link to its target reads it (R8). */
+export function linkTitleMax(route: DispatchReferenceRoute | undefined): number {
+  switch (route === undefined ? undefined : referenceTargetKind(route)) {
+    case "ask":
+    case "block":
+    case "comment":
+    case "message":
+      return TITLE_HEADLINE_MAX;
+    default:
+      return Number.POSITIVE_INFINITY;
+  }
+}
+
 /** How a title reads the references in the text it is cut from: it reads none of them, so a
  *  `dispatch://` one reads as its short form for good (`ReferenceNaming.readsNone`), never as a
  *  name. R8 is the rule for a stored record drawn on a surface; a title cut from a target's own
@@ -915,7 +933,7 @@ export function useReferenceTarget(
   // only where `tree` is undefined, so a stored text that came with its tree is still parsed
   // nowhere (`e2e/parse-count.e2e.ts`). The title reads none of the references in it, so each
   // `dispatch://` one reads as its short form with either reading (`TITLE_NAMING`).
-  const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored, TITLE_NAMING);
+  const headline = useMarkdownHeadline(authoredTree, linkTitleMax(route), authored, TITLE_NAMING);
 
   let shown: ShownTarget;
   if (kind === "message") {

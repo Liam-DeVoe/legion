@@ -283,7 +283,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
 	askNode := graphstore.PlanUncaused(nodes, facts)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -376,15 +379,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The ask's node, the asker's follow, what the question and the parts state, and the ask's
 	// record in its thread learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(b, followed, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		return recording.Queue(b, graphstore.LatestEvent)
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -649,7 +646,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	askChanges, cited, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question, editedAt)
+	askChanges, cited, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question, editedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -676,7 +673,8 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// under the ask.edited that records it, queued right after that event.
 	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -785,7 +783,8 @@ func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (strin
 // every project. ?waiting_on= narrows any of them to the asks that wait on one person. Every row
 // passes the visibility predicate of the ask's node for the acting credential
 // (refs.VisibleKind), so the read answers no ask the caller may not see. A human clarification
-// leaves an ask open but makes the author responsible for the next reply.
+// leaves an ask open but makes the author responsible for the next reply. An ask is open as the
+// Inbox picks it: its row's state and its node's (askOpenOf).
 //
 // The read is two statements on the pool: what the scope holds as of now - the moment it answers
 // in as_of, and whether an ask of it, in any state, opened at or after ?since= - and then the
@@ -858,7 +857,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		       greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint,
 		       exists (select 1 from comments c where c.ask_id = a.id and c.author->>'kind' = 'user')
 		`+openAskRowFrom("$5")+`
-		where a.state = 'open' and (i.key is null or i.closed_at is null)
+		where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
 		  and `+scope+`
 		order by i.priority asc nulls last, a.created_at asc, a.id
 	`, sessionID, project, waitingOn, visibility, snoozer)
@@ -1231,27 +1230,30 @@ func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, 
 }
 
 // pgx caches prepared plans by query text. State and ownership each have a fixed query, with the
-// state written in as a literal, so that the index a state carries stays eligible under a
-// generic plan too: an issue's open asks read asks_open (0001), the partial index on
-// (issue_key) where state = 'open', which a $-parameterized state would lose. A document's asks
-// read asks_artifact_id (0032) and filter the state, whatever state is asked for:
-// asks_open_artifact, the partial index 0009 built for the open case, went unused for the nine
-// days the index audit measured and migration 20261101182440 drops it. An issue's asks with no
-// state filter read asks_issue_key (20261101182426). They are vars, not consts, because
-// askReadFrom builds its anchor join from store.CastableUUID.
+// state written in as a literal. A state is the ask's node's (askNodeStateOf), which every row
+// these read shows (scanAskRead), so a list by state is picked by the state it shows (R3); no
+// index of asks holds it, so the issue's lists read asks_issue_key (20261101182426) and a
+// document's read asks_artifact_id (0032), and each filters the owner's asks by their node's
+// state. The partial index asks_open (0001), on (issue_key) where the row's state is open, served
+// an issue's open asks while they were picked by the row's state; the open counts still read it
+// (issueSummaryJoins). asks_open_artifact, the partial index 0009 built for a document's open
+// asks, went unused for the nine days the index audit measured and migration 20261101182440 drops
+// it. An issue's asks with no state filter read asks_issue_key too. They are vars, not consts,
+// because askReadFrom builds its anchor join from store.CastableUUID and askNodeStateOf its read
+// of the node from graphstore.CurrentTupleRead.
 var (
 	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 order by a.created_at, a.id`
 	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'open' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + askNodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'answered' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + askNodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.artifact_id = $1 order by a.created_at, a.id`
 	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'open' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + askNodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'answered' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + askNodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",

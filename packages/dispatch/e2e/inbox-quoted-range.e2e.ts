@@ -14,7 +14,7 @@ import { asUser } from "./users";
 
 /**
  * The reading pane shows a comment on document text inside its document, with the quoted range
- * marked (dispatch://INFRA-4948 R3, check c-quoted-range). A comment on an issue's spec and a
+ * marked (the in-document pane, R3, check c-quoted-range). A comment on an issue's spec and a
  * comment on a project document each open in their document, at the anchored block, with the
  * thread under that block and the comment's own mark lit and in view. A comment whose words were
  * deleted from the spec draws the thread with its quote and the document page's sentence. The

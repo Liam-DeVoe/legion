@@ -18,13 +18,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// c-read-state-tuples (dispatch://INFRA-1152 R6) over marks the release before this branch wrote:
+// c-read-state-tuples (the spec's R6) over marks the release before this branch wrote:
 // the build of BASELINE_SHA, checked out at $TMPDIR/base-read-state and booted over
 // $ISSUE_READ_STATE_DATABASE_URL, which it migrates, as the Verification preamble states (T1's
 // harness, one_inbox_basebuild_test.go). It boots a server of an earlier commit because what it
@@ -586,7 +587,7 @@ func requireDismissalHeldTo(t *testing.T, handler http.Handler, database *store.
 // read and no difference.
 func requireThreadsCensusAgrees(t *testing.T, database *store.Store, when string) {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("the store census %s: %v", when, err)
 	}

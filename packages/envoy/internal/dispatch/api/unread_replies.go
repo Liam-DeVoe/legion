@@ -46,7 +46,7 @@ import (
 // reply whose row the prune took is read by the mark either way, the reply_read tuple left standing
 // answers what the row would have - not unread - and since a read mark only moves forward, under
 // either release, no later write makes that reply unread again. No read here needs the tuple held
-// to its row, as INFRA-1149's view join holds an arm whose rows a rollback can remove. The
+// to its row, as the node store's view join holds an arm whose rows a rollback can remove. The
 // dismissal, the snooze and user_threads are still read from their rows, so a tuple a delete
 // leaves standing there reaches no read; R9's census is what reads it.
 // TestEveryReadStateWriteIsATupleFromThePerson holds the prune case.

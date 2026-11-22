@@ -589,7 +589,10 @@ func (s *server) queueNewArtifact(
 			}
 		}
 		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, stated)
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, documentNode) }); err != nil {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
 			return model.Artifact{}, graphstore.Uncaused{}, err
 		}
 	}
@@ -786,12 +789,7 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	} else if artifact.Retired {
-		// A retired decisions document is refused as a new one is: decisions are nodes now.
-		refusal := decisionsAreNodes(target, input.name)
-		if refusal == nil {
-			refusal = documentRetiredRefusal(artifact)
-		}
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, input.name))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -830,6 +828,14 @@ func (s *server) storeArtifact(
 	// its event's append, after that insert, holding a transaction id.
 	if target.IssueKey == nil && target.Session == "" && !created {
 		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The find above read the row before this lock, and a retirement takes it too
+		// (docs.RetireDocument): one committed since is read here, under it. An issue's upload
+		// finds its document under its issue's lock already, which is the lock a retirement of
+		// that document takes, and an agent's conversation holds no document.
+		if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, input.name); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -968,13 +974,15 @@ func (s *server) storeArtifact(
 		published = append(published, event)
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, documentNode, blockCause)
+		graphstore.QueueCaused(b, documentNode, blockCause)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1391,7 +1399,8 @@ func (s *server) commitArtifactVersionEvent(
 		return nil, err
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -1482,6 +1491,80 @@ type editArtifactInput struct {
 	Actor        *model.Actor            `json:"actor"`
 }
 
+// jsonMember decodes any JSON value into whether it is null, so a map of them says which members
+// a JSON object names, and which of those are null, and reading one copies none of its value.
+type jsonMember struct{ null bool }
+
+func (m *jsonMember) UnmarshalJSON(data []byte) error {
+	m.null = string(data) == "null"
+	return nil
+}
+
+// replaceTakes reports whether member is one a replace takes: op, find, with and occurrence. Every
+// other member is another operation's or none's, so a replace carrying one sends what replace
+// never reads.
+func replaceTakes(member string) bool {
+	switch member {
+	case "op", "find", "with", "occurrence":
+		return true
+	}
+	return false
+}
+
+// replaceFieldsRefusal is the refusal of the first replace of ops whose JSON in body, the request's
+// bytes, names no with or carries a member a replace does not take (replaceTakes), whatever that
+// member holds: 400 REPLACE_FIELDS naming the operation and each such member; and nil where every
+// replace names with and replace's members alone. Read as an empty with, a replace naming none
+// deleted its match, and one carrying another member was applied as if it held none. Only the
+// body says either: a decoded op's With is "" both for no with and for with "", which deletes the
+// match on purpose, a JSON null with is none, and a member model.EditOp does not declare decodes
+// to nothing. So a batch holding a replace reads body a second time, for each op's member names
+// alone (jsonMember). The decoder stops after body's one value, as the first read did
+// (readJSONBody, which accepts a value followed by a closing bracket or brace), so a body the
+// route accepted reads here too.
+func replaceFieldsRefusal(ops []model.EditOp, body []byte) error {
+	if !slices.ContainsFunc(ops, func(op model.EditOp) bool { return op.Op == "replace" }) {
+		return nil
+	}
+	var named struct {
+		Ops []map[string]jsonMember `json:"ops"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&named); err != nil {
+		return fmt.Errorf("read the edit's members: %w", err)
+	}
+	if len(named.Ops) != len(ops) {
+		return fmt.Errorf("read the edit's members: the second read found %d operations, the first %d", len(named.Ops), len(ops))
+	}
+	for index, op := range ops {
+		if op.Op != "replace" {
+			continue
+		}
+		with, withNamed := named.Ops[index]["with"]
+		omitted := !withNamed || with.null
+		var foreign []string
+		for member := range named.Ops[index] {
+			if !replaceTakes(member) {
+				foreign = append(foreign, member)
+			}
+		}
+		if !omitted && len(foreign) == 0 {
+			continue
+		}
+		var problems []string
+		if omitted {
+			problems = append(problems, "names no with, which would delete the text find matches")
+		}
+		if len(foreign) > 0 {
+			slices.Sort(foreign)
+			problems = append(problems, fmt.Sprintf("carries %s, which replace does not take", strings.Join(foreign, " and ")))
+		}
+		return errorf(http.StatusBadRequest, "REPLACE_FIELDS",
+			`operation %d: replace %s; a replace takes find, with and occurrence alone: write the new text in with, or with "" to delete the match on purpose`,
+			index, strings.Join(problems, ", and "))
+	}
+	return nil
+}
+
 // editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns answer.
 type editArtifactResponse struct {
@@ -1508,7 +1591,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input editArtifactInput
-	if err := decodeJSON(r, &input); err != nil {
+	body, err := decodeJSONBody(r, &input)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := replaceFieldsRefusal(input.Ops, body); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1527,7 +1615,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if artifact.Retired {
-		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, artifact.Name))
 		return
 	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
@@ -1552,6 +1640,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The test of artifact.Retired above ran before this lock, and the decisions step's retirement
+	// takes it too (docs.RetireDocument): one committed since is read here, under the lock this
+	// edit's version write holds to its commit, and refused as that test refuses it.
+	if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, artifact.Name); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -2466,7 +2561,8 @@ var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerif
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 
 // decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
-// is the slug of a decisions document: a decision is a
+// is the slug of a decisions document, and any write of new text to an issue's decisions document
+// once it is retired (retiredDocumentRefusal): a decision is a
 // `decision` block of the spec, and a document of that name would be stored where nothing reads
 // it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
 // It reads the name and not the issue, so a document of any other name is taken. An upload that
@@ -2481,10 +2577,45 @@ func decisionsAreNodes(target artifactTarget, name string) error {
 		name, *target.IssueKey)
 }
 
+// retiredDocumentRefusal is the 409 refusing a write of new text to artifact, a retired document
+// (docs.RetireDocument): an upload or a create under name, its name or its slug, and an edit by its
+// id or its slug, whose name is the document's own. An issue's decisions document - one whose
+// slug, or the name the write gives, is a decisions document's - is refused as a new document of
+// that name is (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another
+// name would lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED
+// (documentRetiredRefusal).
+func retiredDocumentRefusal(artifact model.Artifact, name string) error {
+	target := artifactTarget{IssueKey: artifact.IssueKey}
+	for _, held := range []string{name, artifact.Slug} {
+		if refusal := decisionsAreNodes(target, held); refusal != nil {
+			return refusal
+		}
+	}
+	return documentRetiredRefusal(artifact)
+}
+
+// refuseRetiredUnderOwnerLock is retiredDocumentRefusal's answer for artifact, named name by a
+// write of new text, where its row reads retired in tx, and nil where it does not. tx holds the lock
+// of the document's owner, which docs.RetireDocument takes before it sets retired_at
+// (lockArtifactOwner) and which the write holds to its commit, so a retirement either committed
+// before this read and is read here, or waits for the write to end. A write's first test of the row
+// (model.Artifact.Retired) runs before that lock and spares the work for a document retired before
+// the request came; this read is the one that decides.
+func refuseRetiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifact model.Artifact, name string) error {
+	var retired bool
+	if err := tx.QueryRow(ctx, `select retired_at is not null from artifacts where id = $1`, artifact.ID).Scan(&retired); err != nil {
+		return fmt.Errorf("read whether the document is retired: %w", err)
+	}
+	if !retired {
+		return nil
+	}
+	return retiredDocumentRefusal(artifact, name)
+}
+
 // documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
-// (docs.RetireDocument): an upload or a create under its name or slug, and an edit by its id or
-// its slug. The document is in no list of its issue's or its project's documents, so text written
-// into it would be stored where no reader looks for it. Its versions stay readable.
+// that is no decisions document (retiredDocumentRefusal). The document is in no list of its
+// issue's or its project's documents, so text written into it would be stored where no reader
+// looks for it. Its versions stay readable.
 func documentRetiredRefusal(artifact model.Artifact) error {
 	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
 		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable at /api/v1/artifacts/%s/versions; write a document of another name",

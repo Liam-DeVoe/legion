@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -269,18 +270,28 @@ func assertDismissedScaleSeed(t *testing.T, shape *dismissedScaleShape) {
 		query string
 		total int
 	}{
-		{"?kind=reply,agent&state=inbox", dismissedScaleInboxRows()},
-		{"?kind=reply,agent&state=unread&limit=1", dismissedScaleUnreadRows()},
-		// The Dismissed view answers no count of the pile: its total is the page it holds, and the
-		// pile itself is asserted above, in the tables the marks live in.
-		{"?kind=reply,agent&state=dismissed",
-			min(shape.dismissedReplies+shape.dismissedAgents, myRepliesDismissedPage)},
+		{"inbox", dismissedScaleInboxRows()},
+		{"unread", dismissedScaleUnreadRows()},
+		// The pile itself is asserted above, in the tables the marks live in.
+		{"dismissed", shape.dismissedReplies + shape.dismissedAgents},
 	} {
-		page := getMyReplies(t, shape.handler, dismissedScaleLogin, state.query)
-		if page.Total != state.total {
-			t.Fatalf("%s on %s answered total=%d, want %d", state.query, shape.name, page.Total, state.total)
+		if rows := dismissedScaleRows(t, shape, state.query); rows != state.total {
+			t.Fatalf("state=%s on %s answered %d rows, want %d", state.query, shape.name, rows, state.total)
 		}
 	}
+}
+
+// dismissedScaleRows is how many Thread and Agent rows the one read answers the seeded person in
+// one state with no limit, which is every row of that state, as the Inbox page draws them.
+func dismissedScaleRows(t *testing.T, shape *dismissedScaleShape, state string) int {
+	t.Helper()
+	rows := 0
+	for _, entry := range readMeInboxAs(t, shape.handler, dismissedScaleLogin, url.Values{"state": {state}}).Entries {
+		if entry.Thread != nil || entry.Agent != nil {
+			rows++
+		}
+	}
+	return rows
 }
 
 // dismissedScaleDismissTargets is the 120 rows one dismissal names: threads the seed marked read
@@ -333,25 +344,24 @@ func dismissedScaleUnreadAgentReplies(t *testing.T, shape *dismissedScaleShape) 
 }
 
 // dismissedScaleDeepCursor is the cursor a page 50,000 rows deep resumes from: the row at that
-// depth of the merged order both halves answer in, read the way the route merges them - newest
-// dismissal first, ties by id descending.
+// depth of the order the Dismissed view draws its rows in - newest dismissal first, then the
+// node's kind and id descending - written as the one read writes its next_cursor (meInboxCursor).
 func dismissedScaleDeepCursor(t *testing.T, shape *dismissedScaleShape) string {
 	t.Helper()
-	var at time.Time
-	var id string
+	var cursor meInboxCursor
 	if err := shape.database.Pool.QueryRow(context.Background(), `
-		select at, id from (
-			select dismissed_at as at, thread_id::text as id from user_threads
+		select at, kind, id from (
+			select dismissed_at as at, kind, thread_id::text as id from user_threads
 			where login = $1 and dismissed_at is not null
 			union all
-			select dismissed_at, message_id::text from user_agent_thread_dismissed where login = $1
+			select dismissed_at, 'message', message_id::text from user_agent_thread_dismissed where login = $1
 		) dismissed
-		order by at desc, id desc
+		order by at desc, kind desc, id desc
 		offset $2::int limit 1
-	`, dismissedScaleLogin, dismissedScaleCursorDepth-1).Scan(&at, &id); err != nil {
+	`, dismissedScaleLogin, dismissedScaleCursorDepth-1).Scan(&cursor.moment, &cursor.kind, &cursor.id); err != nil {
 		t.Fatalf("read the cursor %d deep: %v", dismissedScaleCursorDepth, err)
 	}
-	return at.UTC().Format(time.RFC3339Nano) + "," + id
+	return url.QueryEscape(cursor.String())
 }
 
 func dismissedScaleStrings(t *testing.T, shape *dismissedScaleShape, statement string, args ...any) []string {

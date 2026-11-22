@@ -49,6 +49,7 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeScopeBatch over a comment node takes no owner lock and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
 	t.Run("writeMessages takes the owner lock, the messages rows ascending, then the store and the reached thread row before its delivery", requireTheMessagesBatchLockOrder)
 	t.Run("writeCommentPointers takes the owner lock, the comments rows ascending, then the store and the reached thread row before its delivery", requireTheCommentPointersBatchLockOrder)
+	t.Run("the messages_past_bound batch takes the owner lock, then the messages rows ascending, and nothing of the store", requireTheMessagesPastBoundBatchLockOrder)
 	for _, kind := range inboxItemKinds {
 		for _, part := range itemParts {
 			t.Run("the "+part.pass(kind)+" batch takes the owner lock, the "+kind.kind+"'s row, its block state row and its "+part.name+" rows, then the store",
@@ -144,8 +145,8 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 
 // requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
 // owner lock of its comments' issue, as every writer of a comments row and the erase do
-// (LockCommentOwners), and reads under it which comments still stand unmarked
-// (CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
+// (refs.LockCommentOwners), and reads under it which comments still stand unmarked
+// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
 // removed it writes nothing for it. It then writes every node it writes - its comments' and their
 // authors' - in one store write, which takes their rows in ascending (kind, id) and then appends
 // every tuple: the facts each comment row projects, and each author's authored_by and aliases
@@ -160,8 +161,8 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
-// author's node (graphstore.Authored), passes as well. The run followed is the comment pass
-// alone: the pass over the comment pointers that runs after it (dispatch://INFRA-1152's
+// author's node (graphstore.QueueAuthored), passes as well. The run followed is the comment pass
+// alone: the pass over the comment pointers that runs after it (the one inbox's
 // commentPointersPass) takes the issue's owner row first, as every writer of a comment does, and
 // following the whole run would read that pass's lock as this batch's.
 func requireTheCommentBatchLockOrder(t *testing.T) {

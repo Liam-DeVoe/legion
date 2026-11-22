@@ -24,7 +24,7 @@ import { asUser } from "./users";
  * document block's thread in the spec, the margin thread beside the passage it is about, with
  * the Conversation card next to it, and the Inbox's reading pane over the comment thread, with
  * the Inbox's card below the pane's width. That thread is anchored to the spec, so the pane draws
- * it inside the spec's live room, under its block (dispatch://INFRA-4948 R3). An ask's own thread
+ * it inside the spec's live room, under its block (the in-document pane, R3). An ask's own thread
  * in the Inbox is in `threads-order.stub.e2e.ts`, and the three threads both files are read over
  * are in `threads-order.ts`.
  *

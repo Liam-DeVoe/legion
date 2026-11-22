@@ -12,7 +12,7 @@ import (
 // (failpoint.Between). The write then fails as any failed statement fails it - its transaction
 // rolls back, the store write and the projection write with it, and the event it appended in that
 // transaction reaches nobody - which is what c-census reads back of each writer the census names
-// (dispatch://INFRA-1152 R9).
+// (the spec's R9).
 //
 // It arms the process the call lands on, as the slow-write hook does, and no other: a driver that
 // boots one server reaches the one that serves its writes. Test-only: mounted only under

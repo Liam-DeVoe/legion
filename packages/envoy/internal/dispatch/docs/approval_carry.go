@@ -23,15 +23,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A person's answer is held once, on the ask's node, so answering an
-// ask changes no byte of a document and supersedes no approval of it. What changes the bytes is
-// the answer's old second copy leaving the document: the server-owned attributes of every ask
-// block (askServerAttributeNames), which the release before wrote into every version and this
-// build stops writing once the whole fleet runs it (rollWindowAskAttributes). That removal rewrites
-// bytes a person approved, on blocks nobody edited, on the first accepted write of every document
-// holding an ask block, open or answered, since `state="open"` is written on every open ask. So
-// the version that drops them carries the approval (R10), and so does a version written while two
-// builds serve, whose attributes the roll window keeps in step with an answer given since.
+// A person's answer is held once, on the ask's node, and the text a person approves is the
+// document's words and blocks. What changes the bytes beside them is the answer's old second copy:
+// the server-owned attributes of every ask block (askServerAttributeNames), which the release
+// before wrote into every version. While two builds serve, the roll window keeps all of them in
+// step with each ask (rollWindowAskAttributes); once the whole fleet runs this build, every write
+// takes the answer's words and selection off, and an open ask's state, and keeps the state of an
+// ask that is not open, its answerer and time and a copy's provenance (keptAskState), and every
+// change of an ask's state rewrites those. Each rewrites bytes a person approved, on blocks nobody
+// edited: the first accepted write once the fleet is one build does so on every document holding
+// an ask block, open or answered, whose stored opener the release before wrote, since `state="open"` is
+// written on every open ask. So a version whose only change from the approved one is in those
+// attributes carries the approval (R10).
 //
 // The approval carried is the document's newest review, an approval of version A; the version
 // written is N. N carries it when every difference between the two falls under one of the carry
@@ -160,7 +163,8 @@ var readingCase = carryCase{
 }
 
 // attributeRemovalCase is R10's: the server-owned attributes of every ask block
-// (askServerAttributeNames), which the first accepted write once the fleet is one build drops, and
+// (askServerAttributeNames), which the first accepted write once the fleet is one build cuts to the
+// ones a version keeps (keptAskState), which every change of an ask's state then rewrites, and
 // which a write while two builds serve keeps in step with an answer given since.
 var attributeRemovalCase = carryCase{
 	change: "the server-owned attributes of its ask blocks, which hold no answer",
@@ -173,13 +177,17 @@ var attributeRemovalCase = carryCase{
 // - each answered ask it returns, and each ask block of the decisions document it moves, whatever
 // its ask's state - in place of its pointer line, with the `## Decisions` heading it adds to a
 // spec holding no such part, a block under a new id included. It takes out of N only the blocks
-// the restore's own write added (decisionStepCases.restored), and out of A only the pointer line
-// that write took out (pointerLinesTaken); a block an agent wrote into the part is no part of it.
-// Where the approved version held the ask's block already, under the id it stands at now, the
-// block is taken out of both versions only where its words are the words the person approved
-// (restoredAskBlocks), so a restore that returns other words than the approved ones is a
-// difference no case carries. It holds for the restore's own write alone
-// (decisionStepCases.restore): an agent's write that makes the same change carries nothing by it.
+// the restore's own write added (decisionStepCases.restored), and the heading where it is the
+// step's doing (stepsOwnHeading), and out of A only the pointer line that write took out
+// (pointerLinesTaken); a block an agent wrote into the part is no part of it, and neither is a
+// heading A held, empty or not. Where the approved version held the ask's block already, under
+// the id it stands at now, the block is taken out of both versions only where it is byte for byte
+// the block the person approved (restoredAskBlocks), so a restore that returns other words, or
+// the same words in other bytes, than the approved ones is a difference no case carries. It holds
+// for the restore's own write alone (decisionStepCases.restore): an agent's write that makes the
+// same change carries nothing by it.
+//
+// kept for one release: decisions-step
 var restoreCase = carryCase{
 	change: "the ask blocks its Decisions part holds again, which changed where they stand and not their words",
 	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
@@ -190,7 +198,7 @@ var restoreCase = carryCase{
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == "ask" && input.restored[id]
 		})
-		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(approved))
+		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(approved), !approved && input.stepsOwnHeading())
 		return restored, took || restoredTook
 	},
 }
@@ -203,11 +211,13 @@ var restoreCase = carryCase{
 // asks are readingCase's. It takes out of N only the decisions and the pointers the conversion's
 // own write added (decisionStepCases.decisions, decisionStepCases.shaped), and out of A only the
 // pointer line that write took out (pointerLinesTaken): a decision A held, whose words an agent
-// changed since, and a pointer an agent gave an ask, stay differences. A `## Decisions` heading the
-// part holds nothing else under is taken out with them, since the conversion adds it to a spec
-// that holds no such part. It holds for the conversion's own write alone
-// (decisionStepCases.conversion): an agent's upload that adds the same `shaped` pointers to an
-// answered ask supersedes the approval as any other change does.
+// changed since, and a pointer an agent gave an ask, stay differences. The `## Decisions` heading
+// is taken out of N with them where it is the step's doing (stepsOwnHeading) and the part holds
+// nothing else; a heading A held stays in both. It holds for the
+// conversion's own write alone (decisionStepCases.conversion): an agent's upload that adds the
+// same `shaped` pointers to an answered ask supersedes the approval as any other change does.
+//
+// kept for one release: decisions-step
 var conversionCase = carryCase{
 	change: "the decisions its Decisions part holds in place of the pointer line to the issue's decisions document, " +
 		"and the spec nodes its answered asks shaped, which an approval of a spec does not cover",
@@ -216,15 +226,28 @@ var conversionCase = carryCase{
 			return tree, false
 		}
 		if approved {
-			return withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(true))
+			return withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(true), false)
 		}
 		tree, took := withoutAddedShapedPointers(tree, input.steps.shaped, input.decided)
 		converted, convertedTook := withoutDecisionsPartBlocks(tree, func(node *pmdoc.Node) bool {
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == decisionType && input.steps.decisions[id]
-		})
+		}, input.stepsOwnHeading())
 		return converted, took || convertedTook
 	},
+}
+
+// stepsOwnHeading reports whether N's `## Decisions` heading is the decisions step's doing, which
+// restoreCase and conversionCase take out of N once its part holds nothing else: A holds no such
+// part, and the step's write either added the heading (decisionStepCases.headingAdded) or took out
+// the pointer line it stood over (decisionStepCases.pointerLines), the heading and line an agent
+// of the release before wrote as one after the approval, which the step's blocks replace. Where A
+// holds a `## Decisions` part, empty or not, its heading stays in both versions, so a write that
+// leaves N without the heading a person approved is a difference no case carries.
+//
+// kept for one release: decisions-step
+func (input carryInput) stepsOwnHeading() bool {
+	return !hasDecisionsPart(input.approved) && (input.steps.headingAdded || len(input.steps.pointerLines) > 0)
 }
 
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
@@ -235,16 +258,20 @@ var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, 
 // document, which is all those two cases take out of a version: the block id of each answered ask
 // block the restore wrote (restored), of each decision the conversion wrote (decisions), the
 // `shaped` pointers it gave an answered ask block the document held already, by that block's id
-// (shaped), and the markdown of each pointer line the write took out of the document's
+// (shaped), whether it added the `## Decisions` heading to a document that held no such part
+// (headingAdded), and the markdown of each pointer line the write took out of the document's
 // `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
 // approved version. Only the step sets it, through a mark on its write's context no route can put
 // there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
 // (versionWrite.steps); every other version write leaves it zero, and its carry weighs the reading
 // case and the attribute-removal case alone.
+//
+// kept for one release: decisions-step
 type decisionStepCases struct {
 	restore, conversion bool
 	restored, decisions map[string]bool
 	shaped              map[string][]string
+	headingAdded        bool
 	pointerLines        []string
 }
 
@@ -258,6 +285,8 @@ type decisionStepWriteKey struct{}
 
 // withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names and
 // with what it added.
+//
+// kept for one release: decisions-step
 func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context.Context {
 	return context.WithValue(ctx, decisionStepWriteKey{}, steps)
 }
@@ -296,9 +325,9 @@ type carryInput struct {
 // paragraph of the part whose markdown is that line's, once each in a pass of the cases between
 // the two of them (pointersLeft), however many paragraphs of A are that line; of N, none, since
 // the write left none of them there. A paragraph a person approved that the write did not take
-// out - one citing a block of the decisions document, which the restore keeps, or a second copy of
-// the pointer line - stays in A. The answer is a drop for one call of withoutDecisionsPartBlocks,
-// which it walks in order.
+// out - one citing the decisions document among other words or citing a block of it, which the
+// restore keeps (isPointerLine), or a second copy of the pointer line - stays in A. The answer is
+// a drop for one call of withoutDecisionsPartBlocks, which it walks in order.
 func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
 	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
 		return func(*pmdoc.Node) bool { return false }
@@ -539,16 +568,17 @@ type versionAsks struct {
 }
 
 // asksAgreeWithTheirNodes is every ask block of a version, tree, by block id (askNodes), and
-// whether each agrees with its node: a block the row of artifactID indexes agrees with that row,
-// the projection of its node (askAgreesWithItsNode), and a block no row of this document indexes
-// is a copy of an ask on another document of its owner (readCopiedAskSources, settlement's own
-// classification) that agrees with its source (copyAgreesWithItsSource). A version holding no ask
+// whether each agrees with its node: a block the row of artifactID indexes agrees with that row and
+// with its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), and a
+// block no row of this document indexes is a copy of an ask on another document of its owner
+// (readCopiedAskSources, settlement's own classification) that agrees with its source and its
+// source's node (copyAgreesWithItsSource). A version holding no ask
 // block agrees; one holding a block id twice, which settlement reads no block under, or a block
 // neither indexed nor a copy - one forged on the socket, or one whose update the room has not
-// credited yet - does not, and leaves its decisions unknown to every carry rule. The rows are read
-// only for a version holding an ask block, and the sources only for one holding a block no row
-// indexes; the carry opens no ask from what it reads, so it takes no copy lock. What it read of
-// the blocks is answered beside the verdict (versionAsks).
+// credited yet - does not, and leaves its decisions unknown to every carry rule. The rows and
+// their nodes are read only for a version holding an ask block, and the sources and theirs only
+// for one holding a block no row indexes; the carry opens no ask from what it reads, so it takes
+// no copy lock. What it read of the blocks is answered beside the verdict (versionAsks).
 func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (versionAsks, bool, error) {
 	nodes, readable := askNodes(tree)
 	if !readable || len(nodes) == 0 {
@@ -558,11 +588,22 @@ func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, 
 	if err != nil {
 		return versionAsks{}, false, err
 	}
+	indexed := make([]string, 0, len(nodes))
+	for id := range nodes {
+		if ask, held := rows[id]; held {
+			indexed = append(indexed, ask.ID)
+		}
+	}
+	// kept for one release: stored-ask-state
+	answers, err := askNodeAnswers(ctx, tx, indexed)
+	if err != nil {
+		return versionAsks{}, false, err
+	}
 	var copies []askBlock
 	var unindexed []string
 	for id, node := range nodes {
-		if ask, indexed := rows[id]; indexed {
-			if !askAgreesWithItsNode(node, ask) {
+		if ask, held := rows[id]; held {
+			if !askAgreesWithItsNode(node, ask, onItsNode(ask, answers)) {
 				return versionAsks{}, false, nil
 			}
 			continue
@@ -584,9 +625,17 @@ func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, 
 	if err != nil {
 		return versionAsks{}, false, err
 	}
+	copied := make([]string, 0, len(sources))
+	for _, source := range sources {
+		copied = append(copied, source.ask.ID)
+	}
+	// kept for one release: stored-ask-state
+	if answers, err = askNodeAnswers(ctx, tx, copied); err != nil {
+		return versionAsks{}, false, err
+	}
 	for _, block := range copies {
-		source, copied := sources[block.id]
-		if !copied || !copyAgreesWithItsSource(block.node, source) {
+		source, held := sources[block.id]
+		if !held || !copyAgreesWithItsSource(block.node, source, onItsNode(source.ask, answers)) {
 			return versionAsks{}, false, nil
 		}
 	}
@@ -651,31 +700,28 @@ func holdsDecision(tree *pmdoc.Node) bool {
 
 // copyAgreesWithItsSource reports whether node, a copy of source's ask on another document,
 // agrees with it: settlement reads it (no `invalid`), and it shows no state of the source other
-// than the source's - none at all, or what the roll window keeps in step with the source, its
-// provenance among it (inStepWithTheRollWindow with the source's document). Its wording is the
-// source's by the classification that found it.
-func copyAgreesWithItsSource(node *pmdoc.Node, source copiedSource) bool {
+// than the source's, as its row or its node (onNode) holds it (showsItsAsksState with the source's
+// document). Its wording is the source's by the classification that found it.
+func copyAgreesWithItsSource(node *pmdoc.Node, source copiedSource, onNode model.Ask) bool {
 	if _, flagged := node.Attrs["invalid"]; flagged {
 		return false
 	}
-	return !withoutStoredAskAttributes(attributesOf(node)) || inStepWithTheRollWindow(node, source.ask, source.document)
+	return showsItsAsksState(node, source.ask, onNode, source.document)
 }
 
 // askAgreesWithItsNode reports whether node, an ask block of a version, agrees with ask, the row of
-// its document that indexes it, which is the projection of the ask's node: settlement reads it (it
-// carries no `invalid`); it shows no answer state other than the row's - none at all, as every
-// block of a version written once the fleet is one build, or what the roll window keeps in step
-// with the row (inStepWithTheRollWindow), as a block of a version written while two builds serve -
-// so a forged or stale state, answerer, time, selection or answer, or a copy's provenance on a
-// block of this document's own, disagrees; and, for a row that is not open, it asks the wording
-// the row was decided on (askBlock.asks, settlement's own test), which settlement writes back over
-// a decided block. An open row's body is free: its question is still being written, and the row
-// takes it.
-func askAgreesWithItsNode(node *pmdoc.Node, ask model.Ask) bool {
+// its document that indexes it, and with onNode, that row with its state and answer as the ask's
+// node holds them (onItsNode): settlement reads it (it carries no `invalid`); it shows no answer
+// state other than the row's or the node's (showsItsAsksState), so a forged or stale state,
+// answerer, time, selection or answer, or a copy's provenance on a block of this document's own,
+// disagrees; and, for a row that is not open, it asks the wording the row was decided on
+// (askBlock.asks, settlement's own test), which settlement writes back over a decided block. An
+// open row's body is free: its question is still being written, and the row takes it.
+func askAgreesWithItsNode(node *pmdoc.Node, ask, onNode model.Ask) bool {
 	if _, flagged := node.Attrs["invalid"]; flagged {
 		return false
 	}
-	if withoutStoredAskAttributes(attributesOf(node)) && !inStepWithTheRollWindow(node, ask, "") {
+	if !showsItsAsksState(node, ask, onNode, "") {
 		return false
 	}
 	if ask.State == asks.StateOpen {
@@ -685,16 +731,25 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask model.Ask) bool {
 	return err == nil && block.asks(model.NewAskEditPrevious(ask))
 }
 
-// inStepWithTheRollWindow reports whether node, an ask block, holds what the roll window keeps in
-// step with ask, a copy's provenance among it where copied names the source's document, as one of
-// its two writes leaves it, so that neither changes the block: the write with the answer's words
-// (rollWindowAskAttributes), or the one without them (rollWindowAskAttributesWithheld), which the
-// answer route and settlement write into a block whose answer the document has no room for, as
-// the release before writes such a block. Only a block both would change shows a state the row
-// does not hold.
-func inStepWithTheRollWindow(node *pmdoc.Node, ask model.Ask, copied string) bool {
-	return !rollWindowAskAttributes(true, ask, copied)(attributesOf(node)) ||
-		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node))
+// showsItsAsksState reports whether node, an ask block of a version, shows no answer state other
+// than ask's - its own ask's row, or where copied names the source's document, the source's, its
+// provenance among it - as one of the writes that put them there leaves it, so that it changes
+// nothing: none of the seven attributes a version can store, as a version an upload wrote holds;
+// the ones a version keeps once the fleet is one build (keptAskState), written from onNode, the
+// ask as its node holds it, as every write on a fleet of one build writes them (onItsNode) - which
+// differs from the row only while the decisions step's catch-up has not yet stated on the node what
+// a process of the release before wrote into the row; the roll window's write without the
+// answer's words (rollWindowAskAttributesWithheld, the same form as keptAskState) from the row; or
+// the roll window's write with them (rollWindowAskAttributes) from the row, as a version written
+// while two builds serve, or by the release before, holds. Only a block every one of them would
+// change shows a state neither the row nor the node holds.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
+func showsItsAsksState(node *pmdoc.Node, ask, onNode model.Ask, copied string) bool {
+	return !withoutStoredAskAttributes(attributesOf(node)) || !keptAskState(onNode, copied)(attributesOf(node)) ||
+		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node)) ||
+		!rollWindowAskAttributes(true, ask, copied)(attributesOf(node))
 }
 
 // attributesOf is a node of node's type holding a copy of its attributes alone, for a write to an
@@ -945,6 +1000,12 @@ func askNodes(tree *pmdoc.Node) (map[string]*pmdoc.Node, bool) {
 // trees only what stands the same in each - readings A holds and N holds unchanged - changed
 // nothing, and is not named. Its error is a refusal of this renderer.
 func carryVerdict(input carryInput) (string, bool, error) {
+	return carryVerdictOver(input, carryCases[:])
+}
+
+// carryVerdictOver is carryVerdict over cases alone, in their order: carryCases for the carry, and
+// R10's case alone for the turn of an approval request (changesAskAttributesAlone).
+func carryVerdictOver(input carryInput, cases []carryCase) (string, bool, error) {
 	if !input.agrees {
 		return "", false, nil
 	}
@@ -953,8 +1014,8 @@ func carryVerdict(input carryInput) (string, bool, error) {
 		return "", false, err
 	}
 	// skipped names the cases a comparison is made without: none, for the verdict itself.
-	skipped := make([]bool, len(carryCases))
-	approved, version, took := input.neutral(skipped)
+	skipped := make([]bool, len(cases))
+	approved, version, took := input.neutral(cases, skipped)
 	if !took {
 		return "", false, nil
 	}
@@ -965,9 +1026,9 @@ func carryVerdict(input carryInput) (string, bool, error) {
 		return "", false, nil
 	}
 	var changes []string
-	for index, carried := range carryCases {
+	for index, carried := range cases {
 		skipped[index] = true
-		approvedWithout, versionWithout, _ := input.neutral(skipped)
+		approvedWithout, versionWithout, _ := input.neutral(cases, skipped)
 		same, err := renderSame(approvedWithout, versionWithout)
 		if err != nil {
 			return "", false, err
@@ -983,15 +1044,15 @@ func carryVerdict(input carryInput) (string, bool, error) {
 	return strings.Join(changes, ", and ") + carriedReasonEnd, true, nil
 }
 
-// neutral is input's two trees, A's and N's, each taken through every carry case in carryCases'
+// neutral is input's two trees, A's and N's, each taken through every case of cases in their
 // order but those skipped names, and whether any of those cases took something out of either. The
 // pass takes each pointer line of the step's write out of A once, whichever of restoreCase and
 // conversionCase takes it (pointersLeft).
-func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, took bool) {
+func (input carryInput) neutral(cases []carryCase, skipped []bool) (approved, version *pmdoc.Node, took bool) {
 	left := slices.Clone(input.steps.pointerLines)
 	input.pointersLeft = &left
 	approved, version = input.approved, input.version
-	for index, carried := range carryCases {
+	for index, carried := range cases {
 		if skipped[index] {
 			continue
 		}
@@ -1001,6 +1062,43 @@ func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, 
 		took = took || tookApproved || tookVersion
 	}
 	return approved, version, took
+}
+
+// turnCases is the one case a version's change may be for an approval request to keep the person's
+// turn across it (changesAskAttributesAlone): R10's.
+var turnCases = []carryCase{attributeRemovalCase}
+
+// changesAskAttributesAlone reports whether the version number of artifactID, written as markdown
+// from tree, differs from its stored version earlier in the server-owned attributes of its ask
+// blocks alone, by the test R10's case makes for the carry: every ask block of the version agrees
+// with its node (asksAgreeWithTheirNodes), and the two texts, earlier's as stored and as this
+// build renders it, are byte for byte the same once the eight attributes are taken off every ask
+// block of each (carryVerdictOver with attributeRemovalCase alone), every block id earlier holds
+// still standing. It is MoveApprovalAsk's keep-turn rule beside restoresApprovedText: the version
+// a person's answer, resolve or decline writes, or a reopen's settlement, changes no more than
+// that. A nil tree is markdown's read-back, parsed here; a version holding no ask block differs in
+// no ask attribute. Its reads run where it is called.
+func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string, earlier, number int, markdown string, tree *pmdoc.Node) (bool, error) {
+	if tree == nil {
+		parsed, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			return false, skipUnreadableVersion(artifactID, number, err)
+		}
+		tree = parsed
+	}
+	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
+	if err != nil || !agrees || len(shown.nodes) == 0 {
+		return false, err
+	}
+	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, earlier)
+	if err != nil || !readable {
+		return false, err
+	}
+	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees}, turnCases)
+	if err != nil {
+		return false, skipUnreadableVersion(artifactID, number, err)
+	}
+	return alone, nil
 }
 
 // renderSame reports whether the trees a and b render byte for byte the same.
@@ -1051,12 +1149,12 @@ func typedBlockIDs(tree *pmdoc.Node) map[string]struct{} {
 // logged and not readable, a number below 1, before the document's first version, is no version
 // and not readable either, and a version holding an element this build does not know is an error
 // (skipUnreadableVersion).
-func approvedVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int) (*pmdoc.Node, string, bool, error) {
+func approvedVersion(ctx context.Context, q Queryer, artifactID string, number int) (*pmdoc.Node, string, bool, error) {
 	if number < 1 {
 		return nil, "", false, nil
 	}
 	var markdown string
-	if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
+	if err := q.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
 		return nil, "", false, fmt.Errorf("read document version %d: %w", number, err)
 	}
 	tree, err := pmdoc.ParseRendering(markdown)
@@ -1119,7 +1217,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// of its own. The answer holds the parts alone, so the step reconciles the question's
 	// references after them too, its citations stated beside the parts', and settles the forms
 	// queue there (questionReconciled false).
-	changes, parts, indexed, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
+	changes, parts, indexed, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
 		answered, answer.At, false, model.ReferenceChanges{}, nil)
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
@@ -1152,12 +1250,8 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		// What the answer states on the ask's node, what its part states in the store, and its
 		// record in the request's thread are appended under that same event, which no statement
 		// between them appends another of (graphstore.LatestEvent).
-		if err := graphstore.QueueCaused(b, settled.Held, graphstore.LatestEvent); err != nil {
-			return fmt.Errorf("state the answer of approval ask %s: %w", ask.ID, err)
-		}
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return fmt.Errorf("state approval ask %s's answer in the store: %w", ask.ID, err)
-		}
+		graphstore.QueueCaused(b, settled.Held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
 			return fmt.Errorf("record approval ask %s's answer in its thread: %w", ask.ID, err)
 		}

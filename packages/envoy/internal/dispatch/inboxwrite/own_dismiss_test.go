@@ -9,7 +9,7 @@ import (
 )
 
 // TestAnOwnAnswerOrReplyDismissesOnlyWhereAllFourConditionsHold holds PlanRecord's rule of D5
-// (dispatch://INFRA-4948 R1, ownDismissal) to one row each way for each of its four conditions: the
+// (the own-answer rule, R1, ownDismissal) to one row each way for each of its four conditions: the
 // handler marked the write its writer's own (Write.Own), the writer is a person, the tuples' writer
 // carries no agent acting for them (Who.Act), and the write is an answer or a reply rather than the
 // write that starts its thread. Only a reply under a message thread on no project dismisses an Agent

@@ -1,11 +1,12 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, waitFor } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
 import type { Agent, Decision, DisplayTree, IssueChild } from "../../api/types";
@@ -15,8 +16,10 @@ import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
 import { useAgentText } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
+  NOTHING_PUBLISHED,
   PublishedReferenceNames,
   type PublishedReferences,
   ReferenceNamesProvider,
@@ -31,7 +34,14 @@ import {
   KEY,
   SPEC_SLUG,
 } from "./decisions-filter/decisions-fixtures";
-import { buildIssueTree, FIRST_LINE_LIMIT, type NodeChip, type TreeNode } from "./issue-tree";
+import {
+  buildIssueTree,
+  FIRST_LINE_LIMIT,
+  type IssueTreeReads,
+  type NodeChip,
+  type TreeNode,
+  targetNaming,
+} from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
@@ -48,9 +58,10 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
+import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId, treeContext } from "./tree-drafts";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -91,52 +102,6 @@ const NOBODY_RECORDED: Author = {
   reader: false,
 };
 
-/** What the page's one batched read publishes, for a row drawn under it (`useIssueTree.ts`):
- *  each target's name as words the store draws as they stand (`ReferenceNameReading.words`), the
- *  references it answered ambiguous and gone, and every reference it asks for, which is every
- *  one of those unless `asked` names more. */
-function publishedNames(
-  names: ReadonlyMap<string, string>,
-  {
-    ambiguous = new Set(),
-    asked = [],
-    gone = new Set(),
-  }: {
-    ambiguous?: ReadonlySet<string>;
-    asked?: readonly string[];
-    gone?: ReadonlySet<string>;
-  } = {}
-): PublishedReferences {
-  return {
-    ambiguous,
-    asked: new Set([...names.keys(), ...ambiguous, ...gone, ...asked]),
-    gone,
-    readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
-    unnamed: new Set(),
-  };
-}
-
-/** What the page's chips publish (`issue-tree.ts`'s `targetNaming`): each chip's reading, the
- *  chips that are gone or ambiguous, every answered chip with no reading as one the read
- *  answered with no words, and every chip's reference as one the page asks for. */
-function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
-  return {
-    ambiguous: new Set(chips.filter((chip) => chip.ambiguous === true).map((chip) => chip.ref)),
-    asked: new Set(chips.map((chip) => chip.ref)),
-    gone: new Set(
-      chips.filter((chip) => chip.gone && chip.ambiguous !== true).map((chip) => chip.ref)
-    ),
-    readings: new Map(
-      chips.flatMap((chip) => (chip.reading === undefined ? [] : [[chip.ref, chip.reading]]))
-    ),
-    unnamed: new Set(
-      chips
-        .filter((chip) => chip.answered && !chip.gone && chip.reading === undefined)
-        .map((chip) => chip.ref)
-    ),
-  };
-}
-
 /** The parties Dispatch knows, as a party's own read finds them (`useReferenceTarget`): a
  *  session the registry lists, a role a listed session holds, and a person's login. */
 interface Parties {
@@ -168,7 +133,11 @@ function Named({
   published: PublishedReferences | undefined;
 }): ReactNode {
   usePublishReferenceNames(published);
-  return <PublishedReferenceNames published={published}>{children}</PublishedReferenceNames>;
+  return (
+    <PublishedReferenceNames published={published ?? NOTHING_PUBLISHED}>
+      {children}
+    </PublishedReferenceNames>
+  );
 }
 
 /** One row, drawn with its body open, as the focused row draws it, unless `body` is false;
@@ -775,11 +744,11 @@ test("a numbered step keeps its number in a chip and in a folded line", async ()
   }
 });
 
-// R8 over ruling 5: the page publishes a target's name whole, as every surface reads the target
-// by it, and a chip cuts it to a chip's room where it draws it. So the plain line a row draws
-// beside the chip - here its parent's line - reads the target by its whole name, and only the
-// chip by the cut one.
-test("a plain line beside a chip reads the chip's target by its whole name", async () => {
+// R8 over ruling 5: the page publishes a target's name as a link to the target reads it - a
+// comment's words within a link's 60 characters - as every surface reads the target by it, and
+// a chip cuts it to a chip's room where it draws it. So the plain line a row draws beside the
+// chip - here its parent's line - reads the target by that name, and only the chip by the cut.
+test("a plain line beside a chip reads the chip's target by the name a link reads, not the chip's cut", async () => {
   const target = "dispatch://CORE-1/comment/c9";
   const whole = "Hold the deploy until the plan lands and the gate is green";
   const chip: NodeChip = {
@@ -815,6 +784,85 @@ test("a plain line beside a chip reads the chip's target by its whole name", asy
       );
     });
   } finally {
+    view.unmount();
+  }
+});
+
+// The architect's ruling on block names, by R8: a block reads in a plain line as a link to it
+// reads it - the headline of its whole text, cut to a link's 60 characters - so the page
+// publishes the block's whole reading (`tree-drafts.ts`'s `treeContext`). A chip of the block
+// keeps G's own rule (decisions 66 and 88): it is named by the first block of its words that
+// holds any, here the decision's heading, from the reading it carries. Both are read from the
+// one batched read's answer for the block, through the page's own code.
+test("a two-paragraph block reads alike in a plain line and a link, and its chip reads its heading", async () => {
+  const block = "dispatch://CORE-2/spec#b-r1";
+  const text = "## Keep it\n\nKeep the model pure, and draw every row from the one tree it builds.";
+  const title = "Keep it Keep the model pure, and draw every row from the one…";
+  const reads = {
+    issue: issueDetails(),
+    targets: [{ gone: false, kind: "block", name: text, ref: block, text_tree: readingOf(text) }],
+  } satisfies IssueTreeReads;
+  const chip = treeContext(reads).chipOf(block);
+  const words = `Serve ${block} first.`;
+  const view = renderRow(
+    node({
+      chips: [chip],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: "dispatch://CORE-1/spec#b-r2",
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: "Draw the rows.",
+      type: "plan_task",
+    }),
+    { body: false, published: { ...targetNaming(reads), asked: new Set([block]) } }
+  );
+  // The link to the block, which reads the block itself, as every rendered body's does.
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      block_id: "r1",
+      document: "dispatch://CORE-2/spec",
+      id: "CORE-2/spec#r1",
+      issue_key: "CORE-2",
+      kind: "block",
+      project: "CORE",
+      ref: block,
+      text,
+      text_tree: readingOf(text),
+    },
+  });
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "Drain the queue",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const body = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <MarkdownBody markdown={words} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await within(body.container).findByRole("link", { name: title });
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        `Serve ${title} first.`
+      );
+      expect(view.container.querySelector("[data-chip-name]")?.textContent).toBe("Keep it");
+    });
+  } finally {
+    getReferences.mockRestore();
+    getIssueSummary.mockRestore();
+    body.unmount();
     view.unmount();
   }
 });

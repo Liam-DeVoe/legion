@@ -354,7 +354,7 @@ function CommentThreadBody({
           // comes back to this thread. The key names the composer too: the thread's root is
           // drawn beside it under the thread's id, and siblings are told apart by their keys.
           // Its Send is held until the Inbox is read again (`heldSend`): the reader's own reply
-          // takes the thread out of their Inbox (dispatch://INFRA-4948 R1), and the box with it.
+          // takes the thread out of their Inbox (the own-answer rule, R1), and the box with it.
           // The send's landing has read the Inbox again already (`held-sends.ts`'
           // `refreshAfter`), so the hold waits on that read (`meInboxReadsBack`) and not on the
           // one more this box asks for, as it always has.

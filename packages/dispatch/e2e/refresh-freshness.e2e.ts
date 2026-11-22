@@ -163,8 +163,11 @@ test("inbox: an issue closed while the Inbox read is in flight drops its ask fro
     await expect(inboxRow(page, staying.id)).toBeVisible();
 
     // The Inbox read the new ask owes is composed with the ask and held; the close lands while it
-    // is in flight.
-    const held = await holdNextRead(page, /\/api\/v1\/inbox(\?|$)/);
+    // is in flight. The ask waits on alice, CORE's default assignee, so the read that lists it is
+    // the one read's `inbox` state (`GET /api/v1/me/inbox?state=inbox`): the read of everyone
+    // else's asks the filter adds (`GET /api/v1/asks/open`) answers it too, and the page leaves
+    // a row of alice's own out of that read.
+    const held = await holdNextRead(page, /\/api\/v1\/me\/inbox\?(.*&)?state=inbox(&|$)/);
     const ask = await createAsk(closing.key, { question: "An ask whose issue closes" }, bob);
     await held.arrived;
     const projectsRead = page.waitForRequest(

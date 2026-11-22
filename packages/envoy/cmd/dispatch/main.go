@@ -196,6 +196,7 @@ type bootConfig struct {
 	// HoldDecisionsStep keeps the server from running any phase of the decisions step
 	// (docs.DecisionStep), at boot or on its tick, so a test driver's command entry point makes the
 	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
+	// kept for one release: decisions-step
 	HoldDecisionsStep bool
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
@@ -458,6 +459,7 @@ func main() {
 	// its own tick once the server listens, below: the boot reads only what the first phase reads,
 	// so a table it does not need, held by another transaction, keeps no process from serving.
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
+	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
 		if err := decisionStep.Boot(ctx); err != nil {
 			slog.Error("dispatch: the decisions step's backfill", "error", err)
@@ -1040,6 +1042,7 @@ func main() {
 	// release before wrote stands unmarked, the catch-up of what a process of another build
 	// writes while one lives, and, once the fleet is this one build, the restore of the answered
 	// asks that left their specs and the conversion of every decisions document.
+	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
 		go decisionStep.Run(ctx)
 	}
@@ -1566,6 +1569,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		// kept for one release: decisions-step
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {

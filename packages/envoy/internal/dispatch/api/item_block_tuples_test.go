@@ -49,7 +49,7 @@ var (
 // graph_edges answers each relation once: a marked row from the tuples, under the item's block
 // address form for a block's edge; an older build's comment, its blocks and its refs row named by
 // no node, from the old arms alone; and a document's refs row from the refs arm, which this child
-// leaves to INFRA-1253.
+// leaves to the work that moves a document's citations.
 func TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
@@ -96,13 +96,13 @@ func TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations(t *testing.T) {
 	// A re-index of the unchanged text, as an owed pass or a rebuild reads it, appends nothing.
 	before := countTuples(t, database)
 	reindexItem(t, database, "the comment", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		return reindexItemBody(ctx, tx, refs.ItemComment, comment.ID, citing)
+		return reindexItemBody(ctx, tx, comment.Author, refs.ItemComment, comment.ID, citing)
 	})
 	reindexItem(t, database, "the message", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		return reindexItemBody(ctx, tx, refs.ItemMessage, message.ID, citing)
+		return reindexItemBody(ctx, tx, message.Author, refs.ItemMessage, message.ID, citing)
 	})
 	reindexItem(t, database, "the ask", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		cited, err := reindexReferences(ctx, tx, refs.ItemAsk, ask.ID, question)
+		cited, err := reindexReferences(ctx, tx, ask.Author, refs.ItemAsk, ask.ID, question)
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -110,7 +110,7 @@ func TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations(t *testing.T) {
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		indexing, err := refs.PlanAskParts(index, refs.NewReader(ctx, tx, "ask", ask.ID, itemBlockServer),
+		indexing, err := refs.PlanAskParts(index, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, itemBlockServer),
 			model.Ask{ID: ask.ID, Question: question}, time.Now())
 		if err != nil {
 			return graphstore.Uncaused{}, err
@@ -342,9 +342,9 @@ func countTuples(t *testing.T, database *store.Store) int {
 }
 
 // reindexReferences reconciles the references of item kind/itemID with body, as an owed pass
-// reads them, and answers the citations that states.
-func reindexReferences(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string) (graphstore.Uncaused, error) {
-	found := text.Refs(refs.NewReader(ctx, tx, string(kind), itemID, itemBlockServer).Mentions(body))
+// reads them for writer, the author its row records, and answers the citations that states.
+func reindexReferences(ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, body string) (graphstore.Uncaused, error) {
+	found := text.Refs(refs.NewReader(ctx, tx, writer, string(kind), itemID, itemBlockServer).Mentions(body))
 	replacement, _, err := planFoundReferences(ctx, tx, string(kind), itemID, found, nil, nil, time.Now().UTC())
 	if err != nil {
 		return graphstore.Uncaused{}, err
@@ -358,14 +358,14 @@ func reindexReferences(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemI
 	return replacement.Cited(), nil
 }
 
-// reindexItemBody re-indexes a comment's or a message's body: its references and its blocks with
-// their links, and answers what both state.
-func reindexItemBody(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string) (graphstore.Uncaused, error) {
-	cited, err := reindexReferences(ctx, tx, kind, itemID, body)
+// reindexItemBody re-indexes a comment's or a message's body, written by writer: its references
+// and its blocks with their links, and answers what both state.
+func reindexItemBody(ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, body string) (graphstore.Uncaused, error) {
+	cited, err := reindexReferences(ctx, tx, writer, kind, itemID, body)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	located := refs.NewReader(ctx, tx, string(kind), itemID, itemBlockServer).Mentions(body)
+	located := refs.NewReader(ctx, tx, writer, string(kind), itemID, itemBlockServer).Mentions(body)
 	_, written, err := refs.IndexItem(ctx, tx, kind, itemID, body, itemBlockServer, time.Now().UTC(), located, nil)
 	if err != nil {
 		return graphstore.Uncaused{}, err

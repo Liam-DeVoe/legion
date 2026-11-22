@@ -499,7 +499,8 @@ func (s *server) settleUndeliverableMention(ctx context.Context, undeliverable u
 	// The receipt, and under it what the attempt's row now holds (graphstore.QueueAttempted), in
 	// one batch.
 	receipt, err := s.appendEventThen(ctx, tx, commentDeliveryReceipt(comment, comment.Author, failed), func(b *store.WriteBatch) error {
-		return graphstore.QueueAttempted(b, comment.Author, graphstore.LatestEvent, graphstore.CommentAttempt(comment.ID, failed.Target, failed.Attempt))
+		graphstore.QueueAttempted(b, comment.Author, graphstore.LatestEvent, graphstore.CommentAttempt(comment.ID, failed.Target, failed.Attempt))
+		return nil
 	})
 	if err != nil {
 		return false, err

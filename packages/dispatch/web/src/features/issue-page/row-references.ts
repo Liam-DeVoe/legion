@@ -23,7 +23,7 @@ import { documentWord } from "./node-row-chip";
  * the batched read answered that its issue exists: `UTF-16` and `SHA-256` are read as keys by
  * the grammar the web shares with the server, name no issue, and are drawn as the words they
  * are. A short reference the read answered ambiguous links nothing either and is drawn as
- * written (`useKnownAmbiguousReferences`). A reference with no name yet - its target has not
+ * written (`KnownReferences.ambiguous`). A reference with no name yet - its target has not
  * answered, or Dispatch answered it has none - reads as the words its author wrote (R8,
  * INFRA-1196 decision 350).
  *
@@ -196,7 +196,7 @@ const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
  *  `issues`. A `#id` is left as written: its question map is a read of its own, one per
  *  document, which a row does not make. A reference in `ambiguous` - one the batched read
  *  answered that two or more targets carry the short id of, which the page publishes
- *  (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text it is and
+ *  (`KnownReferences.ambiguous`) - is left out too, so the row draws it as the text it is and
  *  links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): it names no one target. */
 export function rowReferences(
   text: string,
@@ -227,7 +227,7 @@ export function rowReferences(
 }
 
 /**
- * What a row draws a reference as, from `names`, the whole name each reference has
+ * What a row draws a reference as, from `names`, the name each reference has as a link reads it
  * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
  * the one the page published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for
  * a document (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party

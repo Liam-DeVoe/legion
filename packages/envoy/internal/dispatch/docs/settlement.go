@@ -100,11 +100,28 @@ type settlement struct {
 	reconciled     *pmdoc.Node
 	versioned      *pmdoc.Node
 	reconciliation settlementReconciliation
-	// snapshotCursor is the head the version records (doc_update_version), through which every one
-	// of the room's updates it holds is stored.
+	// readHead is the head of the document's stored history this settlement read under the
+	// document's lock, before it stored anything (readLocked). snapshotCursor is the head the
+	// version records (doc_update_version), through which every one of the room's updates it holds
+	// is stored; it equals readHead when the settlement stored no update (savedNothing).
+	readHead       int64
 	snapshotCursor int64
 	// published are the events this settlement appended, published once its transaction commits.
 	published []model.Event
+}
+
+// savedNothing reports whether this settlement wrote nothing that a later move of an approval
+// request reads, given whether it writes a version (versioning): it writes no version, stores no
+// update in the document's history - none of the room's updates, no block-id stamp and no ask- or
+// check-block repair, so the head it leaves is the head it read (readHead) - and lists no author,
+// neither a pending author nor an in-flight credit. A reopen's move reads the latest version and
+// the editor kept for it (FollowClosedIssueVersions); what else such a settlement writes - block
+// events in SettlementActor's name, the settled version's number in their payloads, the recorded
+// author of an unindexed ask block - changes neither. A settlement armed while another one commits,
+// as the resumption's pick of the row that one is about to delete arms it, finds nothing owed and
+// is such a settlement.
+func (st *settlement) savedNothing(versioning bool) bool {
+	return !versioning && st.snapshotCursor == st.readHead && len(st.credit.authors) == 0
 }
 
 // skipUnreadableSettlement reports whether err stops a settlement at a document whose tree it cannot
@@ -703,9 +720,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
 			for _, stated := range writes.stated {
-				if err := graphstore.QueueCaused(b, *stated, graphstore.LatestEvent); err != nil {
-					return err
-				}
+				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 			for _, step := range writes.after {
 				if err := step(b); err != nil {
@@ -833,19 +848,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
 	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
-	// looks for text in it. Typing a room took before the retirement closed it is still stored -
-	// this settlement commits the updates it read, as every settlement does - and logged, so it is
-	// kept rather than dropped, but no version of the retired document holds it.
-	if versioning {
-		retired, err := documentRetired(ctx, tx, room)
-		if err != nil {
-			return settleDone, st.abandon(err)
-		}
-		if retired {
-			slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
-				"room", room, "latest_version", st.latest.Number)
-			versioning = false
-		}
+	// looks for text in it. Whether it is retired is the read beside the owner's lock this
+	// settlement took (lockArtifactOwner, artifactOwner.Retired), the lock the retirement takes
+	// too, so a retirement either committed before that read or commits after this settlement.
+	// Typing a room took before the retirement closed it, or took in a room the retirement's close
+	// missed (ServeHTTP), is still stored - this settlement commits the updates it read, as every
+	// settlement does - and logged, so it is kept rather than dropped, but no version of the
+	// retired document holds it.
+	if versioning && st.owner.Retired {
+		slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
+			"room", room, "latest_version", st.latest.Number)
+		versioning = false
 	}
 	settledVersion := st.latest.Number
 	if versioning {
@@ -867,17 +880,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// doc_closed_edit_sources), for the reopen's mark to write back into the row it inserts
 	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
 	// settlement on an open issue has named its editor itself, and one on a closed issue that
-	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
-	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
-	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
-	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
-	// of this settlement is, for its write phase.
+	// credits SettlementActor for the edits it saves names no editor, as the settlement after the
+	// reopen, crediting the same edits, named none then: each forgets the editor an earlier
+	// settlement kept. One on a closed issue whose credit is only the kept editor
+	// (settlementVersionCredit.kept), its version adding none of their text, keeps that same
+	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
+	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
+	// only because it found nothing to credit, and its commit deletes the pending row alone,
+	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
+	// are queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
 	}
-	if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
+	if st.issueClosed && kept == nil && st.savedNothing(versioning) {
+		if err := clearSettlementPendingRow(ctx, tx, room); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	} else if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
@@ -891,6 +911,15 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		var keptEditor *model.Actor
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
+		}
+		// A person's edit in the room that took an answered ask's block out of the document is
+		// that person's removal, which the version's index pass states on the ask's node, as the
+		// same edit over HTTP records it (holdSettledRemovals). Only an answered ask the
+		// reconciled tree held no block of can be one, or any where the version is a later read.
+		if st.reconciliation.answeredGone || st.versioned != st.reconciled {
+			if err := holdSettledRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
+				return settleDone, st.abandon(err)
+			}
 		}
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,

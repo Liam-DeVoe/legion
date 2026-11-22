@@ -43,6 +43,19 @@ const readingAgent = {
 /** The heading of the one decision the decision row writes. */
 const DECISION = "Read the references";
 
+/** The question block a decision's own document declares: the reading world's, asked with another
+ *  urgency. A block of another document of the issue that asks exactly what a block of the same
+ *  id asks is a copy of that block and shows its ask (`docs/copied_asks.go`), so the spec's own
+ *  block would make this one name the spec's ask; this one settles into an ask of its own. */
+function ownQuestionBlock(): string {
+  const spec = readingQuestionBlock();
+  const own = spec.replace('urgency="med"', 'urgency="high"');
+  if (own === spec) {
+    throw new Error(`setup: the reading question block names no urgency to change: ${spec}`);
+  }
+  return own;
+}
+
 // SLOW(>=2s): seeds the reading world and a comment, loads the Activity tab, pins the comment's
 // row, and opens the margin's Pinned tab, which reads the pinned event back before it draws it.
 test("activity-event-body: a pinned Activity event draws every form of a stored reference through the renderer", async ({
@@ -203,28 +216,31 @@ test("issue-decision: a decision's paragraph draws every form of a stored refere
   page,
 }) => {
   const seeded = await seedReadingWorld();
-  // A decision is a passage of `decisions.md`, so a `#id` in it is read against that document:
-  // the document declares the question block itself, ahead of its first decision, and the world
-  // is scoped to it.
-  const decisions = await createIssueArtifact(
+  // A decision is a `decision` block of a document of the issue, so a `#id` in it is read against
+  // that document: this one stands in a document of its own, which declares the question block
+  // itself, ahead of the decision, and the world is scoped to it. That block is no copy of the
+  // spec's, so it is an ask of its own, and a `#id` read against the spec would name another.
+  const notes = await createIssueArtifact(
     seeded.host.key,
     {
-      content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(seeded)}\n`,
-      name: "decisions.md",
+      content: `${ownQuestionBlock()}\n\n:::decision{#d1}\n### ${DECISION}\n\n${readingText(seeded)}\n:::\n`,
+      name: "notes.md",
     },
     readingAgent
   );
-  expect(decisions.artifact.slug).toBe("decisions-md");
-  const world = await scopedTo(seeded, decisions.artifact.id);
+  const world = await scopedTo(seeded, notes.artifact.id);
+  expect(world.question, "the document's question is an ask of its own").not.toBe(seeded.question);
 
-  // A decision whose text names a question is one a person's answer made (`readDecisions`), so
-  // the panel lists it among the reader's own rather than as an agent's waiting for review.
+  // A `decision` block is an agent's decision, whoever wrote it, and nobody has kept this one,
+  // so the panel lists it as waiting for the reader's review.
   await page.goto(`/issues/${world.host.key}/decisions`);
-  const card = page.getByRole("region", { name: "Your decisions" }).locator("[data-decision]");
+  const card = page
+    .getByRole("region", { name: "Waiting for your review" })
+    .locator("[data-decision]");
   await expect(card.getByRole("heading", { name: DECISION })).toBeVisible();
 
-  // The card draws its heading through the renderer as well, as one line; its paragraphs are
-  // its one block body, which is where the stored text is.
+  // The card's heading is a link to the decision's node, worded as its plain words; its
+  // paragraphs below it are each a block body, and the one paragraph here is the stored text.
   await expectReadsReferences(card.locator(`div${RENDERED_BODY}`), world, "link");
 });
 

@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The three relations that tie a thing to a person by what reached them (dispatch://INFRA-1152 R2
+// The three relations that tie a thing to a person by what reached them (the spec's R2
 // and R4). TupleDeliveredTo (people.go) points from a write at each person it reached;
 // TupleMentions points from a thing at the person a mention of it names, as it points at a
 // document or an issue the thing cites; TupleParticipatesIn points from a person, or a session,
@@ -55,9 +55,13 @@ var ErrPersonTupleOutsideToPerson = errors.New("a delivered_to, mentions or part
 // predicate has it (refs.VisibleKind). An end past the store's address bound is no tuple, and the
 // rest of the call is appended.
 //
-// It is QueueToPerson run at once, as a batch of its own, for a writer with no write phase.
+// It is QueueToPerson run at once, as a batch of its own, for a writer with no write phase. Its
+// error is the batch's: a refusal, a statement that fails, or a tuple QueueToPerson cannot take.
 func ToPerson(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueToPerson(b, tuples) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueToPerson(b, tuples)
+		return nil
+	})
 }
 
 // QueueToPerson queues ToPerson on a write phase's batch, in two statements: the read of the nodes
@@ -68,10 +72,12 @@ func ToPerson(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
 // read runs where the batch reaches it, so it sees every node the statements queued before it
 // wrote, as the read ToPerson ran after those writes saw them; a refusal stops the batch's reading,
 // and the transaction it ends commits nothing of the call. A tuple's SourceEvent may be
-// LatestEvent, for a write whose event the batch appends right before it.
-func QueueToPerson(b *store.WriteBatch, tuples []Tuple) error {
+// LatestEvent, for a write whose event the batch appends right before it. A tuple of none of the
+// three kinds, or one that cannot be encoded, fails Send rather than this call, which answers
+// nothing (QueueWrite).
+func QueueToPerson(b *store.WriteBatch, tuples []Tuple) {
 	if len(tuples) == 0 {
-		return nil
+		return
 	}
 	stated := make([]Tuple, 0, len(tuples))
 	// reaches is, beside each stated tuple, the person it names and the node at its other end.
@@ -82,7 +88,8 @@ func QueueToPerson(b *store.WriteBatch, tuples []Tuple) error {
 	for _, tuple := range tuples {
 		person, end, err := personEnds(&tuple)
 		if err != nil {
-			return err
+			queueRefused(b, err)
+			return
 		}
 		if !AddressFits(person) || !AddressFits(end[1]) {
 			continue
@@ -96,7 +103,7 @@ func QueueToPerson(b *store.WriteBatch, tuples []Tuple) error {
 		}
 	}
 	if len(stated) == 0 {
-		return nil
+		return
 	}
 	queueReservedForAuthor(b, ends, func(reserved map[[2]string]model.Actor) error {
 		for index, reach := range reaches {
@@ -116,10 +123,10 @@ func QueueToPerson(b *store.WriteBatch, tuples []Tuple) error {
 	})
 	arms, params, _, err := writeArms(1, persons, stated, nil, true)
 	if err != nil {
-		return err
+		queueRefused(b, err)
+		return
 	}
 	b.Queue(fmt.Sprintf("append %d tuple naming a person", len(stated)), "with "+arms+"\nselect 1", params...)
-	return nil
 }
 
 // ToPersonRows is the select list a caller's common-table expression answers for ToPersonArms and

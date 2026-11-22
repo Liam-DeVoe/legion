@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// The tests of dispatch://INFRA-1152's backfill (backfill_inbox.go, backfill_inbox_threads.go).
+// The tests of the one inbox's backfill (backfill_inbox.go, backfill_inbox_threads.go).
 // Each writes, through SQL, rows as a build of the release before this one writes them - no marker
 // of this child's, each beside the event its write appended - runs the backfill, and reads that
 // each row took exactly the tuples this release's writer of it states, under that write's own
@@ -265,7 +265,7 @@ func TestTheBackfillStatesAnOlderBuildsMessagesAndCommentPointers(t *testing.T) 
 		innerTuple{from: message(reply.id), kind: graphstore.TupleDeliveredTo, to: person("alice"), event: reply.event, at: reply.at},
 		innerTuple{from: person("bob"), kind: graphstore.TupleParticipatesIn, to: message(root.id), event: reply.event, at: reply.at},
 	)
-	// A comment's author is dispatch://INFRA-1149's backfill's, so its authored_by is not this
+	// A comment's author is the node store's backfill's, so its authored_by is not this
 	// child's to state, and is left out of the kinds read here.
 	commentKinds := []string{graphstore.TupleRepliesTo, graphstore.TuplePartOf, graphstore.TupleAnswers,
 		graphstore.TupleDeliveredTo, graphstore.TupleParticipatesIn}

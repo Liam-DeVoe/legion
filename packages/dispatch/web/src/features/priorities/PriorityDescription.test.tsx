@@ -17,6 +17,24 @@ import {
 import { PriorityDescription } from "./PriorityDescription";
 import { SAVE_AFTER_MS } from "./useInPlaceDraft";
 
+/** Draws `node` as the priorities page draws a description: under a router and a query client,
+ *  which the editor's reference picker reads. */
+function renderDescription(node: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={client}>{node}</QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    view,
+    unmount: () => {
+      view.unmount();
+      client.clear();
+    },
+  };
+}
+
 /**
  * A writer's description over a server the test answers by hand, from outside the page, since a
  * click would take the focus out of the editor. Every text the editor sends is recorded in
@@ -48,14 +66,7 @@ function heldDescription(initial: string) {
       />
     );
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={client}>
-        <Description />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { unmount, view } = renderDescription(<Description />);
   return {
     lands: (text: string) => act(() => read(text)),
     page: within(view.container),
@@ -68,10 +79,7 @@ function heldDescription(initial: string) {
         write.refuse(new Error("refused"));
       }),
     saves,
-    unmount: () => {
-      view.unmount();
-      client.clear();
-    },
+    unmount,
   };
 }
 
@@ -129,24 +137,6 @@ beforeAll(async () => {
 });
 
 afterEach(restoreParseWorker);
-
-/** Draws `node` as the priorities page draws a description: under a router and a query client,
- *  which the editor's reference picker reads. */
-function renderDescription(node: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={client}>{node}</QueryClientProvider>
-    </MemoryRouter>
-  );
-  return {
-    view,
-    unmount: () => {
-      view.unmount();
-      client.clear();
-    },
-  };
-}
 
 /** A write the server has not answered yet, and does not answer while the row runs. */
 const neverAnswered = (): Promise<unknown> => new Promise(() => {});
@@ -228,19 +218,14 @@ test("a description the reader has just written is drawn from its own text, neve
 test("a description is drawn from the tree the priorities read sends", async () => {
   const tree = displayTree("Ship the **daemon** first.");
   const parses = countEngineParses();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={client}>
-        <PriorityDescription
-          canWrite={false}
-          description="Ship the **daemon**."
-          descriptionTree={tree}
-          label="Description of P1"
-          onSave={async () => undefined}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
+  const { unmount, view } = renderDescription(
+    <PriorityDescription
+      canWrite={false}
+      description="Ship the **daemon**."
+      descriptionTree={tree}
+      label="Description of P1"
+      onSave={async () => undefined}
+    />
   );
   try {
     await waitFor(() => expect(view.container.textContent).toBe("Ship the daemon first."));
@@ -248,7 +233,6 @@ test("a description is drawn from the tree the priorities read sends", async () 
     expect(parses.count()).toBe(0);
   } finally {
     parses.restore();
-    view.unmount();
-    client.clear();
+    unmount();
   }
 });

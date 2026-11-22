@@ -2,10 +2,10 @@ import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { drawnLine, firstLineOf, type ParentLine, type TreeNode } from "./issue-tree";
+import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
-import { lineWordsOf } from "./projection-fixture";
+import { parentLinkWords } from "./projection-fixture";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 
@@ -68,20 +68,12 @@ function drawn(root: TreeNode, preset: Preset, query = ""): string[] {
   return idsOf(view.rootRow ? rows : rows.slice(1));
 }
 
-/** The one line a row draws for `line`'s parent (`NodeRow.tsx`'s `ParentLink`): the parent's
- *  words projected by the shared reader (`lineWordsOf`), cut by R1's first-line rule, and the
- *  page's word for its kind where they hold none. */
-function drawnParentLine(line: ParentLine): string {
-  const words = lineWordsOf(line);
-  return words === "" ? NODE_TYPE_NAMES[line.type] : drawnLine(firstLineOf(words));
-}
-
 /** Every node the view draws, by id, with the line its parent is drawn as where it has one. */
 function parentLines(root: TreeNode): Record<string, string> {
   const lines: Record<string, string> = {};
   const walk = (at: TreeNode): void => {
     if (at.parentLine !== undefined) {
-      lines[at.id] = `${at.parentLine.type}: ${drawnParentLine(at.parentLine)}`;
+      lines[at.id] = `${at.parentLine.type}: ${parentLinkWords(at.parentLine)}`;
     }
     for (const child of at.children) walk(child);
   };
@@ -309,7 +301,7 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
   const view = presetView(root, "spec", "");
   expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
   const [long, short] = view.root.children.map((row) =>
-    row.parentLine === undefined ? undefined : drawnParentLine(row.parentLine)
+    row.parentLine === undefined ? undefined : parentLinkWords(row.parentLine)
   );
   // The one sentence runs past the limit, so the line stops inside it and says it carries on.
   expect(long).toEndWith("…");
@@ -365,7 +357,7 @@ test("a parent with no words is drawn on its child's row as its kind's word, nev
   });
   for (const row of view.root.children) {
     const line = row.parentLine;
-    expect(line === undefined ? undefined : drawnParentLine(line)).not.toBe(line?.id);
+    expect(line === undefined ? undefined : parentLinkWords(line)).not.toBe(line?.id);
   }
 });
 

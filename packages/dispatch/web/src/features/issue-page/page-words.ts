@@ -628,7 +628,8 @@ export const STATE_LINES = freeze({
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
    *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays. */
+   *  the part the document plays: the spec, the plan or Verification, since a decision is a block
+   *  of a document and no document of its own. */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",
@@ -639,7 +640,6 @@ export const STATE_LINES = freeze({
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
-  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**

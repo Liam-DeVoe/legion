@@ -235,3 +235,25 @@ func TestAWriteToARetiredDocumentIsRefused(t *testing.T) {
 	}
 	uploadIssueDocument(t, handler, issue.Key, "other.md", "Another document is taken.\n")
 }
+
+// A write api does not test the row for itself - a comment's mark on a quote of the document -
+// reaches the document service, which refuses it under the document owner's lock (docs'
+// joinLiveWrite, docs.RetiredDocumentError), and api answers that refusal as it answers an edit of
+// the retired document (documentRetiredRefusal): 409 DOCUMENT_RETIRED naming the document, not 500.
+func TestACommentsMarkOnARetiredDocumentIsRefusedAsItsEditIs(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
+	retireTestDocument(t, database, design.ID)
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+design.ID+"/comments", map[string]any{
+		"body": "Use Plan.", "anchor": map[string]string{"artifact": design.Slug, "quote": "notes"},
+	}, "alice")
+	body := response.Body.String()
+	if response.Code != http.StatusConflict || responseCode(t, response) != "DOCUMENT_RETIRED" || !strings.Contains(body, design.ID) {
+		t.Fatalf("a comment's mark on the retired document %s: status=%d body=%s, want 409 DOCUMENT_RETIRED naming it", design.ID, response.Code, body)
+	}
+	if versions := latestVersion(t, database, design.ID); versions.Number != 1 {
+		t.Fatalf("the retired document reads version %d after the refused mark, want 1", versions.Number)
+	}
+}

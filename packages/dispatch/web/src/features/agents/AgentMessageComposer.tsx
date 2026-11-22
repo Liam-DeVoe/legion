@@ -66,7 +66,7 @@ export function AgentMessageComposer({
   agent: Agent;
   /** Holds Send until the Inbox is read again after the send lands (`MentionComposer`'s
    *  `heldSend`): the Inbox's Agent row passes it, since the reader's own reply takes the thread
-   *  out of their Inbox (dispatch://INFRA-4948 R1). The read it waits for is the one the send's
+   *  out of their Inbox (the own-answer rule, R1). The read it waits for is the one the send's
    *  landing already started (`held-sends.ts`' `refreshAfter`), waited on and not sent again
    *  (`meInboxReadsBack`). */
   heldSend?: boolean;

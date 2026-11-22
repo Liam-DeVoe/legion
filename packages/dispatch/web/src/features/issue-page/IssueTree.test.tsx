@@ -21,7 +21,7 @@ import {
 } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
@@ -47,11 +47,15 @@ import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor"
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
   type ReportAdmission,
@@ -62,11 +66,11 @@ import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
-import type { TreeNode } from "./issue-tree";
+import type { NodeChip, TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { useNodeLine } from "./NodeRow";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
+import { lineOrKindWord } from "./node-line";
 import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
@@ -90,7 +94,7 @@ import {
   type Preset,
   STATE_LINES,
 } from "./page-words";
-import { Publisher, publishedNames } from "./projection-fixture";
+import { nodeLineOf, Publisher, publishedNames, publishedTree } from "./projection-fixture";
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
@@ -113,28 +117,25 @@ import { overflowing } from "./words-scroll-fixtures";
 
 const KEY = "CORE-1";
 
-const decisionsDocument: Artifact = {
+/** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
+ *  written against and a Change is anchored in. */
+const specDocument: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  id: "artifact-decisions",
+  id: "artifact-spec",
   issue_key: KEY,
   kind: "doc",
-  name: "Decisions",
+  name: "Spec",
   primary: false,
   project: "CORE",
-  ref_key: "artifact:artifact-decisions",
+  ref_key: "artifact:artifact-spec",
   session_id: null,
-  slug: "decisions",
+  slug: "spec",
   versions: [],
 };
 
-const specDocument: Artifact = {
-  ...decisionsDocument,
-  id: "artifact-spec",
-  name: "Spec",
-  slug: "spec",
-};
-
+/** The agent's one decision: a `decision` block of the spec's `## Decisions` part, whose entry the
+ *  decisions read answers (`decisionsRead`), drawn as the spec's block node `spec#b-d1`. */
 const decision: Decision = {
   asks: [],
   block_id: "d1",
@@ -144,9 +145,9 @@ const decision: Decision = {
   kept: null,
   kind: "agent",
   links: [],
-  ref: `dispatch://${KEY}/decisions#b-d1`,
+  ref: `dispatch://${KEY}/spec#b-d1`,
   replaced: false,
-  text: "## Ship behind a flag\n\nWe ship it behind a flag.",
+  text: ":::decision{#d1}\n### Ship behind a flag\n\nWe ship it behind a flag.\n:::\n",
   text_sha256: "sha256:one",
   unsure: false,
   waiting_review: true,
@@ -209,11 +210,6 @@ function readingOf(markdown: string): DisplayTree {
   return tree;
 }
 
-/** The block of the spec the rows' chips name, and what the page publishes of its batched read
- *  where that read named it (`useIssueTree.ts`): the name every chip naming it draws. */
-const CHIP_TARGET = `dispatch://${KEY}/spec#b-r1`;
-const CHIP_TARGET_NAMED = publishedNames(new Map([[CHIP_TARGET, "The spec block"]]));
-
 /** The page's own `issue` scope, which every one of the tree's keys is registered in. */
 function IssueScope(): ReactNode {
   useKeymapScope("issue");
@@ -226,38 +222,17 @@ function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
   return null;
 }
 
-/** What the page's panel would draw the facts of: the node the tree last set as focused, and the
- *  name the panel names it by (`PanelName`), which is `undefined` while nothing has the focus. */
-function FocusedNodeProbe({
-  seen,
-}: {
-  seen: { name?: string | undefined; node?: FocusedNode };
-}): ReactNode {
+/** What the page's panel would draw the facts of: the node the tree last set as focused. */
+function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode {
   seen.node = useFocusedNode();
-  if (seen.node === undefined) {
-    seen.name = undefined;
-    return null;
-  }
-  return <PanelName node={seen.node} seen={seen} />;
+  return null;
 }
 
-/** The name the panel names the focused node by (`FocusedNode.text`), as every place that names
- *  a node by its one line names it: the page's own `useNodeLine`'s `name` - its first line, each
- *  reference in it read as its target's current name (R8), and its kind's word where its words
- *  hold none - with the reads that name its references mounted. The panel draws nothing of the
- *  focused node yet (`details-more.tsx`), so no row of the reading list is the panel's, and the
- *  name is read on the crumb's: the surface names the row, and the projection reads nothing of
- *  it. */
-function PanelName({
-  node,
-  seen,
-}: {
-  node: FocusedNode;
-  seen: { name?: string | undefined };
-}): ReactNode {
-  const { name, reads } = useNodeLine(node, { surface: "outline-crumb" });
-  seen.name = name;
-  return reads;
+/** What the panel names the focused node by: its one line, as every place that names a node by
+ *  one draws it (`node-line.tsx`'s `useNodeLine`), and its kind's word where its words hold none
+ *  (`lineOrKindWord`); `""` where nothing has the focus. */
+function panelWords(focused: FocusedNode | undefined): string {
+  return focused === undefined ? "" : lineOrKindWord(nodeLineOf(focused), focused.type);
 }
 
 /** How the page's row editor reports what a document's room admitted the page to
@@ -346,11 +321,10 @@ function EditedDocument({
  *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
  *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
  *  `admit` answers for a document's room, as the page's row editor reports what that room
- *  admitted the page to (`document-admission.tsx`); `focusedNode` is the node the tree set as
- *  focused, and `panelName` the name the panel names it by (`PanelName`). The tree is drawn under
- *  the names store, as the shell draws every page (`app.tsx`), with `published` published to it
- *  as the page publishes its batched names read (`Publisher`), until `publish` publishes another
- *  value, as a later answer of that read does. */
+ *  admitted the page to (`document-admission.tsx`). `published` is what the page publishes of
+ *  its batched names read, to the store and to the tree (`Publisher`): where it is not given,
+ *  what the page publishes for the chips of the tree it draws (`publishedTree`), each time it
+ *  draws one. `publish` publishes another value, as a later answer of that read does. */
 function renderTree(
   root: TreeNode,
   {
@@ -381,11 +355,14 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const reads = { held: readsHeld, settled: readsSettled };
-  const names = { published };
+  const names = {
+    follows: published === undefined,
+    published: published ?? publishedTree(root),
+  };
   const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
-  const focused: { name?: string | undefined; node?: FocusedNode } = {};
+  const focused: { node?: FocusedNode } = {};
   const admission: { report?: ReportAdmission } = {};
   const draw = () => (
     <MemoryRouter>
@@ -399,7 +376,7 @@ function renderTree(
                   <IssueScope />
                   <FocusedNodeProbe seen={focused} />
                   <AdmissionProbe held={admission} />
-                  {names.published === undefined ? null : <Publisher published={names.published} />}
+                  <Publisher published={names.published} />
                   <IssueTree
                     artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
                     context={new Set()}
@@ -412,6 +389,7 @@ function renderTree(
                       edited.push(artifactId);
                       editedDocument.set?.(artifactId, onEditor);
                     }}
+                    published={names.published}
                     readsHeld={reads.held}
                     readsSettled={reads.settled}
                     reveal={reveal}
@@ -429,6 +407,7 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
+  // Under the names store, as the shell draws every page (`app.tsx`).
   const view = render(draw(), { wrapper: ReferenceNamesProvider });
   return {
     address: () => seen.path,
@@ -436,8 +415,6 @@ function renderTree(
       act(async () => admission.report?.(artifactId, readOnly)),
     edited,
     focusedNode: () => focused.node,
-    /** The name the panel names the focused node by (`PanelName`). */
-    panelName: () => focused.name,
     holdReads: () => {
       reads.held = true;
       view.rerender(draw());
@@ -446,16 +423,19 @@ function renderTree(
     /** Publishes `next` in place of what the page published, as its batched read answering
      *  again does. */
     publish: (next: PublishedReferences) => {
+      names.follows = false;
       names.published = next;
       view.rerender(draw());
     },
     reread: (next: TreeNode) => {
       tree.root = next;
+      if (names.follows) names.published = publishedTree(next);
       view.rerender(draw());
     },
     /** Draws `next` with every read answered, as the last read to answer draws it. */
     settle: (next: TreeNode) => {
       tree.root = next;
+      if (names.follows) names.published = publishedTree(next);
       reads.held = true;
       reads.settled = true;
       view.rerender(draw());
@@ -475,7 +455,8 @@ interface PageHold {
 }
 
 /** The tree as `slots/body.tsx` draws it: from the last request of the page's
- *  `OutlineRequestProvider`, under the page's row writer, while it is shown. */
+ *  `OutlineRequestProvider`, under the page's row writer, while it is shown, with what the page
+ *  publishes for its chips published to the store and handed to it (`publishedTree`). */
 function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNode {
   held.ask = useAskOutline();
   held.focusBranch = useFocusBranch()[1];
@@ -483,6 +464,8 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
   const request = useOutlineRequest();
   const [shown, setShown] = useState(true);
   held.show = setShown;
+  const published = useMemo(() => publishedTree(drawn), [drawn]);
+  usePublishReferenceNames(published);
   return shown ? (
     <IssueTree
       artifacts={new Map()}
@@ -493,6 +476,7 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
       holdsEscape={false}
       isClosed={false}
       onEditing={() => {}}
+      published={published}
       {...(request === undefined ? {} : { request })}
       reveal={undefined}
       root={drawn}
@@ -503,13 +487,12 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
 
 /**
  * The tree under the providers the page's `slots/providers.tsx` draws around its body - the row
- * writer and the Contents list's requests - with `reader` signed in, and under the names store
- * with `published` published to it, as the page publishes its batched names read. It hands back
- * the list's ask and its Focus branch toggle, the writer's landing, a switch that takes the tree
- * off the page and draws it again (a view drawn in its place and turned off), and a redraw over
- * another tree (a read answering).
+ * writer and the Contents list's requests - with `reader` signed in. It hands back the list's
+ * ask and its Focus branch toggle, the writer's landing, a switch that takes the tree off the
+ * page and draws it again (a view drawn in its place and turned off), and a redraw over another
+ * tree (a read answering).
  */
-function renderPageTree(root: TreeNode, reader = "alice", published?: PublishedReferences) {
+function renderPageTree(root: TreeNode, reader = "alice") {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -525,7 +508,6 @@ function renderPageTree(root: TreeNode, reader = "alice", published?: PublishedR
             <OutlineWriterProvider issueKey={KEY}>
               <OutlineRequestProvider>
                 <IssueScope />
-                {published === undefined ? null : <Publisher published={published} />}
                 <PageBody drawn={drawn} held={held} />
               </OutlineRequestProvider>
             </OutlineWriterProvider>
@@ -534,6 +516,7 @@ function renderPageTree(root: TreeNode, reader = "alice", published?: PublishedR
       </QueryClientProvider>
     </MemoryRouter>
   );
+  // Under the names store, as the shell draws every page (`app.tsx`).
   const view = render(draw(root), { wrapper: ReferenceNamesProvider });
   return {
     ask: (id: string | undefined, focusBranch: boolean) =>
@@ -730,10 +713,10 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
             answered: true,
             gone: false,
             reading: { tree: readingOf("The spec block") },
-            ref: CHIP_TARGET,
+            ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
-        id: "decisions#b-d1",
+        id: "spec#b-d1",
         reference: decision.ref,
         type: "decision",
         waiting: true,
@@ -743,12 +726,11 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
     type: "issue",
   });
   const view = renderTree(root, {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
-    published: CHIP_TARGET_NAMED,
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     if (row === undefined) throw new Error("the decision has no row");
 
     // The tree offers one tab stop and nothing inside a row offers another, standing on the
@@ -783,11 +765,11 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   setViewport(1440);
   const user = userEvent.setup();
   const sent = spyOn(api, "createComment").mockResolvedValue({ id: "comment-1" } as never);
-  const read = readDecisionsText();
+  const read = readSpecText();
   const root = node({
     children: [
       node({
-        id: "decisions#b-d1",
+        id: "spec#b-d1",
         reference: decision.ref,
         type: "decision",
         waiting: true,
@@ -797,11 +779,11 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     type: "issue",
   });
   const view = renderTree(root, {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     await act(async () => row?.focus());
     await user.click(await view.findByRole("button", { name: "Change" }));
     await user.click(view.getByRole("textbox", { name: "Your change" }));
@@ -824,20 +806,18 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
 /** The one decision's tree the two rows below press its controls in. */
 function decisionTree(): TreeNode {
   return node({
-    children: [
-      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
-    ],
+    children: [node({ id: "spec#b-d1", reference: decision.ref, type: "decision", waiting: true })],
     id: KEY,
     type: "issue",
   });
 }
 
-/** Answers the decisions document's text, which a Change reads as it is sent to count its
- *  quote's places over (`DecisionActions.tsx`). */
-function readDecisionsText() {
+/** Answers the text of the spec, which holds the decision's block in its `## Decisions` part and
+ *  which a Change reads as it is sent to count its quote's places over (`DecisionActions.tsx`). */
+function readSpecText() {
   return spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: decision.text,
-    token: "sha256:decisions-text",
+    markdown: `## Decisions\n\n${decision.text}`,
+    token: "sha256:spec-text",
     version: null,
   });
 }
@@ -854,11 +834,11 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
   const answer = Promise.withResolvers<never>();
   const kept = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
   const view = renderTree(decisionTree(), {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     if (row === undefined) throw new Error("the decision has no row");
     await act(async () => row.focus());
     const keep = await view.findByRole("button", { name: "Keep" });
@@ -887,13 +867,13 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
-  const read = readDecisionsText();
+  const read = readSpecText();
   const view = renderTree(decisionTree(), {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     if (row === undefined) throw new Error("the decision has no row");
     await act(async () => row.focus());
     await user.click(await view.findByRole("button", { name: "Change" }));
@@ -928,17 +908,17 @@ test("a Change the reader typed in comes back with its decision's body", async (
   const user = userEvent.setup();
   const root = node({
     children: [
-      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+      node({ id: "spec#b-d1", reference: decision.ref, type: "decision", waiting: true }),
       node({ id: "comment-1", text: "The next words.", type: "comment" }),
     ],
     id: KEY,
     type: "issue",
   });
   const view = renderTree(root, {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
-  const [row] = rowsFor(view.container, "decisions#b-d1");
+  const [row] = rowsFor(view.container, "spec#b-d1");
   if (row === undefined) throw new Error("the decision has no row");
   await act(async () => row.focus());
   await view.findByRole("button", { name: "Change" });
@@ -955,7 +935,7 @@ test("a Change the reader typed in comes back with its decision's body", async (
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull();
   await user.keyboard("k");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-d1"));
   const back = await view.findByRole("textbox", { name: "Your change" });
   expect((back as HTMLTextAreaElement).value).toBe("Say more about the flag.");
 });
@@ -1213,9 +1193,9 @@ test("a press outside the outline that leaves the focus on no control keeps the 
 // row's chips, then the links its words hold, then each control of the row that no key of the
 // keymap presses - Change answer, Copy reference, a command's Copy - in the row's order, and the
 // last stop comes back round to the first. Enter on the one it stopped on follows it or presses
-// it. The link to CORE-7 reads as that issue's key and title, which its own read gives, since the
-// page's batched read asks for no reference here (R8, INFRA-1196 decision 350: a reference reads
-// as its name, the short form gone).
+// it. The link to CORE-7 reads as that issue's key and title, which its own read gives, since
+// the tree is drawn here with no batched read beside it (INFRA-1196 decision 350: a reference
+// reads as its name, the short form gone).
 test("f steps through a row's chips, links and then the controls no key presses", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1247,7 +1227,7 @@ test("f steps through a row's chips, links and then the controls no key presses"
             answered: true,
             gone: false,
             reading: { tree: readingOf("The spec block") },
-            ref: CHIP_TARGET,
+            ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
         id: "ask-1",
@@ -1267,7 +1247,7 @@ test("f steps through a row's chips, links and then the controls no key presses"
     return document.activeElement?.textContent;
   };
   try {
-    const { container } = renderPageTree(root, "alice", CHIP_TARGET_NAMED).view;
+    const { container } = renderPageTree(root, "alice").view;
     await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
     await waitFor(() => expect(container.textContent).toContain("CORE-7 Ship the flag"));
     expect(await stop()).toBe("The spec block");
@@ -1298,7 +1278,7 @@ test("Home from a chip of the first row brings the row back on screen after the 
             answered: true,
             gone: false,
             reading: { tree: readingOf("The spec block") },
-            ref: CHIP_TARGET,
+            ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
         id: "comment-1",
@@ -1323,7 +1303,7 @@ test("Home from a chip of the first row brings the row back on screen after the 
   });
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
-    const { container } = renderTree(root, { published: CHIP_TARGET_NAMED });
+    const { container } = renderTree(root);
     await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
     await user.keyboard("f");
     expect(document.activeElement?.textContent).toBe("The spec block");
@@ -1478,7 +1458,7 @@ test("a statement's and a check's rows carry data-editable, a comment's, a resul
   const artifacts: Artifact[] = [
     specDocument,
     {
-      ...decisionsDocument,
+      ...specDocument,
       id: "artifact-verification",
       name: "Verification",
       slug: "verification",
@@ -1547,7 +1527,7 @@ test("the rows of a document its room admitted read-only carry no data-editable,
   const artifacts: Artifact[] = [
     specDocument,
     {
-      ...decisionsDocument,
+      ...specDocument,
       id: "artifact-verification",
       name: "Verification",
       slug: "verification",
@@ -3866,6 +3846,90 @@ test("the keys that would change the node's heading's level or lines leave it as
   // editor lets it in.
   expect(view.state.doc.child(1).attrs.id, "the heading's name did not follow its words").toBe(
     "#a-heading"
+  );
+});
+
+// A decision is a `decision` block whose heading and words are blocks of their own inside it, and
+// the editor holds every block inside the node's block to the type and the attributes it had, as
+// it holds the node's block itself (`holdEditsToBlock`): measured on the outline's row of a
+// decision, three Backspaces at its heading's start made the heading a paragraph. Delete and
+// Backspace at the heading's start lower it a level (DowngradeHeading) and Ctrl+Alt+0 makes it a
+// paragraph; Backspace at the start of the words joins them to the heading, and Ctrl+Alt+1 and
+// `# ` typed at their start make them a heading. The editor refuses each, and leaves every block
+// as it was; a letter typed in either goes in. The editor mints an id for the heading as it draws
+// it, so Enter's caret at the decision's start is in a block of another id than `r1`, inside `r1`'s
+// section: the row is entered here rather than through `editLive`, which waits for the caret in a
+// block of `r1`'s own id.
+test("the keys that would change a block inside the node's decision leave it as it was", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const blocks = liveBlocks({
+    attrs: { blockId: "r1" },
+    content: [
+      {
+        attrs: { level: 3 },
+        content: [{ text: "Ship behind a flag", type: "text" }],
+        type: "heading",
+      },
+      { content: [{ text: "We ship it behind a flag.", type: "text" }], type: "paragraph" },
+    ],
+    type: "decision",
+  });
+  const room = liveRoom();
+  const { editable } = await enterStatement(user, (onEditor) => (
+    <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+  ));
+  const caretInDecision = () => {
+    const anchor = window.getSelection()?.anchorNode;
+    const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+    return element?.closest('[data-block-id="r1"]') != null;
+  };
+  await waitFor(
+    () =>
+      expect(
+        document.activeElement === editable && caretInDecision(),
+        "Enter did not put the caret in the decision"
+      ).toBe(true),
+    { timeout: 10_000 }
+  );
+  const view = room.editor?.view;
+  if (view === undefined) throw new Error("the row's editor was never made");
+  /** The words of the decision's block `tag` draws: its heading, `h3`, or its words, `p`. */
+  const wordsIn = (tag: "h3" | "p"): Text => {
+    const drawn = editable.querySelector(`[data-block-id="r1"] ${tag}`)?.firstChild;
+    if (!(drawn instanceof Text)) throw new Error(`the editor draws no ${tag} in the decision`);
+    return drawn;
+  };
+  /** The blocks `blocksOf` reads, with the id of each block inside the decision left out: the
+   *  editor mints one for a block of it an edit goes into. */
+  const shapes = (lines: readonly string[]) => lines.map((line) => line.replace(/^1 \S+ /, "1 "));
+  const before = blocksOf(view);
+  /** `lines`, read without ids (`shapes`), with the line of the decision's block of `type`,
+   *  `heading 3` or `paragraph`, now holding `text`. */
+  const inside = (lines: readonly string[], type: string, text: string) =>
+    lines.map((line) => (line.startsWith(`1 ${type}: `) ? `1 ${type}: ${text}` : line));
+  for (const [tag, key, modifiers] of [
+    ["h3", "Delete", {}],
+    ["h3", "Backspace", {}],
+    ["h3", "0", { altKey: true, ctrlKey: true }],
+    ["p", "Backspace", {}],
+    ["p", "1", { altKey: true, ctrlKey: true }],
+  ] as const) {
+    await select(wordsIn(tag), 0);
+    pressIn(editable, key, modifiers);
+    const name = `${Object.keys(modifiers).join("+")} ${key} at the ${tag}'s start`;
+    expect(blocksOf(view), `${name} changed the document`).toEqual(before);
+  }
+  await select(wordsIn("p"), 0);
+  typeInEditor(view, "# ");
+  const typed = inside(shapes(before), "paragraph", "#We ship it behind a flag.");
+  expect(shapes(blocksOf(view)), "`# ` typed at the words' start made them a heading").toEqual(
+    typed
+  );
+  await select(wordsIn("h3"), 4);
+  typeInEditor(view, "Y");
+  expect(shapes(blocksOf(view)), "a letter typed in the heading did not go in").toEqual(
+    inside(typed, "heading 3", "ShipY behind a flag")
   );
 });
 
@@ -6448,7 +6512,7 @@ test("z holds the focused row on screen as the page grows, with the focus on a c
             answered: true,
             gone: false,
             reading: { tree: readingOf("The spec block") },
-            ref: CHIP_TARGET,
+            ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
         id: "comment-2",
@@ -6472,7 +6536,7 @@ test("z holds the focused row on screen as the page grows, with the focus on a c
   const sizes = sizesByHand();
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
-    const view = renderTree(root, { published: CHIP_TARGET_NAMED });
+    const view = renderTree(root);
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     await user.keyboard("j");
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
@@ -6779,7 +6843,7 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
       node({ id: "ask-1", question: true, text: "Which flag?", type: "ask" }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -6791,10 +6855,10 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
 });
 
-// The focused node is named in the panel by its own first line, and a node with no words - a
-// plan task whose block holds none - by the page's word for its kind, never by its id, which is
-// no name a reader reads (the rule a parent line already follows). Both are the page's own name
-// for the node (`useNodeLine`'s `name`), read off the node the tree set as focused.
+// The focused node is named in the panel by its own first line, as every place that names a node
+// by one names it, and a node with no words - a plan task whose block holds none - by the page's
+// word for its kind, never by its id, which is no name a reader reads (the rule a parent line
+// already follows). The tree hands the panel the node's words, which it projects (`panelWords`).
 test("a focused row whose node has no words names it by its kind, not its id", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -6808,20 +6872,12 @@ test("a focused row whose node has no words names it by its kind, not its id", a
   });
   const view = renderTree(root);
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  await waitFor(() =>
-    expect(view.panelName(), "the panel does not name the comment by its first line").toBe(
-      "The first words."
-    )
-  );
+  expect(panelWords(view.focusedNode())).toBe("The first words.");
 
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("plan#b-t1"));
   expect(view.focusedNode()?.id).toBe("plan#b-t1");
-  await waitFor(() =>
-    expect(view.panelName(), "the panel does not name the plan task by its kind's word").toBe(
-      "plan task"
-    )
-  );
+  expect(panelWords(view.focusedNode())).toBe("plan task");
 });
 
 // The page opens with the focus on the first open question that waits on the reader, in the
@@ -8698,7 +8754,7 @@ test("a crumb is its node's first line cut at a word, and the issue's is its key
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8737,7 +8793,7 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8755,12 +8811,13 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
   expect(crumbs[1]?.textContent).toBe(NODE_TYPE_NAMES.plan_task);
 });
 
-// R8 and INFRA-1196 decision 350: a reference reads as its target's name, the short form gone. The
-// panel's name of the focused node and a crumb each draw one line for a node as every place that
-// names a node by one does (`useNodeLine`): a reference in it reads as the words its author wrote
-// while the page's batched read has not answered for it, and as its target's current name once it
-// has, in the panel and in the crumb alike.
-test("a reference in a node's line reads as its target's name in the panel and in its crumb, and as its author's words until it resolves", async () => {
+// R8 and INFRA-1196 decision 350: a reference reads as its target's name, the short form gone. A
+// crumb draws one line for a node as every place that names a node by one does (`useNodeLine`):
+// a reference in it reads as the words its author wrote while the page's batched read has not
+// answered for it, and as its target's current name once it has, and it reads none itself. The
+// panel is handed the node's own words to name it by under the same rule (`FocusedNode.text`),
+// never a line cut from them, which could read no name.
+test("a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves", async () => {
   setViewport(1000);
   const user = userEvent.setup();
   const address = "dispatch://CORE-2/spec#b-r1";
@@ -8778,15 +8835,15 @@ test("a reference in a node's line reads as its target's name in the panel and i
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root, { published: publishedNames(new Map(), { asked: [address] }) });
   const crumb = () => view.container.querySelector<HTMLElement>('[data-crumb="comment-1"]');
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    await waitFor(() =>
-      expect(view.panelName(), "the panel does not name the node by its author's words").toBe(words)
+    expect(view.focusedNode()?.text, "the panel is handed a line cut from the node's words").toBe(
+      words
     );
     await user.keyboard(".");
     await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
@@ -8802,17 +8859,72 @@ test("a reference in a node's line reads as its target's name in the panel and i
     await waitFor(() =>
       expect(crumb()?.textContent, "the crumb did not name the target").toBe(`See ${name} first.`)
     );
-    // Back out of both zooms, `,` puts the focus on the row each zoomed into, the comment last.
-    await user.keyboard(",");
-    await waitFor(() => expect(crumb()).toBeNull());
-    await user.keyboard(",");
-    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    await waitFor(() =>
-      expect(view.panelName(), "the panel did not name the target").toBe(`See ${name} first.`)
-    );
+    expect(getReferences, "the crumb read the reference the page asks for").not.toHaveBeenCalled();
   } finally {
     getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// R8 and INFRA-1196 decision 350 over the outline's rows: the page hands the rows what it
+// publishes of its batched names read in the render that draws them (`IssueTree`'s
+// `published`), so a reference the page asks the read for waits on the page's answer from a
+// row's first render, drawn as its author wrote it meanwhile, and is never read by the row. The
+// page publishes to the names store only after the rows have rendered, as the body does beside
+// the tree (`Publisher`), so a row that read the store alone mounted a read of its own first. A
+// row drawn once the page's read has named its target reads the name in the render that draws it.
+test("a row of the outline waits on the page's read for a reference the page asks for, and draws the page's name in the render that draws it", async () => {
+  setViewport(1440);
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const name = "the queue's drain";
+  const words = `See ${address} first.`;
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const comment = (id: string) => node({ id, text: words, type: "comment" });
+  const tree = (...children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const view = renderTree(tree(comment("comment-1")), {
+    published: publishedNames(new Map(), { asked: [address] }),
+  });
+  const rowWords = (id: string) => rowsFor(view.container, id)[0]?.textContent ?? "";
+  try {
+    await waitFor(() => expect(rowWords("comment-1")).toContain(words));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.publish(publishedNames(new Map([[address, name]])));
+    await waitFor(() => expect(rowWords("comment-1")).toContain(`See ${name} first.`));
+    view.reread(tree(comment("comment-1"), comment("comment-2")));
+    expect(rowWords("comment-2"), "a row drawn after the name came drew it later").toContain(
+      `See ${name} first.`
+    );
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// The architect's ruling on a block chip's line: a tie's chip names a block by the line the names
+// store projects beside the block's name from what the page published (`KnownReferences.lines`),
+// as a block drawn as a chip in a node's words is named, and projects none of its own. The page
+// hands its rows what it publishes in the render that draws them, the store's lines with it
+// (`PublishedReferenceNames`), so a row drawn once the store holds a block's line draws its chip
+// by that line in the very render that draws it: a block that opens on a heading by the heading.
+test("a chip drawn once the store holds its block's line draws it in the render that draws it", async () => {
+  setViewport(1440);
+  const chip: NodeChip = {
+    answered: true,
+    gone: false,
+    reading: { tree: readingOf("## Keep it\n\nKeep the model pure.") },
+    ref: `dispatch://${KEY}/spec#b-r1`,
+  };
+  const row = (id: string) => node({ chips: [chip], id, text: "The words.", type: "comment" });
+  const tree = (...children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const view = renderTree(tree(row("comment-1")));
+  const chipOf = (id: string) =>
+    rowsFor(view.container, id)[0]?.querySelector("[data-chip-name]")?.textContent;
+  try {
+    await waitFor(() => expect(chipOf("comment-1"), "the chip drew no line").toBe("Keep it"));
+    view.reread(tree(row("comment-1"), row("comment-2")));
+    expect(chipOf("comment-2"), "a chip drawn after its line came drew it later").toBe("Keep it");
+  } finally {
     view.unmount();
   }
 });
@@ -8827,12 +8939,7 @@ function seedBodyReads(
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], {
-    decisions: [],
-    document: null,
-    entries: [],
-    open_questions: [],
-  });
+  client.setQueryData(["decisions", KEY], decisionsRead([]));
   client.setQueryData(["asks", KEY], []);
   if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
   client.setQueryData(["issue-messages", KEY], []);
@@ -9076,11 +9183,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   seedBodyReads(client, { comments: [] });
   const reads = [
     spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
     spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
     spyOn(api, "listComments").mockResolvedValue([] as never),
@@ -9378,8 +9481,8 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
     );
     const alert = body.view.getByRole("alert");
 
-    // The issue's read answers with its spec and its decisions document, whose blocks are then
-    // read, and are out.
+    // The issue's read answers with its spec, whose blocks are then read, and are out; no
+    // decisions document stands beside it, a decision being a block of the spec.
     body.redraw(issueDetails());
     await waitFor(() =>
       expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
@@ -9491,8 +9594,8 @@ test("an agents-only turn's landing on the issue, kept while a document added to
     const zoomedOn = focusedRow(container);
     expect(zoomedOn, "the zoom left the focus on no row").toBeDefined();
 
-    // The issue's read answers with its spec and its decisions document, whose blocks are then
-    // read, and are out.
+    // The issue's read answers with its spec, whose blocks are then read, and are out; no
+    // decisions document stands beside it, a decision being a block of the spec.
     body.redraw(issueDetails());
     await waitFor(() =>
       expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
@@ -10094,6 +10197,63 @@ test("a failed asks read draws its line over the tree and opens the page on its 
     messages.mockRestore();
     names.mockRestore();
   }
+});
+
+/** Draws the stage under the view `preset`, whose body is `[data-<preset>-body]`, with the names
+ *  read refused once, and reads the outline's names line there: in the outline's words, over the
+ *  view's tree, and gone once its Retry has read the names again. `view` names the view in a
+ *  failure. */
+async function namesLineOverView(preset: "plan" | "verification", view: string): Promise<void> {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  try {
+    const body = renderAddressedBody(presetPath(KEY, preset), TWO_THREADS, StageSlot);
+    const { container } = body.view;
+    const lineSelector = `[data-${preset}-body] [data-${preset}-unreadable="names"]`;
+    const line = await waitFor(() => {
+      const drawn = container.querySelector<HTMLElement>(lineSelector);
+      expect(drawn, `the ${view} drew no line for the names read`).not.toBeNull();
+      return drawn as HTMLElement;
+    }, OWN_WORDS);
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.names_unreadable);
+    const tree = container.querySelector(`[data-${preset}-body] [role="tree"]`);
+    if (tree === null) throw new Error(`the ${view} drew no tree`);
+    expect(
+      (line.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      `the ${view}'s names line is not drawn over its tree`
+    ).toBe(true);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error(`the ${view}'s names line drew no Retry`);
+
+    await user.click(retry);
+    await waitFor(
+      () =>
+        expect(
+          container.querySelector(lineSelector),
+          `the ${view}'s names line stayed once the names answered`
+        ).toBeNull(),
+      OWN_WORDS
+    );
+    expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
+  } finally {
+    names.mockRestore();
+  }
+}
+
+// The Verification view drew its rows from the page's names and said nothing when their read
+// failed: every reference in a row and a parent line stayed its raw address, and every "Also
+// under" line went, with no word of why and no Retry. It draws the outline's names line over the
+// view, after its own reads' lines, and its Retry reads the names again.
+test("under the Verification view, a failed names read draws the outline's names line over the view, and its Retry reads the names again", async () => {
+  await namesLineOverView("verification", "Verification view");
+});
+
+// The Plan view, the same: its bars, chips and steps wait on the page's names, and said nothing
+// when their read failed.
+test("under the Plan view, a failed names read draws the outline's names line over the view, and its Retry reads the names again", async () => {
+  await namesLineOverView("plan", "Plan view");
 });
 
 /** Where the focus is in `container`: the id of the row that holds it, a failed read's Retry
@@ -11178,8 +11338,8 @@ test("the line that the issue has no children stays drawn, with the focus on it,
       expect(document.activeElement, "the children's line does not hold the focus").toBe(heading)
     );
 
-    // The issue's read answers with its spec and its decisions document, whose blocks are then
-    // read, and are out.
+    // The issue's read answers with its spec, whose blocks are then read, and are out; no
+    // decisions document stands beside it, a decision being a block of the spec.
     body.redraw(issueDetails());
     await waitFor(() =>
       expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()

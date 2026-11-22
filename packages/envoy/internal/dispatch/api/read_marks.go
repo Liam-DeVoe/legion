@@ -8,7 +8,7 @@ import (
 )
 
 // What a person has read, cleared, dismissed or snoozed is a tuple from their person node
-// (dispatch://INFRA-1152 R6, graphstore.FromPerson), and the six read-state tables are its
+// (the spec's R6, graphstore.FromPerson), and the six read-state tables are its
 // projections. Every route that writes one of them states the mark as that tuple in its own
 // transaction:
 //
@@ -31,7 +31,7 @@ import (
 // The one writer of a thread states the rest: a person's own write moves their read mark
 // (inboxwrite.Record's queueKeepRow), and their own answer or reply also states their dismissal of
 // the thread - dismissed to its root, on their user_threads row or, under an Agent thread, on their
-// user_agent_thread_dismissed row at its root (dispatch://INFRA-4948 R1); a write by somebody else
+// user_agent_thread_dismissed row at its root (the own-answer rule, R1); a write by somebody else
 // retracts their dismissal, of a Reply thread or of an Agent thread, as it clears the row.
 //
 // Each route's statement answers exactly what it stored - the rows it moved, at the moment each

@@ -1163,7 +1163,7 @@ test("an approval ask keeps its document link and the version it asked about onc
 });
 
 // ---------------------------------------------------------------------------------------------
-// R2 of dispatch://INFRA-4948: each Inbox row of an issue wears the approval state of its issue,
+// R2, the approval state: each Inbox row of an issue wears the approval state of its issue,
 // and its reading pane draws the issue's design gate, in the issue page's words.
 // ---------------------------------------------------------------------------------------------
 

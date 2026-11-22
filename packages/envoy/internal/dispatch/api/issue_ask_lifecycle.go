@@ -172,7 +172,8 @@ func (s *server) recordWithdrawnAsksTx(ledger *docs.Ledger, issueKey string, pla
 		// What the withdrawal stated on the ask's node learns the event the step before appended.
 		held := planned.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			return nil
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -302,12 +303,8 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		held := restored.held[index]
 		move := inboxwrite.Restored(ask.ID, restored.at, actor)
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			if err := graphstore.QueueCaused(b, held, graphstore.LatestEvent); err != nil {
-				return err
-			}
-			if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-				return err
-			}
+			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 			return inboxwrite.QueueMoveWaiting(b, move, graphstore.LatestEvent)
 		}); err != nil {
 			return nil, err

@@ -7,14 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
 // eraseTestWindow is the bound the erase waits out after its commit in these tests, in place of
@@ -35,17 +41,36 @@ func startEraseServer(t *testing.T, databaseURL string, settleDelay time.Duratio
 	})
 }
 
+// confirmTries is how many listings confirmErase confirms, in all, before it gives up on a
+// listing that keeps moving.
+const confirmTries = 3
+
 // confirmErase is what an operator runs: the erase of kind:id without --confirm, which reads its
-// listing and removes nothing, then with the digest that run printed.
+// listing and removes nothing, then with the digest that run printed. These tests run it against a
+// live server whose ticks write rows that derive from the node - a comment's windows among them -
+// so a tick between the two runs moves the listing, and the confirmed run refuses it (Mismatch),
+// as it refuses an operator's. The operator then reads the listing again and confirms that digest,
+// and so does confirmErase, confirmTries times in all; when the last confirmed run still reads
+// another listing it answers an error naming both digests. Any other refusal it answers as the
+// erase does, the refused Erasure with no error.
 func confirmErase(ctx context.Context, databaseURL, kind, id string, window time.Duration) (*grapherase.Erasure, error) {
-	listing, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, "", 0)
-	if err != nil {
-		return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+	for try := 1; ; try++ {
+		listing, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, "", 0)
+		if err != nil {
+			return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+		}
+		if listing.Applied {
+			return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
+		}
+		erasure, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, listing.Digest, window)
+		if err != nil || !erasure.Mismatch() {
+			return erasure, err
+		}
+		if try == confirmTries {
+			return erasure, fmt.Errorf("erase --node %s:%s refused each of %d listings it was given: the last confirmed run was given %s and read a listing of digest %s",
+				kind, id, confirmTries, erasure.Confirmed, erasure.Digest)
+		}
 	}
-	if listing.Applied {
-		return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
-	}
-	return grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, listing.Digest, window)
 }
 
 // blockHolding is the node address of the block of document whose text, at the latest version
@@ -94,6 +119,13 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if text := eraseDocumentText(t, server, notes); strings.Contains(text, secret) {
 		t.Fatalf("the edit left the secret in the live text of the notes: %q", text)
 	}
+	// The uploads owe the notes a settlement (doc_settlements_pending), and the issue's creation
+	// owes the spec one, each run after the settle delay. Run after an erase, it would write a
+	// version of its own from the live text the erase left - for the spec a version holding the
+	// marker, with its event - so each erase is read against the settled document, which nothing
+	// writes to again.
+	waitForSettlementOwed(t, database, notes, false)
+	waitForSettlementOwed(t, database, spec, false)
 
 	// The controls: each store holds the secret before the erase, read by the very statement
 	// that must read none of it afterwards.
@@ -110,6 +142,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if err != nil || !erased.Applied {
 		t.Fatalf("erase %s: applied %t, %v", notesBlock, erased != nil && erased.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, notes, false)
 	if held := updatesHolding(t, database, notes, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the notes still hold the secret's bytes", held)
 	}
@@ -170,6 +205,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if !erasure.Applied {
 		t.Fatalf("the erase of %s removed nothing", specBlock)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, spec, false)
 	var report bytes.Buffer
 	erasure.Write(&report)
 	t.Logf("the erase reported:\n%s", report.String())
@@ -281,11 +319,19 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	if held := updatesHolding(t, database, document, secret); held == 0 {
 		t.Fatalf("no stored update of %s holds the secret, so the history check proves nothing", document)
 	}
+	// The upload owes the document a settlement (doc_settlements_pending), which runs after the
+	// settle delay. Run after the erase, it would write a version of its own from the live text the
+	// erase left - a version holding the marker, with its event - so the erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 
 	erasure, err := confirmErase(ctx, databaseURL, "block", block, time.Millisecond)
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	if held := updatesHolding(t, database, document, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of %s still hold the secret past the excerpt", held, document)
 	}
@@ -295,6 +341,194 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
 		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
 	}
+}
+
+// R5: the keyword fill writes a comment's keyword version (search_text_versions) from its event,
+// on its own, while the server serves: the comment's text in its body and its words in its
+// vector, which derive from the comment. A comment holding a word no other row holds is written
+// through the API, and the test waits for the server's own fill to write its version, which holds
+// the word (the control). The comment's erase takes that version, and no row of the table holds
+// the word afterwards. The table is then emptied, as the fill empties it for a log that was reset,
+// and the fill runs again over the whole log (textversions.FillToHorizon): the erase redacted the
+// comment's events in place, so every event decodes, and no row the fill writes again holds the
+// word. The test logs what it wrote again of the erased comment.
+func TestTheCommentEraseTakesItsKeywordVersionsAndTheFillWritesNoneOfItsTextAgain(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERK","name":"Erase keywords"}`, http.StatusCreated)
+
+	secret := eraseTestSecret()
+	issue, _ := createEraseIssue(t, server, "ERK", "A comment that held a secret", "# Spec\n\nNothing secret is written here.\n")
+	comment := writeEraseComment(t, server, issue, "The passphrase is "+secret+" and nobody else may read it.")
+	deadline := time.Now().Add(time.Minute)
+	for len(eraseKeywordVersions(t, database, comment)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the server's keyword fill wrote no keyword version of comment %s within a minute", comment)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) == 0 {
+		t.Fatalf("before the erase no keyword version holds the secret, so this test proves nothing: comment %s's versions read %q",
+			comment, eraseKeywordVersions(t, database, comment))
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "comment", comment, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase comment:%s: applied %t, %v", comment, erasure != nil && erasure.Applied, err)
+	}
+	var report bytes.Buffer
+	erasure.Write(&report)
+	t.Logf("the erase reported:\n%s", report.String())
+	if !strings.Contains(report.String(), "    delete search_text_versions comment "+comment+" event_seq ") {
+		t.Errorf("the listing names no keyword version of comment %s as a row the run deletes:\n%s", comment, report.String())
+	}
+	if versions := eraseKeywordVersions(t, database, comment); len(versions) != 0 {
+		t.Errorf("after the erase the keyword table holds %d version(s) of comment %s, want none: %q", len(versions), comment, versions)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) != 0 {
+		t.Errorf("after the erase the keyword versions %q hold the secret", held)
+	}
+
+	// The fill again, from no row, over the log the erase redacted, with the server stopped so
+	// the test's fill is the one that writes.
+	server.Terminate(t)
+	server.WaitExit(t, "SIGTERM")
+	if _, err := database.Pool.Exec(ctx, `delete from search_text_versions; delete from search_text_versions_fill`); err != nil {
+		t.Fatalf("empty the keyword table and its cursor row: %v", err)
+	}
+	if err := textversions.FillToHorizon(ctx, database, events.NewHorizon(database.Pool)); err != nil {
+		t.Fatalf("fill the keyword table again over the log the erase redacted: %v", err)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) != 0 {
+		t.Errorf("after the fill ran again the keyword versions %q hold the secret", held)
+	}
+	t.Logf("the fill wrote again %d keyword version(s) of the erased comment %s: %q",
+		len(eraseKeywordVersions(t, database, comment)), comment, eraseKeywordVersions(t, database, comment))
+}
+
+// R5: an event carries a comment's body whole up to contracts.DispatchEventBodyMax (32,000 UTF-16
+// units) and only its first part past that (model.EventBody), cut at the last blank line within
+// the bound, else at the last line break, else at the last character. A block holds up to 32,000
+// units as well, so a body whose first block fills the bound and breaks its lines with no blank
+// line between them is cut inside that block: the event holds the block's head, which no erased
+// text matches whole. The comment here is that body, its secret on the first line, written
+// through the API, and the test reads its comment.created event cut inside the first block with
+// the secret in it (the control). The comment's erase takes every byte of the cut body out of its
+// events, and no column of the database holds the secret afterwards. The keyword table is then
+// emptied, as the fill empties it for a log that was reset, and the fill runs again over the
+// whole log (textversions.FillToHorizon): the comment has no row and no blocks left, so the fill
+// reads its cut body from the event (body_from 'cut'), and no version it writes holds the secret.
+func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERC","name":"Erase a cut body"}`, http.StatusCreated)
+
+	secret := eraseTestSecret()
+	first := cutBodyBlock("The passphrase is "+secret+" and nobody else may read it.", contracts.DispatchEventBodyMax)
+	body := first + "\n\nA second block of the same comment."
+	issue, _ := createEraseIssue(t, server, "ERC", "A comment past the event's bound", "# Spec\n\nNothing secret is written here.\n")
+	comment := writeEraseComment(t, server, issue, body)
+	var cut string
+	var truncated bool
+	if err := database.Pool.QueryRow(ctx, `
+		select payload->>'body', coalesce((payload->>'body_truncated')::boolean, false)
+		from events where type = 'comment.created' and payload->>'id' = $1`, comment).Scan(&cut, &truncated); err != nil {
+		t.Fatalf("read comment %s's comment.created event: %v", comment, err)
+	}
+	if !truncated || !strings.Contains(cut, secret) || len(cut) >= len(first) || !strings.HasPrefix(first, cut) {
+		t.Fatalf("comment %s's comment.created event carries %d bytes of its %d-byte first block, truncated %t, holding the secret %t; want the head of that block alone, cut inside it with the secret in it, so this test would prove nothing",
+			comment, len(cut), len(first), truncated, strings.Contains(cut, secret))
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "comment", comment, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase comment:%s: applied %t, %v", comment, erasure != nil && erasure.Applied, err)
+	}
+	var held int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events
+		where (payload->>'id' = $1 or payload->>'comment_id' = $1) and position($2 in payload::text) > 0`,
+		comment, secret).Scan(&held); err != nil {
+		t.Fatalf("read comment %s's events after the erase: %v", comment, err)
+	}
+	if held != 0 {
+		t.Errorf("after the erase %d event(s) of comment %s still hold the secret in the head of the body their event cut", held, comment)
+	}
+	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
+		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
+	}
+
+	// The fill again, from no row, over the log the erase redacted, with the server stopped so
+	// the test's fill is the one that writes.
+	server.Terminate(t)
+	server.WaitExit(t, "SIGTERM")
+	if _, err := database.Pool.Exec(ctx, `delete from search_text_versions; delete from search_text_versions_fill`); err != nil {
+		t.Fatalf("empty the keyword table and its cursor row: %v", err)
+	}
+	if err := textversions.FillToHorizon(ctx, database, events.NewHorizon(database.Pool)); err != nil {
+		t.Fatalf("fill the keyword table again over the log the erase redacted: %v", err)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) != 0 {
+		t.Errorf("after the fill ran again the keyword versions %q hold the secret", held)
+	}
+	t.Logf("the fill wrote again %q of the erased comment %s", eraseKeywordVersions(t, database, comment), comment)
+}
+
+// cutBodyBlock is one paragraph of exactly units ASCII characters whose lines end in a single line
+// break and never in a blank line, its first line opening with line, and its last character none
+// of white space, so the block's stored text is the whole of it: a block that fills an event's
+// bound, which an event's cut (model.EventBody) can only split at one of its own line breaks.
+func cutBodyBlock(line string, units int) string {
+	var block strings.Builder
+	block.WriteString(line)
+	for number := 2; block.Len() < units; number++ {
+		block.WriteString(fmt.Sprintf("\nLine %d of a long paragraph.", number))
+	}
+	cut := []byte(block.String()[:units])
+	if last := len(cut) - 1; cut[last] == '\n' || cut[last] == ' ' {
+		cut[last] = 'x'
+	}
+	return string(cut)
+}
+
+// eraseKeywordVersions is every keyword version (search_text_versions) of comment, as
+// `event_seq <n> body_from <source>: <body>`, in event_seq order.
+func eraseKeywordVersions(t *testing.T, database *store.Store, comment string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select 'event_seq ' || event_seq || ' body_from ' || body_from || ': ' || body
+		from search_text_versions where kind = 'comment' and id = $1 order by event_seq`, comment)
+	if err != nil {
+		t.Fatalf("read the keyword versions of comment %s: %v", comment, err)
+	}
+	versions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the keyword versions of comment %s: %v", comment, err)
+	}
+	return versions
+}
+
+// eraseKeywordVersionsHolding names, by key, every keyword version whose body or vector holds
+// text, the vector read in its text form, which spells each lexeme.
+func eraseKeywordVersionsHolding(t *testing.T, database *store.Store, text string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select kind || ' ' || id || ' event_seq ' || event_seq from search_text_versions
+		where position($1 in body) > 0 or position($1 in search::text) > 0 order by kind, id, event_seq`, text)
+	if err != nil {
+		t.Fatalf("read the keyword versions holding the text: %v", err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the keyword versions holding the text: %v", err)
+	}
+	return held
 }
 
 // eraseTestSecret is one word of letters and digits no other run writes, which a search vector
@@ -340,16 +574,8 @@ func eraseDocumentText(t *testing.T, server *dispatchProcess, document string) s
 // names that version's token.
 func uploadEraseDocument(t *testing.T, server *dispatchProcess, issue, name, markdown string) string {
 	t.Helper()
-	artifacts := "/api/v1/issues/" + issue + "/artifacts"
-	upload := map[string]any{"name": name, "content": markdown}
-	if base := server.uploadBase(t, artifacts, name); base != nil {
-		upload["precondition"] = base
-	}
-	body, err := json.Marshal(upload)
-	if err != nil {
-		t.Fatalf("encode the document: %v", err)
-	}
-	answer := server.send(t, http.MethodPost, artifacts, string(body), asUser(dispatchTestLogin))
+	body := server.documentUpload(t, issue, name, markdown, dispatchTestLogin)
+	answer := server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", body, asUser(dispatchTestLogin))
 	if answer.status != http.StatusCreated && answer.status != http.StatusOK {
 		t.Fatalf("upload %s: %s", name, answer)
 	}
@@ -362,6 +588,35 @@ func uploadEraseDocument(t *testing.T, server *dispatchProcess, issue, name, mar
 		t.Fatalf("read the upload of %s back: %v: %s", name, err, answer.body)
 	}
 	return uploaded.Artifact.ID
+}
+
+// documentUpload is the JSON body of an upload of content as the document issue holds under name,
+// sent as login. An upload replacing a document names the token of the version it replaces, which
+// Dispatch checks under the write's own lock (a replacement that names none is taken unchecked and
+// counted: api/unguarded_replacements.go), so the body names the token the document carries now; a
+// document's first version replaces nothing and names none.
+func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, login string) string {
+	t.Helper()
+	upload := map[string]any{"name": name, "content": content}
+	answer := p.send(t, http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+url.PathEscape(name)+"/text", "", asUser(login))
+	switch answer.status {
+	case http.StatusNotFound:
+	case http.StatusOK:
+		var document struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(answer.body, &document); err != nil || document.Token == "" {
+			t.Fatalf("read the token of %s's document %s: %v: %s", issue, name, err, answer)
+		}
+		upload["precondition"] = map[string]string{"document": document.Token}
+	default:
+		t.Fatalf("read %s's document %s: %s", issue, name, answer)
+	}
+	body, err := json.Marshal(upload)
+	if err != nil {
+		t.Fatalf("encode the upload of %s: %v", name, err)
+	}
+	return string(body)
 }
 
 // writeEraseComment writes body as a comment of issue, as the test's person, and answers its id.

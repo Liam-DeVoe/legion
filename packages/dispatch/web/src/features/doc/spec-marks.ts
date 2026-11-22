@@ -4,15 +4,9 @@ import { useMemo, useState } from "react";
 
 import { api, documentReadRequest } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
-import type {
-  Artifact,
-  ArtifactBlock,
-  DecisionEntry,
-  DecisionLink,
-  GraphReferences,
-  IssueDecisions,
-} from "../../api/types";
+import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { isDecisionEntry, withEntries } from "../issue/decision-entries";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
 /** What a stale block says when the reader rests on it. */
@@ -34,33 +28,20 @@ export interface ChangedSinceRead {
   readonly version: number;
 }
 
-/** The decisions view, which the margin's decision cards read under the same key. */
+/** The decisions view, which the margin's decision cards, the issue page and the Decisions tab read
+ *  under the same key: the read with its `entries`, whichever release's server answered it
+ *  (`withEntries`). */
 export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   enabled,
-  queryFn: () => api.getIssueDecisions(issueKey),
+  queryFn: async (): Promise<IssueDecisions> =>
+    withEntries(await api.getIssueDecisions(issueKey), issueKey),
   queryKey: ["decisions", issueKey] as const,
 });
 
-/** Whether the spec node a decision shaped changed after the decision tied it: its text last
- *  changed in a version whose event (`text_changed_event`) is later than the event that wrote the
- *  `shaped` tuple (`event`). Where either event is absent - a tie or a version no event recorded -
- *  the server's own comparison by the database's clock (`stale`) says it. */
-export function shapedNodeChanged(link: DecisionLink): boolean {
-  const event = link.event ?? null;
-  const changed = link.text_changed_event ?? null;
-  return event !== null && changed !== null ? changed > event : link.stale;
-}
-
-/** Whether an entry of the Decisions read is a decision: an agent's, or an ask a person answered.
- *  An open ask is a question, and a declined one decided nothing, so neither is drawn beside the
- *  spec nodes its `shaped` tuples reach, as the old `decisions` member never held them. */
-export function isDecisionEntry(entry: DecisionEntry): boolean {
-  return entry.kind === "agent" || entry.answer_state === "answered";
-}
-
-/** Every spec block a decision shaped whose text changed after the decision tied it, each once,
- *  in the order the read names them: the `shaped` links of the Decisions read's decisions
- *  (isDecisionEntry). With `refKey`, only the blocks of that document, whose node ids open
+/** Every spec block a stale link of any decision names, each once, in the order the read names
+ *  them: the `shaped` links of the Decisions read's decisions (isDecisionEntry). A link is stale
+ *  when its decision changed after it first linked the block and the block has not changed since
+ *  (`DecisionLink.stale`). With `refKey`, only the blocks of that document, whose node ids open
  *  `<refKey>#`. */
 export function staleSpecBlocks(decisions: IssueDecisions | undefined, refKey?: string): string[] {
   const stale: string[] = [];
@@ -69,9 +50,7 @@ export function staleSpecBlocks(decisions: IssueDecisions | undefined, refKey?: 
     for (const link of entry.shaped ?? []) {
       const blockId = link.to.block_id;
       if (refKey !== undefined && !link.to.id.startsWith(`${refKey}#`)) continue;
-      if (shapedNodeChanged(link) && blockId !== undefined && !stale.includes(blockId)) {
-        stale.push(blockId);
-      }
+      if (link.stale && blockId !== undefined && !stale.includes(blockId)) stale.push(blockId);
     }
   }
   return stale;

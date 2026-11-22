@@ -540,13 +540,12 @@ export const markdownClassName =
 /** What one reference a projected text writes resolved to, under its `dispatch://` reference
  *  (`MarkdownHeadline.addresses`): `name`, what the reference reads as standing on its own - its
  *  target's current name, or undefined where Dispatch answered that its target does not exist or
- *  exists with no name of its own, where it reads as the words its author wrote (R8) - `key`, an
- *  issue's key, which the words write before its name as a link to an issue reads (`RefLink`) and
- *  which is kept apart from it, so a surface that sets the key apart reads the name alone; and
+ *  exists with no name of its own, where it reads as the words its author wrote (R8) - and
  *  `mention`, what a party's mention of it reads as, undefined where the mention keeps its
- *  author's words. A reference the lookup does not answer has not been read yet. */
+ *  author's words. An issue's name is its title alone, which the projection writes after its key
+ *  (`standingName`), so a surface that sets the key apart reads the title alone. A reference the
+ *  lookup does not answer has not been read yet. */
 export interface ReferenceName {
-  readonly key?: string;
   readonly name: string | undefined;
   readonly mention: string | undefined;
 }
@@ -558,11 +557,15 @@ export interface ReferenceNameLookup {
   get(reference: string): ReferenceName | undefined;
 }
 
-/** The words `answer` names its reference by standing on its own: an issue's key and then its
- *  name, and any other target's name. Undefined where it names none. */
-function standingName(answer: ReferenceName | undefined): string | undefined {
+/** The words `answer` names a reference to `route` by standing on its own: an issue's key and
+ *  then its title, as a link to an issue reads (`RefLink`), and any other target's name.
+ *  Undefined where it names none. */
+function standingName(
+  route: DispatchReferenceRoute,
+  answer: ReferenceName | undefined
+): string | undefined {
   const name = answer?.name;
-  return name === undefined || answer?.key === undefined ? name : `${answer.key} ${name}`;
+  return name === undefined || route.kind !== "issue" ? name : `${route.key} ${name}`;
 }
 
 /** What a caller knows of the references a projected text writes: what each one resolved to
@@ -596,12 +599,21 @@ export interface ReferenceNaming {
 export const NO_REFERENCE_NAMING: ReferenceNaming = { names: new Map() };
 
 /** What one text of a document projects to: its words, the `dispatch://` reference of every
- *  reference it read outside code and a link's words, and whether it holds a `#id`, which only a
- *  question map resolves. */
+ *  reference it read outside code and a link's words, those of them it wrote a name for in place
+ *  of the words their author wrote, and whether it holds a `#id`, which only a question map
+ *  resolves. */
 interface ProjectedText {
   readonly words: string;
   readonly addresses: readonly string[];
+  readonly named: readonly string[];
   readonly questions: boolean;
+}
+
+/** Where one line's references are written as the projection reads them: every one it read
+ *  (`ProjectedText.addresses`), and those of them it wrote a name for. */
+interface LineReferences {
+  readonly addresses: string[];
+  readonly named: string[];
 }
 
 /** Whether a rendered body draws a reference to `route` by name at all (`RefLink.tsx`'s
@@ -658,36 +670,40 @@ export function citedReferences(
  * a rendered body draws the words of a link whose title has not resolved (`RefLink`). For a
  * caller that reads none of them (`ReferenceNaming.readsNone`), a `dispatch://` address reads as
  * its short form instead, and every other form as written. A reference the text's source does
- * not cite (`ReferenceNaming.cited`) is the words it is. Each reference read is added to `read`
- * by its `dispatch://` reference, an issue key's being its issue's.
+ * not cite (`ReferenceNaming.cited`) is the words it is. Each reference read is added to
+ * `references` by its `dispatch://` reference, an issue key's being its issue's, and among those
+ * named where a name was written in its place.
  */
 function nameReferences(
   text: string,
   naming: ReferenceNaming,
-  read: string[]
-): { named: string; questions: boolean } {
+  references: LineReferences
+): { words: string; questions: boolean } {
   const reading = readTextReferences(text, {
     origin: window.location.origin,
     questions: naming.questions,
   });
-  let named = "";
+  let words = "";
   let cursor = 0;
   for (const found of reading.references) {
     const target = candidateTarget(found, naming.projects);
     if (target === undefined || naming.cited?.has(target.reference) === false) {
       continue;
     }
-    read.push(target.reference);
-    const drawn =
+    references.addresses.push(target.reference);
+    const name =
       naming.readsNone === true
-        ? found.form === "address" && found.text.startsWith("dispatch://")
-          ? shortForm(target.route)
-          : found.text
-        : (standingName(naming.names.get(target.reference)) ?? found.text);
-    named += `${text.slice(cursor, found.start)}${drawn}`;
+        ? undefined
+        : standingName(target.route, naming.names.get(target.reference));
+    if (name !== undefined) references.named.push(target.reference);
+    const drawn =
+      naming.readsNone === true && found.form === "address" && found.text.startsWith("dispatch://")
+        ? shortForm(target.route)
+        : (name ?? found.text);
+    words += `${text.slice(cursor, found.start)}${drawn}`;
     cursor = found.end;
   }
-  return { named: named + text.slice(cursor), questions: reading.needs.questions };
+  return { questions: reading.needs.questions, words: words + text.slice(cursor) };
 }
 
 /**
@@ -699,14 +715,15 @@ function nameReferences(
  * `dispatch://` address reads as its short form, as the bare address does. Undefined where the
  * link reads as its words - an author's own words, words formatted in part or holding code or a
  * hard break, an address that names nothing, a target not yet read or that Dispatch answered has
- * no name - and the link's reference is added to `read` where it has one to read.
+ * no name - and the link's reference is added to `references` where it has one to read, and
+ * among those named where a name was written in place of its words.
  */
 function linkDrawn(
   href: string,
   words: string,
   formatting: WordsFormatting,
   naming: ReferenceNaming,
-  read: string[]
+  references: LineReferences
 ): string | undefined {
   const origin = window.location.origin;
   const route = wordsAreAddress(words, href)
@@ -725,12 +742,14 @@ function linkDrawn(
     return undefined;
   }
   const reference = buildDispatchReference(route);
-  read.push(reference);
+  references.addresses.push(reference);
   if (naming.readsNone === true && reads !== "mention") {
     return href.startsWith("dispatch://") ? shortForm(route) : undefined;
   }
   const answer = naming.names.get(reference);
-  return reads === "mention" ? answer?.mention : standingName(answer);
+  const name = reads === "mention" ? answer?.mention : standingName(route, answer);
+  if (name !== undefined) references.named.push(reference);
+  return name;
 }
 
 /** The link mark over a text node, if any. */
@@ -792,7 +811,7 @@ export function linkWordsAt(
 function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText[] {
   const lines: ProjectedText[] = [];
   let words = "";
-  let addresses: string[] = [];
+  let references: LineReferences = { addresses: [], named: [] };
   let questions = false;
   // Where the table row being read ends: a node that starts before it is one of its cells.
   let rowEnd = -1;
@@ -808,9 +827,9 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
       words += " ";
       return;
     }
-    lines.push({ addresses, questions, words });
+    lines.push({ ...references, questions, words });
     words = "";
-    addresses = [];
+    references = { addresses: [], named: [] };
     questions = false;
   };
   // A reference never spans a newline (`reference-spans.ts`), so each line of a text is named
@@ -828,8 +847,8 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
         words += line;
         continue;
       }
-      const named = nameReferences(line, naming, addresses);
-      words += named.named;
+      const named = nameReferences(line, naming, references);
+      words += named.words;
       questions ||= named.questions;
     }
   };
@@ -855,7 +874,7 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
         const written = linkWordsAt(parent, index, link);
         const drawn =
           typeof href === "string"
-            ? linkDrawn(href, written.words, written.formatting, naming, addresses)
+            ? linkDrawn(href, written.words, written.formatting, naming, references)
             : undefined;
         reading = { drawn: drawn !== undefined, link };
         write(position, drawn ?? text, false);
@@ -891,6 +910,7 @@ function plainWords(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
   const lines = plainLines(doc, naming);
   return {
     addresses: lines.flatMap((line) => line.addresses),
+    named: lines.flatMap((line) => line.named),
     questions: lines.some((line) => line.questions),
     words: lines.map((line) => line.words).join(" "),
   };
@@ -905,6 +925,7 @@ function firstLineOf(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTe
   return (
     plainLines(doc, naming).find((line) => line.words.trim() !== "") ?? {
       addresses: [],
+      named: [],
       questions: false,
       words: "",
     }
@@ -919,6 +940,10 @@ export interface MarkdownHeadline {
    *  them: a caller that resolves their names (`usePlainHeadline`) hands them back in `naming`,
    *  and one that does not ignores them. */
   readonly addresses: readonly string[];
+  /** Those of `addresses` the projection wrote a name for in place of the words their author
+   *  wrote (`naming`), in the order it wrote them: for a caller that draws a reference only once
+   *  it has a name, as a chip does. */
+  readonly named: readonly string[];
   /** Whether the projected text holds a `#id`, which only its document's question map names. */
   readonly questions: boolean;
 }
@@ -1003,7 +1028,13 @@ export function useMarkdownHeadline(
   return headline;
 }
 
-/** Whether two headlines read the same: the same words, cut alike, from the same references. */
+/** Whether two lists of references are the same, in the same order. */
+function sameReferences(one: readonly string[], other: readonly string[]): boolean {
+  return one.length === other.length && one.every((reference, at) => other[at] === reference);
+}
+
+/** Whether two headlines read the same: the same words, cut alike, from the same references,
+ *  named alike. */
 function sameHeadline(
   one: MarkdownHeadline | undefined,
   other: MarkdownHeadline | undefined
@@ -1013,8 +1044,8 @@ function sameHeadline(
     one.text === other.text &&
     one.cut === other.cut &&
     one.questions === other.questions &&
-    one.addresses.length === other.addresses.length &&
-    one.addresses.every((address, at) => other.addresses[at] === address)
+    sameReferences(one.addresses, other.addresses) &&
+    sameReferences(one.named, other.named)
   );
 }
 
@@ -1032,6 +1063,7 @@ function headlineOf(
   const cut = characters.length > max;
   return {
     addresses: projected.addresses,
+    named: projected.named,
     questions: projected.questions,
     cut,
     text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),

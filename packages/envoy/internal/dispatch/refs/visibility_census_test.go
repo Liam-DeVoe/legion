@@ -184,8 +184,6 @@ var readsWithoutAViewer = map[string]string{
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
 	"ListOwedAfter":    serverWork,
-	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
-	"NewReaderInScope": serverWork + " - the index-time resolver of a source whose row is only queued acts for no person, as NewReader's does",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -367,7 +365,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, _, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1", "")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -405,6 +403,18 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return err
 		})
 	}
+	// The index-time resolver resolves the short ids a text writes for that text's writer
+	// (Reader.Items, through ResolvePrefix), so each constructor's reader is asked one: the
+	// statement that resolves it is the read of the graph the census holds it to.
+	const shortComment = "See dispatch://CORE-1/comment/00000000."
+	record("NewReader", "NewReader's resolution of a short comment id", func() error {
+		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example").Mentions(shortComment)
+		return nil
+	})
+	record("NewReaderInScope", "NewReaderInScope's resolution of a short comment id", func() error {
+		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example", nil).Mentions(shortComment)
+		return nil
+	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
 	// is read are read here.
 	for _, kind := range []string{"ask", "comment", "message"} {

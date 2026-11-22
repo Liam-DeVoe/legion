@@ -24,7 +24,7 @@ import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * dispatch://INFRA-1152's browser rows of the one read, GET /api/v1/me/inbox.
+ * The browser rows of the one read, GET /api/v1/me/inbox.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.

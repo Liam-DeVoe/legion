@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -224,7 +225,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
-	read := readGraphEdgesArms(t, database)
+	read := readViewArms(t, database, "graph_edges")
 	t.Logf("graph_edges has %d arms:\n  %s", len(read), strings.Join(armReport(read), "\n  "))
 	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
 		t.Fatalf("graph_edges reads %v; this test declares %v.\nAn arm over a source column is a kind that would have to be moved twice: "+
@@ -234,7 +235,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	moved := append(movedArms(t, read, movedArmsDeletedBy, "", 4), movedArms(t, read, askArmsDeletedBy, inboxArmsMovedBy, 13)...)
 	stores := storeArms(t, read)
 	requireTheStatedArmsTestTheirRows(t, read)
-	createPreviousGraphEdges(t, database)
+	createViewFrom(t, database, previousGraphEdgesMigration, previousGraphEdges)
 
 	fixture := seedGraphEdgeFixture(t, database, service)
 	// The rows of one document are put back in the shape the release before this one left
@@ -529,22 +530,25 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 	return stores
 }
 
-// createPreviousGraphEdges creates previousGraphEdges from the statement of the migration that
-// last stated graph_edges before this child, over the same tables, so that what the release
-// before this one reads can be read beside what this one reads.
-func createPreviousGraphEdges(t *testing.T, database *store.Store) {
+// graphEdgesStatement opens every migration's statement of graph_edges, which each holds last.
+const graphEdgesStatement = "create or replace view graph_edges "
+
+// createViewFrom creates the view name from migration's statement of graph_edges, over the same
+// tables, so that what that statement reads can be read beside what graph_edges reads: the
+// release before this one's (previousGraphEdges), or each restatement of the view
+// (TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered).
+func createViewFrom(t *testing.T, database *store.Store, migration, name string) {
 	t.Helper()
-	migration, err := os.ReadFile(previousGraphEdgesMigration)
+	text, err := os.ReadFile(migration)
 	if err != nil {
-		t.Fatalf("read the previous release's view: %v", err)
+		t.Fatalf("read %s: %v", migration, err)
 	}
-	const statement = "create or replace view graph_edges "
-	_, view, found := strings.Cut(string(migration), statement)
+	_, view, found := strings.Cut(string(text), graphEdgesStatement)
 	if !found {
-		t.Fatalf("%s states no %q", previousGraphEdgesMigration, statement)
+		t.Fatalf("%s states no %q", migration, graphEdgesStatement)
 	}
-	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
-		t.Fatalf("create the previous release's view: %v", err)
+	if _, err := database.Pool.Exec(context.Background(), "create view "+name+" "+view); err != nil {
+		t.Fatalf("create %s from %s: %v", name, migration, err)
 	}
 }
 
@@ -858,17 +862,18 @@ func armReport(read []graphEdgesArm) []string {
 	return lines
 }
 
-// readGraphEdgesArms reads graph_edges out of the catalogue and answers one entry per arm, each
-// naming the relation that arm reads first and carrying the arm's own text. pg_get_viewdef's
-// pretty form puts every top-level UNION ALL on a line of its own and opens each arm's own FROM
-// at three spaces; an arm whose FROM opens a sub-select is named by the first relation inside
-// it, which the store's own arm reads under a `distinct on`.
-func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
+// readViewArms reads view, graph_edges or a view created beside it from another statement of it
+// (createViewFrom), out of the catalogue and answers one entry per arm, each naming the relation
+// that arm reads first and carrying the arm's own text. pg_get_viewdef's pretty form puts every
+// top-level UNION ALL on a line of its own and opens each arm's own FROM at three spaces; an arm
+// whose FROM opens a sub-select is named by the first relation inside it, which the store's own
+// arm reads under a `distinct on`.
+func readViewArms(t *testing.T, database *store.Store, view string) []graphEdgesArm {
 	t.Helper()
 	var definition string
 	if err := database.Pool.QueryRow(context.Background(),
-		`select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
-		t.Fatalf("read the graph_edges definition: %v", err)
+		`select pg_get_viewdef($1::regclass, true)`, view).Scan(&definition); err != nil {
+		t.Fatalf("read the %s definition: %v", view, err)
 	}
 	var arms []graphEdgesArm
 	for index, text := range strings.Split(strings.TrimSuffix(strings.TrimRight(definition, "\n"), ";"), "\nUNION ALL\n") {
@@ -881,7 +886,7 @@ func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
 			}
 			fields := strings.Fields(rest)
 			if len(fields) == 0 {
-				t.Fatalf("arm %d of graph_edges names no relation after its FROM: %q", index+1, line)
+				t.Fatalf("arm %d of %s names no relation after its FROM: %q", index+1, view, line)
 			}
 			relation = fields[0]
 			if relation == "(" {
@@ -890,7 +895,7 @@ func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
 			break
 		}
 		if relation == "" {
-			t.Fatalf("arm %d of graph_edges has no FROM of its own:\n%s", index+1, text)
+			t.Fatalf("arm %d of %s has no FROM of its own:\n%s", index+1, view, text)
 		}
 		arms = append(arms, graphEdgesArm{relation: relation, text: text})
 	}
@@ -975,8 +980,8 @@ func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Sto
 	t.Helper()
 	// The arm table declares a kind for each node kind the registry resolves and for no other, so
 	// its kinds are the node kinds this build reads, the list refs binds where the statement
-	// binds $3.
-	kinds := refs.BacklinkKinds()
+	// binds $3, read from refstest's copy of the table's keys, which refs' own test holds to it.
+	kinds := refstest.BacklinkKinds()
 	counts := make(map[string]map[string]int, len(kinds))
 	for _, kind := range kinds {
 		ids := backlinkTargets(t, database, kind)
@@ -1583,14 +1588,14 @@ const graphEdgeItemCitation = ", after dispatch://CORE-2"
 const graphEdgeServer = "https://dispatch.example"
 
 // indexItemAsThisBuild indexes the body of a comment or a message in its write's transaction, as
-// this build's writers do, from one reading of the body: its blocks and their links
-// (refs.IndexItem) and the item's citations (planReplacement, refs.PlanItemReplace), both dated
-// by the item's own moment, then what that states in the store under the write's event, the
-// sentinel here.
-func indexItemAsThisBuild(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body string, at time.Time) {
+// this build's writers do, from one reading of the body for author, who wrote it: its blocks and
+// their links (refs.IndexItem) and the item's citations (planReplacement, refs.PlanItemReplace),
+// both dated by the item's own moment, then what that states in the store under the write's
+// event, the sentinel here.
+func indexItemAsThisBuild(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body string, author model.Actor, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	located := refs.NewReader(ctx, tx, string(kind), id, graphEdgeServer).Mentions(body)
+	located := refs.NewReader(ctx, tx, author, string(kind), id, graphEdgeServer).Mentions(body)
 	_, indexed, err := refs.IndexItem(ctx, tx, kind, id, body, graphEdgeServer, at, located, nil)
 	if err != nil {
 		t.Fatalf("index the blocks of the %s %q: %v", kind, body, err)
@@ -1660,7 +1665,7 @@ func writeMessageAsThisBuild(t *testing.T, database *store.Store, inReplyTo, rep
 	`, id, issueKey, body, replyTo, replyToBlock, at, graphstore.KindMessage, id); err != nil {
 		t.Fatalf("write the message %q: %v", body, err)
 	}
-	indexItemAsThisBuild(t, tx, refs.ItemMessage, id, body, at)
+	indexItemAsThisBuild(t, tx, refs.ItemMessage, id, body, author, at)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the message %q: %v", body, err)
 	}
@@ -1716,7 +1721,7 @@ func writeCommentAsThisBuild(t *testing.T, database *store.Store, pointers graph
 		graphstore.KindComment, at); err != nil {
 		t.Fatalf("write the comment %q: %v", body, err)
 	}
-	indexItemAsThisBuild(t, tx, refs.ItemComment, id, body, at)
+	indexItemAsThisBuild(t, tx, refs.ItemComment, id, body, author, at)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the comment %q: %v", body, err)
 	}
@@ -1759,7 +1764,7 @@ func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) s
 	`, id, issueKey, question, at, nodeKind, nodeAddress); err != nil {
 		t.Fatalf("write the ask %q: %v", question, err)
 	}
-	reader := refs.NewReader(ctx, tx, "ask", id, graphEdgeServer)
+	reader := refs.NewReader(ctx, tx, author, "ask", id, graphEdgeServer)
 	changes, writeRefs, cited, err := planAskReferences(ctx, tx, reader, id, question, nil)
 	if err != nil {
 		t.Fatalf("index the question of the ask %q: %v", question, err)
@@ -1786,9 +1791,10 @@ func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) s
 
 // writeVersionAsAnOlderBuild replaces the document's live text with markdown and writes the
 // version a build without the block index wrote: the version row, the artifact.version event
-// that recorded it, and the settlement cleared. The trigger of migration 0122 leaves the
-// document owed a block index, and the tick indexes it, which is the one path in this package
-// that states a version's blocks and links in the store.
+// that recorded it, whose seq it takes off the issue's own counter as events.Append does
+// (documentEvent), and the settlement cleared. The trigger of migration 0122 leaves the document
+// owed a block index, and the tick indexes it, which is the one path in this package that states a
+// version's blocks and links in the store.
 func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, artifactID, name, markdown string) {
 	t.Helper()
 	ctx := context.Background()
@@ -1811,14 +1817,7 @@ func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Se
 	`, artifactID, live).Scan(&number); err != nil {
 		t.Fatalf("write the version of %s: %v", artifactID, err)
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', $3::text, 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-	`, artifactID, number, name); err != nil {
-		t.Fatalf("append the version's event: %v", err)
-	}
+	appendDocumentEvent(t, ctx, tx, "artifact.version", versionEventPayload(t, artifactID, name, number))
 	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, artifactID); err != nil {
 		t.Fatalf("settle %s: %v", artifactID, err)
 	}
@@ -1868,7 +1867,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
-	read := readGraphEdgesArms(t, database)
+	read := readViewArms(t, database, "graph_edges")
 	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
 		t.Fatalf("graph_edges reads %v; this test declares %v", armRelations(read), want)
 	}
@@ -1876,7 +1875,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	moved := append(movedArms(t, read, movedArmsDeletedBy, "", 4), asked...)
 	firstAsked := len(moved) - len(asked)
 	stores := storeArms(t, read)
-	createPreviousGraphEdges(t, database)
+	createViewFrom(t, database, previousGraphEdgesMigration, previousGraphEdges)
 
 	fixture := seedAskArmsFixture(t, database, service)
 	before := readEachArm(t, database, "before the backfill", moved, stores)

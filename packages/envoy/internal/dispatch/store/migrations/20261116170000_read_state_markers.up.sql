@@ -1,7 +1,7 @@
 -- 20261116170000_read_state_markers.up.sql
 --
 -- The five read-state tables other than user_threads learn since when the node and tuple store
--- holds the mark their row says (INFRA-1152's D4 and R6): user_agent_read, user_agent_state,
+-- holds the mark their row says (this child's D4 and R6): user_agent_read, user_agent_state,
 -- user_agent_reply_read, user_agent_thread_dismissed and user_ask_snooze each take
 --   tuples_stored_at   the moment of the mark the store holds for the row, which is its tuple's
 --                      own moment, set by the statement of this release's writer that writes the

@@ -298,13 +298,9 @@ func leftBy(held heldAnswer, ask model.Ask, tuples []graphstore.Tuple) heldAnswe
 // in it is refused with ErrStateMoved as the batch reads the update's result, which stops the
 // write phase there.
 func (s Settled) Queue(b *store.WriteBatch) error {
-	if err := graphstore.QueueNodes(b, s.Held); err != nil {
-		return fmt.Errorf("state the answer of ask %s: %w", s.askID, err)
-	}
+	graphstore.QueueNodes(b, s.Held)
 	if s.change.Held == nil {
-		if err := graphstore.QueueCaused(b, s.Held, s.change.Event); err != nil {
-			return fmt.Errorf("state the answer of ask %s: %w", s.askID, err)
-		}
+		graphstore.QueueCaused(b, s.Held, s.change.Event)
 	}
 	// The point a test injects a failure through between the answer's tuples and the asks row
 	// that projects them (failpoint.AskAnswer), for an answer this release's writer writes.

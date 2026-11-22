@@ -34,10 +34,9 @@ func TestAnAttemptPastInt4IsRefusedNotWrapped(t *testing.T) {
 				t.Fatalf("begin: %v", err)
 			}
 			err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-				if err := QueueWrite(b, nil, []Tuple{marker}); err != nil {
-					return err
-				}
-				return QueueAttempted(b, AttemptWriter, NoEvent, key)
+				QueueWrite(b, nil, []Tuple{marker})
+				QueueAttempted(b, AttemptWriter, NoEvent, key)
+				return nil
 			})
 			if err == nil {
 				if err := tx.Commit(ctx); err != nil {

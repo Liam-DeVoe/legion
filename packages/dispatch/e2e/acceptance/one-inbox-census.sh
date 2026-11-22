@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# c-census (dispatch://INFRA-1152/artifact/verification-md#b-c-census): the child's census, run
+# The check c-census: the child's census, run
 # over a corpus half of which a build of the release before this one wrote.
 #
 # It starts a `nats-server -js` of its own under $TMPDIR, so the outbox publishes and
@@ -18,8 +18,8 @@
 # One PASS: line per assertion, with the counts and digests it read; every section runs whatever an
 # earlier one found; the run exits 1 at the end when any assertion failed, 2 on a missing input.
 #
-# The mention arm (a comment that points at a person) is dispatch://INFRA-1152's T13, which waits
-# on the person address of dispatch://INFRA-1702. Until that writer lands this driver's mention
+# The mention arm (a comment that points at a person) is the plan's T13, which waits on the
+# person address of the identity-address grammar. Until that writer lands this driver's mention
 # arm fails, naming that cause, and the comment_mentions census entry it proves is not written
 # either.
 set -euo pipefail
@@ -398,7 +398,7 @@ seed_half() {
     "{\"read_through\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" "$half: Mark all read" >/dev/null || true
 
   # The mention arm: a comment that points at a person, a role and a session. The person half is
-  # dispatch://INFRA-1152's T13, which waits on dispatch://INFRA-1702's person address; until it
+  # the plan's T13, which waits on the identity-address grammar's person address; until it
   # lands this arm is refused, and this driver says so.
   if [[ -n "${comment:-}" && "$comment" != null ]]; then
     expect 201 POST "/api/v1/issues/$issue/comments" \
@@ -410,11 +410,11 @@ seed_half() {
     if [[ "$status" == "201" ]]; then
       pass "$half: a comment that points at a person, a role and a session was stored"
     else
-      fail "$half: a comment that points at a person answered $status: the mention tuples are dispatch://INFRA-1152's T13, which waits on the person address of dispatch://INFRA-1702 ($(head -c 200 "$work/mention-$half.json"))"
+      fail "$half: a comment that points at a person answered $status: the mention tuples are the plan's T13, which waits on the person address of the identity-address grammar ($(head -c 200 "$work/mention-$half.json"))"
     fi
   fi
   # A document of the project's own, whose body cites the issue, so this run writes the blocks and
-  # the block links dispatch://INFRA-1149's census covers; and a role the issue is routed to, so
+  # the block links the node store's census covers; and a role the issue is routed to, so
   # its role and its page are nodes the publisher writes.
   expect 201 POST "/api/v1/projects/$project/artifacts" \
     "{\"name\":\"census-$half.md\",\"content\":\"# The $half half\\n\\nA passage citing dispatch://$issue.\\n\"}" \

@@ -488,7 +488,7 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 		agentThreadDismissal(t, database, "alice", seed.agent))
 }
 
-// A person's own reply under an Agent thread dismisses it for them (dispatch://INFRA-4948 R1), so
+// A person's own reply under an Agent thread dismisses it for them (the own-answer rule, R1), so
 // it takes the thread's root `for update` before its own insert and only then writes the person's
 // user_agent_thread_dismissed row: the root and then the row, the order a Dismiss of that root
 // takes them in (steps 2 and 4 of the lock order on markInboxReadThreads, D6). So the reply and a

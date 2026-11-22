@@ -13,9 +13,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// inboxCensus is a database the census of dispatch://INFRA-1152 is read over: the project CENS
+// inboxCensus is a database the census of the one inbox is read over: the project CENS
 // and its issue CENS-1, whose events each test appends through the broker as a write appends
 // them, and whose nodes, tuples and projection rows each test states directly, as the writers
 // would leave them, so each rule of the census is read over exactly the state it is about.
@@ -112,7 +113,7 @@ func (f *inboxCensus) newest(t *testing.T) int64 {
 // census takes the store census and logs what it printed.
 func (f *inboxCensus) census(t *testing.T, when string) (*StoreReport, string) {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), f.writes.database.Pool.Config().ConnString(), false)
+	report, err := StoreCensus(context.Background(), f.writes.database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census %s: %v", when, err)
 	}
@@ -598,7 +599,7 @@ func TestTheCensusSnapshotIsBoundedByItsDeadline(t *testing.T) {
 	f := newInboxCensus(t)
 	ctx := context.Background()
 	url := f.writes.database.Pool.Config().ConnString()
-	conn, err := connect(ctx, url, applicationName)
+	conn, err := store.Connect(ctx, url, applicationName)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -634,7 +635,7 @@ func TestTheCensusSnapshotIsBoundedByItsDeadline(t *testing.T) {
 	short, stop := context.WithTimeout(ctx, 3*time.Second)
 	defer stop()
 	started := time.Now()
-	_, err = StoreCensus(short, url, false)
+	_, err = StoreCensus(short, url, false, nil)
 	var pgErr *pgconn.PgError
 	switch {
 	case err == nil:

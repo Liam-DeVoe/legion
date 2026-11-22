@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -162,14 +163,20 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
+	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
+	// as New sets it: the rule its marks, its event cursor and its index passes carry
+	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run
+	// a build of that rule beside this one.
+	markingRule int
 	// eventHorizon is the event log's safe horizon the block-index tick reads, which
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
-	// objectPassFinished is when this process's last object pass finished with nothing left, in
-	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
-	// owes the pass on the process's first tick and once objectPassInterval has passed since
-	// (readEventsAfterCursor).
+	// objectPassFinished is when this process's last object pass that a cursor row records
+	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
+	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
+	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
+	// before any horizon is proven (rollNow) does not set it.
 	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
@@ -569,20 +576,26 @@ type Service struct {
 	hostname string
 }
 
+// artifactOwner is a document's owner as lockArtifactOwner reads it. Retired is whether the
+// document is retired (artifacts.retired_at, RetireDocument), read in the statement after the
+// owner's lock, which the retirement takes too: a writer that holds the lock reads a retirement
+// that committed before it, and no retirement commits until the writer's transaction ends.
 type artifactOwner struct {
 	IssueKey *string
 	Project  string
 	Slug     string
 	Name     string
+	Retired  bool
 }
 
 // lockArtifactOwner loads an artifact's owner, then takes that owner's lock (store.LockOwner): the
 // artifact itself for a project document, its issue otherwise. The lock is a transaction advisory
 // lock, so it serialises this writer against every other writer of the owner without taking a row
 // lock, and so without giving the transaction a transaction id or blocking the `for key share` a
-// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open is
-// read in the statement after the lock, sent with it (store.LockOwnerAndRead), so a close committed
-// while this waited is seen.
+// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open,
+// and whether the document is retired (artifactOwner.Retired), are read in the statement after
+// the lock, sent with it (store.LockOwnerAndRead), so a close or a retirement committed while this
+// waited is seen.
 func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, bool, error) {
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
@@ -593,16 +606,17 @@ func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artif
 	}
 	if owner.IssueKey == nil {
 		if err := store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(artifactID), `
-			select true from artifacts where id = $1 and issue_key is null
-		`, []any{artifactID}, new(bool)); err != nil {
+			select retired_at is not null from artifacts where id = $1 and issue_key is null
+		`, []any{artifactID}, &owner.Retired); err != nil {
 			return artifactOwner{}, false, fmt.Errorf("lock and read document artifact: %w", err)
 		}
 		return owner, true, nil
 	}
 	var open bool
 	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(*owner.IssueKey), `
-		select closed_at is null from issues where key = $1
-	`, []any{*owner.IssueKey}, &open); err != nil {
+		select i.closed_at is null, a.retired_at is not null
+		from issues i, artifacts a where i.key = $1 and a.id = $2
+	`, []any{*owner.IssueKey, artifactID}, &open, &owner.Retired); err != nil {
 		return artifactOwner{}, false, fmt.Errorf("lock and read document issue: %w", err)
 	}
 	return owner, open, nil
@@ -915,6 +929,7 @@ func New(deps Deps) *Service {
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		buildCommit:       deps.BuildCommit,
+		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,

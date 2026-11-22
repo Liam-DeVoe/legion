@@ -413,6 +413,13 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
+ *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
+ *  the Decisions tab reads them. */
+export function getIssueDecisions(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
@@ -654,13 +661,6 @@ export function createAsk(
 /** Every ask on the issue, whatever its state (the route's default `state=all`). */
 export function listIssueAsks(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
-}
-
-/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
- *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
- *  the Decisions tab reads them. */
-export function getIssueDecisions(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/decisions", { params: { key: issue } }, options);
 }
 
 export function createProjectDocument(

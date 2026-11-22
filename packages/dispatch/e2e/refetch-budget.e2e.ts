@@ -96,7 +96,9 @@ async function until(at: number): Promise<void> {
  *  `MIN_REFETCH_INTERVAL_MS` after the fetch before it (`web/src/api/query-refresh.ts`), a page
  *  timer, so the page's clock fires it at once rather than the row waiting that long; `settled`
  *  then waits out whatever it sent. A read the page sends late is still counted, and one it never
- *  owed cannot appear. */
+ *  owed cannot appear. Each window also opens with it: the barrier's own write lands within a
+ *  second of the page's first reads, so the refresh it owes waits for the interval, longer than
+ *  `settled`'s quiet, and would otherwise be sent inside the window it does not belong to. */
 async function drainRefreshWindow(page: Page, traffic: Traffic): Promise<void> {
   await page.clock.runFor(MIN_REFETCH_INTERVAL_MS);
   await settled(traffic);
@@ -262,7 +264,7 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
       turns.getByRole("link", { exact: true, name: `dispatch://agent/${neverHeld}` })
     ).toHaveCount(0);
     await eventBarrier(page, traffic, source.key, source.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     // The page asked about every session the registry does not list in one read, whatever their
     // number: three here.
     expect(
@@ -416,7 +418,7 @@ test("pin: a pin from another tab shows in this tab's sidebar within 2 s with on
     const navigation = page.getByRole("navigation", { name: "Navigation" });
     await expect(navigation.locator('a[href="/projects/CORE"]')).toBeVisible();
     const title = await eventBarrier(page, traffic, issue.key, issue.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     pinnedReads = 0;
 
     // The other tab: alice's own write through the API, which this page did not make.
@@ -462,7 +464,7 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
     await page.goto(`/issues/${strangers.key}/conversation`);
     const title = await eventBarrier(page, traffic, strangers.key, strangers.title);
     await expect(inboxCount).toHaveText(inboxCountText(0));
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     oneReadReads = 0;
 
     await createComment(
@@ -536,7 +538,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     // the one on her other issue.
     await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
     const title = await eventBarrier(page, traffic, open.key, open.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     traffic.reset();
     inboxReads = 0;
 
@@ -599,7 +601,7 @@ test("project default: a project's default moved between two other people reads 
     await page.goto(`/issues/${open.key}`);
     await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
     let title = await eventBarrier(page, traffic, open.key, open.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
 
     // Each write, made by its project's default as themself: the route takes a person, and the
     // default it moves is the last step of the chain that decides who a question reaches.
@@ -712,7 +714,7 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
         { intervals: [0], timeout: 30_000 }
       )
       .toBe(true);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     listReads = 0;
 
     const startedAt = Date.now();
@@ -797,7 +799,7 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
         { intervals: [0], timeout: 30_000 }
       )
       .toBe(true);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     projectReads = 0;
 
     // Rows are virtualized, so the window's own first row is the one a title change is read

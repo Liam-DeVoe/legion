@@ -1,17 +1,8 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { IssueDecisions } from "../web/src/api/types";
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import {
-  baseUrl,
-  createAsk,
-  createIssue,
-  createIssueArtifact,
-  createProject,
-  patchIssue,
-  userHeaders,
-} from "./api";
+import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
 import { listTrigger } from "./filters";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
@@ -298,18 +289,6 @@ export async function labelFillingTheRoom(page: Page, under: number): Promise<st
 /** The count of what waits on the reader, or whose turn it is when nothing waits. */
 export function waitingCount(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-whose-turn");
-}
-
-/** The issue's decisions as the server reads them for alice, each with `waiting_review`
- *  (`GET /api/v1/issues/{key}/decisions`). `e2e/api.ts` wraps no read of the route, so this is a
- *  plain fetch with her sign-in, as `e2e/bare-references.e2e.ts` reads an issue. */
-export async function issueDecisions(key: string): Promise<IssueDecisions> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
-  const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
-  if (!response.ok) {
-    throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
-  }
-  return (await response.json()) as IssueDecisions;
 }
 
 /** Details, the drawer over the right of the page. */

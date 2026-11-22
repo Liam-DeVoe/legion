@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -110,6 +111,52 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 	for _, name := range storedAskAttributes() {
 		if value, held := block.Attrs[name]; held {
 			t.Errorf("on a fleet of one build the block that fails the strict read keeps %s=%v in the live tree, want none of the seven", name, value)
+		}
+	}
+}
+
+// On a fleet of one build a block that fails the strict read keeps of the seven attributes a
+// version can store only what a version keeps of its ask as the ask's node holds it (R10,
+// keptAskState): an answered ask's block a browser empties and forges another answerer onto keeps
+// its node's state, answerer and time, and the forged answerer does not come back; a block no ask
+// row backs keeps none of the seven, whatever it claims.
+func TestABlockThatFailsTheStrictReadKeepsOnlyWhatItsAsksNodeHolds(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, ":::ask{#ship urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
+	settleCurrentGeneration(t, service, artifactID)
+	ask := blockAskOn(t, service, artifactID, "ship")
+	answerAskOnItsNode(t, service, ask.ID, model.AskAnswer{User: "alice", Selected: []string{"Ship"}, At: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)})
+	settleCurrentGeneration(t, service, artifactID)
+
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		tree = withAskQuestion(t, "ship", "")(tree)
+		block := blockByID(tree, "ship")
+		block.Attrs["answered_by"], block.Attrs["selected"] = "mallory", []any{"Hold"}
+		tree.Children = append(tree.Children, &pmdoc.Node{
+			Type: "ask",
+			Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: "rowless", "urgency": "low", "multiple": false,
+				"state": "answered", "answered_by": "mallory", "answered_at": "2026-11-20T09:00:00Z"},
+			Children: []*pmdoc.Node{{Type: "paragraph", Attrs: pmdoc.Attrs{}}},
+		})
+		return tree
+	})
+	settleCurrentGeneration(t, service, artifactID)
+	live := liveTree(t, service, artifactID)
+	block := blockByID(live, "ship")
+	if got := block.Attrs["invalid"]; got != `ask block "ship" has an empty question` {
+		t.Fatalf("the emptied block's invalid = %#v, want its reason", got)
+	}
+	want := pmdoc.Attrs{"state": "answered", "answered_by": "alice", "answered_at": "2026-11-20T09:00:00Z"}
+	for _, name := range storedAskAttributes() {
+		if got, held := block.Attrs[name]; got != want[name] || held != (want[name] != nil) {
+			t.Errorf("the emptied answered block holds %s=%#v (held %v), want %#v from its ask's node", name, got, held, want[name])
+		}
+	}
+	rowless := blockByID(live, "rowless")
+	for _, name := range storedAskAttributes() {
+		if value, held := rowless.Attrs[name]; held {
+			t.Errorf("the block no ask row backs keeps %s=%v, want none of the seven", name, value)
 		}
 	}
 }

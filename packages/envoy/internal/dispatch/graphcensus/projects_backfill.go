@@ -528,9 +528,10 @@ func derefText(value *string) string {
 // (graphstore.ErrProjectMoved), which is a difference for the census to report rather than for
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
-// ascending id, in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused
-// and then graphstore.Caused under that cause, and the report counts the tuples the store appended
-// for those runs (graphstore.Counting).
+// ascending id, in runs of consecutive nodes of one cause, each run's nodes queued as one write
+// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.Caused
+// under that cause, and the report counts the tuples the store appended for those runs
+// (graphstore.Counting).
 //
 // The batch was read before this transaction opened, and a removal may commit in between: a node
 // written live then would stand behind no row. So for a kind a writer deletes rows of
@@ -617,7 +618,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			run := write[start:end]
 			// A node a writer left standing for an earlier row is stated gone and then live by
 			// the run's own tuples, both under its cause: one node write of the node in this
-			// transaction leaves one mark on its row (graphstore's nodeMark), so a second write of
+			// transaction leaves one mark on its row (graphstore's nodeMarks), so a second write of
 			// it would lose the first's statement, and the node write then states no state of its
 			// own beside them.
 			var stated []graphstore.Tuple
@@ -626,12 +627,18 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 					stated = append(stated, stateTuple(statement), stateTuple(node))
 				}
 			}
-			made, err := graphstore.WriteUncaused(ctx, tx, run, stated)
-			if err != nil {
+			// PlanUncaused sets each node's SourceEvent to the sentinel where it stands, so the
+			// run's one cause (the loop above grouped the nodes by it) is read before it.
+			cause := run[0].SourceEvent
+			made := graphstore.PlanUncaused(run, stated)
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, made)
+				return nil
+			}); err != nil {
 				return err
 			}
 			var appended int64
-			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), run[0].SourceEvent); err != nil {
+			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), cause); err != nil {
 				return err
 			}
 			written.Tuples += appended

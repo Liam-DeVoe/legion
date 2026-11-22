@@ -131,13 +131,17 @@ async function typeIntoPlanner(user: UserEvent, words: string) {
   return { field, row };
 }
 
+/** The rail's line naming who is signed in, matched on its own text, which leaves the login out. */
+const SIGNED_IN_LINE = /^Signed in as$/;
+
 /** Every person the shell is drawn for, in order, as its rail names them (`Signed in as`). The
  *  page is read each time its DOM changes, so a shell drawn and replaced between two steps of a
- *  test is named too. `names` gives them space-separated. */
+ *  test is named too. `names` gives them space-separated. The rail draws the login as a link, so
+ *  the line's own text is `Signed in as` (SIGNED_IN_LINE) and its whole text names the person. */
 function shellsDrawn() {
   const logins: string[] = [];
   const read = () => {
-    for (const line of screen.queryAllByText(/^Signed in as/)) {
+    for (const line of screen.queryAllByText(SIGNED_IN_LINE)) {
       const login = (line.textContent ?? "").replace(/^Signed in as /, "");
       if (logins.at(-1) !== login) logins.push(login);
     }
@@ -221,7 +225,7 @@ async function olderCheckAnswersLast(queryClient: QueryClient): Promise<void> {
     // The page settles on whoever its check names. A page that waits on the older check draws
     // alice here, and under Dispatch's client asks again once that check lands and draws bob
     // after her, which the settle below lets run before the shell is read.
-    await screen.findByText(/^Signed in as/);
+    await screen.findByText(SIGNED_IN_LINE);
     await act(settle);
     expect(shells.names()).toBe("bob");
     expect(asked).toBe(2);

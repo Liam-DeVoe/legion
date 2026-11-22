@@ -11,6 +11,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -131,12 +135,59 @@ func approveAndCapture(t *testing.T, ctx context.Context, p *dispatchProcess, da
 	return approvedDocument{name: label, issue: issue, id: artifactID, version: number, markdown: markdown, review: string(review)}
 }
 
-// One version whose only change is the removal of the server-owned ask attributes carries a
-// person's approval, and nothing wider does (c-attribute-removal). The
-// base release writes the documents and a person approves them; this head writes a document
-// holding a reading; the base release serves again beside this head and leaves that document be;
-// while both serve, the roll window keeps the attributes; once the base release is gone, the first
-// write to each document drops them and carries its approval, and every wider write supersedes.
+// reviewHash is a review and the digest it holds of the bytes it approved, content_sha256: the
+// insert's trigger takes it of the version's stored markdown (artifact_version_text_sha256,
+// migration 20261105084017), and no statement moves it after.
+type reviewHash struct {
+	review, hash string
+}
+
+// reviewHashOf is the review the person gave of document, read off the answer captured with it, and
+// the digest that review holds now.
+func reviewHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, document approvedDocument) reviewHash {
+	t.Helper()
+	var answered struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(document.review), &answered); err != nil || answered.ID == "" {
+		t.Fatalf("read the review of %s back: %v: %s", document.name, err, document.review)
+	}
+	held := reviewHash{review: answered.ID}
+	if err := database.QueryRow(ctx, `select coalesce(content_sha256, '') from artifact_reviews where id = $1::uuid`, held.review).Scan(&held.hash); err != nil {
+		t.Fatalf("read the hash of the review %s of %s: %v", held.review, document.name, err)
+	}
+	return held
+}
+
+// textHash is the sha256 of markdown's UTF-8 bytes in hex, as artifact_version_text_sha256 takes it
+// of a stored version.
+func textHash(markdown string) string {
+	sum := sha256.Sum256([]byte(markdown))
+	return hex.EncodeToString(sum[:])
+}
+
+// versionHashOf is the digest the store takes now of the bytes the version number of document holds
+// (artifact_version_text_sha256), and the hash its newest review there holds (docs.ReviewOrder).
+func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, document string, number int) (stored, reviewed string) {
+	t.Helper()
+	if err := database.QueryRow(ctx, `
+		select coalesce(artifact_version_text_sha256($1::uuid, $2), ''),
+		       coalesce((select content_sha256 from artifact_reviews where artifact_id = $1::uuid and version = $2
+		                 order by `+docs.ReviewOrder+` limit 1), '')
+	`, document, number).Scan(&stored, &reviewed); err != nil {
+		t.Fatalf("read the hashes of version %d of %s: %v", number, document, err)
+	}
+	return stored, reviewed
+}
+
+// One version whose only change is in the server-owned ask attributes carries a person's
+// approval, and nothing wider does (c-attribute-removal). The base release writes the documents, a
+// person approves them and an agent requests approval of one; this head writes a document holding
+// a reading; the base release serves again beside this head and leaves that document be; while
+// both serve, the roll window keeps the attributes; once the base release is gone, the first write
+// to each document cuts them to the form R10 keeps and carries its approval, an answer keeps an
+// approval request's turn, a copy of an open ask keeps every carry and every turn, and every wider
+// write supersedes.
 func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
@@ -160,8 +211,16 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		"op": "insert", "after": "end", "markdown": ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nShare the source?\n\n- Share: Now.\n- Keep: Later.\n:::\n",
 	}}}), http.StatusOK)
 	answerAsk(t, previous, blockAskOf(t, previous, issue, "decided-one"), "Ship", "Ship one now.")
-	second := uploadedID(t, uploadDocument(t, previous, issue, "lonely.md", "# Lonely\n\nA line of prose.\n\n:::ask{#lonely urgency=\"med\" multiple=\"false\"}\nIs it lonely?\n\n- Yes: It is.\n- No: It is not.\n:::\n"))
-	blockAskOf(t, previous, issue, "lonely")
+	second := uploadedID(t, uploadDocument(t, previous, issue, "lonely.md", "# Lonely\n\nA line of prose.\n\n"+lonelyAsk))
+	lonelyAskID := blockAskOf(t, previous, issue, "lonely")
+	// The fifth and the sixth document: two open asks of each one's own and a copy of the second
+	// document's open ask, which the base release settles as a copy, open, naming its source.
+	fifth := uploadedID(t, uploadDocument(t, previous, issue, "fifth.md", copyingDocument("fifth")))
+	sixth := uploadedID(t, uploadDocument(t, previous, issue, "sixth.md", copyingDocument("sixth")))
+	for _, name := range []string{"fifth", "sixth"} {
+		blockAskOf(t, previous, issue, name+"-a")
+		blockAskOf(t, previous, issue, name+"-b")
+	}
 	superseding := make([]string, 5)
 	for index := range superseding {
 		name := fmt.Sprintf("s%d", index+1)
@@ -193,8 +252,35 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	for index, id := range superseding {
 		captured[index] = approveAndCapture(t, ctx, previous, database, issue, id, fmt.Sprintf("superseding document %d", index+1))
 	}
+	// The person approves the fifth document; an agent asks the person to approve the sixth, which
+	// no approval stands on, so the request waits on the person. Both hold the copy the base
+	// release settled open, naming its source.
+	five := approveAndCapture(t, ctx, previous, database, issue, fifth, "the fifth document")
+	settledDocument(t, ctx, previous, database, sixth)
+	sixthBase, sixthBaseText := latestMarkdown(t, previous, sixth)
+	for _, read := range []struct{ what, markdown string }{{five.name, five.markdown}, {"the sixth document", sixthBaseText}} {
+		if copied := copyOpenerOf(read.markdown); !strings.Contains(copied, `state="open"`) || !strings.Contains(copied, `copied_from="`+lonelyAskID+`"`) || !strings.Contains(copied, ` copied_from_document="`) {
+			t.Fatalf("the base release's %s holds the copy %q, want it open, naming its source ask %s and that ask's document", read.what, copied, lonelyAskID)
+		}
+	}
+	sixthRequest := openedRequestID(t, asAgentSession(t, previous, http.MethodPost, "/api/v1/artifacts/"+sixth+"/approval-requests", map[string]any{}, http.StatusCreated))
+	if request := approvalRequestOf(t, previous, sixthRequest); !request.waitsOnThePersonAt(sixthBase) {
+		t.Fatalf("the sixth document's request reads %s through the base release, want it waiting on the person at version %d", request, sixthBase)
+	}
 	t.Logf("the base release %s wrote the documents; the person approved the first at version %d and the second at version %d; reviews %s %s",
 		baseCommit, one.version, two.version, one.review, two.review)
+	// The review's hash, captured before this branch boots: the digest the base release's store
+	// took of the bytes the person approved, which is the digest of the markdown captured.
+	approvedHashes := map[string]reviewHash{}
+	for _, document := range []approvedDocument{one, two} {
+		approved := reviewHashOf(t, ctx, database, document)
+		if approved.hash == "" || approved.hash != textHash(document.markdown) {
+			t.Fatalf("the base release's review %s of %s holds the hash %q, want the sha256 of the markdown the person approved, %s",
+				approved.review, document.name, approved.hash, textHash(document.markdown))
+		}
+		approvedHashes[document.id] = approved
+		t.Logf("%s: the person's review %s holds the hash %s of the approved version %d", document.name, approved.review, approved.hash, document.version)
+	}
 	stopProcess(t, previous)
 
 	// This head writes a third document holding a reading inside an answered ask.
@@ -402,7 +488,13 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	})
 
 	// The fleet is this head alone: the first accepted write to each of the two documents - for the
-	// first, the agent's upload above - drops the attributes and carries the approval.
+	// first, the agent's upload above - cuts the attributes to the form R10 keeps and carries the
+	// approval.
+	sourceAddress := "dispatch://" + issue + "/artifact/" + sourceSlug
+	keptBlocks := map[string][]keptBlock{
+		one.id: {{"decided-one", blockAskOf(t, current, issue, "decided-one"), ""}, {"pending-one", blockAskOf(t, current, issue, "pending-one"), ""}, {"shared", blockAskOf(t, current, issue, "shared"), sourceAddress}},
+		two.id: {{"lonely", blockAskOf(t, current, issue, "lonely"), ""}},
+	}
 	for _, document := range []approvedDocument{one, two} {
 		before := newestReviewOf(t, current, document.id)
 		if before.State != "approved" {
@@ -414,11 +506,12 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		}
 		settledDocument(t, ctx, current, database, document.id)
 		number, rendering := latestMarkdown(t, current, document.id)
-		for _, opener := range askOpener.FindAllString(rendering, -1) {
-			if askServerAttribute.MatchString(opener) {
-				t.Errorf("%s's ask block still holds a server-owned attribute once the fleet is one build: %s", document.name, opener)
-			}
+		// Every ask block, the blocks nobody edited included, holds the form R10 keeps, each value
+		// as its ask's node holds it, and none holds the answer's words or selection.
+		for _, block := range keptBlocks[document.id] {
+			requireKeptForm(t, ctx, database, document.name+"'s version "+strconv.Itoa(number), rendering, block)
 		}
+		requireNoAnswerWords(t, document.name+"'s version "+strconv.Itoa(number), rendering)
 		approval := approvalOf(t, current, document.id)
 		carried := newestReviewOf(t, current, document.id)
 		// The carried review records the version the person approved, whatever carries stand
@@ -432,6 +525,97 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		t.Logf("%s: the approved markdown without the eight is %d bytes, the new rendering %d", document.name, len(strippedApproved), len(strippedNew))
 		if strippedApproved != strippedNew {
 			t.Errorf("%s: without the eight attributes the approved markdown and the new rendering differ:\n%s\n----\n%s", document.name, strippedApproved, strippedNew)
+		}
+		// The person's review still holds the hash captured before the upgrade, and the version it
+		// names still holds the bytes that hash is the digest of: the carry read the bytes already
+		// stored and rewrote none of them. The carried review is a review of its own, over the bytes
+		// the new version holds.
+		approved := approvedHashes[document.id]
+		if now := reviewHashOf(t, ctx, database, document); now.hash != approved.hash {
+			t.Errorf("%s: the person's review %s holds the hash %q once the fleet is one build, want the hash %q captured before the upgrade",
+				document.name, approved.review, now.hash, approved.hash)
+		}
+		if stored, _ := versionHashOf(t, ctx, database, document.id, document.version); stored != approved.hash {
+			t.Errorf("%s: version %d, which the person approved, holds bytes whose digest is %q once the first write on one build carried the approval, want the review's hash %q captured before the upgrade: the carry rewrote the bytes already stored",
+				document.name, document.version, stored, approved.hash)
+		}
+		if stored, reviewed := versionHashOf(t, ctx, database, document.id, number); reviewed != stored || reviewed != textHash(rendering) || reviewed == approved.hash {
+			t.Errorf("%s: the carried review at version %d holds the hash %q, want the digest of that version's bytes, %q (the store's %q), which is not the person's review's %q",
+				document.name, number, reviewed, textHash(rendering), stored, approved.hash)
+		}
+	}
+
+	// An answer keeps the turn of an approval request. On a fleet of one build an agent writes a
+	// fourth document holding one open ask and requests its approval, so the request waits on the
+	// person; the person's answer settles into a version whose only change is the ask block's kept
+	// form, and the request moves there quietly and still waits on the person, who then approves
+	// through it.
+	fourth := agentUpload(t, current, issue, "fourth.md", "# Fourth\n\nA line of prose.\n\n:::ask{#fourth-ask urgency=\"med\" multiple=\"false\"}\nShip the fourth?\n\n- Ship: Now.\n- Hold: Later.\n:::\n")
+	fourthAsk := blockAskOf(t, current, issue, "fourth-ask")
+	settledDocument(t, ctx, current, database, fourth)
+	fourthNamed, _ := latestMarkdown(t, current, fourth)
+	fourthRequest := openedRequestID(t, asAgentSession(t, current, http.MethodPost, "/api/v1/artifacts/"+fourth+"/approval-requests", map[string]any{}, http.StatusCreated))
+	if request := approvalRequestOf(t, current, fourthRequest); !request.waitsOnThePersonAt(fourthNamed) {
+		t.Fatalf("the fourth document's request reads %s, want it waiting on the person at version %d", request, fourthNamed)
+	}
+	answerAsk(t, current, fourthAsk, "Ship", "Ship it now.")
+	settledDocument(t, ctx, current, database, fourth)
+	fourthAnswered, fourthText := latestMarkdown(t, current, fourth)
+	requireKeptForm(t, ctx, database, "the fourth document's version "+strconv.Itoa(fourthAnswered), fourthText, keptBlock{"fourth-ask", fourthAsk, ""})
+	if request := approvalRequestOf(t, current, fourthRequest); fourthAnswered == fourthNamed || !request.waitsOnThePersonAt(fourthAnswered) {
+		t.Errorf("the version an answer wrote moved the approval request to its agent: the fourth document's request reads %s, the answer's version %d, the version requested %d", request, fourthAnswered, fourthNamed)
+	}
+	if edits := approvalRequestEdits(t, ctx, database, fourthRequest); len(edits) != 1 || !edits[0].quiet || edits[0].notify {
+		t.Errorf("the fourth document's request moved to the answer's version with the ask.edited events %+v, want one that is quiet and notifies nobody", edits)
+	}
+	// The person approves through the request: the review of the version it names answers it.
+	current.call(t, http.MethodPost, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d/reviews", fourth, fourthAnswered), `{"state":"approved"}`, http.StatusCreated)
+	if approval, request := approvalOf(t, current, fourth), approvalRequestOf(t, current, fourthRequest); !approval.approvedLatest() || approval.LatestVersion != fourthAnswered || request.State != "answered" {
+		t.Errorf("the fourth document reads %s and its request %s once the person approved through it, want approved at version %d, its latest, and the request answered", approvalState(approval), request, fourthAnswered)
+	}
+
+	// A copy of an open ask keeps every carry, and every turn R10's turn rule keeps. The fifth
+	// document's first accepted write on one build is an agent's upload of the text its text route
+	// serves: it renders the copy with its source and no state, and carries the approval, and so
+	// does the version a person's answer to one of its own asks settles into.
+	fifthCopy := keptBlock{"lonely", lonelyAskID, "dispatch://" + issue + "/artifact/" + slugOf(second)}
+	fifthCarried := func(what string) {
+		t.Helper()
+		number, rendering := latestMarkdown(t, current, fifth)
+		requireKeptForm(t, ctx, database, "the fifth document's version "+strconv.Itoa(number), rendering, fifthCopy)
+		approval, carried := approvalOf(t, current, fifth), newestReviewOf(t, current, fifth)
+		prefix := fmt.Sprintf("Carried forward from the approval of version %d:", five.version)
+		if number == five.version || !approval.approvedLatest() || approval.LatestVersion != number || carried.Version != number || carried.Reason == nil || !strings.HasPrefix(*carried.Reason, prefix) {
+			t.Errorf("the version did not carry its approval across a copy of an open ask: the fifth document's version %d, %s, whose copy block %s opens %q, reads %s with newest review %+v, want its approval carried there with a reason opening %q",
+				number, what, fifthCopy.block, copyOpenerOf(rendering), approvalState(approval), carried, prefix)
+		}
+	}
+	served := servedTextOf(t, current, "/api/v1/artifacts/"+fifth+"/text")
+	if uploaded := agentReplace(t, current, issue, fifth, served.Markdown); strings.Contains(string(uploaded.body), "superseded_approval") {
+		t.Errorf("the agent's upload of the fifth document's served text reports a superseded approval: %s", uploaded.body)
+	}
+	settledDocument(t, ctx, current, database, fifth)
+	fifthCarried("the agent's upload of the text its text route serves, its first accepted write on one build")
+	answerAsk(t, current, blockAskOf(t, current, issue, "fifth-a"), "Ship", "Ship the fifth now.")
+	settledDocument(t, ctx, current, database, fifth)
+	fifthCarried("the version a person's answer to its own ask settled into")
+
+	// The sixth document's request waits on the person at the version the base release wrote. A
+	// person's answer to one of its own asks settles into its first accepted write on one build,
+	// which renders the copy as the fifth's does: the request moves there and still waits on the
+	// person, and so it does across the version the answer to its other own ask writes.
+	if request := approvalRequestOf(t, current, sixthRequest); !request.waitsOnThePersonAt(sixthBase) {
+		t.Fatalf("the sixth document's request reads %s once the fleet is one build, want it waiting on the person at version %d, the base release's", request, sixthBase)
+	}
+	sixthCopy := keptBlock{"lonely", lonelyAskID, fifthCopy.copied}
+	for _, own := range []string{"sixth-a", "sixth-b"} {
+		answerAsk(t, current, blockAskOf(t, current, issue, own), "Ship", "Ship the sixth now.")
+		settledDocument(t, ctx, current, database, sixth)
+		number, rendering := latestMarkdown(t, current, sixth)
+		requireKeptForm(t, ctx, database, "the sixth document's version "+strconv.Itoa(number), rendering, sixthCopy)
+		if request := approvalRequestOf(t, current, sixthRequest); number == sixthBase || !request.waitsOnThePersonAt(number) {
+			t.Errorf("the sixth document's request moved to its agent at a version whose only change is the kept form of a copy of an open ask: after the answer to %s the request reads %s, the latest version is %d, whose copy block %s opens %q",
+				own, request, number, sixthCopy.block, copyOpenerOf(rendering))
 		}
 	}
 
@@ -554,6 +738,218 @@ func requireBlockInStepWithRow(t *testing.T, ctx context.Context, database *pgx.
 				blockID, name, mustJSON(t, got), held, mustJSON(t, wanted), isWanted)
 		}
 	}
+}
+
+// lonelyAsk is the second document's one ask, which the fifth and the sixth document copy.
+const lonelyAsk = ":::ask{#lonely urgency=\"med\" multiple=\"false\"}\nIs it lonely?\n\n- Yes: It is.\n- No: It is not.\n:::\n"
+
+// copyingDocument is the fifth or the sixth document, name: a paragraph of prose, two open asks of
+// its own (name-a and name-b) and a copy of the second document's open ask (lonelyAsk).
+func copyingDocument(name string) string {
+	return "# The " + name + " document\n\nThe " + name + " document copies a question.\n\n" +
+		":::ask{#" + name + "-a urgency=\"high\" multiple=\"false\"}\nShip the " + name + " first?\n\n- Ship: Now.\n- Hold: Later.\n:::\n\n" +
+		":::ask{#" + name + "-b urgency=\"low\" multiple=\"false\"}\nShip the " + name + " second?\n\n- Ship: Now.\n- Hold: Later.\n:::\n\n" +
+		lonelyAsk
+}
+
+// copyOpenerOf is the opening line of the copy of the second document's ask in markdown, or "".
+func copyOpenerOf(markdown string) string {
+	for _, opener := range askOpener.FindAllString(markdown, -1) {
+		if strings.Contains(opener, "{#lonely ") {
+			return opener
+		}
+	}
+	return ""
+}
+
+// keptBlock is an ask block a version written once the fleet is one build holds: its id, the ask
+// whose node its kept attributes are written from - its own, or a copy's source - and, for a copy,
+// the address of the source's document.
+type keptBlock struct {
+	block, ask, copied string
+}
+
+// serverOwnedAskAttributes is the eight server-owned attributes of an ask block.
+var serverOwnedAskAttributes = []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
+
+// requireKeptForm fails t unless the ask block kept.block of markdown, a version written once the
+// fleet is one build, holds of the eight server-owned attributes exactly the form R10 keeps, each
+// value as the node of kept.ask holds it: state where the ask is answered or resolved and none
+// where it is open, answered_by and answered_at where it is answered, and, for a copy,
+// copied_from naming kept.ask and copied_from_document naming kept.copied, whatever the source's
+// state. It never holds selected, answer or invalid. A block that differs is printed. It answers
+// the answer_state the node holds.
+func requireKeptForm(t *testing.T, ctx context.Context, database *pgx.Conn, what, markdown string, kept keptBlock) string {
+	t.Helper()
+	held := askNodeHolds(t, ctx, database, kept.ask)
+	state := held[graphstore.TupleAnswerState].ToID
+	if state == "" {
+		t.Errorf("%s: the node of ask %s holds no answer_state, so no form of the block %s can be read from it: %v", what, kept.ask, kept.block, held)
+	}
+	want := map[string]string{}
+	if state != "" && state != asks.StateOpen {
+		want["state"] = state
+	}
+	if state == asks.StateAnswered {
+		want["answered_by"] = strings.TrimSpace(held[graphstore.TupleAnsweredBy].ToID)
+		want["answered_at"] = held[graphstore.TupleAnsweredAt].ToID
+	}
+	if kept.copied != "" {
+		want["copied_from"], want["copied_from_document"] = kept.ask, kept.copied
+	}
+	block := storedAskBlock(t, markdown, kept.block)
+	differs := false
+	for _, name := range serverOwnedAskAttributes {
+		wanted, isWanted := want[name]
+		got, isHeld := block.Attrs[name]
+		value, _ := got.(string)
+		same := isHeld == isWanted && (!isWanted || value == wanted || name == "answered_at" && sameInstant(value, wanted))
+		if !same {
+			differs = true
+			t.Errorf("%s: the block %s holds %s=%s (held %t), want %q (held %t): the form R10 keeps, from the node of ask %s, which holds %q",
+				what, kept.block, name, mustJSON(t, got), isHeld, wanted, isWanted, kept.ask, state)
+		}
+	}
+	if differs {
+		t.Errorf("%s: the ask block %s, which differs from the form R10 keeps:\n%s", what, kept.block, askBlockText(markdown, kept.block))
+	}
+	return state
+}
+
+// askBlockText is the ask block blockID of markdown as the version writes it, from its opening
+// line to its closing fence, for a failure to print; markdown whole where no opening line names
+// blockID.
+func askBlockText(markdown, blockID string) string {
+	lines := strings.Split(markdown, "\n")
+	for start, line := range lines {
+		if !askOpener.MatchString(line) || !strings.Contains(line, "{#"+blockID+" ") && !strings.Contains(line, "{#"+blockID+"}") {
+			continue
+		}
+		fence := strings.TrimLeft(line, "> \t-")
+		fence = fence[:len(fence)-len(strings.TrimLeft(fence, ":"))]
+		for end := start + 1; end < len(lines); end++ {
+			if strings.TrimRight(strings.TrimLeft(lines[end], "> \t"), " \t") == fence {
+				return strings.Join(lines[start:end+1], "\n")
+			}
+		}
+		return strings.Join(lines[start:], "\n")
+	}
+	return markdown
+}
+
+// sameInstant reports whether a and b, two RFC 3339 times, name one instant.
+func sameInstant(a, b string) bool {
+	at, errA := time.Parse(time.RFC3339Nano, a)
+	bt, errB := time.Parse(time.RFC3339Nano, b)
+	return errA == nil && errB == nil && at.Equal(bt)
+}
+
+// answerWords is an answer's words, its selection or `invalid` on an ask block's opening line.
+var answerWords = regexp.MustCompile(` (selected|answer|invalid)="`)
+
+// requireNoAnswerWords fails t unless no ask block of markdown, a stored version, holds an answer's
+// words, its selection or `invalid`.
+func requireNoAnswerWords(t *testing.T, what, markdown string) {
+	t.Helper()
+	for _, opener := range askOpener.FindAllString(markdown, -1) {
+		if answerWords.MatchString(opener) {
+			t.Errorf("%s: an ask block holds an answer's words once the fleet is one build: %s", what, opener)
+		}
+	}
+}
+
+// agentReplace uploads content as a new version of the issue's document artifactID as the agent's
+// session (asAgentSession's), naming the token of the version it replaces, and answers the answer.
+func agentReplace(t *testing.T, p *dispatchProcess, issue, artifactID, content string) httpAnswer {
+	t.Helper()
+	artifacts := "/api/v1/issues/" + issue + "/artifacts"
+	name := documentName(t, p, artifactID)
+	body := map[string]any{"name": name, "content": content, "actor": map[string]string{"kind": "session", "id": restoreSession}}
+	if base := p.uploadBase(t, artifacts, name); base != nil {
+		body["precondition"] = base
+	}
+	answer := p.send(t, http.MethodPost, artifacts, encodeJSON(t, body), agentBearer())
+	if answer.status != http.StatusCreated && answer.status != http.StatusOK {
+		t.Fatalf("the agent's upload of %s to %s: %s", name, issue, answer)
+	}
+	return answer
+}
+
+// openedRequestID is the id of the approval request POST /api/v1/artifacts/{id}/approval-requests
+// answered.
+func openedRequestID(t *testing.T, answer httpAnswer) string {
+	t.Helper()
+	var opened struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}
+	if err := json.Unmarshal(answer.body, &opened); err != nil || opened.Ask.ID == "" {
+		t.Fatalf("read the approval request back: %v: %s", err, answer)
+	}
+	return opened.Ask.ID
+}
+
+// approvalRequest is an approval request as GET /api/v1/asks/{id} reads it: its state, whose reply
+// it waits on, the version of its document it names and the version it was last handed to the
+// person at.
+type approvalRequest struct {
+	State     string `json:"state"`
+	WaitingOn string `json:"waiting_on"`
+	Approval  struct {
+		Version          int `json:"version"`
+		RequestedVersion int `json:"requested_version"`
+	} `json:"approval"`
+}
+
+func (r approvalRequest) String() string {
+	return fmt.Sprintf("%s waiting on %q at version %d requested at version %d", r.State, r.WaitingOn, r.Approval.Version, r.Approval.RequestedVersion)
+}
+
+// waitsOnThePersonAt reports whether the request is open and waits on the person at version: it
+// names that version and was handed to the person at it.
+func (r approvalRequest) waitsOnThePersonAt(version int) bool {
+	return r.State == "open" && r.WaitingOn == "human" && r.Approval.Version == version && r.Approval.RequestedVersion == version
+}
+
+func approvalRequestOf(t *testing.T, p *dispatchProcess, askID string) approvalRequest {
+	t.Helper()
+	var read struct {
+		Ask approvalRequest `json:"ask"`
+	}
+	readJSON(t, p, "/api/v1/asks/"+askID, &read)
+	return read.Ask
+}
+
+// requestEdit is one ask.edited event of an approval request: whether its payload marks the move
+// quiet (model.AskEditEventPayload.Quiet) and whether it notifies.
+type requestEdit struct {
+	quiet, notify bool
+}
+
+// approvalRequestEdits is every ask.edited event of the request askID, oldest first.
+func approvalRequestEdits(t *testing.T, ctx context.Context, database *pgx.Conn, askID string) []requestEdit {
+	t.Helper()
+	rows, err := database.Query(ctx, `
+		select coalesce((payload->>'quiet')::boolean, false), notify
+		from events where type = 'ask.edited' and payload->>'id' = $1 order by seq
+	`, askID)
+	if err != nil {
+		t.Fatalf("read the ask.edited events of request %s: %v", askID, err)
+	}
+	defer rows.Close()
+	var edits []requestEdit
+	for rows.Next() {
+		var edit requestEdit
+		if err := rows.Scan(&edit.quiet, &edit.notify); err != nil {
+			t.Fatalf("read an ask.edited event of request %s: %v", askID, err)
+		}
+		edits = append(edits, edit)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the ask.edited events of request %s: %v", askID, err)
+	}
+	return edits
 }
 
 // servedText is the answer of a text route (GET /api/v1/artifacts/{id}/text and its slug forms):

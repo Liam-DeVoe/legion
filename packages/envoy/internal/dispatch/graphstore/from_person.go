@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The read state of a person (dispatch://INFRA-1152 R6): what they have read, cleared, dismissed
+// The read state of a person (the spec's R6): what they have read, cleared, dismissed
 // or snoozed is a tuple from their node and never a node, its far end is what the mark is about,
 // and the tuple's own moment is the mark it stands for. TupleReadThrough runs to the root of a
 // thread, or to a session, the person has read through that moment; TupleDismissed to the root of
@@ -59,29 +59,37 @@ var ErrMarkOutsideFromPerson = errors.New("a read_through, dismissed, cleared, r
 // rest of the call is appended; a writer that marks its projection row asks AddressFits of the
 // same ends first, so such a row stays its old arm's.
 //
-// It is QueueFromPerson run at once, as a batch of its own, for a writer with no write phase.
+// It is QueueFromPerson run at once, as a batch of its own, for a writer with no write phase. Its
+// error is the batch's: a statement that fails, or a tuple QueueFromPerson cannot take.
 func FromPerson(ctx context.Context, tx pgx.Tx, made time.Time, tuples []Tuple) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueFromPerson(b, made, tuples) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueFromPerson(b, made, tuples)
+		return nil
+	})
 }
 
 // QueueFromPerson queues FromPerson on a write phase's batch, as one statement: the person nodes,
 // in ascending (kind, id) as every write of this store takes them (WriteArms), then the tuples,
 // which take the relation repeat key, so one event states each mark once. A tuple's SourceEvent
-// may be LatestEvent, for a write whose event the batch appends right before it.
-func QueueFromPerson(b *store.WriteBatch, made time.Time, tuples []Tuple) error {
+// may be LatestEvent, for a write whose event the batch appends right before it. A tuple that is
+// no mark from a person, or one that cannot be encoded, fails Send rather than this call, which
+// answers nothing (QueueWrite).
+func QueueFromPerson(b *store.WriteBatch, made time.Time, tuples []Tuple) {
 	if len(tuples) == 0 {
-		return nil
+		return
 	}
 	stated := make([]Tuple, 0, len(tuples))
 	var persons []Node
 	for _, tuple := range tuples {
 		if tuple.FromKind != KindPerson || !isMark(tuple.Kind) || tuple.ToKind == KindValue {
-			return fmt.Errorf("FromPerson appends %s from a person to a node, not %s %s/%s -> %s/%s",
-				strings.Join(markKinds[:], ", "), tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID)
+			queueRefused(b, fmt.Errorf("FromPerson appends %s from a person to a node, not %s %s/%s -> %s/%s",
+				strings.Join(markKinds[:], ", "), tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID))
+			return
 		}
 		tuple.FromID = model.CanonicalLogin(tuple.FromID)
 		if tuple.FromID == "" {
-			return fmt.Errorf("%s -> %s/%s names no person", tuple.Kind, tuple.ToKind, tuple.ToID)
+			queueRefused(b, fmt.Errorf("%s -> %s/%s names no person", tuple.Kind, tuple.ToKind, tuple.ToID))
+			return
 		}
 		if !AddressFits(tuple.FromID) || !AddressFits(tuple.ToID) {
 			continue
@@ -92,14 +100,14 @@ func QueueFromPerson(b *store.WriteBatch, made time.Time, tuples []Tuple) error 
 		}
 	}
 	if len(stated) == 0 {
-		return nil
+		return
 	}
 	arms, params, _, err := writeArms(1, persons, stated, nil, true)
 	if err != nil {
-		return err
+		queueRefused(b, err)
+		return
 	}
 	b.Queue(fmt.Sprintf("append %d mark from a person", len(stated)), "with "+arms+"\nselect 1", params...)
-	return nil
 }
 
 // Marked names the persons whose marks QueueMarksEnded ends: a list of logins its caller knows
@@ -134,14 +142,16 @@ func MarkedIn(query string, arg any) Marked {
 // committed while it waited; people read by the statement (MarkedIn) are read then too. Every
 // person a standing mark names holds a node already, which FromPerson wrote beside the mark, so
 // the statement writes no node. A login past the store's address bound states nothing, as
-// FromPerson has it. event may be LatestEvent.
-func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Marked, at time.Time, who model.Actor, event int64) error {
+// FromPerson has it. event may be LatestEvent. A kind that is no mark, or a writer that cannot be
+// encoded, fails Send rather than this call, which answers nothing (QueueWrite).
+func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Marked, at time.Time, who model.Actor, event int64) {
 	if !isMark(kind) || toKind == KindValue {
-		return fmt.Errorf("QueueMarksEnded retracts %s from a person to a node, not %s -> %s/%s",
-			strings.Join(markKinds[:], ", "), kind, toKind, toID)
+		queueRefused(b, fmt.Errorf("QueueMarksEnded retracts %s from a person to a node, not %s -> %s/%s",
+			strings.Join(markKinds[:], ", "), kind, toKind, toID))
+		return
 	}
 	if !AddressFits(toID) {
-		return nil
+		return
 	}
 	persons, named, arg := `any($4::text[])`, "", any(nil)
 	if people.query != "" {
@@ -154,15 +164,11 @@ func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Mark
 			}
 		}
 		if len(logins) == 0 {
-			return nil
+			return
 		}
 		named, arg = fmt.Sprintf("%d person", len(logins)), logins
 	}
-	writer, err := json.Marshal(who.Recorded())
-	if err != nil {
-		return fmt.Errorf("encode the writer of the %s marks ended: %w", kind, err)
-	}
-	b.Queue(fmt.Sprintf("end the %s marks of %s on %s/%s", kind, named, toKind, toID), `
+	b.QueueBuilt(fmt.Sprintf("end the %s marks of %s on %s/%s", kind, named, toKind, toID), `
 		insert into graph_tuples (`+tupleWriteColumns+`)
 		select '`+KindPerson+`', standing.from_id, $1, $2, $3, $5::timestamptz, $6::jsonb, `+causeOf("$7::bigint")+`, null, false
 		from (
@@ -174,8 +180,13 @@ func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Mark
 		) standing
 		where standing.asserted
 		order by standing.from_id`+relationRepeatKey,
-		kind, toKind, toID, arg, at, writer, event)
-	return nil
+		func() ([]any, error) {
+			writer, err := json.Marshal(who.Recorded())
+			if err != nil {
+				return nil, fmt.Errorf("encode the writer of the %s marks ended: %w", kind, err)
+			}
+			return []any{kind, toKind, toID, arg, at, writer, event}, nil
+		})
 }
 
 // MarkArm is the arm of a caller's statement that appends, for each row of rows - a common-table

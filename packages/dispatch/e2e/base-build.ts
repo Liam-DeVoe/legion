@@ -1,5 +1,5 @@
 /** The build of the release before, booted beside a stack's own server, for the rows that read
- *  both builds at once (dispatch://INFRA-1152's c-inbox-unchanged): the commit `BASELINE_SHA`
+ *  both builds at once (the check c-inbox-unchanged): the commit `BASELINE_SHA`
  *  names, built once per run, its dashboard where a row opens its pages, and this checkout's own
  *  build, which such a row boots beside it.
  *

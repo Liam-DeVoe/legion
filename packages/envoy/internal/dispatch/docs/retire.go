@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -23,9 +24,23 @@ type Retirement struct {
 	SupersededApproval *model.SupersededApproval
 }
 
-// ErrDocumentRetired refuses the retirement of a document already retired: it is retired once,
-// with one document.retired event.
+// ErrDocumentRetired refuses what a retired document no longer takes: a second retirement of it
+// (it is retired once, with one document.retired event), and a live write into it, which its
+// owner's lock reads it retired under (joinLiveWrite, RetiredDocumentError).
 var ErrDocumentRetired = errors.New("docs: the document is retired already")
+
+// RetiredDocumentError is a live write refused because its document is retired (joinLiveWrite):
+// the document's id, name and slug, which api's 409 DOCUMENT_RETIRED names, as it names them for a
+// write it refuses itself. It is ErrDocumentRetired.
+type RetiredDocumentError struct {
+	ID, Name, Slug string
+}
+
+func (e *RetiredDocumentError) Error() string {
+	return fmt.Sprintf("docs: document %s (%s) is retired and takes no new text", e.ID, e.Slug)
+}
+
+func (e *RetiredDocumentError) Unwrap() error { return ErrDocumentRetired }
 
 // errRetirementReason refuses a retirement that says not why: the reason is the event's record of
 // it, and the only one.
@@ -59,8 +74,8 @@ var retirementEvents = events.NewBroker()
 //
 // It takes the document's owner row first (lockArtifactOwner), then writes the store's lock order
 // as a create writes it: the node, its projection row, the event, and the node's facts under that
-// event (graphstore.WriteUncaused, graphstore.Caused). A document already retired is refused with
-// ErrDocumentRetired, and a reason that is blank with errRetirementReason.
+// event (graphstore.PlanUncaused and QueueNodes, then graphstore.Caused). A document already
+// retired is refused with ErrDocumentRetired, and a reason that is blank with errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -148,7 +163,14 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 	}
 	node.State = graphstore.StateGone
 	node.SourceEvent = graphstore.NoEvent
-	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, nil)
+	write := graphstore.PlanUncaused([]graphstore.Node{node}, nil)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, write)
+		return nil
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return write, nil
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves

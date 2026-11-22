@@ -1,6 +1,6 @@
 -- 20261117132340_inbox_comparison_runs.up.sql — one row per run of `envoy-dispatch inbox-compare`.
 --
--- dispatch://INFRA-1152's R8 and R10: the comparison asks the three reads the one read replaces
+-- The spec's R8 and R10: the comparison asks the three reads the one read replaces
 -- (GET /api/v1/inbox?assignee=me, GET /api/v1/me/replies and a person's own conversations of GET
 -- /api/v1/agents/{session_id}/messages) on the build of the release before, and the one read (GET
 -- /api/v1/me/inbox) on this build, both over one database, for every person, and keeps what each

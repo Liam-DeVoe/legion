@@ -219,7 +219,7 @@ var (
 	// thread: the mark alone says it is dismissed (myAgentDismissedRoot), so the test is one
 	// anti-join against the person's own marks rather than a walk of every thread they ever
 	// dismissed. The unread state leaves them out too, and may: a dismissal - a Dismiss press, or
-	// the person's own reply under the thread (inboxwrite.Record's step 6, dispatch://INFRA-4948
+	// the person's own reply under the thread (inboxwrite.Record's step 6, the own-answer rule,
 	// R1) - marks every reply in the thread read by id, and a reply written since cleared the mark
 	// in its own transaction, so a root that still carries one holds nothing unread.
 	myAgentUnreadRoots = myAgentMarks + myAgentDismissedRootSet + `

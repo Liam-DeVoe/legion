@@ -156,15 +156,47 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 	}
 }
 
+// An issue that holds two decisions documents as decisions_documents() reads them - one an earlier
+// release gave the decisions role under another slug, and one with no role under the decisions
+// document's slug - names the same one in both old members: the oldest, by created_at and then id
+// (refs.DecisionsDocumentOf), in the issue read's decisions_artifact_id as in the Decisions read's
+// document. The younger is given the lower id, so a rule that took the lowest id would name it.
+func TestBothOldMembersNameTheOldestOfAnIssuesTwoDecisionsDocuments(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	const older, younger = "ffffffff-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, role, created_by, created_at)
+		select v.id::uuid, i.key, i.project_key, v.slug, v.name, 'doc', false, v.role,
+		       '{"kind":"session","id":"`+decidingSession+`"}', v.at
+		from issues i, (values ($2, 'decided-md', 'decided.md', 'decisions', now() - interval '1 hour'),
+		                       ($3, 'decisions-md', 'decisions.md', null, now())) v (id, slug, name, role, at)
+		where i.key = $1
+	`, issue.Key, older, younger); err != nil {
+		t.Fatalf("store the issue's two decisions documents: %v", err)
+	}
+	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != older {
+		t.Fatalf("the issue read names decisions_artifact_id %q, want %s, the older of its two decisions documents", named.DecisionsArtifactID, older)
+	}
+	if view := readIssueDecisions(t, handler, issue.Key); view.Document == nil || !strings.HasSuffix(*view.Document, "/artifact/decided-md") {
+		t.Fatalf("the Decisions read's document = %v, want the address of decided-md, the document decisions_artifact_id names", view.Document)
+	}
+}
+
 // Until the decisions step retires it, a heading of a decisions document an earlier release stored
 // is kept as the release before kept it: the Keep reads the
 // section through the step's section reader, whose text runs from the heading to its last block, so
 // its sum is the one that release served. A Keep of another sum is 409 DECISION_CHANGED and writes
 // nothing; the Keep of the sum answers 200 and writes the decision_keeps row the conversion carries
 // onto the node. A heading under `## Replaced`, a block that opens no section and a bearer's Keep are
-// refused. Once the document is retired, its heading is 404 TARGET_NOT_FOUND.
+// refused. Once the document is retired, its heading is 404 TARGET_NOT_FOUND. A heading's node is
+// a plain block and no decision, so the Keep's read of a decision node leaves it out without
+// logging it as a decision whose stored value does not parse.
 func TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	logs := captureLogs(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
@@ -214,6 +246,9 @@ func TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired(t *testing.T
 	bearer := sessionRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": sum, "actor": sessionActor()})
 	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), codeScopeRequired) {
 		t.Fatalf("a bearer's Keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+	}
+	if warned := logs.Lines("a decision whose stored value does not parse"); warned != "" {
+		t.Fatalf("the Keeps of the decisions document's blocks logged:\n%swant no parse failure: a heading's node is no decision", warned)
 	}
 
 	retireTestDocument(t, database, decisions)
@@ -280,9 +315,10 @@ const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}
 // first indexing: the document's first version, written while it has no block rows, and the
 // backfill over a document no block-aware build indexed. The spec's decisions shape its
 // requirements in the version that writes them all, so no requirement's text changed after a
-// tie, and a later version that leaves every requirement and decision alone is one more version
-// the backfill walks. Each link is judged on the change the index recorded for its requirement,
-// so it holds text_changed_at, and reads stale false.
+// tie and no decision's words did, and a later version that leaves every requirement and
+// decision alone is one more version the backfill walks. Each link is judged on the change the
+// index recorded for its requirement, so it holds text_changed_at, and reads changed_since_tie
+// false and stale false.
 func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -309,8 +345,8 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 				t.Fatalf("%s the decision %s answers the links %v, want %v", when, block, targets, ties[block])
 			}
 			for _, link := range entry.Shaped {
-				if link.TextChangedAt == nil || link.Stale {
-					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded and stale false",
+				if link.TextChangedAt == nil || link.ChangedSinceTie || link.Stale {
+					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded, changed_since_tie false and stale false",
 						when, link.To.ID, block, entryJSON(t, link))
 				}
 			}

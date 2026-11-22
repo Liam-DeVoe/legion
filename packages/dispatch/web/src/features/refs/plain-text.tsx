@@ -31,11 +31,12 @@ const NO_NAMES: ReadonlyMap<string, ReferenceName> = new Map();
 const NO_ADDRESSES: readonly string[] = [];
 
 /** What a reference reads as in plain words once its target has answered (`ReferenceName`): the
- *  name the painted link reads for it (`RefLink`), which for an issue is its title after its key,
- *  as a project's issue list writes a key beside one, and for a party's mention what the painted
- *  mention draws (`@legion/contracts`'s `mentionDrawn`): the mention sign and that name, or the
- *  sign and the party's short form where it exists with no name. A target Dispatch answered does
- *  not exist, or exists with no name of its own, has no name, and reads as the words its author
+ *  name the painted link reads for it (`RefLink`), which for an issue is its title, which the
+ *  projection writes after the issue's key as a project's issue list writes a key beside one
+ *  (`markdown-engine.ts`'s `standingName`), and for a party's mention what the painted mention
+ *  draws (`@legion/contracts`'s `mentionDrawn`): the mention sign and that name, or the sign and
+ *  the party's short form where it exists with no name. A target Dispatch answered does not
+ *  exist, or exists with no name of its own, has no name, and reads as the words its author
  *  wrote (R8). Undefined while the target has not answered, and for one the reader may not see,
  *  where the projection keeps the words written, as the painted link does until its title
  *  resolves. */
@@ -50,7 +51,6 @@ function referenceAnswer(
     return undefined;
   }
   return {
-    ...(route.kind === "issue" ? { key: route.key } : {}),
     mention: isPartyRoute(route) ? mentionDrawn({ known, title }, shortForm(route)) : undefined,
     name: title,
   };
@@ -73,16 +73,12 @@ function OwnNameRead({
 }): ReactNode {
   const { known, missing, title } = useReferenceTarget(route, { text: false });
   const answer = referenceAnswer(route, { known, missing, title });
-  const key = answer?.key;
   const name = answer?.name;
   const mention = answer?.mention;
   const answered = answer !== undefined;
   useEffect(() => {
-    onName(
-      address,
-      answered ? { ...(key === undefined ? {} : { key }), mention, name } : undefined
-    );
-  }, [address, answered, key, mention, name, onName]);
+    onName(address, answered ? { mention, name } : undefined);
+  }, [address, answered, mention, name, onName]);
   return null;
 }
 
@@ -90,8 +86,8 @@ function OwnNameRead({
  * What the page published answers for one reference (`reference-names.tsx`), by the one rule R8
  * is everywhere:
  *
- * - **A name the page's batched read gave it**: that name, an issue's after its key, as a link
- *   to an issue reads.
+ * - **A name the page's batched read gave it**: that name, which an issue's key is written before
+ *   as a link to an issue reads (`standingName`).
  * - **Gone, or one the reader may not see, and ambiguous**: `null`, the words its author wrote,
  *   and no read of its own.
  * - **Asked for and not answered yet**, or answered with a reading the store has not projected
@@ -109,9 +105,7 @@ function publishedAnswer(
 ): ReferenceName | null | undefined {
   if (isPartyRoute(route)) return undefined;
   const name = known.names.get(address);
-  if (name !== undefined) {
-    return { ...(route.kind === "issue" ? { key: route.key } : {}), mention: undefined, name };
-  }
+  if (name !== undefined) return { mention: undefined, name };
   if (known.unnamed.has(address)) return undefined;
   return known.ambiguous.has(address) || known.gone.has(address) || known.asked.has(address)
     ? null
@@ -138,7 +132,6 @@ function useNameLookup(): NameLookup {
     setRead((current) => {
       const now = current.get(address);
       if (
-        now?.key === name?.key &&
         now?.name === name?.name &&
         now?.mention === name?.mention &&
         current.has(address) === (name !== undefined)
@@ -282,15 +275,15 @@ export interface PlainHeadlineOptions {
  * read as plain words is read from the same document the surface draws.
  *
  * `text` is `undefined` until the engine has answered, which is one pre-paint commit on a page
- * whose engine is loaded. `names` is what the projection named the line's references by, for a
- * caller that asks whether one of them has a name. `reads` draws nothing and the caller mounts it
- * wherever it draws the line.
+ * whose engine is loaded; it says which of its references it wrote a name for
+ * (`MarkdownHeadline.named`). `reads` draws nothing and the caller mounts it wherever it draws
+ * the line.
  */
 export function usePlainHeadline(
   tree: DisplayTree | undefined,
   markdown: string | undefined,
   { firstLine = false, issue, max = Number.POSITIVE_INFINITY, source }: PlainHeadlineOptions = {}
-): { names: ReferenceNameLookup; reads: ReactNode; text: MarkdownHeadline | undefined } {
+): { reads: ReactNode; text: MarkdownHeadline | undefined } {
   const lookup = useNameLookup();
   const [asksQuestions, setAsksQuestions] = useState(false);
   // Asked once the projection says the line holds a `#id`, which is after it mounted
@@ -316,7 +309,7 @@ export function usePlainHeadline(
     if (holdsQuestions) setAsksQuestions(true);
   }, [holdsQuestions]);
   const reads = useOwnNameReads(text?.addresses ?? NO_ADDRESSES, source?.issue ?? issue, lookup);
-  return { names, reads, text };
+  return { reads, text };
 }
 
 /**

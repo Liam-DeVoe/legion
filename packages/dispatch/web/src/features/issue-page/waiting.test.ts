@@ -161,6 +161,7 @@ function waitingDecision(blockId: string, shaped: readonly string[]): Decision {
     kept: null,
     kind: "agent",
     links: shaped.map((one) => ({
+      changed_since_tie: false,
       created_at: "2026-11-05T00:00:00Z",
       created_version: 1,
       from_block: blockId,
@@ -209,6 +210,7 @@ function entryOf(decision: Decision): DecisionEntry {
       block_id: decision.block_id,
       ref: `dispatch://${KEY}/spec`,
     },
+    from_ask: decision.asks ?? [],
     kept: decision.kept,
     kept_by: decision.kept?.kept_by ?? null,
     kept_text_sum: decision.kept === null ? null : decision.text_sha256,
@@ -234,11 +236,11 @@ function entryOf(decision: Decision): DecisionEntry {
 }
 
 /** The decisions read over `rows`, as this build's server answers it: an entry of the store for
- *  each (`entries`), the same decisions in the old shape (`decisions`), and no decisions
- *  document, which is retired. */
+ *  each (`entries`), which is all the count reads of it, so the old `decisions` member holds none
+ *  of them, and no decisions document, which is retired. */
 function decisionsRead(rows: readonly Decision[]): IssueDecisions {
   return {
-    decisions: [...rows],
+    decisions: [],
     document: null,
     entries: rows.map(entryOf),
     open_questions: [],
@@ -425,7 +427,7 @@ function changePlaces(
   const text = wordsOf(document);
   const nodes: readonly DisplayTree[] = Array.isArray(document.content) ? document.content : [];
   const chosen = rows.map((row) => {
-    const anchor = changeAnchor(row, document);
+    const anchor = changeAnchor(entryOf(row), document);
     if (anchor?.occurrence === undefined) return undefined;
     const matches: number[] = [];
     for (let at = text.indexOf(anchor.quote); at !== -1; at = text.indexOf(anchor.quote, at + 1)) {
@@ -630,13 +632,14 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
       })),
     };
   };
-  const reviewed = decisionsRead([
+  const tied = [
     tiedTo("short", "r1", spec.id, `dispatch://${KEY}/spec#b-r1`),
     tiedTo("slugged", "r1", spec.id, `dispatch://${KEY}/artifact/spec#b-r1`),
     tiedTo("unlisted", "r2", spec.id, `dispatch://${KEY}/spec#b-r2`),
     tiedTo("elsewhere", "r1", "artifact-other-spec", "dispatch://ACME-2/spec#b-r1"),
     tiedTo("planned", "p1", plan.id, `dispatch://${KEY}/artifact/plan-md#b-p1`),
-  ]);
+  ];
+  const reviewed = decisionsRead(tied);
   const documents: DocumentBlocks[] = [
     { artifactId: spec.id, blocks: [requirementBlock("r1"), requirementBlock("r2")] },
     { artifactId: plan.id, blocks: [requirementBlock("p1")] },
@@ -658,7 +661,6 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   const waitingDecisions = specDecisions(waitingIn(root));
   expect(waitingDecisions).toEqual(["spec#b-short", "spec#b-slugged"]);
   const listed = coverageStatements(planned, coverage);
-  const tied = reviewed.decisions ?? [];
   expect(tied).toHaveLength(5);
   for (const decision of tied) {
     const alone = decisionsRead([decision]);
@@ -700,7 +702,7 @@ test("a Change of a decision whose first sentence another decision also opens wi
     ["Keep the model pure.", [1, 0, 2]],
   ] as const) {
     const document = specReading(intro, blocks);
-    expect(rows.map((row) => changeAnchor(row, document))).toEqual([
+    expect(rows.map((row) => changeAnchor(entryOf(row), document))).toEqual([
       { occurrence: occurrences[0], quote: "Keep the model pure." },
       { occurrence: occurrences[1], quote: "Read it from one place." },
       { occurrence: occurrences[2], quote: "Keep the model pure." },
@@ -710,7 +712,7 @@ test("a Change of a decision whose first sentence another decision also opens wi
   }
 
   const headingOnly = readDecision("d4", "Heading only", "", []);
-  expect(changeAnchor(headingOnly, specReading(PLAIN_INTRO, blocks))).toBeUndefined();
+  expect(changeAnchor(entryOf(headingOnly), specReading(PLAIN_INTRO, blocks))).toBeUndefined();
 });
 
 // The server counts a quote's places over the
@@ -732,11 +734,11 @@ test("a Change counts the quote's match in the spec's intro above the first deci
     rows.map(blockOf)
   );
 
-  expect(changeAnchor(first, document)).toEqual({
+  expect(changeAnchor(entryOf(first), document)).toEqual({
     occurrence: 1,
     quote: "Keep the model pure.",
   });
-  expect(changeAnchor(second, document)).toEqual({
+  expect(changeAnchor(entryOf(second), document)).toEqual({
     occurrence: 0,
     quote: "Read it from one place.",
   });
@@ -776,7 +778,7 @@ test("a Change counts the quote's matches in a replaced decision and in a # sect
     blockOf(again),
   ]);
 
-  expect(rows.map((row) => changeAnchor(row, document))).toEqual([
+  expect(rows.map((row) => changeAnchor(entryOf(row), document))).toEqual([
     { occurrence: 1, quote: "Keep the model pure." },
     { occurrence: 2, quote: "Keep the model pure." },
     { occurrence: 4, quote: "Keep the model pure." },
@@ -812,7 +814,7 @@ test("a Change of a decision whose first block is a list counts the same words i
       ["Hold the deploy. Then ship.", 1],
     ] as const) {
       const document = specReading(intro, rows.map(blockOf));
-      expect(changeAnchor(second, document)).toEqual({
+      expect(changeAnchor(entryOf(second), document)).toEqual({
         occurrence: inIntro + inFirst,
         quote: "Hold the deploy. Then ship.",
       });
@@ -839,14 +841,14 @@ test("a Change counts a match that starts in the decision's heading and runs int
     ["go go go", 1],
   ] as const) {
     const document = specReading(intro, rows.map(blockOf));
-    expect(changeAnchor(second, document)).toEqual({
+    expect(changeAnchor(entryOf(second), document)).toEqual({
       occurrence: 3 + inIntro,
       quote: "go go go",
     });
     const places = changePlaces(rows, document);
     expect(places.chosen).toEqual(places.own);
     const alone = specReading(intro, [blockOf(second)]);
-    expect(changeAnchor(second, alone)).toEqual({
+    expect(changeAnchor(entryOf(second), alone)).toEqual({
       occurrence: 1 + inIntro,
       quote: "go go go",
     });
@@ -880,17 +882,22 @@ test("a Change names no occurrence where the spec's reading does not line up wit
     specReading(intro, [blockOf(first), blockOf(second), thirdBlock]);
 
   const whole = withThird(blockOf(third));
-  expect(changeAnchor(third, whole)).toEqual({
+  expect(changeAnchor(entryOf(third), whole)).toEqual({
     occurrence: 2,
     quote: "Keep the model pure.",
   });
   const placed = changePlaces(rows, whole);
   expect(placed.chosen).toEqual(placed.own);
 
-  expect(changeAnchor(third, undefined)).toStrictEqual(quoteAlone);
+  expect(changeAnchor(entryOf(third), undefined)).toStrictEqual(quoteAlone);
   const lacking = specReading(intro, [blockOf(first), blockOf(third)]);
-  expect(changeAnchor(second, lacking)).toStrictEqual({ quote: "Read it from one place." });
-  expect(changeAnchor(third, lacking)).toEqual({ occurrence: 2, quote: "Keep the model pure." });
+  expect(changeAnchor(entryOf(second), lacking)).toStrictEqual({
+    quote: "Read it from one place.",
+  });
+  expect(changeAnchor(entryOf(third), lacking)).toEqual({
+    occurrence: 2,
+    quote: "Keep the model pure.",
+  });
   const reworded = withThird(
     decisionNode("d3", [
       headingNode(2, "Purity again"),
@@ -898,7 +905,7 @@ test("a Change names no occurrence where the spec's reading does not line up wit
       paragraph("Test it alone."),
     ])
   );
-  expect(changeAnchor(third, reworded)).toStrictEqual(quoteAlone);
+  expect(changeAnchor(entryOf(third), reworded)).toStrictEqual(quoteAlone);
   const elsewhere = withThird(
     decisionNode("d4", [
       headingNode(2, "Purity again"),
@@ -906,7 +913,7 @@ test("a Change names no occurrence where the spec's reading does not line up wit
       paragraph("Test it alone."),
     ])
   );
-  expect(changeAnchor(third, elsewhere)).toStrictEqual(quoteAlone);
+  expect(changeAnchor(entryOf(third), elsewhere)).toStrictEqual(quoteAlone);
   const renamed = withThird(
     decisionNode("d3", [
       headingNode(2, "Purity, again"),
@@ -914,7 +921,10 @@ test("a Change names no occurrence where the spec's reading does not line up wit
       paragraph("Test it alone."),
     ])
   );
-  expect(changeAnchor(third, renamed)).toEqual({ occurrence: 2, quote: "Keep the model pure." });
+  expect(changeAnchor(entryOf(third), renamed)).toEqual({
+    occurrence: 2,
+    quote: "Keep the model pure.",
+  });
 
   const underWhy = readDecision("d3", "Purity again", "### Why\n\nKeep the model pure.", [
     headingNode(3, "Why"),
@@ -922,7 +932,7 @@ test("a Change names no occurrence where the spec's reading does not line up wit
   ]);
   expect(anchorQuote(underWhy)).toBe("Keep the model pure.");
   const below = withThird(blockOf(underWhy));
-  expect(changeAnchor(underWhy, below)).toEqual({
+  expect(changeAnchor(entryOf(underWhy), below)).toEqual({
     occurrence: 2,
     quote: "Keep the model pure.",
   });
@@ -963,7 +973,7 @@ test("a Change of a decision read with no reading is read by its stored text's r
   );
   const rows = [first, second];
 
-  expect(rows.map((row) => changeAnchor(row, PURITY_DOCUMENT))).toEqual([
+  expect(rows.map((row) => changeAnchor(entryOf(row), PURITY_DOCUMENT))).toEqual([
     { occurrence: 1, quote: "Keep the model pure." },
     { occurrence: 2, quote: "Keep the model pure." },
   ]);
@@ -982,7 +992,7 @@ test("a Change of a decision read with no reading is read by its stored text's r
       },
     ]),
   ]);
-  expect(changeAnchor(marked, strong)).toStrictEqual({
+  expect(changeAnchor(entryOf(marked), strong)).toStrictEqual({
     occurrence: 0,
     quote: "Keep the model pure.",
   });
@@ -1010,7 +1020,7 @@ test("a decision whose reading holds no blocks is read by its stored markdown", 
   const rows = [first, second];
 
   expect(anchorQuote(first)).toBe("Keep the model pure.");
-  expect(rows.map((row) => changeAnchor(row, PURITY_DOCUMENT))).toEqual([
+  expect(rows.map((row) => changeAnchor(entryOf(row), PURITY_DOCUMENT))).toEqual([
     { occurrence: 1, quote: "Keep the model pure." },
     { occurrence: 2, quote: "Keep the model pure." },
   ]);

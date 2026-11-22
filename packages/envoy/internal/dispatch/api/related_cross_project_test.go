@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -391,14 +393,15 @@ func TestCrossProjectRelatedSkipsAsksThatDoNotQualify(t *testing.T) {
 	// the schema admits an answer on an answered row only (asks_answer_state_check). The
 	// windows the answer was indexed into stay as they are, so this ask still stands at cosine
 	// 0.92 of the question through the answer's own words; its state is what leaves it out. No
-	// route writes this row, so it is written here.
-	if tag, err := database.Pool.Exec(context.Background(), `
-		update asks set state = 'resolved', answer = null,
-		    resolution = jsonb_build_object('kind', 'resolved', 'reason', 'the document moved on',
-		      'actor', jsonb_build_object('kind', 'user', 'id', 'alice'), 'at', now())
-		 where id = $1`, resolved); err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("resolve the answered ask %s: %v (%d rows)", resolved, err, tag.RowsAffected())
+	// route writes this state, so it is written here as the decisions step's catch-up states a
+	// retraction a release before wrote (asks.Recorded): on the ask's node, which the statement
+	// reads the state off (askNodeStateOf), and on its row.
+	retraction := model.AskResolution{
+		Kind: "resolved", Reason: "the document moved on", Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC(),
 	}
+	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
+	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, database, resolved, retracted)
 	// A write of an ask's answer marks it owed a block index and owed its windows
 	// (item_blocks_owe, migration 20261107194001), and the statement above writes that column.
 	// The marks are this statement's own artefact: no route writes this row, so nothing in the

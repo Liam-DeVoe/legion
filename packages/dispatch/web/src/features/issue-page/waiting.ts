@@ -65,10 +65,11 @@ export function waitingOnReader(
     );
   const asks = open.length - approvals.length;
   const changes = decisionChanges(decisions, comments, issue, documents);
+  // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
   const reviewing =
     viewer === undefined
       ? 0
-      : (decisions?.decisions ?? []).filter((decision) =>
+      : (decisions?.entries ?? []).filter((decision) =>
           inReviewList(decision, isCoverageStatement, changes.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };

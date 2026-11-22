@@ -265,8 +265,16 @@ which passed. The browser step over them, in seconds:
   2026-11-21    144    414    507  531
   all           672    380    486  531
 
-The browser step's budget, its `timeout-minutes: 11`, is that maximum by the rule in this file's
-head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
+The census's maximum is 531 s, shard (2) of run 44917245139 (job 136888588252), which by the
+rule in this file's head would be 531 x 1.15 = 611 s -> 11 min. The rule reads the pooled
+maximum, and one more read holds a longer step: #4523's read of every shard browser step of
+`ci.yaml` from 2026-11-13T16:00Z to 2026-11-20T16:00Z, 19,219 steps in 4,742 runs of pull
+requests, merge groups and the nightly schedule, `workflow_dispatch` runs left out. Its longest
+uncut step is 585 s (run 44557669985, job 135679815991, shard (3)), a leg that had to finish
+its retries to report a failing row, and the next is 558 s (run 44601631311, job 135835839778,
+shard (4)). A leg with a failing row must finish to report it, so a pull request's legs count
+as much as a merge group's. So the browser step's budget, its `timeout-minutes: 12`, is
+585 x 1.15 = 673 s -> 12 min.
 The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
 leg), and the 1,260 rows both runs passed took 4,345 s and 4,393 s, a ratio of 1.011. So this
@@ -508,11 +516,12 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives by the rule from this
-step's maximum, 607 s, which the shared controls' rows of dispatch://INFRA-3135 set with the rows
-main has added since: 607 x 1.15 = 698 s. Main's own full-lane runs of 2026-11-18 to 2026-11-21,
-whose maximum is 531 s, would give 11 minutes; the job's head gives the census's query and why the
-budget is read again as the suite grows.
+The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives from the
+pooled maximum of two reads: main's own full-lane runs of 2026-11-18 to 2026-11-21, whose
+maximum is 531 s, and #4523's read of every shard browser step of `ci.yaml` from
+2026-11-13T16:00Z to 2026-11-20T16:00Z, whose maximum is 585 s (run 44557669985, job
+135679815991). The job's head gives both reads and why the budget is read again as the suite
+grows.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -1225,21 +1234,32 @@ three's per-leg merge all grow with those. A job cancelled at this budget posts 
 so the run is red and read again from the jobs API; it cannot pass a verdict it never
 reached.
 
-## Why every leg's blob report is downloaded into a directory of its own
+## Why every leg's blob report is downloaded without merge-multiple, and the two layouts it lands in
 
-Every leg's blob report and row count, one directory per artifact. Each artifact holds a
-blob-report/ and a rows/ directory, so the zips land together and the counts land beside
-them rather than among them: `merge-reports` reads the zips of the directory it is given.
+Every leg's blob report and row count. A leg's artifact holds a blob-report/ directory, a
+rows/ directory or both (a leg whose browser step wrote a count and no blob uploads rows/
+alone), so the zips land together and the counts land beside them rather than among them:
+`merge-reports` reads the zips of the directory it is given.
 
-No `merge-multiple`, so each artifact is extracted into a directory named for it
-(dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip) and the step "Take the
-newest attempt of each leg's blob report" can
-tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
-pattern matches them all; two attempts of one leg hold the same inner paths, so merging
-them into one directory let one attempt overwrite the other in an order nothing fixes.
+No `merge-multiple`, so when more than one artifact matches, each is extracted into a
+directory named for it (dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip)
+and the step "Take the newest attempt of each leg's blob report" can tell the attempts
+apart. A run's artifact list holds every attempt's artifacts and this pattern matches
+them all; two attempts of one leg hold the same inner paths, so merging them into one
+directory let one attempt overwrite the other in an order nothing fixes.
 The pattern is this lane's prefix, ARTIFACT_LANE of the workflow's `env:`, which the shard
 job's upload names too: a references run beside a pull-request run in one workflow run
 must not join the other's legs.
+
+When exactly one artifact matches, the action extracts it into `path` itself, with no
+directory named for it: v8.0.1's src/download-artifact.ts, at the pinned 3e5f45b2, writes
+into `path` when `merge-multiple` is set or when `artifacts.length === 1`. blobs/ then
+holds that artifact's blob-report/ and rows/ (blobs/blob-report/report-shard-1.zip). How
+many artifacts the pattern matches, over every attempt of the run, is the run's - one leg
+that uploaded a blob on one attempt makes one - so that step reads both layouts, and takes
+a lone artifact whole: one artifact is one leg at one attempt, and there is nothing to
+choose. That layout holds no artifact name, so no prefix is read there: the pattern is
+the lane's own, so the one artifact it matched is that lane's.
 
 ## Why a refused blob download is reported as a refused read
 
@@ -1266,10 +1286,10 @@ The newest attempt of each leg, and no other, into one directory of the shape th
 "Merge the legs' blob reports into one report", "Reading one, the rows" and "Reading three, the leg exits with no failed row" read. A leg a failed-only re-run did not run keeps the attempt that ran it, which
 is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
 script's head says what two attempts of one leg did to a merged report when they were
-downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
-and its log names the attempt it took for each leg. The third argument is the lane's
-artifact prefix, ARTIFACT_LANE from this step's environment, which the download step
-matched.
+downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory.
+Where several artifacts matched, its log names the attempt it took for each leg; where one
+matched, it names the files it took. The third argument is the lane's artifact prefix,
+ARTIFACT_LANE from this step's environment, which the download step matched.
 
 ## What the merged report's three outputs are for
 

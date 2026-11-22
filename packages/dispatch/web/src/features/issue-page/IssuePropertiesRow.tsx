@@ -101,7 +101,7 @@ export function IssuePropertiesRow({
     ...EVENT_FRESH,
   });
   const decided = new Set(
-    (decisions.data?.decisions ?? []).map((decision) => decisionDocumentId(issue, decision))
+    (decisions.data?.entries ?? []).map((decision) => decisionDocumentId(issue, decision))
   );
   const decisionDocuments = treeDocumentIds(issue).filter((id) => decided.has(id));
   // `combine` keeps one value for the documents' blocks, replaced only when a document's own read

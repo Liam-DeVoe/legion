@@ -6,6 +6,9 @@ package main
 // DISPATCH_DEFECTS_SERVER_BINARY names, as
 //
 //	DISPATCH_DEFECTS_SERVER_BINARY=$TMPDIR/base-dispatch go test -tags basebuild ./cmd/dispatch/ -run '^TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel$' -count=1 -v
+//
+// Whatever binary that names, the test asserts all three defects, so a run with the variable set
+// passes only for a binary in which all three are gone.
 
 import (
 	"context"
@@ -29,8 +32,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
-// defectsServerBinaryEnv names the envoy-dispatch binary of the base release, which the baseline
-// quote boots instead of this head's build. Unset, the test boots this head (cmdtest.Build).
+// defectsServerBinaryEnv names an envoy-dispatch binary the test boots instead of this head's
+// build: the base release, for the baseline quote. Unset, the test boots this head (cmdtest.Build).
 const defectsServerBinaryEnv = "DISPATCH_DEFECTS_SERVER_BINARY"
 
 // defectsAgentSession is the session the shared agent bearer writes the agent's decision as.
@@ -65,8 +68,8 @@ func (entry defectsEntry) node() string {
 	return entry.Node.Kind + ":" + entry.Node.ID
 }
 
-// shaped is each spec node the entry's shaped answers, written kind:id, with the tuple's event and
-// whether the link is stale, for a message to print.
+// shaped is each spec node the entry's shaped answers, written kind:id, with the tuple's event,
+// whether the link is stale and whether its node changed since the tie, for a message to print.
 func (entry defectsEntry) shaped() string {
 	if len(entry.Shaped) == 0 {
 		return "no shaped link"
@@ -77,7 +80,7 @@ func (entry defectsEntry) shaped() string {
 		if link.Event != nil {
 			event = fmt.Sprintf("event %d", *link.Event)
 		}
-		links[index] = fmt.Sprintf("%s:%s (%s, stale %t)", link.To.Kind, link.To.ID, event, link.Stale)
+		links[index] = fmt.Sprintf("%s:%s (%s, stale %t, changed since the tie %t)", link.To.Kind, link.To.ID, event, link.Stale, link.ChangedSinceTie)
 	}
 	return "the shaped links " + strings.Join(links, ", ")
 }
@@ -255,28 +258,49 @@ func (run *defectsRun) editSpec(what, find, with string) int {
 	return run.writtenVersion(what, run.seed(what, http.MethodPost, "/api/v1/issues/"+run.issue+"/artifacts/spec/edits", body, asUser(dispatchTestLogin), http.StatusOK))
 }
 
-// requireDefectsServerBinary fails the test unless binary, the base release
+// requireDefectsServerBinary fails the test unless binary, the build
 // DISPATCH_DEFECTS_SERVER_BINARY names, is an executable file. It never skips: a baseline that did
 // not run reads as one that held.
 func requireDefectsServerBinary(t *testing.T, binary string) {
 	t.Helper()
 	info, err := os.Stat(binary)
 	if err != nil {
-		t.Fatalf("the base release %s that %s names cannot be read: %v", binary, defectsServerBinaryEnv, err)
+		t.Fatalf("the build %s that %s names cannot be read: %v", binary, defectsServerBinaryEnv, err)
 	}
 	if info.IsDir() || info.Mode()&0o111 == 0 {
-		t.Fatalf("the base release %s that %s names is no executable file", binary, defectsServerBinaryEnv)
+		t.Fatalf("the build %s that %s names is no executable file", binary, defectsServerBinaryEnv)
 	}
 }
 
-// defectsDatabase creates an empty database on the test server for the base release alone, as
-// censusDatabase does, and answers its URL: the base release runs its own migrations on it, which a
-// clone of this build's migrated template would refuse.
+// defectsServerCommit is the commit the process says it is stamped with, the `commit` of its
+// /healthz (the one the e2e drivers read), "" for a build stamped with none.
+func defectsServerCommit(t *testing.T, process *dispatchProcess) string {
+	t.Helper()
+	answer := process.send(t, http.MethodGet, "/healthz", "", nil)
+	var health struct {
+		Commit *string `json:"commit"`
+	}
+	if answer.status != http.StatusOK {
+		t.Fatalf("reading the server's build failed: GET /healthz answers %s", answer)
+	}
+	if err := json.Unmarshal(answer.body, &health); err != nil {
+		t.Fatalf("reading the server's build failed: decode GET /healthz: %v: %s", err, answer)
+	}
+	if health.Commit == nil {
+		return ""
+	}
+	return *health.Commit
+}
+
+// defectsDatabase creates an empty database on the test server for the build
+// DISPATCH_DEFECTS_SERVER_BINARY names alone, as censusDatabase does, and answers its URL: that
+// build runs its own migrations on it, which a clone of this build's migrated template would
+// refuse where it is the base release.
 func defectsDatabase(t *testing.T) string {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv(storetest.DatabaseURLEnv))
 	if raw == "" {
-		t.Fatalf("%s names the base release, which serves a database this test creates on the server %s names, and %s is unset",
+		t.Fatalf("%s names a build, which serves a database this test creates on the server %s names, and %s is unset",
 			defectsServerBinaryEnv, storetest.DatabaseURLEnv, storetest.DatabaseURLEnv)
 	}
 	server, err := url.Parse(raw)
@@ -314,11 +338,12 @@ func defectsDatabase(t *testing.T) string {
 // Each later assertion reads what the earlier one held - the ask's entry, then its tie - so a
 // defect's failure ends the run.
 //
-// With DISPATCH_DEFECTS_SERVER_BINARY naming the base release's binary, the process is that
-// binary, over an empty database the test creates on the test server, and the issue holds only
-// what that release accepts: the spec with the ask bob answers. Only the first assertion runs, and
-// on that release it fails, printing defect 1's words, for the base answers an empty list for an
-// issue with no decisions.md.
+// With DISPATCH_DEFECTS_SERVER_BINARY naming a binary, the process is that binary, over an empty
+// database the test creates on the test server, and the issue holds only what the base release
+// accepts: the spec with the ask bob answers. The test prints the commit the binary's /healthz
+// names and asserts all three defects as above, so a binary of this head passes and the base
+// release fails at the first assertion, printing defect 1's words, for the base answers an empty
+// list for an issue with no decisions.md.
 func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 	ctx := context.Background()
 	base := strings.TrimSpace(os.Getenv(defectsServerBinaryEnv))
@@ -331,10 +356,13 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 		requireDefectsServerBinary(t, base)
 		databaseURL = defectsDatabase(t)
 		options.Binary = base
-		t.Logf("the server is the base release %s, over an empty database of this run's own", base)
+		t.Logf("the server is the build %s, over an empty database of this run's own", base)
 	}
 	process := startDispatchProcessWith(t, databaseURL, options)
 	process.waitHealthy(t)
+	if base != "" {
+		t.Logf("the build %s that %s names is stamped with the commit %q (its /healthz)", base, defectsServerBinaryEnv, defectsServerCommit(t, process))
+	}
 	database, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("seeding the issue failed: connect to the database the server serves: %v", err)
@@ -394,9 +422,6 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 			run.path(), read.answered(), run.issue, len(held), strings.Join(missing, ", "), stray, read.body)
 	}
 	t.Logf("the assertion of defect 1 holds: GET %s answers %s, one entry for each decision %s holds", run.path(), read.answered(), run.issue)
-	if base != "" {
-		return
-	}
 
 	// ───── defect 2: the tie appears on the first read after the write that ties it ─────
 	r1 := refs.BlockNodeKind + ":" + run.issue + "/spec#r1"

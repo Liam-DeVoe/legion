@@ -12,7 +12,7 @@ import (
 )
 
 // readStateTable is one of the six tables a person's read state is projected onto
-// (dispatch://INFRA-1152 R6): each row mirrors tuples from the person's node to what the mark is
+// (the spec's R6): each row mirrors tuples from the person's node to what the mark is
 // about, and so derives from both ends. Key is the table's primary key, the order the erase takes
 // a node's rows of it in (lockReadStateRows) and how the listing names each. Items names, by the
 // kind of an erased item, the predicate over $1, the item's id, that picks the rows naming it; a

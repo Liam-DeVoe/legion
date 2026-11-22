@@ -248,11 +248,11 @@ function handOffFocus(form: HTMLElement): void {
  *  focus.
  *
  *  Where the reader's own answer takes the form's row away - in an Inbox, whose rows of the ask
- *  the answer takes out (dispatch://INFRA-4948 R1) - the form goes with no hand-off of its own
+ *  the answer takes out (the own-answer rule, R1) - the form goes with no hand-off of its own
  *  (`leaveToRescue`): the focus it held is the page's to place. The page's rescue reads that loss
  *  as the reader's press while the answer's hold is on (`useHeldThroughAnswer`), and the reading
  *  column hands a focus it lost to its own stop, the region named Question body, once it draws
- *  the row the Inbox selects next (`Inbox.tsx`'s own hand-off; INFRA-3135's open items, "A
+ *  the row the Inbox selects next (`Inbox.tsx`'s own hand-off; the Inbox page's open items, "A
  *  component's own hand-off"). */
 function useFormRef(leaveToRescue: {
   readonly current: boolean;
@@ -478,7 +478,7 @@ export function AskCard({
   // Outside `NoTooltips`, in an Inbox, the answer's Send is held by `aria-disabled` while its write
   // is out, rather than `disabled`, so the focus stays on it: the answer takes the ask's rows away
   // - its row as it lands, and the row of its thread once the Inbox is read again, since the
-  // reader's own answer dismisses that thread (dispatch://INFRA-4948 R1) - so the hold goes on
+  // reader's own answer dismisses that thread (the own-answer rule, R1) - so the hold goes on
   // past the landing until the reads of the Inbox out then have come back (`meInboxReadsBack`):
   // the landing started that read (`onSettled`), and the hold waits on it and sends none. The hold
   // ends at the latest at the write deadline from the press (`SEND_DEADLINE_MS`), and at once on a

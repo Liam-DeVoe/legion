@@ -23,7 +23,7 @@ import (
 // email stays until it is archived: reading it and pressing Mark all read leave it there. The
 // person's own answer or reply takes it out as this route does, with no second press: its writer
 // marks the thread dismissed in the write's own transaction (inboxwrite.Record, steps 5 and 6,
-// dispatch://INFRA-4948 R1). A new write by somebody else brings a dismissed thread back, unread.
+// the own-answer rule, R1). A new write by somebody else brings a dismissed thread back, unread.
 //
 // It is a file of its own rather than a third act in api/inbox_read.go: that file's subject is the
 // read mark and the lock order written on markInboxReadThreads, which this route takes without
@@ -187,7 +187,7 @@ var inboxDismissCheckAgentRoots = myAgentMarks + `
 // holds the row as the lock taken before it left it (writeInboxThreadMarks): no other writer moves
 // a row this transaction holds. A timestamp as a value is sound, and a filtered dismissal is
 // matched by one: it writes the rows whose replied_at is at or before dismiss_through, the as_of
-// rule the mark-all takes too (INFRA-450's spec, v32). What decides a named dismissal's rows is
+// rule the mark-all takes too. What decides a named dismissal's rows is
 // the version.
 //
 // That version is user_threads.version ($4, one per thread beside the ids in $3), which the list

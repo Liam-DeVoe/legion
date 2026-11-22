@@ -48,6 +48,9 @@ func approvedConversionSpec(t *testing.T, handler http.Handler, title string) co
 		"markdown": "## Decisions\n\nThe decisions this spec rests on are in dispatch://" + issue.Key + "/artifact/decisions-md.",
 	})
 	answerDecisionBlock(t, handler, asks["a1"], "alice", []string{"Postgres"}, "Postgres, the database we back up.", nil)
+	// The answer writes one version, version 3, the block's kept state alone (R3), and the person
+	// approves the spec as that version leaves it.
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	return conversionFixture{issueKey: issue.Key, specID: issue.PrimaryArtifactID, askID: asks["a1"], approval: approval}
 }

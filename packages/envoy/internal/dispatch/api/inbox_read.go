@@ -454,7 +454,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // waits for.
 //
 // A person's own reply under an Agent thread takes steps 2 and 4 as well, as a dismissal of that
-// one thread (dispatch://INFRA-4948 R1, D6). Its writer (createStoredMessage, api/messages.go)
+// one thread (the own-answer rule, R1, D6). Its writer (createStoredMessage, api/messages.go)
 // takes the thread's root `for update` before the reply's own insert: that insert's foreign key
 // holds its parent `for key share`, so a `for update` taken after it would be the upgrade
 // migration 20261105093507's header records as a deadlock. Only then, in the record's step 6
@@ -511,7 +511,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // ascending login order, in one pass (queueThreadLock), which holds the row of every person the
 // write is about to deliver to; only then the delivered_to tuple of each of those people, through
 // graphstore.QueueToPerson; then the move of their rows; and last the writer's own row, which a
-// person's own answer or reply also marks dismissed (dispatch://INFRA-4948 R1), a row this pass
+// person's own answer or reply also marks dismissed (the own-answer rule, R1), a row this pass
 // already holds where it was there before. The backfill marks a row under that same lock, so no
 // delivery falls on both sides of a row's mark (D4). Two writes into one thread queue at their
 // owner lock before either reaches this pass, so the pass orders nothing between writers; it is
@@ -558,11 +558,11 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //  3. the event is appended before the tuples whose cause it is, so a tuple's source_event
 //     names a row the log already holds;
 //  4. a graph_nodes write touching several nodes takes them in ascending (kind, id)
-//     (graphstore.writeNodes), so two such writes cannot each hold what the other waits for;
+//     (graphstore's queueNodes), so two such writes cannot each hold what the other waits for;
 //  5. a writer under the revision fence (R23 of this change: the version write, the
 //     block index reconciliation tick and the backfill) takes the document's owner lock, through
 //     lockArtifactOwner or events.LockOwnerRows, then the document's document_block_versions row
-//     `for no key update` (indexOwedDocument, refs.standsAtVersion, graphcensus's
+//     `for no key update` (indexOwedDocument, refs' queueStand, graphcensus's
 //     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
 //     the asks the settlement opens are followed), before it writes a node, a tuple or a
 //     projection row, so two passes over one document queue at the fence and the one that loses
@@ -573,7 +573,9 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // and invariant 3 is about which rows exist, not about which are held. The one exception is the
 // erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
 // tuples and its node row, and takes this same order to do it: the lock of every owner it writes
-// under, then the node row, then the rest (grapherase's lockInStoreOrder). A writer owning no
+// under, then the node row, then the rest of the rows it locks before it reads (its projection
+// rows), and after them the keyword fill's cursor row, which holds the fill back until the erase
+// ends (grapherase's lockInStoreOrder, textversions.HoldFillBack). A writer owning no
 // issue and no document - an operator's own write, a session-addressed event - takes no owner
 // lock at all, and invariant 1 says nothing about it. graphstore's
 // TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.
@@ -691,9 +693,7 @@ func (s *server) commitInboxMarks(
 				mark.SourceEvent = graphstore.LatestEvent
 				marks[position] = mark
 			}
-			if err := graphstore.QueueFromPerson(b, at, marks); err != nil {
-				return fmt.Errorf("state the inbox's marks: %w", err)
-			}
+			graphstore.QueueFromPerson(b, at, marks)
 		}
 		return nil
 	}); err != nil {

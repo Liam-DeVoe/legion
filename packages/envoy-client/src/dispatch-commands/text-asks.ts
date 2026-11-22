@@ -11,25 +11,87 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
 
 /**
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
- * none, each line opening an ask block read for the attributes that carried them, which reads no
- * ask for a document of this release with no ask block, since its markdown opens none. A line
- * quoting an opener (in code, say) is read too, as the release before's readers read it, so it
- * can add a block but never hide one.
+ * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
+ * release before writes them (askOpenerLines). Only a real opener counts: a line that, past its
+ * containers' quote and list markers, opens the directive, outside fenced code. A line that quotes
+ * an opener in code - a fence, or an inline span, which never starts the line - opens no block, so
+ * a document's writer cannot make it read as an answer Dispatch recorded. A document of this
+ * release with no ask block opens none, and reads no ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
-  return text.markdown.split("\n").flatMap((line) => {
+  return askOpenerLines(text.markdown).flatMap((line) => {
     const opener = openerOf(line);
     return opener === undefined ? [] : [opener];
   });
 }
 
-/** The ask block `line` opens, its attributes read as the release before wrote them, or undefined
- *  where it opens none. */
+/** A fenced code block's fence: its character, a backtick or a tilde, and its length. */
+type CodeFence = { readonly char: string; readonly run: number };
+
+/**
+ * Each line of `markdown` that opens an ask block, past its containers' markers, outside fenced
+ * code, as CommonMark and pmdoc's parser read the canonical rendering a text route serves, which
+ * writes every code block fenced (the server's refs.questionBlocks makes the same scan).
+ */
+function askOpenerLines(markdown: string): string[] {
+  const openers: string[] = [];
+  let fence: CodeFence | undefined;
+  for (const line of markdown.split("\n")) {
+    const rest = withoutContainerMarkers(line.replace(/\r$/, ""));
+    if (fence !== undefined) {
+      const closer = fenceRun(rest);
+      if (
+        closer?.char === fence.char &&
+        closer.run >= fence.run &&
+        rest.slice(closer.run).trim() === ""
+      ) {
+        fence = undefined;
+      }
+      continue;
+    }
+    const opened = fenceRun(rest);
+    if (
+      opened !== undefined &&
+      opened.run >= 3 &&
+      !(opened.char === "`" && rest.slice(opened.run).includes("`"))
+    ) {
+      fence = opened;
+      continue;
+    }
+    if (/^:{3,}ask\{/.test(rest)) openers.push(rest);
+  }
+  return openers;
+}
+
+/** The run of backticks or tildes `text` opens with, if any. */
+function fenceRun(text: string): CodeFence | undefined {
+  const char = text[0];
+  if (char !== "`" && char !== "~") return undefined;
+  let run = 1;
+  while (text[run] === char) run++;
+  return { char, run };
+}
+
+/** `line` without the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`, or a number
+ *  and `.` or `)`, each followed by a space) a block nested in a quote or a list item is written
+ *  after. */
+function withoutContainerMarkers(line: string): string {
+  let rest = line;
+  for (;;) {
+    rest = rest.replace(/^[ \t]+/, "");
+    const marker = /^(?:>|[-*+][ \t]|\d+[.)][ \t])/.exec(rest);
+    if (marker === null) return rest;
+    rest = rest.slice(marker[0].length);
+  }
+}
+
+/** The ask block `line`, a line past its containers' markers that opens the directive, opens, its
+ *  attributes read as the release before wrote them, or undefined where it names no block id. */
 function openerOf(line: string): TextAsk | undefined {
-  const start = line.indexOf("ask{");
   const end = line.lastIndexOf("}");
-  if (start < 0 || end <= start) return undefined;
+  const start = line.indexOf("ask{");
+  if (end <= start) return undefined;
   const attributes = line.slice(start + "ask{".length, end);
   const values = new Map<string, string>();
   for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {

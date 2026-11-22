@@ -139,9 +139,18 @@ func (r *storeWriterRig) plainIssueWithAsk(t *testing.T) string {
 }
 
 // patchIssueSteps are the steps a close or a reopen takes: the issue's owner lock, its ask's row
-// written, the ask's event and the facts its settle held for it. issue is the run's.
+// written, the ask's event and the facts its settle held for it. The settle of a withdrawal or a
+// restore writes no node, so its facts are graphstore's plain tuple append. issue is the run's.
 func patchIssueSteps(issue *string) []storeStep {
-	return []storeStep{runOwnerLockStep(issue), askRowWrittenStep(), eventAppendStep(), tupleAppendStep()}
+	return []storeStep{runOwnerLockStep(issue), askRowWrittenStep(), eventAppendStep(), plainTupleAppendStep()}
+}
+
+// plainTupleAppendStep is tupleAppendStep for a write that wrote no node, whose tuples graphstore
+// appends with a plain insert (queueAppend).
+func plainTupleAppendStep() storeStep {
+	step := tupleAppendStep()
+	step.at = plainTupleAppendStatement
+	return step
 }
 
 // issueCloseWithdrawing is the close of an issue that holds an open ask (recordWithdrawnAsksTx),

@@ -32,7 +32,7 @@ import (
 )
 
 // TestTheWritersOwnAnswerOrReplyDismissesTheThreadForThem is c-answer-dismisses-store
-// (dispatch://INFRA-4948 R1). A person's own answer or reply takes its thread out of their Inbox
+// (the own-answer rule, R1). A person's own answer or reply takes its thread out of their Inbox
 // in the write's own transaction, as a Dismiss press does: one dismissed tuple from the person to
 // the thread's root, at the write's moment and under its event, and the projection's mark - the
 // person's user_threads row, or their user_agent_thread_dismissed row at an Agent thread's root.
@@ -781,8 +781,8 @@ func setsOwnWrite(literal *ast.CompositeLit) bool {
 	return false
 }
 
-// otherDismissedThreads is how many dismissed threads the return's bound is read over, as R4 of
-// dispatch://INFRA-1152 bounds a thread's participants.
+// otherDismissedThreads is how many dismissed threads the return's bound is read over, as the
+// one-Inbox spec's R4 bounds a thread's participants.
 const otherDismissedThreads = 1000
 
 // requireTheReturnTouchesOneThread proves the return and its bound. A comment thread alice and carol

@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The assignee arm (dispatch://INFRA-1152 R2 and R4, decision 10, departure P4): an open ask
+// The assignee arm (the spec's R2 and R4, decision 10, departure P4): an open ask
 // reaches the person it waits on, the person asks.AskedOfPersonExpression names - the person it
 // was handed to, else its issue's assignee, else its project's default assignee - and that person
 // takes part in its thread. The ask's create appends both tuples (Record, for an Opened write),

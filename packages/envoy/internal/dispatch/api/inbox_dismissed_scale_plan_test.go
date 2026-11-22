@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -90,6 +93,154 @@ func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold b
 			}
 		}
 	}
+	explainDismissedScaleOneRead(t, connection.Conn(), shape, hold)
+}
+
+// explainDismissedScaleOneRead explains the one read's Dismissed page as the handler builds it
+// (GET /api/v1/me/inbox?state=dismissed&limit=200, meInboxStatement): the first page and, where the
+// shape holds one, the page 50,000 deep, each under the generic plan, the plan the read runs, which
+// knows nothing of the cursor or the page, and under the plan of its own arguments beside it. The
+// generic explain runs under every setting of the read's own transaction (meInboxSettings,
+// readMeInbox), as the read runs. The other runs under meInboxNoJIT alone, leaving out the setting
+// that makes the read's plan the generic one (meInboxGenericPlan), so that it plans for its own
+// arguments. On the loaded shape each plan is held to the cut (meInboxDismissedCut): each of the
+// two arms reads its own index, from the cursor and in that index's order, and takes no more of it
+// than the page and the one row past it, so no node reading either index answers more than 201
+// rows and no sort orders anything by the dismissal. Before the cut each arm read the whole pile -
+// 100,000 and 10,000 rows - into the walk.
+func explainDismissedScaleOneRead(t *testing.T, connection *pgx.Conn, shape *dismissedScaleShape, hold bool) {
+	t.Helper()
+	ctx := context.Background()
+	var horizon int64
+	if err := connection.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&horizon); err != nil {
+		t.Fatalf("read the event log's horizon: %v", err)
+	}
+	pages := []struct{ operation, cursor string }{{"dismissed page 1", ""}}
+	if shape.deepCursor != "" {
+		pages = append(pages, struct{ operation, cursor string }{"dismissed page 50,000 deep", shape.deepCursor})
+	}
+	limit := dismissedScalePage
+	for _, page := range pages {
+		request := meInboxRequest{state: myRepliesStateDismissed, limit: &limit}
+		if page.cursor != "" {
+			raw, err := url.QueryUnescape(page.cursor)
+			if err != nil {
+				t.Fatalf("unescape the cursor %d deep: %v", dismissedScaleCursorDepth, err)
+			}
+			if request.cursor, err = parseMeInboxCursor(raw, myRepliesStateDismissed); err != nil {
+				t.Fatalf("read the cursor %d deep: %v", dismissedScaleCursorDepth, err)
+			}
+		}
+		statement, args, err := meInboxStatement(model.Actor{Kind: "user", ID: dismissedScaleLogin}, horizon, request, false, false, nil)
+		if err != nil {
+			t.Fatalf("build the one read's %s: %v", page.operation, err)
+		}
+		for _, generic := range []bool{false, true} {
+			name := page.operation + " / the one read @ " + shape.name
+			plan, text := json.RawMessage(nil), ""
+			if generic {
+				name = page.operation + " / the one read, generic plan @ " + shape.name
+				plan, text = explainDismissedScaleGeneric(t, connection, name, statement, args, meInboxSettings...)
+			} else {
+				plan, text = explainDismissedScale(t, connection, name, statement, args, meInboxNoJIT)
+			}
+			t.Logf("%s:\n%s", name, text)
+			if !hold {
+				continue
+			}
+			for _, index := range []string{"user_threads_dismissed", "user_agent_thread_dismissed_login_dismissed_at"} {
+				if !planReadsIndex(t, plan, index) {
+					t.Errorf("%s does not read %s:\n%s", name, index, text)
+				}
+				if read := planRowsOver(t, plan, index); read > float64(limit+1) {
+					t.Errorf("%s takes %.0f rows of %s, want at most the page and the one past it, %d: the arm meets the walk before it is cut:\n%s",
+						name, read, index, limit+1, text)
+				}
+			}
+			for _, key := range planSortKeys(t, plan) {
+				if strings.Contains(key, "dismissed_at") {
+					t.Errorf("%s sorts on %s, which the state's indexes already answer in:\n%s", name, key, text)
+				}
+			}
+		}
+	}
+}
+
+// planRowsOver is how many rows the nodes of an analysed plan that read index answered, over every
+// loop of each.
+func planRowsOver(t *testing.T, planJSON json.RawMessage, index string) float64 {
+	t.Helper()
+	rows := float64(0)
+	for _, node := range explaintest.Nodes(t, planJSON) {
+		if node.Index == index {
+			rows += node.Rows * max(node.Loops, 1)
+		}
+	}
+	return rows
+}
+
+// explainDismissedScaleGeneric is explainDismissedScale under the generic plan: statement prepared
+// on connection, and its EXECUTE explained under plan_cache_mode force_generic_plan and settings,
+// each a statement the transaction runs first, inside a transaction that is rolled back. EXECUTE
+// takes no bind parameter (explaintest.GenericPlan), so args go as literals pgx writes into it (the
+// simple protocol), each cast to the type the prepare gave that parameter. The prepared statement
+// is deallocated afterwards.
+func explainDismissedScaleGeneric(
+	t *testing.T, connection *pgx.Conn, name, statement string, args []any, settings ...string,
+) (json.RawMessage, string) {
+	t.Helper()
+	ctx := context.Background()
+	const prepared = "dismissed_scale_generic"
+	described, err := connection.Prepare(ctx, prepared, statement)
+	if err != nil {
+		t.Fatalf("prepare %s: %v", name, err)
+	}
+	defer func() {
+		if err := connection.Deallocate(ctx, prepared); err != nil {
+			t.Errorf("deallocate %s: %v", name, err)
+		}
+	}()
+	placeholders := make([]string, len(described.ParamOIDs))
+	for index, oid := range described.ParamOIDs {
+		var typed string
+		if err := connection.QueryRow(ctx, `select $1::oid::regtype::text`, oid).Scan(&typed); err != nil {
+			t.Fatalf("name the type of %s's $%d: %v", name, index+1, err)
+		}
+		placeholders[index] = fmt.Sprintf("$%d::%s", index+1, typed)
+	}
+	tx, err := connection.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the explain of %s: %v", name, err)
+	}
+	defer tx.Rollback(ctx)
+	for _, setting := range append([]string{"set local plan_cache_mode = force_generic_plan"}, settings...) {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s before the explain of %s: %v", setting, name, err)
+		}
+	}
+	execute := "execute " + prepared + "(" + strings.Join(placeholders, ", ") + ")"
+	// A []byte argument - the acting credential, JSON (refs.VisibilityArg) - goes as its text: pgx
+	// writes bytes as a bytea literal, which no json cast reads.
+	literals := []any{pgx.QueryExecModeSimpleProtocol}
+	for _, arg := range args {
+		if raw, isBytes := arg.([]byte); isBytes {
+			arg = string(raw)
+		}
+		literals = append(literals, arg)
+	}
+	var planJSON []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+execute, literals...).Scan(&planJSON); err != nil {
+		t.Fatalf("explain %s: %v", name, err)
+	}
+	rows, err := tx.Query(ctx, "explain (analyze, buffers) "+execute, literals...)
+	if err != nil {
+		t.Fatalf("explain %s as text: %v", name, err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("explain %s as text: %v", name, err)
+	}
+	return explaintest.OnePlan(t, planJSON), strings.Join(lines, "\n")
 }
 
 // planLoopsOver is the greatest number of times any one node of an analysed plan read relation:
@@ -118,9 +269,10 @@ func planLoopsOver(t *testing.T, planJSON json.RawMessage, relation string) floa
 
 // explainDismissedScale runs one statement under EXPLAIN (ANALYZE, BUFFERS) twice: once as JSON,
 // which the checks read, and once as text, which the report prints. Both run inside a transaction
-// that is rolled back, so a write route's read takes no lock past the measurement.
+// that is rolled back, so a write route's read takes no lock past the measurement, after settings,
+// the statements the read's own transaction runs before it where it runs any (meInboxSettings).
 func explainDismissedScale(
-	t *testing.T, connection *pgx.Conn, name, statement string, args []any,
+	t *testing.T, connection *pgx.Conn, name, statement string, args []any, settings ...string,
 ) (json.RawMessage, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -129,6 +281,11 @@ func explainDismissedScale(
 		t.Fatalf("begin the explain of %s: %v", name, err)
 	}
 	defer tx.Rollback(ctx)
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s before the explain of %s: %v", setting, name, err)
+		}
+	}
 	var planJSON []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, args...).Scan(&planJSON); err != nil {
 		t.Fatalf("explain %s: %v", name, err)
@@ -152,37 +309,16 @@ func explainDismissedScale(
 	return explaintest.OnePlan(t, planJSON), strings.Join(lines, "\n")
 }
 
-// dismissedScaleStatements is every statement the six operations run, with the index each is held
-// to: the list route's two halves per state (api/replies.go and api/replies_agent.go), the
-// dismissal's read of the rows it was given (api/inbox_dismiss.go) and the mark-all's two reads
-// (api/inbox_read.go). The indexes are the ones replies_plan_test.go pins, which is where the
-// states' own reads are held to them.
+// dismissedScaleStatements is every statement the two write operations run, with the index each is
+// held to: the dismissal's read of the rows it was given (api/inbox_dismiss.go) and the mark-all's
+// two reads (api/inbox_read.go). The one read's Dismissed page is explained apart, as the handler
+// builds it (explainDismissedScaleOneRead).
 func dismissedScaleStatements(shape *dismissedScaleShape) []dismissedScaleExplained {
-	var everyRow *int
-	page := myRepliesDismissedPage
-	one := 1
-	replyArgs := func(extra ...any) []any {
-		return append([]any{dismissedScaleLogin, "", nil}, extra...)
-	}
 	agentArgs := func(extra ...any) []any {
 		return append([]any{dismissedScaleLogin, dismissedScaleLogin, nil}, extra...)
 	}
-	cursorAt, cursorThread, _ := strings.Cut(shape.deepCursor, ",")
 	mark := time.Now().UTC().Format(time.RFC3339Nano)
 	statements := []dismissedScaleExplained{
-		{"state=inbox", "reply", myRepliesInboxPageQuery, replyArgs(everyRow), "user_threads_inbox", "user_threads", "", ""},
-		// The Inbox's own three reads take the person's dismissal marks as one set, so each is
-		// held to reading that table once rather than to an access path of its own.
-		{"state=inbox", "agent", myAgentInboxRowsQuery, agentArgs(everyRow),
-			"messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
-		{"unread count", "reply count", myRepliesCountQuery, replyArgs(), "user_threads_unread", "user_threads", "", ""},
-		{"unread count", "reply page", myRepliesPageQuery, replyArgs(&one), "user_threads_unread", "user_threads", "", ""},
-		{"unread count", "agent page and total", myAgentCountedRowsQuery, agentArgs(&one),
-			"messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
-		{"dismissed page 1", "reply page", myRepliesDismissedPageQuery, replyArgs(&page),
-			"user_threads_dismissed", "user_threads", "", ""},
-		{"dismissed page 1", "agent page", myAgentDismissedRowsQuery, agentArgs(&page),
-			"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at", ""},
 		// The two write routes sort the rows they matched by thread id, which is the lock order
 		// markInboxReadThreads writes down and not an order any index owes them, so what each is
 		// held to is that nothing sorts by the state's own order. The dismissal's read of the
@@ -196,15 +332,6 @@ func dismissedScaleStatements(shape *dismissedScaleShape) []dismissedScaleExplai
 			[]any{dismissedScaleLogin, "", nil, mark, nil, true, nil}, "user_threads_unread", "user_threads", "replied_at", ""},
 		{"mark all read", "agent rows", inboxReadAgentThreads,
 			append(agentArgs(), mark), "messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
-	}
-	if shape.deepCursor != "" {
-		statements = append(statements,
-			dismissedScaleExplained{"dismissed page 50,000 deep", "reply page", myRepliesDismissedFromQuery,
-				replyArgs(&page, cursorAt, cursorThread), "user_threads_dismissed", "user_threads", "", ""},
-			dismissedScaleExplained{"dismissed page 50,000 deep", "agent page", myAgentDismissedFromQuery,
-				agentArgs(&page, cursorAt, cursorThread),
-				"user_agent_thread_dismissed_login_dismissed_at", "user_agent_thread_dismissed", "dismissed_at", ""},
-		)
 	}
 	return statements
 }

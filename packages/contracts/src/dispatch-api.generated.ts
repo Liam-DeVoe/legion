@@ -339,7 +339,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names, or that differs from it only in the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve or decline writes does; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -357,7 +357,7 @@ export interface paths {
     /** @description List a document's asks. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
-    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
+    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask on a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1ArtifactsByIdAsks"];
     delete?: never;
     options?: never;
@@ -426,7 +426,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
+    /** @description Comment on a document or one of its quotes. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -443,7 +443,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. */
+    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdEdits"];
     delete?: never;
     options?: never;
@@ -873,7 +873,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Accept a suggestion, applying its replacement. */
+    /** @description Accept a suggestion, applying its replacement. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1CommentsByIdAccept"];
     delete?: never;
     options?: never;
@@ -924,7 +924,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Reject a suggestion. */
+    /** @description Reject a suggestion. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1CommentsByIdReject"];
     delete?: never;
     options?: never;
@@ -990,7 +990,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. */
+    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. A caller Dispatch calls a restricted member is listed the grants of the sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller is, the list holds no other grant either. */
     get: operations["getApiV1CredentialGrants"];
     put?: never;
     post?: never;
@@ -1009,7 +1009,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. */
+    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: any other is 403 NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers. */
     post: operations["postApiV1CredentialGrantsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -1024,7 +1024,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. */
+    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. A caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, so their list holds their own machine logins alone; while the broker cannot ask Dispatch what kind of member the caller is, it holds none of those other rows either. */
     get: operations["getApiV1CredentialRequests"];
     put?: never;
     post?: never;
@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted member: 403 NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while the broker cannot ask Dispatch what kind of member the caller is, denying nothing. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. */
+    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. A caller Dispatch calls a restricted member dismisses only their own machine logins: a secret request or a service's machine login is 403 NOT_APPROVER to them, saying why, and while the broker cannot ask Dispatch what kind of member the caller is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE, dismissing nothing. */
     post: operations["postApiV1CredentialRequestsByIdDismiss"];
     delete?: never;
     options?: never;
@@ -1438,7 +1438,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1489,7 +1489,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, an edit of a retired document 409 DOCUMENT_RETIRED, and one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/edits answers them. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -1558,7 +1558,7 @@ export interface paths {
     /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). */
     get: operations["getApiV1IssuesByKeyAsks"];
     put?: never;
-    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
+    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask anchored in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1IssuesByKeyAsks"];
     delete?: never;
     options?: never;
@@ -1611,7 +1611,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1643,7 +1643,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple, {kind, id, title?}: title is a session's, the newest title it stamped on anything it wrote, absent for a person and for a session that stamped none), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. open_questions are the issue's open asks whose block is in its spec, oldest first. document and decisions are kept for one release for a page of the release before, and answer from the store: decisions is each decision node and each answered ask of entries in its old shape (kind agent or person, links from shaped, kept and waiting_review from the node), and document is the dispatch:// address of the issue's decisions document while one an earlier release stored still stands, null once it is retired or where there is none. No read answers from that document's text. */
+    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple, {kind, id, title?}: title is a session's, the newest title it stamped on anything it wrote, absent for a person and for a session that stamped none), from_ask (a decision's, the id of each ask its from_ask tuples reach; [] on an ask), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, stale, true when the decision's own words changed after the tuple and the node's text has not changed since they did, and changed_since_tie, true when the node's text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. open_questions are the issue's open asks whose block is in its spec, oldest first. document and decisions are kept for one release for a page of the release before, and answer from the store: decisions is each decision node and each answered ask of entries in its old shape (kind agent or person, links from shaped, kept and waiting_review from the node), and document is the dispatch:// address of the issue's decisions document while one an earlier release stored still stands, null once it is retired or where there is none. No read answers from that document's text. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -1797,7 +1797,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
+    /** @description An issue's references, one hop in each direction: {links, linked_from, members, truncated}, under an ETag (If-None-Match answers 304). The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v1/references lists it. links is every node the issue's own content links to, and linked_from every node that links to the issue or to its own content, one row for each node, a block or a part counted as its document or item; the issue and its own content are in neither, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via}: the node as GET /api/v1/references names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end; each list is in the order of the node's kind, then its id, and is [] when it has no row. A caller that sent Dispatch-Trees: 1 is also given name_tree on each row: its name as the tree a reader is shown. members is the documents of links, each {artifact, depth, via} with the document's versions and its row's via, and truncated says whether the read was cut: depth is always 1 and truncated always false, since the read reads one hop, and both stay for the clients that read them. ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
     get: operations["getApiV1IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -2020,7 +2020,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A caller Dispatch calls a restricted member is listed their own machines' and pods' logins alone, and so is any caller while the broker cannot ask Dispatch what kind of member the caller is. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2039,7 +2039,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller Dispatch calls a restricted member revokes their own logins alone: a service's login is 404 to them, as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of member the caller is, who still revokes their own. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -2194,7 +2194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}. */
+    /** @description Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}. */
     get: operations["getApiV1MeInbox"];
     put?: never;
     post?: never;
@@ -2449,7 +2449,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets. */
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none. */
     get: operations["getApiV1PeopleByLoginNodes"];
     put?: never;
     post?: never;
@@ -2660,7 +2660,7 @@ export interface paths {
     /** @description List a project's documents. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. */
+    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2711,7 +2711,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of a retired document 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -4583,6 +4583,7 @@ export interface components {
       declined: boolean;
       declined_note: null | string;
       document: components["schemas"]["DecisionEntryDocument"] | null;
+      from_ask: string[] | null;
       kept: components["schemas"]["DecisionKeep"] | null;
       kept_by: null | string;
       kept_text_sum: null | string;
@@ -4634,6 +4635,7 @@ export interface components {
       kept_by: string;
     };
     DecisionLink: {
+      changed_since_tie: boolean;
       /** Format: date-time */
       created_at: string;
       created_version: number;
@@ -5176,6 +5178,16 @@ export interface components {
       started_at: null | string;
       title: string;
     };
+    ForeignChildOpen: {
+      key: string;
+      project: string;
+      status: string;
+    };
+    ForeignChildOpenError: {
+      code: string;
+      error: string;
+      issues: components["schemas"]["ForeignChildOpen"][] | null;
+    };
     GoingAction: {
       action: string;
       description: string;
@@ -5642,6 +5654,8 @@ export interface components {
       slug: string;
     };
     IssueReferences: {
+      linked_from: components["schemas"]["ReferenceLink"][] | null;
+      links: components["schemas"]["ReferenceLink"][] | null;
       members: components["schemas"]["ReferenceMember"][] | null;
       truncated: boolean;
     };
@@ -6557,6 +6571,18 @@ export interface components {
       session: components["schemas"]["CredentialSession"];
       state: string;
     };
+    ReferenceLink: {
+      kinds: string[] | null;
+      name: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      name_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      node: components["schemas"]["GraphNode"];
+      via: components["schemas"]["ReferenceVia"];
+    };
     ReferenceMember: {
       artifact: components["schemas"]["Artifact"];
       depth: number;
@@ -7061,6 +7087,7 @@ export interface components {
       parent?: string | null;
       priority?: number | null;
       rank?: components["schemas"]["IssueRankInput"] | null;
+      refuse_open_foreign_children?: boolean;
       repo?: string | null;
       route?: null | string;
       status?: null | string;
@@ -8390,6 +8417,7 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["EditPreconditionError"]
+            | components["schemas"]["ErrorBody"]
             | components["schemas"]["EditLostError"]
             | components["schemas"]["AmbiguousTargetError"];
         };
@@ -10655,7 +10683,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueDuplicateError"];
+          "application/json":
+            | components["schemas"]["IssueDuplicateError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10763,6 +10793,17 @@ export interface operations {
           "application/json": components["schemas"]["Issue"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["ForeignChildOpenError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10973,6 +11014,7 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["EditPreconditionError"]
+            | components["schemas"]["ErrorBody"]
             | components["schemas"]["EditLostError"]
             | components["schemas"]["AmbiguousTargetError"];
         };
@@ -11211,7 +11253,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueClaimedError"];
+          "application/json":
+            | components["schemas"]["IssueClaimedError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11258,7 +11302,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueClaimedError"];
+          "application/json":
+            | components["schemas"]["IssueClaimedError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12945,7 +12991,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["UserStateStaleError"];
+          "application/json":
+            | components["schemas"]["UserStateStaleError"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14128,6 +14176,7 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["EditPreconditionError"]
+            | components["schemas"]["ErrorBody"]
             | components["schemas"]["EditLostError"]
             | components["schemas"]["AmbiguousTargetError"];
         };
@@ -15651,6 +15700,8 @@ export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMi
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
+export type ForeignChildOpen = components["schemas"]["ForeignChildOpen"];
+export type ForeignChildOpenError = components["schemas"]["ForeignChildOpenError"];
 export type GoingAction = components["schemas"]["GoingAction"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
@@ -15794,6 +15845,7 @@ export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInp
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
 export type RecordEnrollmentResp = components["schemas"]["RecordEnrollmentResp"];
 export type RecordResponse = components["schemas"]["RecordResponse"];
+export type ReferenceLink = components["schemas"]["ReferenceLink"];
 export type ReferenceMember = components["schemas"]["ReferenceMember"];
 export type ReferenceQuestion = components["schemas"]["ReferenceQuestion"];
 export type ReferenceQuestions = components["schemas"]["ReferenceQuestions"];

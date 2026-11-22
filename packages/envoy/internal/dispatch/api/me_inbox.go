@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -30,7 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-// GET /api/v1/me/inbox is the one read of what is tied to a person (dispatch://INFRA-1152 R1): every
+// GET /api/v1/me/inbox is the one read of what is tied to a person (the spec's R1): every
 // node that holds a current relation to the caller's own person node, at either end of it, each
 // answered once with every relation kind that ties it to them. It takes its relation kinds from the
 // store and from no list here, so a kind a later write appends is an entry of this read the day it is
@@ -172,8 +173,11 @@ func (cursor meInboxCursor) String() string {
 		cursor.moment.UTC().Format(time.RFC3339Nano) + "\n" + cursor.kind + "\n" + cursor.id))
 }
 
-// parseMeInboxCursor reads one ?cursor=, which is a next_cursor this route answered.
-func parseMeInboxCursor(raw string) (*meInboxCursor, error) {
+// parseMeInboxCursor reads one ?cursor=, which is a next_cursor this route answered. Under
+// state=dismissed the key it resumes after is the moment and the id of a thread root or an Agent
+// root (meInboxOrder), which this route writes as a uuid's own text, so a cursor naming anything else
+// there is none it answered.
+func parseMeInboxCursor(raw, state string) (*meInboxCursor, error) {
 	refusal := errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor is one this route answered in next_cursor")
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
@@ -186,6 +190,11 @@ func parseMeInboxCursor(raw string) (*meInboxCursor, error) {
 	moment, err := time.Parse(time.RFC3339Nano, parts[0])
 	if err != nil {
 		return nil, refusal
+	}
+	if state == myRepliesStateDismissed {
+		if id, err := uuid.Parse(parts[2]); err != nil || id.String() != parts[2] {
+			return nil, refusal
+		}
 	}
 	return &meInboxCursor{moment: moment, kind: parts[1], id: parts[2]}, nil
 }
@@ -241,7 +250,7 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 		request.offset = value
 	}
 	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
-		cursor, err := parseMeInboxCursor(raw)
+		cursor, err := parseMeInboxCursor(raw, request.state)
 		if err != nil {
 			return meInboxRequest{}, err
 		}
@@ -261,11 +270,12 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 //
 // The statement is the whole of the database work the handler does: actingPerson resolves the
 // person before it, the horizon is read in process (sinceHorizon, whose observation runs on the
-// horizon's own pool), and what follows it is Go over the rows it answered. The display trees the
-// page asks for (Dispatch-Trees: 1) are read in it too, and a text it holds no tree of is read for
-// display and stored back after the answer, off the request, as every reader's misses are. The
-// listener's roster is read off the stored answer in it, and asked of the listener alone where that
-// answer is stale.
+// horizon's own pool), and what follows it is Go over the rows it answered. It runs in a read-only
+// transaction of its own, sent with it as one batch (readMeInbox). The display trees the page asks
+// for (Dispatch-Trees: 1) are read in it too, and a text it holds no tree of is read for display and
+// stored back after the answer, off the request, as every reader's misses are. The listener's
+// roster is read off the stored answer in it, and asked of the listener alone where that answer is
+// stale.
 func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 	request, err := parseMeInboxRequest(r)
 	if err != nil {
@@ -289,12 +299,7 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), statement, args...)
-	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read the inbox: %w", err))
-		return
-	}
-	read, err := readMeInboxRows(rows, s.deps.ServerURL)
+	read, err := s.readMeInbox(r.Context(), statement, args)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -339,6 +344,84 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		response.NextCursor = meInboxCursor{moment: last.Moment, kind: last.Node.Kind, id: last.Node.ID}.String()
 	}
 	writeMeInboxAnswer(w, response)
+}
+
+// meInboxSettings are what the read's own transaction sets before its statement (readMeInbox), in
+// order: meInboxNoJIT, then meInboxGenericPlan. The read states the settings it was measured under,
+// as the search coverage read states its own (embedqueue's coverageSettings).
+var meInboxSettings = []string{meInboxNoJIT, meInboxGenericPlan}
+
+const (
+	// meInboxNoJIT turns JIT off, so that what the read costs is its plan's and not the server's
+	// JIT setting. A server built with LLVM compiles a statement whose estimated cost passes
+	// jit_above_cost (100,000 by default), and this statement's estimate passes it once a person's
+	// pile is large, whatever page it answers. At the dismissed scale test's seed, 110,000
+	// dismissed threads, the Dismissed page's plans are estimated at 109,000 (the generic plan) to
+	// 209,000, and Postgres compiled about 1,400 functions on every execution of each of the four
+	// the scale test explains (page 1 and the page 50,000 deep, each under the plan of its own
+	// arguments and the generic plan): 450 to 490 ms of JIT in an execution of 480 to 520 ms,
+	// where the page itself was built in about 30 ms. At 200 dismissed threads, or none, the
+	// estimate stays under the threshold and nothing is compiled. So with JIT on the cut page read
+	// a p50 of 464 to 795 ms, against 86 ms on a Postgres built without LLVM, and 25 ms with it
+	// once JIT was off; every other measurement of this read ran without JIT too - a pod's test
+	// server sets it off - and production's setting was never read.
+	meInboxNoJIT = `set local jit = off`
+	// meInboxGenericPlan has each connection plan the read once and run that plan from then on.
+	// pgx sends the statement as a named prepared statement of the connection (its default mode,
+	// QueryExecModeCacheStatement, which the batch takes too), and Postgres plans a prepared
+	// statement afresh, for the values of that execution, on each of its first five executions on
+	// a connection, and only from the sixth may it keep the generic plan. Planning this statement
+	// costs about what running it does: at the dismissed scale test's seed the unread count
+	// (state=unread&limit=1) ran in about 27 ms and planned in about 27 ms more, so after its one
+	// warm-up run its first four measured runs read 54 to 60 ms and every run after them about
+	// 27.5 ms - a p95 of 57.6 ms against its 50 ms bound with the pile, and 52.2 ms with no
+	// dismissed row at all. The statement is built to run the same under either plan (meInboxBuild,
+	// meInboxPageRows, meInboxDismissedCut), so no request's own values are worth planning it
+	// again for.
+	meInboxGenericPlan = `set local plan_cache_mode = force_generic_plan`
+)
+
+// readMeInbox runs the read's statement and reads what it answered (readMeInboxRows), in a
+// read-only transaction of its own that sets meInboxSettings first: begin, the settings, the
+// statement and commit, sent as one batch. A batch is one round trip, so the transaction costs the
+// read no round trip it did not make already, and the statement stays the read's one statement and
+// the only one that reads anything (TestOneReadAnswersEveryRelationToThePersonsNode). The settings
+// come before the statement rather than inside it because Postgres decides which plan to run a
+// statement by, and whether to compile it, when it plans it, which the server does at that
+// statement's Bind, after it has run the messages before it; and `set local` ends with the
+// transaction, so no setting reaches a statement this connection runs for another request. A
+// statement that fails leaves the transaction aborted, and the pool closes a connection handed
+// back to it in one rather than reuse it.
+func (s *server) readMeInbox(ctx context.Context, statement string, args []any) (*meInboxRead, error) {
+	batch := &pgx.Batch{}
+	batch.Queue(`begin transaction read only`)
+	for _, setting := range meInboxSettings {
+		batch.Queue(setting)
+	}
+	batch.Queue(statement, args...)
+	batch.Queue(`commit`)
+	results := s.deps.Store.Pool.SendBatch(ctx, batch)
+	defer results.Close()
+	for range 1 + len(meInboxSettings) {
+		if _, err := results.Exec(); err != nil {
+			return nil, fmt.Errorf("begin the inbox's read: %w", err)
+		}
+	}
+	rows, err := results.Query()
+	if err != nil {
+		return nil, fmt.Errorf("read the inbox: %w", err)
+	}
+	read, err := readMeInboxRows(rows, s.deps.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := results.Exec(); err != nil {
+		return nil, fmt.Errorf("end the inbox's read: %w", err)
+	}
+	if err := results.Close(); err != nil {
+		return nil, fmt.Errorf("end the inbox's read: %w", err)
+	}
+	return read, nil
 }
 
 // writeMeInboxAnswer writes response with the bytes WriteJSON writes for it, its entries one at a
@@ -536,7 +619,7 @@ type meInboxOnceColumns struct {
 	asks, opened, backlinks, parts, reach                []pgtype.UndecodedBytes
 	replies, replyNamed, replyAttempts                   []pgtype.UndecodedBytes
 	askBlocks, commentBlocks, edits, followers           []pgtype.UndecodedBytes
-	threads                                              []pgtype.UndecodedBytes
+	threads, threadAnswers                               []pgtype.UndecodedBytes
 	roots, messages, attempts, messageBlocks, titles     []pgtype.UndecodedBytes
 	gateIssues, gateDocuments, gateReviews, gateRequests []pgtype.UndecodedBytes
 	trees                                                []pgtype.UndecodedBytes
@@ -546,7 +629,7 @@ func (once *meInboxOnceColumns) targets() []any {
 	return []any{
 		&once.asks, &once.opened, &once.backlinks, &once.parts, &once.reach,
 		&once.replies, &once.replyNamed, &once.replyAttempts, &once.askBlocks, &once.commentBlocks, &once.edits, &once.followers,
-		&once.threads,
+		&once.threads, &once.threadAnswers,
 		&once.roots, &once.messages, &once.attempts, &once.messageBlocks, &once.titles,
 		&once.gateIssues, &once.gateDocuments, &once.gateReviews, &once.gateRequests,
 		&once.trees,
@@ -705,10 +788,11 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 // readPage reads what the statement read once for the page (meInboxPageReads) into read: the Ask
 // rows as listInbox reads them (scanAskRead) with the details loadAskDetails reads, each thread's
 // replies with the targets each names, its attempts and its named block (hydrateCommentSideTables),
-// the rewordings and followers; the Reply rows (scanMyReplyRow); each Agent row's root and the
-// replies under it, each message's attempts and the block it names, and the sessions' names; the
-// approval gate of each issue a row belongs to (readApprovalGates); and every stored tree their
-// texts read.
+// the rewordings and followers; the Reply rows (scanMyReplyRow), each whose newest write by
+// somebody else is its ask's answer with that answer as the ask's node holds it (answerReply); each
+// Agent row's root and the replies under it, each message's attempts and the block it names, and
+// the sessions' names; the approval gate of each issue a row belongs to (readApprovalGates); and
+// every stored tree their texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
 		asks: map[string]openAskRow{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
@@ -720,10 +804,21 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 	if err := read.readAsks(types, columns, &page); err != nil {
 		return err
 	}
-	for _, record := range records(types, columns.threads) {
-		thread, err := scanMyReplyRow(record, read.serverURL)
+	answers := map[string]model.Ask{}
+	for _, record := range records(types, columns.threadAnswers) {
+		ask, err := scanMyReplyAnswer(record)
 		if err != nil {
 			return fmt.Errorf("read the inbox's Reply rows: %w", err)
+		}
+		answers[ask.ID] = ask
+	}
+	for _, record := range records(types, columns.threads) {
+		thread, answerWrite, err := scanMyReplyRow(record, read.serverURL)
+		if err != nil {
+			return fmt.Errorf("read the inbox's Reply rows: %w", err)
+		}
+		if answerWrite {
+			answerReply(&thread.Reply, answers[thread.ThreadID], read.serverURL)
 		}
 		page.threads[thread.ThreadID] = thread
 	}
@@ -986,8 +1081,9 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 // but this: its state, whether an owner narrows it, whether the page asks for display trees and
 // whether the listener's stored roster is read. Every other value of a request is an argument, so
 // a shape is one text, built once a process (meInboxTextOf) and prepared once on each connection,
-// whose plan Postgres plans once and reuses from the sixth execution: the text is tens of kilobytes
-// and takes tens of milliseconds to plan and to build, which a request pays only where it is new.
+// whose plan Postgres plans once there, on its first execution, and runs from then on
+// (meInboxGenericPlan): the text is tens of kilobytes and takes tens of milliseconds to plan and to
+// build, which a request pays only where it is new.
 type meInboxShape struct {
 	state              string
 	owned              bool
@@ -1110,6 +1206,24 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // predicate is over the node's own row of graph_nodes, read by its key for each node, in this
 // statement and bound once, and the counts are taken after it. What the page's rows draw is read
 // once for the page (meInboxPageReads).
+//
+// Under state=dismissed the walk reads only the tuples between the person's nodes and the nodes
+// the page answers (page_nodes): the first offset + limit + 1 of the page's rows, in the order the
+// page answers in, which are the rows the page and its next_cursor are taken from, or every row
+// where ?kind= narrows the entries by their relations. That is the page's cost and not the
+// person's history: every dismissal appends a dismissed tuple and every Mark all read a read_through
+// tuple for each thread it marks (api/read_marks.go), and the whole walk read all of them for a page
+// of 200. In the dismissed scale test the dismissals and Mark all read runs it times append some
+// 35,000 such tuples to the person, before the page 50,000 deep is timed and after page 1 is: the
+// walk then read 11,830 tuples for each of three kinds, and the deep page read a p50 of 44 ms
+// against 24 ms for page 1 over the same plan. Each of these reads is keyed from the page's node:
+// a relation out of the person by graph_tuples_current on its whole key, one index descent, and a
+// relation into the person by graph_tuples_as_of_out from the node, whose own tuples of a kind are
+// few. The read into the person leaves out the `to_kind <> 'value'` test, which every person node
+// passes, so graph_tuples_as_of_in - keyed by the person, the index that made each probe of the
+// scale check above read all the person's tuples of a kind - is no index its plan can take. A
+// page's nodes are at most offset + limit + 1, where the states the page does not cut (inbox and
+// unread) answer every row, so they keep the one pass over the person's tuples.
 func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	slots := shape.slots()
 	args := &meInboxArgs{values: make([]any, slots.first)}
@@ -1121,11 +1235,34 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 			and (` + meInboxKindsParam + `::text[] is null or ` + kind + ` = any(` + meInboxKindsParam + `::text[]))`
 	}
 	// A project narrows every entry by its node's own project, and a node the store holds no row
-	// for cannot be judged, so it is left out under the narrowing. An owner keeps the page's rows of
-	// that owner alone (meInboxRequest.owned); under a state the entries are those rows already.
-	inProject := `(` + meInboxProject + `::text = '' or n.project_key = ` + meInboxProject + `::text)`
-	visible := `coalesce((select ` + refs.VisibleRow("n", meInboxVisibility) + ` and ` + inProject + `
-			from graph_nodes n where n.kind = g.node_kind and n.id = g.node_id), ` + meInboxProject + `::text = '')`
+	// for cannot be judged, so it is left out under the narrowing (meInboxVisible). An owner keeps
+	// the page's rows of that owner alone (meInboxRequest.owned); under a state the entries are those
+	// rows already.
+	visible := meInboxVisible("g.node_kind", "g.node_id")
+	order := meInboxOrderOf(shape)
+	// The walk's reach: the relations of every node tied to the person, or under state=dismissed of
+	// the page's own nodes alone (above).
+	pageNodes, walkFrom := ``, ``
+	inbound := `t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
+	outbound := `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
+	if shape.state == myRepliesStateDismissed {
+		pageNodes = `
+	page_nodes(node_kind, node_id) as materialized (
+		select pr.node_kind, pr.node_id from page_rows pr
+		order by ` + order.by("pr") + `
+		limit case when ` + meInboxKindsParam + `::text[] is null
+		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end
+	),`
+		walkFrom = `
+		cross join page_nodes p`
+		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = k.kind
+				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
+		outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+				and t.to_kind = p.node_kind and t.to_id = p.node_id
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
+	}
 
 	var statement strings.Builder
 	statement.WriteString(`
@@ -1133,6 +1270,8 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	-- The three parameters of unreadDirectRepliesArgs, typed once: a request narrowed to an
 	-- owner splices in no Agent fragment, which is what reads the last two.
 	direct_args(login, actor_id, session_id) as (select $1::text, $2::text, $3::text),
+	-- The cursor, typed once: the Dismissed view's key takes no kind (meInboxOrder).
+	cursor_args(moment, kind, id) as (select ` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text),
 	person_nodes(kind, id) as (
 		select '` + graphstore.KindPerson + `'::text, $1::text
 		union
@@ -1146,20 +1285,16 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	` + meInboxKindSkip("kinds_out", "from") + `,
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
 		meInboxPageRows(shape, meInboxIssue, meInboxArtifact) + `
-	),
+	),` + pageNodes + `
 	walked(near_kind, near_id, kind, direction, at) as (
 		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
-		from kinds_in k
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`,
-		`t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
-				and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
+		from kinds_in k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`, inbound) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 		union all
 		select stated.to_kind, stated.to_id, k.kind, '` + meInboxOutbound + `', stated.at
-		from kinds_out k
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`,
-		`t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
-				and t.to_kind <> '`+graphstore.KindValue+`' and `+meInboxOutOfPerson+` and `+atHorizon) + `) stated
+		from kinds_out k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`, outbound) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 	),
 	-- Each relation kind and end that ties a node to the person, once, with its newest moment: the
@@ -1218,6 +1353,14 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		  and ` + visible + `
 	),`)
 	}
+	// Under state=dismissed the total is the page the read answers, and not the whole pile, which
+	// nothing counts: the arms are cut to the page before the walk (meInboxDismissedCut), so the
+	// entries hold the page and no row past it but the one each arm reads to learn whether another
+	// page follows (remaining).
+	total := `(select c.total from counted c limit 1)`
+	if shape.state == myRepliesStateDismissed {
+		total = `(select count(*) from paged)`
+	}
 	statement.WriteString(`
 	counted as (
 		select e.*, count(*) over () as total from entries e
@@ -1225,14 +1368,14 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	remaining as (
 		select c.*, count(*) over () as remaining from counted c
 		where ` + meInboxCursorMoment + `::timestamptz is null
-		   or (c.moment, c.node_kind, c.node_id) < (` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)
+		   or ` + order.after("c") + `
 	),
 	-- The page, each entry numbered in the order it is answered in.
 	paged as (
 		select cut.*, row_number() over () as ord
 		from (
-			select * from remaining
-			order by moment desc, node_kind desc, node_id desc
+			select * from remaining r
+			order by ` + order.by("r") + `
 			offset ` + meInboxOffset + ` limit ` + meInboxLimit + `
 		) cut
 	),`)
@@ -1256,11 +1399,11 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	       entry.page, entry.agent
 	from (
 		select now() as as_of, ` + roster + ` as roster,
-		       coalesce((select c.total from counted c limit 1), 0) as total,
+		       coalesce(` + total + `, 0) as total,
 		       coalesce((select r.remaining from remaining r limit 1), 0) as remaining
 	) head
 	left join paged entry on true
-	order by entry.moment desc, entry.node_kind desc, entry.node_id desc`)
+	order by ` + order.by("entry"))
 	return statement.String(), args.values[slots.first:], nil
 }
 
@@ -1302,33 +1445,45 @@ func meInboxKindSkip(name, end string) string {
 //
 // Each row is the node it draws, the kind of row, the moment that state's list orders it by, and an
 // Agent row's session and the row itself (myAgentRowColumns), read once here for its order and kept.
-// A walk with no state draws the rows of the Inbox's own state.
+// A walk with no state draws the rows of the Inbox's own state. Under state=dismissed each of the two
+// arms is cut to the page before the walk meets it (meInboxDismissedCut), so a page of that state
+// reads the rows it answers however many threads the person has dismissed.
 //
-// The Ask rows are the open asks first, read by their state alone, and then the ones of those that
-// wait on the person, each with its newest reply; and an owner's test is written only into a shape
-// that names an owner. The plan Postgres keeps from the sixth execution knows nothing of the
-// arguments: it takes a test of an argument against a column to keep almost no row, and with the
-// owner's tests on every shape it took the open asks to be one and read each one's issue, document
-// and project by a scan of that whole table, and its newest reply, before it knew whether the ask
-// waits on the person at all (13.6 ms of that plan's 21.6 for the person whose history is empty,
-// against 0.4 ms in the plan of their own arguments).
+// The Ask rows are the open asks first, read by their row's state alone, then the ones of those
+// that wait on the person, and last the ones of those that are open as every read of open asks
+// across owners picks them, by their row's state and their node's (askOpenOf, R3), each with its
+// newest reply; and an owner's test is written only into a shape that names an owner. The plan
+// Postgres keeps from the sixth execution knows nothing of the arguments: it takes a test of an
+// argument against a column to keep almost no row, and with the owner's tests on every shape it
+// took the open asks to be one and read each one's issue, document and project by a scan of that
+// whole table, and its newest reply, before it knew whether the ask waits on the person at all
+// (13.6 ms of that plan's 21.6 for the person whose history is empty, against 0.4 ms in the plan
+// of their own arguments). The node's test probes the ask's node, so it reads only the asks that
+// wait on the person, which are materialized before it as the open asks are before them.
 func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 	state := shape.state
 	if state == "" {
 		state = myRepliesStateInbox
 	}
-	threads, threadMoment := myRepliesInbox, `u.replied_at`
+	threads, threadMoment := bindFragment(myRepliesInbox, "$1", issue, artifact), `u.replied_at`
 	agents, agentMoment := myAgentInboxRoots, `listed.replied_at`
 	switch state {
 	case myRepliesStateUnread:
-		threads, agents = myRepliesUnread, myAgentUnreadRoots
+		threads, agents = bindFragment(myRepliesUnread, "$1", issue, artifact), myAgentUnreadRoots
 	case myRepliesStateDismissed:
-		threads, threadMoment = myRepliesDismissed, `u.dismissed_at`
-		agents, agentMoment = myAgentDismissedRoots, `listed.dismissed_at`
+		threads, threadMoment = `
+		from (
+			select u.kind, u.thread_id, u.dismissed_at
+			`+bindFragment(myRepliesDismissed, "$1", issue, artifact)+
+			meInboxDismissedCut("u.kind", "u.thread_id", "u.dismissed_at")+`
+		) u`, `u.dismissed_at`
+		agents, agentMoment = myAgentDismissedRootsHead+
+			meInboxDismissedCut(`'`+graphstore.KindMessage+`'`, "d.message_id", "d.dismissed_at")+`
+	)`, `listed.dismissed_at`
 	}
 	arms := []string{`
 		select u.kind, u.thread_id::text, '` + meInboxPageThread + `', ` + threadMoment + `, null::text, null::record
-		` + bindFragment(threads, "$1", issue, artifact)}
+		` + threads}
 	if state == myRepliesStateInbox {
 		owner := ``
 		if shape.owned {
@@ -1340,12 +1495,16 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 		select '`+graphstore.KindAsk+`', a.id::text, '`+meInboxPageAsk+`', coalesce(lr.created_at, a.created_at), null::text, null::record
 		from (
 			with open_asks as materialized (
-				select id, created_at, issue_key, artifact_id, asked_of from asks where state = 'open'
+				select id, created_at, issue_key, artifact_id, asked_of, state, node_kind from asks where state = 'open'
+			), waiting as materialized (
+				select a.id, a.created_at, a.state, a.node_kind
+				from open_asks a`+askedOfPersonJoins+`
+				where (i.key is null or i.closed_at is null)
+				  and `+askedOfPersonExpression+` = $1`+owner+`
 			)
 			select a.id, a.created_at
-			from open_asks a`+askedOfPersonJoins+`
-			where (i.key is null or i.closed_at is null)
-			  and `+askedOfPersonExpression+` = $1`+owner+`
+			from waiting a
+			where `+askOpenOf("a")+`
 		) a`+lastReplyJoin)
 	}
 	if !shape.owned {
@@ -1356,6 +1515,79 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 	}
 	return strings.Join(arms, `
 		union all`)
+}
+
+// meInboxDismissedCut cuts one arm of the Dismissed view to the page before the walk meets it, as
+// GET /api/v1/me/replies cuts its own (myRepliesDismissedCut, myAgentDismissedPageCut): the arm's
+// rows past the cursor, in the order of the state's own index - the dismissal's moment, then the
+// root's id (user_threads_dismissed, user_agent_thread_dismissed_login_dismissed_at; meInboxOrder)
+// - and of those the first offset + limit + 1, the one past the page saying whether another page
+// follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its root's uuid
+// and its dismissal. So the walk, the grouping, the count and the sort meet at most twice that
+// many rows, where they met the whole pile: at the dismissed scale test's seed a page of 200 read a p50 of
+// 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and cut it reads 86 ms at either.
+//
+// Three things make the cut the page the read answers. The cursor is one row comparison over
+// coalesced arguments rather than `(cursor is null or ...)`, so it is the index's own condition in
+// the generic plan too, the plan every execution runs (meInboxGenericPlan), which knows nothing of
+// whether a request carries a cursor: the first page compares against a key past every dismissal.
+// Every test an entry of the page passes is passed above the cut - the visibility predicate and the
+// project (meInboxVisible) here, the owner in the fragment the cut ends - so no row the page would
+// answer lies past a row the cut took and the page dropped. And a request narrowed by relation
+// kind keeps the whole arm, since whether a row holds one of those kinds is the walk's to say,
+// which the cut comes before; no caller sends one to this state. With no limit the cut takes every
+// row, as the read answers every entry then.
+func meInboxDismissedCut(kind, id, moment string) string {
+	return `
+		  and (` + moment + `, ` + id + `) < (coalesce(` + meInboxCursorMoment + `::timestamptz, 'infinity'),
+		      coalesce(` + meInboxCursorID + `::text::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+		  and ` + meInboxVisible(kind, id+`::text`) + `
+		order by ` + moment + ` desc, ` + id + ` desc
+		limit case when ` + meInboxKindsParam + `::text[] is null
+		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end`
+}
+
+// meInboxVisible is whether the caller may see the node kind and id name, inside the request's
+// project where it names one: the visibility predicate over the node's own row of graph_nodes, read
+// by its key and bound once (refs.VisibleRow at meInboxVisibility), and for a node the store holds
+// no row for, true unless a project narrows the read, since such a node cannot be judged.
+func meInboxVisible(kind, id string) string {
+	inProject := `(` + meInboxProject + `::text = '' or n.project_key = ` + meInboxProject + `::text)`
+	return `coalesce((select ` + refs.VisibleRow("n", meInboxVisibility) + ` and ` + inProject + `
+			from graph_nodes n where n.kind = ` + kind + ` and n.id = ` + id + `), ` + meInboxProject + `::text = '')`
+}
+
+// meInboxOrder is the order a shape's entries are answered in, newest first, and the key a cursor
+// resumes after: the moment, then the node's kind and id, which together name one node. Under
+// state=dismissed it is the moment and the node's id alone, as a uuid (byID), which is the order
+// both of that state's indexes hold and so the order its arms are cut in (meInboxDismissedCut).
+// Every row of that state is a thread root or an Agent root, each a uuid of its own, so the id alone
+// names the node; and a key the cut did not take would let the page's last entry and the next
+// page's cut disagree over a tie, which a dismissal of many threads at once makes, since it gives
+// them all one moment.
+type meInboxOrder struct {
+	byID bool
+}
+
+func meInboxOrderOf(shape meInboxShape) meInboxOrder {
+	return meInboxOrder{byID: shape.state == myRepliesStateDismissed}
+}
+
+// after is whether the entry row names lies past the cursor in this order.
+func (order meInboxOrder) after(row string) string {
+	if order.byID {
+		return `(` + row + `.moment, ` + row + `.node_id::uuid) < (` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorID + `::text::uuid)`
+	}
+	return `(` + row + `.moment, ` + row + `.node_kind, ` + row + `.node_id) < (` + meInboxCursorMoment + `::timestamptz, ` +
+		meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)`
+}
+
+// by is this order over the entry rows row names, for an `order by`.
+func (order meInboxOrder) by(row string) string {
+	if order.byID {
+		return row + `.moment desc, ` + row + `.node_id::uuid desc`
+	}
+	return row + `.moment desc, ` + row + `.node_kind desc, ` + row + `.node_id desc`
 }
 
 // meInboxReads is what the page's rows draw, as meInboxPageReads writes it: the statement's
@@ -1376,7 +1608,8 @@ type meInboxReads struct {
 //     threads as loadAskThreads reads them (inboxAskReplyChainsQuery, then the targets each reply
 //     names, its attempts and its block, the rewordings, the followers and askReachesQuery);
 //   - the Reply rows as listMyReplies selects them over the rows its cut kept (myRepliesPageRest),
-//     each read by its user_threads key;
+//     each read by its user_threads key, and the answers of their asks as answerReplyRows reads
+//     them off each ask's node (myReplyAnswersStatement);
 //   - the Agent rows' conversations as hydrateMessageThreads reads them - each root message, every
 //     reply under it (messageReplyChainsQuery), each message's attempts (messageDeliveriesQuery) and
 //     the block it names (refs.ReplyBlocksStatement) - and the names of their sessions
@@ -1515,6 +1748,7 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 				where kept.login = $1 and kept.thread_id = any(` + threadIDs + `::uuid[])
 			),` + myRepliesPageRest + `
 		) listed)`,
+		`array(select row(answered.*) from (` + bindFragment(myReplyAnswersStatement, threadIDs) + `) answered)`,
 		`array(select row(r.*) from agent_roots r)`,
 		`array(select row(c.*) from agent_chain c)`,
 		`array(select row(attempt.*) from (` + bindFragment(messageDeliveriesQuery, messageIDs) + `) attempt)`,

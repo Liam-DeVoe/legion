@@ -32,8 +32,8 @@ afterEach(() => {
   restoreWindowFocus();
 });
 
-/** Every read the margin of an issue sends on its Comments tab with no pin: the open asks, the
- *  reader's state, the issue's comments and its asks (`useAnsweredAsks`). */
+/** Every read the margin of an issue sends on its Comments tab with no pin: the open asks
+ *  (`openAsksQuery`), the reader's state, the issue's comments and its asks (`useAnsweredAsks`). */
 interface MarginReads {
   readonly getMyState: Mock<typeof api.getMyState>;
   readonly listComments: Mock<typeof api.listComments>;
@@ -60,8 +60,8 @@ function stubMarginReads(): MarginReads {
 function stubDecisionsRead(): Mock<typeof api.getIssueDecisions> {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
-    entries: [],
     document: null,
+    entries: [],
     open_questions: [],
   });
   const before = restore;

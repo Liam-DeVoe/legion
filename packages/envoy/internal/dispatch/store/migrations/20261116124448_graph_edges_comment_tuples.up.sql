@@ -9,7 +9,7 @@
 -- 20261116114517 gave a message's replies over the messages row, made over the comments row with a
 -- marker of the comment's own (migration 20261116124447).
 --
--- The marker is no node column. INFRA-1149 names the node on every comment its writers and its
+-- The marker is no node column. The node store names the node on every comment its writers and its
 -- backfill write, pointers or none, so a test on node_kind would answer an older reply from
 -- neither arm. Every writer of this release names the node and sets tuples_stored in the insert
 -- that writes the row, and states the comment's pointers in the same transaction, under the event

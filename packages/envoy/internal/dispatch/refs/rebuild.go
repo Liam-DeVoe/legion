@@ -59,7 +59,7 @@ type Rebuild struct {
 // which the release before this one neither reads nor clears. A pod of that release may drain the
 // null version first and write each document's new rows with no node, and the second mark brings
 // this build's pass to the document after it (IndexBlocks). A mark a document already holds keeps
-// its time.
+// its time. The mark is of this build's marking rule (RebuildMarkStatement).
 //
 // It marks every comment and message, direct messages included, and every ask owed a block index
 // of its own blocks too (owed_at, a missing state row inserted owed), and owed its embedding
@@ -125,11 +125,7 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 		return report, err
 	}
 	report.Orphans = orphans
-	owed, err := pool.Exec(ctx, `
-		insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where kind = 'doc'
-		on conflict (artifact_id) do update set version = null,
-			store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
-	`)
+	owed, err := pool.Exec(ctx, RebuildMarkStatement, BlockIndexMarkingRule)
 	if err != nil {
 		return report, fmt.Errorf("mark every document owed a block index: %w", err)
 	}
@@ -159,6 +155,22 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 	}
 	return report, nil
 }
+
+// RebuildMarkStatement is RebuildAll's mark of every document owed a block index, at the marking
+// rule $1 (BlockIndexMarkingRule): both marks of a debt, a null version and this build's own mark
+// (store_owed_at), as docs' oweDocumentIndexStatement sets them on one document. A mark the
+// document already holds keeps its time and keeps the higher of its rule and $1, so a mark of a
+// higher rule stays that rule's to drain; where no mark stands the row takes $1, whatever rule a
+// mark cleared before left on it, since the rule is read only where a mark stands (OwedRuleKept).
+// It is a named statement so the test that holds the marking rule to its statements reads it
+// (TestTheMarkingRuleNamesTheStatementsItMarksWith).
+var RebuildMarkStatement = `
+	insert into document_block_versions (artifact_id, store_owed_at, store_owed_rule)
+	select id, now(), $1::integer from artifacts where kind = 'doc'
+	on conflict (artifact_id) do update set version = null,
+		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
+		store_owed_rule = ` + OwedRuleKept("document_block_versions", "excluded.store_owed_rule", "\n\t\t\t") + `
+`
 
 func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, error) {
 	rows, err := pool.Query(ctx, query)
@@ -243,48 +255,56 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 	}
 	defer tx.Rollback(ctx)
 	var body string
-	found, err := readSourceUnderOwner(ctx, tx, fromKind, fromID, read, &body, new(time.Time))
+	var author []byte
+	found, err := readSourceUnderOwner(ctx, tx, fromKind, fromID, read, &body, &author, new(time.Time))
 	if err != nil || !found {
 		return false, err
 	}
-	located := NewReader(ctx, tx, fromKind, fromID, serverURL).Mentions(body)
+	writer, err := writerOf(author)
+	if err != nil {
+		return false, fmt.Errorf("read the author of %s %s: %w", fromKind, fromID, err)
+	}
+	located := NewReader(ctx, tx, writer, fromKind, fromID, serverURL).Mentions(body)
 	replacement, err := planSourceReplace(ctx, tx, fromKind, fromID, text.Refs(located), nil, nil)
 	if err != nil {
 		return false, err
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
-		return graphstore.QueueCaused(b, replacement.Cited(), graphstore.NoEvent)
+		graphstore.QueueCaused(b, replacement.Cited(), graphstore.NoEvent)
+		return nil
 	}); err != nil {
 		return false, fmt.Errorf("reconcile the references of %s %s: %w", fromKind, fromID, err)
 	}
 	return true, tx.Commit(ctx)
 }
 
-// sourceRead is the statement that reads the text one reference source writes, with the time that
-// text was written: a document's latest version's markdown (id its uuid) and that version's
-// created_at, an ask's question, a comment's body, or an issue message's body, with the row's
-// edited_at where its table has one (asks, comments) and its created_at otherwise. It locks
-// nothing: a caller that orders itself against the edits of that text holds the source's owner
-// lock and runs this statement after it (replaceInTx, ReindexOwed).
+// sourceRead is the statement that reads the text one reference source writes, with the author it
+// records and the time that text was written: a document's latest version's markdown (id its
+// uuid), the first of that version's authors, which is null where it records none, and its
+// created_at; an ask's question, a comment's body, or an issue message's body, with the row's
+// author and its edited_at where its table has one (asks, comments) and its created_at
+// otherwise. The author is whom the text's short ids resolve for (NewReader). It locks nothing: a
+// caller that orders itself against the edits of that text holds the source's owner lock and
+// runs this statement after it (replaceInTx, ReindexOwed).
 func sourceRead(kind, id string) (string, error) {
 	switch kind {
 	case "artifact":
-		return `select markdown, created_at from artifact_versions
+		return `select markdown, authors->0, created_at from artifact_versions
 			where artifact_id = $1::uuid and markdown is not null order by number desc limit 1`, nil
 	case "ask":
-		return `select question, coalesce(edited_at, created_at) from asks where id = $1::uuid`, nil
+		return `select question, author, coalesce(edited_at, created_at) from asks where id = $1::uuid`, nil
 	case "comment":
-		return `select body, coalesce(edited_at, created_at) from comments where id = $1::uuid`, nil
+		return `select body, author, coalesce(edited_at, created_at) from comments where id = $1::uuid`, nil
 	case "message":
-		return `select body, created_at from messages where id = $1::uuid and issue_key is not null`, nil
+		return `select body, author, created_at from messages where id = $1::uuid and issue_key is not null`, nil
 	}
 	return "", fmt.Errorf("read the text of %s %s: not a reference source", kind, id)
 }
 
 // sourceText reads one reference source's text, and the time it was written, with sourceRead's
-// statement. found is false when no such source exists: a deleted row, a document with no
-// markdown version, a direct message, which nothing indexes.
+// statement, whose author it skips. found is false when no such source exists: a deleted row, a
+// document with no markdown version, a direct message, which nothing indexes.
 func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.Time, bool, error) {
 	read, err := sourceRead(kind, id)
 	if err != nil {
@@ -292,7 +312,7 @@ func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.T
 	}
 	var body string
 	var writtenAt time.Time
-	switch err := q.QueryRow(ctx, read, id).Scan(&body, &writtenAt); {
+	switch err := q.QueryRow(ctx, read, id).Scan(&body, nil, &writtenAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", time.Time{}, false, nil
 	case err != nil:
@@ -596,7 +616,8 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 	defer tx.Rollback(ctx)
 	var body string
 	var writtenAt time.Time
-	found, err := readSourceUnderOwner(ctx, tx, source.Kind, source.ID, read, &body, &writtenAt)
+	var author []byte
+	found, err := readSourceUnderOwner(ctx, tx, source.Kind, source.ID, read, &body, &author, &writtenAt)
 	if err != nil {
 		return false, err
 	}
@@ -604,7 +625,7 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 	if err != nil || !owes {
 		return false, err
 	}
-	plan, err := planReindex(ctx, tx, source.Kind, source.ID, body, serverURL, writtenAt, found)
+	plan, err := planReindex(ctx, tx, source.Kind, source.ID, body, serverURL, author, writtenAt, found)
 	if err != nil {
 		return false, err
 	}
@@ -633,24 +654,29 @@ type reindexPlan struct {
 }
 
 // planReindex plans the re-index of kind id's text, body read with the whole grammar through a
-// reader of the source's own (NewReader), in tx, which holds the source's owner lock and read
-// the text in the statement after it (readSourceUnderOwner). found is what that read answered: a
-// source that is gone is planned as the delete of its edges. A comment or a message has its
-// blocks planned too (PlanItemIndex, whose first queued statement takes the item's block state
-// row), and an ask its parts (PlanAskParts, read from the row the owner lock guards and through
-// the same reader), so the mentions its blocks hold are read with the same grammar as its own.
+// reader of the source's own (NewReader), for author, the author the source's row records as
+// sourceRead reads it, in tx, which holds the source's owner lock and read the text in the
+// statement after it (readSourceUnderOwner). found is what that read answered: a source that is
+// gone is planned as the delete of its edges. A comment or a message has its blocks planned too
+// (PlanItemIndex, whose first queued statement takes the item's block state row), and an ask its
+// parts (PlanAskParts, read from the row the owner lock guards and through the same reader), so
+// the mentions its blocks hold are read with the same grammar as its own.
 // The reconciliation of its own references is queued after the blocks, so where the plan holds
 // the source's blocks it settles the forms queue too (Replacement.SettlingForms), after both
 // deletes, and the source's row is settled only for its whole text. What the re-index states in
 // the node and tuple store - the item's block nodes, their part_of and links, and its citations
 // (planSourceReplace) - is queued at the sentinel (graphstore.NoEvent, reindexPlan.queue): the
 // re-index of old text is no write any event records.
-func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL string, writtenAt time.Time, found bool) (reindexPlan, error) {
+func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL string, author []byte, writtenAt time.Time, found bool) (reindexPlan, error) {
 	plan := reindexPlan{kind: kind, id: id, found: found}
 	if !found {
 		return plan, nil
 	}
-	resolve := NewReader(ctx, tx, kind, id, serverURL)
+	writer, err := writerOf(author)
+	if err != nil {
+		return reindexPlan{}, fmt.Errorf("read the author of %s %s: %w", kind, id, err)
+	}
+	resolve := NewReader(ctx, tx, writer, kind, id, serverURL)
 	located := resolve.Mentions(body)
 	// scope is the item's, as the index of its blocks read it, for the reconciliation of its
 	// citations; nil where no index read it (planSourceReplace reads it then).
@@ -749,7 +775,8 @@ func (p reindexPlan) queue(b *store.WriteBatch) error {
 	}
 	p.replacement.Queue(b)
 	stated.Tuples = append(stated.Tuples, p.replacement.Cited().Tuples...)
-	return graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+	graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+	return nil
 }
 
 // ReindexScopeSource re-indexes one comment, ask or issue message whose text belongs to a document
@@ -790,14 +817,15 @@ func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL stri
 	defer tx.Rollback(ctx)
 	var body string
 	var writtenAt time.Time
-	found, err = readSourceUnderOwner(ctx, tx, kind, id, read, &body, &writtenAt)
+	var author []byte
+	found, err = readSourceUnderOwner(ctx, tx, kind, id, read, &body, &author, &writtenAt)
 	if err != nil || !found {
 		return false, err
 	}
 	if !HoldsQuestionCandidate(body, serverURL) {
 		return false, nil
 	}
-	plan, err := planReindex(ctx, tx, kind, id, body, serverURL, writtenAt, true)
+	plan, err := planReindex(ctx, tx, kind, id, body, serverURL, author, writtenAt, true)
 	if err != nil {
 		return false, err
 	}

@@ -195,7 +195,7 @@ test("a resolved ask's thread takes a reply on that ask, whichever way it was re
   }
 });
 
-// The answered ask's reply box in an Inbox (dispatch://INFRA-4948 R1): the reader's own reply takes
+// The answered ask's reply box in an Inbox (the own-answer rule, R1): the reader's own reply takes
 // the ask's thread out of their Inbox, and the box with it, so Reply and the box stay held past
 // the landing until the read of the Inbox the landing started has come back - Reply
 // `aria-disabled`, the box taking no typing - and are the reader's again once it has. The page's

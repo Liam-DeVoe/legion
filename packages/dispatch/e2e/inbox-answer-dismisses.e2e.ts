@@ -21,7 +21,7 @@ import { asUser } from "./users";
 
 /**
  * A person's own answer or reply takes its thread out of their Inbox, with no second press, and
- * the next write by somebody else brings it back (dispatch://INFRA-4948 R1). The answer's Send and
+ * the next write by somebody else brings it back (the own-answer rule, R1). The answer's Send and
  * a reply box's Send are held, `aria-disabled`, until their row goes, and the focus then goes to
  * the reading column's own stop for the row the Inbox selects next, never to the page's body.
  *

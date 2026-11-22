@@ -534,7 +534,7 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// user_threads_ask passes it by and the event names the row its answerer is about to hold; a
 	// decline takes part, at the resolution's moment. An answer is its writer's own write, so it
 	// takes the ask's thread out of their Inbox where its writer is a person acting as themselves
-	// (inboxwrite.Write.Own, dispatch://INFRA-4948 R1): an answer here, and an approval review,
+	// (inboxwrite.Write.Own, the own-answer rule, R1): an answer here, and an approval review,
 	// which answers the open approval request through this transition (reviews.go). A decline
 	// dismisses nothing.
 	var recording *inboxwrite.Recording
@@ -570,12 +570,8 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// What the transition stated on the ask's node, what its parts state and its record in the
 	// ask's thread learn the event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, held, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		if recording == nil {
 			return nil
 		}

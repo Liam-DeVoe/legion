@@ -62,12 +62,12 @@ const censusSigningKey = "store-census-signing-key"
 // own, so a kind the census stops checking is read by a person before this test agrees with it.
 var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
 
-// inboxCensusKinds are the kinds of dispatch://INFRA-1152, which `census --store` prints a line
+// inboxCensusKinds are the kinds of the one inbox, which `census --store` prints a line
 // for beside the kinds above: the nine projections the one inbox read uses, the messages node, the
 // comment pointers and the item block and link tables (graphcensus's inboxProjections). This run's
-// corpus is dispatch://INFRA-1149's, so it writes rows of some of them and none of others; what
+// corpus is the node store's, so it writes rows of some of them and none of others; what
 // holds each of them to a population of both releases is c-census, whose corpus seeds every arm.
-// Here a difference in either direction fails, as it does for the kinds of dispatch://INFRA-1150.
+// Here a difference in either direction fails, as it does for the decision kinds.
 var inboxCensusKinds = []string{
 	"messages", "message", "comment_pointers",
 	"comment_block", "message_block", "ask_block",
@@ -1408,7 +1408,7 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
 		case slices.Contains(inboxCensusKinds, kind.kind):
-			// dispatch://INFRA-1152's kinds: this run's corpus holds rows of some and none of
+			// The one inbox's kinds: this run's corpus holds rows of some and none of
 			// others, and c-census is what holds each to a population; a difference fails here.
 			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
 				t.Errorf("kind %s reads %d row(s) without a tuple and %d tuple(s) without a row",
@@ -1450,21 +1450,35 @@ func requireTheLongRoleIsCountedPastTheBound(t *testing.T, report []kindCensus) 
 // requireTheSizingRunsBeforeTheMigration runs `envoy-dispatch census --store --sizing` of this
 // build over the database the older build left, before this build has migrated it. R4 takes its
 // readings on such a database, so the growth pass must read only tables that exist before this
-// branch's first migration: the census reads no kind and says the store is absent, the growth
-// pass names the store's tables as not held, and the command exits 0 on the growth pass alone.
+// branch's first migration, and the census reads the store only over a database migrated to this
+// build: the census reads no kind and says the store is absent with the reason, the growth pass
+// names graph_nodes as held exactly where the older build holds it - the fork point with main holds
+// none, a parent that is a store's own release holds its own - and the command exits 0 on the
+// growth pass alone.
 func requireTheSizingRunsBeforeTheMigration(t *testing.T, databaseURL string) {
 	t.Helper()
+	ctx := context.Background()
+	var held bool
+	if err := censusConnect(t, ctx, databaseURL).QueryRow(ctx, `select to_regclass('graph_nodes') is not null`).Scan(&held); err != nil {
+		t.Fatalf("read whether the older build holds graph_nodes: %v", err)
+	}
 	code, out := runDispatchCommand(t, cmdtest.Build(t, "envoy-dispatch"), databaseURL, "census", "--store", "--sizing")
-	t.Logf("census --store --sizing before this build's migrations:\n%s", out)
+	t.Logf("census --store --sizing before this build's migrations (graph_nodes held=%t):\n%s", held, out)
 	if code != 0 {
 		t.Fatalf("census --store --sizing exited %d over the database before this build's migrations, want 0: the growth pass reads only what exists before them", code)
 	}
 	// The command's output comes back with its last line ending in no line feed, so each line is
 	// looked for with one put back.
 	printed := out + "\n"
+	// The growth pass names a table the database does not hold as held=false, and one it holds by
+	// its size.
+	graphNodes := "census: sizing table name=graph_nodes held=false\n"
+	if held {
+		graphNodes = "census: sizing table name=graph_nodes altered="
+	}
 	for _, line := range []string{
 		"census: store absent (",
-		"census: sizing table name=graph_nodes held=false\n",
+		graphNodes,
 		"census: sizing tuples-a-write kind=block_parent_moved ",
 		"census: store absent, sizing ok\n",
 	} {

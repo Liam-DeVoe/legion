@@ -1,7 +1,7 @@
 -- 20261116102759_delivery_attempt_attributes.up.sql
 --
 -- The delivery_attempt supertag takes its attributes. One attempt to reach one session or role -
--- a row of comment_deliveries or message_deliveries - is a node of the store (dispatch://INFRA-1152,
+-- a row of comment_deliveries or message_deliveries - is a node of the store (the spec's
 -- R5), and its number, state, envelope, errors, claim and acceptance are its values, because they
 -- belong to no comment and to no person. 20261109051232 seeded the supertag node with no attribute
 -- of its own, since the kinds that move in a later child bring theirs with them; this is that
@@ -28,7 +28,7 @@
 --
 -- Every row is written out as a literal, because the pre-deploy census admits only literal rows on
 -- a table above pgmigrate.CensusTableLimit (its bounded-write rule), and graph_tuples is above it
--- in production once INFRA-1149's backfill has run. The file is four `insert ... values`
+-- in production once the node store's backfill has run. The file is four `insert ... values`
 -- statements: the nine nodes, then their visibility and state tuples, their `attribute_of` tuples
 -- and their value tuples, each in the order of the node's id. No earlier migration writes one of
 -- these ids and no code outside a migration writes a node of kind `attribute`, so none of the nodes

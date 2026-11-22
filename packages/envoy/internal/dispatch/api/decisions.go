@@ -35,7 +35,10 @@ import (
 // answer from the store (R11, ruling F4): decisions is each decision node and each answered ask
 // in model.Decision's shape, in the order of entries, and document is the address of the issue's
 // decisions document while it stands (decisions_documents()), null once it is retired or where
-// the issue holds none.
+// the issue holds none. A link of an entry's shaped and of a decision's links is one value
+// (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
+// after the tie and the spec node has not changed since they did, which the page of the release
+// before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
 //
 // kept for one release: compat-objects
 type issueDecisions struct {
@@ -90,9 +93,7 @@ func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*st
 	var primary bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.kind, a.is_primary
-		from decisions_documents() d join artifacts a on a.id = d.id
-		where d.issue_key = $1 order by a.created_at, a.id limit 1
-	`, key).Scan(&issueKey, &project, &session, &slug, &kind, &primary)
+		`+refs.DecisionsDocumentOf("$1"), key).Scan(&issueKey, &project, &session, &slug, &kind, &primary)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -132,7 +133,9 @@ func artifactMissing(err error) bool {
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
+// shape every ask read has (askReadColumns, with the newest reply beside the row). An ask is open
+// as its node holds it (askNodeAnswer.applyTo), which every read of an answer reads (R3), so the
+// statement reads each of the spec's asks and the scan keeps the open ones. reader is the
 // answer's own, and each row registers its texts with it once the slice has stopped growing: a
 // shaping registers a pointer into the row, and an append that moved the backing array would
 // leave the reader filling trees into memory the answer no longer holds.
@@ -141,7 +144,7 @@ func (s *server) specOpenQuestions(
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
+		where a.issue_key = $1 and a.block_artifact_id = $2::uuid
 		order by a.created_at, a.id
 	`, key, specID)
 	if err != nil {
@@ -153,6 +156,9 @@ func (s *server) specOpenQuestions(
 		if err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if ask.State != "open" {
+			continue
 		}
 		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
 	}
@@ -199,8 +205,11 @@ func (s *server) specOpenQuestions(
 // decision reads them: an ask's text is its question, and a decision's text its own words.
 // shaped is one link for each spec node the node's current `shaped` tuples reach, each with the
 // tuple's own event, the event that wrote the version the node's text last changed in
-// (text_changed_event), and stale. readings are the live `reading` nodes whose part_of reaches
-// this node, each with the far end of its authored_by tuple, null where it holds none.
+// (text_changed_event), stale, true when the decision's own words changed after the tuple and the
+// node's text has not changed since they did, and changed_since_tie, true when the node's text
+// changed after the tuple (model.DecisionLink). readings are the live `reading` nodes whose
+// part_of reaches this node, each with the far end of its authored_by tuple, null where it holds
+// none.
 type decisionEntry struct {
 	Node     decisionEntryNode      `json:"node"`
 	Ref      string                 `json:"ref"`
@@ -246,7 +255,10 @@ type decisionEntry struct {
 	ChangedVersion int                  `json:"changed_version"`
 	ChangedAt      *time.Time           `json:"changed_at"`
 	Shaped         []model.DecisionLink `json:"shaped"`
-	Readings       []decisionReading    `json:"readings"`
+	// FromAsk is, for a decision node, the id of each ask its from_ask tuples reach (the questions
+	// it settles, decisionread's Decision.Asks), and [] for an ask's own entry.
+	FromAsk  []string          `json:"from_ask"`
+	Readings []decisionReading `json:"readings"`
 
 	// openedAt is the ask row's created_at, which orders the open asks among themselves.
 	openedAt time.Time
@@ -469,7 +481,7 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 			if entry.Node.Kind == refs.BlockNodeKind {
 				place.BlockID = strings.TrimPrefix(entry.Node.ID, refKey+"#")
 			}
-			place.Block = refKey + "#" + place.BlockID
+			place.Block = refs.BlockAddress(refKey, place.BlockID)
 			if place.BlockID != "" {
 				entry.Document = &place
 			}
@@ -543,6 +555,10 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 			entry.KeptBy, entry.KeptTextSum = &keptBy, &keptSum
 		}
 		entry.ChangedVersion, entry.ChangedAt, entry.Shaped = decision.ChangedVersion, decision.ChangedAt, decision.Links
+		entry.FromAsk = []string{}
+		if entry.Node.Kind != graphstore.KindAsk {
+			entry.FromAsk = append(entry.FromAsk, decision.Asks...)
+		}
 		read = append(read, entry)
 	}
 	entries = read
@@ -605,49 +621,24 @@ func (entry decisionEntry) at() time.Time {
 }
 
 // readFacts sets the values and relations of entry's node the entries read holds (entryFactKinds),
-// from the JSON list the statement aggregated, or answers which of them does not parse. A
-// declined ask carries its note and no answer, and an ask carries no Keep.
+// from the JSON list the statement aggregated, or answers which of them does not parse: the
+// answer state, as every ask read reads it (askNodeAnswer), and the decision's own. A declined ask
+// carries its note and no answer, and an ask carries no Keep.
 func (entry *decisionEntry) readFacts(encoded []byte) error {
-	var facts []struct {
-		Kind   string `json:"kind"`
-		ToKind string `json:"to_kind"`
-		ToID   string `json:"to_id"`
-	}
+	var facts []nodeFact
 	if err := json.Unmarshal(encoded, &facts); err != nil {
 		return fmt.Errorf("the node's values: %w", err)
 	}
+	var answer askNodeAnswer
 	for _, fact := range facts {
 		value := fact.ToID
-		switch fact.Kind {
-		case graphstore.TupleAnswerState:
-			switch value {
-			case "open", "answered", "resolved":
-				entry.AnswerState = &value
-			default:
-				return fmt.Errorf("answer_state holds %q, which is none of open, answered and resolved", value)
-			}
-		case graphstore.TupleAnswer:
-			entry.Answer = &value
-		case graphstore.TupleSelected:
-			selected := []string{}
-			if err := json.Unmarshal([]byte(value), &selected); err != nil {
-				return fmt.Errorf("selected holds %q, which is no list of labels: %w", value, err)
-			}
-			entry.Selected = selected
-		case graphstore.TupleAnsweredAt:
-			at, err := time.Parse(time.RFC3339Nano, value)
+		if held, err := answer.read(fact.Kind, value); held {
 			if err != nil {
-				return fmt.Errorf("answered_at holds %q, which is no time: %w", value, err)
+				return err
 			}
-			entry.AnsweredAt = &at
-		case graphstore.TupleResolution:
-			var resolution model.AskResolution
-			if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-				return fmt.Errorf("resolution holds %q, which is no resolution: %w", value, err)
-			}
-			entry.Resolution = &resolution
-		case graphstore.TupleAnsweredBy:
-			entry.AnsweredBy = &value
+			continue
+		}
+		switch fact.Kind {
 		case graphstore.TupleDecidedBy:
 			entry.DecidedBy = &decisionDecider{Kind: fact.ToKind, ID: value}
 		case refs.ValueUncertainty:
@@ -661,6 +652,8 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 			entry.UncertaintyReason = &value
 		}
 	}
+	entry.AnswerState, entry.Answer, entry.Selected = answer.State, answer.Answer, answer.Selected
+	entry.AnsweredAt, entry.AnsweredBy, entry.Resolution = answer.AnsweredAt, answer.AnsweredBy, answer.Resolution
 	if entry.Resolution != nil && entry.Resolution.Kind == model.AskResolutionDeclined {
 		// D9: a declined ask is an entry of its own, with the person's note, and never an answer.
 		entry.Declined, entry.Kind = true, "declined"
@@ -860,18 +853,38 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // version that last changed the decision's text (readDecisionNode).
 //
 // It writes as the store's writers do: the issue's owner lock first, under which it reads the
-// node's current keepers, and then one write-phase batch (store.RunWrite), so the transaction holds
-// its id only for that batch: the person's node (one the store already holds moves nothing), the
-// projection row, the decision.kept event, and last the tuples, under that event
-// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The event's
-// changed_version is the one the row is written with, which no statement of the batch reads back.
+// decision again and the node's current keepers, and then one write-phase batch (store.RunWrite),
+// so the transaction holds its id only for that batch: the person's node (one the store already
+// holds moves nothing), the projection row, the decision.kept event, and last the tuples, under
+// that event (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The
+// event's changed_version is the one the row is written with, which no statement of the batch
+// reads back.
+//
+// keepDecision read decision on the pool, holding no lock, and an agent's write of the document
+// takes the same owner lock: one that committed while the Keep waited for it would leave the Keep
+// recording a sum the decision no longer has, or keeping a decision now replaced. So the decision
+// is read again under the lock, as keepDecisionHeading reads its section: one the store no longer
+// holds, or holds replaced, is 404 TARGET_NOT_FOUND, and one whose text sum is no longer the one
+// it was read at is 409 DECISION_CHANGED, each with nothing written.
 func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}
+	current, found, err := s.readDecisionNode(ctx, tx, actor, document, decision.BlockID)
+	if err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	if !found || current.Replaced {
+		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
+	}
+	if current.TextSHA256 != decision.TextSHA256 {
+		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusConflict, "DECISION_CHANGED",
+			"the decision changed since it was read; read it again and keep what it says now")
+	}
+	decision = current
 	login := model.CanonicalLogin(actor.ID)
-	address := decisionNodeAddress(document, decision.BlockID)
+	address := refs.BlockAddress(document.RefKey, decision.BlockID)
 	// The tuple's time is the projection row's, to the microsecond a timestamptz holds.
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	earlier, err := graphstore.CurrentOut(ctx, tx, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
@@ -901,9 +914,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	keep := model.DecisionKeep{ArtifactID: document.ID}
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, held); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, held)
 		b.Queue("", `
 			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
 			values ($1::uuid, $2, $3, $4, $5, $6)
@@ -921,7 +932,8 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 		}), func(written model.Event) { event = written }); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}
@@ -963,12 +975,6 @@ func (s *server) keptDecision(ctx context.Context, who model.Actor, document mod
 	}, false, nil
 }
 
-// decisionNodeAddress is the address of the node of block blockID of document, as the block
-// index keys it: a U+0000 reads as U+FFFD, as the rendering writes it.
-func decisionNodeAddress(document model.Artifact, blockID string) string {
-	return document.RefKey + "#" + strings.ReplaceAll(blockID, "\x00", "\uFFFD")
-}
-
 // readDecisionNode is the agent's decision whose node is block blockID of document, a document
 // of an issue, as who reads it, and whether the store holds such a node: a live node of the
 // `decision` supertag at that block's address. It is read through decisionread.Decisions, the one
@@ -981,7 +987,7 @@ func (s *server) readDecisionNode(ctx context.Context, q queryer, who model.Acto
 		return model.Decision{}, false, nil
 	}
 	decisions, err := decisionread.Decisions(ctx, q, who,
-		[]decisionread.Node{{Kind: refs.BlockNodeKind, ID: decisionNodeAddress(document, blockID)}})
+		[]decisionread.Node{{Kind: refs.BlockNodeKind, ID: refs.BlockAddress(document.RefKey, blockID)}})
 	if err != nil || len(decisions) == 0 || decisions[0].Kind != "agent" {
 		return model.Decision{}, false, err
 	}

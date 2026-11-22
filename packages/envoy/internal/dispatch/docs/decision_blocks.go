@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,6 +14,46 @@ import (
 
 // decisionType is the block type whose server-owned attributes settlement holds to the store.
 const decisionType = "decision"
+
+// decisionServerAttribute is one server-owned attribute of the decision type: its name in the
+// markdown, and kind, the store name its value or its relation is kept under
+// (schemanodes.StoreName).
+type decisionServerAttribute struct{ name, kind string }
+
+// decisionServerAttributes is the decision type's server-owned attributes, read off the block
+// schema with their store names, and false where the installed manifest declares no decision
+// type. It depends on the installed manifest alone, so it is read once for each manifest
+// installed (decisionServerNames), as storedAskAttributes is, and every settlement shares the
+// list, which none writes.
+func decisionServerAttributes() ([]decisionServerAttribute, bool) {
+	schema, declared := pmdoc.BlockTypeAttributes(decisionType)
+	if !declared {
+		return nil, false
+	}
+	if read := decisionServerNames.Load(); read != nil && sameAttributeSchema(read.schema, schema) {
+		return read.attributes, true
+	}
+	var server []decisionServerAttribute
+	for _, attribute := range schema {
+		if attribute.Server {
+			server = append(server, decisionServerAttribute{name: attribute.Name, kind: schemanodes.StoreName(decisionType, attribute.Name)})
+		}
+	}
+	decisionServerNames.Store(&decisionServerNamesRead{schema: schema, attributes: server})
+	return server, true
+}
+
+// decisionServerNamesRead is decisionServerAttributes's answer for one installed manifest: the
+// decision type's attribute schema as that manifest holds it, and the attributes read off it.
+type decisionServerNamesRead struct {
+	schema     pmdoc.BlockAttributes
+	attributes []decisionServerAttribute
+}
+
+// decisionServerNames holds decisionServerAttributes's last read. A manifest installed since
+// (pmdoc.Install, or one a test installs) is compiled whole into new slices, so its decision
+// schema is another slice and the read is made again for it (sameAttributeSchema).
+var decisionServerNames atomic.Pointer[decisionServerNamesRead]
 
 // reconcileDecisionBlocks holds the server-owned attributes of every decision block of tree, the
 // tree settlement read of document artifactID, to what the store holds of the block's node: an
@@ -29,16 +70,9 @@ const decisionType = "decision"
 // Each change is a repair (settlementReconciliation.repair), written into the live document with
 // the ask blocks' (repairLive); it emits no event, since it restores what the store already says.
 func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) error {
-	attributes, declared := pmdoc.BlockTypeAttributes(decisionType)
+	server, declared := decisionServerAttributes()
 	if !declared {
 		return nil
-	}
-	type owned struct{ name, kind string }
-	var server []owned
-	for _, attribute := range attributes {
-		if attribute.Server {
-			server = append(server, owned{name: attribute.Name, kind: schemanodes.StoreName(decisionType, attribute.Name)})
-		}
 	}
 	type claimed struct {
 		node *pmdoc.Node
@@ -72,7 +106,7 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 	}
 	addresses := make([]string, len(decisions))
 	for index, decision := range decisions {
-		addresses[index] = storeBlockAddress(refKey, decision.id)
+		addresses[index] = refs.BlockAddress(refKey, decision.id)
 	}
 	kinds := make([]string, len(server))
 	for index, attribute := range server {

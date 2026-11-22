@@ -804,7 +804,7 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the connection that holds the step's lock: %v", err)
 	}
-	t.Cleanup(func() { closeDecisionStepConn(conn) })
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	holder, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds the step's lock: %v", err)

@@ -212,7 +212,7 @@ export function replyRefusal(reply: {
  * (`useHeldThroughAnswer`): by `aria-disabled`, never `disabled`, so the one the reader pressed or
  * typed Ctrl+Enter in keeps their focus through the hold. Inside an Inbox the hold goes on past
  * the landing: the reader's own reply takes the ask's thread out of their Inbox
- * (dispatch://INFRA-4948 R1), and this form with it, so Reply stays held until the reads of the
+ * (the own-answer rule, R1), and this form with it, so Reply stays held until the reads of the
  * Inbox out then have come back - the landing started that read (`outstanding-answers.ts`'
  * `onSettled`), and the hold waits on it and sends none (`meInboxReadsBack`) - and at the latest
  * until the write deadline from the press (`SEND_DEADLINE_MS`); a refusal lands nothing and ends
@@ -252,7 +252,7 @@ export function AskReplyComposer({
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
   // host draws this composer for by then. A reply takes no row out of the Inbox's read as it
   // goes: Dispatch takes the ask's thread out of the reader's Inbox once it has taken the reply
-  // (dispatch://INFRA-4948 R1), which the read after the landing shows.
+  // (the own-answer rule, R1), which the read after the landing shows.
   const options: OutstandingAnswerWriteOptions<Comment, ReplyPress> = {
     // The question goes in as its plain-text projection, the words the card draws: the reading
     // list's `write-label` (`DISPATCH_READING_SURFACES`) says why. Each press carries the line as

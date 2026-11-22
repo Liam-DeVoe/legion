@@ -20,7 +20,7 @@ import (
 )
 
 // TestTheOneWriterRecordsParticipationAndDelivery holds the one writer of the threads a person
-// takes part in (inboxwrite.Record, dispatch://INFRA-1152 D3, R2, R4 and R9) to what each write
+// takes part in (inboxwrite.Record, this child's D3, R2, R4 and R9) to what each write
 // records, every expected tuple written out by hand, each carrying the event of the write that
 // appended it: who takes part in the thread, whom the write reached and never its own writer, the
 // user_threads rows it moved and began, and the markers that hand a write an older build made to
@@ -111,8 +111,8 @@ func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
 			t.Fatalf("alice's row carries no dismissal after her dismiss")
 		}
 		// The dismissal's tuple from the person, which the dismiss route states under the event it
-		// appends (dispatch://INFRA-1152 R6): the reply below retracts it. Each reply is also its
-		// writer's own, so it dismisses the thread for its writer (dispatch://INFRA-4948 R1): bob's
+		// appends (the spec's R6): the reply below retracts it. Each reply is also its
+		// writer's own, so it dismisses the thread for its writer (the own-answer rule, R1): bob's
 		// for bob, and carol's for carol, which brings bob's back with alice's.
 		dismissEvent := newestEventOf(t, database, "user_thread_state.updated", "alice")
 		thread := "comment:" + root.ID

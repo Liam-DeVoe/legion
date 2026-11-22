@@ -12,11 +12,7 @@ import {
 } from "../../api/queries";
 import type { IssueDetails, ReferenceTarget } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import {
-  type PublishedReferences,
-  usePublishReferenceNames,
-  useSameReferences,
-} from "../refs/reference-names";
+import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
 import {
   buildIssueTree,
@@ -78,8 +74,7 @@ export interface IssueTreeView {
   readonly namesHeld: boolean;
   /** What the page publishes of its batched read (`usePublishReferenceNames`), which the view
    *  that draws the tree's rows hands them as well, in the render that draws them
-   *  (`PublishedReferenceNames`), so no row reads a reference the page is asking for. Each of its
-   *  sets is the same set while it holds the same references. */
+   *  (`PublishedReferenceNames`), so no row reads a reference the page is asking for. */
   readonly published: PublishedReferences;
   readonly root: TreeNode;
 }
@@ -544,16 +539,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
         : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
-  // Each set the same set while it holds the same references: the tree is read anew whenever any
-  // of its reads answers, and a set read anew that holds what it held is no change to publish.
-  const askedNow = useMemo(() => new Set([...refs, ...extra]), [extra, refs]);
-  const asked = useSameReferences(askedNow);
-  const ambiguous = useSameReferences(naming.ambiguous);
-  const gone = useSameReferences(naming.gone);
-  const wordless = useSameReferences(naming.unnamed);
+  // The tree is read anew whenever any of its reads answers, and so is each set of references
+  // published from it; the store hands readers the set it already holds where a new one holds
+  // the same references (`refs/reference-names.tsx`'s `merged`), so such a set draws nothing
+  // again.
   const published = useMemo<PublishedReferences>(
-    () => ({ ambiguous, asked, gone, readings: naming.readings, unnamed: wordless }),
-    [ambiguous, asked, gone, naming.readings, wordless]
+    () => ({ ...naming, asked: new Set([...refs, ...extra]) }),
+    [extra, naming, refs]
   );
   usePublishReferenceNames(published);
   const root = useMemo(

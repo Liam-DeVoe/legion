@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -247,14 +246,7 @@ func composedUploadAnsweredAsk(t *testing.T, service *Service, artifactID, docum
 	if ask.State != "open" || ask.Question != composedUploadQuestion {
 		t.Fatalf("the seeded ask is %s, want it open on %q before the person answers", askRowSummary(ask), composedUploadQuestion)
 	}
-	answer, err := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"REST"}, At: composedUploadAnsweredAt})
-	if err != nil {
-		t.Fatalf("encode the person's answer: %v", err)
-	}
-	if _, err := service.store.Pool.Exec(context.Background(),
-		`update asks set state = 'answered', answer = $2 where id = $1`, ask.ID, answer); err != nil {
-		t.Fatalf("answer the ask as the person: %v", err)
-	}
+	answerAskOnItsNode(t, service, ask.ID, model.AskAnswer{User: "alice", Selected: []string{"REST"}, At: composedUploadAnsweredAt})
 	settleCurrentGeneration(t, service, artifactID)
 	answered := blockAskOn(t, service, artifactID, "transport")
 	if answered.State != "answered" || answered.Answer == nil {

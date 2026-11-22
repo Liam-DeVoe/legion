@@ -152,13 +152,13 @@ func seedByWriter(t *testing.T, service *Service, artifactID string, client crdt
 }
 
 // The asks of a document already past what one upload may hold - stored before the bound, or grown
-// by a browser - can still be answered and resolved, and none of it grows the document: an answer,
-// a choice and its words, and a resolution are held on the ask's node and its row alone
-// (asks.Settle), and on a fleet of one build the routes write no byte of any document: once the
-// whole fleet runs this build, a person's answer changes no byte of any document. An agent reads
-// each ask's state and answer beside the text, in the asks
-// member of the text routes (TextWithAsks), whole: no answer is text of the document's, so none is
-// weighed against what one upload may hold.
+// by a browser - can still be answered and resolved, and none of it adds an answer's words to the
+// document: an answer, a choice and its words, and a resolution are held on the ask's node and its
+// row (asks.Settle), and on a fleet of one build the routes write into each block only what a
+// version keeps of its ask - its state, and for an answer who answered and when (keptAskState) -
+// never the words or the selection, which no write weighs against the bound. An agent reads each
+// ask's state and answer beside the text, in the asks member of the text routes (TextWithAsks),
+// whole: no answer is text of the document's, so none is weighed against what one upload may hold.
 func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.T) {
 	service, _ := newTestService(t)
 	service.settle = time.Hour
@@ -187,8 +187,15 @@ func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.
 		settleAskAs(t, service, artifactID, block, blockAskOn(t, service, artifactID, block).ID, alice, change)
 	}
 	settleCurrentGeneration(t, service, artifactID)
-	if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
-		t.Fatalf("answering and resolving left the document %d bytes (%v), want the %d it held: no byte of it holds an answer", len(after), err, len(before))
+	after, err := service.Text(context.Background(), artifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same, err := renderedWithoutAskServerAttributes(before, after); err != nil || !same ||
+		strings.Contains(after, "selected=") || strings.Contains(after, ` answer="`) ||
+		strings.Count(after, ` state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z"}`) != 2 ||
+		!strings.Contains(after, `#resolved urgency="med" multiple="false" state="resolved"}`) {
+		t.Fatalf("answering and resolving left the document %d bytes (%v), want the %d it held but for the kept state of each ask, and no answer's words or selection", len(after), err, len(before))
 	}
 	text, err := service.TextWithAsks(context.Background(), artifactID, false)
 	if err != nil {

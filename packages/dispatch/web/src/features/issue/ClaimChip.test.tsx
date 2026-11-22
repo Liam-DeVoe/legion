@@ -28,6 +28,7 @@ import { stateForIssue } from "./pins";
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
+
 function header(
   issue: Issue,
   liveness: ClaimHolderLiveness = {}

@@ -19,7 +19,7 @@ import (
 )
 
 // TestEveryReadStateWriteIsATupleFromThePerson holds each writer of the six read-state tables to
-// what dispatch://INFRA-1152 R6 asks of it (api/read_marks.go): the mark it stored is a tuple from
+// what the spec's R6 asks of it (api/read_marks.go): the mark it stored is a tuple from
 // the writer's one person node, to the thread's root, the session, the reply, the root message or
 // the ask, at the mark's own moment and under the event the write appended, and a row of the five
 // tables other than user_threads that the write stored is marked at that moment. A mark that ends

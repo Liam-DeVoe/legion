@@ -3,7 +3,6 @@ package refs
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -518,7 +517,9 @@ const currentBlockRow = `projected.position is not null`
 // is no key of this table, so a node kind a newer build adds to the graph is counted only once
 // its arms are declared here; "block" is present and empty because no literal-kind arm of the
 // view targets a document's block, and an entry that is present but empty is counted from the
-// mention arms alone rather than refused.
+// mention arms alone rather than refused. Tests outside this package count the same kinds from a
+// copy of these keys (refstest.BacklinkKinds), which TestRefstestBacklinkKindsAreTheArmTablesKinds
+// holds equal to them.
 //
 // Each arm reads only the relations it needs to reach the address it points at and leaves out
 // the joins the view makes only to date an edge. Dropping them preserves every row:
@@ -692,14 +693,6 @@ func identityMentionArms() []backlinkArm {
 	}
 }
 
-// BacklinkKinds is every node kind BacklinkCounts answers for, sorted: the keys of the arm
-// table, which is what the count refuses a kind for not holding. A test outside this package
-// counts the same kinds the count itself declares rather than keeping a list of its own
-// (docs.TestGraphEdgesLosesEveryArmOverAMovedKind).
-func BacklinkKinds() []string {
-	return slices.Sorted(maps.Keys(backlinkArms))
-}
-
 // mentionBacklinkArms is the arms of graph_edges whose edge kind and target kind are columns
 // rather than literals: refs; the block_refs rows naming no node and the store's links of a
 // document's blocks; the store's links of every item's blocks, in one arm; and for each item kind
@@ -742,12 +735,12 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// a kind nodeRegistry resolves, so the filter would drop nothing there.
 		arm(`refs r`, ` and r.from_kind = any($2) and not r.tuples_stored and not `+heldByABlock("r"),
 			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),
-		// block_refs_to (to_kind, to_id), over the rows that name no node. The view's own arm
-		// lists a block[] pointer's row only while block_ref_listed holds, the types test a
-		// typed block's pointer carries, and a row with no limit is listed without the call;
-		// this arm repeats both, so the count is the rows the list shows. A pointer whose
-		// target is retyped out of its allowed types leaves the count the moment it leaves the
-		// list, with no rewrite of either.
+		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,
+		// over the rows that name no node. The view's own arm lists a block[] pointer's row only
+		// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
+		// with no limit is listed without the call; this arm repeats both, so the count is the
+		// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
+		// the count the moment it leaves the list, with no rewrite of either.
 		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
 			and `+rowNamesNoNode(`r.node_kind`),
 			VisibleKind("block", `r.from_node`, backlinkSeen)),
@@ -798,7 +791,6 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		}
 	}
 	for _, item := range itemKinds {
-		tables, _ := item.tables()
 		// An item's citations in the store: the current `mentions` tuples out of the item's node,
 		// read through graph_tuples_as_of_in, which leads with the far end and the kind, each
 		// counted only while the refs row of its pair stands holding tuples_stored
@@ -815,11 +807,11 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		}
 		// One arm per item kind over the links its blocks hold, over the rows that name no node:
 		// <kind>_block_refs_to (to_kind, to_id, (<item>::text)), then the blocks table's primary key
-		// for the join. The join keeps the view's position filter: a link a block holds is listed
-		// while that block is one of the item's current ones, and the count copies the view's
-		// answer rather than correcting it.
-		arms = append(arms, arm(tables.refs+` r join `+tables.blocks+` b on b.`+tables.item+` = r.`+tables.item+` and b.block_id = r.block_id`,
-			` and b.position is not null and `+rowNamesNoNode(`r.node_kind`), VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
+		// for the join. The join keeps the view's position filter (itemBlockLinks,
+		// itemBlockCurrent): a link a block holds is listed while that block is one of the item's
+		// current ones, and the count copies the view's answer rather than correcting it.
+		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent+` and `+rowNamesNoNode(`r.node_kind`),
+			VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms
 }

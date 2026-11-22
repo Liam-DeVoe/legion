@@ -28,10 +28,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// This file is the package's external test because the sites it drives live in packages that
-// import graphcensus - docs imports it for the block-index tick's comment write, api imports
-// docs, and grapherase imports api - so the package's own tests cannot import them. It hands its
-// drives to TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
+// This file is the package's external test because one site it drives lives in a package that
+// imports graphcensus - grapherase, whose erase reads the census's ProvedSessionComments - so the
+// package's own tests cannot import it, and the API's and the document service's drives run on the
+// same rig ahead of the erase's, which takes a comment they wrote. It hands its drives to
+// TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
 func init() {
 	graphcensus.ImportedDrives = func(t *testing.T) []graphcensus.StoreDrive {
 		return slices.Concat(importedDrives(t), mentionClaimDrives(t))
@@ -291,7 +292,8 @@ func (r *writersRig) serve(method, target string, body any, login, key string) (
 }
 
 // uploadBase is the token an upload replacing the document artifact names, the one it carries
-// now: Dispatch refuses a replacement that names none (docs.ErrPreconditionRequired).
+// now, which Dispatch checks under the write's own lock (a replacement that names none is taken
+// unchecked and counted: api/unguarded_replacements.go).
 func (r *writersRig) uploadBase(t *testing.T, artifact string) map[string]string {
 	t.Helper()
 	document := decoded[struct {
@@ -356,8 +358,8 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // session opens, a follow of it, the spec's approval request renewed on a retry and handed back, a
 // settlement opening an ask a session wrote as a block, the tick indexing a version a build
 // without the block index wrote, and the erase of the issue's comment, which appends nothing. The
-// comment path's drives name the sites the path runs in turn (comment): the comment's node, its
-// tuples under its event, and who wrote it.
+// comment path's drives name the sites the path runs in turn (comment): the path itself, which
+// writes the comment's node and its tuples under its event, and who wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -378,8 +380,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}
 	const replayedKey = "sizing-replayed-comment"
 	comment := func(name string, sites ...string) []string {
-		return append([]string{name, "api/comment_create.go#writeNode", "api/comment_create.go#caused",
-			"graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue", "api/comment_create.go#queueRecordAndMentions"}, sites...)
+		return append([]string{name, "graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue",
+			"api/comment_create.go#queueRecordAndMentions"}, sites...)
 	}
 	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
@@ -721,7 +723,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindPerson, graphstore.TupleDismissed}:       {"dismissal"},
 		}),
 	}, {
-		// alice's own reply under that BTW, as herself (dispatch://INFRA-4948 R1): it takes the
+		// alice's own reply under that BTW, as herself (the own-answer rule, R1): it takes the
 		// Agent thread out of her Inbox as a Dismiss press does - her dismissed to the root, and the
 		// session's follow-up she had not read marked read by its id - and its send reaches the
 		// session, which the listener takes at once.

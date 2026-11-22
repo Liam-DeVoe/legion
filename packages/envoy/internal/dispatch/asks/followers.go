@@ -48,8 +48,8 @@ type Followed struct {
 // a session from, so a follower that never wrote a comment and was never reached by a delivery
 // is still a node of the store, and the ask's followed_by edge to it has a far end every read
 // resolves: refs' loadStoreNodes answers a session from graph_nodes alone. Every server path that
-// adds a follower reaches this insert: FollowAuthor, PlanFollowAuthor and PlanFollowNewAsk at each
-// site that writes an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
+// adds a follower reaches this insert: PlanFollowAuthor and PlanFollowNewAsk at each site that
+// writes an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
 //
 // The node is made by who, the actor of the write, at at, and caused by event. A caller whose
 // event is appended after the follow passes graphstore.NoEvent and moves the node onto that event
@@ -112,7 +112,7 @@ type followResult struct {
 // existed. The node arm upserts `do nothing`, which locks no row that is already there, and
 // which of the two arms Postgres runs first moves no lock of the store's order. A session id past
 // the store's address bound is no node the store can key, and the follow then writes the follower
-// row alone, as graphstore.SessionRecorded writes nothing for such a session.
+// row alone, as graphstore.QueueSessionRecorded writes nothing for such a session.
 //
 // The same statement stamps the follower row's marker (ask_followers.node_kind and node_address),
 // which says the ask node's followed_by to the session is the record of this row: on a new row,
@@ -189,16 +189,6 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 		ToKind: graphstore.KindSession, ToID: sessionID,
 		At: at, Who: who, SourceEvent: event, Asserted: asserted,
 	}
-}
-
-// FollowAuthor follows askID for a session author, at once, and does nothing for a human, so
-// every insert site can call it with the actor it already has. The session's node is made by the
-// author at at and caused by event, as Follow makes it.
-func FollowAuthor(ctx context.Context, tx pgx.Tx, askID string, author model.Actor, at time.Time, event int64) (Followed, error) {
-	if author.Kind != "session" || author.ID == "" {
-		return Followed{}, nil
-	}
-	return Follow(ctx, tx, askID, author.ID, author, at, event)
 }
 
 // PlannedFollow is the follow of an ask by a session author as PlanFollowAuthor or
@@ -313,9 +303,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
 	}
-	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation}); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("state that %q follows ask %q: %w", p.sessionID, p.askID, err)
-	}
+	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
 	return held, nil
 }
 

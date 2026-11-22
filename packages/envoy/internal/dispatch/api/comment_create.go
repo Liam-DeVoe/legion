@@ -521,8 +521,8 @@ func (s *server) describeAsk(
 // last, when it is a session none of those names, and [] when no session owns the ask. It reads
 // in the route's read phase, where the read holds no transaction id and finds the followers
 // committed before this write, but not the follow the write queues for a session that replies
-// (asks.QueueFollowAuthor), which only Ledger.Commit sends: so the replier is added here rather
-// than read.
+// (asks.PlanFollowAuthor's PlannedFollow, queued by its Queue), which only Ledger.Commit sends: so
+// the replier is added here rather than read.
 func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string, replier model.Actor) ([]string, error) {
 	followers, err := asks.Followers(ctx, tx, askID)
 	if err != nil {
@@ -985,10 +985,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	// What this comment is in the node and tuple store: its node, queued before the row, in the
-	// project of the issue or the document it belongs to, the facts the row is the projection of,
-	// and what it answers - each pointer the row holds and its place under what it answers - all
-	// of which wait for the event that stores it. The row says in its own insert whether its
+	// What this comment is in the node and tuple store: its node, queued before the row that names
+	// it, in the project of the issue or the document it belongs to, the facts the row is the
+	// projection of, and what it answers - each pointer the row holds and its place under what it
+	// answers - all of which wait for the event that stores it. The node write appends nothing
+	// (graphstore.QueueNodes): every fact of this write, the base attributes it states among them,
+	// is appended under that event, which is appended after the row. A comment left out of the
+	// store (unprojected) has no node to write. The row says in its own insert whether its
 	// pointers are stated (tuples_stored), which is what the trigger on that insert and
 	// graph_edges read.
 	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
@@ -1005,9 +1008,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		ReplyTo: deref(input.ReplyTo), AskID: deref(input.AskID),
 		Answers: deref(threadTarget.Answers), RepliesToBlock: deref(threadTarget.ReplyBlock.nodeID()),
 	})
-	if err := ledger.Queue(stored.writeNode); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if !stored.unprojected {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, stored.written)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// The failure point between the comment's node and its row (failpoint.Comment), decided here
 	// and queued between the two.
@@ -1021,8 +1029,8 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	nodeKind, nodeAddress := stored.rowNode()
 	if err := queueExec(ledger, `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, tuples_stored, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, tuples_stored, threads_recorded, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, $16)
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
 		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, nodeKind, nodeAddress, stored.pointersStored, comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
@@ -1162,9 +1170,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		// attempt the answer carries and the claim the sender holds - is read by the statement's
 		// own callback as the batch runs, into this mention's slot.
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			if err := graphstore.QueueNodes(b, opened); err != nil {
-				return err
-			}
+			graphstore.QueueNodes(b, opened)
 			b.Queue("", `
 				insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, resolve_error, state, claimed_at,
 				                                node_kind, node_address)
@@ -1189,7 +1195,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if anchor != nil {
 		pending.AnchorArtifactID = &anchor.ArtifactID
 	}
-	referenceChanges, indexed, err := s.queueItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, comment.Body, pending, stored.scope(), comment.CreatedAt, true)
+	referenceChanges, indexed, err := s.queueItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, comment.Body, pending, stored.scope(), comment.CreatedAt, true)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1200,20 +1206,21 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		indexed = commentMentionFacts(indexed, comment.ID, resolvedMentions, actor, comment.CreatedAt)
 	}
 	// The comment's thread in the Inbox, planned below and queued once its event is in
-	// (inboxwrite.PlanRecord): a comment whose pointers are stated is passed by the trigger
+	// (inboxwrite.PlanRecord): the row's threads_recorded passes it by the trigger
 	// user_threads_comment, so its thread_logins, which its event's insert reads after the
 	// comment's own insert, name the row its writer is about to hold beside the ones the thread
 	// holds. Its record names the node its head pointer names, whose tuple is queued and not
 	// written (commentRepliesTo), and reaches each person its text newly mentions. A comment whose
-	// pointers are no tuples is the trigger's, as an older build's is, and the backfill takes it.
+	// pointers are no tuples is recorded as the trigger body would have recorded it, its thread's
+	// rows moved and left to the backfill and no tuple stated (inboxwrite.Write.Unstored).
 	// The comment is its writer's own write: a reply by a person acting as themselves takes its
-	// thread out of their Inbox (inboxwrite.Write.Own, dispatch://INFRA-4948 R1), from the issue
+	// thread out of their Inbox (inboxwrite.Write.Own, the own-answer rule, R1), from the issue
 	// route and a document's margin alike, both of which reach this handler.
 	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed).Own(), input.AskID, input.ReplyTo)
-	logins := events.ThreadLoginsOf(commentThread(comment))
-	if stored.pointersStored {
-		logins = events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)
+	if !stored.pointersStored {
+		inbox = inbox.Unstored()
 	}
+	logins := events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)
 	events := []*model.Event{}
 	if snapshot != nil {
 		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
@@ -1258,12 +1265,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return
 		}
 	}
-	var recording inboxwrite.Recording
-	if stored.pointersStored {
-		if recording, err = inboxwrite.PlanRecord(r.Context(), tx, inbox); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	recording, err := inboxwrite.PlanRecord(r.Context(), tx, inbox)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	event, err := s.queueLoggedEvent(ledger, owner.event(
 		"comment.created",
@@ -1275,10 +1280,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	// What the comment states, under the event that stored it, queued right after that event
-	// (graphstore.LatestEvent): its node's cause, its two base attributes, the artifacts it is
-	// anchored to and owned by, and what it answers; its attempts' nodes and what their rows hold;
-	// and what its body is in the store - its blocks' nodes, their part_of and the links they
-	// hold, and its citations. Then who wrote it, as the node and tuple store holds it: the
+	// (graphstore.LatestEvent): its node's cause, its base attributes, the artifacts it is
+	// anchored to and owned by, and what it answers, with the move of its node row onto that event
+	// (graphstore.QueueCaused); its attempts' nodes and what their rows hold; and what its body is
+	// in the store - its blocks' nodes, their part_of and the links they hold, and its citations.
+	// Then who wrote it, as the node and tuple store holds it: the
 	// author's node and the comment's authored_by tuple, under the same event. A comment left out
 	// of the store has no node to author, so this is skipped with the rest of its write. Then a
 	// session writing in an ask's thread follows the ask, and is a node of the store from this
@@ -1298,20 +1304,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := stored.caused(b, graphstore.LatestEvent); err != nil {
-			return err
+		if !stored.unprojected {
+			graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		}
 		for _, opened := range attemptsOpened {
-			if err := graphstore.QueueCaused(b, opened, graphstore.LatestEvent); err != nil {
-				return err
-			}
+			graphstore.QueueCaused(b, opened, graphstore.LatestEvent)
 		}
-		if err := graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, attemptKeys...); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, attemptKeys...)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		if !stored.unprojected {
 			if err := graphstore.QueueAuthored(b, graphstore.KindComment, comment.ID, actor, comment.CreatedAt, graphstore.LatestEvent); err != nil {
 				return err
@@ -1325,7 +1325,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		if stored.pointersStored {
 			return queueRecordAndMentions(b, recording, indexed, actor, comment.CreatedAt, graphstore.LatestEvent)
 		}
-		return nil
+		return recording.Queue(b, graphstore.LatestEvent)
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1450,22 +1450,24 @@ func queueRecordAndMentions(b *store.WriteBatch, recording inboxwrite.Recording,
 		return err
 	}
 	rootKind, rootID := recording.Root()
-	return graphstore.QueueToPerson(b, inboxwrite.MentionParticipation(rootKind, rootID, indexed, who, at, event))
+	graphstore.QueueToPerson(b, inboxwrite.MentionParticipation(rootKind, rootID, indexed, who, at, event))
+	return nil
 }
 
 // commentStoreWrite is what a comment is in the node and tuple store: its node, the facts its row
 // is the projection of (graphstore.CommentFacts), and what it answers
 // (graphstore.CommentPointerFacts).
 //
-// The node is written by the request itself (writeNode), before the row, because the composite
-// foreign key on (node_kind, node_address) is checked inside the statement that writes the row
-// and there is no node to name otherwise. The facts are not: on the request path no event
-// exists while the row is written, so they wait for the event that caused the write (caused),
-// queued right after it in the same write phase, where refs.QueueStamp already runs. The node's
-// two base attributes wait with them: the write holds them for that event rather than letting
-// the node write state them, so that they carry the event that stored the comment like every
-// other fact of this write. The block index states its own nodes the same way
-// (graphstore.Uncaused).
+// The node is written by the request itself (graphstore.QueueNodes), before the row, because the
+// composite foreign key on (node_kind, node_address) is checked inside the statement that writes
+// the row and there is no node to name otherwise. The facts are not: on the request path no event
+// exists while the row is written, so they wait for the event that caused the write
+// (graphstore.QueueCaused), queued right after it in the same write phase, where refs.QueueStamp
+// already runs. The node's base attributes wait with them: the write holds them for that
+// event rather than letting the node write state them, so that they carry the event that stored
+// the comment like every other fact of this write. The block index states its own nodes the same
+// way (graphstore.Uncaused). Each writer of a comment skips both for a comment left out of the
+// store (unprojected).
 type commentStoreWrite struct {
 	// written is the node with every fact of this write held for the event that stores the
 	// comment (graphstore.PlanUncaused).
@@ -1544,11 +1546,11 @@ func (w commentStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 
 // statePointers adds what the comment's row holds of what it answers, pointers, to the facts this
 // write holds for its event (graphstore.CommentPointerFacts), dated and made as the node is, and
-// records whether they are stated (pointersStored). It runs before writeNode, which queues the
-// node holding those facts for the event, and plans the write again with them
-// (graphstore.PlanUncaused). A comment left out of the store states none, and nor does one whose
-// pointer the store's address bound cannot key, so its row's tuples_stored stays false and the old
-// arms of graph_edges answer its pointers.
+// records whether they are stated (pointersStored). It runs before the node write is queued
+// (graphstore.QueueNodes), which holds those facts for the event, and plans the write again with
+// them (graphstore.PlanUncaused). A comment left out of the store states none, and nor does one
+// whose pointer the store's address bound cannot key, so its row's tuples_stored stays false and
+// the old arms of graph_edges answer its pointers.
 func (w *commentStoreWrite) statePointers(pointers graphstore.CommentPointers) {
 	if w.unprojected {
 		return
@@ -1570,35 +1572,6 @@ func (w commentStoreWrite) scope() refs.ItemScope {
 		return refs.ItemScope{}
 	}
 	return refs.WrittenItem(w.written.Nodes[0])
-}
-
-// writeNode queues the comment's node, which the row that projects it names, holding every fact
-// of this write for the event that stores the comment, the two base attributes that write states
-// among them (graphstore.QueueNodes). It appends nothing: on the request path that event is
-// appended after the row, so all of them are appended by caused.
-func (w commentStoreWrite) writeNode(b *store.WriteBatch) error {
-	if w.unprojected {
-		return nil
-	}
-	if err := graphstore.QueueNodes(b, w.written); err != nil {
-		return fmt.Errorf("write the node of comment %s: %w", w.written.Nodes[0].ID, err)
-	}
-	return nil
-}
-
-// caused queues what the comment states under the event that stored it, its node's two base
-// attributes among them, and the move of its node row onto that event (graphstore.QueueCaused).
-// event is graphstore.LatestEvent on the request path, which queues this right after that event,
-// and graphstore.NoEvent where no event recorded the write, and the tuples then carry the
-// sentinel.
-func (w commentStoreWrite) caused(b *store.WriteBatch, event int64) error {
-	if w.unprojected {
-		return nil
-	}
-	if err := graphstore.QueueCaused(b, w.written, event); err != nil {
-		return fmt.Errorf("state what comment %s is: %w", w.written.Nodes[0].ID, err)
-	}
-	return nil
 }
 
 // artifactAddresses are the addresses the graph names the given artifacts by, their ref_keys,

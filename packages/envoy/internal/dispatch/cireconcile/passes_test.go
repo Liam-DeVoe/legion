@@ -18,18 +18,18 @@ import (
 // nothing else can; and beside them the pass its caller cancelled, which the record tells from
 // a pass that finished and the pass's own line does not.
 
-// registerProcess writes the row processes.Register writes for a live server process, with a
-// heartbeat of the given age, and answers the instance id. Written here rather than by calling
-// Register because these tests need a heartbeat older than the live window, which a registration
-// that keeps beating cannot have.
+// registerProcess writes the row processes.Register writes for a live server process, at this
+// build's owner lock protocol (store.OwnerLockProtocol), with a heartbeat of the given age, and
+// answers the instance id. Written here rather than by calling Register because these tests need
+// a heartbeat older than the live window, which a registration that keeps beating cannot have.
 func registerProcess(t *testing.T, pool *store.Pool, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
 	if err := pool.QueryRow(t.Context(), `
-		insert into server_processes (instance, heartbeat_at)
-		values (gen_random_uuid(), now() - make_interval(secs => $1))
+		insert into server_processes (instance, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), now() - make_interval(secs => $1), $2)
 		returning instance::text
-	`, heartbeatAge.Seconds()).Scan(&instance); err != nil {
+	`, heartbeatAge.Seconds(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("register a server process: %v", err)
 	}
 	return instance

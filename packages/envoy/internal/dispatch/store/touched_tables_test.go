@@ -22,6 +22,7 @@ var thisChildsMigrations = []string{
 	"20261117002006_block_moved_to.up.sql",
 	"20261117002045_artifacts_retired_at.up.sql",
 	"20261117093337_decisions_documents.up.sql",
+	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations

@@ -1103,9 +1103,6 @@ const rules: Record<string, Rule> = {
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
   },
-  // An issue's decisions are nodes of its documents, and Dispatch refuses the upload of a
-  // decisions document (`DECISIONS_ARE_NODES`), so a first upload, whose event carries no
-  // version, leaves the decisions alone.
   "the upload of a document of the issue leaves the issue's decisions alone": {
     event: event("artifact.created", {
       artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },

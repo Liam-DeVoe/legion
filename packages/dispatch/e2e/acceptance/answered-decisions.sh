@@ -8,14 +8,19 @@
 # (BASELINE_BINARY, default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA), with the dev
 # sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
 # DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh
-# write the corpus through that server's own API. Through the same server it closes issue D, so
-# one issue the restore owes is closed.
+# write the corpus through that server's own API. Through the same server it gives issue D a
+# questions.md holding an ask the person answers, and has an agent put a copy of that ask's block
+# into spec D, which the base settles as a copy no row names; then it closes issue D, so one issue
+# the restore owes is closed.
 #
 # BASELINE_SHA, the commit of the release this branch lands after, is required and has no
 # default: only the caller knows which release that is. Once the base server has booted, the
 # commit it is stamped with (the `commit` of its /healthz, the one it registers in
 # server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
-# naming both, so that a binary built from another commit never stands in for that release.
+# naming both, so that a binary built from another commit never stands in for that release. In
+# the same way this head's server must be stamped with the commit this checkout stands on (`git
+# rev-parse HEAD`, which the Verification preamble stamps HEAD_BINARY with), so that a binary left
+# from an earlier head never stands in for the head the result is recorded at.
 #
 # Before this head boots it captures, through the base server: each restored ask's id, question,
 # options, answer and answerer (GET /api/v1/asks/{id}); the spec blocks the base's Decisions read
@@ -23,7 +28,9 @@
 # of each issue the restore owes (GET /api/v1/artifacts/{id}/versions/{n}); the text the citation
 # of the second shape's old addresses answers (GET /api/v1/references?to=), and that of the main
 # shape's colliding old spec address; and the block_refs rows the decisions document holds for the
-# second shape's ask blocks. It then stops that server and boots this head, HEAD_BINARY (default
+# second shape's ask blocks and the blocks each holds (document_blocks.parent_block_id), among
+# them the citation of an issue the seed writes in each one's question, and it fails when an ask
+# holds none. It then stops that server and boots this head, HEAD_BINARY (default
 # $TMPDIR/bin/envoy-dispatch, built stamped as the Verification preamble builds it), over the same
 # database with the hold setting, so the commands below and not the boot make the first move.
 #
@@ -31,23 +38,37 @@
 # restore read an answer from) and the store census (`envoy-dispatch census --store`), which must
 # list each spec whose answered asks left it with exactly those asks; then the restore,
 # `envoy-dispatch restore-answered-asks --project SEED`, and the census again, which must list
-# none. For each restored ask it reads, at this head: the same ask id, its answer and answerer
+# list none. For each restored ask it reads, at this head: the same ask id, its answer and answerer
 # character for character as captured; its block in the spec's `## Decisions` part, in answer-time
 # order, the pointer line gone; that block's question and options character for character as the
-# captured row, and no answer and no server-owned attribute in its markdown (the stored version's);
-# for the main shape its old block id and no moved_to tuple naming it, and for the second shape one
-# moved_to tuple from its old address to its new one; one current shaped tuple from the ask's node
-# to each spec node captured from its section's links, and no other; and no copied_from on its
-# block. It reads every captured version of both documents answering the captured bytes. For the
-# second shape it reads the two documents move together: the decisions document's block index and
-# block_refs hold nothing of the moved asks, and the spec's hold each and each captured edge. For
-# both collisions it reads the restored ask's new id, held by no other document of the issue, in
-# the asks row asks_block_id_unique keys; for the second shape the old address still resolving
-# through its one moved_to tuple to the captured text, and for the main shape no moved_to tuple and
-# the old spec address answering the live block that holds that id, as captured. A text is held to
-# the captured one character for character with two differences and no other, each printed: the
-# eight server-owned ask attributes are absent, and a block that took a new id carries it. It runs
-# the restore again and reads the same result for the closed issue, and for every other.
+# captured row, and no answer in its markdown (the stored version's); for the main shape its old
+# block id and no moved_to tuple naming it, and for the second shape one moved_to tuple from its
+# old address to its new one; one current shaped tuple from the ask's node to each spec node
+# captured from its section's links, and no other; and no copied_from on its block. It reads every
+# ask block of each version the restore wrote - the versions its line of each issue names
+# (spec_version, decisions_version) and counts (other_versions), as the artifact.version events
+# the step appends in its own name name them - in both shapes, and each holds the form R10 keeps,
+# each value equal to its ask's node as the store states it: `state` where the ask is answered or
+# resolved and none where it is open, `answered_by` and `answered_at` where it is answered, and
+# `copied_from` and `copied_from_document` on a copy of an ask of another document; a block that
+# has no ask row and is no copy of an ask holds none of the eight server-owned attributes; and no
+# block holds `selected`, `answer` or `invalid`. A block that differs fails the run, which prints
+# the block, its attributes and the ones its ask's node gives. Spec D's version holds the copy of
+# the answered ask, and the run fails unless a version the restore wrote holds a copy of an
+# answered ask whose kept form it read. It reads every captured version of
+# both documents answering the captured bytes. For the second shape it reads the two documents
+# move together: the decisions document's block index and block_refs hold nothing of the moved
+# asks or of a block they held, and the spec's hold each ask and each captured edge, an ask block's
+# own under its new id and a held block's under a block the restored ask block holds. For both
+# collisions it reads the restored ask's new id, held by no other document of the issue, in the
+# asks row asks_block_id_unique keys; for the second shape the old address still resolving through
+# its one moved_to tuple to the captured text, and for the main shape no moved_to tuple and the old
+# spec address answering the live block that holds that id, as captured. A text is held to the
+# captured one character for character with two differences and no other, each printed: the
+# attributes R10 takes out of markdown, `selected` and `answer`, are absent, and a block that took
+# a new id carries it; its `state`, `answered_by` and `answered_at`, which R10 keeps, written from
+# the same ask node, equal the captured ones, each printed. It runs the restore again and reads
+# the same result for the closed issue, and for every other.
 #
 # Then, on the spec, which still holds the answered ask q-kept, it makes three writes as the agent
 # - a delete of that block, a whole-document replacement without it, and a retype of it - and reads
@@ -67,8 +88,10 @@
 # spec holding no block of that ask, its newest version the person's, and no restore of it in any
 # report - a failure names the ask and the version that wrote its block back; the section deleted
 # by R9's rule for it, its heading address answering the ask through one moved_to tuple, the
-# decisions.md retired, and /healthz's decisions_step_owed zero; and the SEED ask the agent dropped
-# restored in the same run, the version that dropped it read as a session with no act of a person.
+# decisions.md retired, and /healthz's decisions_step_owed zero; the SEED ask the agent dropped
+# restored in the same run, the version that dropped it read as a session with no act of a person;
+# and every ask block of each version the step wrote on its ticks, each an artifact.version event
+# it appended in its own name, in the form R10 keeps, as for the versions the restore wrote.
 #
 # Last it stops this head and runs the Go test that carries a drop by a broker token the secrets
 # broker scoped to a person, which no shell driver can present, since that token signs a DPoP proof
@@ -107,7 +130,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
 require_env DATABASE_URL TMPDIR BASELINE_SHA
-require_commands cmp curl git go jq psql sed sort
+require_commands cmp curl git go jq paste psql sed sort
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
 database_url="$DATABASE_URL"
 if [[ -z "${BASELINE_BINARY:-}" ]]; then
@@ -147,8 +170,15 @@ base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quie
   exit 2
 }
 readonly base_sha
+# The commit this checkout stands on, in full: the one this head's server must be stamped with.
+head_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet HEAD)" || {
+  printf 'this checkout stands on no commit (git rev-parse HEAD)\n' >&2
+  exit 2
+}
+readonly head_sha
 readonly project=SEED
-# The eight server-owned ask attributes R10 takes out of markdown.
+# The eight server-owned ask attributes. R10 takes `selected` and `answer` out of markdown, keeps
+# the others a version can store in the form keptAskState writes, and no rendering writes `invalid`.
 readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
 
 work_dir
@@ -288,26 +318,48 @@ expected_body() {
   jq -r '.question, (if (.options // []) | length > 0 then "", (.options[] | "- " + .label + (if (.description // "") == "" then "" else ": " + .description end)) else empty end)' "$1"
 }
 
+# attribute_of OPENING NAME: the attribute NAME as the opening line OPENING of an ask block holds
+# it, `NAME="<value>"`, or `NAME=` and what follows up to a space or a brace where its value is not
+# quoted; nothing where OPENING holds no such attribute.
+attribute_of() {
+  if [[ "$1" =~ \ $2=\"([^\"]*)\" ]]; then
+    printf '%s="%s"' "$2" "${BASH_REMATCH[1]}"
+  elif [[ "$1" =~ \ $2=([^ }]*) ]]; then
+    printf '%s=%s' "$2" "${BASH_REMATCH[1]}"
+  fi
+}
+
 # same_text SECTION WHAT CAPTURED GOT OLD_ID NEW_ID: GOT, the text a citation resolves to now,
 # equals CAPTURED, the text it resolved to before the upgrade, character for character but for two
-# differences, each printed: the eight server-owned ask attributes are absent from GOT, and where
-# NEW_ID is not OLD_ID the block carries NEW_ID in place of OLD_ID. A server-owned attribute still
-# in GOT fails, as does any other difference.
+# differences, each printed: the attributes R10 takes out of markdown, `selected` and `answer`, are
+# absent from GOT, and where NEW_ID is not OLD_ID the block carries NEW_ID in place of OLD_ID. GOT
+# holds every other server-owned ask attribute as CAPTURED holds it - `state`, `answered_by` and
+# `answered_at`, which R10 keeps, written from the same ask node - each printed. A `selected` or an
+# `answer` still in GOT fails, as does a kept attribute that differs, and any other difference.
 same_text() {
-  local section="$1" what="$2" captured="$3" got="$4" old="$5" new="$6" name opening
+  local section="$1" what="$2" captured="$3" got="$4" old="$5" new="$6" name opening captured_opening want held
   printf '%s: the captured text:\n%s\n%s: the text now:\n%s\n' "$what" "$(<"$captured")" "$what" "$(<"$got")"
   opening="$(head -n 1 "$got")"
-  for name in "${server_attributes[@]}"; do
-    [[ "$opening" != *" $name=\""* ]] ||
-      fail "$section" "$what" "the server-owned attribute $name is still in the text: $opening"
-  done
+  captured_opening="$(head -n 1 "$captured")"
   cp "$captured" "$work/expected.txt"
-  opening="$(head -n 1 "$captured")"
   for name in "${server_attributes[@]}"; do
-    if [[ "$opening" =~ \ $name=\"[^\"]*\" ]]; then
-      printf '%s: allowed difference: the server-owned attribute %s is absent\n' "$what" "${BASH_REMATCH[0]# }"
-      sed -i -E "1s/ $name=\"[^\"]*\"//" "$work/expected.txt"
-    fi
+    want="$(attribute_of "$captured_opening" "$name")"
+    held="$(attribute_of "$opening" "$name")"
+    case "$name" in
+      selected | answer)
+        [[ -z "$held" ]] ||
+          fail "$section" "$what" "the attribute $name, which R10 takes out of markdown, is still in the text: $opening"
+        if [[ -n "$want" ]]; then
+          printf '%s: allowed difference: the attribute %s is absent\n' "$what" "$want"
+          sed -i -E "1s/ $name=\"[^\"]*\"//" "$work/expected.txt"
+        fi
+        ;;
+      *)
+        [[ "$held" == "$want" ]] ||
+          fail "$section" "$what" "the text holds ${held:-no $name} and the captured text ${want:-no $name}: R10 keeps it, written from the same ask node"
+        [[ -z "$want" ]] || printf '%s: kept as captured: %s\n' "$what" "$want"
+        ;;
+    esac
   done
   if [[ "$old" != "$new" ]]; then
     printf '%s: allowed difference: the block took the id %s in place of %s\n' "$what" "$new" "$old"
@@ -316,6 +368,172 @@ same_text() {
   cmp -s "$work/expected.txt" "$got" ||
     fail "$section" "$what" "the text differs beyond those two: want $(<"$work/expected.txt"), got $(<"$got")"
   pass "$section" "$what"
+}
+
+# kept_form SECTION DOCUMENT NUMBER WHAT: every ask block of version NUMBER of DOCUMENT (WHAT says
+# whose version it is), read through the versions route, holds the form R10 keeps
+# (docs.keptAskState), each value equal to its ask's node as the store states it now: the ask whose
+# row names the block of DOCUMENT under its id, or, for a block no row names whose block node
+# holds a standing copied_from (settlement's claimCopies), the ask it copies. Such a block holds
+# `state` where that node's answer_state is answered or resolved and none where it is open or
+# absent, `answered_by` and `answered_at` as the node holds them where it is answered, and, on a
+# copy, `copied_from`, the ask, and `copied_from_document`, the address of the document that ask's
+# row names (refs.ArtifactRef). A block that has no ask row and is no copy of an ask holds none of
+# the eight server-owned attributes, and no block holds `selected`, `answer` or `invalid`. It prints
+# each block's attributes; a block that differs fails the run, which prints the block, the
+# attributes it holds and the ones its ask's node gives. It counts the blocks of each branch it read
+# that hold the form, in kept_copies, kept_answered_copies (a copy whose source is answered) and
+# kept_rowless (a block with no ask row and no copy), for a caller that requires a branch read.
+kept_form() {
+  local section="$1" document="$2" number="$3" what="$4" id own source copied state by at name whose
+  local opening got held wants differs blocks=0
+  local -a ids
+  local -A wanted
+  send agent GET "/api/v1/artifacts/$document/versions/$number"
+  want_status 200 "$section" "read version $number of $document, $what"
+  jq -j '.markdown' "$work/body" >"$work/kept-form.md"
+  mapfile -t ids < <(sed -nE 's/^:+ask\{#([^ }]+).*/\1/p' "$work/kept-form.md")
+  if [[ "${#ids[@]}" == 0 ]]; then
+    pass "$section" "version $number of $document, $what, holds no ask block"
+    return 0
+  fi
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "
+    with block (block_id, position) as (
+      select b, p from unnest(string_to_array('${ids[*]}', ' ')) with ordinality as u (b, p)
+    ), owned as (
+      select block.block_id, block.position,
+        (select a.id::text from asks a where a.block_artifact_id = '$document' and a.block_id = block.block_id) as own,
+        (select c.to_id from document_blocks d
+           cross join lateral (
+             select distinct on (t.to_kind, t.to_id) t.to_id, t.asserted from graph_tuples t
+             where t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = 'copied_from' and t.to_kind = 'ask'
+             order by t.to_kind, t.to_id, t.seq desc) c
+           where d.artifact_id = '$document' and d.block_id = block.block_id and d.node_address is not null and c.asserted
+           limit 1) as copied
+      from block
+    ), asked as (
+      select o.block_id, o.position, o.own, case when o.own is null then o.copied end as source,
+        coalesce(o.own, o.copied) as ask
+      from owned o
+    )
+    select k.block_id, coalesce(k.own, ''), coalesce(k.source, ''),
+      coalesce((select case when sa.session_id is not null then 'dispatch://agent/' || sa.session_id || '/artifact/' || sa.slug
+                            when sa.issue_key is null then 'dispatch://' || sa.project_key || '/artifact/' || sa.slug
+                            when sa.is_primary and sa.kind = 'doc' then 'dispatch://' || sa.issue_key || '/spec'
+                            else 'dispatch://' || sa.issue_key || '/artifact/' || sa.slug end
+                from asks s join artifacts sa on sa.id = s.block_artifact_id where s.id::text = k.source), ''),
+      coalesce(n.state, ''), coalesce(n.answered_by, ''), coalesce(n.answered_at, '')
+    from asked k
+    left join lateral (
+      select max(f.to_id) filter (where f.kind = 'answer_state') as state,
+        string_agg(f.to_id, ',' order by f.to_id) filter (where f.kind = 'answered_by') as answered_by,
+        max(f.to_id) filter (where f.kind = 'answered_at') as answered_at
+      from (
+        select distinct on (g.kind, g.to_kind, case when g.to_kind = 'value' then '' else g.to_id end) g.kind, g.to_id, g.asserted
+        from graph_tuples g
+        where g.from_kind = 'ask' and g.from_id = k.ask and g.kind in ('answer_state', 'answered_by', 'answered_at')
+        order by g.kind, g.to_kind, case when g.to_kind = 'value' then '' else g.to_id end, g.seq desc) f
+      where f.asserted) n on true
+    order by k.position" >"$work/kept-form-rows" 2>"$work/psql" ||
+    fail "$section" "read the ask of each ask block of version $number of $document" "psql: $(<"$work/psql")"
+  [[ "$(wc -l <"$work/kept-form-rows")" == "${#ids[@]}" ]] ||
+    fail "$section" "read the ask of each of the ${#ids[@]} ask blocks of version $number of $document" "$(<"$work/kept-form-rows")"
+  while IFS='|' read -r id own source copied state by at; do
+    blocks=$((blocks + 1))
+    wanted=()
+    whose="no ask row and no copy of an ask"
+    [[ -z "$own" ]] || whose="ask $own, its node's answer_state ${state:-absent}"
+    [[ -z "$source" ]] || whose="a copy of ask $source of $copied, its node's answer_state ${state:-absent}"
+    if [[ -n "$own$source" && -n "$state" && "$state" != open ]]; then
+      wanted[state]="$state"
+    fi
+    if [[ -n "$own$source" && "$state" == answered ]]; then
+      [[ -z "$by" ]] || wanted[answered_by]="$by"
+      [[ -z "$at" ]] || wanted[answered_at]="$at"
+    fi
+    if [[ -n "$source" ]]; then
+      wanted[copied_from]="$source"
+      wanted[copied_from_document]="$copied"
+    fi
+    ask_block "$id" "$work/kept-form.md" >"$work/kept-form-block.md"
+    opening="$(head -n 1 "$work/kept-form-block.md")"
+    held="" wants="" differs=""
+    for name in "${server_attributes[@]}"; do
+      got="$(attribute_of "$opening" "$name")"
+      held+="${got:+ $got}"
+      if [[ -n "${wanted[$name]+set}" ]]; then
+        wants+=" $name=\"${wanted[$name]}\""
+        [[ "$got" == "$name=\"${wanted[$name]}\"" ]] || differs+=" $name"
+      elif [[ -n "$got" ]]; then
+        differs+=" $name"
+      fi
+    done
+    if [[ -n "$differs" ]]; then
+      printf '%s: version %s of %s, %s: the ask block %s (%s):\n%s\n' "$section" "$number" "$document" "$what" "$id" "$whose" \
+        "$(<"$work/kept-form-block.md")"
+      printf '%s: the server-owned attributes it holds:%s\n' "$section" "${held:- none}"
+      printf '%s: the form R10 keeps, from its ask'"'"'s node:%s\n' "$section" "${wants:- none}"
+      fail "$section" "every ask block of version $number of $document, $what, holds the form R10 keeps, each value its ask's node's" \
+        "the block $id ($whose) differs in$differs: it holds${held:- none}, want${wants:- none}"
+    fi
+    printf '%s: version %s of %s: the ask block %s (%s) holds%s\n' "$section" "$number" "$document" "$id" "$whose" \
+      "${held:- none of the eight server-owned attributes}"
+    # Which branch of the kept form the block read, for a caller that requires a branch read.
+    if [[ -n "$source" ]]; then
+      kept_copies=$((kept_copies + 1))
+      [[ "$state" != answered ]] || kept_answered_copies=$((kept_answered_copies + 1))
+    elif [[ -z "$own" ]]; then
+      kept_rowless=$((kept_rowless + 1))
+    fi
+  done <"$work/kept-form-rows"
+  pass "$section" "the $blocks ask blocks of version $number of $document, $what, each hold the form R10 keeps, each value its ask's node's"
+}
+
+# step_events SECTION MARKER ISSUE LIMIT: the artifact.version events the decisions step appended
+# in its own name (docs.DecisionStepActor) after event MARKER, of ISSUE ("" for every issue), the
+# first LIMIT of them ("all" for every one), `document number` one a line, oldest first, in
+# $work/step-events.
+step_events() {
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F ' ' -c "
+    select e.payload->>'artifact_id', e.payload->'version'->>'number' from events e
+    where e.id > $2 and ('$3' = '' or e.issue_key = '$3') and e.type = 'artifact.version'
+      and e.actor->>'kind' = 'system' and e.actor->>'id' = 'dispatch-decisions-step'
+    order by e.id limit $4" >"$work/step-events" 2>"$work/psql" ||
+    fail "$1" "read the versions the decisions step wrote after event $2" "psql: $(<"$work/psql")"
+}
+
+# step_versions SECTION NAME MARKER: each version the decisions step run by hand, whose output is
+# $work/NAME.out, wrote, `document number` one a line, into $work/NAME.versions. Its line of each
+# issue names the version it wrote of the spec (spec_version) and of the decisions document
+# (decisions_version), 0 for none, and counts the versions it wrote of the issue's other documents
+# (other_versions). It writes them in the issue's one transaction, each with its artifact.version
+# event in its own name, so the first of those events of the issue after event MARKER, as many as
+# the line counts, are its versions: they must hold the spec's and the decisions document's under
+# the numbers the line names, and they name the other documents.
+step_versions() {
+  local section="$1" name="$2" marker="$3" line issue spec_version decisions_version others count spec
+  : >"$work/$name.versions"
+  while IFS= read -r line <&3; do
+    [[ "$line" =~ \ issue=([^ ]+)\ .*\ spec_version=([0-9]+)\ decisions_version=([0-9]+)\ other_versions=([0-9]+)\  ]] ||
+      fail "$section" "the line of $name names the versions it wrote" "$line"
+    issue="${BASH_REMATCH[1]}" spec_version="${BASH_REMATCH[2]}" decisions_version="${BASH_REMATCH[3]}" others="${BASH_REMATCH[4]}"
+    count=$(((spec_version > 0) + (decisions_version > 0) + others))
+    [[ "$count" -gt 0 ]] || continue
+    step_events "$section" "$marker" "$issue" "$count"
+    query "$section" "read the spec of $issue" "select id from artifacts where issue_key = '$issue' and is_primary and kind = 'doc'"
+    spec="$answer"
+    [[ "$(wc -l <"$work/step-events")" == "$count" ]] ||
+      fail "$section" "the step appended the artifact.version event of each of the $count versions $name wrote of $issue" \
+        "it appended $(wc -l <"$work/step-events") after event $marker: $(tr '\n' ';' <"$work/step-events")"
+    [[ "$spec_version" == 0 ]] || grep -qx -- "$spec $spec_version" "$work/step-events" ||
+      fail "$section" "the versions $name wrote of $issue hold version $spec_version of its spec $spec" "$(tr '\n' ';' <"$work/step-events")"
+    [[ "$decisions_version" == 0 ]] ||
+      awk -v s="$spec" -v n="$decisions_version" '$1 != s && $2 == n { found = 1 } END { exit !found }' "$work/step-events" ||
+      fail "$section" "the versions $name wrote of $issue hold version $decisions_version of its decisions document" \
+        "$(tr '\n' ';' <"$work/step-events")"
+    printf '%s: the versions %s wrote of %s (document number): %s\n' "$section" "$name" "$issue" "$(tr '\n' ';' <"$work/step-events")"
+    cat "$work/step-events" >>"$work/$name.versions"
+  done 3< <(grep -E '^[a-z-]+: issue=[^ ]+ restored=' "$work/$name.out")
 }
 
 # moved_to_rows ADDRESS: every moved_to tuple from the block node ADDRESS, one `to_id|asserted`
@@ -342,6 +560,14 @@ shaped_of() {
       order by t.to_kind, t.to_id, t.seq desc
     ) s where s.asserted order by s.to_id" 2>"$work/psql" ||
     fail shaped "read the shaped tuples of ask $1" "psql: $(<"$work/psql")"
+}
+
+# held_cte DOCUMENT BLOCK: on stdout, the `with recursive held (block_id)` clause of a query that
+# follows it: BLOCK of DOCUMENT and every block BLOCK holds there, at any depth, through the block
+# index's document_blocks.parent_block_id.
+held_cte() {
+  printf "with recursive held (block_id) as (select '%s'::text union select b.block_id from document_blocks b join held h on b.parent_block_id = h.block_id where b.artifact_id = '%s')" \
+    "$2" "$1"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -389,10 +615,45 @@ declare -A section_heading=([ask_doc_plain]="Which reader reads the corpus first
 # The two collisions: a live block of the spec holds the old block id.
 declare -A collides=([ask_left_store]=1 [ask_doc_collide]=1)
 
+# A copy of an answered ask in a version the restore writes, written through the base release as the
+# seed writes: questions.md of issue D holds an ask the person answers, and an agent puts a copy of
+# its block into spec D - the same id, question and urgency - which the base release settles as a
+# copy of that ask, so no row names it and the block holds copied_from. The restore writes spec D,
+# so the version it writes holds that copy, and kept_form reads a copy's kept form on it.
+cat >"$work/questions-d.md" <<'MD'
+# Questions
+
+:::ask{#q-d-copied urgency="low"}
+Which shelf keeps the approved version?
+:::
+MD
+seed_upload questions_d "$issue_d" questions.md "$work/questions-d.md"
+seed_ask ask_d_copied "$issue_d" "${seed_ids[questions_d]}" q-d-copied
+seed_answer ask_d_copied "${seed_ids[questions_d]}" q-d-copied "The top shelf, beside the approval."
+seed_edit "$spec_d" "an agent puts a copy of the answered ask q-d-copied into spec D" \
+  "$(jq -cn '[{op: "insert", after: "end", markdown: ":::ask{#q-d-copied urgency=\"low\"}\nWhich shelf keeps the approved version?\n:::"}]')"
+seed_wait_block "$spec_d" q-d-copied answered "the copy of q-d-copied in spec D shows its source answered"
+seed_wait_settled "the copy of q-d-copied in spec D settles"
+send agent GET "/api/v1/issues/$issue_d/asks?state=all"
+want_status 200 capture "read the asks of $issue_d"
+jq -e --arg d "$spec_d" '[.[] | select(.block_id == "q-d-copied" and .block_artifact.id == $d)] | length == 0' "$work/body" >/dev/null ||
+  fail capture "the block q-d-copied of spec D is a copy no row names" \
+    "$(jq -c '[.[] | select(.block_id == "q-d-copied") | {id, block_artifact}]' "$work/body")"
+send agent GET "/api/v1/artifacts/$spec_d/text"
+want_status 200 capture "read spec D"
+jq -e --arg c "copied_from=\"${seed_ids[ask_d_copied]}\"" \
+  '[.markdown | split("\n")[] | select(startswith(":::ask{#q-d-copied "))] | length == 1 and (.[0] | contains($c))' \
+  "$work/body" >/dev/null ||
+  fail capture "spec D holds the block q-d-copied, a copy of ask_d_copied" "$(jq -r '.markdown' "$work/body" | head -c 600)"
+pass capture "spec D holds q-d-copied, a copy of the answered ask ${seed_ids[ask_d_copied]} of questions.md, which no row names"
+
 # The closed issue: D, whose answered ask left its spec.
 send agent PATCH "/api/v1/issues/$issue_d" "$(jq -cn --argjson a "$(seed_actor)" '{status: "done", actor: $a}')"
 want_status 200 capture "close issue $issue_d through the base release"
 expect capture "issue $issue_d is closed" '"done"' '.status'
+# The close writes the copy in spec D from its source's row, and the settlement it leaves owed
+# versions spec D; the capture below reads every version once nothing is owed.
+seed_wait_settled "the close of issue $issue_d settles"
 
 # Each restored ask, and q-kept, as the base release's ask read answers them.
 for key in "${restored[@]}" ask_kept; do
@@ -450,13 +711,27 @@ want_status 200 capture "resolve spec#b-q-left-store through the base release"
 expect capture "spec#b-q-left-store is the callout that took that id" '"callout"' '.node.text | capture("^:::(?<t>[a-z]+)").t'
 jq -j '.node.text' "$work/body" >"$work/capture/text.q-left-store"
 
-# The block_refs rows the decisions document holds for the second shape's ask blocks.
+# The block_refs rows the decisions document holds for the second shape's ask blocks and for every
+# block each holds: the seed's question of each cites an issue, which the base release indexes
+# under the question's paragraph, a block the ask block holds. The blocks' ids go to
+# capture/held.$key and the edges, one `where|kind|to_kind|to_id|count` line each (where: `own`
+# for the ask block's own, `held` for a block it holds), to capture/edges.$key, which must not be
+# empty: an ask that holds no edge would leave the check of the two documents moving together
+# below nothing to check.
 for key in ask_doc_plain ask_doc_collide; do
-  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "
-    select kind, to_kind, to_id from block_refs
-    where artifact_id = '$decisions_a' and block_id = '${old_id[$key]}' order by 1, 2, 3" \
+  env -u PGHOSTADDR psql "$database_url" -XAtq -c \
+    "$(held_cte "$decisions_a" "${old_id[$key]}") select block_id from held order by 1" \
+    >"$work/capture/held.$key" 2>"$work/psql" || fail capture "read the blocks $key holds" "psql: $(<"$work/psql")"
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "$(held_cte "$decisions_a" "${old_id[$key]}")
+    select case when block_id = '${old_id[$key]}' then 'own' else 'held' end, kind, to_kind, to_id, count(*)
+    from block_refs where artifact_id = '$decisions_a' and block_id in (select block_id from held)
+    group by 1, 2, 3, 4 order by 1, 2, 3, 4" \
     >"$work/capture/edges.$key" 2>"$work/psql" || fail capture "read the edges of $key" "psql: $(<"$work/psql")"
-  printf 'captured edges of %s in the decisions document: %s\n' "$key" "$(wc -l <"$work/capture/edges.$key")"
+  [[ -s "$work/capture/edges.$key" ]] ||
+    fail capture "the decisions document holds an edge of $key or of a block it holds" \
+      "block_refs holds none for its blocks $(tr '\n' ' ' <"$work/capture/held.$key")"
+  printf 'captured edges of %s and the blocks it holds in the decisions document: %s\n' "$key" \
+    "$(tr '\n' ' ' <"$work/capture/edges.$key")"
 done
 baseline_stop_server
 
@@ -469,9 +744,10 @@ server="$baseline_boot_url"
 send agent GET /healthz
 want_status 200 head "read this head's /healthz"
 head_commit="$(jq -r '.commit // ""' "$work/body")"
-[[ -n "$head_commit" && "$head_commit" != "$base_commit" ]] ||
-  fail head "this head is stamped with a commit of its own" "it serves '$head_commit', the base '$base_commit'"
-pass head "this head serves $head_commit over the base release's database, the decisions step held"
+[[ "$head_commit" == "$head_sha" && "$head_commit" != "$base_commit" ]] ||
+  fail head "this head is stamped with the commit this checkout stands on, not the base's" \
+    "it serves '$head_commit', the checkout stands on '$head_sha', the base serves '$base_commit'"
+pass head "this head serves $head_commit, the commit this checkout stands on, over the base release's database, the decisions step held"
 sign_in head
 
 # The step's first phase, which states each answer on its ask's node.
@@ -496,7 +772,10 @@ for issue in "${!owed[@]}"; do
   pass census "the census lists $issue with asks ${want%,}"
 done
 
-# The restore, through its entry point.
+# The restore, through its entry point. The newest event before it bounds the artifact.version
+# events of the versions it writes (step_versions).
+query restore "read the newest event before the restore" "select coalesce(max(id), 0) from events"
+readonly before_restore="$answer"
 dispatch_command restore restore-answered-asks --project "$project"
 grep '^restore-answered-asks: ' "$work/restore.out" | sed 's/^/  /' || true
 [[ "$command_code" == 0 ]] || fail restore "envoy-dispatch restore-answered-asks --project $project" "exited $command_code: $(<"$work/restore.out")"
@@ -575,10 +854,6 @@ for key in "${restored[@]}"; do
   ask_block "${new_id[$key]}" "$work/spec.$spec.md" >"$work/block.md"
   [[ -s "$work/block.md" ]] || fail main "the spec holds the block of $key" "no ask block ${new_id[$key]} in $spec"
   opening="$(head -n 1 "$work/block.md")"
-  for name in "${server_attributes[@]}"; do
-    [[ "$opening" != *" $name=\""* ]] ||
-      fail main "the block of $key holds no server-owned attribute" "it holds $name: $opening"
-  done
   answer_text="$(jq -r '.answer.text' "$work/capture/ask.$key.json")"
   ! grep -Fq -- "$answer_text" "$work/block.md" || fail main "the block of $key holds no answer" "$(<"$work/block.md")"
   block_body "$work/block.md" >"$work/body.got"
@@ -626,6 +901,27 @@ for key in "${restored[@]}"; do
   pass copy "the restored block of $key carries no mark of a copy"
 done
 
+# ---------------------------------------------------------------------------------------------
+# The form R10 keeps, in every version the restore wrote.
+# ---------------------------------------------------------------------------------------------
+# Every ask block of each version the restore wrote - each spec's, which holds the restored blocks
+# of both shapes beside the blocks it held already, the decisions document's it took the second
+# shape's blocks out of, and any other its lines count - holds the form R10 keeps, each value equal
+# to its ask's node (kept_form). Spec D's holds the copy of the answered ask q-d-copied, so the
+# kept form of a copy is read there: its source's state, answerer and time, and copied_from and
+# copied_from_document.
+kept_copies=0 kept_answered_copies=0 kept_rowless=0
+step_versions kept restore "$before_restore"
+[[ -s "$work/restore.versions" ]] || fail kept "the restore wrote a version" "its lines name none: $(<"$work/restore.out")"
+while read -r document number <&3; do
+  kept_form kept "$document" "$number" "a version the restore wrote"
+done 3<"$work/restore.versions"
+pass kept "every ask block of the $(wc -l <"$work/restore.versions") versions the restore wrote, in both shapes, holds the form R10 keeps, each value its ask's node's"
+[[ "$kept_answered_copies" -gt 0 ]] ||
+  fail kept "a version the restore wrote holds a copy of an answered ask, so the kept form of a copy is read" \
+    "the versions it wrote hold $kept_copies copies, none of an answered ask, and $kept_rowless blocks with no ask row and no copy"
+pass kept "the versions the restore wrote hold $kept_answered_copies copies of an answered ask, each holding its source's state, answered_by and answered_at, and copied_from and copied_from_document, as its source's node gives them; and $kept_rowless blocks with no ask row and no copy, each holding none of the eight"
+
 # Every version captured before the upgrade answers the same bytes.
 for captured in "$work"/capture/version.*.md; do
   name="${captured##*/version.}"
@@ -640,23 +936,33 @@ for captured in "$work"/capture/version.*.md; do
 done
 pass history "every one of the $captured_versions captured versions answers the bytes captured before the upgrade"
 
-# The two documents of the second shape move together.
+# The two documents of the second shape move together: the ask block and every block it held leave
+# the decisions document's index and block_refs, and each captured edge stands in the spec, the
+# ask block's own under its new id and a held block's under a block the restored ask block holds.
 for key in ask_doc_plain ask_doc_collide; do
-  query together "read the decisions document's index of $key" \
-    "select count(*) from document_blocks where artifact_id = '$decisions_a' and block_id = '${old_id[$key]}'"
-  [[ "$answer" == 0 ]] || fail together "the decisions document no longer holds the block of $key" "its index holds $answer"
+  held_list="$(sed "s/.*/'&'/" "$work/capture/held.$key" | paste -sd, -)"
+  query together "read the decisions document's index of $key and the blocks it held" \
+    "select count(*) from document_blocks where artifact_id = '$decisions_a' and block_id in ($held_list)"
+  [[ "$answer" == 0 ]] ||
+    fail together "the decisions document no longer holds the block of $key or a block it held" "its index holds $answer"
   query together "read the spec's index of $key" \
     "select count(*) from document_blocks where artifact_id = '$spec_a' and block_id = '${new_id[$key]}' and type = 'ask'"
   [[ "$answer" == 1 ]] || fail together "the spec holds the block of $key" "its index holds $answer"
-  query together "read the decisions document's edges of $key" \
-    "select count(*) from block_refs where artifact_id = '$decisions_a' and block_id = '${old_id[$key]}'"
-  [[ "$answer" == 0 ]] || fail together "no edge of $key is left under the decisions document" "$answer are"
-  while IFS='|' read -r kind to_kind to_id; do
-    query together "read the spec's edge $kind of $key" \
-      "select count(*) from block_refs where artifact_id = '$spec_a' and block_id = '${new_id[$key]}' and kind = '$kind' and to_kind = '$to_kind' and to_id = '$to_id'"
-    [[ "$answer" == 1 ]] || fail together "the spec holds the edge $kind -> $to_id of $key" "it holds $answer"
+  query together "read the decisions document's edges of $key and the blocks it held" \
+    "select count(*) from block_refs where artifact_id = '$decisions_a' and block_id in ($held_list)"
+  [[ "$answer" == 0 ]] || fail together "no edge of $key or of a block it held is left under the decisions document" "$answer are"
+  while IFS='|' read -r where kind to_kind to_id count; do
+    if [[ "$where" == own ]]; then
+      query together "read the spec's edge $kind of $key" \
+        "select count(*) from block_refs where artifact_id = '$spec_a' and block_id = '${new_id[$key]}' and kind = '$kind' and to_kind = '$to_kind' and to_id = '$to_id'"
+    else
+      query together "read the spec's edge $kind of a block $key holds" \
+        "$(held_cte "$spec_a" "${new_id[$key]}") select count(*) from block_refs where artifact_id = '$spec_a' and block_id in (select block_id from held where block_id <> '${new_id[$key]}') and kind = '$kind' and to_kind = '$to_kind' and to_id = '$to_id'"
+    fi
+    [[ "$answer" == "$count" ]] ||
+      fail together "the spec holds the edge $kind -> $to_id of $key ($where block)" "it holds $answer, want $count"
   done <"$work/capture/edges.$key"
-  pass together "$key moved with its $(wc -l <"$work/capture/edges.$key") captured edges: the spec's index and block_refs hold it, the decisions document's hold nothing of it"
+  pass together "$key moved with its captured edges ($(tr '\n' ' ' <"$work/capture/edges.$key")): the spec's index and block_refs hold it and them, the decisions document's hold nothing of it or of a block it held"
 done
 
 # ---------------------------------------------------------------------------------------------
@@ -1038,6 +1344,10 @@ while true; do
   sleep 0.1
   waited=$((waited + 1))
 done
+# The newest event before this head boots bounds the artifact.version events of the versions its
+# step writes on its ticks.
+query step "read the newest event before the step's ticks" "select coalesce(max(id), 0) from events"
+readonly before_ticks="$answer"
 baseline_extra_env=(DISPATCH_TEST_HOOKS=1)
 baseline_boot head-unheld "$head_binary" "$baseline_database_url"
 head_pid="$baseline_boot_pid"
@@ -1147,6 +1457,19 @@ latest_markdown agent "$spec_e"
 [[ -n "$(ask_block q-printed "$work/latest.md")" ]] ||
   fail agent "the spec of $issue_e holds q-printed again" "version $version holds no such block"
 pass agent "the answered q-printed, which version $drop_version dropped as a session with no act of a person, is restored in the same run, at version $version of $spec_e: $agent_restores"
+
+# Every ask block of each version the step wrote on its ticks - the restore of q-printed and the
+# conversion of the issue of PERSON among them - holds the form R10 keeps, as those of the versions
+# the restore by hand wrote do.
+step_events tick "$before_ticks" "" all
+cp "$work/step-events" "$work/tick.versions"
+[[ -s "$work/tick.versions" ]] ||
+  fail tick "the step wrote a version on its ticks" "no artifact.version event in its name after event $before_ticks"
+printf 'the versions the step wrote on its ticks (document number): %s\n' "$(tr '\n' ';' <"$work/tick.versions")"
+while read -r document number <&3; do
+  kept_form tick "$document" "$number" "a version the step wrote on its tick"
+done 3<"$work/tick.versions"
+pass tick "every ask block of the $(wc -l <"$work/tick.versions") versions the step wrote on its ticks, the restore of q-printed among them, holds the form R10 keeps, each value its ask's node's"
 
 # ---------------------------------------------------------------------------------------------
 # A drop by a broker token the secrets broker scoped to a person stays.

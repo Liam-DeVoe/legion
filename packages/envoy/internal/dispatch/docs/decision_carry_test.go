@@ -12,20 +12,24 @@ import (
 // answered asks in the spec's `## Decisions` part, in place of its pointer line to the issue's
 // decisions document, under the heading the restore adds, and under a new block id, carry the
 // approval, and so does an open ask block the restore moved there from the decisions document
-// (D1), and such a block the approved version held elsewhere with the same words; a
-// restored block whose words moved does not. The conversion's decisions in that part carry it,
+// (D1), and such a block the approved version held elsewhere with the same bytes, a link and a
+// code span among them; a restored block whose words moved, or whose words stand in other bytes,
+// does not. The conversion's decisions in that part carry it,
 // and so do the `shaped` pointers it gives an answered ask that stands in the spec already, beside
 // a decision and a reading in one version (spec v42's R9); a decision outside the part does not.
 //
 // Each case takes out only what the step's own write added, as its mark names it
-// (decisionStepCases): out of the new version the ask blocks it restored, the decisions it wrote
-// and the pointers it gave an ask, and out of the approved version the pointer line it took out,
-// once in a pass of the cases however many identical paragraphs the approved version holds.
-// So a change an agent made since the approval, which the step's version keeps, still supersedes
-// it: a decision the approved version held whose words an agent rewrote, a pointer an agent gave
-// an answered ask, an answered ask block an agent wrote into the part, and a paragraph of the part
-// citing a block of the decisions document, which the step keeps and a writer took out. Each
-// verdict names the cases it carried by, in carryCases' order. Every row is weighed twice: as the
+// (decisionStepCases): out of the new version the ask blocks it restored, the decisions it wrote,
+// the pointers it gave an ask and the `## Decisions` heading where it is the step's doing (the
+// approved version holding no such part, and the step having added the heading or replaced the
+// pointer line under it), and out of the approved version the pointer line it took out, once in a
+// pass of the cases however many identical paragraphs the approved version holds. So a change an
+// agent made since the approval, which the step's version keeps, still supersedes it: a decision
+// the approved version held whose words an agent rewrote, a pointer an agent gave an answered ask,
+// an answered ask block an agent wrote into the part, a paragraph of the part citing a block of the
+// decisions document, which the step keeps and a writer took out, and an empty `## Decisions`
+// heading the approved version held, which the step's version lacks. Each verdict names
+// the cases it carried by, in carryCases' order. Every row is weighed twice: as the
 // decisions step's own write, and as another writer's - an agent's upload or edit making the same
 // change - which carries nothing by those two cases.
 func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *testing.T) {
@@ -41,6 +45,9 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 	}
 	decision := ":::decision{#d1}\nThe census runs before the view.\n:::\n"
 	held := func(words string) string { return ":::decision{#d0}\n" + words + "\n:::\n" }
+	// linked is a question holding a link and a code span, whose words are those of
+	// "Which region, per the map, goes first in the rollout?".
+	const linked = "Which region, per [the map](https://example.com/map), goes first in the `rollout`?"
 	const stepPointer = "dispatch://DOC-1/spec#b-r1"
 	const agentPointer = "dispatch://DOC-1/spec#b-r2"
 	shaped := ` shaped="` + stepPointer + `"`
@@ -84,19 +91,37 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 		{"an answered ask returned in place of the pointer line", prose + part + pointer, prose + part + ask("q1", "Which region goes first?", ""),
 			ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
 		{"an answered ask returned under the heading the restore adds", prose, prose + part + ask("q1", "Which region goes first?", ""),
-			ids("q1"), nil, decisionStepCases{restored: ids("q1")}, restored},
+			ids("q1"), nil, decisionStepCases{restored: ids("q1"), headingAdded: true}, restored},
+		{"an empty Decisions heading the approved version held, kept, beside the answered ask the restore writes under it", prose + part,
+			prose + part + ask("q1", "Which region goes first?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1")}, restored},
+		{"an empty Decisions heading the approved version held, deleted, where the heading the restore adds stands as it stood", prose + part,
+			prose + part + ask("q1", "Which region goes first?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), headingAdded: true}, restored},
+		{"an agent's pointer line and its heading, written after the approval, which the restore's answered ask replaces", prose,
+			prose + part + ask("q1", "Which region goes first?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
+		{"an empty Decisions heading the approved version held, which the step's version lacks, beside the shaped pointer the conversion gives a present answered ask",
+			prose + ask("q1", "Which region goes first?", "") + "\n" + part, prose + ask("q1", "Which region goes first?", shaped),
+			ids("q1"), nil, decisionStepCases{shaped: map[string][]string{"q1": {stepPointer}}}, ""},
+		{"an empty Decisions heading the approved version held, kept, beside the shaped pointer the conversion gives a present answered ask",
+			prose + ask("q1", "Which region goes first?", "") + "\n" + part, prose + ask("q1", "Which region goes first?", shaped) + "\n" + part,
+			ids("q1"), nil, decisionStepCases{shaped: map[string][]string{"q1": {stepPointer}}}, converted},
 		{"an answered ask the approved version held elsewhere, returned with its words", prose + ask("q1", "Which region goes first?", "") + "\n" + part + pointer,
 			prose + part + ask("q1", "Which region goes first?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
 		{"an answered ask returned under a new block id", prose + part + pointer, prose + part + ask("q-fresh", "Which region goes first?", ""),
 			ids("q-fresh"), nil, decisionStepCases{restored: ids("q-fresh"), pointerLines: tookPointer}, restored},
 		{"an answered ask returned with its question edited", prose + ask("q1", "Which region goes first?", "") + "\n" + part + pointer,
 			prose + part + ask("q1", "Which region goes last?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
+		{"an answered ask the approved version held with a link and a code span, returned with them", prose + ask("q1", linked, "") + "\n" + part + pointer,
+			prose + part + ask("q1", linked, ` shaped="`+stepPointer+`"`), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
+		{"an answered ask the approved version held with a link and a code span, returned with its words in plain text", prose + ask("q1", linked, "") + "\n" + part + pointer,
+			prose + part + ask("q1", "Which region, per the map, goes first in the rollout?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
 		{"an open ask the restore moved into the Decisions part", prose + part + pointer, prose + part + ask("q1", "Which region goes first?", ""),
 			map[string]bool{"q1": false}, nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
 		{"a decision in place of the pointer line", prose + part + pointer, prose + part + decision, nil, nil,
 			decisionStepCases{decisions: ids("d1"), pointerLines: tookPointer}, converted},
 		{"a decision under the heading the conversion adds", prose, prose + part + decision, nil, nil,
-			decisionStepCases{decisions: ids("d1")}, converted},
+			decisionStepCases{decisions: ids("d1"), headingAdded: true}, converted},
+		{"an empty Decisions heading the approved version held, deleted, where the heading the conversion adds stands as it stood", prose + part,
+			prose + part + decision, nil, nil, decisionStepCases{decisions: ids("d1"), headingAdded: true}, converted},
 		{"a shaped pointer the conversion gives a present answered ask, beside a decision and a reading",
 			prose + ask("q1", "Which region goes first?", "") + "\n" + part + pointer,
 			prose + askWithReading("q1", shaped) + "\n" + part + decision,

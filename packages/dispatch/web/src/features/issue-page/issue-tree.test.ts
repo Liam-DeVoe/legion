@@ -24,6 +24,7 @@ import type {
   ReferenceTarget,
   RequirementCoverage,
 } from "../../api/types";
+import { withEntries } from "../issue/decision-entries";
 import { askResolutionBadge } from "../refs/actor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { usePlainHeadline } from "../refs/plain-text";
@@ -40,15 +41,10 @@ import {
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
+import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
-import {
-  lineWordsOf,
-  nameOf,
-  namesOf,
-  projectedNames,
-  publishingNames,
-} from "./projection-fixture";
+import { nameOf, namesOf, nodeLineOf, projectedNames, publishingNames } from "./projection-fixture";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
 import { storedReading } from "./stored-reading";
 import { blockNodeId, checkStanding, nodeIdOf, treeContext } from "./tree-drafts";
@@ -292,6 +288,7 @@ function decision(
     kept: null,
     kind: "agent",
     links: shaped.map((one) => ({
+      changed_since_tie: false,
       created_at: "2026-11-05T00:00:00Z",
       created_version: 1,
       from_block: blockId,
@@ -321,8 +318,9 @@ function decision(
 
 /** The entry the decisions read answers beside the agent's decision `decision` of `document`
  *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it, the document's block it
- *  stands at, and the members the read takes from that node, each null where an agent's
- *  decision holds none. */
+ *  stands at, the asks its `from_ask` settles, and the members the read takes from that node,
+ *  each null where an agent's decision holds none. A person's decision is an ask's entry, which
+ *  settles no other ask. */
 function entryOf(
   decision: Decision,
   document: Pick<Artifact, "id" | "ref_key"> = {
@@ -347,6 +345,7 @@ function entryOf(
       block_id: decision.block_id,
       ref: decision.ref.slice(0, decision.ref.indexOf("#")),
     },
+    from_ask: decision.kind === "person" ? [] : (decision.asks ?? []),
     kept: decision.kept,
     kept_by: decision.kept?.kept_by ?? null,
     kept_text_sum: decision.kept === null ? null : decision.text_sha256,
@@ -372,11 +371,11 @@ function entryOf(
 }
 
 /** The decisions read over the agents' decisions `made` of the spec, as this build's server
- *  answers it: an entry of the store for each (`entries`), the same decisions in the old shape
- *  (`decisions`), and no decisions document, which is retired. */
+ *  answers it: an entry of the store for each (`entries`), which is all the tree reads of it, so
+ *  the old `decisions` member holds none of them, and no decisions document, which is retired. */
 function decisions(made: readonly Decision[]): IssueDecisions {
   return {
-    decisions: [...made],
+    decisions: [],
     document: null,
     entries: made.map((one) => entryOf(one)),
     open_questions: [],
@@ -386,6 +385,7 @@ function decisions(made: readonly Decision[]): IssueDecisions {
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
 function linkTo(ref: string, kind: string): NonNullable<Decision["links"]>[number] {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
     from_block: "d1",
@@ -830,6 +830,7 @@ test("a chip of a block draws the first line of its reading, and a document's ch
     ...decision("d1", "Keep the spec as one document.", []),
     links: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-05T00:00:00Z",
         created_version: 1,
         from_block: "d1",
@@ -1000,8 +1001,9 @@ test("a task needed by a pinned and an unpinned pointer is one needs chip", () =
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
 // which is the chip's by one rule (`targetNaming`) - is that text's plain-text projection, its
-// words with no `**`, backtick or link mark. The page publishes the name whole, as every surface
-// reads the target by it (R8), and the chip cuts it as a chip's words are cut where it draws it.
+// words with no `**`, backtick or link mark. The page publishes the name as a link to the
+// target reads it, as every surface reads the target by it (R8), and the chip cuts it as a
+// chip's words are cut where it draws it.
 // An issue's name is its title, which is no markdown and is drawn as written.
 test("a chip naming an ask, a comment or a message draws its plain words, an issue its title", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -1234,7 +1236,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
   const read = nodeOf(root, blockNodeId(SPEC, "d1"));
   expect(read?.tree).toEqual(reading);
   expect(read === undefined ? "" : nodeWords(read)).toBe("Keep it Keep the model pure.");
-  const line = read === undefined ? "" : lineWordsOf(read);
+  const line = read === undefined ? "" : nodeLineOf(read);
   expect(line).toBe("Keep it");
   // The heading is the whole of its block, so nothing of the line is cut and, by `drawnLine`'s
   // rule, it draws no ellipsis.
@@ -1245,7 +1247,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
   const stored = nodeOf(root, blockNodeId(SPEC, "d2"));
   expect(stored?.tree).toBeUndefined();
   expect(stored?.text).toBe(`${text}\n`);
-  expect(stored === undefined ? "" : lineWordsOf(stored)).toBe("Keep it");
+  expect(stored === undefined ? "" : nodeLineOf(stored)).toBe("Keep it");
   // A chip naming a block is cut from the first block of the block's reading the same way.
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(nameOf)).toEqual(["Keep it"]);
 });
@@ -1259,7 +1261,7 @@ test("a node's line from a stored heading leaves out its marker once", () => {
     issue: issueDetails([spec]),
   });
   const stored = nodeOf(root, blockNodeId(SPEC, "d1"));
-  expect(stored === undefined ? "" : lineWordsOf(stored)).toBe("# 1 rule");
+  expect(stored === undefined ? "" : nodeLineOf(stored)).toBe("# 1 rule");
 });
 
 // A rendered body draws an address in code as its author wrote it (`MarkdownBody.tsx`), so a
@@ -1317,7 +1319,7 @@ test("an address in code stays as written in a node's line, from a reading and f
   const node = (id: string): TreeNode | undefined => nodeOf(root, blockNodeId(SPEC, id));
   const line = (id: string): string => {
     const found = node(id);
-    return found === undefined ? "" : lineWordsOf(found);
+    return found === undefined ? "" : nodeLineOf(found);
   };
 
   const written = "Run dispatch read dispatch://CORE-2 before dispatch://CORE-3 lands.";
@@ -1395,7 +1397,7 @@ test("a node's one line is cut from its first block that holds words, past a rul
   });
   const line = (id: string): string => {
     const node = nodeOf(root, blockNodeId(SPEC, id));
-    return node === undefined ? "" : lineWordsOf(node);
+    return node === undefined ? "" : nodeLineOf(node);
   };
 
   expect(line("d1")).toBe("Keep the model pure.");
@@ -1449,7 +1451,7 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
     });
     const task = nodeOf(root, blockNodeId("plan-md", "t1"));
     expect(task?.text, sent).toBe(words);
-    expect(task === undefined ? "" : drawnLine(firstLineOf(lineWordsOf(task))), sent).toBe(
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(
       "1. Stand the harness up and record what the page is today."
     );
   }
@@ -1499,10 +1501,30 @@ test("the line of the issue and of a child issue is its title as written", () =>
     const root = buildIssueTree({
       issue: { ...issueDetails([]), children: [childIssue("CORE-2", title)], title },
     });
-    expect(lineWordsOf(root), title).toBe(`${KEY} ${line}`);
+    expect(nodeLineOf(root), title).toBe(`${KEY} ${line}`);
     const child = nodeOf(root, "CORE-2");
     expect(child?.type, title).toBe("child_issue");
-    expect(child === undefined ? "" : lineWordsOf(child), title).toBe(line);
+    expect(child === undefined ? "" : nodeLineOf(child), title).toBe(line);
+  }
+});
+
+// R1 on the issue's own line: the issue's node holds its key and then its title, and the key is
+// the page's word for the issue, so R1's rule reads a leading label after it, as it reads one at
+// the start of any node's own words: `CORE-1 1. Migrate the table` keeps its `1.`, and a sentence
+// end after the label still ends the line. The key is no word of the title, so a name the page
+// published for the issue's own address takes no place in its line either.
+test("the issue's own line reads a label after its key, and names nothing in its key", () => {
+  const root = buildIssueTree({
+    issue: { ...issueDetails([]), title: "1. Ship it now. Then the rest of it." },
+  });
+  expect(nodeLineOf(root)).toBe(`${KEY} 1. Ship it now.`);
+  const named = renderHook(() => useNodeLine(root, { surface: "node-row-first-line" }), {
+    wrapper: publishingNames(new Map([[`dispatch://${KEY}`, "Ship it now"]])),
+  });
+  try {
+    expect(named.result.current.line).toBe(`${KEY} 1. Ship it now.`);
+  } finally {
+    named.unmount();
   }
 });
 
@@ -1520,7 +1542,9 @@ test("a chip, a published name and a row's link name a child issue by its whole 
   const citing = { ...comment("c1", "2026-11-05T01:00:00Z"), body: `See ${cited} first.` };
   const long = `${"a".repeat(225)} dispatch://CORE-3/spec#b-r1 then dispatch://CORE-4 up`;
   const longName = `${"a".repeat(225)} CORE-3 spec block then CORE-4 up`;
-  for (const [title, line, name = line] of [...TITLES, [long, long, longName] as const]) {
+  // The row's own line holds R1's 100 characters of the long title and says it carries on.
+  const longLine = `${"a".repeat(100)}…`;
+  for (const [title, line, name = line] of [...TITLES, [long, longLine, longName] as const]) {
     // The read's name for an issue, as the server cuts it: the title's first 240 characters.
     const head = [...title].slice(0, 240).join("");
     const reads = {
@@ -1539,7 +1563,7 @@ test("a chip, a published name and a row's link name a child issue by its whole 
     };
     const root = buildIssueTree(reads);
     const child = nodeOf(root, "CORE-2");
-    expect(child === undefined ? "" : lineWordsOf(child), title).toBe(line);
+    expect(child === undefined ? "" : nodeLineOf(child), title).toBe(line);
     const chips = nodeOf(root, blockNodeId(SPEC, "d1"))?.chips;
     // The chip cuts the whole name where it draws it; the page publishes it whole.
     expect(
@@ -1820,6 +1844,40 @@ test("a decision sits under the ask it answers, and one that answers none under 
   ]);
 });
 
+// A server of the release before answers the Decisions read with no `entries`: its decisions are
+// the sections of the issue's decisions document, each with the asks it cites. A page of this
+// build that reaches it during a roll reads them as entries (`withEntries`), so the tree still
+// draws each agent's section as a decision under the question it settles, with what it shaped.
+test("a Decisions read of the release before, with no entries, still places its decisions", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const section = decision("h-store", "Answers the issue's own question.", ["r1"]);
+  const read = withEntries(
+    {
+      decisions: [
+        {
+          ...section,
+          asks: ["ask-own"],
+          ref: `dispatch://${KEY}/artifact/decisions-md#b-h-store`,
+          text: "## Answers the issue's own question.\n\nThe words of the section.",
+        },
+      ],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
+  const root = buildIssueTree({
+    asks: [question("ask-own", { state: "answered" })],
+    decisions: read,
+    issue: issueDetails([spec]),
+  });
+
+  const id = blockNodeId("decisions-md", "h-store");
+  expect(nodeOf(root, id)?.type).toBe("decision");
+  expect(placementsOf(root, id).map((one) => one.parent)).toEqual(["ask-own"]);
+  expect(nodeOf(root, id)?.chips.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r1`]);
+});
+
 // A read of the release before built a decision's asks and links paragraph by paragraph and
 // kept every repeat, so a decision whose two paragraphs cite one question and link one statement
 // named each twice; this build's read names each tie once, from the decision's node. A repeat is
@@ -1961,7 +2019,7 @@ test("a person's decision is the answered ask's own node, which carries what it 
       requirement("r1", "The requirement the question in the spec raised."),
     ]),
     decisions: {
-      decisions: [...decided, settling],
+      decisions: [],
       document: null,
       entries: [...entries, entryOf(settling)],
       open_questions: [],
@@ -2063,7 +2121,7 @@ test("a reading sits under the ask or the decision it reads", () => {
   };
   const decided = decision("d1", "Read it once.", []);
   const read: IssueDecisions = {
-    decisions: [personal, decided],
+    decisions: [],
     document: null,
     entries: [
       {
@@ -2285,6 +2343,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
     kind: "agent",
     links: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-16T11:11:07.225118Z",
         created_version: 1,
         from_block: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",
@@ -2311,6 +2370,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
         },
       },
       {
+        changed_since_tie: false,
         created_at: "2026-11-16T11:11:07.225118Z",
         created_version: 1,
         from_block: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",
@@ -2510,7 +2570,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
         spec_artifact_id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
       },
       decisions: {
-        decisions: [reviewed],
+        decisions: [],
         document: null,
         entries: [entryOf(reviewed, spec)],
         open_questions: [],
@@ -3416,7 +3476,7 @@ test("a bare address in a node's line reads as written until it is named, from a
     for (const [at, [words, line]] of lines.entries()) {
       const task = nodeOf(root, blockNodeId("plan-md", `t${at + 1}`));
       expect(task?.text, sent).toBe(words);
-      expect(task === undefined ? "" : drawnLine(firstLineOf(lineWordsOf(task))), sent).toBe(line);
+      expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(line);
     }
     expect(nodeOf(root, blockNodeId("plan-md", "t0"))?.chips.map(nameOf), sent).toEqual([
       read ? "Do it as CORE-2 says." : NODE_TYPE_NAMES.plan_task,
@@ -3443,8 +3503,8 @@ test("a bare address in a node's line reads as written until it is named, from a
 // comment draws as the plain-text projection of its reading, a name and so a title over one
 // record: a bare address in the body reads as its target's short form in the chip's name and in
 // the name the page publishes for it (`targetNaming`), since a name reads no other name. A link
-// whose target is an address reads as its words, as it did. The page publishes the name whole,
-// and the chip cuts it as a chip's words are cut.
+// whose target is an address reads as its words, as it did. The page publishes the name as a
+// link to the comment reads it, and the chip cuts it as a chip's words are cut.
 test("a chip naming a comment whose body holds a bare address names it by the short form", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const ref = `dispatch://${KEY}/comment/comment-9`;
@@ -3492,9 +3552,9 @@ test("a stored text read to plain words holds the words of the server's reading 
     const names = projectedNames(new Map([["stored", { tree: storedReading(stored) }]]));
     expect(names.get("stored"), stored).toBe(reading);
   }
-  expect(lineWordsOf({ text: "Intro line:\n- item one\n- item two", type: "comment" })).toBe(
-    "Intro line:"
-  );
+  expect(
+    nodeLineOf({ id: "c1", text: "Intro line:\n- item one\n- item two", type: "comment" })
+  ).toBe("Intro line:");
 
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const ref = `dispatch://${KEY}/message/message-9`;
@@ -3527,7 +3587,9 @@ test("a node's words keep the bare address its line reads", () => {
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task === undefined ? "" : nodeWords(task), sent).toBe(words);
-    expect(task === undefined ? "" : lineWordsOf(task), sent).toBe(words);
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(
+      "Do it as dispatch://CORE-2 says."
+    );
   }
 });
 
@@ -3542,7 +3604,7 @@ test("a string that only looks like an address stays as written in a node's line
     ["no reading", false],
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
-    expect(task === undefined ? "" : lineWordsOf(task), sent).toBe(words);
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(words);
   }
 });
 
@@ -3558,7 +3620,7 @@ test("a node with no reading takes its line from its stored text's first line of
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task?.tree === undefined, sent).toBe(!read);
-    expect(task === undefined ? "" : lineWordsOf(task), sent).toBe(words);
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(words);
   }
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const ruled = decision("d1", "---\n\nDo it as **dispatch://CORE-2** says.", []);
@@ -3573,7 +3635,7 @@ test("a node with no reading takes its line from its stored text's first line of
   ] as const) {
     const node = nodeOf(root, blockNodeId(SPEC, row.block_id));
     expect(node?.tree, row.block_id).toBeUndefined();
-    expect(node === undefined ? "" : lineWordsOf(node), row.block_id).toBe(line);
+    expect(node === undefined ? "" : nodeLineOf(node), row.block_id).toBe(line);
   }
 });
 
@@ -3608,7 +3670,7 @@ test("an issue addresses a node as its tree does, from the issue alone", () => {
     undefined,
     undefined,
   ]);
-  const context = treeContext({ issue }, () => undefined);
+  const context = treeContext({ issue });
   expect(references.map(context.nodeIdOf)).toEqual(references.map(alone));
 });
 
@@ -3638,8 +3700,8 @@ test("a result node holds the server's reading of its observed text where the re
   const read = nodeOf(root, "res-read");
   expect(read?.tree).toEqual(readingOf("Server words."));
   expect(read?.source).toBeUndefined();
-  expect(read === undefined ? "" : lineWordsOf(read)).toBe("Server words.");
+  expect(read === undefined ? "" : nodeLineOf(read)).toBe("Server words.");
   const stored = nodeOf(root, "res-stored");
   expect(stored?.tree).toBeUndefined();
-  expect(stored === undefined ? "" : lineWordsOf(stored)).toBe("Stored words only.");
+  expect(stored === undefined ? "" : nodeLineOf(stored)).toBe("Stored words only.");
 });

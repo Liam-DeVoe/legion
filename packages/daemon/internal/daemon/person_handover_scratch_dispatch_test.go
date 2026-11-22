@@ -922,10 +922,10 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //     the state's design gate approved at that version, and no handover is queued;
 //  7. the carried case: on a parked labelled root a session writes an ask block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
-//     person then answers the block, which writes no version, so the version they approved is
-//     still the latest and approved; a session then writes its reading of the answer inside the
-//     answered block, and Dispatch records a carried approval of the version that reading wrote,
-//     in the person's name: the daemon applies it writing nothing;
+//     person then answers the block, which writes one version that changes only the block's
+//     server-owned attributes, and Dispatch carries their approval to it in their name; a session
+//     then writes its reading of the answer inside the answered block, and Dispatch carries the
+//     approval on to the version that reading wrote: the daemon applies each carry writing nothing;
 //  8. the recorded parked root of step 1, its spec revised by a session, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
@@ -993,28 +993,34 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.notQueued(running.Key, "in_progress", 0)
 	t.Logf("the person's approval of the running root %s's registered gate document opened its gate and queued no handover:\n%s", running.Key, body)
 
-	// 7. The carried case: the person's answer writes no version, and a session's reading of it
-	// inside the answered block carries the person's approval to the version the reading writes.
+	// 7. The carried case: the person's answer writes one version, which changes only the
+	// server-owned attributes of the ask's block - its state, who answered and when - and Dispatch
+	// carries the person's approval across it; a session's reading of the answer inside the
+	// answered block carries it on to the version the reading writes. The daemon applies each
+	// carried approval writing nothing.
 	carried := r.create(asSession, "Regional wave decision pending", labelled)
 	r.setStatus(carried.Key, "backlog")
 	blockVersion := r.editDocument(carried.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": personHandoverBlock})
 	askID := r.blockAsk(carried.Key, "wave")
 	approved := r.approve(carried.PrimaryArtifactID)
 	if approved.Version != blockVersion {
-		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the ask block", carried.Key, approved.Version, blockVersion)
+		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the ask block: an open ask keeps no state in the stored bytes, so the settlement that opens its row writes no version",
+			carried.Key, approved.Version, blockVersion)
 	}
 	r.queuedByThePerson(carried.Key, "approval", 1)
 	reparked := r.setStatus(carried.Key, "backlog")
 	r.applied(r.newestEvent(carried.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == reparked.LastSeq }))
 	r.answerBlock(askID, personHandoverAnswer)
-	if latest := r.approvedLatest(carried.PrimaryArtifactID); latest != approved.Version {
-		t.Fatalf("after the person's answer, %s's spec reads approved at its latest version %d (0: the latest version is not approved); want %d, the version the person approved: an answer writes no version",
-			carried.Key, latest, approved.Version)
+	answerCarry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
+	if latest := r.approvedLatest(carried.PrimaryArtifactID); answerCarry.Version != approved.Version+1 || latest != answerCarry.Version {
+		t.Fatalf("after the person's answer, Dispatch carried the approval of %s's spec to version %d and reads it approved at its latest version %d (0: not approved); want both %d, the one version the answer wrote",
+			carried.Key, answerCarry.Version, latest, approved.Version+1)
 	}
+	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == answerCarry.Version }))
 	readingVersion := r.addReading(carried.Key, carried.PrimaryArtifactID, "wave", personHandoverReading)
-	if readingVersion != approved.Version+1 {
-		t.Fatalf("the session's reading wrote version %d of %s's spec; want %d, the version after the one the person approved: the answer wrote none",
-			readingVersion, carried.Key, approved.Version+1)
+	if readingVersion != answerCarry.Version+1 {
+		t.Fatalf("the session's reading wrote version %d of %s's spec; want %d, the version after the one the answer wrote",
+			readingVersion, carried.Key, answerCarry.Version+1)
 	}
 	carry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
 	if latest := r.approvedLatest(carried.PrimaryArtifactID); carry.Version != readingVersion || latest != readingVersion {
@@ -1023,8 +1029,8 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	}
 	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == carry.Version }))
 	r.notQueued(carried.Key, "backlog", 1)
-	t.Logf("the person's answer to the ask block of %s wrote no version, and the session's reading inside it carried their approval of version %d to version %d (%q); the daemon queued nothing for it",
-		carried.Key, approved.Version, carry.Version, *carry.Reason)
+	t.Logf("the person's answer to the ask block of %s wrote version %d, which carried their approval of version %d (%q), and the session's reading inside it carried it on to version %d (%q); the daemon queued nothing for either",
+		carried.Key, answerCarry.Version, approved.Version, *answerCarry.Reason, carry.Version, *carry.Reason)
 
 	// 8. The recorded parked root with a gate from its earlier run, approved at a new version.
 	revised := r.revise(recorded.PrimaryArtifactID, "behind a flag", "behind a flag, in two waves")

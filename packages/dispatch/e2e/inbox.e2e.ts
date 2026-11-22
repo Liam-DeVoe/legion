@@ -1729,6 +1729,9 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
     await expect(hiddenCard.getByText("Fresh hidden reply.")).toBeVisible();
     expect(askReads).toBeGreaterThan(0);
   } finally {
+    // The held reads fetch the server's answer once released (fulfillOpenAsks); unrouted first,
+    // a release that lands as the context closes is no error of the row.
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     releaseSecond.resolve();
     releaseRest.resolve();
     await alice.close();

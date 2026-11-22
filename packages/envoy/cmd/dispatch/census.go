@@ -41,9 +41,14 @@ import (
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
-//     growth pass reads only tables that exist before this branch's first migration, so it runs
-//     on a database the store does not exist in yet, where the census says so and the growth
-//     pass alone decides the exit.
+//     growth pass refuses nothing: beside a table at or above that limit, and a store table it
+//     projects past it, it names the migration census's bounded-write rule, the gate a pending
+//     migration that writes rows of such a table meets (pgmigrate.BoundedWriteRows), so this form
+//     refuses only where the store census does. The growth pass counts only tables that exist
+//     before this branch's first migration, so it runs on a database the store does not exist in
+//     yet, where the census says so and passes on the growth pass alone; where the store exists
+//     it also reads the store's type nodes, so that it parses each version against the block
+//     schema the store declares.
 //
 // Each keeps the one exit convention: 0 when nothing refuses, 1 when the report refuses (every
 // reason is in the report), 2 when the census could not be taken (errOut says why). Each prints
@@ -114,14 +119,17 @@ type storeCensusOptions struct {
 
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one
 // read-only snapshot of its own within options.deadline, so a deployment can take it before it
-// rolls, exactly as it takes the migration census. Beside the store's lines it prints what the
-// decisions step's third phase still owes (graphcensus.DecisionsCensus), which docs reads in a
-// read-only snapshot of its own within the same deadline, since only docs reads a decisions
-// document's sections; it refuses nothing.
+// rolls, exactly as it takes the migration census. options.verbose prints each citation the
+// dangling-citation counter counted, whose returning set holds the returns the restore makes,
+// judged by the restore's own test of a person's removal (docs.ReturnDeclined), which graphcensus
+// cannot read itself. Beside the store's lines it prints what the decisions step's third phase
+// still owes (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its own
+// within the same deadline, since only docs reads a decisions document's sections; it refuses
+// nothing.
 func storeCensus(ctx context.Context, databaseURL string, options storeCensusOptions, out, errOut io.Writer) int {
 	ctx, cancel := context.WithTimeout(ctx, options.deadline)
 	defer cancel()
-	report, err := graphcensus.StoreCensus(ctx, databaseURL, options.sizing)
+	report, err := graphcensus.StoreCensus(ctx, databaseURL, options.sizing, docs.ReturnDeclined)
 	if err != nil {
 		writeCensusFailure(errOut, err)
 		return 2

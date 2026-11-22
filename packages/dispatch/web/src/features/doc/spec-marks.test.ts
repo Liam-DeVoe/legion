@@ -12,7 +12,6 @@ import {
   changedSinceRead,
   readLineText,
   STALE_BLOCK_TITLE,
-  shapedNodeChanged,
   specBlockMarks,
   specBlockParts,
   staleSpecBlocks,
@@ -29,16 +28,18 @@ function block(id: string, type: string, from: number): ArtifactBlock {
   };
 }
 
-/** A `shaped` link to block `to` of the spec: its tuple written by event 10, and the block's text
- *  last changed by the event `changed` names, after the tie where it is the greater. */
-function link(to: string, changed: number, document = "CORE-1/spec"): DecisionLink {
+/** A `shaped` link to block `to` of the spec, stale or not. Its other fact and its events say the
+ *  opposite - a stale link's block has not changed since the tie, and a fresh one's has, by its
+ *  events too - so a reader of anything but `stale` marks the wrong blocks. */
+function link(to: string, stale: boolean, document = "CORE-1/spec"): DecisionLink {
   return {
+    changed_since_tie: !stale,
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
     event: 10,
     from_block: "d-1",
-    stale: changed > 10,
-    text_changed_event: changed,
+    stale,
+    text_changed_event: stale ? 9 : 11,
     to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
   };
 }
@@ -60,6 +61,7 @@ function entry(blockId: string, shaped: DecisionLink[], replaced = false): Decis
       block_id: blockId,
       ref: "dispatch://CORE-1/artifact/choices-md",
     },
+    from_ask: [],
     kept: null,
     kept_by: null,
     kept_text_sum: null,
@@ -87,17 +89,17 @@ const decisions: IssueDecisions = {
   decisions: [],
   document: null,
   entries: [
-    entry("d-1", [link("p-plan", 12), link("p-scope", 8)]),
+    entry("d-1", [link("p-plan", true), link("p-scope", false)]),
     entry(
       "d-2",
-      [link("p-plan", 12), link("p-rollout", 11), link("p-notes", 13, "CORE-1/notes-md")],
+      [link("p-plan", true), link("p-rollout", true), link("p-notes", true, "CORE-1/notes-md")],
       true
     ),
   ],
   open_questions: [],
 };
 
-test("every spec block whose text changed after a decision tied it is stale, each once, in the order the read names them", () => {
+test("every spec block a stale link names is stale, each once, in the order the read names them", () => {
   expect(staleSpecBlocks(decisions, "CORE-1/spec")).toEqual(["p-plan", "p-rollout"]);
   expect(staleSpecBlocks(decisions)).toEqual(["p-plan", "p-rollout", "p-notes"]);
   expect(staleSpecBlocks(undefined, "CORE-1/spec")).toEqual([]);
@@ -106,7 +108,7 @@ test("every spec block whose text changed after a decision tied it is stale, eac
 
 test("an open and a declined ask mark nothing stale, and an answered one does", () => {
   const ask = (id: string, state: string, to: string, declined = false): DecisionEntry => ({
-    ...entry(id, [link(to, 12)]),
+    ...entry(id, [link(to, true)]),
     answer_state: state,
     declined,
     kind: declined ? "declined" : "person",
@@ -126,15 +128,15 @@ test("an open and a declined ask mark nothing stale, and an answered one does", 
   expect(staleSpecBlocks(asks, "CORE-1/spec")).toEqual(["p-answered"]);
 });
 
-test("a shaped node changed after the tie when its text's event is later than the tuple's", () => {
-  expect(shapedNodeChanged(link("p", 11))).toBe(true);
-  expect(shapedNodeChanged(link("p", 10))).toBe(false);
-  expect(shapedNodeChanged({ ...link("p", 9), stale: true })).toBe(false);
-  // Where the store holds no event for one of the two, the server's comparison by its clock says it.
-  expect(shapedNodeChanged({ ...link("p", 9), event: undefined, stale: true })).toBe(true);
-  expect(shapedNodeChanged({ ...link("p", 12), text_changed_event: undefined, stale: false })).toBe(
-    false
-  );
+// A block whose own text changed after the tie, the decision unchanged since, is not stale: the
+// server's `stale` says the decision changed after the block, and its `changed_since_tie` and
+// events say only that the block changed, which marks nothing.
+test("a block is marked by its link's stale alone, never by its own change since the tie", () => {
+  const changedSinceTie: IssueDecisions = {
+    ...decisions,
+    entries: [entry("d-1", [link("p-plan", false), link("p-scope", false)])],
+  };
+  expect(staleSpecBlocks(changedSinceTie, "CORE-1/spec")).toEqual([]);
 });
 
 const references: GraphReferences = {
@@ -266,5 +268,7 @@ test("the editor's block marks: stale blocks with their title, changed blocks wi
     { blockId: "p-intro", className: changedSinceReadMark },
     { blockId: "p-plan", className: changedSinceReadMark },
   ]);
+  // A block is marked for a decision that changed after it (`DecisionLink.stale`), so the title
+  // names the decision's change and not one of the block's.
   expect(STALE_BLOCK_TITLE).toBe("A decision that shaped this block changed after it.");
 });

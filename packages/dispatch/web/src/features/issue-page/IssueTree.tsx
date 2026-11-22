@@ -14,6 +14,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
+import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
@@ -23,7 +24,7 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { useNodeLine } from "./NodeRow";
+import { lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
@@ -102,6 +103,7 @@ export function IssueTree({
   isClosed,
   landingReport,
   onEditing,
+  published,
   readsHeld = true,
   readsSettled = true,
   request,
@@ -160,6 +162,13 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
   onEditing: OnEditing;
+  /** What the page publishes of its one batched read (`useIssueTree.ts`'s `published`), which
+   *  the tree hands every row and crumb it draws in the render that draws it
+   *  (`PublishedReferenceNames`): a reference the page is asking for waits on the page's answer
+   *  from a row's first render, rather than being read again by the row (R8). The page publishes
+   *  it to the names store as well, which names each target. Every caller hands it, so no tree
+   *  draws a row that reads what its page asks for. */
+  published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
    *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
    *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
@@ -1120,7 +1129,7 @@ export function IssueTree({
     };
   }, [landing]);
 
-  return (
+  const outline = (
     <div className="mb-3 flex min-w-0 flex-col">
       {/* Over the tree and never in it: an alert inside the tree would break its structure of
           rows (`FailedReadLine`). */}
@@ -1260,6 +1269,7 @@ export function IssueTree({
       ) : null}
     </div>
   );
+  return <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>;
 }
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to
@@ -1276,15 +1286,15 @@ function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): Readonly
 }
 
 /** What a crumb above a zoom says of a node other than the issue, which is named by its key:
- *  its name, as every place that names a node by its one line draws it (`useNodeLine`'s
- *  `name`) - each reference in it read as its target's current name (R8) - and its kind's word
- *  where its words hold none. */
+ *  its one line, as every place that names a node by one draws it (`useNodeLine`) - each
+ *  reference in it read as its target's current name (R8) - and its kind's word where its words
+ *  hold none (`lineOrKindWord`). */
 function CrumbName({ node }: { node: TreeNode }): ReactNode {
-  const { name, reads } = useNodeLine(node, { surface: "outline-crumb" });
+  const { line, reads } = useNodeLine(node, { surface: "outline-crumb" });
   return (
     <>
       {reads}
-      {name ?? ""}
+      {lineOrKindWord(line, node.type)}
     </>
   );
 }

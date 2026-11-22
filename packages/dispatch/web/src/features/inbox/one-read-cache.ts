@@ -1,5 +1,5 @@
 /**
- * The optimistic writes over the one read's cache, `meInboxKey` (dispatch://INFRA-1152). The
+ * The optimistic writes over the one read's cache, `meInboxKey`. The
  * reader's own asks, their Reply and Agent rows and their unread count are drawn from it, so every
  * write that moves one of them on the press - a hand-on, an assignee, a priority, a snooze, an
  * answer or a decline, Mark all read, a dismissal - moves it here as well as in the open asks'

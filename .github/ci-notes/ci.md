@@ -583,6 +583,12 @@ pods: the packages `go list -deps ./cmd/cipherd ./cmd/dev-oidc-issuer
 ./internal/cipher/ciphertest/requestseed` lists in packages/envoy beyond the
 Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 
+## envoy_go: Its natslive step runs cmd/listener's natslive tests
+
+Its natslive step runs cmd/listener's natslive tests, so its test build reads the
+fixtures cmd/listener's untagged tests read (api_test.go), which this job must then
+run as well (check-ci-filters.sh's rule 15).
+
 ## envoy_go: internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 
 internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
@@ -958,7 +964,14 @@ by that package's own tests, which run in a job of their own.
 
 TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under
 bun (runDispatchCLI, internal/dispatch/api/decision_entries_test.go): the frozen
-install the job's steps make, and the packages that command loads.
+install the job's steps make, and the files that command loads: its entry,
+packages/envoy-client/bin/dispatch.ts, envoy-client's sources and broker-client's,
+which they import, and the contracts modules its bundle loads, which
+`.github/scripts/check-ts-filters.sh write` lists file by file (ci_ts_programs.py's
+BUNDLES and LISTED rows for this filter), as dispatch_two_builds_go lists them. Not
+packages/envoy-client/** and packages/contracts/** whole: a changelog fragment, a
+test or a README of those packages is no file the command loads, and this is the
+slowest Dispatch race job.
 
 ## envoy_go_claim_model: The mention sender's claim model's own job
 

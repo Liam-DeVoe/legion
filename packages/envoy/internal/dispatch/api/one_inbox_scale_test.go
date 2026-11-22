@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// dispatch://INFRA-1152's two measurements, taken before its first line of product code (spec
+// This child's two measurements, taken before its first line of product code (spec
 // R11, plan T1), over the corpus one_inbox_scale_seed_test.go seeds:
 //
 //   - the participant set (TestOneInboxParticipantSetOfTheCorpus): R11's three statements over the
@@ -252,7 +252,7 @@ type oneInboxPath struct {
 //
 // Each path whose write is its writer's own answer or reply - the three comments, the issue
 // message, the answer and the reply under an Agent row - dismisses the thread for its writer on
-// this build (dispatch://INFRA-4948 R1), so each reads back, after each timed write, the dismissed
+// this build (the own-answer rule, R1), so each reads back, after each timed write, the dismissed
 // tuple that write appended (requireOneInboxDismissed). Each such writer is a person the header
 // names, with no agent acting for them.
 func oneInboxWritePaths() []oneInboxPath {
@@ -478,7 +478,7 @@ const oneInboxThisBuild = "this build"
 // requireOneInboxDismissed fails the test, naming path, unless the write answer stands for appended
 // its writer's dismissed tuple to the thread's root rootKind/rootID at the write's own moment - the
 // comment's or the message's created_at, the answer's at: on this build a person's own answer or
-// reply takes its thread out of their Inbox (dispatch://INFRA-4948 R1). So a build with that write
+// reply takes its thread out of their Inbox (the own-answer rule, R1). So a build with that write
 // taken out fails here, at the path that lost it. The base build appends no such tuple, and its
 // readings read nothing.
 func requireOneInboxDismissed(t *testing.T, side *oneInboxSide, path, writer, rootKind, rootID string, answer apiAnswer) {

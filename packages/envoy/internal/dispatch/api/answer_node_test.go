@@ -61,8 +61,9 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 	})
 
 	t.Run("the approval carry", func(t *testing.T) {
-		// A person's answer writes no version (R3), so the carry that answers an open approval
-		// request here is the restore's: the agent's undo of its edit holds the approved text.
+		// The carry that answers an open approval request here is the restore's: the agent's undo
+		// of its edit holds the approved text. (A person's answer writes one version, its block's
+		// kept state alone, which R10's case carries; this document holds no ask block.)
 		handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 		issue := createInteractionIssue(t, handler, "TEST", "The carry's answer on the node", "A spec\n")
 		reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")

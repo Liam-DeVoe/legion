@@ -301,6 +301,43 @@ func requireTheMessagesBatchLockOrder(t *testing.T) {
 	}
 }
 
+// requireTheMessagesPastBoundBatchLockOrder holds the past-bound pass to the writers' order. bob's
+// two replies, which an older build wrote naming a block of alice's message whose node id the store
+// cannot key, so the messages pass takes neither: the batch takes the issue's owner lock, then both
+// replies' rows `for no key update` in ascending id, and marks them. It writes nothing of the
+// store, and takes neither the project's lock, nor alice's message's row, nor a row of the thread.
+func requireTheMessagesPastBoundBatchLockOrder(t *testing.T) {
+	writes := newAddressingWrites(t)
+	database := writes.database
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	root := writeAsAnOlderBuild(t, writes, "message.created", alice, `
+		insert into messages (issue_key, author, body) values ('CENS-1', $1, 'Ship it on Friday?')
+		returning id::text, created_at`, actorJSON(t, alice))
+	block := "message/" + root.id + "#" + strings.Repeat("b", graphstore.MaxAddressBytes)
+	first := writeAsAnOlderBuild(t, writes, "message.answered", bob, `
+		insert into messages (issue_key, author, body, in_reply_to, replies_to_block) values ('CENS-1', $1, 'Friday works.', $2, $3)
+		returning id::text, created_at`, actorJSON(t, bob), root.id, block)
+	second := writeAsAnOlderBuild(t, writes, "message.answered", bob, `
+		insert into messages (issue_key, author, body, in_reply_to, replies_to_block) values ('CENS-1', $1, 'So does Monday.', $2, $3)
+		returning id::text, created_at`, actorJSON(t, bob), root.id, block)
+	backfillBeforePass(t, database, "messages_past_bound")
+
+	const mark = "with held as ( select m.id from messages m"
+	unlocked := []string{"graph_nodes", "graph_tuples", "user_threads"}
+	owner := ownerHold(t, database, unlocked...)
+	project := projectHold(t, database, false)
+	rootRow := itemRowHold(t, database, "messages", root.id, "alice's message's row", false, "")
+	firstRow := itemRowHold(t, database, "messages", first.id, "bob's first reply's row", true, mark, unlocked...)
+	secondRow := itemRowHold(t, database, "messages", second.id, "bob's second reply's row", true, mark, unlocked...)
+	aliceRow := threadRowHold(t, database, root.id, "alice", false, "")
+
+	done, _ := followThePass(t, database, "messages_past_bound",
+		[]*lockstep.Hold{owner, project, rootRow, firstRow, secondRow, aliceRow})
+	if done.Rows != 2 || done.Tuples != 0 || done.Nodes != 0 || !done.Complete {
+		t.Errorf("the messages_past_bound pass reports %#v, want both replies marked, nothing of the store written, and nothing left", done)
+	}
+}
+
 // requireTheAsksOwedBatchLockOrder holds writeAsksOwed to the writers' order. An ask an older build
 // created on an issue nobody is assigned, which bob answered as that build answers: the batch takes
 // the issue's owner lock, then the lock of project CENS, whose default assignee the ask waits on

@@ -224,7 +224,7 @@ interface MentionComposerProps {
    *  the refusal shown. While it holds the field is read-only, and the hold is part of the
    *  reader's press (`useHeldThroughAnswer`), so the page's rescue reads what the send takes away
    *  as the reader's doing. The Inbox's reply boxes pass it: the reader's own reply takes its
-   *  thread out of their Inbox (dispatch://INFRA-4948 R1), so the box goes once the Inbox is read
+   *  thread out of their Inbox (the own-answer rule, R1), so the box goes once the Inbox is read
    *  again. */
   readonly heldSend?: boolean;
   /** Where the host hands this composer a draft the reader carried from another one with that

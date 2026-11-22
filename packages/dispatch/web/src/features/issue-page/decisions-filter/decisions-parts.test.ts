@@ -3,16 +3,10 @@ import { beforeAll, expect, test } from "bun:test";
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
-import {
-  type DocumentBlocks,
-  drawnLine,
-  firstLineOf,
-  type ParentLine,
-  type TreeNode,
-} from "../issue-tree";
+import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
-import { lineWordsOf } from "../projection-fixture";
+import { parentLinkWords } from "../projection-fixture";
 import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
 import {
   AGENT,
@@ -22,6 +16,7 @@ import {
   decision,
   decisionNode,
   decisionsRead,
+  entryOf,
   issueDetails,
   issueTree,
   KEY,
@@ -56,15 +51,6 @@ beforeAll(async () => {
 
 /** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
-
-/** The one line a row draws for a node of the filter - a parent, or a statement a decision
- *  shaped (`ParentLine`, `ShapedStatement.node`) - as every one line of a node is drawn: its
- *  words projected by the shared reader (`lineWordsOf`), cut by R1's first-line rule, and the
- *  page's word for its kind where they hold none. */
-function lineOf(node: Pick<ParentLine, "text" | "tree" | "type">): string {
-  const words = lineWordsOf(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
-}
 
 /** The spec's blocks as the blocks read answers them: each agent's decision's own `decision`
  *  block, in the order the decisions were made. */
@@ -223,11 +209,16 @@ test("the review list is read from the shaped ties alone", () => {
 
   // The one rule, as the count of what waits on the reader reads it too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
-  expect(made.map((row) => inReviewList(row, isStatement))).toEqual([true, true, false, false]);
+  expect(made.map((row) => inReviewList(entryOf(row), isStatement))).toEqual([
+    true,
+    true,
+    false,
+    false,
+  ]);
   // A decision that does not wait is no entry of the list, whatever its ties.
   expect(
     inReviewList(
-      decision("kept", { links: [shaped(specRef("s1"))], waiting_review: false }),
+      entryOf(decision("kept", { links: [shaped(specRef("s1"))], waiting_review: false })),
       isStatement
     )
   ).toBe(false);
@@ -384,7 +375,7 @@ test("a decision the reader asked to change leaves the review list and carries t
   // The one rule the count of what waits on the reader reads too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
   expect(
-    inReviewList(decision("asked", { links: [shaped(specRef("s1"))] }), isStatement, true)
+    inReviewList(entryOf(decision("asked", { links: [shaped(specRef("s1"))] })), isStatement, true)
   ).toBe(false);
   expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
 });
@@ -536,7 +527,7 @@ test("a decision that shaped three statements is one entry that reaches all thre
   expect(
     parts.review[0]?.shapes.map(({ id, node, path, stale }) => ({
       id,
-      line: lineOf(node),
+      line: parentLinkWords(node),
       path,
       stale,
     }))
@@ -590,7 +581,7 @@ test("each entry carries its address in the conversation and its parent's line",
     parent: { id: "q1", type: "ask" },
     path: `/issues/${KEY}#b-under`,
   });
-  expect(under?.parent === undefined ? undefined : lineOf(under.parent)).toBe(
+  expect(under?.parent === undefined ? undefined : parentLinkWords(under.parent)).toBe(
     "On a phone, where does the box sit?"
   );
   expect(parts.review.find((entry) => entry.node.id === D("top"))?.parent).toBeUndefined();
@@ -642,11 +633,11 @@ test("a parent's line and a statement's line are cut from the node's first block
 
   const parentLine = (block: string) => {
     const parent = entry(block)?.parent;
-    return parent === undefined ? undefined : { id: parent.id, line: lineOf(parent) };
+    return parent === undefined ? undefined : { id: parent.id, line: parentLinkWords(parent) };
   };
   expect(parentLine("headed")).toEqual({ id: "q1", line: "Where the box sits" });
   expect(parentLine("wordless")).toEqual({ id: "q2", line: NODE_TYPE_NAMES.ask });
-  expect(entry("headed")?.shapes.map((one) => lineOf(one.node))).toEqual([
+  expect(entry("headed")?.shapes.map((one) => parentLinkWords(one.node))).toEqual([
     "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
     NODE_TYPE_NAMES.requirement,
   ]);

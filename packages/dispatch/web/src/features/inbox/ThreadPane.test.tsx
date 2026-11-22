@@ -15,7 +15,7 @@ import { ThreadPane } from "./ThreadPane";
 
 /**
  * The reading pane over a comment on document text whose anchor it cannot place
- * (dispatch://INFRA-4948 R3, ST6 row 5): it draws the thread with its quote and the document
+ * (the in-document pane, R3, ST6 row 5): it draws the thread with its quote and the document
  * page's sentence that the text changed, and reads no document.
  */
 

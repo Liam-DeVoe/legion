@@ -286,9 +286,11 @@ func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
 // answered ask blocks the restore writes back, the decisions the conversion writes, or the ask
 // attributes the server drops (packages/envoy/internal/dispatch/docs/approval_carry.go,
 // restoreReason, restoreCarriedReason and carriedReasonPrefix, whose format is "Carried forward
-// from the approval of version %d: ..."). A person's answer to an ask block is none of these: it
-// writes no version, so it carries nothing. The daemon cannot import that package, so it holds
-// the prefix before the version number as a literal of its own.
+// from the approval of version %d: ..."). A person's answer, resolve or decline of an ask writes
+// one version, which changes only the server-owned attributes of the ask's block (`state`, and
+// `answered_by` and `answered_at` where it is answered), so its carry is the last of these, a
+// carried approval like any other. The daemon cannot import that package, so it holds the prefix
+// before the version number as a literal of its own.
 const CarriedApprovalReasonPrefix = "Carried forward from the approval of version"
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix

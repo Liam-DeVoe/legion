@@ -18,7 +18,7 @@ import (
 )
 
 // A comment, a message and an ask are each the root of their own thread, and the rows of the six
-// read-state tables that name one of them mirror tuples from a person to it (dispatch://INFRA-1152
+// read-state tables that name one of them mirror tuples from a person to it (the spec's
 // R6): the user_threads row of each participant of the comment, the issue message and the ask, and
 // the ask's snoozes. An Agent dismissal and a reply read by its id name a direct conversation, the
 // only kind of thread either release's routes write those two rows for: erin's issue-less message
@@ -209,9 +209,13 @@ func TestTheEraseOfAPersonTakesTheirReadStateRows(t *testing.T) {
 	reply := write("s1's reply to erin", `
 		insert into messages (author, body, in_reply_to, target) values ('{"kind":"session","id":"s1"}', 'Looking.', $1::uuid, 'session:s1')`, root)
 	writeAsThisBuild(t, database, "the person's node", func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{
+		written := graphstore.PlanUncaused([]graphstore.Node{
 			graphstore.PersonNode(person, model.Actor{Kind: "user", ID: person}, time.Now().UTC(), graphstore.NoEvent),
 		}, nil)
+		return written, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, written)
+			return nil
+		})
 	})
 	// erin's row of her comment thread is the one its insert gave her (migration 0095's trigger).
 	if _, err := database.Pool.Exec(ctx, `
@@ -359,8 +363,11 @@ func writeReplyAsThisBuild(t *testing.T, database *store.Store, id, root string,
 	}
 	node, tuples := graphstore.CommentFacts(nil, id, author, at, graphstore.NoEvent, "", "", "CORE", nil)
 	tuples, _ = graphstore.CommentPointerFacts(tuples, id, graphstore.CommentPointers{ReplyTo: root}, author, at, graphstore.NoEvent)
-	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, tuples)
-	if err != nil {
+	written := graphstore.PlanUncaused([]graphstore.Node{node}, tuples)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, written)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the reply's node: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -372,7 +379,9 @@ func writeReplyAsThisBuild(t *testing.T, database *store.Store, id, root string,
 	if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
 		t.Fatalf("state the reply: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, id, author, at, graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, id, author, at, graphstore.NoEvent)
+	}); err != nil {
 		t.Fatalf("state who wrote the reply: %v", err)
 	}
 	issue := "CORE-1"

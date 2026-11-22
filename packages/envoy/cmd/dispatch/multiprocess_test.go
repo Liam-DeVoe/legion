@@ -2462,7 +2462,7 @@ func storedCopiesOf(t *testing.T, js natsgo.JetStreamContext, head uint64, subje
 // sweep, so a row about that lease reads the count rather than the log alone. It counts the pull
 // requests the processes fetch for the same reason: one envelope handed to one intake is one
 // fetch, and the count is the only thing that tells one bound subscriber from two
-// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt).
+// (TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce).
 type githubFake struct {
 	server  *httptest.Server
 	release chan struct{}
@@ -6140,9 +6140,10 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // A closed issue's document settles on the running servers as an open issue's does, with nobody
 // opening it again.
 //
-// A process of another build is registered beside the pair (openClosingAskIssue), since only then
-// does the close write anything into the spec for a settlement to save: on a fleet of one build a
-// close changes no byte of any document. Bob's keystroke in his tab on
+// A process of another build is registered beside the pair (openClosingAskIssue), whose pages the
+// close writes the withdrawn ask's attributes into the spec for; on a fleet of one build the close
+// writes the ones a version keeps, one version that changes only the server-owned attributes of the
+// ask's block (R3). Bob's keystroke in his tab on
 // B is stored, and the issue closes through A. The close settles the spec first, so the keystroke
 // is in the version the close leaves; the close's withdrawal of the decision's ask then writes the
 // block resolved, which leaves the spec owing a settlement, and the close closes B's room. Nothing
@@ -8657,15 +8658,16 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 	}
 
 	// A process on B's build that is beating, and then one whose last heartbeat left the window. It
-	// serves this tree's binary, so its row carries this build's schema numbers, as
-	// processes.Register writes them: a row without them reads as a build that predates the fleet
-	// columns, which every document socket's admission and the ask attributes' fleet guard read
-	// as another build.
+	// serves this tree's binary, so its row carries this build's schema numbers and owner lock
+	// protocol, as processes.Register writes them: a row without the schema numbers reads as a
+	// build that predates the fleet columns, which every document socket's admission and the ask
+	// attributes' fleet guard read as another build, and one at owner lock protocol 0 as a build
+	// before that protocol, which holds every owner lock in the legacy mode.
 	var instance string
 	if err := pair.database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, dashboard_build, signing_keys, schema_version, schema_creatable)
-		values (gen_random_uuid(), $1, '{fingerprint}', $2, $3)
-		returning instance::text`, routes.DashboardBuild(buildB.dir), pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()).Scan(&instance); err != nil {
+		insert into server_processes (instance, dashboard_build, signing_keys, schema_version, schema_creatable, owner_lock_protocol)
+		values (gen_random_uuid(), $1, '{fingerprint}', $2, $3, $4)
+		returning instance::text`, routes.DashboardBuild(buildB.dir), pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatal(err)
 	}
 	if _, live := dashboardBuildsOf(t, a); !slices.Equal(live, []string{entryA, entryB}) {

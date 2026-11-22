@@ -6,7 +6,7 @@
  * A thread stays in the Inbox, read or not, until it is dismissed, as an email stays until it is
  * archived: reading it, and **Mark all read**, leave it where it is. **Dismiss** takes it out, and
  * so does the reader's own answer or reply in it, which Dispatch dismisses in the write itself
- * (dispatch://INFRA-4948 R1); in the Dismissed view the same write with `restore` puts it back.
+ * (the own-answer rule, R1); in the Dismissed view the same write with `restore` puts it back.
  *
  * One press is one `POST /api/v1/me/inbox/dismiss` (`inboxDismissRequest`), naming either the row
  * ids it changes with what the page drew in each of them - which is every press made over a

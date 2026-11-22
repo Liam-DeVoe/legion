@@ -98,7 +98,9 @@ func inboxDrives(t *testing.T) []StoreDrive {
 				}
 			}
 			for _, pass := range []func(context.Context, *store.Store) (KindBackfill, error){
-				backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
+				func(ctx context.Context, database *store.Store) (KindBackfill, error) {
+					return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
+				}, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
 			} {
 				if done, err := pass(ctx, database); err != nil {
 					t.Fatalf("backfill the %s kind before the inbox's passes: %v", done.Kind, err)
@@ -161,17 +163,14 @@ func inboxDrives(t *testing.T) []StoreDrive {
 			kind, address, write := graphstore.AttemptOpened(opened, graphstore.AttemptWriter, at)
 			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-					if err := graphstore.QueueNodes(b, write); err != nil {
-						return err
-					}
+					graphstore.QueueNodes(b, write)
 					b.Queue("open the attempt", `
 						insert into comment_deliveries (comment_id, target, attempt, delivery, state, created_at, node_kind, node_address)
 						values ($1::uuid, $2, $3, 'aside', 'pending', $4, $5, $6)
 					`, opened.Comment, opened.Target, opened.Attempt, at, kind, address)
-					if err := graphstore.QueueCaused(b, write, graphstore.NoEvent); err != nil {
-						return err
-					}
-					return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, opened)
+					graphstore.QueueCaused(b, write, graphstore.NoEvent)
+					graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, opened)
+					return nil
 				})
 			}); err != nil {
 				t.Fatalf("open the attempt to ses_claimed as a sender opens one: %v", err)

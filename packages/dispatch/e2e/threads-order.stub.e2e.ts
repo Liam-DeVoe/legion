@@ -7,7 +7,7 @@
  *  (packages/dispatch/README.md, "The stubbed layer"). The rows that read a document block's
  *  thread, a margin thread and the comment thread in the reading pane are in
  *  `threads-order.e2e.ts`: all three sit on the live document, since the comment thread is
- *  anchored to the spec and the pane draws it inside the spec's live room (dispatch://INFRA-4948
+ *  anchored to the spec and the pane draws it inside the spec's live room (the in-document pane,
  *  R3).
  */
 import { expect } from "@playwright/test";

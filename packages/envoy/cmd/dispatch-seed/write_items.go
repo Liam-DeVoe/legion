@@ -200,7 +200,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
-			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
+			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, serverURL)
 			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
 			if err != nil {
 				return err
@@ -356,7 +356,7 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 //
 // Who wrote a comment is written as the server's comment write writes it (api/comment_create.go).
 // The row holds the author as the model encodes it, which is the value the comment's node holds
-// as made_by, and the batch states what graphstore.Authored states of each comment
+// as made_by, and the batch states what graphstore.QueueAuthored states of each comment
 // (graphstore.AuthorFacts): the author's node, the comment's authored_by tuple to it and the
 // aliases the server proved of the author (commentStoreWrite). The store census holds each
 // comment row to its node and its authored_by, so a seeded comment answers it as a comment the
@@ -378,10 +378,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		parameters += fmt.Sprintf(", $%d", next)
 		next++
 	}
-	// The address of the comment's own node, which the batch writes before its first row, and
-	// whether the batch stated its pointers there.
-	columns += ", node_kind, node_address, tuples_stored"
-	parameters += fmt.Sprintf(", $%d, $%d, $%d", next, next+1, next+2)
+	// The address of the comment's own node, which the batch writes before its first row, whether
+	// the batch stated its pointers there, and that the seed records the comment in its thread, as
+	// the server's comment write says of each comment it writes (threads_recorded).
+	columns += ", node_kind, node_address, tuples_stored, threads_recorded"
+	parameters += fmt.Sprintf(", $%d, $%d, $%d, true", next, next+1, next+2)
 	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
 	author, err := json.Marshal(seedAuthor)
 	if err != nil {
@@ -472,15 +473,24 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			}
 			// Who wrote it takes part in its thread and keeps the thread's row, and the comment
 			// reaches everyone else in that thread, as the server's comment write records it
-			// (inboxwrite.Record): the row holds its marker from its insert, so the trigger
+			// (inboxwrite.Record): the row holds threads_recorded from its insert, so the trigger
 			// user_threads_comment passes it by. A comment whose pointers the batch could not state
-			// is the trigger's, as it is the server's. The seed appends no event of its own.
-			if pointersStored[index-from] {
-				written := inboxwrite.Comment(comment.ID, seedAuthor, comment.CreatedAt, issueKey, artifactID,
-					r.itemProject(comment.Issue, comment.Document))
-				if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
-					return fmt.Errorf("record comment %s in its thread: %w", comment.ID, err)
+			// is recorded as the server records one, its thread's rows alone
+			// (inboxwrite.Write.Unstored), naming the head no pointer tuple names. The seed appends
+			// no event of its own.
+			written := inboxwrite.Comment(comment.ID, seedAuthor, comment.CreatedAt, issueKey, artifactID,
+				r.itemProject(comment.Issue, comment.Document))
+			if !pointersStored[index-from] {
+				switch {
+				case pointers.AskID != "":
+					written = written.RepliesTo(graphstore.KindAsk, pointers.AskID)
+				case pointers.ReplyTo != "":
+					written = written.RepliesTo(graphstore.KindComment, pointers.ReplyTo)
 				}
+				written = written.Unstored()
+			}
+			if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
+				return fmt.Errorf("record comment %s in its thread: %w", comment.ID, err)
 			}
 			mentions.add(comment.ID, text.Refs(located), comment.CreatedAt)
 		}
@@ -503,15 +513,15 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // stated, which is what its row's tuples_stored holds.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
-// graphstore.Authored writes for a comment of the server's: the comment's authored_by tuple and
-// the aliases the server proved of its author go among the comment's own tuples, and the
+// graphstore.QueueAuthored writes for a comment of the server's: the comment's authored_by tuple
+// and the aliases the server proved of its author go among the comment's own tuples, and the
 // author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
 // comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
 // which is the store's lock order. Every batch writes the author's node again, so it restates the
 // author (graphstore.Node's Restates), as the backfill's comment write does: no comment owns its
 // author's state or visibility, so a later batch keeps the ones the store holds, and only the
 // first batch makes the author's node, at the time of the first comment the seed writes, as
-// Authored makes it at the first comment that names it. writeComments refused an author that
+// QueueAuthored makes it at the first comment that names it. writeComments refused an author that
 // names nobody before its first batch, so every comment here names one.
 func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []graphstore.Node, tuples []graphstore.Tuple, pointersStored []bool) {
 	nodes = make([]graphstore.Node, 0, to-from+1)
@@ -653,8 +663,8 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 				nodeKind, nodeAddress = &kind, &row.ID
 			}
 			if _, err := tx.Exec(ctx, `
-				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block, node_kind, node_address)
-				values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)
+				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block, node_kind, node_address, threads_recorded)
+				values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, true)
 			`, message.ID, row.IssueKey, seedActor, body, message.CreatedAt,
 				inReplyTo, repliesTo, nodeKind, nodeAddress); err != nil {
 				return fmt.Errorf("message %s: %w", message.ID, err)
@@ -680,15 +690,20 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			// Who wrote it takes part in its thread and keeps the thread's row, and the message
 			// reaches everyone else in that thread, as the server's message write records it
-			// (inboxwrite.Record): the row names its node from its insert, so the trigger
-			// user_threads_message passes it by. A message whose row names no node is the
-			// trigger's, as it is the server's.
-			if projected[index-from] {
-				written := inboxwrite.Message(message.ID, seedAuthor, message.CreatedAt, &row.IssueKey,
-					r.itemProject(message.Issue, -1))
-				if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
-					return fmt.Errorf("record message %s in its thread: %w", message.ID, err)
+			// (inboxwrite.Record): the row holds threads_recorded from its insert, so the trigger
+			// user_threads_message passes it by. A message whose row names no node is recorded as the
+			// server records one, its thread's rows alone (inboxwrite.Write.Unstored), climbing from
+			// the message it answers, which no replies_to tuple of its own names.
+			written := inboxwrite.Message(message.ID, seedAuthor, message.CreatedAt, &row.IssueKey,
+				r.itemProject(message.Issue, -1))
+			if !projected[index-from] {
+				if row.InReplyTo != "" {
+					written = written.RepliesTo(graphstore.KindMessage, row.InReplyTo)
 				}
+				written = written.Unstored()
+			}
+			if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
+				return fmt.Errorf("record message %s in its thread: %w", message.ID, err)
 			}
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}

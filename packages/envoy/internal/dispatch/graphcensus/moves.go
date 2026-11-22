@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -48,15 +49,9 @@ type RestoreWork struct {
 // issue_key, ref_key): the catalog function decisions_documents()
 // (20261117093337_decisions_documents.up.sql), the one place a decisions document is spelled, by
 // its role or, for one stored before the role existed, by its slug. A retired document is none of
-// them (artifacts.retired_at): it holds nothing the restore owes. The dangling-citation counter
-// reads the retired ones too (decisionsDocumentsEver), since an address one of them held stays
-// cited after the retirement.
+// them (artifacts.retired_at): it holds nothing the restore owes.
 // kept for one release: decisions-documents-fn
 const decisionsDocuments = `decisions_documents()`
-
-// decisionsDocumentsEver is decisionsDocuments with every retired decisions document among them
-// (decisions_documents(include_retired => true)), found by the slug the retirement leaves it.
-const decisionsDocumentsEver = `decisions_documents(include_retired => true)`
 
 // owesBlockIndex is true of the document whose uuid is the SQL expression artifact while it still
 // owes its block index (document_block_versions.version null, as typedNodeOwed reads it): its
@@ -109,7 +104,7 @@ var restoreWorkRead = `
 		  and not ` + owesBlockIndex("spec.id") + `
 		union all
 		select '` + RestoreMoves + `', decisions.issue_key, k.id::text, d.node_id, d.block_id, spec.id
-		from ` + decisionsDocuments + ` decisions
+		from ` + decisionsDocuments + ` decisions -- kept for one release: decisions-documents-fn
 		join document_blocks d on d.artifact_id = decisions.id and d.type = 'ask'
 		join asks k on k.block_artifact_id = decisions.id and block_id_key(k.block_id) = block_id_key(d.block_id)
 		join artifacts spec on spec.issue_key = decisions.issue_key and spec.is_primary
@@ -175,19 +170,35 @@ func CollisionsOf(work []RestoreWork) []Collision {
 
 // The two sets of the dangling-citation counter.
 const (
-	// DanglingMoved is the citations whose target is a moved_to source, or a block address a
-	// decisions document held - the document a move of the second shape and the conversion empty,
-	// standing or retired since - and that resolve to no block. It reads zero before the first
-	// restore, while each such block stands where it is, and zero after the last one, while every
-	// address a move left resolves through its tuple: a move that wrote no tuple leaves its
-	// citations dangling in the decisions document, before its retirement and after it, and they
-	// count here.
+	// DanglingMoved is the citations whose target is a moved_to source - an address a moved_to was
+	// ever stated from, asserted now or retracted since, since the tuple is the record of the move
+	// (R8) - or an ask block the restore's dry run lists as a move of the second shape
+	// (RestoreMoves), and that resolve to no block. It reads zero before the first restore, while
+	// each such block stands where it is, and zero after the last one, while every address a move
+	// left resolves through its tuple: a move whose tuple no longer asserts leaves its citations
+	// dangling, and they count here. A block an edit deleted before this release, which no move
+	// made, is no target of it, and neither is a block of a converted section that is no heading,
+	// which no moved_to leaves.
 	DanglingMoved = "moved"
 	// DanglingReturning is the citations whose target is the old spec address of an ask the
-	// restore writes back (RestoreReturns), and that resolve to no block: it reads their count
-	// before the restore and zero after it.
+	// restore writes back (RestoreReturns, but each the restore declines because a person took its
+	// block out: ReturnDeclined), and that resolve to no block: it reads their count before the
+	// restore and zero after it.
 	DanglingReturning = "returning"
 )
+
+// ReturnDeclined answers, reading through q, whether the restore declines to write back the ask of
+// work, a return of the main shape (RestoreReturns): whether a person took its block out of the
+// spec, which the restore reads off the spec's stored versions before it writes one back (docs'
+// removalOf) and records then on the ask's node (RemovedByAPerson). That read parses a stored
+// version's tree, which docs reads and graphcensus does not, and docs imports graphcensus, so the
+// caller supplies the test: docs.ReturnDeclined, the one the restore reads by.
+type ReturnDeclined func(ctx context.Context, q graphstore.Queryer, work RestoreWork) (bool, error)
+
+// ErrNoReturnDeclined is the counter's refusal to judge a return without the restore's test: the
+// restore owes a return of the main shape and the caller passed no ReturnDeclined, so the counter
+// cannot tell an ask the restore writes back from one a person removed, and guesses neither.
+var ErrNoReturnDeclined = errors.New("the restore owes a return and the dangling-citation counter was given no test of which returns it declines (docs.ReturnDeclined)")
 
 // DanglingCitation is one citation the counter counted: the set it is in, the node whose text
 // cites the target - a document (its uuid), an ask, a comment or a message - and the target's
@@ -214,22 +225,21 @@ func (r DanglingReport) Count(set string) int64 {
 }
 
 // danglingRead counts the citations of the two sets in one statement. $1 is the old spec
-// addresses of the returns (ReadRestoreWork).
+// addresses of the returns the restore writes back, and $2 the addresses of the moves of the
+// second shape it owes (ReadRestoreWork).
 //
-// A target is a block address: the moved_to sources the store states now, read out of every block
-// node the log holds through graph_tuples_current, one probe per node (currentOutOfNodes); each
-// block address a decisions document held at a version the block index recorded
-// (document_block_texts, keyed by the document), whether the document stands or was retired since
-// (decisionsDocumentsEver), since the restore and the conversion retire it in the transaction that
-// moves its blocks out; and the addresses the returns name. One that resolves, through
-// moved_to_reach, to a block a document_blocks row holds is no dangling target, and neither is one
-// whose moves end at an ask whose row stands - the heading of a section that cites an answered ask
-// a person removed, which answers that ask - nor one in a document that still owes its block
-// index, whose rows are not current.
+// A target is a block address: every address a moved_to was ever stated from, asserted now or
+// retracted since, read out of every block node the log holds through graph_tuples_current, one
+// probe per node (statedOutOfNodes); the ask blocks the restore's dry run lists as moves of the
+// second shape; and the addresses the returns name. One that resolves, through moved_to_reach, to
+// a block a document_blocks row holds is no dangling target, and neither is one whose moves end at
+// an ask whose row stands - the heading of a section that cites an answered ask a person removed,
+// which answers that ask - nor one in a document that still owes its block index, whose rows are
+// not current.
 // The counter reads no other target: a `#b-` citation in prose is free text nothing validates,
-// and a block of a document past the deferral bound resolves to no block until the index catches
-// up, so a count of every unresolved citation of the instance is non-zero on a healthy one. A
-// decisions document's address its versions never held is such a prose citation too.
+// a block of a document past the deferral bound resolves to no block until the index catches up,
+// and a block an edit deleted, before this release or since, resolves to none for good, so a count
+// of every unresolved citation of the instance is non-zero on a healthy one.
 //
 // A citation is the node whose text cites a target, read off the five tables a citation of a block
 // is stored in, each through its index on (to_kind, to_id): refs, by its source, and block_refs,
@@ -238,12 +248,11 @@ func (r DanglingReport) Count(set string) int64 {
 // one of its blocks, or from two blocks, is one citation, so each set counts the nodes that cite
 // each target.
 var danglingRead = `
-	with recursive ` + currentOutOfNodes("moved", []string{refs.BlockNodeKind}, []string{graphstore.TupleMovedTo}) + `,
+	with recursive ` + statedOutOfNodes("moved", []string{refs.BlockNodeKind}, []string{graphstore.TupleMovedTo}) + `,
 	targets (address, counted) as (
 		select moved.from_id, '` + DanglingMoved + `' from moved
 		union
-		select distinct decisions.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
-		from ` + decisionsDocumentsEver + ` decisions join document_block_texts held on held.artifact_id = decisions.id
+		select unnest($2::text[]), '` + DanglingMoved + `'
 		union
 		select unnest($1::text[]), '` + DanglingReturning + `'
 	),
@@ -276,26 +285,41 @@ var danglingRead = `
 
 // DanglingCitations is the dangling-citation counter: the citations
 // of the moved set and of the returning set (DanglingMoved, DanglingReturning), read in q over the
-// restore's work as ReadRestoreWork finds it. Both sets answer before the restore moves anything.
-func DanglingCitations(ctx context.Context, q graphstore.Queryer) (DanglingReport, error) {
+// restore's work as ReadRestoreWork finds it, its returns judged by declined (ReturnDeclined).
+// Both sets answer before the restore moves anything.
+func DanglingCitations(ctx context.Context, q graphstore.Queryer, declined ReturnDeclined) (DanglingReport, error) {
 	work, err := ReadRestoreWork(ctx, q)
 	if err != nil {
 		return DanglingReport{}, err
 	}
-	return danglingCitationsOver(ctx, q, work)
+	return danglingCitationsOver(ctx, q, work, declined)
 }
 
 // danglingCitationsOver is DanglingCitations over work already read, so the census reads the
-// restore's work once for the counter and the collision lines. The moves of work need no address
-// of their own: each is a block of a decisions document, which the moved set reads whole.
-func danglingCitationsOver(ctx context.Context, q graphstore.Queryer, work []RestoreWork) (DanglingReport, error) {
-	returning := []string{}
+// restore's work once for the counter and the collision lines. A return the restore declines
+// (declined) is no return it makes, and its old address no target: a person took the block out,
+// and the address stays empty after the restore as before it. A return it cannot judge, since
+// declined is nil, is ErrNoReturnDeclined, naming the ask.
+func danglingCitationsOver(ctx context.Context, q graphstore.Queryer, work []RestoreWork, declined ReturnDeclined) (DanglingReport, error) {
+	returning, moving := []string{}, []string{}
 	for _, ask := range work {
-		if ask.Shape == RestoreReturns {
-			returning = append(returning, ask.Address)
+		switch ask.Shape {
+		case RestoreMoves:
+			moving = append(moving, ask.Address)
+		case RestoreReturns:
+			if declined == nil {
+				return DanglingReport{}, fmt.Errorf("count the dangling citations: ask %s of %s: %w", ask.Ask, ask.Issue, ErrNoReturnDeclined)
+			}
+			refused, err := declined(ctx, q, ask)
+			if err != nil {
+				return DanglingReport{}, fmt.Errorf("count the dangling citations: judge the return of ask %s of %s: %w", ask.Ask, ask.Issue, err)
+			}
+			if !refused {
+				returning = append(returning, ask.Address)
+			}
 		}
 	}
-	rows, err := q.Query(ctx, danglingRead, returning)
+	rows, err := q.Query(ctx, danglingRead, returning, moving)
 	if err != nil {
 		return DanglingReport{}, fmt.Errorf("count the dangling citations: %w", err)
 	}

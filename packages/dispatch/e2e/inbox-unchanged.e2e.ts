@@ -15,7 +15,7 @@ import { bandHeadings } from "./inbox-view";
 import { type Browser, expect, type Page, test } from "./test";
 
 /**
- * dispatch://INFRA-1152's c-inbox-unchanged: the Inbox renders the same page before and after this
+ * The check c-inbox-unchanged: the Inbox renders the same page before and after this
  * work, but for the one label the owner chose.
  *
  * The base build (the commit `BASELINE_SHA` names, its server and its dashboard) and this

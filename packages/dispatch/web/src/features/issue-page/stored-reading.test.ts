@@ -2,8 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { wordsOf } from "../refs/tree-fragment";
-import { firstWordedBlock } from "./issue-tree";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { projectedNames } from "./projection-fixture";
 import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
 

@@ -71,6 +71,7 @@ export type DispatchReadingSurface =
   | "issue-decision"
   | "decision-heading-words"
   | "decision-change-quote"
+  | "decision-shaped-link"
   | "issue-open-question"
   | "item-match-first-line"
   | "spec-requirement-words"
@@ -96,6 +97,7 @@ export type DispatchReadingSurface =
   | "check-retraction-reason"
   | "referenced-by-excerpt"
   | "referenced-by-title"
+  | "artifacts-reference-name"
   | "priority-description"
   | "body-reference-cards"
   | "dispatch-reference-card"
@@ -115,6 +117,7 @@ export type DispatchReadingSurface =
   | "node-row-parent-line"
   | "node-row-chip"
   | "outline-crumb"
+  | "issue-pin"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -552,11 +555,12 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "node-row-child-title",
   },
   // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
-  // line a filter's row names a node's parent by and a crumb above a zoom, each projected from
-  // the node's own words and cut by R1's first-line rule; and a chip, which names a tie's target.
+  // line a filter's row names a node's parent by, a crumb above a zoom and a pin in Details, each
+  // projected from the node's own words and cut by R1's first-line rule; and a chip, which names
+  // a tie's target.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
       test: "a folded branch's line reads a reference as its target's name, and as its author's words until it resolves",
@@ -569,7 +573,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
       test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
@@ -588,7 +592,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       test: "a numbered step keeps its number in a chip and in a folded line",
     },
     reach: "/issues/<ISSUE> with the new issue page on, a plan task's needs chip",
-    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record. The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
+    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record, and a block by the line the store projects beside that name, the first block of its words (\`KnownReferences.lines\`). The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
     record: false,
     rendered: false,
     surface: "node-row-chip",
@@ -598,7 +602,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: ["packages/dispatch/web/src/features/issue-page/IssueTree.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/IssueTree.test.tsx",
-      test: "a reference in a node's line reads as its target's name in the panel and in its crumb, and as its author's words until it resolves",
+      test: "a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves",
     },
     reach:
       "/issues/<ISSUE> with the new issue page on, below 1024 px, the crumb line above a node zoomed into",
@@ -606,6 +610,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "outline-crumb",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssuePins.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueMargin.test.tsx",
+      test: "a pin's line reads a reference as its target's name",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, Details' Pinned section",
+    reason: `A pin names its record on one line, its first line cut by R1's rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-pin",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
@@ -749,8 +766,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // The issue's Decisions panel, which names the decisions document by its artifact id: a
   // decision's heading and paragraphs, and the open questions. A link to a spec block a decision
-  // shaped draws no stored text: it names the block by its id, in the panel's own words, since
-  // the decisions read sends none of the block's text (`refs.BlockLinks`).
+  // shaped is a row of its own (`decision-shaped-link`).
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
     reach: "/issues/<ISSUE>/decisions, a decision's heading and paragraphs",
@@ -782,10 +798,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A decision's heading, where it names a write, a form or a card, or words a link: on the
   // Decisions panel, on a margin card, and in the Keep and the Change of a decision's row on the
-  // new issue page. All three read it through one hook (`useDecisionHeadingWords`).
+  // new issue page. Each reads it through the plain-text projection under this surface
+  // (`usePlainHeadline`, and the panel's link through `PlainText`).
   {
     files: [
-      "packages/dispatch/web/src/features/issue/decision-heading.ts",
       "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       "packages/dispatch/web/src/features/margin/DecisionCard.tsx",
       "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
@@ -814,6 +830,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "decision-change-quote",
+  },
+  // A link under "Shaped in the spec:" on the Decisions panel, worded by the spec block a
+  // decision shaped.
+  {
+    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx",
+      test: "a shaped block's link reads its block's words as their plain-text projection",
+    },
+    reach: "/issues/<ISSUE>/decisions, a decision's link under Shaped in the spec",
+    reason: `A link names the spec block a decision shaped by the block's words, which the decisions read sends as the block's stored excerpt (\`to.text\`) with no reading of them, so the page parses them. ${PLAIN_WORDS_REASON} Until the reader's engine has answered, and for a block the read sends no words for, the link names the block by its id, in the panel's own words.`,
+    record: true,
+    rendered: false,
+    surface: "decision-shaped-link",
   },
   // A requirement's line in the spec's Requirements list.
   {
@@ -1046,6 +1076,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "referenced-by-title",
+  },
+  // The Artifacts tab's References and Referenced by rows: each a link to the node at the far end
+  // of a link of the issue's references read, worded with the name the read gives that node.
+  {
+    files: ["packages/dispatch/web/src/features/artifacts/ArtifactsTab.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/artifacts/ArtifactsTab.test.tsx",
+      test: "a references row reads a reference in its name as its target's name",
+    },
+    reach: "/issues/<ISSUE>/artifacts, a References or Referenced by row",
+    reason: `A row of the issue's references read is a link to the node at its far end, worded with the name the read gives that node, as the server cut it. Where that name is the head of a comment's, an ask's or a message's text, whose \`#id\` is read against that record, it is drawn through this projection; a document's name, an issue's title and a component's are drawn as the characters they are. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "artifacts-reference-name",
   },
   // A priority's description, on its own page and on the open row of the priorities table, and
   // its first line on a closed row of that table.
