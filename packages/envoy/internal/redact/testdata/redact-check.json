@@ -6086,7 +6086,7 @@
       "mutation": {
         "file": "packages/daemon/internal/workflow/review.go",
         "preimage": "\"answered\", githubrest.ShownSHA(fact.HeadSHA), \"head\"",
-        "replacement": "\"answered\", fact.HeadSHA, \"head\""
+        "replacement": "\"answered\", fact.HeadSHA, \"shown\", githubrest.ShownSHA(fact.HeadSHA), \"head\""
       }
     },
     {
