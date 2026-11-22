@@ -42,7 +42,7 @@ func specImportDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// level, which the term issue_relation counts; and the hook's repair_issue on the hold,
 		// which spec_repair_issue counts.
 		Name: "api/spec_import.go#repairIssueHook", Database: r.database,
-		Sites: []string{"api/spec_import.go#repairIssueHook", "specstore/import.go#Import", "api/issue_create.go#createIssue",
+		Sites: []string{"api/spec_import.go#repairIssueHook", "specstore/import.go#Import", "api/issue_create.go#createIssueWith",
 			"api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery", "docs/mutation.go#WriteVersionNode",
 			"refs/blocks.go#Queue"},
 		Ready: func(t *testing.T) {

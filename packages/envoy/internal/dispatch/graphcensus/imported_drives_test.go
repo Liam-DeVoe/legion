@@ -322,8 +322,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Address string `json:"address"`
 	}
 	return append([]graphcensus.StoreDrive{{
-		Name: "api/issue_create.go#createIssue", Database: r.database,
-		Sites: []string{"api/issue_create.go#createIssue", "api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery",
+		Name: "api/issue_create.go#createIssueWith", Database: r.database,
+		Sites: []string{"api/issue_create.go#createIssueWith", "api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery",
 			"docs/mutation.go#WriteVersionNode", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			created := decoded[struct {
