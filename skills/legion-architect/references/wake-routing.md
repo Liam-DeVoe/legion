@@ -39,7 +39,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Tester fails and requests for changes are what it counts.
+Only a request for changes counts a round, never a tester's fail or a move back.
 Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it.

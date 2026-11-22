@@ -514,17 +514,17 @@ Legion uses GitHub's own review mechanisms rather than labels:
   At the round cap the architect decides, in the turn the notice wakes, whether to narrow the next
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
-  let converging rounds run, and posts that decision on the issue. Every move back to an earlier
-  phase counts a round: a tester's fail, a review's request for changes and a worker's move back.
-  A move made while the record holds the head conflicting with its base is a conflict round, which
-  `review_round_cap` does not count: the implementer answers such a round with a forward merge,
-  which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
-  the conflict rounds left out.
-- Each move back is counted by its kind as well, as the pair `<from>-<to>` of the phase it leaves
+  let converging rounds run, and posts that decision on the issue. Only a review that requests
+  changes counts a round: a tester's fail and a move back by a worker or the architect count none.
+  A request for changes made while the record holds the head conflicting with its base is a
+  conflict round, which `review_round_cap` does not count. The implementer answers such a round
+  with a forward merge, which no reviewer asked for. The cap's message names both numbers, the
+  rounds counted and the conflict rounds left out.
+- Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
   and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
   or any other of the 42 pairs of two different workflow phases, such as `testing-reviewing` on a
   task whose reviewer step comes before its tester step —
-  beside the round count, and a conflict round raises no pair.
+  beside the round count, and a move made while the head conflicts with its base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
   issue that has had no move back.
 - **Hooks** put a deployment's own words in front of the workers on a move back. A hook is an

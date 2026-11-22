@@ -1227,7 +1227,7 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 // completion reported, the Dispatch handoff record it named — and the three counts the phase
 // carries: the passes it has made through its stretch of the workflow, which every backward move
 // counts one of, the review rounds, which only a review that requested changes counts, and the
-// counts of the moves back, by kind, that made those rounds.
+// counts of the moves back, by kind, that made those passes.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
@@ -1238,11 +1238,11 @@ type PhaseView struct {
 	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
-	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
-	// exactly: it rises on every move back, a conflict round included, where no pair counts a
-	// conflict round, since nobody sent the work back. The counts start empty at the migration
-	// that added them and are never filled in from the past, so an issue already in flight reads
-	// counts that add up to less than its `rounds`.
+	// counts at all from one whose counts the daemon holds. Rounds beside it counts review rounds
+	// alone, a conflict round included, and Pass counts every move back, where no pair counts a
+	// move made at a conflicting head, since nobody sent the work back. The counts start empty at
+	// the migration that added them and are never filled in from the past, so an issue already in
+	// flight reads counts that add up to less than its `pass`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 	// passHidden is set on the copy the state route serves a caller below the contract that added
 	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader

@@ -368,7 +368,7 @@ const legionHandoffRecordView = z.object({
  * completion reported, the Dispatch handoff record it named), and the three counts the phase
  * carries: `pass`, the passes it has made through its stretch of the workflow, which every
  * backward move counts one of, `rounds`, the review rounds, which only a review that requested
- * changes counts, and `backwardMoves`, the counts of the moves back that made those rounds. */
+ * changes counts, and `backwardMoves`, the counts of the moves back that made those passes. */
 const legionPhaseView = z.object({
   claim: legionClaimView.optional(),
   handoffCommit: nonEmptyString.optional(),

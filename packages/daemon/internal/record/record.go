@@ -612,7 +612,7 @@ type PhaseRow struct {
 	// opened the round, and no pair at all, since nobody sent the work back, so no hook fires
 	// for it.
 	// The map starts empty when the migration lands and is never filled in from the past, so an
-	// issue already in flight reads counts that add up to less than its Rounds.
+	// issue already in flight reads counts that add up to less than its Pass.
 	BackwardMoves map[string]int
 	// CapTold is the review_round_cap value this row last posted the cap's message and its
 	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
