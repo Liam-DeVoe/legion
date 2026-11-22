@@ -204,8 +204,8 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 212: the plan register_plan took (`api.PlanRegisterResponse`). The route
-	// arrives with the answer, so no contract below 212 records either.
+	// version.go's 219: the plan register_plan took (`api.PlanRegisterResponse`). The route
+	// arrives with the answer, so no contract below 219 records either.
 	{ID: AnswerPlanRegister, Routes: []string{"POST /legion/v1/plans/register"}, Since: OwnerPlanContract},
 }
 
@@ -535,7 +535,7 @@ var lineKinds = []EnumeratedValue{
 // heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
 // eleven words, and its list grew once: `children_before_retro`, a parent whose plan has no
 // acceptance step held before its retro for the issues beneath it, and `task_stopped`, a task its
-// owner stopped, arrived at OwnerPlanContract (version.go's 212). So it is written out value by
+// owner stopped, arrived at OwnerPlanContract (version.go's 219). So it is written out value by
 // value, sorted by value, as waitAnswers is. It names each constant rather than reading
 // record.HeldReasons, because a word added to the ladder later arrives at its own contract.
 var heldReasons = []EnumeratedValue{
