@@ -14,13 +14,13 @@ import { issueHeader } from "./issue-page-p";
 import type { ApiRequest } from "./traffic";
 
 /**
- * What the rows of `e2e/issue-page-t.e2e.ts` read of what the page received besides what it
- * drew, the gates they check first, and what the page draws beside the rows. These helpers are
- * kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
+ * What the rows of the `e2e/issue-page-t-*.e2e.ts` files read of what the page received
+ * besides what it drew, the gates they check first, and what the page draws beside the rows.
+ * These helpers are kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
  * (`e2e/tools/issue-page-t-record.ts`) loads on a base that holds F's page and not the tree read:
  * what reads the tree read names its modules and its answer's types, which that base does not
- * hold, so it is here, with every other helper the recorder does not read with, so that file
- * loads no more than the recorder needs.
+ * hold, so it is here, so that file loads no more than the recorder needs; the steps and
+ * comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
  *
  * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
  * (`GET /api/v1/issues/{key}/tree`) and of one of its views (`?view=`), every page of a read

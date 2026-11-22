@@ -24,8 +24,8 @@ import type { ApiRequests } from "./traffic";
  * What the decision rows (`e2e/issue-page-u.e2e.ts`) read of the new issue page beside what the
  * other rows' helpers already read (`e2e/issue-page.ts`, `e2e/issue-page-{g,i,p,q,t}.ts` and
  * `e2e/issue-page-t-tree.ts`): the rows' own helper file, which reuses those readers where their
- * files export them. It keeps its own `releaseFilter`, since the file that holds the original is
- * a spec file (`e2e/issue-page-t.e2e.ts`).
+ * files export them. It keeps its own `releaseFilter`, which first checks that the filter's
+ * control is drawn, where part T's (`e2e/issue-page-t-rows.ts`) presses it at once.
  *
  * - **The server's answer.** `e2e/issue-layout-seed-support.ts` holds the reads of the tree read
  *   (`GET /api/v1/issues/{key}/tree`) the rows share with the seeds: `readTree` is the read of
@@ -51,8 +51,8 @@ import type { ApiRequests } from "./traffic";
  *   node; `specColumn` is, for each statement the Spec view draws, what stands beside it - the
  *   decision cell whose bracket spans it (`[data-spec-cell]`) and the links of its line
  *   (`[data-spec-because]`) - and `statementsBeside` the statements a decision stands beside.
- *   `readFilter` and `releaseFilter` press one filter on and off as the rows of
- *   `e2e/issue-page-t.e2e.ts` do.
+ *   `readFilter` and `releaseFilter` press one filter on and off as part T's rows do
+ *   (`e2e/issue-page-t-rows.ts`).
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
  *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
  * - **Row 2's third decision.** `writeThirdDecision` writes, through the spec's edit route, a

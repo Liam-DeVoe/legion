@@ -31,6 +31,7 @@ import {
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
+import { NODE_TYPE_NAMES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
@@ -391,6 +392,29 @@ test("a typed block's row and its chip draw the block's own content, not its kin
     reading("Build the step."),
   ]);
   expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
+});
+
+// Every re-read of the tree builds the drafts again, from an answer whose unchanged objects the
+// cache keeps. A row handed a new reading or a new source draws its words again, and a link
+// focused in them loses the focus, so drawing the same answer twice hands a typed block's row the
+// same cut reading and the same source, and a comment's row the same source.
+test("drawing the same answer twice hands a row the same reading and the same source", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0, {
+      text_tree: typedReading("requirement", { blockId: "r1" }, "The first statement."),
+    }),
+    personsComment("c1", "r1", "2026-11-05T09:00:00Z"),
+  ]);
+  const builds = [drawn(tree).drafts, drawn(tree).drafts];
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(row?.tree).toEqual(reading("The first statement."));
+  expect(row?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.tree).toBe(row?.tree);
+  expect(again?.source).toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toBe(turn?.source);
 });
 
 // A node's `author` lists every author of its first version, whoever made it first ahead of the
@@ -1599,4 +1623,28 @@ test("an ask block's row draws the asks read's question, not the options its blo
     reading(words),
   ]);
   expect(row?.options?.map((option) => option.label)).toEqual(["1024 px", "1280 px"]);
+});
+
+// R3 and R5: a document is no node, so a requirement whose stored source cites one - its
+// `From:` line - carries a chip that opens it, at its own address and named by the page's word
+// for a document; the source is the tree read's text of the block, whatever its words drop.
+test("a requirement whose From line cites a document carries its chip from the tree read's text", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const cites = `dispatch://${KEY}/artifact/notes-md`;
+  const issue = { ...issueDetails(), artifacts: [...(issueDetails().artifacts ?? []), notes] };
+  const words = "The measurements behind it are kept.";
+  const { root } = drawn(
+    answer([
+      block("r-cites", "requirement", KEY, SPEC, 0, {
+        text: `${words}\nFrom: ${cites}`,
+        text_tree: reading(words),
+      }),
+    ]),
+    { issue }
+  );
+
+  expect(
+    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
+    "the requirement draws no chip for the document its From line cites"
+  ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });

@@ -575,6 +575,64 @@ test("a view's row carries the line of the parent of the kind its view names whe
   ).toEqual([["plan-md#b-t1", "spec#b-a1"]]);
 });
 
+// The page holds the tree read and a filter's view read as each answers, in either order, so a
+// filter is drawn first from either, and what it draws for the node an address names must not
+// turn on which answered first. A node the address names that is no row of the filter stands
+// under the nearest row of the filter above it in the tree, and at the top only where no row
+// stands above it, whether the filter is drawn from its view read or off the tree: under
+// Verification a plan task the tree places under a statement stands under that statement, where
+// the view draws the statement's checks alone, never at the top as a row of its own.
+test("a node the address names stands where the tree places it, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"] | undefined) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement(
+          "spec#b-r1",
+          [
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+          ],
+          { readId: "CORE-1/spec#r1" }
+        ),
+        node("comment-1", "comment", [
+          node("plan#b-t2", "plan_task", [], { readId: "CORE-1/plan#t2" }),
+        ]),
+      ],
+      views === undefined ? {} : { views }
+    );
+  // Each top row by its id, the ids of the rows under it, and the id of its parent's line.
+  const placed = (root: TreeNode, id: string) =>
+    presetView(root, "verification", "", new Set([id])).root.children.map((row) => [
+      row.id,
+      row.children.map((child) => child.id),
+      row.parentLine?.id,
+    ]);
+
+  expect(placed(tree({ verification }), "plan#b-t1")).toEqual([
+    ["spec#b-r1", ["verification#b-c1", "plan#b-t1"], undefined],
+  ]);
+  expect(placed(tree({ verification }), "plan#b-t2")).toEqual([
+    ["spec#b-r1", ["verification#b-c1"], undefined],
+    ["plan#b-t2", [], "comment-1"],
+  ]);
+  for (const id of ["plan#b-t1", "plan#b-t2"]) {
+    expect(placed(tree({ verification }), id)).toEqual(placed(tree(undefined), id));
+  }
+});
+
 // Another part draws the Decisions filter's rows itself and reads its kinds from here.
 test("the Decisions filter's row kinds are the asks and the decisions", () => {
   expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);

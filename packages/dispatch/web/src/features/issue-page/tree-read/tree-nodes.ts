@@ -14,7 +14,7 @@ import type {
 } from "../../../api/types";
 import { isDecisionEntry } from "../../issue/decision-entries";
 import { buildDispatchReference, parseNodeReference } from "../../refs/routes";
-import { textSourceOf } from "../../refs/text-references";
+import { type TextSource, textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
   askIdOf,
@@ -675,7 +675,7 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, ask);
-  if (askId !== undefined) draft.source = textSourceOf("ask", askId);
+  if (askId !== undefined) draft.source = sourceOf("ask", askId);
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -716,7 +716,7 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
-  draft.source = textSourceOf(node.supertag, node.id);
+  draft.source = sourceOf(node.supertag, node.id);
   return draft;
 }
 
@@ -770,23 +770,55 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = textSourceOf("artifact", node.document.artifact_id);
+      draft.source = sourceOf("artifact", node.document.artifact_id);
     }
   }
   return draft;
 }
 
+/** Each record's text source, by its kind and then its id: `textSourceOf`'s, made once, so every
+ *  build of the drafts hands a row the source object it handed it before, and the row's words are
+ *  not drawn again for a source that only looks new. */
+const sources: { readonly [Kind in TextSource["kind"]]: Map<string, TextSource> } = {
+  artifact: new Map(),
+  ask: new Map(),
+  comment: new Map(),
+  message: new Map(),
+};
+
+/** The text source of record `id` of `kind` (`textSourceOf`), the one object `sources` holds. */
+function sourceOf(kind: TextSource["kind"], id: string): TextSource | undefined {
+  const byId = sources[kind];
+  let source = byId.get(id);
+  if (source === undefined) {
+    source = textSourceOf(kind, id);
+    if (source !== undefined) byId.set(id, source);
+  }
+  return source;
+}
+
+/** Each typed block's reading cut to its own content (`readingOf`), by the reading it was cut
+ *  from. A re-read whose answer is unchanged keeps each reading's object, and so a row is handed
+ *  the cut it was handed before, and its words are not drawn again. */
+const cutReadings = new WeakMap<DisplayTree, DisplayTree>();
+
 /** The reading of `node`'s words that a row and a chip draw. The read sends a block's reading
  *  as the blocks read does, of the block's whole stored text: a typed block's reading is the one
  *  typed node, its type and its attributes on it, which the row draws apart (its kind, its chips,
  *  its facts). So a block whose reading is that one node of its own kind (`typedNodeOf`) reads as
- *  the node's own content, as the server's other reads cut a typed block's text to its content.
- *  Every other reading is the node's words as sent. A view's line (`presets.ts`) reads it here
- *  too. */
+ *  the node's own content, as the server's other reads cut a typed block's text to its content,
+ *  the same object for the same reading (`cutReadings`). Every other reading is the node's words
+ *  as sent. A view's line (`presets.ts`) reads it here too. */
 export function readingOf(node: TreeAnswerNode): DisplayTree | undefined {
   const reading = node.text_tree;
   const content = typedNodeOf(node)?.content;
-  return reading !== undefined && Array.isArray(content) ? { ...reading, content } : reading;
+  if (reading === undefined || !Array.isArray(content)) return reading;
+  let cut = cutReadings.get(reading);
+  if (cut === undefined) {
+    cut = { ...reading, content };
+    cutReadings.set(reading, cut);
+  }
+  return cut;
 }
 
 /** The one node of `node`'s own kind its reading is, where the read sent a typed block's reading,
