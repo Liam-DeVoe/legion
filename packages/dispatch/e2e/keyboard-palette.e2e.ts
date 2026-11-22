@@ -2,9 +2,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { issueSearchIn, openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
-import { openIssue, searchPath } from "./keyboard-palette";
+import { nextFrames } from "./frames";
+import { inboxSearchBox } from "./inbox-filter";
+import { modKey, openIssue, searchPath } from "./keyboard-palette";
 import { priorityTrigger } from "./menus";
-import { expect, test } from "./test";
+import { devices, expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -684,7 +686,8 @@ test("a row whose control has gone since the palette opened does nothing", async
 
 // A key pressed the moment a page draws reaches the keymap: its one window listener is attached
 // in the commit that first draws the shell (`KeymapProvider.tsx`), so no page is drawn before it
-// listens. The row sends Control+k from inside the page as the Inbox heading enters the DOM,
+// listens. The row sends the page's Search key, Control+k or Cmd+k under a Mac's user agent
+// (`modKey`), from inside the page as the Inbox heading enters the DOM,
 // before the browser has painted it, on five fresh loads, and each one opens the bar. The
 // listener attached in a passive effect came 6 to 30 ms after the heading, since `AuthGate` draws
 // the shell in a render its own passive effect starts, and every one of those presses was lost
@@ -692,13 +695,14 @@ test("a row whose control has gone since the palette opened does nothing", async
 // @webkit @firefox: when each engine delivers a key the page sends as the heading enters the DOM
 // (from a mutation observer's callback) against the layout effects of the first commit that draws
 // the shell, in which `features/shell/KeymapProvider.tsx` attaches its window listener.
-test("a Control+k sent as the Inbox heading enters the page opens the bar @firefox @webkit", async ({
+test("a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading enters the page opens the bar @firefox @webkit", async ({
   browser,
 }) => {
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.addInitScript(() => {
+    const mod = await modKey(page);
+    await page.addInitScript((modifier) => {
       new MutationObserver((_records, observer) => {
         const drawn = Array.from(document.querySelectorAll("h1")).some(
           (heading) => heading.textContent?.trim() === "Inbox"
@@ -710,12 +714,13 @@ test("a Control+k sent as the Inbox heading enters the page opens the bar @firef
             bubbles: true,
             cancelable: true,
             code: "KeyK",
-            ctrlKey: true,
+            ctrlKey: modifier === "Control",
             key: "k",
+            metaKey: modifier === "Meta",
           })
         );
       }).observe(document, { childList: true, subtree: true });
-    });
+    }, mod);
     for (let load = 1; load <= 5; load += 1) {
       await page.goto("/");
       await expect(
@@ -723,6 +728,60 @@ test("a Control+k sent as the Inbox heading enters the page opens the bar @firef
         `load ${load}: the Control+k sent as the Inbox heading entered the page opened no bar`
       ).toBeVisible();
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// `$mod` is Cmd on a Mac and Control elsewhere (`matchesCombo`, web/src/features/shell/keymap.ts).
+// A Mac's text field keeps Control+K, which deletes to the end of the line, so under a Mac's user
+// agent Control+K in the Inbox's search box opens no bar and the box keeps the focus, and Cmd+K
+// opens the bar. The app reads the Mac from the page's user agent (`IS_MAC`), so this row sets
+// Desktop Safari's on the project's Chromium.
+test("under a Mac's user agent Control+K in the Inbox's search box opens no bar and the box keeps the focus, and Cmd+K opens the bar", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice", {
+    userAgent: devices["Desktop Safari"].userAgent,
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await modKey(page), "the page's user agent names no Mac").toBe("Meta");
+    const box = inboxSearchBox(page);
+    await box.focus();
+    await expect(box).toBeFocused();
+    const bar = page.getByRole("dialog", { name: "Search" });
+
+    await page.keyboard.press("Control+k");
+    // The registry runs a key in the press's own task, so a bar it opened is drawn by the second
+    // frame after it.
+    await nextFrames(page);
+    await expect(bar, "Control+K opened the bar under a Mac's user agent").toHaveCount(0);
+    await expect(box, "Control+K took the focus from the search box").toBeFocused();
+
+    await page.keyboard.press("Meta+k");
+    await expect(bar, "Cmd+K opened no bar under a Mac's user agent").toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+// The same box under the project's own user agent, which names no Mac: there `$mod` is Control.
+test("under a user agent that names no Mac Control+K in the Inbox's search box opens the bar", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await modKey(page), "the project's user agent names a Mac").toBe("Control");
+    const box = inboxSearchBox(page);
+    await box.focus();
+    await expect(box).toBeFocused();
+
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   } finally {
     await context.close();
   }

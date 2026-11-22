@@ -326,7 +326,7 @@ const parallelProjects = [
   // page and by Shift+Tab in a dialog and reads the focus on the list's trigger.
   // When the engine delivers a key the page sends as a page is first drawn, against the layout
   // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
-  // keymap's window listener: `keyboard-palette`'s row that a Control+k sent as the Inbox heading
+  // keymap's window listener: `keyboard-palette`'s row that a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading
   // enters the page opens the bar.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
@@ -439,7 +439,7 @@ const parallelProjects = [
   // page and by Shift+Tab in a dialog and reads the focus on the list's trigger.
   // When the engine delivers a key the page sends as a page is first drawn, against the layout
   // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
-  // keymap's window listener: `keyboard-palette`'s row that a Control+k sent as the Inbox heading
+  // keymap's window listener: `keyboard-palette`'s row that a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading
   // enters the page opens the bar.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press

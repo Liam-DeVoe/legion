@@ -95,7 +95,7 @@ import {
   valuesOf,
 } from "./inbox-view";
 import { focusThePage } from "./issue-page-g";
-import { searchPath } from "./keyboard-palette";
+import { modKey, searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import {
   bulkSnoozeMenu,
@@ -2875,8 +2875,8 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
   for (const [keys, shut] of [
     [["/"], "Escape"],
-    [["g", "p"], "Control+k"],
-    [["Control+k"], "Escape"],
+    [["g", "p"], `${await modKey(page)}+k`],
+    [[`${await modKey(page)}+k`], "Escape"],
   ] as const) {
     await page.locator("body").focus();
     for (const key of keys) await page.keyboard.press(key);
@@ -2887,7 +2887,7 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   }
 
   // The words, and the hits grouped under what they belong to.
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await box.fill("harbour");
   await expect.poll(() => hitOwners(bar), { message: "the words' hits" }).toEqual(harbour);
   await expect(
@@ -2987,7 +2987,7 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   await page.goto(`/issues/${seed.rollout}`);
   await expect(page.getByTestId("issue-header")).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await expect(scope).toHaveText(new RegExp(`Acting on ${seed.rollout}`));
   await expect(
     bar.getByRole("group", { name: "Actions" }).getByRole("option"),
@@ -3009,7 +3009,7 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   await expect(documentEditor(page)).toContainText("The sextant sights the horizon.");
   await placeCaret(page, "after", "sextant");
   await expect(documentEditor(page)).toBeFocused();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await expect(scope).toHaveText(/Harbour notes/);
   await page.keyboard.press("Tab");
   await expect(scope, "the Tab key").toHaveText(/The sextant sights the horizon/);
@@ -3019,7 +3019,7 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await expect(box).toHaveValue("");
   const recent = bar.getByRole("group", { name: "Recent" });
   await expect(
@@ -4812,7 +4812,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     };
     await page.route(searchPath, failSearch);
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const palette = page.getByRole("dialog", { name: "Search" });
     await control(controlRow(palette), CONTROL.searchBox).fill("rollout");
     await expect
@@ -5068,7 +5068,7 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   await page.goto("/");
   await expect(page.getByRole("searchbox", { name: "Search asks" })).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   const palette = page.getByRole("dialog", { name: "Search" });
   await expect(palette).toBeVisible();
   const barTrigger = control(controlRow(palette), CONTROL.panelTrigger);
@@ -5745,7 +5745,7 @@ test("a date the reader gives the search bar's Updated since is their press, so 
     if (how === "typed" && browserName === "webkit") continue;
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const bar = page.getByRole("dialog", { name: "Search" });
     await expect(bar).toBeVisible();
     await page.keyboard.type("Harbour");

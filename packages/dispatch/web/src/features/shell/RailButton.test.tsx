@@ -31,7 +31,10 @@ test("RailButton shows its action's keys, announces them and opens what it stand
     expect(opened).toBe(1);
 
     const search = screen.getByRole("button", { name: /search/i });
-    expect(search).toHaveAttribute("aria-keyshortcuts", "Control+K Meta+K");
+    expect(search).toHaveAttribute(
+      "aria-keyshortcuts",
+      MOD_KEY_LABEL === "⌘" ? "Meta+K" : "Control+K"
+    );
     expect(search.querySelector("kbd")?.textContent).toBe(MOD_KEY_LABEL === "⌘" ? "⌘K" : "Ctrl K");
   } finally {
     view.unmount();

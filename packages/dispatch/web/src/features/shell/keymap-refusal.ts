@@ -1,4 +1,4 @@
-import { isStrictPrefix, type KeyCombo, parseChord, sameCombo } from "./keymap";
+import { IS_MAC, isStrictPrefix, type KeyCombo, parseChord, sameCombo } from "./keymap";
 import {
   catalogueEntry,
   KEYMAP_ACTIONS,
@@ -166,20 +166,49 @@ const FIELD_COMMAND_KEYS: Record<string, true> = {
   z: true,
 };
 
+/** The keys a Mac's text field takes as its own with Control, whatever else the press holds, by
+ *  the platform's text bindings: A and E move the caret to the line's start and end, B and F back
+ *  and forward, N and P down and up a line, D and H delete a character, K deletes to the line's
+ *  end, O opens a line, T transposes two characters, V pages down and Y yanks. On a Mac `$mod` is
+ *  Cmd, so these are Control's alone. Each key in lower case, as `FIELD_COMMAND_KEYS`. */
+const MAC_FIELD_CONTROL_KEYS: Record<string, true> = {
+  a: true,
+  b: true,
+  d: true,
+  e: true,
+  f: true,
+  h: true,
+  k: true,
+  n: true,
+  o: true,
+  p: true,
+  t: true,
+  v: true,
+  y: true,
+};
+
 /** Whether a text field takes `combo` as its own, so that an `inEditable` binding of it would take
  *  the press from every field: a press with Ctrl, Cmd or Meta whose key is one of
- *  `FIELD_COMMAND_KEYS`, with Shift or Alt or without; and a press with no Ctrl, Cmd or Meta,
+ *  `FIELD_COMMAND_KEYS`, with Shift or Alt or without; on a Mac, a press with Control whose key is
+ *  one of `MAC_FIELD_CONTROL_KEYS`, whatever else it holds; and a press with no Ctrl, Cmd or Meta,
  *  unless it holds Alt with a key that neither types a character nor edits the text
  *  (`Alt+Enter`). With Alt, a key of one character types one on a Mac (Option+M types `µ`). */
-function actsInField(combo: KeyCombo): boolean {
+function actsInField(combo: KeyCombo, isMac: boolean): boolean {
   if (combo.control || combo.meta || combo.mod) {
-    return FIELD_COMMAND_KEYS[combo.key.toLowerCase()] === true;
+    const key = combo.key.toLowerCase();
+    return (
+      FIELD_COMMAND_KEYS[key] === true ||
+      (isMac && combo.control && MAC_FIELD_CONTROL_KEYS[key] === true)
+    );
   }
   return !combo.alt || combo.key.length === 1 || FIELD_KEYS[combo.key] === true;
 }
 
-function sameChord(a: readonly KeyCombo[], b: readonly KeyCombo[]): boolean {
-  return a.length === b.length && a.every((combo, index) => sameCombo(combo, b[index] as KeyCombo));
+function sameChord(a: readonly KeyCombo[], b: readonly KeyCombo[], isMac: boolean): boolean {
+  return (
+    a.length === b.length &&
+    a.every((combo, index) => sameCombo(combo, b[index] as KeyCombo, isMac))
+  );
 }
 
 /** The presses of `LINK_COPY_KEY`, the `y` that copies a focused link's address, read once. */
@@ -214,26 +243,30 @@ function refused(message: string, other?: KeymapActionId): KeyVerdict {
  * Refused: a key that is no key; a key that keeps its own action (`RESERVED_KEYS`, a digit) or
  * that the browser keeps; for an action that also works while the reader types (`inEditable`), a
  * key a text field takes as its own (`actsInField`), with Ctrl or Cmd or without (`u`,
- * `Backspace`, `$mod+v`, `$mod+z`, `$mod+ArrowLeft`), since the registry would take it from every
- * field; any key for an action whose keys all keep their own action, since its run reads the key
- * pressed; a key listed twice, or two of the action's own keys of which one is the first press of
- * the other (`g` beside `g i`, while `g i` beside `g a` passes); a key another action of the same
- * surface, or of a surface drawn with it, has, unless the two are a pair of `EXCLUSIVE_BY_FOCUS`;
- * a key that is the first press of another action's key, or whose first press is another action's
- * key, in any scope; and a key whose first press is `LINK_COPY_KEY`, the `y` that copies a focused
- * link's address (`link-copy.ts`), a binding written out whole and registered on every page. The
+ * `Backspace`, `$mod+v`, `$mod+z`, `$mod+ArrowLeft`), and on a Mac with Control (`Control+e`,
+ * `Control+k`), since the registry would take it from every field; any key for an action whose
+ * keys all keep their own action, since its run reads the key pressed; a key listed twice, or two
+ * of the action's own keys of which one is the first press of the other (`g` beside `g i`, while
+ * `g i` beside `g a` passes); a key another action of the same surface, or of a surface drawn
+ * with it, has, unless the two are a pair of `EXCLUSIVE_BY_FOCUS`; a key that is the first press
+ * of another action's key, or whose first press is another action's key, in any scope; and a key
+ * whose first press is `LINK_COPY_KEY`, the `y` that copies a focused link's address
+ * (`link-copy.ts`), a binding written out whole and registered on every page. The
  * shell's keys are drawn on every page but those `ON_EVERY_PAGE_BUT` names: a key another action
  * of the `global` scope has on a page where both are drawn is refused, since one scope holds a key
  * once, and a key a global action has, taken by a page's action where the global one is drawn, or
  * the other way round, is accepted with the notice that the global action does not work on that
  * page, as the Agents page's `/` and `i` are today. The notice says more than the registry does:
  * where the page's action does not apply (its `when` is false), `resolve` in `keymap.ts` passes
- * the key on to the global action.
+ * the key on to the global action. Two keys are one key where the platform reads them as one
+ * press (`sameCombo`, `keymap.ts`): `isMac`, the browser's own unless a test names one, decides
+ * whether `$mod` is Cmd or Ctrl.
  */
 export function refusalOf(
   action: KeymapActionId,
   keys: readonly string[],
-  personKeys: PersonKeys
+  personKeys: PersonKeys,
+  isMac: boolean = IS_MAC
 ): KeyVerdict {
   const entry = catalogueEntry(action);
   if (keys.length > 0 && keepsOwnKeys(entry)) {
@@ -249,17 +282,21 @@ export function refusalOf(
       );
     }
     if (chord.some(isBrowsers)) return refused(`${key} is the browser's own key.`);
-    if (entry.inEditable === true && chord.some(actsInField)) {
+    if (entry.inEditable === true && chord.some((combo) => actsInField(combo, isMac))) {
+      const command = isMac ? "Cmd or Control" : "Ctrl or Cmd";
+      const macControl = isMac
+        ? " With Control, a Mac text field also uses B, D, E, F, H, K, N, O, P and T to move the cursor and edit."
+        : "";
       return refused(
-        `${key} would be taken from every text field: ${entry.label} also works while you type, so its key needs Ctrl or Cmd with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.`
+        `${key} would be taken from every text field: ${entry.label} also works while you type, so its key needs ${command} with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.${macControl}`
       );
     }
     for (const earlier of taken) {
-      if (sameChord(earlier.chord, chord)) return refused(`${key} is listed twice.`);
-      if (isStrictPrefix(earlier.chord, chord)) {
+      if (sameChord(earlier.chord, chord, isMac)) return refused(`${key} is listed twice.`);
+      if (isStrictPrefix(earlier.chord, chord, isMac)) {
         return refused(`${earlier.key} is the first press of ${key}, both keys of ${entry.label}.`);
       }
-      if (isStrictPrefix(chord, earlier.chord)) {
+      if (isStrictPrefix(chord, earlier.chord, isMac)) {
         return refused(`${key} is the first press of ${earlier.key}, both keys of ${entry.label}.`);
       }
     }
@@ -274,13 +311,13 @@ export function refusalOf(
       const otherChord = chordOf(otherKey);
       if (otherChord === null) continue;
       for (const { chord, key } of taken) {
-        if (isStrictPrefix(chord, otherChord)) {
+        if (isStrictPrefix(chord, otherChord, isMac)) {
           return refused(`${key} is the first press of ${otherKey}, ${otherEntry.label}.`, other);
         }
-        if (isStrictPrefix(otherChord, chord)) {
+        if (isStrictPrefix(otherChord, chord, isMac)) {
           return refused(`${otherKey}, ${otherEntry.label}, is the first press of ${key}.`, other);
         }
-        if (!sameChord(chord, otherChord) || exclusiveByFocus(action, other)) continue;
+        if (!sameChord(chord, otherChord, isMac) || exclusiveByFocus(action, other)) continue;
         if (
           entry.surface === otherEntry.surface ||
           DRAWN_TOGETHER.some(
@@ -317,7 +354,7 @@ export function refusalOf(
   // command bar's own close is the keys of Search and actions (`search/SearchPalette.tsx`), which
   // this check reads as that action's.
   for (const { chord, key } of taken) {
-    if (isStrictPrefix(LINK_COPY_CHORD, chord)) {
+    if (isStrictPrefix(LINK_COPY_CHORD, chord, isMac)) {
       return refused(`${LINK_COPY_KEY}, ${LINK_COPY_LABEL}, is the first press of ${key}.`);
     }
   }

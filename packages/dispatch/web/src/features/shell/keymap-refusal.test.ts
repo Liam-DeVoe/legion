@@ -123,9 +123,40 @@ test("an action that also works while the reader types takes no Ctrl or Cmd key 
       other: undefined,
     });
   }
-  // Search and actions' default, and a Ctrl key no text field takes.
-  for (const key of ["$mod+k", "$mod+e"]) {
-    expect(refusalOf("global.search", [key], NO_PERSON_KEYS).kind, key).toBe("accepted");
+  // Search and actions' default.
+  expect(refusalOf("global.search", ["$mod+k"], NO_PERSON_KEYS).kind).toBe("accepted");
+});
+
+// On a Mac `$mod` is Cmd, and a Mac's text field keeps Control with A, B, D, E, F, H, K, N, O, P,
+// T, V or Y to move the caret and edit, whatever else the press holds: Control+E moves to the end
+// of the line and Control+K deletes to it. Cmd+E is no such key.
+test("on a Mac an action that also works while the reader types takes no Control key a Mac's text field takes as its own, and takes Cmd+E", () => {
+  for (const key of ["Control+e", "Control+k", "Control+Shift+a"]) {
+    expect(refusalOf("global.search", [key], NO_PERSON_KEYS, true), key).toEqual({
+      kind: "refused",
+      message: `${key} would be taken from every text field: Search and actions also works while you type, so its key needs Cmd or Control with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter. With Control, a Mac text field also uses B, D, E, F, H, K, N, O, P and T to move the cursor and edit.`,
+      other: undefined,
+    });
+  }
+  expect(refusalOf("global.search", ["$mod+e"], NO_PERSON_KEYS, true).kind).toBe("accepted");
+  // Elsewhere Control is `$mod`, and Ctrl+E is a key no text field takes.
+  for (const key of ["$mod+e", "Control+e"]) {
+    expect(refusalOf("global.search", [key], NO_PERSON_KEYS, false).kind, key).toBe("accepted");
+  }
+});
+
+// One press is one key, as the platform reads `$mod`: Search and actions' `$mod+k` is Cmd+K on a
+// Mac and Ctrl+K elsewhere, so another action of the shell may take the other of the two.
+test("Search and actions' $mod+k is Meta+k on a Mac and Control+k elsewhere, and the other is free", () => {
+  for (const [isMac, held, free] of [
+    [true, "Meta+k", "Control+k"],
+    [false, "Control+k", "Meta+k"],
+  ] as const) {
+    expect(refusalOf("global.create", [held], NO_PERSON_KEYS, isMac), held).toMatchObject({
+      kind: "refused",
+      other: "global.search",
+    });
+    expect(refusalOf("global.create", [free], NO_PERSON_KEYS, isMac).kind, free).toBe("accepted");
   }
 });
 
