@@ -242,6 +242,34 @@ not_landed_plant() {
     grep -qxF -- "$2" "$1/judgement.md" && ! grep -qE '\*\*(Landed|Proven by):\*\*' "$1/judgement.md"
 }
 
+# symbol_plant <name> <file field> <symbol> [<path> <text>]...; prints a fresh copy of the
+# fixture named <name> (fresh) into whose repository each <path>, where any is given, is
+# committed holding <text>, that commit named as our repository's in sources.json, and whose
+# row f-our-1 cites <file field> with <symbol>, in place of handoff.go and
+# TesterVerdictRequired. It prints nothing and returns 1 when any of it could not be planted,
+# and its caller stops.
+symbol_plant() {
+    local dir evidence named="" file="$2" symbol="$3" paths=()
+    dir="$(fresh "$1")" || return 1
+    evidence="$dir/repo/docs/research/internet-of-cognition"
+    shift 3
+    while [ "$#" -ge 2 ]; do
+        mkdir -p "$dir/repo/$(dirname -- "$1")" && printf '%s' "$2" >"$dir/repo/$1" || return 1
+        paths+=("$1")
+        shift 2
+    done
+    if [ "${#paths[@]}" -gt 0 ]; then
+        named="$(cd "$dir/repo" && git add -- "${paths[@]}" && git commit --quiet -m "the files a cited symbol names" && git rev-parse HEAD)" &&
+            jq --arg c "$named" '.our_repository.commit = $c' "$evidence/sources.json" >"$dir/sources.json" &&
+            mv "$dir/sources.json" "$evidence/sources.json" || return 1
+        [ -n "$named" ] && [ "$(jq -r '.our_repository.commit' "$evidence/sources.json")" = "$named" ] || return 1
+    fi
+    sed -i "/\"id\":\"f-our-1\"/s#\"file\":\"packages/daemon/internal/api/handoff.go\",\"symbol\":\"TesterVerdictRequired\"#\"file\":\"$file\",\"symbol\":\"$symbol\"#" \
+        "$evidence/claims.jsonl"
+    grep -F '"id":"f-our-1"' "$evidence/claims.jsonl" | grep -qF "\"file\":\"$file\",\"symbol\":\"$symbol\"" || return 1
+    printf '%s' "$dir"
+}
+
 # ==== the cases of check.test.sh begin below this line, where cases_copy cuts it ====
 
 # 1. A row that carries a command and a recorded output but no predicate. claims.jsonl has
@@ -5802,6 +5830,440 @@ for form in module package mistyped; do
             "citation-our-code: f-our-1 cites the symbol engin\\.match" "$out"
         ;;
     *) honest_result "a dotted name $symbol, whose prefix names engine.py as a module, in a file that writes neither engine nor api as a word, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 188. A module path is the file's stem after the directories above it, each matched whole
+# from the file upward, and a prefix whose directory is not the file's names no file (the
+# architect's note of round 49 on case 187). module_file reads a dotted prefix as a module
+# of a file the citation names: its last component the file's stem, its name without its
+# extension, and each component before it the next directory up. So does a colon prefix,
+# the object reference `pkg.mod:func` that Python's entry points write for the function
+# func of pkg/mod.py. The case commits pkg/mod.py into the fixture, a module-level
+# `def func`, its text writing neither pkg, mod nor other as a word, names that commit as our
+# repository's in sources.json, and writes the fixture's row f-our-1 as citing that file
+# with the symbol 'pkg.mod.func', then 'pkg.mod:func', then 'other.mod.func', running
+# --citations over each (symbol_plant): the first two must pass citation-our-code; the
+# third, whose directory is not pkg, names no file as a module and is read as a qualified
+# name, and must fail it, naming the part and the component other. At ca8b6531 the first two
+# failed, each naming the component 'pkg' of the prefix 'pkg.mod'.
+for form in dotted colon other; do
+    case "$form" in
+    dotted) symbol='pkg.mod.func' ;;
+    colon) symbol='pkg.mod:func' ;;
+    other) symbol='other.mod.func' ;;
+    esac
+    dir="$(symbol_plant "symbol-module-path-$form" pkg/mod.py "$symbol" pkg/mod.py $'def func(row):\n    return row\n')" &&
+        ! grep -qwE 'pkg|mod|other' "$dir/repo/pkg/mod.py" || {
+        printf 'FAIL the symbol %s and its module could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    other)
+        case_result "a dotted name other.mod.func, whose directory is not pkg/mod.py's, names no file as a module and fails --citations, naming the part and the component other" \
+            "citation-our-code: f-our-1 cites the symbol other\\.mod\\.func, which pkg/mod\\.py holds only by its local part 'func', and the component 'other' of its prefix 'other\\.mod'" "$out"
+        ;;
+    *) honest_result "a symbol $symbol, whose prefix names pkg/mod.py as a module, in a file that writes neither pkg nor mod as a word, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 189. A class or an attribute after the module, `engine.Engine.match`, is read in the
+# module's file (the architect's note (a) of round 49, the class of cases 183, 187 and 188: a
+# correct Python reference read as a namespace). Python names a method by its module, its
+# class and its name, so module_file takes the longest leading run of the prefix's dotted
+# components that names a file as a module, and module_held asks each name after that run,
+# the class and then the method, to stand in that file as a whole token. At ca8b6531 such a
+# prefix reached prefix_held, which asks the module's own name to stand in its text, so
+# 'engine.Engine.match' failed citation-our-code on the component engine, though engine.py
+# declares the class Engine and its method match. The case commits
+# packages/daemon/internal/api/engine.py, a class Engine with a method match, its text writing
+# neither engine nor api as a word, and writes the row f-our-1 as citing that file with the
+# symbol 'engine.Engine.match, api.engine.Engine.match', then 'engine.Engin.match', running
+# --citations over each: the first must pass citation-our-code; the second, a class the file
+# holds only inside Engine, must fail it, naming Engin.
+for form in honest mistyped; do
+    case "$form" in
+    honest) symbol='engine.Engine.match, api.engine.Engine.match' ;;
+    mistyped) symbol='engine.Engin.match' ;;
+    esac
+    dir="$(symbol_plant "symbol-module-class-$form" packages/daemon/internal/api/engine.py "$symbol" \
+        packages/daemon/internal/api/engine.py $'class Engine:\n    def match(self, row):\n        return row\n')" &&
+        ! grep -qwE 'engine|api|Engin' "$dir/repo/packages/daemon/internal/api/engine.py" || {
+        printf 'FAIL the symbol %s and its module could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    mistyped)
+        case_result "a dotted name engine.Engin.match, whose class engine.py holds only inside Engine, fails --citations, naming Engin" \
+            "citation-our-code: f-our-1 cites the symbol engine\\.Engin\\.match, whose prefix names the file packages/daemon/internal/api/engine\\.py as the module engine, and packages/daemon/internal/api/engine\\.py does not hold the name 'Engin'" "$out"
+        ;;
+    honest) honest_result "dotted names $symbol, a class and its method after the module engine.py names, in a file that writes neither engine nor api as a word, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 190. A package's __init__.py is the module its directory names (the architect's note (b) of
+# round 49). Python names a function of a package's __init__.py by the package, `pkg.func`,
+# and a package path before it, `a.pkg.func`, so module_names reads a file named __init__.py
+# by the directory that holds it, and each component before that as the next directory up.
+# At ca8b6531 'pkg.func' failed citation-our-code on the component pkg, which the file's text
+# does not write. The case commits a/pkg/__init__.py, a function func, its text writing none
+# of a, pkg and other as a word, and writes the row f-our-1 as citing that file with the
+# symbol 'pkg.func, a.pkg.func', then 'other.pkg.func', running --citations over each: the
+# first must pass citation-our-code; the second, whose directory is not a, names no module and
+# is read as a qualified name, and must fail it, naming the component other.
+for form in honest other; do
+    case "$form" in
+    honest) symbol='pkg.func, a.pkg.func' ;;
+    other) symbol='other.pkg.func' ;;
+    esac
+    dir="$(symbol_plant "symbol-module-package-$form" a/pkg/__init__.py "$symbol" a/pkg/__init__.py $'def func(row):\n    return row\n')" &&
+        ! grep -qwE 'a|pkg|other' "$dir/repo/a/pkg/__init__.py" || {
+        printf 'FAIL the symbol %s and its package could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    other)
+        case_result "a dotted name other.pkg.func, whose directory is not a/pkg/__init__.py's, names no module and fails --citations, naming the component other" \
+            "citation-our-code: f-our-1 cites the symbol other\\.pkg\\.func, which a/pkg/__init__\\.py holds only by its local part 'func', and the component 'other' of its prefix 'other\\.pkg'" "$out"
+        ;;
+    honest) honest_result "dotted names $symbol, a function of the package a/pkg/__init__.py names, in a file that writes none of a and pkg as a word, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 191. A module below a directory the citation names is read in its file (the architect's
+# note (c) of round 49). A citation whose file field names a directory, lib, cites a module
+# below it by the path from that directory down, `core.verifier.verify` for the function
+# verify of lib/core/verifier.py, or `core.setup` for one of the package lib/core/__init__.py,
+# and Python's full reference writes the directory's own name first, `lib.core.verifier.verify`,
+# or names the directory's own package alone, `lib.hook` for lib/__init__.py; module_below
+# reads each so. At ca8b6531 each failed citation-our-code on a component the files' text does
+# not write. The case commits lib/core/verifier.py, a function verify under a comment that
+# says core, lib/core/__init__.py, a function setup, and lib/__init__.py, a function hook, the
+# text writing none of lib, verifier and verifer as a word, and writes the row f-our-1 as
+# citing the directory lib with the symbol
+# 'core.verifier.verify, lib.core.verifier.verify, core.setup, lib.hook', then
+# 'core.verifer.verify', running --citations over each: the first must pass
+# citation-our-code; the second, whose longest run that names a module is the package core,
+# must fail it, naming verifer, which lib/core/__init__.py does not hold.
+for form in honest mistyped; do
+    case "$form" in
+    honest) symbol='core.verifier.verify, lib.core.verifier.verify, core.setup, lib.hook' ;;
+    mistyped) symbol='core.verifer.verify' ;;
+    esac
+    dir="$(symbol_plant "symbol-module-below-$form" lib "$symbol" \
+        lib/core/verifier.py $'# the core checks\ndef verify(row):\n    return row\n' \
+        lib/core/__init__.py $'def setup(row):\n    return row\n' \
+        lib/__init__.py $'def hook(row):\n    return row\n')" &&
+        ! grep -rqwE 'lib|verifier|verifer' "$dir/repo/lib" || {
+        printf 'FAIL the symbol %s and the modules below lib could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    mistyped)
+        case_result "a dotted name core.verifer.verify, cited in the directory lib, whose longest module run is the package core, fails --citations, naming verifer" \
+            "citation-our-code: f-our-1 cites the symbol core\\.verifer\\.verify, whose prefix names the file lib/core/__init__\\.py as the module core, and lib/core/__init__\\.py does not hold the name 'verifer'" "$out"
+        ;;
+    honest) honest_result "dotted names $symbol, modules and packages below the directory lib the citation names, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 192. A name and a colon before a line, `Symbol:line`, is read as text its file holds and as
+# that file's line (the architect's class of round 49: every symbol form the gate reads is
+# stated once, in check.sh's header above resolve_symbol, each pinned by a case that passes and
+# one that fails). The live row m-eval-our-scorers writes `askOnMessage:306` so, and no case
+# held the form. The case writes the fixture's row f-our-1, which cites
+# packages/daemon/internal/api/handoff.go, a file of three lines declaring
+# TesterVerdictRequired, with the symbol 'TesterVerdictRequired:3', then
+# 'TesterVerdictRequird:3', then 'TesterVerdictRequired:4', running --citations over each
+# (symbol_plant): the first must pass citation-our-code; the second, whose name is neither a
+# file nor text the file holds, must fail it, naming the part and the name; and the third, a
+# line past the file's end, must fail it, naming the file's three lines.
+for form in honest mistyped past-end; do
+    case "$form" in
+    honest) symbol='TesterVerdictRequired:3' ;;
+    mistyped) symbol='TesterVerdictRequird:3' ;;
+    past-end) symbol='TesterVerdictRequired:4' ;;
+    esac
+    dir="$(symbol_plant "symbol-name-line-$form" packages/daemon/internal/api/handoff.go "$symbol")" || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    mistyped)
+        case_result "a symbol part TesterVerdictRequird:3, whose name is neither a file nor text handoff.go holds, fails --citations, naming the part and the name" \
+            "citation-our-code: f-our-1 cites TesterVerdictRequird:3, and TesterVerdictRequird is neither a file beside the paths the citation names nor text the file before it" "$out"
+        ;;
+    past-end)
+        case_result "a symbol part TesterVerdictRequired:4, a line past the end of handoff.go, fails --citations, naming the file's three lines" \
+            "citation-our-code: f-our-1 cites TesterVerdictRequired:4, and packages/daemon/internal/api/handoff\\.go holds no such line at [0-9a-f]+, 3 lines" "$out"
+        ;;
+    honest) honest_result "a symbol part TesterVerdictRequired:3, a name handoff.go holds and a line it holds, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 193. A part written in words is read as text its file holds, and one that no reading of its
+# form finds is reported as not checked, never passed unread (the architect's class of round
+# 49). resolve_symbol read any part holding a `/` as a path, by paths_at, which passes over a
+# part written in words and returns 0, so at ca8b6531 a part in words holding a slash passed
+# citation-our-code and was not listed as not checked, though nothing read it: twelve live
+# parts so, `GET /api/v1/delivery/pipeline` of n-2918-routes and
+# `skills/thermonuclear-code-quality/SKILL.md lines 22-23` of tc-our-2 among them. The case
+# writes the fixture's row f-our-1 as citing skills/legion-worker/references/pr-body.md with
+# the symbol 'one row per half', text that file holds, then 'the rows of
+# skills/legion-worker/references/merge-gate.md', text it does not hold, running --citations
+# over each: each must pass citation-our-code; the first must not be listed as not checked,
+# and the second must be, by the line `not checked: f-our-1 cites the part "..."`.
+for form in held unread; do
+    case "$form" in
+    held)
+        symbol='one row per half' listed=0
+        words_case="a symbol part in words that pr-body.md holds, 'one row per half', passes citation-our-code and is not listed as not checked"
+        ;;
+    unread)
+        symbol='the rows of skills/legion-worker/references/merge-gate.md' listed=1
+        words_case="a symbol part in words holding a path, which pr-body.md does not hold, is listed as not checked and fails nothing, never passed unread"
+        ;;
+    esac
+    dir="$(symbol_plant "symbol-words-$form" skills/legion-worker/references/pr-body.md "$symbol")" || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case_read "$words_case" "$out" || continue
+    times="$(grep -cxF "  not checked: f-our-1 cites the part \"$symbol\"" "$out/text")"
+    if printf '%s' "$RUN_FAILED" | grep -qx citation-our-code; then
+        case_failed "$words_case" "$(grep '^FAIL citation-our-code' "$out/text" | head -1)"
+    elif [ "$times" != "$listed" ]; then
+        case_failed "$words_case" "its run lists the part as not checked $times times, not $listed"
+    else
+        case_passed "$words_case"
+    fi
+done
+
+# 194. A quoted string is read as text its file holds, its quotes among it (the architect's
+# class of round 49). No case held the form. The case commits
+# packages/daemon/internal/api/mode.py, `MODE = 'strict'`, and writes the fixture's row f-our-1
+# as citing that file with the symbol "'strict'", then "'MODE'", a name the file writes
+# without quotes, running --citations over each: the first must pass citation-our-code; the
+# second must fail it, naming the part.
+for form in honest unquoted; do
+    case "$form" in
+    honest) symbol="'strict'" ;;
+    unquoted) symbol="'MODE'" ;;
+    esac
+    dir="$(symbol_plant "symbol-quoted-$form" packages/daemon/internal/api/mode.py "$symbol" \
+        packages/daemon/internal/api/mode.py "MODE = 'strict'"$'\n')" || {
+        printf 'FAIL the symbol %s and its file could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    unquoted)
+        case_result "a quoted symbol part 'MODE', a name mode.py writes without its quotes, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol 'MODE', which packages/daemon/internal/api/mode\\.py does not hold" "$out"
+        ;;
+    honest) honest_result "a quoted symbol part 'strict', which mode.py holds with its quotes, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 195. A part that is a file's name beside the paths the citation names is that file, and the
+# parts after it are read in it (the architect's class of round 49). Case 171 holds a file's
+# name before a line's colon, `merge-gate.md:3`; no case held a file's name written as a part
+# of its own, as the live row t-ml-cross-reference-docs writes `contracts.md`. The case writes
+# the fixture's row f-our-1 as citing skills/legion-worker/references/pr-body.md, a file of
+# three lines, with the symbol 'merge-gate.md, 2', then 'merge-gate.md, 3', merge-gate.md
+# being a file of two lines beside it, running --citations over each: the first must pass
+# citation-our-code; the second must fail it, naming line 3 and merge-gate.md, so line 3 is
+# read in merge-gate.md and not in pr-body.md, which holds it.
+for form in honest past-end; do
+    case "$form" in
+    honest) symbol='merge-gate.md, 2' ;;
+    past-end) symbol='merge-gate.md, 3' ;;
+    esac
+    dir="$(symbol_plant "symbol-file-name-$form" skills/legion-worker/references/pr-body.md "$symbol")" &&
+        [ "$(wc -l <"$dir/repo/skills/legion-worker/references/pr-body.md")" = 3 ] &&
+        [ "$(wc -l <"$dir/repo/skills/legion-worker/references/merge-gate.md")" = 2 ] || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    past-end)
+        case_result "a symbol 'merge-gate.md, 3' cited in pr-body.md reads line 3 in merge-gate.md, a file of two lines, and fails --citations, naming it" \
+            "citation-our-code: f-our-1 cites 3, and skills/legion-worker/references/merge-gate\\.md holds no such line at [0-9a-f]+, 2 lines" "$out"
+        ;;
+    honest) honest_result "a symbol 'merge-gate.md, 2' cited in pr-body.md, a file's name beside it and a line that file holds, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 196. A part that is a file's name is read as a path of the tree that is the name or ends
+# with it after a slash (the architect's class of round 49). Twelve live parts pass only so,
+# as `engine.py` of t-cp-drop-packages, cited in the directory packages/ioc-concord/, and no
+# case held the reading. The case writes the fixture's row f-our-1 as citing the directory
+# packages/daemon with the symbol 'handoff.go', the name of
+# packages/daemon/internal/api/handoff.go, which no file of the directory writes, then
+# 'handof.go', running --citations over each: the first must pass citation-our-code; the
+# second must fail it, naming the part and the directory.
+for form in honest mistyped; do
+    case "$form" in
+    honest) symbol='handoff.go' ;;
+    mistyped) symbol='handof.go' ;;
+    esac
+    dir="$(symbol_plant "symbol-tree-name-$form" packages/daemon "$symbol")" &&
+        ! grep -rqF 'handoff.go' "$dir/repo/packages/daemon" || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    mistyped)
+        case_result "a symbol part handof.go, cited in packages/daemon, the name of no file of the tree, fails --citations, naming the part and the directory" \
+            "citation-our-code: f-our-1 cites the symbol handof\\.go, which packages/daemon does not hold" "$out"
+        ;;
+    honest) honest_result "a symbol part handoff.go, cited in packages/daemon, the name of a file below it that no file writes, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 197. A prefixed name whose prefix is a namespace, `Namespace:Symbol`, holds where its file
+# holds the local part and each component of the prefix, and a prefix that names the file or
+# a module holds the part to that file (the architect's class of round 49). The live rows
+# ts-hold-key and ts-hold-actors write Turtle terms, `mas:sessionId`, and no case held that
+# form; cases 183 and 188 hold `file.ext.Symbol` and `module:attr` passing, and no case held
+# either failing. The case commits ontology/terms.ttl, a Turtle file that declares
+# <https://example.org/mas#sessionId> under `@prefix mas:` and never writes mas:sessionId whole,
+# and pkg/mod.py, a function func, and writes the fixture's row f-our-1 as citing both with
+# the symbol 'mas:sessionId, pkg.mod:func, terms.ttl.sessionId', then 'mass:sessionId', then
+# 'pkg.mod:fun', then 'terms.ttl.session', running --citations over each: the first must pass
+# citation-our-code; each other must fail it, naming the component mass, the name fun in
+# pkg/mod.py, or the local part session in ontology/terms.ttl.
+for form in honest namespace module file; do
+    case "$form" in
+    honest) symbol='mas:sessionId, pkg.mod:func, terms.ttl.sessionId' ;;
+    namespace) symbol='mass:sessionId' ;;
+    module) symbol='pkg.mod:fun' ;;
+    file) symbol='terms.ttl.session' ;;
+    esac
+    dir="$(symbol_plant "symbol-prefixed-$form" 'ontology/terms.ttl, pkg/mod.py' "$symbol" \
+        ontology/terms.ttl $'@prefix mas: <https://example.org/mas#> .\n<https://example.org/mas#sessionId> a owl:DatatypeProperty .\n' \
+        pkg/mod.py $'def func(row):\n    return row\n')" &&
+        ! grep -qwE 'mass|fun|session' "$dir/repo/ontology/terms.ttl" "$dir/repo/pkg/mod.py" &&
+        ! grep -qF 'mas:sessionId' "$dir/repo/ontology/terms.ttl" || {
+        printf 'FAIL the symbol %s and its two files could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    namespace)
+        case_result "a prefixed name mass:sessionId, whose namespace terms.ttl does not write, fails --citations, naming the component mass" \
+            "citation-our-code: f-our-1 cites the symbol mass:sessionId, which ontology/terms\\.ttl, pkg/mod\\.py holds only by its local part 'sessionId', and the component 'mass' of its prefix 'mass'" "$out"
+        ;;
+    module)
+        case_result "a prefixed name pkg.mod:fun, whose prefix names pkg/mod.py as a module that holds fun only inside func, fails --citations, naming fun" \
+            "citation-our-code: f-our-1 cites the symbol pkg\\.mod:fun, whose prefix names the file pkg/mod\\.py as the module pkg\\.mod, and pkg/mod\\.py does not hold the name 'fun'" "$out"
+        ;;
+    file)
+        case_result "a dotted name terms.ttl.session, whose prefix names ontology/terms.ttl, which holds session only inside sessionId, fails --citations, naming session" \
+            "citation-our-code: f-our-1 cites the symbol terms\\.ttl\\.session, whose prefix names the file ontology/terms\\.ttl, and ontology/terms\\.ttl does not hold its local part 'session'" "$out"
+        ;;
+    honest) honest_result "symbol parts $symbol, a namespace, a module and a file each with a name its file holds, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 198. A path is read as a path, a directory or a glob the commit holds (the architect's class
+# of round 49). The live rows r-12, d-codeowners-skills and t-ml-drop-libraries cite
+# `protocols/accord`, `skills/` and `src/mas/library/*`, and no case held the form. The case
+# writes the fixture's row f-our-1, which cites packages/daemon/internal/api/handoff.go, with
+# the symbol 'skills/legion-worker/references, skills/*/references', a directory and a glob
+# the fixture holds, then 'skills/legion-reviewer/references', which it does not, running
+# --citations over each: the first must pass citation-our-code; the second must fail it,
+# naming the part.
+for form in honest missing; do
+    case "$form" in
+    honest) symbol='skills/legion-worker/references, skills/*/references' ;;
+    missing) symbol='skills/legion-reviewer/references' ;;
+    esac
+    dir="$(symbol_plant "symbol-path-$form" packages/daemon/internal/api/handoff.go "$symbol")" &&
+        [ -d "$dir/repo/skills/legion-worker/references" ] && [ ! -e "$dir/repo/skills/legion-reviewer" ] || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    missing)
+        case_result "a symbol part skills/legion-reviewer/references, a path the fixture does not hold, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol skills/legion-reviewer/references, which packages/daemon/internal/api/handoff\\.go does not hold" "$out"
+        ;;
+    honest) honest_result "symbol parts $symbol, a directory and a glob the fixture holds, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 199. A pattern, any part holding `|` or `*` that is no path, is read as an extended regular
+# expression a line of its file matches (the architect's class of round 49). The live rows
+# d-29 and m-tel-semconv-module cite `consensus|majority|quorum` and `GEN_AI_*`, and no case
+# held the form. The case writes the fixture's row f-our-1, which cites
+# packages/daemon/internal/api/handoff.go, with the symbol 'TesterVerdict(Required|Missing)',
+# then 'TesterVerdict(Absent|Missing)', running --citations over each: the first must pass
+# citation-our-code; the second must fail it, naming the part.
+for form in honest unmatched; do
+    case "$form" in
+    honest) symbol='TesterVerdict(Required|Missing)' ;;
+    unmatched) symbol='TesterVerdict(Absent|Missing)' ;;
+    esac
+    dir="$(symbol_plant "symbol-pattern-$form" packages/daemon/internal/api/handoff.go "$symbol")" || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    unmatched)
+        case_result "a symbol part TesterVerdict(Absent|Missing), a pattern no line of handoff.go matches, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol TesterVerdict\\(Absent\\|Missing\\), which packages/daemon/internal/api/handoff\\.go does not hold" "$out"
+        ;;
+    honest) honest_result "a symbol part TesterVerdict(Required|Missing), a pattern a line of handoff.go matches, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 200. A part in no form of the symbol grammar fails by name and is never read as text (the
+# architect's class of round 49: a form the gate does not state is refused, not guessed at).
+# resolve_symbol read every part that no other reading took as text its file holds, so at
+# ca8b6531 `match(row)`, a call no form reads, passed citation-our-code in a file that writes
+# `def match(row):`. The case commits packages/daemon/internal/api/engine.py, that function,
+# pyproject.toml, the table [project.optional-dependencies], and lab.yaml, a list scenarios
+# whose item holds overlays, and writes the fixture's row f-our-1 as citing the three with the
+# symbol 'match, [project.optional-dependencies], scenarios[].overlays', a name and two key
+# paths written with brackets, then 'match(row)', then 'Engine::match', running --citations
+# over each: the first must pass citation-our-code; each other must fail it, naming the part
+# as not a symbol form the gate reads.
+for form in honest call scope; do
+    case "$form" in
+    honest) symbol='match, [project.optional-dependencies], scenarios[].overlays' ;;
+    call) symbol='match(row)' ;;
+    scope) symbol='Engine::match' ;;
+    esac
+    dir="$(symbol_plant "symbol-no-form-$form" 'packages/daemon/internal/api/engine.py, pyproject.toml, lab.yaml' "$symbol" \
+        packages/daemon/internal/api/engine.py $'def match(row):\n    return row\n' \
+        pyproject.toml $'[project.optional-dependencies]\nneo4j = []\n' \
+        lab.yaml $'scenarios:\n  - id: baseline\n    overlays: []\n')" &&
+        grep -qF 'match(row)' "$dir/repo/packages/daemon/internal/api/engine.py" || {
+        printf 'FAIL the symbol %s and its three files could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    call)
+        case_result "a symbol part match(row), which engine.py writes but which is in no form of the symbol grammar, fails --citations, named as no symbol form the gate reads" \
+            "citation-our-code: f-our-1 cites the symbol part 'match\\(row\\)', which is not a symbol form the gate reads \\(check\\.sh's header, the symbol grammar\\)" "$out"
+        ;;
+    scope)
+        case_result "a symbol part Engine::match, in no form of the symbol grammar, fails --citations, named as no symbol form the gate reads" \
+            "citation-our-code: f-our-1 cites the symbol part 'Engine::match', which is not a symbol form the gate reads \\(check\\.sh's header, the symbol grammar\\)" "$out"
+        ;;
+    honest) honest_result "symbol parts $symbol, a name and two key paths written with brackets, pass citation-our-code" citation-our-code "$out" ;;
     esac
 done
 

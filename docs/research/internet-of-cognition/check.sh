@@ -859,8 +859,8 @@ front-page|shape|the front page carries the ranking, the one thing to do first, 
 question-list|shape|every page's question is one word the gate reads, Q and its number, and is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
-citation-our-code|citations|every path the file field of a citation into our own repository names stands at the commit it names, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in its own file, the file the part names or else the file before it, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names, read whole, a repository sources.json pins, by its name or the owner and name of its url, every path its file field names is one the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in its own file, the file the part names or else the file before it, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
+citation-our-code|citations|every path the file field of a citation into our own repository names stands at the commit it names, and every part of its symbol is read by its form of the symbol grammar (check.sh's header above resolve_symbol) and holds in its own file, the file the part names or else the file before it, a part in no form of the grammar failing by name; a part written in words that no reading of its form finds, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names, read whole, a repository sources.json pins, by its name or the owner and name of its url, every path its file field names is one the clone holds at the pinned commit, and every part of its symbol is read by its form of the symbol grammar (check.sh's header above resolve_symbol) and holds in its own file, the file the part names or else the file before it, a part in no form of the grammar failing by name; a part written in words that no reading of its form finds, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
@@ -5964,6 +5964,140 @@ symbol_file() {
     printf '%s' "$name"
 }
 
+# module_file <repo root> <commit> <prefix> <path>...; reads a symbol part's prefix as a
+# reference into a Python module, a file the citation names or one below a directory it
+# names, and prints <run><TAB><file>: the longest leading run of the prefix's dotted
+# components that names such a file as a module, by module_names for a path the citation
+# names that is a file and by module_below for one that is a directory. So `engine.Engine`
+# prints engine and packages/daemon/internal/api/engine.py, the components after the run
+# being names that file holds (module_held). Only a file at the commit counts. It prints
+# nothing and returns 1 when no run names a file, a glob naming none, or when the prefix
+# holds an empty component or a /.
+module_file() {
+    local root="$1" commit="$2" prefix="$3" path run found files=() dirs=() form='^[^./]+(\.[^./]+)*$'
+    shift 3
+    [[ "$prefix" =~ $form ]] || return 1
+    for path in "$@"; do
+        case "$path" in ':(glob)'*) continue ;; esac
+        case "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" in
+        blob) files+=("$path") ;;
+        tree) dirs+=("$path") ;;
+        esac
+    done
+    run="$prefix"
+    while :; do
+        for path in "${files[@]}"; do
+            module_names "$run" "$path" && printf '%s\t%s' "$run" "$path" && return 0
+        done
+        for path in "${dirs[@]}"; do
+            found="$(module_below "$root" "$commit" "$run" "$path")" && printf '%s\t%s' "$run" "$found" && return 0
+        done
+        [[ "$run" == *.* ]] || return 1
+        run="${run%.*}"
+    done
+}
+
+# module_names <run> <file>; returns 0 when the run of dotted components names the file as a
+# module, as Python names one, and 1 when it does not, by bash alone: the run ends with the
+# file's stem, its name without its last extension, or, for a package's __init__.py, with the
+# name of the directory it stands in, and each dotted component before that is the next
+# directory up the file's path, matched whole, from the file upward. So `engine` and
+# `api.engine` name packages/daemon/internal/api/engine.py, `pkg.mod` names pkg/mod.py while
+# `other.mod` does not, and `pkg` and `a.pkg` name a/pkg/__init__.py.
+module_names() {
+    local run="$1" path="$2" name stem dir head
+    name="${path##*/}"
+    if [[ "$path" == */* ]]; then dir="${path%/*}"; else dir=""; fi
+    if [ "$name" = __init__.py ]; then
+        [ -n "$dir" ] || return 1
+        stem="${dir##*/}"
+        if [[ "$dir" == */* ]]; then dir="${dir%/*}"; else dir=""; fi
+    else
+        stem="${name%.*}"
+        [ -n "$stem" ] && [ "$stem" != "$name" ] || return 1
+    fi
+    if [ "$run" = "$stem" ]; then
+        head=""
+    elif [[ "$run" == ?*".$stem" ]]; then
+        head="${run%".$stem"}"
+    else
+        return 1
+    fi
+    while [ -n "$head" ]; do
+        [ -n "$dir" ] && [ "${head##*.}" = "${dir##*/}" ] || return 1
+        if [[ "$head" == *.* ]]; then head="${head%.*}"; else head=""; fi
+        if [[ "$dir" == */* ]]; then dir="${dir%/*}"; else dir=""; fi
+    done
+    return 0
+}
+
+# module_below <repo root> <commit> <run> <directory>; prints the file below a directory the
+# citation names that the run of dotted components names as a module, and returns 1 when it
+# names none. The run names every directory between that directory and the file: its
+# components are the directory's own last directories, none or more, matched whole and in
+# order, as module_names matches them, then a path below it, each component a directory,
+# ending in a file's stem, as `core.verifier` and `lib.core.verifier` name
+# lib/core/verifier.py below lib, or in a package, a directory holding __init__.py, as `core`
+# names lib/core/__init__.py; the directory's own last directories alone name its own
+# __init__.py, as `lib` names lib/__init__.py. A package comes before a module of its name, as
+# Python imports it. Only a file at the commit counts, read by git ls-tree and git cat-file of
+# <commit>:<path>, which take no pathspec.
+module_below() {
+    local root="$1" commit="$2" run="$3" top="$4" comps=() up=() j i m k base last listing meta entry package module
+    IFS=. read -r -a comps <<<"$run"
+    IFS=/ read -r -a up <<<"$top"
+    m="${#comps[@]}" k="${#up[@]}"
+    for ((j = 0; j <= m && j <= k; j++)); do
+        for ((i = 0; i < j; i++)); do
+            [ "${comps[i]}" = "${up[k - j + i]}" ] || continue 2
+        done
+        if [ "$j" = "$m" ]; then
+            [ "$(git -C "$root" cat-file -t "$commit:$top/__init__.py" 2>/dev/null)" = blob ] || continue
+            printf '%s' "$top/__init__.py"
+            return 0
+        fi
+        base="$top"
+        for ((i = j; i < m - 1; i++)); do base="$base/${comps[i]}"; done
+        last="${comps[m - 1]}" package="" module=""
+        listing="$(git -C "$root" ls-tree "$commit:$base" 2>/dev/null)" || continue
+        while IFS=$'\t' read -r meta entry; do
+            case "$meta" in
+            *' tree '*)
+                [ "$entry" = "$last" ] && [ "$(git -C "$root" cat-file -t "$commit:$base/$entry/__init__.py" 2>/dev/null)" = blob ] &&
+                    package="$base/$entry/__init__.py"
+                ;;
+            *' blob '*)
+                [ -z "$module" ] && [ "$entry" != "$last" ] && [ "${entry%.*}" = "$last" ] && module="$base/$entry"
+                ;;
+            esac
+        done <<<"$listing"
+        [ -n "$package$module" ] || continue
+        printf '%s' "${package:-$module}"
+        return 0
+    done
+    return 1
+}
+
+# module_held <family> <id> <part> <run> <file> <names> <root> <commit>; holds to the file a
+# part's prefix names as the module <run> (module_file) each name after the run, <names>, its
+# dotted components in turn, the prefix's components after the run and then the local part,
+# as `Engine` and `match` after `engine` in `engine.Engine.match`: each stands in the file as
+# a whole token (token_held). It returns 0 when each does; else it fails <family>, naming the
+# row, the part, the file, the module and the first name the file does not hold, an empty
+# name among them, and returns 1.
+module_held() {
+    local family="$1" id="$2" part="$3" run="$4" path="$5" rest="$6" root="$7" commit="$8" name
+    while :; do
+        name="${rest%%.*}"
+        if [ -z "$name" ] || ! token_held "$root" "$commit" "$name" "$path"; then
+            fail "$family" "$id cites the symbol $part, whose prefix names the file $path as the module $run, and $path does not hold the name '$name' after it as a word at $commit"
+            return 1
+        fi
+        [[ "$rest" == *.* ]] || return 0
+        rest="${rest#*.}"
+    done
+}
+
 # whole_token <token>; prints the Perl-compatible regular expression that finds <token> as a
 # whole token, the one rule by which a search of a token an author wrote, a symbol, a name or
 # a word, reads it: the token's text as it stands, quoted (\Q...\E, a \E inside it written
@@ -6013,57 +6147,169 @@ prefix_held() {
     return 0
 }
 
-# resolve_symbol <id> <repo root> <commit> <pathspec> <symbol>
+# SYMBOL_LINE_FORM is form 1 of the symbol grammar (below), a line or a line range alone,
+# after a colon or after a name and a colon: the name, the line and the range's end are its
+# second, third and fifth groups.
+SYMBOL_LINE_FORM='^(([^:[:space:]]*):)?([0-9]+)(-([0-9]+))?[]).,;:]*$'
+
+# symbol_form <part>; prints the form of the symbol grammar (below) a symbol part is written
+# in, decided by its text alone, in the grammar's order: line, words, quoted, name, key,
+# prefixed, path or pattern. It prints nothing and returns 1 for a part in none of them, which
+# resolve_symbol refuses by name (symbol_refused).
+symbol_form() {
+    local part="$1" name='[A-Za-z0-9_][A-Za-z0-9_-]*' path='[A-Za-z0-9_.@+~*/-]*/[A-Za-z0-9_.@+~*/-]*' key keys
+    key="($name(\\[[0-9]*\\])?|\"[^\"]*\")"
+    keys="$key(\\.$key)*"
+    local name_form="^$name\$" key_form="^($keys|\\[$keys\\])\$" prefixed_form="^($path|$keys|\\[$keys\\]):$keys\$"
+    local path_form="^$path\$" quoted_form="^(\"[^\"]*\"|'[^']*'|\`[^\`]*\`)\$"
+    if [[ "$part" =~ $SYMBOL_LINE_FORM ]]; then
+        printf line
+    elif [[ "$part" == *[[:space:]]* ]]; then
+        printf words
+    elif [[ "$part" =~ $quoted_form ]]; then
+        printf quoted
+    elif [[ "$part" =~ $name_form ]]; then
+        printf name
+    elif [[ "$part" =~ $key_form ]]; then
+        printf key
+    elif [[ "$part" =~ $prefixed_form ]]; then
+        printf prefixed
+    elif [[ "$part" =~ $path_form ]]; then
+        printf path
+    elif [[ "$part" == *[*\|]* ]]; then
+        printf pattern
+    else
+        return 1
+    fi
+}
+
+# symbol_refused <family> <id> <part>; fails <family> for a symbol part in no form of the
+# symbol grammar (symbol_form), naming the row and the part: one that starts with a digit as
+# no line or line range this gate reads, so it is never read as the line its first digits
+# name, and any other as no symbol form the gate reads.
+symbol_refused() {
+    case "$3" in
+    [0-9]*) fail "$1" "$2 cites $3, which starts with a digit and is no line or line range this gate reads, nor a symbol form it reads (check.sh's header, the symbol grammar): a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3" ;;
+    *) fail "$1" "$2 cites the symbol part '$3', which is not a symbol form the gate reads (check.sh's header, the symbol grammar)" ;;
+    esac
+}
+
+# The symbol grammar: every form of a symbol part --citations reads, and what each holds. This
+# is the one place this script states it; README.md, "How a cited symbol is read", lists the
+# same forms for a reader. symbol_form decides a part's form by its text alone, and
+# resolve_symbol reads the part by that form's rule alone.
 #
-# How a symbol is read, which is a reading of its own and so is written here. The symbol
-# is split on commas and on the word "and", and each part is read against its own file: a
-# part that names a file, as `pr-body.md:33-34` or `pr-body.md`, is read against that file,
-# found by symbol_file, and a part that names no file against the file before it, the one
-# the last part that named a file named, or the paths the citation names for the parts
-# before any did, as citations.py continues a bare line range from the nearest file
-# citation before it. A part that is a line or a line range, written alone or after a
-# name and a colon, as `88-97`, `:188-196`, `name.py:88-97` or `askOnMessage:306`, is read
-# whole, with both ends: it resolves when its file holds that line, or the range's last
-# line; a file's lines are numbered from 1, so a line is 1 or more and so is each end of a
-# range, and a part that names line 0, as `0` or `0-3`, names no line and fails by name; a
-# range whose end stands before its start names no lines and fails; a name before the colon
-# that is no file is a name its file holds. Every other part is looked for in its file: as
-# literal text, as a file name, as a prefixed name, as a path, as a regular expression where
-# the part holds `|` or `*`, and as the last element of a dotted name. Each search of text
-# the part names finds it as a whole token, by the one rule of whole_token (token_held): its
-# first character, where it is a letter, a digit or `_`, follows none of those in the file,
-# and its last, where it is one, is followed by none, so a part the file holds only inside a
-# longer word, `TesterVerdictRequire` beside `TesterVerdictRequired`, is not held. That rule
-# reads the part whole, its local part after its last colon or its last dot, each component
-# of a qualified name's prefix (prefix_held) and a name before a line's colon; a regular
-# expression is read as its author wrote it, since it says itself what it matches. A
-# prefixed or a dotted name that its file does not hold whole, whose prefix, the text before
-# its last colon or its last dot, names a file beside the paths the citation names (found
-# by symbol_file), as `spendattrs.go:SpendRoleAttribute` or `count.py:quote_matches` does,
-# is read as that file and a name it holds, as a line after a file's name and a colon is
-# read against that file: its local part, the text after that colon or dot, resolves only
-# when that file holds it as a whole token (token_held), the parts after it are read
-# against that file, and nothing of the prefix is read as a namespace, since it is a file's
-# name; a local part that file does not hold fails the citation, naming the row, the part
-# and the file. Any other prefixed or dotted name, a qualified name, that its file holds only
-# by its local part resolves only when each component of its prefix stands in the file too,
-# as a whole token, each component a word of letters, digits, `_` and `-` that `.`, `[]`,
-# `:`, `;`, a space, a quote or a bracket parts from the next (prefix_held); a component the
-# file does not hold fails the citation, naming the row, the part and the component, so
-# `Engin.match` fails in a file of `class Engine` and `def match`, where `Engine.match`
-# resolves, and `Engine.matc`, whose local part that file holds only inside `match`, is held
-# by no search and fails. A part that starts with a digit and holds no space, and is
-# neither text the file holds nor a line or a line range, fails by name. A part written in
-# words that none of those finds names a part of the file a reader
-# judges, and this gate does not read it; nor does it read any part of a symbol whose
-# citation writes its file in words. Each such part is written to
-# $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row, so
-# that a part nothing checked is never counted as checked. Any other part that no search
-# finds fails the citation. A line names no line of a glob or a directory, so a line read
-# against one is a figure of the prose, as before any part named a file of a citation of a
-# set.
+# A symbol is a list of parts, split at each comma and at each "and" between spaces, each part
+# read with the space around it taken off, and an empty part skipped. Each part is read
+# against here: the paths the citation's file field names, until a part names a file, which
+# is here for that part and every part after it, as citations.py continues a bare line range
+# from the nearest file before it. Text here holds is text a file of here holds as a whole
+# token (whole_token, token_held): its first character, where it is a letter, a digit or `_`,
+# follows none of those, and its last, where it is one, is followed by none, so
+# `TesterVerdictRequire` does not stand in `TesterVerdictRequired`. A file beside the paths
+# is one symbol_file finds: a path among them that is the name or ends with it after a slash,
+# then the name in the directory of one of them or in one of them that is a directory, then
+# the name as a path of the tree. Below, a name is letters, digits, `_` and `-`, its first
+# character no `-`; a key is a name, a name followed by `[]` or by digits in brackets, or a
+# string in double quotes; and a key path is keys joined by dots, or a key path in square
+# brackets, as TOML heads a table.
+#
+#  1. A line or a line range: digits, or two runs of digits joined by `-`, written alone,
+#     after a colon, or after a name and a colon, with any of `)`, `]`, `.`, `,`, `;` and `:`
+#     after it: `88`, `88-97`, `:188-196`, `397-404)` (cases 167, 177); `file:line` and
+#     `file:line-line`, `pr-body.md:33-34`, whose name is a file beside the paths, which
+#     becomes here (cases 139, 171); and `Symbol:line`, `askOnMessage:306`, whose name is no
+#     such file and is text here holds, or the part fails (case 192). It holds when a file of
+#     here holds that line, or the range's last line. A file's lines are numbered from 1, so
+#     a line is 1 or more and so is each end of a range: `0` and `0-3` name no line and fail,
+#     and so does a range whose end stands before its start, and one that runs past its
+#     file's end, naming the file's length. A line read against a glob or a directory names
+#     no line of a file and is a figure of the prose: it is not read.
+#  2. A part in words, any part holding a space: `the title line`,
+#     `kind: Deployment|StatefulSet|Job` (case 193). It holds as text here holds; else,
+#     holding a colon, by the readings of a prefixed name (6); else, holding `|` or `*`, as a
+#     pattern (8); else it names a part of the file a reader judges, and it is not checked. A
+#     path inside it, as in `skills/x/SKILL.md lines 22-23`, is not read as a path.
+#  3. A quoted string, in double quotes, single quotes or backquotes, holding no space:
+#     `'strict'` (case 194). It holds as text here holds, its quotes among it, or the part
+#     fails.
+#  4. A name, `Symbol` (cases 4, 175): text here holds, or the part fails.
+#  5. A key path that is no name, a file's name among them: `Envelope.Validate`,
+#     `engine.match`, `SKILL.md`, `scenarios[].overlays`,
+#     `project.entry-points."mas.runtime.manifest_libraries"`,
+#     `[project.optional-dependencies]` (case 200). It is read in turn:
+#     a. holding a dot before a letter, as a file's name: a file beside the paths, which
+#        becomes here (case 195);
+#     b. as text here holds;
+#     c. holding a dot before a letter, as a file's name: a path of the tree at the commit
+#        that is the name or ends with it after a slash (case 196);
+#     d. holding a dot, as a qualified name, by its prefix, the text before its last dot, and
+#        its local part, the text after it:
+#        - `file.ext.Symbol`, `a.go.Alpha`: a prefix that is a file beside the paths is that
+#          file, which becomes here, and the part holds when it holds the local part, or
+#          fails naming the file (cases 183, 197);
+#        - `module.symbol` and `pkg.module.symbol`, a reference into a Python module: the
+#          longest leading run of the prefix's dotted components that names a file at the
+#          commit as a module (module_file) is that file, which becomes here, and the part
+#          holds when each name after the run stands in it, the class or attribute
+#          `engine.Engine.match` writes and then the local part, or fails naming the first it
+#          does not hold (module_held). A run names a file the citation names when it ends
+#          with the file's stem, its name without its last extension, each component before
+#          that being the next directory up, matched whole (module_names): `engine.match`
+#          and `api.engine.match` read packages/daemon/internal/api/engine.py, and
+#          `other.mod.func` names no module of pkg/mod.py (cases 187, 188, 189); or when it
+#          ends with the name of the directory a package's __init__.py stands in, as
+#          `pkg.func` and `a.pkg.func` read a/pkg/__init__.py (case 190). A run names a file
+#          below a directory the citation names when its components are that directory's own
+#          last directories, none or more, then the path below it to a file's stem or to a
+#          package, a package before a module of its name (module_below): cited in lib,
+#          `core.verifier.verify` and `lib.core.verifier.verify` read lib/core/verifier.py,
+#          `core.setup` lib/core/__init__.py and `lib.hook` lib/__init__.py (case 191);
+#        - `Namespace.Symbol`, any other prefix: the part holds when here holds the local part
+#          and each component of the prefix too, each a word of letters, digits, `_` and `-`
+#          (prefix_held), so `Engin.match` fails where `class Engine` and `def match` stand,
+#          naming Engin, and so does `Engine.matc` (cases 172, 174);
+#     else the part fails.
+#  6. A prefixed name, `prefix:local`, its prefix a name, a key path or a path and its local
+#     part keys joined by dots, one or more. It holds as text here holds; else
+#     - `file:Symbol`, `spendattrs.go:SpendRoleAttribute`: a prefix that is a file beside the
+#       paths is that file, which becomes here, and the part holds when it holds the local
+#       part, or fails naming the file (case 183);
+#     - `module:attr`, the object reference `pkg.mod:func` of Python's entry points: a prefix
+#       whose run names a module, as in 5d, is that file, which becomes here, and the part
+#       holds when each name after the run, and then each of the attribute path after the
+#       colon, stands in it (cases 188, 197);
+#     - `Namespace:Symbol`, as the Turtle term `mas:sessionId`: any other prefix holds as in
+#       5d (case 197);
+#     else the part fails.
+#  7. A path, holding `/`, of letters, digits, `_`, `.`, `-`, `@`, `+`, `~` and `*`:
+#     `protocols/accord`, `skills/`, `src/mas/library/*` (case 198). It is read in turn as a
+#     file beside the paths, which becomes here; as text here holds; as a file's name, as in
+#     5c; as a path, a directory or a glob the commit holds (paths_at); and, holding `*`, as a
+#     pattern (8); else the part fails.
+#  8. A pattern, any other part holding `|` or `*`: `GEN_AI_*`, `consensus|majority|quorum`
+#     (case 199). It holds as text here holds, or as an extended regular expression a line of
+#     here matches, read as its author wrote it, since it says itself what it matches; else
+#     the part fails.
+#
+# A part in none of these forms, as `match(row)`, `$row` or `Engine::match`, fails by name,
+# "<id> cites the symbol part '<part>', which is not a symbol form the gate reads", and is
+# never read as text or as a form it might have meant (case 200). A part that starts with a
+# digit and is no line, as `3–9` written with a dash or `12a`, is never read as the line its
+# first digits name: in no form, or in 3 to 8 once it is neither a file nor text here holds,
+# it fails by name as no line or line range this gate reads (case 167). A citation whose file
+# field names no path, each part of it written in words, as "15 pyproject.toml files under
+# backend/", holds its symbol to no file: each part in a form is not checked. A part not
+# checked, there or in 2, is written to $RUN_SCRATCH/unchecked-parts, which --citations
+# prints, one line per part with its row, so that a part nothing read is never counted as
+# checked.
+
+# resolve_symbol <id> <repo root> <commit> <pathspec> <symbol> [<family>]; reads each part of
+# a citation's symbol by the symbol grammar above and fails <family>, citation-our-code unless
+# it is given, naming the row and the part, at the first part that does not hold. It returns
+# 0 when every part holds or is not checked, and 1 after that failure.
 resolve_symbol() {
-    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
+    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part form
     # The paths the citation names, each part of its file field.
     local pathspec=()
     local fpart
@@ -6077,26 +6323,36 @@ resolve_symbol() {
         case "$fpart" in *'*'*) fpart=":(glob)$fpart" ;; esac
         pathspec+=("$fpart")
     done < <(printf '%s\n' "$file" | sed 's/ and /\n/g; s/,/\n/g')
-    # A citation whose file is written in words, such as "15 pyproject.toml files", names
-    # a set a reader reads rather than a path, and the gate holds its symbol to no file:
-    # the paths it does name were already read by paths_at. Each part of its symbol is
-    # reported as not checked.
+    # A citation whose file is written in words, such as "15 pyproject.toml files", names a
+    # set a reader reads rather than a path, and the gate holds its symbol to no file: the
+    # paths it does name were already read by paths_at. Each part in a form of the grammar is
+    # reported as not checked, and a part in none fails by name.
     if [ "${#pathspec[@]}" -eq 0 ]; then
         while IFS= read -r part; do
             part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-            [ -n "$part" ] && printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
+            [ -z "$part" ] && continue
+            if ! symbol_form "$part" >/dev/null; then
+                symbol_refused "$family" "$id" "$part"
+                return 1
+            fi
+            printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
         done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
         return 0
     fi
     # here: the file each part is read against, the paths the citation names until a part
     # names a file of its own; here_name: how a failure names it.
-    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end
-    local line_part='^(([^:[:space:]]*):)?([0-9]+)(-([0-9]+))?[]).,;:]*$'
+    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end reference run rest
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
-        # A line or a line range, alone or after a name and a colon.
-        if [[ "$part" =~ $line_part ]]; then
+        # A part in no form of the grammar is refused by name and read no further.
+        if ! form="$(symbol_form "$part")"; then
+            symbol_refused "$family" "$id" "$part"
+            return 1
+        fi
+        # 1. A line or a line range, alone or after a name and a colon.
+        if [ "$form" = line ]; then
+            [[ "$part" =~ $SYMBOL_LINE_FORM ]]
             named="${BASH_REMATCH[2]}" part_line="${BASH_REMATCH[3]}" part_end="${BASH_REMATCH[5]:-${BASH_REMATCH[3]}}"
             if [ "$part_line" -lt 1 ] || [ "$part_end" -lt 1 ]; then
                 fail "$family" "$id cites $part, which names line 0: a file's lines are numbered from 1, so a line is 1 or more and so is each end of a line range, as 1 or 1-3"
@@ -6130,96 +6386,117 @@ resolve_symbol() {
             fi
             return 1
         fi
-        # A part that is a file name or a path and names a file beside the paths the
-        # citation names is read as that file, and the parts after it are read against it.
-        case "$part" in
-        *' '*) ;;
-        */* | *.[A-Za-z]*)
-            path="$(symbol_file "$root" "$commit" "$part" "${pathspec[@]}")" && here=("$path") here_name="$path" && continue
+        # 5a, 7: a file's name or a path that is a file beside the paths the citation names
+        # is that file, which becomes here for this part and the parts after it.
+        case "$form" in
+        key | path)
+            case "$part" in
+            */* | *.[A-Za-z]*)
+                path="$(symbol_file "$root" "$commit" "$part" "${pathspec[@]}")" && here=("$path") here_name="$path" && continue
+                ;;
+            esac
             ;;
         esac
+        # Every form but a line: text here holds as a whole token.
         if token_held "$root" "$commit" "$part" "${here[@]}"; then
             continue
         fi
-        # Any other part that starts with a digit and holds no space, as "3–9" written with a
-        # dash or "12a", and that its file does not hold as text, a whole token, is no line
-        # this gate reads, and fails, naming the row and the part, rather than being read as
-        # the line its first digits name.
-        case "$part" in
-        [0-9]*)
-            if [[ "$part" != *[[:space:]]* ]]; then
+        # A part of 3 to 8 that starts with a digit, as "12a", and is neither a file nor text
+        # here holds is no line this gate reads, and fails, naming the row and the part,
+        # rather than being read as the line its first digits name.
+        if [ "$form" != words ]; then
+            case "$part" in
+            [0-9]*)
                 fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $here_name holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
                 return 1
-            fi
+                ;;
+            esac
+        fi
+        # 5c, 7: a file's name that a path of the tree is, or ends with after a slash.
+        case "$form" in
+        key | path)
+            case "$part" in
+            *.[A-Za-z]*)
+                # ls-tree does not read the glob magic git grep takes, so the whole listing
+                # is filtered here, as paths_at filters it.
+                git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null |
+                    grep -qE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
+                ;;
+            esac
             ;;
         esac
-        # A part that is a file name resolves as a path under the paths the citation names.
-        case "$part" in
-        *.[A-Za-z]*)
-            # ls-tree does not read the glob magic git grep takes, so the whole listing is
-            # filtered here, as paths_at filters it.
-            git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null |
-                grep -qE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
+        # 6, and 2 where it holds a colon: a prefixed name, read as `file:Symbol`, as
+        # `module:attr` and as `Namespace:Symbol`, in that order.
+        case "$form" in
+        prefixed | words)
+            case "$part" in
+            *:*)
+                if path="$(symbol_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
+                    here=("$path") here_name="$path"
+                    token_held "$root" "$commit" "${part##*:}" "$path" && continue
+                    fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*:}' as a word at $commit"
+                    return 1
+                fi
+                if reference="$(module_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
+                    run="${reference%%$'\t'*}" path="${reference#*$'\t'}"
+                    here=("$path") here_name="$path"
+                    rest="${part%:*}" rest="${rest#"$run"}" rest="${rest#.}"
+                    module_held "$family" "$id" "$part" "$run" "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" || return 1
+                    continue
+                fi
+                if token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
+                    prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                    continue
+                fi
+                ;;
+            esac
             ;;
         esac
-        # A prefixed name whose prefix names a file, as `spendattrs.go:SpendRoleAttribute`,
-        # is that file and a name it holds, as a line after a file's name and a colon is
-        # read: the file is the one the parts after it are read against, and the prefix
-        # is a file's name and no namespace, so prefix_held reads nothing of it. Any other
-        # prefixed name, such as a Turtle term `mas:sessionId`, resolves on its local part
-        # too: the prefix names a namespace and the file declares the local name. Each
-        # component of the prefix stands in the file too (prefix_held), so a prefix with a
-        # mistyped component fails rather than resolving on its local part alone.
-        case "$part" in
-        *:*)
-            if path="$(symbol_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
-                here=("$path") here_name="$path"
-                token_held "$root" "$commit" "${part##*:}" "$path" && continue
-                fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*:}' as a word at $commit"
-                return 1
-            fi
-            if token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
-                prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
-                continue
-            fi
+        # 7: a path, a directory or a glob the commit holds.
+        case "$form" in
+        path) paths_at "$root" "$commit" "$part" && continue ;;
+        esac
+        # 8, and 2 and 7 where they hold `|` or `*`: an extended regular expression a line of
+        # here matches.
+        case "$form" in
+        pattern | path | words)
+            case "$part" in
+            *'|'* | *'*'*)
+                git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue
+                ;;
+            esac
             ;;
         esac
-        # A symbol that is itself a path resolves as a path does.
-        case "$part" in
-        */*)
-            paths_at "$root" "$commit" "$part" && continue
-            ;;
-        esac
-        case "$part" in
-        *'|'* | *'*'*)
-            git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue
-            ;;
-        esac
-        case "$part" in
-        *' '*)
-            # A part of a file named in words, which a reader judges and this gate does
-            # not: it is reported as not checked.
+        # 2: a part in words no reading found names a part of the file a reader judges, and
+        # is reported as not checked.
+        if [ "$form" = words ]; then
             printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
             continue
-            ;;
-        esac
-        # A dotted name whose prefix names a file, as `config.yaml.key`, is that file and a
-        # name it holds, as a prefixed name's is above. Any other dotted name is read by its
-        # last element too, since a citation writes `Envelope.Validate` where the file
-        # declares `Validate` on a receiver, and each component of what stands before that
-        # element stands in the file too (prefix_held), as `Envelope` does there.
-        case "$part" in
-        *.*)
-            if path="$(symbol_file "$root" "$commit" "${part%.*}" "${pathspec[@]}")"; then
-                here=("$path") here_name="$path"
-                token_held "$root" "$commit" "${part##*.}" "$path" && continue
-                fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*.}' as a word at $commit"
-                return 1
-            fi
-            if token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
-                prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
-                continue
-            fi
+        fi
+        # 5d: a key path holding a dot, a qualified name, read as `file.ext.Symbol`, as
+        # `module.symbol` and as `Namespace.Symbol`, in that order.
+        case "$form" in
+        key)
+            case "$part" in
+            *.*)
+                if path="$(symbol_file "$root" "$commit" "${part%.*}" "${pathspec[@]}")"; then
+                    here=("$path") here_name="$path"
+                    token_held "$root" "$commit" "${part##*.}" "$path" && continue
+                    fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*.}' as a word at $commit"
+                    return 1
+                fi
+                if reference="$(module_file "$root" "$commit" "${part%.*}" "${pathspec[@]}")"; then
+                    run="${reference%%$'\t'*}" path="${reference#*$'\t'}"
+                    here=("$path") here_name="$path"
+                    module_held "$family" "$id" "$part" "$run" "$path" "${part#"$run".}" "$root" "$commit" || return 1
+                    continue
+                fi
+                if token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
+                    prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                    continue
+                fi
+                ;;
+            esac
             ;;
         esac
         fail "$family" "$id cites the symbol $part, which $here_name does not hold at $commit"
@@ -6329,14 +6606,14 @@ report_live_pages() {
 # report_unchecked_parts
 #
 # The symbol parts resolve_symbol did not read: a part written in words, as the name of a
-# part of a file, that neither the literal search nor any other reading found, and every
+# part of a file, that no reading of its form found (the symbol grammar, form 2), and every
 # part of a symbol whose citation writes its file in words. This is a report and no
 # assertion, one line per part with the row that cites it, and a count, so that a reader
 # sees how much of the symbol column the citation assertions leave to them.
 report_unchecked_parts() {
     local list="$RUN_SCRATCH/unchecked-parts" id part
     if [ ! -s "$list" ]; then
-        printf 'No symbol part was left unchecked: every part is an identifier, a line, a prefixed name or a file name, or its text stands in the file.\n'
+        printf 'No symbol part was left unchecked: every part was read by its form of the symbol grammar.\n'
         return
     fi
     printf 'The symbol parts no search of the cited files read: a part written in words that no search found, or a part of a citation whose file is written in words. These are not checked: each names a part of a file, or of a set of files, a reader judges.\n'
@@ -6747,8 +7024,8 @@ mode_citations() {
         esac
         fail "citation-$kind" "claims.jsonl holds no $kind row, so no such citation is checked"
     done
-    [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository names a path that stands at $commit, and every symbol part that is an identifier, a line, a prefixed name or a file name stands in it"
-    [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects names a path the clone holds at its pinned commit, and every symbol part that is an identifier, a line, a prefixed name or a file name stands in it"
+    [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository names a path that stands at $commit, and every symbol part, read by its form of the symbol grammar, stands in it or is reported as not checked"
+    [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects names a path the clone holds at its pinned commit, and every symbol part, read by its form of the symbol grammar, stands in it or is reported as not checked"
     [ "$bad_published" -eq 0 ] && pass citation-published "every citation of a published document names a committed copy that holds the sentence quoted"
 
     report_unchecked_parts
