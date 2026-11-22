@@ -34,8 +34,9 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
-/** rig.sh writes each route as {match, stdout?, stderr?, exit?, status?, keep?, list?, lookup?,
- * pull?}. `status` is the HTTP status `-i` prints (200 for a route that exits 0). */
+/** rig.sh (and heads-routes.ts, for a heads scenario) writes each route as {match, stdout?,
+ * stderr?, exit?, status?, keep?, list?, lookup?, pull?}. `status` is the HTTP status `-i` prints
+ * (200 for a route that exits 0). */
 const Route = z.looseObject({
   match: z.string(),
   stdout: z.unknown().optional(),
