@@ -222,7 +222,7 @@ which passed. The browser step over them, in seconds:
   2026-11-21    144    414    507  531
   all           672    380    486  531
 
-The browser step's budget, its `timeout-minutes: 11`, is that maximum by the rule in this file's
+The browser step's budget at this census was that maximum by the rule in this file's
 head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
 The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
@@ -232,6 +232,16 @@ budget is read again when the suite has grown: at the 9 minutes it replaces, der
 the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21, and in run
 44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed were cut
 at it.
+
+The deal of each leg's tests (#how-a-shard-leg-chooses-its-tests) and a suite of 1,676 rows
+moved that maximum, and the budget is read again over the 12 legs of the first three
+full-lane runs that dealt it, at pull request #4259's heads 0562cc8843, 0dabc697fe and
+690da024b6 (runs 45015897737, 45021559595 and 45024317897), read with
+`gh api 'repos/cybermonklabs/legion/actions/runs/<id>/jobs?filter=latest&per_page=100'`,
+each browser step's `completed_at` less its `started_at`: 474, 476, 607 and 602 s; 636,
+568, 636 and 592 s; 651, 459, 604 and 542 s. One leg read 474 s and then 651 s on the same
+tests, so a run's noise is about a third of a leg. The budget, `timeout-minutes: 13`, is
+651 x 1.15 = 749 s -> 13 min.
 
 The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
 window for every step. Each step without a budget of its own is counted at its maximum over
@@ -291,8 +301,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 660 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,465 s, 24 min 25 s, rounded up to the 25 minutes
+browser step's 780 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,585 s, 26 min 25 s, rounded up to the 27 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -457,9 +467,10 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 11`, is the 11 minutes the job's head derives from main's
-own full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 531 s; the job's head gives
-the census's query and why the budget is read again as the suite grows.
+The step's budget, `timeout-minutes: 13`, is the 13 minutes the job's head derives from the
+legs of the first full-lane runs that dealt the suite by recorded seconds, whose maximum is
+651 s; the job's head gives the census's query, those runs, and why the budget is read again
+as the suite grows.
 
 ## How a shard leg chooses its tests
 
