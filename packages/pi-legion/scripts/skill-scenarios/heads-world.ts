@@ -27,10 +27,17 @@ const HEADS_BASE = RIG_WORLD.defaultBranch;
 const CI_JOB = RIG_WORLD.ciJobs["ci-only"];
 const CI_RUNNING_JOB = RIG_WORLD.ciJobs["ci-pass-and-fail"];
 /** The run of k1 with no `ci_check`, which every recorded result names: it proves R1, the line of
- * docs/usage.md that names `widgets --help` and says it lists every command. A check that served no
- * requirement, or whose run matched any line naming the CLI, gave each architect a reason of its
- * own to send the issue back, so its runs measured that and not the check's rule. */
-const K1_RUN = "grep -cE 'widgets --help.+every command' docs/usage.md";
+ * docs/usage.md that names `widgets --help` and says it lists every command (the `.` stands for the
+ * backquote the page writes). A check that served no requirement, or whose run matched any line
+ * naming the CLI, gave each architect a reason of its own to send the issue back, so its runs
+ * measured that and not the check's rule.
+ *
+ * The run and each reading below hold only the words the pull-request line Dispatch prints keeps
+ * (plainWord, packages/envoy/internal/dispatch/api/results.go: letters, digits and .,;:!?'"-()/).
+ * The line leaves every other word out, so a reading that quoted `widgets --help.+every command`
+ * printed as `grep -cE 'widgets command'`, a command that prints 0 at the head, and a reviewer of
+ * the body that holds that line requested changes on it. */
+export const K1_RUN = "grep -cE 'widgets --help. to list every command' docs/usage.md";
 const HandoffRef = z.object({ id: z.string(), version: z.number().int() });
 /** What `heads-issue` writes, and `heads-events` and rig.sh's heads scenarios read: the run's issue,
  * its title and its Verification document, and once `heads-events` recorded them, its handoff
@@ -190,7 +197,7 @@ const IMPLEMENTER_PASS: HeadsResult = {
   pr: "702",
   role: "implementer",
   verdict: "pass",
-  observed: `${K1_RUN} printed 1: docs/usage.md names \`widgets --help\`, which lists every command.`,
+  observed: `${K1_RUN} printed 1: docs/usage.md names widgets --help, which lists every command.`,
 };
 const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
 

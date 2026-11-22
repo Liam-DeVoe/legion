@@ -71,8 +71,8 @@ type intakeDelivery struct {
 
 // intakeMessage is one message on its way to its key's handler, with its envelope when keying
 // decoded it, so the handler does not decode it again. Keying decodes every message it wants, a
-// pull request's and a workflow run's alike, so the envelope is absent only when that decode
-// failed and deliver reports the failure.
+// pull request's, a workflow run's and a push's alike, so the envelope is absent only when that
+// decode failed and deliver reports the failure.
 type intakeMessage struct {
 	msg      *natsgo.Msg
 	envelope *contracts.Envelope
@@ -583,13 +583,14 @@ func (d *intakeDelivery) mayAnswer() bool {
 }
 
 // intakeKey reads from a message's subject, notifications.github.<owner>.<repo>.<kind>..., and
-// from its envelope, whether the intake wants it and the key its handler runs under. Only three
+// from its envelope, whether the intake wants it and the key its handler runs under. Only four
 // shapes can carry a kind route handles: a pull request's own subject, pr.<n> and nothing after
 // it (pr.<n>.review and pr.<n>.comment carry other kinds, contracts' githubTopic), the
 // settlement of a pull request's CI runs at one commit, pr.<n>.checks, which the listener's CI
-// summary loop publishes (cistore), and a workflow run's, workflow.<file>.<action>. Every other
-// subject -- comments, issues, pushes, job events -- is not wanted, and is decided with no
-// decode at all.
+// summary loop publishes (cistore), a workflow run's, workflow.<file>.<action>, and a push of a
+// branch's, push.branch.<branch>, whose branch is one segment however many dots or slashes it
+// holds (contracts.GithubPushSubject). Every other subject -- comments, issues, a push of a tag
+// (push.tag.<tag>), job events -- is not wanted, and is decided with no decode at all.
 //
 // Every wanted message is decoded, and one whose subject names a repository other than the one
 // its payload names is not wanted. That message is the second copy the listener publishes of a
@@ -598,29 +599,32 @@ func (d *intakeDelivery) mayAnswer() bool {
 // topic. Keyed by its own subject it would key differently from the original, so keyedRunner
 // would start a goroutine for each and two handlers would run at once on one pull request's row,
 // each doing the full FetchPullRequest and paging the same commits, where the older answer can
-// be written last. Dropping the copy loses nothing: the original carries that same event to that
-// same handler. The two repositories are compared one subject segment at a time --
-// contracts.SanitizeSubjectSegment of the payload's owner and of its name against subject tokens
-// 2 and 3, since a name may hold a dot, which the sanitizer replaces -- and without case, as
-// GitHub compares repository names.
+// be written last; and a push's copy would hand the importer one push twice. Dropping the copy
+// loses nothing: the original carries that same event to that same handler. The two repositories
+// are compared one subject segment at a time -- contracts.SanitizeSubjectSegment of the payload's
+// owner and of its name against subject tokens 2 and 3, since a name may hold a dot, which the
+// sanitizer replaces -- and without case, as GitHub compares repository names.
 //
 // The envelope decode costs nothing new: the envelope decoded here is handed on (intakeMessage),
 // and deliver would otherwise decode it itself. The payload is another matter -- route parses the
-// same payload string again for its kind and its fields -- so a pull-request message now pays one
-// extra JSON parse, which is what the copy rule costs. A pull request is keyed by its subject's
-// repository and number, and so is the settlement of its checks: the settlement reads the head
-// row the pull request's own envelopes write, so it runs after the ones that arrived before it
-// and never beside them. A workflow run's subject names its file and not its run, so its key is
-// its payload's repo and run_id.
+// same payload string again for its kind and its fields -- so a pull request's or a push's message
+// pays one extra JSON parse, which is what the copy rule costs. A pull request is keyed by its
+// subject's repository and number, and so is the settlement of its checks: the settlement reads
+// the head row the pull request's own envelopes write, so it runs after the ones that arrived
+// before it and never beside them. A push of a branch is keyed by its subject's repository alone,
+// `push <owner>/<repo>`: its handler is the importer's one read of that repository's sources,
+// which returns without waiting for an import (PushImports), so the pushes of one repository,
+// handled in delivery order, wait for one another for that read alone. A workflow run's subject
+// names its file and not its run, so its key is its payload's repo and run_id.
 //
-// A message this cannot judge keeps exactly the behaviour it had before the rule: wanted, and
-// keyed as it was keyed then. The canonical repository is the one the payload names, and a
-// message whose envelope does not decode, whose payload does not decode, or whose payload names
-// no repository that splits into an owner and a name -- an empty repo above all -- names none to
-// compare the subject with, so it is handled as it always was rather than dropped on a
-// comparison that could not be made. A workflow message whose envelope or payload does not
-// decode is keyed by its subject, and its handler logs it; an envelope that does not decode is
-// handed on undecoded, so deliver reports the decode failure.
+// A message this cannot judge is wanted rather than dropped on a comparison that could not be
+// made, and a pull request or a workflow run keeps the key it had before the rule. The canonical
+// repository is the one the payload names, and a message whose envelope does not decode, whose
+// payload does not decode, or whose payload names no repository that splits into an owner and a
+// name -- an empty repo above all -- names none to compare the subject with. A pull request and a
+// push are keyed by their subjects whatever the payload holds. A workflow message whose envelope
+// or payload does not decode is keyed by its subject, and its handler logs it; an envelope that
+// does not decode is handed on undecoded, so deliver reports the decode failure.
 func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wanted bool) {
 	tokens := strings.Split(msg.Subject, ".")
 	if len(tokens) < 5 || tokens[0] != "notifications" || tokens[1] != "github" {
@@ -629,20 +633,20 @@ func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wante
 	pullRequest := tokens[4] == "pr" && len(tokens) == 6
 	checks := tokens[4] == "pr" && len(tokens) == 7 && tokens[6] == "checks"
 	workflow := tokens[4] == "workflow" && len(tokens) == 7
-	if !pullRequest && !checks && !workflow {
+	branchPush := tokens[4] == "push" && len(tokens) == 7 && tokens[5] == "branch"
+	if !pullRequest && !checks && !workflow && !branchPush {
 		return "", nil, false
 	}
-	ownPullRequest := pullRequest || checks
 	decoded, err := decodeEnvelope(msg.Data)
 	if err != nil {
-		return subjectKey(msg.Subject, tokens, ownPullRequest), nil, true
+		return subjectKey(msg.Subject, tokens), nil, true
 	}
 	var event struct {
 		Repo  string `json:"repo"`
 		RunID string `json:"run_id"`
 	}
 	if err := json.Unmarshal([]byte(decoded.Payload), &event); err != nil {
-		return subjectKey(msg.Subject, tokens, ownPullRequest), &decoded, true
+		return subjectKey(msg.Subject, tokens), &decoded, true
 	}
 	if !subjectNamesRepo(tokens, event.Repo) {
 		return "", nil, false
@@ -650,16 +654,20 @@ func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wante
 	if workflow {
 		return "workflow " + event.Repo + "#" + event.RunID, &decoded, true
 	}
-	return subjectKey(msg.Subject, tokens, ownPullRequest), &decoded, true
+	return subjectKey(msg.Subject, tokens), &decoded, true
 }
 
 // subjectKey is the key a message keeps when its subject is all there is to key it by: a pull
-// request, and the settlement of its checks, by its subject's repository and number, a workflow
-// run by its whole subject, since that subject names the workflow file and not the run. It is
-// built where it is returned, so a message pays for the one key it is handled under.
-func subjectKey(subject string, tokens []string, pullRequest bool) string {
-	if pullRequest {
+// request, and the settlement of its checks, by its subject's repository and number, a push of a
+// branch by its subject's repository, and a workflow run by its whole subject, since that subject
+// names the workflow file and not the run. It is built where it is returned, so a message pays
+// for the one key it is handled under.
+func subjectKey(subject string, tokens []string) string {
+	switch tokens[4] {
+	case "pr":
 		return "pr " + tokens[2] + "/" + tokens[3] + "#" + tokens[5]
+	case "push":
+		return "push " + tokens[2] + "/" + tokens[3]
 	}
 	return "workflow " + subject
 }

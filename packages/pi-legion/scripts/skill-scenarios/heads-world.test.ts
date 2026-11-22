@@ -67,21 +67,23 @@ function stubFetch(): Call[] {
       return json({ artifact: { id: "art-verification" } }, 201);
     if (url.pathname.includes("/handoffs/"))
       return json({ id: `h-${++handoffs}`, version: handoffs }, 201);
+    // A recorded result: Dispatch answers the line its pull request's body carries.
+    if (url.pathname.endsWith("/results")) return json({ line: "- Check k1" }, 201);
     return json({});
   }) as typeof fetch);
   return calls;
 }
 
-/** Runs heads-issue and heads-events of `role`'s world against the stubs, and answers each call. */
-async function world(role: string) {
+/** Runs heads-issue and heads-events of a world against the stubs, and answers each call. */
+async function world(role: string | undefined, scenarioName = "ci-pass-and-fail") {
   published.length = 0;
   const calls = stubFetch();
-  const dir = dirOf(role);
+  const dir = dirOf(`${scenarioName}-${role ?? "one"}`);
   const file = path.join(dir, "fixture.json");
   const headsFile = path.join(dir, "heads.json");
   writeFileSync(headsFile, JSON.stringify({ "702": "a".repeat(40), "703": "b".repeat(40) }));
-  const scenario = heads.headsWorld("ci-pass-and-fail", role);
-  if (scenario === undefined) throw new Error(`no world of ci-pass-and-fail ${role}`);
+  const scenario = heads.headsWorld(scenarioName, role);
+  if (scenario === undefined) throw new Error(`no world of ${scenarioName} ${role}`);
   await heads.headsIssue(file, scenario);
   await heads.headsEvents(file, headsFile, scenario);
   return { calls, fixture: JSON.parse(readFileSync(file, "utf8")) };
@@ -208,4 +210,39 @@ test("heads-events refuses a world it records no results for, and records none",
   expect(
     calls.filter((call) => call.path.endsWith("/results") || call.path.includes("/handoffs/"))
   ).toEqual([]);
+});
+
+// The words the pull-request line Dispatch prints for a result keeps (plainWord,
+// packages/envoy/internal/dispatch/api/results.go): letters, digits and .,;:!?'"-()/.
+const PLAIN_WORD = /^[\p{L}\p{N}.,;:!?'"\-()/]+$/u;
+
+// Catches: a run or a reading of k1 with a word the line leaves out. Each pull request's body
+// carries that line, so it then quoted another command than the one that ran: `widgets
+// --help.+every command` printed as `grep -cE 'widgets command'`, which prints 0 at the head, and a
+// reviewer of reviewer-own-head requested changes on that body line instead of judging the gate.
+test("every run and reading of k1 the heads worlds record holds only words the pull-request line keeps", async () => {
+  // The ports the hook above sets, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  const worlds: [string | undefined, string][] = [
+    ...["sibling-fails", "ci-only", "no-implementer", "no-tester"].map(
+      (which): [string, string] => [which, "reviewer-own-head"]
+    ),
+    [undefined, "reviewer-pass-and-fail"],
+    [undefined, "architect-pass-and-fail"],
+  ];
+  const dropped: string[] = [];
+  let readings = 0;
+  for (const [which, scenario] of worlds) {
+    const { calls } = await world(which, scenario);
+    for (const call of calls.filter((each) => each.path.endsWith("/results"))) {
+      for (const field of ["run", "observed"]) {
+        readings++;
+        for (const word of String(call.body[field]).split(/\s+/).filter(Boolean))
+          if (!PLAIN_WORD.test(word)) dropped.push(`${scenario} ${which ?? ""} ${field}: ${word}`);
+      }
+    }
+  }
+  expect({ dropped, recorded: readings > 0 }).toEqual({ dropped: [], recorded: true });
 });

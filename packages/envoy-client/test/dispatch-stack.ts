@@ -63,11 +63,17 @@ export interface DispatchStackOptions {
    */
   readonly work: string;
   /**
-   * Variables merged into the server's environment over the stack's own, for a stack that
-   * points the server at more than this file starts: the CI results stack names its secrets
-   * broker and its stand-in of GitHub here. A name the stack sets too takes the caller's value.
+   * Settings the server is given beside the ones below, for a row that needs a deployment the
+   * default stack is not: `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` make a server that
+   * verifies projected service-account tokens, and an issuer nothing serves makes every such
+   * verification answer `503 OIDC_ISSUER_UNAVAILABLE`
+   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`); the CI results stack names its secrets
+   * broker and its stand-in of GitHub here. A name the stack sets itself is refused, so a row
+   * cannot quietly take the server's database, port or token away from it, but for
+   * `DISPATCH_SERVER_URL`: a stack that fronts the server (the CI results stack's TLS front) names
+   * the URL the server's callers reach it at.
    */
-  readonly env?: Record<string, string>;
+  readonly env?: Readonly<Record<string, string>> | undefined;
   /** Called with the port the stack chooses for the server, before the server starts. */
   readonly portChosen?: PortChosen;
 }
@@ -99,9 +105,9 @@ export function testDatabaseServer(): string {
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
  * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
  * reaches it, since the child is given the environment below, with `options.env` over it, and
- * nothing else. It serves on a socket the stack holds from the choice of its port
- * (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}), so no other program can take the port before
- * it serves.
+ * nothing else. It serves on a
+ * socket the stack holds from the choice of its port (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}),
+ * so no other program can take the port before it serves.
  *
  * The stack works in `options.work`, which the caller reserved with
  * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
@@ -146,10 +152,8 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       "dispatch",
       "DISPATCH_LISTEN_FD",
       options.portChosen,
-      (port) => ({
-        command: [path.join(bin, "dispatch")],
-        cwd: ENVOY_MODULE,
-        env: {
+      (port) => {
+        const settings: Record<string, string> = {
           PATH: SHELL_PATH,
           HOME: home,
           DATABASE_URL: databaseUrl.toString(),
@@ -162,10 +166,22 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
           DISPATCH_PORT: String(port),
           DISPATCH_SERVER_URL: `http://127.0.0.1:${port}`,
           DISPATCH_WEB_DIST: WEB_DIST,
-          ...options.env,
-        },
-        log,
-      })
+        };
+        for (const [name, value] of Object.entries(options.env ?? {})) {
+          if (name in settings && name !== "DISPATCH_SERVER_URL") {
+            throw new Error(
+              `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
+            );
+          }
+          settings[name] = value;
+        }
+        return {
+          command: [path.join(bin, "dispatch")],
+          cwd: ENVOY_MODULE,
+          env: settings,
+          log,
+        };
+      }
     );
     child = started.child;
     const url = `http://127.0.0.1:${started.port}`;

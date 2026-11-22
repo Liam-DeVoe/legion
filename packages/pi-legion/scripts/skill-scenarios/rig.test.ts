@@ -1852,9 +1852,12 @@ console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DIS
   });
 });
 
-// services_up with a stand-in docker, which records each call and answers each `run` with an id:
-// each container's id goes to <work>/services/containers, and SKILL_SCENARIOS_OWNER labels both.
+// services_up, then services_down, with a stand-in docker, which records each call, answers each
+// `run` with an id and `logs` with the lines NATS logs on a port it chose, and refuses a `run` that
+// publishes a host port, as Docker does when another process holds the port it chose.
 describe("services_up", () => {
+  const TAKEN =
+    "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint t-nats (bb7e): failed to bind host port 127.0.0.1:41026/tcp: address already in use";
   function up(owner: string | undefined) {
     const dir = freshDir("services-up");
     mkdirSync(path.join(dir, "services"));
@@ -1866,24 +1869,54 @@ describe("services_up", () => {
     );
     const result = bash(
       [
+        "set -euo pipefail",
         fn("fail"),
         fn("services_up"),
-        `docker() { printf '%s\\n' "$*" >>"$S/calls"; case $1 in run) n=$((n + 1)) && echo "id-$n" ;; port) echo 127.0.0.1:5555 ;; esac; }`,
+        fn("services_down"),
+        `docker() {
+  printf '%s\\n' "$*" >>"$S/calls"
+  case $1 in
+  run)
+    case " $* " in *" -p 127.0.0.1:"* | *" --publish "*) echo "${TAKEN}" >&2 && return 125 ;; esac
+    n=$((n + 1)) && echo "id-$n"
+    ;;
+  logs)
+    echo "[1] 2026/11/21 01:56:40.269703 [INF] Listening for client connections on 127.0.0.1:4567"
+    echo "[1] 2026/11/21 01:56:40.269710 [INF] Server is ready"
+    ;;
+  esac
+}`,
         "until_true() { :; }",
         "go() { :; }",
         "start_listener() { envoy_port=1; }",
+        "stop_tree() { :; }",
         "note() { :; }",
         "n=0 S=$1/services root=$1/root tag=t services_env=$1/services/env",
         "services_up",
+        `cp "$services_env" "$S/env-seen" && printf '%s' "$pg_socket" >"$S/socket-seen"`,
+        `[ -d "$pg_socket" ] && echo made >"$S/socket-made"`,
+        "services_down",
       ].join("\n"),
       [dir],
       owner === undefined ? {} : { SKILL_SCENARIOS_OWNER: owner }
     );
-    const read = (name: string) => readFileSync(path.join(dir, "services", name), "utf8");
-    const runs = read("calls")
-      .split("\n")
-      .filter((line) => line.startsWith("run "));
-    return { code: result.code, stderr: result.stderr, containers: read("containers"), runs };
+    const read = (name: string) =>
+      existsSync(path.join(dir, "services", name))
+        ? readFileSync(path.join(dir, "services", name), "utf8")
+        : "";
+    const socket = read("socket-seen");
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      containers: read("containers"),
+      runs: read("calls")
+        .split("\n")
+        .filter((line) => line.startsWith("run ")),
+      env: read("env-seen"),
+      socket,
+      socketMade: read("socket-made"),
+      socketLeft: socket !== "" && existsSync(socket),
+    };
   }
 
   // Catches: a container no record names, so nothing can remove it by its id; and an owner label
@@ -1899,6 +1932,38 @@ describe("services_up", () => {
     const plain = up(undefined);
     expect(plain.containers).toBe("id-1\nid-2\n");
     expect(plain.runs.every((line) => !line.includes("--label"))).toBe(true);
+  });
+
+  // Catches: a container that publishes a host port, which Docker chooses among the ports it has
+  // not handed out itself and another process of a shared host can hold; a batch of
+  // reviewer-pass-and-fail ended at that refusal, before any run. And a NATS the listener would
+  // refuse as another machine's, or a service the runs' Dispatch servers would look for on a host
+  // port.
+  test("no container publishes a host port: NATS binds its own loopback port, Postgres is reached through its socket", () => {
+    const { code, stderr, runs, env, socket, socketMade, socketLeft } = up(undefined);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(runs.filter((line) => / (-p 127\.0\.0\.1:|--publish )/.test(line))).toEqual([]);
+    const nats = runs.find((line) => line.startsWith("run -d --name t-nats ")) ?? "";
+    expect(nats).toEndWith(
+      " --network host --cpus 1 --memory 512m nats:rig -js -a 127.0.0.1 -p -1"
+    );
+    expect(env).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4567\n");
+    const postgres = runs.find((line) => line.startsWith("run -d --name t-pg ")) ?? "";
+    expect(postgres).toContain(
+      `--mount type=bind,source=${socket},destination=/var/run/postgresql`
+    );
+    expect(postgres).toMatch(/ --user \d+:\d+ /);
+    // The socket's directory is a new one of /tmp's, short enough for a socket's path, and
+    // services_down removes it.
+    expect({
+      name: socket.replace(/\.[A-Za-z0-9]{6}$/, ".XXXXXX"),
+      socketMade,
+      socketLeft,
+    }).toEqual({
+      name: "/tmp/rig-pg.XXXXXX",
+      socketMade: "made\n",
+      socketLeft: false,
+    });
   });
 });
 
@@ -2495,10 +2560,10 @@ describe("heads_fixture", () => {
     ]);
   });
 
-  // Each GitHub read the heads scenarios' agents made in the fifth round of runs, one call of each
-  // endpoint in the form an agent wrote it, and the reads the role prompts and skills name. The
-  // round's agents named two repositories, since the pane's addressing named another than the
-  // world's; the addressing now reads rig-world.json, so each call names the world's.
+  // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
+  // call of each endpoint in the form an agent wrote it, and the reads the role prompts and skills
+  // name. The round's agents named two repositories, since the pane's addressing named another than
+  // the world's; the addressing now reads rig-world.json, so each call names the world's.
   const ROUND_CALLS = [
     "gh --version",
     "gh auth status",
@@ -2513,6 +2578,7 @@ describe("heads_fixture", () => {
     "gh api repos/example/widgets/pulls/702/comments",
     "gh api --paginate repos/example/widgets/pulls/703/reviews --jq .[] | [.id,.state,.user.login] | @tsv",
     "gh api repos/example/widgets/pulls/702 --jq {head:.head.sha,base:.base.ref,mergeable_state}",
+    "gh api repos/example/widgets/pulls/702/commits --jq .[] | [.sha, .commit.message] | @tsv",
     "gh api repos/example/widgets/actions/runs?head_sha={702}&per_page=100 --jq .workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv",
     "gh api repos/example/widgets/actions/runs/1/jobs --jq .jobs[] | [.id, .name, .status, .conclusion] | @tsv",
     "gh api repos/example/widgets/commits/{703}/check-runs --paginate --jq .check_runs[] | [.name, .status, .conclusion, .started_at] | @tsv",
@@ -2582,6 +2648,110 @@ describe("heads_fixture", () => {
       });
     }
     expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+    // A pull request's commits, as GitHub lists them: its one commit, the head on the base. A
+    // reviewer of reviewer-own-head read #702's so, where the stand-in had no route for it.
+    expect(
+      gh("gh api repos/example/widgets/pulls/702/commits --jq .[] | [.sha, .parents[0].sha] | @tsv")
+    ).toEqual({
+      code: 0,
+      stdout: `${heads["702"]}\t${git(path.join(run, "remote.git"), "rev-parse", "main")}\n`,
+      stderr: "",
+    });
+    // A pull request's files, as GitHub lists them: each path, its status and its patch, the hunks
+    // of that path from the first @@ line. A reviewer of reviewer-own-head read #703's so, where the
+    // stand-in had no route for it.
+    const remote = path.join(run, "remote.git");
+    const changed = git(remote, "diff", "--name-status", "main", heads["703"])
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => line.split("\t"));
+    expect(changed.length).toBeGreaterThan(0);
+    const statuses: Record<string, string> = { A: "added", M: "modified", D: "removed" };
+    expect(
+      gh("gh api repos/example/widgets/pulls/703/files --jq .[] | [.filename, .status] | @tsv")
+    ).toEqual({
+      code: 0,
+      stdout: changed.map(([status, file]) => `${file}\t${statuses[status ?? ""]}\n`).join(""),
+      stderr: "",
+    });
+    for (const [, file] of changed) {
+      const diff = git(remote, "diff", "main", heads["703"], "--", file ?? "");
+      const patch = diff.slice(diff.indexOf("\n@@") + 1).replace(/\n$/, "");
+      expect(
+        gh(
+          `gh api repos/example/widgets/pulls/703/files --jq .[] | select(.filename == "${file}") | .patch`
+        )
+      ).toEqual({ code: 0, stdout: `${patch}\n`, stderr: "" });
+    }
+    expect(
+      gh("gh api repos/example/widgets/pulls/703/files --jq .[] | .filename, .patch").code
+    ).toBe(0);
+    // A check run by its id, as GitHub answers it, and GitHub's 404 for an id no head has a run of.
+    // A reviewer of the case ci-only read its named run so, where the stand-in had no route for it.
+    const runID = gh(
+      "gh api repos/example/widgets/commits/{702}/check-runs --jq .check_runs[0].id"
+    ).stdout.trim();
+    expect(
+      gh(
+        `gh api repos/example/widgets/check-runs/${runID} --jq [.id, .name, .head_sha, .conclusion] | @tsv`
+      )
+    ).toEqual({ code: 0, stdout: `${runID}\tlint\t${heads["702"]}\tsuccess\n`, stderr: "" });
+    expect(gh("gh api repos/example/widgets/check-runs/1 --jq .name")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    // A compare with a commit the repository does not hold: GitHub's 404. An architect of
+    // architect-pass-and-fail compared the base with such a commit, where the stand-in had no route
+    // for it. The control: the compare of the base with a head still answers.
+    expect(
+      gh(
+        "gh api repos/example/widgets/compare/main...cc14cd790a47ea73926f227bad9e00374e3424d1 --jq {status,ahead_by}"
+      )
+    ).toMatchObject({ code: 1, stderr: "gh: Not Found (HTTP 404)\n" });
+    expect(gh("gh api repos/example/widgets/compare/main...{702} --jq .status")).toEqual({
+      code: 0,
+      stdout: "ahead\n",
+      stderr: "",
+    });
+    // Each body holds every line of the template's brief that the implementer writes, and the
+    // Thermo line's row for each half, as skills/legion-worker/references/pr-body.md has them. A
+    // reviewer of reviewer-own-head requested changes on a body that lacked the brief and had one
+    // Thermo row, instead of judging the gate.
+    const template = readFileSync(
+      path.join(root, "skills/legion-worker/references/pr-body.md"),
+      "utf8"
+    );
+    const brief = template.slice(
+      template.indexOf("## For the reviewer"),
+      template.indexOf("## Verification")
+    );
+    const briefLines = brief.split("\n");
+    const implementerLabels = briefLines.flatMap((line, index) => {
+      const label = /^\*\*([^*]+):\*\*/.exec(line)?.[1];
+      const reviewers = `${line}\n${briefLines[index + 1] ?? ""}`.includes(
+        "the reviewer writes this line"
+      );
+      return label === undefined || reviewers ? [] : [label];
+    });
+    expect(implementerLabels).toEqual(["Outcome", "Why", "Change", "Proven by", "Size"]);
+    const halves = [...template.matchAll(/^- (`thermonuclear-[a-z-]+`):/gm)].map((m) => m[1]);
+    expect(halves.length).toBe(2);
+    for (const pr of ["702", "703"]) {
+      const body = gh(`gh pr view ${pr} --repo example/widgets --json body --jq .body`).stdout;
+      expect({
+        pr,
+        brief: body.includes("\n## For the reviewer\n"),
+        missing: implementerLabels.filter(
+          (label) => !body.includes(`\n**${label}:** `) && !body.includes(`\n**${label}:**\n`)
+        ),
+        rows: halves.map((half) =>
+          body.includes(`\n- ${half}: not run (the whole change touches no runtime code)\n`)
+        ),
+      }).toEqual({ pr, brief: true, missing: [], rows: [true, true] });
+    }
+    expect(gh("gh pr view 702 --repo example/widgets --json body --jq .body").stdout).toContain(
+      "\n**Size:** 1 file changed, +3/−0\n"
+    );
     // The reads a reviewer makes of the base, as GitHub answers them for a base with no protection.
     expect(gh("gh api repos/example/widgets/branches/main --jq .protected")).toEqual({
       code: 0,

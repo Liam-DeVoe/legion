@@ -12,12 +12,14 @@ import {
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
 
 // The results route of an issue over its whole length, for a check that its ci_check gives to a
-// CI job: the job's own GitHub token, traded at the real secrets broker under a real result entry
-// for a results token, presented by the real `dispatch` CLI of this checkout, run as a child
-// process, to the real Dispatch server, which reads the job's check run and the head of the
-// branch the job pushed from a stand-in of GitHub. The Go tests of the route prove its rules;
-// this file proves that the command a CI job runs records the result Dispatch keeps, and that
-// the command a reader runs prints where that result stands.
+// CI job: the job's own GitHub token, traded by the real `agent-secrets result-grant` at the real
+// secrets broker under a real result entry for the airlock's placeholder of its run, which the
+// real `dispatch` CLI of this checkout, run as its child process, presents alone, and which the
+// broker's airlock proxy replaces with the run's results token on the way to the real Dispatch
+// server, which reads the job's check run and the head of the branch the job pushed from a
+// stand-in of GitHub. The Go tests of the route prove its rules; this file proves that the command
+// a CI job runs records the result Dispatch keeps, and that the command a reader runs prints where
+// that result stands.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
@@ -106,12 +108,19 @@ describe.skipIf(!dispatchStackEnabled)(
       return `legion/${running().issue}`;
     }
 
-    /** The real CLI entry run with `env` and nothing of this process's own but PATH. */
+    /** The real CLI entry run with `env` and nothing of this process's own but PATH. A job's
+     *  environment (the runner's variables, AGENT_SECRETS_MACHINE_IDENTITY=github-actions) runs it
+     *  under `agent-secrets result-grant`, as a CI job's step does: the producer trades the run's
+     *  token at the broker and gives the command the airlock's placeholder alone. */
     async function cli(
       args: readonly string[],
       env: Readonly<Record<string, string>>
     ): Promise<Ran> {
-      const child = Bun.spawn([process.execPath, ENTRY, ...args], {
+      const producer =
+        env["AGENT_SECRETS_MACHINE_IDENTITY"] === "github-actions"
+          ? [running().agentSecrets, "result-grant", "--"]
+          : [];
+      const child = Bun.spawn([...producer, process.execPath, ENTRY, ...args], {
         env: { PATH: SHELL_PATH, HOME: cliState, DISPATCH_STATE_DIR: cliState, ...env },
         stdout: "pipe",
         stderr: "pipe",
@@ -321,14 +330,14 @@ describe.skipIf(!dispatchStackEnabled)(
       expect([...jobResultsAt(c1, tested), ...jobResultsAt(c1, other)]).toEqual([]);
     }, 120_000);
 
-    test("a role's argument with the job's identity is refused before any request, naming its flag", async () => {
+    test("a role's argument under the job's placeholder is refused before any request, naming its flag", async () => {
       const at = commit("8");
-      // Dispatch and the broker are at no server: a command that sent anything would fail to
-      // connect, and exit 1 saying so.
+      // The command as `agent-secrets result-grant` starts it, with a placeholder of the grant's
+      // shape and Dispatch at no server: a command that sent anything would fail to connect, and
+      // exit 1 saying so.
       const env = {
-        ...running().jobEnv(pushAt(at, 207)),
         DISPATCH_URL: NOWHERE,
-        AGENT_SECRETS_URL: NOWHERE,
+        DISPATCH_RESULTS_TOKEN: "agent-secrets-placeholder-result-Run4242abcdefghijklmnopqrstu",
       };
       const ran = await recordOnIssue(pushAt(at, 207), at, CI_CHECK, ["--role", "tester"], env);
 

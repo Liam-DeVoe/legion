@@ -25,13 +25,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -135,7 +136,7 @@ type Deps struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
@@ -146,7 +147,7 @@ type Deps struct {
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
-	AgentSecrets *agentsecrets.Client
+	AgentSecrets *cipher.Client
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -210,6 +211,11 @@ type Deps struct {
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
 	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
+	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
+	// serves from the moment it enters the route's handler chain, as the access-log line times
+	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
+	// none.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -269,7 +275,7 @@ type DepsInput struct {
 	OIDC          ServiceTokenVerifier
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
 	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
@@ -310,6 +316,9 @@ type DepsInput struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry; see Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads for the keyword fill's pause; see
+	// Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -364,9 +373,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if err != nil {
 		return Deps{}, err
 	}
-	var agentSecretsClient *agentsecrets.Client
+	var agentSecretsClient *cipher.Client
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
-		agentSecretsClient = agentsecrets.New(url, input.AgentSecretsTokenFile)
+		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
 	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {
@@ -404,6 +413,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HideStateFile:          input.HideStateFile,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,
+		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
@@ -473,8 +483,11 @@ type server struct {
 	specReads specResultReads
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
-	going           GoingCatalogue
-	adviceQueryHook func(context.Context, pgx.Tx, string) error
+	going GoingCatalogue
+	// unguardedReplacements counts the document replacements stored naming no token
+	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
+	unguardedReplacements *metrics.Counter
+	adviceQueryHook       func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -829,6 +842,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
+	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -979,11 +993,18 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, so every one of those answers is
-	// compressed for a caller that takes gzip and the line counts the bytes that went on the
-	// wire. The two websockets register mounts beside the table carry no compressed answer: the
-	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	// them resolved. Compression sits just inside it, with nothing between them but the answers
+	// read's timing below, so every one of those answers is compressed for a caller that takes
+	// gzip and the line counts the bytes that went on the wire. The two websockets register
+	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
+	// frames after it are the socket's (compressAnswers).
+	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
+		// Just inside the access-log line, so the time of an answers read the keyword fill
+		// pauses on is the time the line records for it, every layer of the chain included.
+		served = timedAnswersReads(s.deps.AnswersLatency, served)
+	}
+	return accesslog.HandlerFunc(route.Pattern, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1224,7 +1245,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
-	if _, presented := brokertoken.Presented(r); presented {
+	if _, presented := ciphertoken.Presented(r); presented {
 		return s.brokerTokenActor(r)
 	}
 	if token, present := auth.BearerToken(r); present {
@@ -1414,8 +1435,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 }
 
 // codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs: the deployment's shared token and a pod's projected token hold none, and a personal
-// token holds the set its own row names.
+// needs. What each credential holds is said once, above routeScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
@@ -1444,11 +1464,9 @@ func missingScopeError(scope, message string) *apiError {
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
 // that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. A credential the deployment configured
-// rather than a person — the shared token, a pod's service-account token, a broker-issued token
-// scoped to a project — holds none of them; a personal token holds the set its own row names.
-// The first scope the credential lacks, in the order the row declares them, is 403
-// OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
+// table is what decides and a handler restates nothing. What each credential holds is said once,
+// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
+// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
 // through writeAuthenticationError, as every gate on this server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
@@ -1481,7 +1499,7 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // not name (resultsScopeRoutes), one resolved to a results-only credential
 // (model.Credential.ResultsOnly) is answered 403 RESULTS_ONLY_TOKEN; next does not run. Every
 // other request runs next as it always did. The broker's verifier marks a credential one way or
-// the other and never both (brokertoken.shapeOf), so a credential is held to one list.
+// the other and never both (ciphertoken.shapeOf), so a credential is held to one list.
 //
 // It reads the decision decideBrokerToken carried (resolvedCallerKey) and resolves nothing of its
 // own: a second verification would present the request's DPoP proof twice, and a proof is single
@@ -1766,6 +1784,18 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	}
 	logUndeclaredMembers(r, value, body)
 	return nil
+}
+
+// decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
+// value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
+// them.
+func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return nil, err
+	}
+	logUndeclaredMembers(r, value, body)
+	return body, nil
 }
 
 // decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only

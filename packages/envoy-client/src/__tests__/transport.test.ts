@@ -35,6 +35,9 @@ import {
   roleHeldBy,
 } from "../transport";
 
+/** The listener's bearer in the redirect cases, made for this run so no line holds a credential. */
+const REDIRECT_TOKEN = fixtureSecret("listener");
+
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: a change of that constant must change the rule's text, and these
  *  expectations with it, rather than leaving the text saying a number nothing enforces. */
@@ -1637,10 +1640,10 @@ describe("EnvoyClient", () => {
   });
 
   // F6 (the review of 81d860a8f7): whatever answered a redirect in the listener's place chose its
-  // body, and a misconfigured proxy echoes the request back, the bearer with it. The client reads
-  // no redirect's body, so the error names the origin the redirect pointed at and nothing of the
-  // body: not the bearer, not the page, not the target's user.
-  test("a send a redirect answers names the redirect's origin and nothing of its body", async () => {
+  // body, and a misconfigured proxy echoes the request back, the bearer with it. The error prints
+  // that body as the Dispatch client prints a gateway's page, one line with the bearer redacted, and
+  // names the origin the redirect pointed at; never the body whole.
+  test("a send a redirect answers prints its body as one redacted line, with the redirect's origin", async () => {
     const listenerToken = fixtureSecret("listener");
     const echoed = `<html><body><h1>Moved</h1>\n<p>Authorization: Bearer ${listenerToken}</p>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
     const client = createEnvoyClient({
@@ -1660,13 +1663,15 @@ describe("EnvoyClient", () => {
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(EnvoyApiError);
     const message = (error as EnvoyApiError).message;
-    expect(message).toBe(
+    expect(message).toStartWith(
       "POST http://listener/v1/messages/send failed with 308 (a redirect to https://elsewhere.test, " +
-        "which this client does not follow)"
+        "which this client does not follow): a body that is not the listener's error JSON " +
+        '("Moved Authorization: Bearer [redacted]'
     );
     expect(message).not.toContain(listenerToken);
-    expect(message).not.toContain("Moved");
+    expect(message).not.toContain("\n");
     expect(message).not.toContain("pass@");
+    expect(message.length).toBeLessThan(400);
   });
 
   // F6's class (the coordinator's ruling on the review of 81d860a8f7): any answer whose body is not
@@ -2310,10 +2315,9 @@ describe("a listener answer that redirects to another origin", () => {
           headers: { Location: `http://127.0.0.1:${other.port}/v1/roles/reviewer` },
         }),
     });
-    const token = fixtureSecret("listener");
     const credential: RequestCredential = {
-      ...bearerCredential(token),
-      headers: async () => ({ Authorization: `DPoP ${token}`, DPoP: "PROOF" }),
+      ...bearerCredential(REDIRECT_TOKEN),
+      headers: async () => ({ Authorization: "DPoP listener-token", DPoP: "PROOF" }),
     };
     try {
       const client = createEnvoyClient({
@@ -2331,9 +2335,9 @@ describe("a listener answer that redirects to another origin", () => {
   });
 
   // The refusal says where the redirect points, so an operator who wrote `http://` for an
-  // `https://` listener fixes the URL from the line: the scheme and the host, never a path, a
-  // query or a user, any of which can carry a secret.
-  test("is refused with a line that names the origin it points at, and nothing else of it", async () => {
+  // `https://` listener fixes the URL from the line: the scheme and the host of the target, never
+  // its path, its query or its user, any of which can carry a secret.
+  test("is refused with a line that names the origin it points at, and nothing else of its target", async () => {
     // A target that carries a user and a secret, built from its parts; the secret is made for
     // this run, so no line of the test holds a credential.
     const hidden = crypto.randomUUID();
@@ -2364,77 +2368,6 @@ describe("a listener answer that redirects to another origin", () => {
         expect(message, location).not.toContain(part);
       }
     }
-  });
-
-  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
-  // as text or as a link's text), so the line quotes nothing of a redirect's body.
-  test("is refused with a line that quotes nothing of its body, where a redirector writes its target", async () => {
-    // The path and the query of the target are made for this run.
-    const path = `login-${crypto.randomUUID()}`;
-    const state = crypto.randomUUID();
-    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fv1`;
-    for (const [type, body] of [
-      ["text/plain", `Found. Redirecting to ${target}`],
-      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
-      ["application/json", JSON.stringify({ error: `moved to ${target}` })],
-    ] as const) {
-      const client = createEnvoyClient({
-        baseUrl: "http://listener.test/",
-        fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-          new Response(body, {
-            status: 302,
-            headers: { Location: target, "Content-Type": type },
-          })) as typeof fetch,
-        retry: false,
-      });
-      const failure = await client.getRole("reviewer").catch((error: unknown) => error);
-      expect(failure).toBeInstanceOf(EnvoyApiError);
-      const { message } = failure as EnvoyApiError;
-      expect({
-        origin: message.endsWith(
-          "failed with 302 (a redirect to https://sso.example.com, which this client does not follow)"
-        ),
-        path: message.includes(path),
-        query: message.includes(state),
-      }).toEqual({ origin: true, path: false, query: false });
-    }
-  });
-
-  // The client reads no body of a redirect and keeps none: the error of a 3xx holds no text of it,
-  // and a body that never ends delays nothing, since nothing waits on it.
-  test("is refused with no body read or kept in its error", async () => {
-    const target = `https://sso.example.com/login-${crypto.randomUUID()}`;
-    let pulls = 0;
-    let cancelled = false;
-    const client = createEnvoyClient({
-      baseUrl: "http://listener.test/",
-      fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            pull(controller) {
-              pulls += 1;
-              if (pulls === 1)
-                controller.enqueue(new TextEncoder().encode(`Redirecting to ${target}`));
-              // Then nothing more: the body never ends.
-              return new Promise<void>(() => {});
-            },
-            cancel() {
-              cancelled = true;
-            },
-          }),
-          { status: 302, headers: { Location: target, "Content-Type": "text/plain" } }
-        )) as typeof fetch,
-      retry: false,
-      timeoutMs: 30_000,
-    });
-    const started = performance.now();
-    const failure = await client.getRole("reviewer").catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(EnvoyApiError);
-    expect({
-      responseBody: (failure as EnvoyApiError).details.responseBody,
-      cancelled,
-      atOnce: performance.now() - started < 10_000,
-    }).toEqual({ responseBody: "", cancelled: true, atOnce: true });
   });
 });
 

@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -251,7 +251,7 @@ func (r *ciJobRig) issueOf(t *testing.T, project, repository string) (string, st
 
 // jobToken has the broker answer a results token of project ACME for the job's run on a push of
 // ciJobRef, with change applied to the answer, and answers the token.
-func (r *ciJobRig) jobToken(change func(*brokertoken.Introspection)) string {
+func (r *ciJobRig) jobToken(change func(*ciphertoken.Introspection)) string {
 	answer := resultsOnlyToken(r.caller.jkt, ciJobProject)
 	answer.CI.Ref = ciJobRef
 	answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@" + ciJobRef
@@ -268,7 +268,7 @@ func (r *ciJobRig) sessionToken() string {
 	return r.says(answer)
 }
 
-func (r *ciJobRig) says(answer brokertoken.Introspection) string {
+func (r *ciJobRig) says(answer ciphertoken.Introspection) string {
 	r.tokens++
 	token := fmt.Sprintf("a-token-of-the-ci-job-rig-%d", r.tokens)
 	r.broker.Says(token, answer)
@@ -512,7 +512,7 @@ func TestARoleStillCannotRecordACheckOfACIJob(t *testing.T) {
 func TestAResultsTokenOfAnotherJobIsRefused(t *testing.T) {
 	rig := newCIJobRig(t)
 	rig.github.setCheckRun(98, "envoy-go", ciJobCommit)
-	other := rig.jobToken(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = "98" })
+	other := rig.jobToken(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = "98" })
 	text := rig.refusedWith(t, "the envoy-go run's result for c1", rig.post(t, rig.issue, other, jobResultOf("c1", "pass")),
 		http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 	for _, name := range []string{"c1", `"` + ciJobName + `"`, `"envoy-go"`} {
@@ -544,7 +544,7 @@ func TestAJobsResultAtAnotherCommitIsRefused(t *testing.T) {
 	}
 
 	rig.github.setCheckRun(99, ciJobName, ciJobOtherCommit)
-	moved := rig.jobToken(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = "99" })
+	moved := rig.jobToken(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = "99" })
 	text = rig.refusedWith(t, "a check run of another commit", rig.post(t, rig.issue, moved, jobResultOf("c1", "pass")),
 		http.StatusForbidden, "CHECK_RUN_NOT_THE_RUNS")
 	if !strings.Contains(text, ciJobOtherCommit) || !strings.Contains(text, ciJobCommit) {
@@ -558,7 +558,7 @@ func TestAJobsResultAtAnotherCommitIsRefused(t *testing.T) {
 func TestAJobsResultOfARunOfNoBranchIsRefused(t *testing.T) {
 	rig := newCIJobRig(t)
 	for _, ref := range []string{"refs/tags/v1.0.0", "refs/heads/"} {
-		token := rig.jobToken(func(answer *brokertoken.Introspection) {
+		token := rig.jobToken(func(answer *ciphertoken.Introspection) {
 			answer.CI.Ref = ref
 			answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@" + ref
 		})
@@ -575,7 +575,7 @@ func TestAJobsResultOfARunOfNoBranchIsRefused(t *testing.T) {
 func TestAJobOfAnotherRepositoryIsRefused(t *testing.T) {
 	rig := newCIJobRig(t)
 	const other = "example-org/other-repo"
-	token := rig.jobToken(func(answer *brokertoken.Introspection) {
+	token := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.Session = "ci-results:" + other + "/.github/workflows/ci-results.yaml"
 		answer.CI.Repository = other
 		answer.CI.WorkflowRef = other + "/.github/workflows/ci-results.yaml@" + ciJobRef

@@ -146,7 +146,7 @@ put(
   [
     "#!/usr/bin/env bash",
     'printf \'%s\\n\' "$*" >>"$STUB_DIR/docker.log"',
-    'case $1 in port) echo "127.0.0.1:15432" ;; inspect) echo stub-postgres ;; exec) ;; *) exit 1 ;; esac',
+    "case $1 in inspect) echo stub-postgres /stub/pg-socket ;; exec) ;; *) exit 1 ;; esac",
     "",
   ].join("\n"),
   0o755
@@ -337,7 +337,7 @@ async function runRig(args: string[], vars: Record<string, string> = {}) {
 /** What the two runs reported, and each server one of them started: both read by the hook below,
  *  which stages the checkout and then runs the two rigs. */
 let runs: { n: number; code: number; stderr: string; dir: string }[] = [];
-let servers: { pid: number; port: number; database: string }[] = [];
+let servers: { pid: number; port: number; database: string; socket: string | null }[] = [];
 /** The batch's start second, which every run of this file is given; set with the two runs. */
 let start = "";
 const lines = (file: string) =>
@@ -363,7 +363,13 @@ beforeAll(async () => {
   );
   servers = lines(path.join(stub, "servers.log")).map((line) => {
     const [pid = "", port = "", url = ""] = line.split(" ");
-    return { pid: Number(pid), port: Number(port), database: new URL(url).pathname.slice(1) };
+    const parsed = new URL(url);
+    return {
+      pid: Number(pid),
+      port: Number(port),
+      database: parsed.pathname.slice(1),
+      socket: parsed.searchParams.get("host"),
+    };
   });
 });
 
@@ -391,6 +397,8 @@ test.skipIf(withoutPerl)(
       runs.map(({ dir }) => databaseOf(dir)).sort()
     );
     expect(new Set(servers.map((server) => server.port)).size).toBe(2);
+    // Each reaches the batch's Postgres through the socket directory its container mounts.
+    expect(servers.map((server) => server.socket)).toEqual(["/stub/pg-socket", "/stub/pg-socket"]);
   }
 );
 

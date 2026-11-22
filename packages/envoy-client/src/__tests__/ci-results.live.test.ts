@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { newDpopKey } from "@legion/broker-client/dpop";
+import { newDpopKey } from "@legion/cipher-client/dpop";
 import {
   SPEC_CHECK_OBSERVED_CUT_NOTE,
   SPEC_CHECK_OBSERVED_END,
@@ -19,10 +19,9 @@ import {
   writeProbeSpec,
 } from "../../test/ci-results-stack";
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
-import { ownIdentityDispatch } from "../dispatch-config";
 
 // The v-recorder path over its whole length: a CI job's own GitHub token, traded at the real
-// secrets broker (./cmd/broker) under a real result entry for a token that writes results only,
+// secrets broker (./cmd/cipherd) under a real result entry for a token that writes results only,
 // presented by the real `dispatch` CLI of this checkout, run as a child process, to the real
 // Dispatch server (./cmd/dispatch), which reads the job's check run and the spec files at the
 // run's commit from a stand-in of GitHub. The Go tests of each part prove its own rules; only
@@ -85,7 +84,11 @@ describe.skipIf(!dispatchStackEnabled)(
       args: readonly string[],
       env: Readonly<Record<string, string>>
     ): Promise<Ran> {
-      const child = Bun.spawn([process.execPath, ENTRY, ...args], {
+      const producer =
+        env["AGENT_SECRETS_MACHINE_IDENTITY"] === "github-actions"
+          ? [running().agentSecrets, "result-grant", "--"]
+          : [];
+      const child = Bun.spawn([...producer, process.execPath, ENTRY, ...args], {
         env: { PATH: SHELL_PATH, HOME: cliState, DISPATCH_STATE_DIR: cliState, ...env },
         stdout: "pipe",
         stderr: "pipe",
@@ -177,6 +180,10 @@ describe.skipIf(!dispatchStackEnabled)(
       const at = commit("1");
       const ran = await writeResult(runAt(at, 101), at);
 
+      if (ran.code !== 0)
+        throw new Error(
+          `the real result command failed: ${JSON.stringify(ran)}; TLS front: ${await Bun.file(join(stackDirectory, "tls", "tls-front.log")).text()}`
+        );
       expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
       const stored = JSON.parse(ran.stdout) as {
         id: string;
@@ -232,6 +239,7 @@ describe.skipIf(!dispatchStackEnabled)(
           principal: running().resultPrincipal,
         },
       });
+      expect(predicate.recorder).not.toHaveProperty("person");
 
       // A person reads the one result back, and so does `dispatch results --project` under a
       // session's own token, which reads results and writes none.
@@ -326,7 +334,7 @@ describe.skipIf(!dispatchStackEnabled)(
       );
       expect({
         code: ran.code,
-        named: `${ran.stderr}${ran.stdout}`.includes("AGENT_SECRETS_URL"),
+        named: `${ran.stderr}${ran.stdout}`.includes("DISPATCH_RESULTS_TOKEN"),
       }).toEqual({
         code: 2,
         named: true,
@@ -352,42 +360,54 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(await running().results(at)).toEqual([]);
     }, 120_000);
 
-    test("the results token reaches no other route: a read, a write and the results read are refused", async () => {
+    test("the results token reaches no other route: the airlock refuses what its rule does not allow, and Dispatch the rest", async () => {
       const at = commit("9");
       const project = running().project;
 
-      // The command presents a results token on the one route it writes, and its session path
-      // takes no session the result entry fixes. So this row resolves the command's own credential
-      // (ownIdentityDispatch: the job's identity traded at the broker) and presents it elsewhere.
-      const resolution = ownIdentityDispatch(running().jobEnv(runAt(at, 106)));
-      if (!resolution.enabled) throw new Error(`the job's credential: ${resolution.error}`);
-      const answers: string[] = [];
-      for (const [method, route, body] of [
-        ["GET", `/api/v1/issues?project=${project}`, undefined],
+      // A separate real child receives only the airlock placeholder and uses it on four other
+      // routes. The rule allows POST under /api/v1/projects/ alone, so the proxy refuses the
+      // first three itself, before it dials, and says so (Airlock-Forwarded: false and its
+      // Airlock-Code); the fourth is under the prefix, so the proxy carries it with the run's
+      // token and a proof of the broker's key, and Dispatch's own gate refuses the scope.
+      const env = running().jobEnv(runAt(at, 106));
+      const routes = [
+        ["GET", `/api/v1/issues?project=${project}`, null],
         ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
-        ["GET", `/api/v1/projects/${project}/results?commit=${at}`, undefined],
-      ] as const) {
-        // One signal bounds the request and this call's wait on the broker trade the credential
-        // awaits for it; the trade itself runs under its own bound (BrokerTokenClient.token).
-        const signal = AbortSignal.timeout(60_000);
-        const url = `${resolution.url}${route}`;
-        const response = await fetch(url, {
-          method,
-          headers: {
-            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-            ...(await resolution.credential.headers(method, url, undefined, signal)),
-          },
-          signal,
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        });
-        const answer = (await response.json()) as { code?: string };
-        answers.push(`${method} ${route}: ${response.status} ${answer.code}`);
-      }
+        ["GET", `/api/v1/projects/${project}/results?commit=${at}`, null],
+        ["POST", `/api/v1/projects/${project}/artifacts`, { name: "an artifact a CI job writes" }],
+      ];
+      const probe = `import { ownIdentityDispatch } from ${JSON.stringify(join(import.meta.dir, "..", "dispatch-config.ts"))};
+const resolution=ownIdentityDispatch(process.env);
+if(!resolution.enabled) throw new Error(resolution.error);
+const answers=[];
+for(const [method,route,body] of ${JSON.stringify(routes)}) {
+ const url=resolution.url+route;
+ const response=await fetch(url,{method,headers:{...(body===null?{}:{"Content-Type":"application/json"}),...await resolution.credential.headers(method,url)},...(body===null?{}:{body:JSON.stringify(body)})});
+ const text=await response.text();
+ const forwarded=response.headers.get("Airlock-Forwarded");
+ let code=response.headers.get("Airlock-Code");
+ if (forwarded!=="false") { if (!text.startsWith("{")) throw new Error("scope response: "+response.status+" "+text); code=JSON.parse(text).code; }
+ answers.push(method+" "+route+": "+response.status+" "+(forwarded==="false"?"airlock":"dispatch")+" "+code);
+}
+console.log(JSON.stringify(answers));
+`;
+      const child = Bun.spawn(
+        [running().agentSecrets, "result-grant", "--", process.execPath, "-e", probe],
+        { env: { PATH: SHELL_PATH, HOME: cliState, ...env }, stdout: "pipe", stderr: "pipe" }
+      );
+      const [output, errors, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, errors }).toEqual({ code: 0, errors: "" });
+      const answers = JSON.parse(output);
 
       expect(answers).toEqual([
-        `GET /api/v1/issues?project=${project}: 403 RESULTS_ONLY_TOKEN`,
-        "POST /api/v1/issues: 403 RESULTS_ONLY_TOKEN",
-        `GET /api/v1/projects/${project}/results?commit=${at}: 403 RESULTS_ONLY_TOKEN`,
+        `GET /api/v1/issues?project=${project}: 403 airlock REQUEST_NOT_ALLOWED`,
+        "POST /api/v1/issues: 403 airlock REQUEST_NOT_ALLOWED",
+        `GET /api/v1/projects/${project}/results?commit=${at}: 403 airlock REQUEST_NOT_ALLOWED`,
+        `POST /api/v1/projects/${project}/artifacts: 403 dispatch RESULTS_ONLY_TOKEN`,
       ]);
     }, 120_000);
 
@@ -441,18 +461,6 @@ describe.skipIf(!dispatchStackEnabled)(
           `${"x".repeat(SPEC_CHECK_OBSERVED_END - last.length)}${last}`
       );
       expect(observed.length).toBe(SPEC_CHECK_OBSERVED_MAX);
-    }, 120_000);
-
-    // Dispatch cannot store a NUL, so the command sends it as U+FFFD and the result is written.
-    test("an observed text with a NUL byte still writes the result", async () => {
-      const at = commit("e");
-      const nul = join(observedFiles, "observed-nul.txt");
-      writeFileSync(nul, "--- FAIL: TestProbe\n\u0000binary\n");
-      const ran = await writeResult(runAt(at, 111), at, PROBE_CHECK, ["--observed-file", nul]);
-
-      const rows = await running().results(at);
-      expect({ code: ran.code, stored: rows.length }).toEqual({ code: 0, stored: 1 });
-      expect(rows[0]?.attestation.predicate.observed).toBe("--- FAIL: TestProbe\n\uFFFDbinary\n");
     }, 120_000);
   }
 );

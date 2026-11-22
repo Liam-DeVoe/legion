@@ -18,8 +18,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -225,7 +225,7 @@ func newSpecResultsRig(t *testing.T) *specResultsRig {
 
 // token has the broker answer a results token of project ACME for the default run, with change
 // applied to the answer, and answers the token.
-func (r *specResultsRig) token(change func(*brokertoken.Introspection)) string {
+func (r *specResultsRig) token(change func(*ciphertoken.Introspection)) string {
 	r.tokens++
 	token := fmt.Sprintf("a-results-token-%d", r.tokens)
 	answer := resultsOnlyToken(r.caller.jkt, specResultsProject)
@@ -394,7 +394,7 @@ func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
 			workflow := specResultsRepository + "/" + row.path
-			token := rig.token(func(answer *brokertoken.Introspection) {
+			token := rig.token(func(answer *ciphertoken.Introspection) {
 				answer.Session = "ci-results:" + workflow
 				answer.CI.WorkflowRef, answer.CI.Ref = workflow+"@"+row.ref, row.ref
 			})
@@ -654,7 +654,7 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 // under that repository, as the broker mints one.
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 	rig := newSpecResultsRig(t)
-	token := rig.token(func(answer *brokertoken.Introspection) {
+	token := rig.token(func(answer *ciphertoken.Introspection) {
 		answer.CI.Repository = "example-org/another-repo"
 		answer.CI.WorkflowRef = "example-org/another-repo/.github/workflows/ci-results.yaml@refs/heads/topic"
 	})
@@ -678,7 +678,7 @@ func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
 			if mapped := rig.asPerson(t, http.MethodPut, "/api/v1/settings/repo-projects/example-org/old-repo", renamed); mapped.Code != http.StatusOK {
 				t.Fatalf("map example-org/old-repo, renamed to Example-Org/New-Repo: status=%d body=%s", mapped.Code, mapped.Body.String())
 			}
-			token := rig.token(func(answer *brokertoken.Introspection) {
+			token := rig.token(func(answer *ciphertoken.Introspection) {
 				answer.Session = "ci-results:" + row.repository + "/.github/workflows/ci-results.yaml"
 				answer.CI.Repository = row.repository
 				answer.CI.WorkflowRef = row.repository + "/.github/workflows/ci-results.yaml@refs/heads/topic"
@@ -799,7 +799,7 @@ func TestEveryAttemptAndLegIsKept(t *testing.T) {
 	}{{21, "m (a)", "1", "fail"}, {22, "m (b)", "1", "pass"}, {23, "m (a)", "2", "pass"}}
 	for _, run := range runs {
 		rig.github.checkRuns[run.id] = specCheckRunAnswer{name: run.name, headSHA: specResultsCommit}
-		token := rig.token(func(answer *brokertoken.Introspection) {
+		token := rig.token(func(answer *ciphertoken.Introspection) {
 			answer.CI.CheckRunID, answer.CI.RunAttempt = fmt.Sprint(run.id), run.attempt
 		})
 		body := passOf(matrixCheck)
@@ -828,7 +828,7 @@ func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	for _, id := range []int64{11, 12} {
 		rig.github.checkRuns[id] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
-		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = fmt.Sprint(id) }), passOf(probeCheck)))
+		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = fmt.Sprint(id) }), passOf(probeCheck)))
 	}
 	read := rig.read(t, specResultsCommit, probeCheck)
 	if len(read) != 2 || read[0].Attestation.Predicate.Run.CheckRunID != "12" || read[1].Attestation.Predicate.Run.CheckRunID != "11" {
@@ -844,7 +844,7 @@ func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	rig.github.checkRuns[11] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
 	first := rig.token(nil)
-	other := rig.token(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = "11" })
+	other := rig.token(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = "11" })
 	keyed := func(token string) *httptest.ResponseRecorder {
 		request := rig.caller.presenting(t, http.MethodPost, "/api/v1/projects/"+specResultsProject+"/results", token, passOf(probeCheck))
 		request.Header.Set(contracts.IdempotencyKeyHeader, "one-key")
@@ -869,7 +869,7 @@ func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
 func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	for _, run := range []string{"1", "2"} {
-		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *brokertoken.Introspection) { answer.CI.RunID = run }), passOf(probeCheck)))
+		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *ciphertoken.Introspection) { answer.CI.RunID = run }), passOf(probeCheck)))
 	}
 	read := rig.read(t, specResultsCommit, probeCheck)
 	if len(read) != 2 || read[0].Attestation.Predicate.Run.RunID != "2" || read[1].Attestation.Predicate.Run.RunID != "1" {

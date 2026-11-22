@@ -17,18 +17,15 @@ The error's message is that text, under its `code`, or under `HTTP_<status>` whe
 
 Any other body did not come from Dispatch: a gateway's HTML page, an empty body, or JSON of another shape.
 It is a `DispatchGatewayError`, whose `fromDispatch` is false.
-Its message names the method and the request's URL as built, where the configured URL is a plain http(s) URL, and that URL's fixed phrase otherwise (`requestForText`, `@legion/contracts/log-text`).
+Its message names the method and the URL with its query, and leaves out a user and a password that the URL may carry.
 The bearer is a header, so no message names it.
 The message then names the status and the reason phrase, a one-line plain-text excerpt of the body, and what asking again can do.
 The excerpt drops scripts, styles and tags, and it reads at most the first 64 KiB of the body, in linear time.
-In the excerpt and in the reason phrase, the client redacts the value after `Authorization:`, `Bearer` or `DPoP`, and every value shaped as a JWS (`eyJ…`, a proof or a JWT) wherever it stands.
-It also redacts each run of 8 or more characters of each token it presented lately (its credential's now, and those it sent before a renewal: `SentTokens` in `excerpt.ts`), and a shorter token only whole.
-So a copy of a token that is cut short, split by markup or overlapped by another copy leaves no piece behind.
+In the excerpt and in the reason phrase, the client redacts the value after `Authorization:` or `Bearer`.
+It also redacts each run of 8 or more characters of its own bearer, and a shorter bearer only whole.
+So a copy of the bearer that is cut short, split by markup or overlapped by another copy leaves no piece behind.
 The message names a body with no text in the part that the excerpt reads by its size in bytes.
 Only a body with nothing in it is "an empty body".
-
-A read's 2xx is no answer of Dispatch's either where its body is empty, not typed JSON or not JSON, but for a bodiless 204 or 205.
-Every route the client reads as JSON answers JSON, so such a read is a `DispatchGatewayError` too, and a retry may succeed: a proxy or a captive portal in the way can be got past.
 
 What asking again can do depends on the status (`gatewayAdvice`).
 A status that cannot clear gets the same answer until someone fixes the Dispatch URL, or whatever answers in its place.
@@ -45,20 +42,41 @@ Such a 404 means no linked issue, no such document, or a server without the rout
 
 ## A redirect
 
-No request of the client follows a redirect: not a read, not a write, and not the `/healthz` probe.
+No request of the client follows a redirect: not a read, and not a write.
 Dispatch's API routes answer no request with a 3xx, so a 3xx is a refusal of whatever answered in Dispatch's place.
-It is a `DispatchGatewayError`, whatever its body is, and no request reads that body: it is cancelled (`redirectUnread` in `dispatch-http.ts`).
-Its message names the request as for any gateway's answer, then the status and the reason phrase, and the origin that the redirect points at: `answered 302 Found (a redirect to <origin>, which this client does not follow)`.
+It is a `DispatchGatewayError`, whatever its body is.
+Its message names the request as for any gateway's answer, then the status and the reason phrase, and the origin that the redirect points at.
 That origin is the scheme and the host of the `Location`, with a port that is not the scheme's own (`redirectOrigin` in `excerpt.ts`).
-The message holds nothing of the target's path, query, fragment or user, and nothing of the answer's body.
-A redirector writes its target into the body too, as text or as the text of a link, and that target can carry a secret.
-A probe answered with a redirect says nothing of the keyed layer.
+The message holds nothing else of the `Location`: not its path, query, fragment or user.
+The body is named as any gateway's body is: one redacted plain-text line, as the section above says (`bodyForText` in `excerpt.ts`).
 
 The listener's client refuses a redirect the same way.
-An `EnvoyApiError` of a 3xx names the method, the URL as a text names it, the status and the origin, `(a redirect to <origin>, which this client does not follow)` (`transport.ts`).
-It names nothing of the body, which is cancelled unread.
-The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
-The GitHub Actions identity, of `@legion/broker-client` and of the Go broker client, follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
+An `EnvoyApiError` of a 3xx names the method, the URL without its user and password, the status and the origin (`transport.ts`).
+It names the body as one redacted line too.
+The pool identity of `@legion/cipher-client` names a 3xx of the security token service as it names any other non-2xx: `HTTP <status>`, with the Google error code that its body names, if any.
+The GitHub Actions identity of the Go broker client follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
+
+## An answer of the secrets broker's airlock proxy
+
+A CI job's result write goes out through the secrets broker's airlock proxy, with the airlock's placeholder as its credential (`airlockCredential`).
+The proxy can refuse the write itself, and then the write reached no service and stored nothing.
+
+A tunnel that the proxy refuses at the `CONNECT` reaches the client as Bun's `ERR_PROXY_TUNNEL`, whose message carries the proxy's status line and nothing else of its answer.
+The write loop reads it as an `AirlockTunnelRefusedError`, with code `AIRLOCK_TUNNEL_REFUSED`, the `status` and the `reason` phrase.
+Its message says that the proxy refused the connection and that nothing was sent to Dispatch.
+A 503 is a connection that never opened, so the write asks again on its schedule, and ends with that error when the schedule runs out.
+Every other status ends the write at once, a 407 for a grant that ended among them.
+
+An answer that the proxy gives itself inside an open connection, before any byte of the request left it, carries `Airlock-Forwarded: false` and an `Airlock-Code`.
+It is an `AirlockRefusedError`, with the status, that code, or `HTTP_<status>` where it names none, and the proxy's words as `body`, each copy of the credential in them redacted.
+The redaction is of whole copies, because the proxy's words name the placeholder by that word, which the placeholder's own prefix spells.
+The write asks again only after its `503 GRANT_UNREADABLE`, a grant that the proxy could not read at that moment.
+
+Neither error is a `DispatchServiceError`, and `writeOutcomeUnknown` is false for both.
+Where an earlier attempt of the same write may have reached Dispatch, the write ends as a `DispatchWriteUnsettledError`, as for any answer that proves nothing of that attempt.
+
+An answer that the proxy gives itself after the request may have reached Dispatch carries `Airlock-Forwarded: unknown` and an `Airlock-Code`: the proxy's connection to Dispatch broke after the write was sent (`502 UPSTREAM_UNREACHABLE`), or the write's grant ended while Dispatch held the call (`407 GRANT_NOT_LIVE`).
+The write loop reads it as a reset after the write went out (`AirlockOutcomeUnknownError`, with the status, the code and the redacted words): the write may have landed, so it asks again under its key, and ends as a `DispatchWriteUnsettledError` when no answer settles it.
 
 ## A path value that names nothing
 
@@ -76,55 +94,61 @@ So no argument of the command reaches this refusal: a program that ran every com
 
 ## A write whose outcome is unknown
 
-How a write ends is one transition table (`write-outcome.ts`); the README ("Dispatch") says how it reads each answer and when the client asks again under the key.
-Before anything of the write may have landed, a write that ends throws that end's own error: the refusal, the transport's failure, the credential's, the deadline's or the stop's.
-Once an attempt may have landed, the write ends as a `DispatchWriteUnsettledError`, unless an answer settles it or a landing is known.
-That error is deliberately not a `DispatchServiceError`, because a caller reads a `DispatchServiceError` as a refusal that Dispatch decided.
-Its message gives the last answer or failure and the number of attempts.
-It then says whether an earlier attempt may have reached Dispatch, or whether Dispatch was still running one.
-It says that the write may or may not have taken effect.
-Where the call saw the keyed layer judge the write, the message says that Dispatch finishes an attempt that it received.
-It then says to read the write back before you send it again, because a new command sends it under a new key.
-Otherwise it says to check whether the write took effect before you send it again.
-Its `key` is the key every attempt carried, and its `last` what ended the write.
+Once an attempt may have reached a handler, a call without a definitive keyed answer throws `DispatchWriteUnsettledError`, not the last attempt's raw error.
+It carries the write's key as `key` and the last safe error as `last` and `cause`.
+It is deliberately not a `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
+The message gives the last answer, attempt count and possible effect, and says to read the write back before a new command sends a new key.
 
-A write that ends with no answer at all names the request.
+A write that ends with no answer at all is a `DispatchWriteUnsettledError` too, and its message names the request.
 The client cut off its last attempt for silence ("made no progress for 20 s, so it was cut off").
 Or the call's deadline ended it, while an attempt was out or after one that may have reached Dispatch.
 The message then says that the write "had no definitive answer when its deadline ended it".
+Its `last` is the cut or the timeout.
 The client does not send an attempt that the deadline ends before it goes out.
 Neither that attempt nor a credential that could not present counts as an attempt that may have reached Dispatch.
+When the deadline ends a pause that followed answers that reached no handler, the write ends with the last of those answers.
 
-The keyed layer's verdict on the key settles a write that may have landed: the stored result, a replay, a landed answer, or the handler's refusal named back, `422 KEY_REUSED` among them.
-An echoed 401 is no verdict, because a handler gave it, perhaps after it committed, and the layer stores no 401.
+What the attempts showed is a fact of the whole call (`WriteCall`), not of one series of attempts.
+A write carries one key across its no-route retries and its re-send after a dead token.
+The keyed layer wraps each route's handler, so it stores nothing under the key for those answers.
+Once an attempt may have reached a handler, the call ends as a `DispatchWriteUnsettledError`, unless its last answer is the keyed layer's verdict.
+That verdict is a definitive answer that names the key back and that the layer keeps as the key's outcome.
+It is the stored result, a replay, a landed answer, the handler's refusal, or `422 KEY_REUSED`.
+`KEY_REUSED` settles the call because every attempt of it sends the same bytes under its one key, and Dispatch's digest covers the method, the route, its path values, the query, the content type less its boundary and the body, so a key held for another request was claimed by no attempt of this call.
+An echoed 401 is no verdict, because it can come after the handler committed.
 A no-route answer, Dispatch's check of the token, a dead token or a credential that could not present proves nothing of the earlier attempt.
+Before any attempt may have reached a handler, the caller's cancellation remains its own error.
+After a possible landing it is the unsettled error's `last` and `cause`.
 
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown.
 It does for a `DispatchWriteUnsettledError`, for a gateway's answer with `mayHaveReachedDispatch`, and for Dispatch's own 5xx.
-A connection that never opened reached nothing: the host refused it, its name did not resolve, or no route reached the host (`DispatchUnreachableError`, whose `code` is the failure's class, such as `ECONNREFUSED`).
+A transport failure after an attempt that may have reached Dispatch is wrapped in `DispatchWriteUnsettledError` as well.
+A connection that never opened reached nothing: the host refused it, its name did not resolve, or no route reached the host.
+So did a tunnel that a proxy refused to open, which Bun reports as `ERR_PROXY_TUNNEL`.
 A request that Dispatch's check of its broker token turned away before any handler ran reached nothing too.
-Those answers are `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE` (`tokenNotChecked`), and a write asks again after them as after a 429.
+Those answers are `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE` (`tokenNotChecked`).
 A refusal carries its `Retry-After` as `retryAfterMs`.
 
 ## A write that landed with its answer gone
 
 Dispatch's keyed layer names the request's `Idempotency-Key` back on every answer that it gives a keyed write.
 So an answer that names this call's key back is Dispatch's word about this write.
+A landing needs that key.
+The client takes a write as made, with its answer gone, only from an answer that names the call's key back.
+The rule is the same for a 2xx and for a `409 KEY_COMMITTED` (`#missingWriteAnswer`).
 A key that a caller gives is the call's key: `docEdit` and the upload of a project's document take one.
-An empty key names no request, so no answer names it back.
+An empty key names no request, so no answer names it back, and an answer that names no key is no landing of it.
 
 A write that Dispatch made and whose answer is gone is a `DispatchWriteLandedError`, with `code`, a `DispatchLandedCode`, and `status`.
-On a route that stores what it is sent, these answers are a landing:
+On a route that stores what it is sent, these answers are a landing when they name the call's key back:
 
 - `409 KEY_COMMITTED`: the write landed before its answer was lost, and Dispatch will not run it again.
-  One that names the call's key back is a landing; so is one that names no key back where the process knows nothing of the keyed layer, as from a Dispatch without it.
 
 - A replayed 2xx (`Idempotency-Replayed: ?1`) that reads `ANSWER_NOT_KEPT`: the first answer was larger than Dispatch keeps (`answerNotKept`, which the page shares).
 
-- A 2xx that names the call's key back and whose body never gives the row: the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a write's 2xx only after the write committed.
-  JSON that is not the row, a body cut short, and a bodiless 204 or 205 are asked again under the key, and Dispatch replays what it stored; the asking spent, the write landed with its answer lost.
-  A body that is no JSON whatever its type says, or empty, ends so at once.
-  So does every later end of a write that heard such a 2xx: a deadline or a stop that cuts its body, or the attempts after it.
+- A 2xx that the write table settles on and whose body gives no row: the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a write's 2xx only after the write committed.
+  The table settles on a 2xx that names the call's key back and whose body, read whole, is JSON, or a 204 or a 205, which carries none (`answerEvent`).
+  JSON that is not the row is such a landing, and so is a 204 or a 205 where the row needs a body.
 
 Every `POST` and `PATCH` of the client reads its 2xx into the row that its callers read (`dispatch-write-rows.ts`).
 A row holds those members, in the forms that the route answers.
@@ -135,23 +159,36 @@ Its message is the one line that a session reads.
 It says that the method and URL were made, and why the answer is gone.
 It then says to read back what it made with `dispatch read` or the matching list.
 
-Two routes store nothing: the round trip of a text and the related-item check.
-An answer of either that is not its answer made nothing, so it is never a landing.
-That holds for a 2xx with no row, a 2xx that is no answer of Dispatch's, a replay whose first answer Dispatch did not keep, and a `409 KEY_COMMITTED`.
+Three routes store nothing: the round trip of a text, the related-item check and the dry run of a result.
+An answer of any of them that is not its answer made nothing, so it is never a landing.
+That holds for a 2xx with no row, a 2xx that names no key back, a 2xx whose body is empty or not JSON, a replay whose first answer Dispatch did not keep, and a `409 KEY_COMMITTED`.
 Each is a `DispatchAnswerMissingError` (`ANSWER_LOST`), which says that nothing was made and that asking again is safe.
+A 204 or a 205 that names the call's key back is the answer of such a route: an empty text, since no row was to be lost.
 
-## A 2xx that names no key back, or another request's
+## A 2xx that names no key back
 
-A 2xx, or a `409 KEY_COMMITTED`, that names another request's key back came through a keyed layer, and not for this call: a proxy or a cache that answers one write with another's.
-It is never this call's answer, whatever it holds and whatever the process knows of the keyed layer.
-
-One that names no key back is no answer of this call's where the process knows this Dispatch runs the keyed layer: an answer of it named a key back, or its `/healthz` said `idempotency_keys: true`, within the last five minutes (`KEYED_LAYER_MEMORY_MS`).
-Such a Dispatch names the key back on every answer it gives a keyed write, so the answer came from something in its place: a proxy's page, a server that is not Dispatch, or a proxy that drops the header.
-Where the process knows nothing of the layer, it is what a Dispatch without the layer answers: a 2xx whose body is the row is the call's answer, and a `409 KEY_COMMITTED` is its landing.
-
-The client compares nothing of such an answer with what the call sent, because an equal value does not tell this call's write from another call's.
-An answer that is no answer of this call's leaves the write's outcome unknown, a `DispatchWriteUnsettledError` whose `last` is a `DispatchGatewayError` of its status (`HTTP_<status>`), since the write may have reached Dispatch behind what answered it.
+Dispatch's keyed layer runs on every `POST` and `PATCH` route.
+So a 2xx that names no key back, or another request's key, is never this call's answer, whatever it holds.
+The client compares nothing of it with what the call sent, because an equal value does not tell this call's write from another call's.
+A proxy's page, a server that is not Dispatch, a proxy or cache that answers one write with another's, and a proxy that drops the header give such an answer.
+A Dispatch older than the keyed layer names no key back either, so each of its 2xx is such an answer.
+A `409 KEY_COMMITTED` that names no key back, or another request's key, is no such answer either.
+The write may have reached Dispatch behind what answered it, so its outcome is unknown, a `DispatchWriteUnsettledError`.
 Check whether it took effect before you send it again.
+
+## A 2xx whose body is not JSON, or does not arrive whole
+
+Every answer that Dispatch writes to a keyed write is JSON, or a 204 or a 205, which carries no body (`WriteJSON`).
+So a 2xx whose body is empty, or whose `Content-Type` does not say JSON, is no answer of Dispatch's either, whatever key it names back (`foreign-2xx` in `write-outcome.ts`).
+A captive portal's 200 page is such an answer.
+The write ends there, and where an attempt may have reached Dispatch its outcome is unknown, a `DispatchWriteUnsettledError`.
+Its message says that something in Dispatch's place answered.
+
+The client reads every answer's body inside its attempt, so a 2xx settles the write only once its body is read whole.
+A 2xx whose body breaks off before it is read whole (`body-broken`) is asked again under the key, and Dispatch replays what it stored.
+So is a 2xx whose body, read whole, is not the JSON that its `Content-Type` says (`body-malformed`), an answer cut short on the way.
+A 2xx whose body the call's deadline or its caller's stop ends is that stop, with an attempt in flight: the write ends, and its outcome is unknown.
+When the asking runs out after such an answer, the write ends with it as `last`.
 
 ## What the `dispatch` command prints
 
@@ -170,6 +207,9 @@ A session's `dispatch` command prints what the model reads, and the README ("The
 - Dispatch's refusal: the command prints `<CODE>: <message>`, and exits 1.
 
 - A gateway's answer or a redirect: the command prints `HTTP_<status>: ` and the message, and exits 1.
+
+- An answer of the airlock proxy: the command prints the error's message, and exits 1.
+  A CI job's `dispatch result --project` prints the code first, as [`ci-results.md`](ci-results.md) says.
 
 - A missing answer or an unknown outcome: the command prints the error's message, and exits 1.
 

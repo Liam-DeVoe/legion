@@ -1,11 +1,9 @@
 /**
  * The row of each keyed write of `DispatchClient` (each POST and PATCH): what the method's callers
- * read of its 2xx answer, which the write's answer is read against before any caller reads it
- * (`answerEvent`). Dispatch answers a write's 2xx only after the write committed, so a 2xx that
- * names the call's key back and is never this row, asked again under the key until the asking is
- * spent, is a landing whose answer was lost (`ANSWER_LOST`), never a failure of the call. A 2xx
- * that names another request's key back is no answer of the call's, whatever it holds, and so is
- * one that names no key back from a Dispatch the process knows runs the keyed layer.
+ * read of its 2xx answer, which `#writePayload` checks before any caller reads it. Dispatch answers a
+ * write's 2xx only after the write committed, so a 2xx that names the call's key back and is not
+ * this row is a landing whose answer was lost (`ANSWER_LOST`), never a failure of the call. A 2xx
+ * that names no key back is no answer of the call's, whatever it holds.
  *
  * A row names only members a caller reads, and each in the form the route answers it in the
  * OpenAPI document the server generates (`packages/contracts/schemas/dispatch-openapi.json`):
@@ -186,8 +184,8 @@ function storesNothing<Row extends z.ZodType>(row: Row): Row {
   return row;
 }
 
-/** Whether the route whose 2xx `row` reads stores what it is sent. An answer of one that stores
- *  nothing and is not its answer made nothing, so it is no landing (`DispatchClient.#endWrite`). */
+/** Whether the route whose 2xx `row` reads stores what it is sent. A 2xx of one that stores
+ *  nothing and gives no answer made nothing, so it is no landing (`DispatchClient.#writePayload`). */
 export function rowStores(row: z.ZodType): boolean {
   return !STORE_NOTHING.has(row);
 }
@@ -231,8 +229,6 @@ export const WRITE_ROWS = {
   }),
   markdownRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
   related: storesNothing(z.looseObject({ outcome: z.string() })),
-  /** `resultCommand --dry-run` prints the line the record would answer. */
-  dryRunResult: storesNothing(z.looseObject({ line: z.string() })),
   /** `issueUpdateCommand` reads the key and the status on every path, and each other member only
    *  where the call wrote it, so those are optional. */
   updateIssue: updatedIssue,
@@ -300,6 +296,8 @@ export const WRITE_ROWS = {
     line: z.string(),
     result: z.looseObject({ id: z.string(), verdict: z.string(), check_block_id: z.string() }),
   }),
+  /** A validation-only result preview records nothing. */
+  dryRunResult: storesNothing(z.looseObject({ line: z.string(), result: z.unknown() })),
   retractResult: z.looseObject({
     result_id: z.string(),
     reason: z.string(),

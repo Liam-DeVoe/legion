@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -295,7 +295,7 @@ func TestAJobsMatrixLegIsItsLegOnTheIssueRoute(t *testing.T) {
 		ciCheckBlock("m1", `negative_control="`+ciJobNegativeControl+`" ci_check="go-checks (linux)"`))
 	rig.github.setCheckRun(98, "go-checks (linux)", ciJobCommit)
 	// The run pushed the new issue's own branch: a job's result counts only on a branch of its issue.
-	token := rig.jobToken(func(answer *brokertoken.Introspection) {
+	token := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.CheckRunID = "98"
 		answer.CI.Ref = "refs/heads/legion/" + key
 		answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@refs/heads/legion/" + key

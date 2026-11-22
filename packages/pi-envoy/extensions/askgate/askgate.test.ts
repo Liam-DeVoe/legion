@@ -5940,11 +5940,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     DISPATCH_SESSION_ID: "ses-real-cli",
     DISPATCH_STATE_DIR: path.join(work, "state"),
     DISPATCH_URL: "http://127.0.0.1:9",
-    DISPATCH_TOKEN,
     // The gate's dry run starts the real `dispatch` as a child `bun`, which keeps its transpiler
     // cache, about 156 files, in HOME: with the cache off, the afterAll that removes this folder
     // removes only what the rows wrote.
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+    DISPATCH_TOKEN,
   };
   // Block mode, so a post that does not use its marker is refused, never posted with a warning:
   // a post that succeeds then proves the marker the gate minted matched. The harness's default

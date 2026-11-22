@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -48,7 +48,7 @@ func newUnsettledCIJobRig(t *testing.T) (*ciJobRig, *docs.Service) {
 
 // otherJobToken is a results token of otherCIJob's run at ciJobCommit on legion/ACME-1.
 func otherJobToken(rig *ciJobRig) string {
-	return rig.jobToken(func(answer *brokertoken.Introspection) { answer.CI.CheckRunID = "98" })
+	return rig.jobToken(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = "98" })
 }
 
 // withCICheck is the rig's Verification document with c1's ci_check naming job.

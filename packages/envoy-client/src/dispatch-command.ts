@@ -567,8 +567,12 @@ export function parseCommand(
   // line. So it is refused here, naming the flag that gave it: an empty variable in a job's step
   // is how one is written. Each item of a list is read as a single value is (`dispatch priorities
   // --project`). Blank is Go's white space, since Dispatch trims a value by `strings.TrimSpace`
-  // (`@legion/contracts/go-blank`), and in a URL path a value of only dots and slashes names no
-  // step either (`dispatch read --issue ..` asked `GET /api/v1/`).
+  // (`goBlankPattern`, `@legion/contracts/go-blank`). A value of only dots and slashes names
+  // nothing either, of a flag whose value goes into a URL path in some command: there it names no
+  // step (`dispatch read --issue ..` asked `GET /api/v1/`), and no key or reference is made of dots
+  // and slashes where a command sends the value in its body or its query, or matches it against an
+  // issue's documents. So its refusal has one reason, true in each use, and names no place the
+  // value would go.
   for (const { field, noun, tools, path } of IDENTIFIER_FIELDS) {
     const given = args[field];
     if (tools !== undefined && !tools.includes(tool)) continue;
@@ -581,11 +585,7 @@ export function parseCommand(
       } else if (goBlankPattern.test(value)) {
         problem = `${flag} is only white space, so the call names no ${noun}`;
       } else if (path === true && pathNamesNothingPattern.test(value)) {
-        const named = value.replace(goSpaceAtEnds, "");
-        problem =
-          named === "." || named === ".."
-            ? `${flag} is "${named}", a step of a URL path, which the URL drops, so the call names no ${noun}`
-            : `${flag} is "${named}", only dots and slashes, which name no step of a URL path, so the call names no ${noun}`;
+        problem = `${flag} is "${value.replace(goSpaceAtEnds, "")}", only dots and slashes, so the call names no ${noun}`;
       }
       if (problem === undefined) continue;
       problems.push(problem);
@@ -631,9 +631,10 @@ const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
  * reference, a commit or a filter that is never empty or only white space, with the noun its
  * refusal names: every command's field of the name, or the listed commands' alone where another
  * command gives the empty value a meaning (`dispatch issue-update --parent ""` clears the
- * parent). `path` marks a field whose value goes into a URL path in some command, where a value
- * of only dots and slashes names nothing either (`pathNamesNothingPattern`). A value the call
- * puts in a URL path is refused there too, for every caller (`DispatchEmptyPathError`).
+ * parent). `path` marks a field whose value goes into a URL path in some command: a value of
+ * only dots and slashes (`pathNamesNothingPattern`) is refused in each command that takes the
+ * field, since it names nothing wherever the command sends it. A value the call puts in a URL path
+ * is refused there too, for every caller (`DispatchEmptyPathError`).
  */
 const IDENTIFIER_FIELDS: readonly {
   readonly field: string;
@@ -748,6 +749,8 @@ export function commandsHelp(): string {
     }),
     "",
     "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, except that dispatch result's dry run of a record also prints the pull-request body line Dispatch would write for it, recording nothing.",
+    "",
+    "dispatch login --device logs a machine with no identity of its own, such as a laptop, in at the secrets broker, once per machine; it is no Dispatch call, and needs no host or session (dispatch login --help).",
     "",
   ].join("\n");
 }

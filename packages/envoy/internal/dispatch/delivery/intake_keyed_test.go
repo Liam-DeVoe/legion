@@ -220,9 +220,10 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	}
 }
 
-// Every subject but a pull request's own, the settlement of its checks and a workflow run's is
-// acknowledged on its subject alone, with no decode: a comment and a review on a pull request, an
-// issue and a job event. The pull request's own message is decoded once, and so is the settlement.
+// Every subject but a pull request's own, the settlement of its checks, a workflow run's and a push
+// of a branch's is acknowledged on its subject alone, with no decode: a comment and a review on a
+// pull request, an issue, a push of a tag and a job event. The pull request's own message is
+// decoded once, and so is the settlement.
 func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -239,7 +240,7 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 	awaitBoundDurable(t, natsClient)
 
 	payload := `{"kind":"comment","action":"created","repo":"acme/widgets","number":"7","author":"octocat"}`
-	for _, kind := range []string{"pr.7.comment", "pr.7.review", "issue.3", "job.500.completed"} {
+	for _, kind := range []string{"pr.7.comment", "pr.7.review", "issue.3", "push.tag.v1_0_0", "job.500.completed"} {
 		publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", kind), payload)
 	}
 	awaitAcknowledged(t, natsClient)
@@ -876,12 +877,16 @@ func githubEnvelopeData(t *testing.T, topic, payload string) []byte {
 // payload names is the canonical one, and a subject naming another is the copy the listener
 // publishes under a renamed repository's former name (internal/ghrename), which the original
 // already carries to the same handler. A message that names no repository to compare -- an
-// envelope or a payload that does not decode, or a payload with no repo -- is wanted and keyed
-// as it was keyed before the rule, since it cannot be judged.
+// envelope or a payload that does not decode, or a payload with no repo -- is wanted, since it
+// cannot be judged, and a pull request or a workflow run is keyed as it was keyed before the rule.
+// A push of a branch is wanted under its subject's repository, whether or not its envelope
+// decodes, and a push of a tag is not wanted at all.
 func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T) {
 	const (
 		prPayload       = `{"kind":"pr","action":"closed","merged":"true","repo":"cybermonklabs/legion","number":"42","author":"octocat"}`
 		workflowPayload = `{"kind":"workflow","action":"completed","repo":"cybermonklabs/legion","run_id":"77"}`
+		pushPayload     = `{"kind":"push","repo":"cybermonklabs/legion","ref":"refs/heads/main"}`
+		tagPushPayload  = `{"kind":"push","repo":"cybermonklabs/legion","ref":"refs/tags/v1.0.0"}`
 		// settlementPayload is the listener's settlement of #70's check runs at one commit
 		// (cistore.Summary), with its groups and its runs, which are no strings.
 		settlementPayload = `{"kind":"checks","repo":"acme/app","number":"70","sha":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",` +
@@ -966,7 +971,21 @@ func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T
 			subject: "notifications.github.acme.oldapp.pr.70.checks", payload: settlementPayload,
 		},
 		{name: "a subject past a settlement's", subject: "notifications.github.acme.app.pr.70.checks.more", payload: settlementPayload},
-		{name: "a push", subject: "notifications.github.cybermonklabs.legion.push.heads.main", payload: prPayload},
+		{
+			name:    "a push of a branch under its payload's repository",
+			subject: "notifications.github.cybermonklabs.legion.push.branch.main", payload: pushPayload,
+			key: "push cybermonklabs/legion", wanted: true, envelope: true,
+		},
+		{name: "a push of a tag", subject: "notifications.github.cybermonklabs.legion.push.tag.v1_0_0", payload: tagPushPayload},
+		{
+			name:    "a push of a branch whose payload names another repository",
+			subject: "notifications.github.sjawhar.legion.push.branch.main", payload: pushPayload,
+		},
+		{
+			name:    "a push of a branch whose envelope does not decode",
+			subject: "notifications.github.sjawhar.legion.push.branch.main", data: []byte("{not an envelope"),
+			key: "push sjawhar/legion", wanted: true,
+		},
 		{name: "a job", subject: "notifications.github.cybermonklabs.legion.job.500.completed", payload: prPayload},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

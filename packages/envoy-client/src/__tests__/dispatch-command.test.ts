@@ -427,28 +427,28 @@ describe("the dispatch command surface", () => {
   // `dispatch issues --project " "` listed every project's issues with no line. And `.` or `..`
   // in a path is a step of the path, which the URL parser drops: `dispatch read --issue ..` asked
   // `GET /api/v1/`, another route. So the one refusal reads the value trimmed, and refuses `.` and
-  // `..` for each flag whose value goes into a path, `--session` among them.
-  test("a value of only white space, or . or .. where it goes into a path, is refused, naming the flag", () => {
+  // `..` for each flag whose value goes into a path in some command, `--session` among them.
+  test("a value of only white space, or . or .., is refused, naming the flag", () => {
     const blank = (flag: string, noun: string) =>
       `${flag} is only white space, so the call names no ${noun}`;
-    const step = (flag: string, value: string, noun: string) =>
-      `${flag} is "${value}", a step of a URL path, which the URL drops, so the call names no ${noun}`;
+    const dots = (flag: string, value: string, noun: string) =>
+      `${flag} is "${value}", only dots and slashes, so the call names no ${noun}`;
     for (const [argv, problem] of [
       [["issues", "--project", " "], blank("--project", "project")],
       [["issues", "--project", "ACME", "--parent", "\t"], blank("--parent", "parent")],
       [["open-asks", "--project", " "], blank("--project", "project")],
       [["results", "--issue", "ACME-1", "--at", " "], blank("--at", "commit")],
       [["issue-update", "--issue", "  ", "--status", "in_progress"], blank("--issue", "issue")],
-      [["read", "--issue", ".."], step("--issue", "..", "issue")],
-      [["read", "--issue", " . "], step("--issue", ".", "issue")],
+      [["read", "--issue", ".."], dots("--issue", "..", "issue")],
+      [["read", "--issue", " . "], dots("--issue", ".", "issue")],
       [
         ["result", "--retract", "..", "--reason", "Wrong commit."],
-        step("--retract", "..", "result"),
+        dots("--retract", "..", "result"),
       ],
-      [["resolve-comment", "--comment", "."], step("--comment", ".", "comment")],
+      [["resolve-comment", "--comment", "."], dots("--comment", ".", "comment")],
       [
         ["send-to-agent", "--session", "..", "--body", "Hello."],
-        step("--session", "..", "session"),
+        dots("--session", "..", "session"),
       ],
       [
         ["send-to-agent", "--session", "", "--body", "Hello."],
@@ -456,7 +456,7 @@ describe("the dispatch command surface", () => {
       ],
       [
         ["architecture-sync", "--project", "..", "--repo", "acme/infra"],
-        step("--project", "..", "project"),
+        dots("--project", "..", "project"),
       ],
     ] as const) {
       expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
@@ -464,8 +464,8 @@ describe("the dispatch command surface", () => {
         problems: [problem],
       });
     }
-    // A dot is no step outside a path: a query's project or check of "." is sent as it is, and
-    // Dispatch answers that no such thing exists.
+    // A flag whose value goes into a URL path in no command sends a dot as it is: a commit of "."
+    // is sent to Dispatch, which answers that no such commit exists.
     expect(parseCommand(["results", "--issue", "ACME-1", "--at", "."], noFiles)).toMatchObject({
       kind: "call",
     });
@@ -490,11 +490,16 @@ describe("the dispatch command surface", () => {
     });
   });
 
-  // A value of only dots and slashes names no step of a URL path: `./`, `../` and `.//` are what
-  // a script writes for "./$X" with an empty X, and sent they reach no thing of the flag's.
-  test("a value of only dots and slashes where it goes into a path is refused, naming the flag", () => {
+  // A value of only dots and slashes names no thing of the flag's, wherever the command sends it:
+  // `./`, `../` and `.//` are what a script writes for "./$X" with an empty X. In a URL path it
+  // names no step, and no key or reference is made of dots and slashes where the command sends it
+  // as a member of its body (`dispatch issue --project`), as a value of its query (`--project` of
+  // `search`, `issues`, `open-asks` and `priorities`) or matches it against an issue's documents
+  // (`--artifact` beside `--issue`). So the one reason is true in each use, and it names the flag
+  // and the value and no place the value would go.
+  test("a value of only dots and slashes is refused with one reason, wherever the command sends it", () => {
     const dots = (flag: string, value: string, noun: string) =>
-      `${flag} is "${value}", only dots and slashes, which name no step of a URL path, so the call names no ${noun}`;
+      `${flag} is "${value}", only dots and slashes, so the call names no ${noun}`;
     for (const [argv, problem] of [
       [["read", "--issue", "./"], dots("--issue", "./", "issue")],
       [["read", "--issue", "../"], dots("--issue", "../", "issue")],
@@ -505,6 +510,17 @@ describe("the dispatch command surface", () => {
         dots("--session", "...", "session"),
       ],
       [["doc-read", "--project", "ACME", "--artifact", "./"], dots("--artifact", "./", "document")],
+      [["issue", "--project", "./", "--title", "A title"], dots("--project", "./", "project")],
+      [["search", "--project", "./", "--query", "ship it"], dots("--project", "./", "project")],
+      [["issues", "--project", "./"], dots("--project", "./", "project")],
+      [["open-asks", "--project", "./"], dots("--project", "./", "project")],
+      [["priorities", "--project", "ACME", "--project", "./"], dots("--project", "./", "project")],
+      [
+        ["plan-approve", "--issue", "DSP-1", "--artifact", "./"],
+        dots("--artifact", "./", "document"),
+      ],
+      [["doc-read", "--issue", "DSP-1", "--artifact", "./"], dots("--artifact", "./", "document")],
+      [["read", "--issue", "DSP-1", "--artifact", "./"], dots("--artifact", "./", "document")],
     ] as const) {
       expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
         kind: "refused",
@@ -578,8 +594,9 @@ describe("the dispatch command surface", () => {
 
   // The job's `dispatch result --issue` form takes `--commit` as the project form does: a CI job's
   // step writes `--commit "$SHA"`, and an empty one would reach Dispatch only for its refusal,
-  // after the job's trade at the secrets broker. So it is refused there too, as `--commit=` is on
-  // the project form, and the same calls with a commit are calls. The rows above hold the rest.
+  // after `agent-secrets result-grant` traded the run's token. So it is refused there too, as
+  // `--commit=` is on the project form, and the same calls with a commit are calls. The rows above
+  // hold the rest.
   test("an empty --commit of dispatch result --issue, or --commit= of --project, is refused, naming the flag", () => {
     const commit = "a".repeat(40);
     for (const argv of [

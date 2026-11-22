@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -27,21 +27,21 @@ const resultsTokenProject = "TEST"
 // (BROKER_EXCHANGE_RESULT_WORKFLOWS): live, bound to jkt, the scope results alone beside the
 // project scope results, the person and the project the entry names, the session of its
 // workflow, and the run it was minted for.
-func resultsOnlyToken(jkt, project string) brokertoken.Introspection {
-	return brokertoken.Introspection{
+func resultsOnlyToken(jkt, project string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
 		Active:       true,
 		Session:      "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml",
 		Person:       "ada@example.com",
-		ProjectScope: brokertoken.ProjectScopeResults,
+		ProjectScope: ciphertoken.ProjectScopeResults,
 		Projects:     []string{project},
-		Scope:        brokertoken.ScopeResults,
-		CI: &brokertoken.CIRun{
+		Scope:        ciphertoken.ScopeResults,
+		CI: &ciphertoken.CIRun{
 			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
 			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
 			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 		},
 		ExpiresAt:  time.Now().Add(time.Hour).Unix(),
-		ClientID:   brokertoken.ExchangeClientID,
+		ClientID:   ciphertoken.ExchangeClientID,
 		Thumbprint: jkt,
 	}
 }
@@ -61,7 +61,7 @@ type limitedToken struct {
 	// kind names the token in a failure: "a read-only token".
 	kind string
 	// answer is what the broker answers for the token, bound to the caller's key.
-	answer func(jkt string) brokertoken.Introspection
+	answer func(jkt string) ciphertoken.Introspection
 	// list is the routes the token may call, by "<method> <pattern>"; listed reads the mark
 	// routes() stamps from it onto a row.
 	list   []string
@@ -94,7 +94,7 @@ func readOnlyLimitedToken() limitedToken {
 func resultsLimitedToken() limitedToken {
 	return limitedToken{
 		kind:    "a results token",
-		answer:  func(jkt string) brokertoken.Introspection { return resultsOnlyToken(jkt, resultsTokenProject) },
+		answer:  func(jkt string) ciphertoken.Introspection { return resultsOnlyToken(jkt, resultsTokenProject) },
 		list:    resultsScopeRoutes,
 		listed:  func(route apiRoute) bool { return route.ResultsScope },
 		refusal: codeResultsOnlyToken,

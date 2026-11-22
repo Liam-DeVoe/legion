@@ -377,6 +377,12 @@ evidence=$work
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# Every wait for a service the rig starts (await_start, until_true) reads that service's own
+# readiness signal, its log line, its open socket or an answer of its own, and await_start fails the
+# moment the service exits, so a wait's bound is only for a service that lives and never says it is
+# ready. That bound is the run's own deadline, SKILL_SCENARIOS_TIMEOUT (1500 s unset), at each call:
+# nothing but the box's own speed delays a readiness signal, a stalled box held the daemon
+# stand-in's past a fixed 30 s, and a service held past the run's deadline fails the run anyway.
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
@@ -390,7 +396,7 @@ R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_
 # A run of a -hidden label: its switch (hide_state_on). Empty for every other run.
 hide_state_file=''
 natsd_pid='' fake_github_pid=''
-S='' envoy_port='' dispatch_port='' pg_port='' nats_port='' github_port='' run_nats_url=''
+S='' envoy_port='' dispatch_port='' pg_socket='' nats_port='' github_port='' run_nats_url=''
 
 # label_dir LABEL prints the profile directory the map's link <work>/maps/profiles/LABEL points at,
 # or nothing when the link or the directory is missing.
@@ -1028,7 +1034,7 @@ start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
+  await_start listener "$listener_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the Envoy listener to answer /v1/sessions" listener_answers
 }
 
 # listener_answers reads the listener's /v1/sessions with the rig's bearer, which reaches curl on
@@ -1056,10 +1062,10 @@ start_dispatch() {
   DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URL=${run_nats_url:-} \
     DISPATCH_TEST_HIDE_STATE_FILE=$hide_state_file \
     DISPATCH_E2E_AGENT_SECRETS_URL='' start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
-  await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
+  await_start dispatch "$dispatch_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
   dispatch_port=$(report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:')
-  await_start dispatch "$dispatch_pid" 60 "Dispatch to answer /api/v1/whoami" \
+  await_start dispatch "$dispatch_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Dispatch to answer /api/v1/whoami" \
     curl -fsS -o /dev/null -H 'Authorization: Bearer e2e-token' "http://127.0.0.1:$dispatch_port/api/v1/whoami"
 }
 
@@ -1077,25 +1083,40 @@ lock_services() {
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
 # servers at once, so max_connections is 30 for each concurrent run and 20 more for psql. Each
 # container's id goes to $S/containers, and SKILL_SCENARIOS_OWNER labels it.
+#
+# Neither container publishes a host port. Docker would choose one among the ports it has not
+# handed out itself, which another process of a shared host can hold, and `docker run` then fails
+# with "address already in use" (a batch of reviewer-pass-and-fail ended so, before any run). NATS
+# runs on the host's network and binds a loopback port its own bind chooses (`-p -1`), and the
+# rig reads that port from its log, so nothing can take the port between the choice and the bind.
+# Its container's address on the Docker network would be free of the race too, but the listener
+# refuses a NATS server that is not this machine's (bus: ENVOY_ALLOW_REMOTE_NATS), and the rig
+# turns that guard off nowhere. Postgres is reached through its unix socket, in a directory of the
+# batch's own (pg_socket) that the container mounts: each run's Dispatch serves dev sign-in, which
+# refuses a database host that is neither loopback nor a socket (loopbackDatabase,
+# packages/envoy/cmd/dispatch/main.go). The container runs as this user, so the socket and its
+# lock are this user's to remove.
 services_up() {
   local owner=()
   evidence=$S
   [ -z "${SKILL_SCENARIOS_OWNER:-}" ] || owner=(--label "owner=$SKILL_SCENARIOS_OWNER")
+  # A unix socket's path holds at most 107 bytes, and a TMPDIR can be longer than that (a test's
+  # or a session's own), so the directory is a new one of /tmp's.
+  pg_socket=$(mktemp -d /tmp/rig-pg.XXXXXX)
   # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" "${owner[@]}" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+  docker run -d --name "$tag-pg" "${owner[@]}" --user "$(id -u):$(id -g)" --cpus 2 --memory 2g \
+    --mount type=tmpfs,destination=/var/lib/postgresql --mount "type=bind,source=$pg_socket,destination=/var/run/postgresql" \
+    -e POSTGRES_PASSWORD=ci ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
     -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >>"$S/containers"
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
   # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" "${owner[@]}" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >>"$S/containers"
-  nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
-  [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
-  until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
-  until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+  docker run -d --name "$tag-nats" "${owner[@]}" --network host --cpus 1 --memory 512m "$nats_image" -js -a 127.0.0.1 -p -1 >>"$S/containers"
+  until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
+  until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+  nats_port=$(docker logs "$tag-nats" 2>&1 | sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -1)
+  [ -n "$nats_port" ] || fail "NATS logged no client port on 127.0.0.1; see docker logs $tag-nats"
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
@@ -1104,13 +1125,14 @@ services_up() {
     echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
-  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres :$pg_port"
+  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres $pg_socket"
 }
 
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
   docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  [ -z "$pg_socket" ] || rm -rf -- "$pg_socket"
   rm -f "$services_env" "$S/up"
 }
 
@@ -1119,16 +1141,18 @@ services_down() {
 # batch's Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port.
 own_dispatch() {
-  local seed=$1 database=run_${R##*/} pg_port postgres
+  local seed=$1 database=run_${R##*/} postgres socket
   database=${database//-/_}
   # Postgres cuts a longer name to 63 bytes, and two runs whose names agree that far would share it.
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  postgres=$(docker inspect -f '{{.Id}}' "$tag-pg")
-  [ -n "$pg_port" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
+  # The container's id, and the directory of its socket that services_up mounted; an inspect that
+  # answers nothing leaves both empty for the refusal below.
+  read -r postgres socket < <(docker inspect -f \
+    '{{.Id}} {{range .Mounts}}{{if eq .Destination "/var/run/postgresql"}}{{.Source}}{{end}}{{end}}' "$tag-pg") || true
+  [ -n "$postgres" ] && [ -n "$socket" ] || fail "no Postgres container $tag-pg with its socket for the run's Dispatch"
   docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
     fail "CREATE DATABASE $database failed; see $R/fixture.log"
-  start_dispatch "postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+  start_dispatch "postgres:///$database?host=$socket&user=postgres&sslmode=disable"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
@@ -1147,11 +1171,11 @@ own_dispatch() {
 own_github() {
   local log=$evidence/logs
   start_process natsd "$work/services/bin/natsd" -p -1 -store_dir "$R/nats-store"
-  await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$log/natsd.log"
+  await_start natsd "$natsd_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "natsd to be ready" grep -q 'Server is ready' "$log/natsd.log"
   run_nats_url=nats://127.0.0.1:$(report_port "$log/natsd.log" 'Listening for client connections on [^ ]*:') ||
     fail "natsd logged no client port; see $log/natsd.log"
   FAKE_GITHUB_PORT='' start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
-  await_start fake_github "$fake_github_pid" 60 "the GitHub stand-in to report its port" \
+  await_start fake_github "$fake_github_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the GitHub stand-in to report its port" \
     report_port "$log/fake_github.log" 'fake github listener on 127\.0\.0\.1:'
   github_port=$(report_port "$log/fake_github.log" 'fake github listener on 127\.0\.0\.1:')
 }
@@ -1813,7 +1837,7 @@ legion_session() {
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role" ${phase:+"$phase"}
-  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
+  await_start daemon "$daemon_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
@@ -1993,8 +2017,9 @@ SQL
 # each GitHub read and write the role prompts, the skills and this round's agents' transcripts name:
 # `gh pr view`, `gh pr diff`, `gh pr checks` (exit 8 while a check runs; `--required` is GitHub's
 # "no required checks"), `gh pr list`, `gh pr edit`, `gh pr ready`, `gh pr merge`, `gh repo view`,
-# `gh auth status` and `gh --version`; the REST read and PATCH of each pull request; GraphQL (review
-# threads, the base's branch protection rule, which is none, and the head's check rollup); the check
+# `gh auth status` and `gh --version`; the REST read and PATCH of each pull request, and the list of
+# its commits (its one commit, the head on the base); GraphQL (review threads, the base's branch
+# protection rule, which is none, and the head's check rollup); the check
 # runs and the combined status of each head (state `pending`, as GitHub answers a commit with no
 # status); the workflow runs of each head and their jobs; the repository; its branches (each
 # `protected: false`), each branch's protection read (403, "Resource not accessible by
@@ -2013,15 +2038,19 @@ SQL
 # A call no route names is the stand-in's loud failure (gh-standin.ts), which score.ts counts as a
 # rig error, so a read this list lacks can never pass as GitHub's answer. The stand-in records each
 # call and its body in calls.jsonl.
-# Each body is `Dispatch: <issue>`, then the template's Verification section
-# (skills/legion-worker/references/pr-body.md), whose one Checks line is that of k1 at that pull
+# Each body is `Dispatch: <issue>`, then the template's two sections
+# (skills/legion-worker/references/pr-body.md): For the reviewer, with the implementer's lines
+# (Outcome, Why, Change, Proven by and Size; Look at first and Not proven are the reviewer's to
+# write), and Verification, whose Thermo line has a row for each half of the pair, each not run
+# since the change touches no runtime code, and whose one Checks line is that of k1 at that pull
 # request's head: the line Dispatch answered for the newest pass a role recorded there, or for the
 # tester's fail at #703 in sibling-fails (seed.ts heads-events keeps both in $R/fixture.json), and in
 # ci-only and ci-pass-and-fail the `Pull request line:` results-before.txt holds under the line of
-# that head; with none, `not yet run`. So no body disagrees with the results, and a reviewer's
-# refusal cannot come from a body.
+# that head; with none, `not yet run`. So no body disagrees with the results or the template, and a
+# reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
+# k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703)
+  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size
   case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
@@ -2035,13 +2064,40 @@ heads_routes() {
     fi
     [ -n "$line" ] || [ "$pr" != 702 ] ||
       fail "no line of k1 at #702's head for its body: see $R/fixture.json and $R/results-before.txt"
+    case $pr in
+    702)
+      outcome='A reader of the usage page learns how to list every command of the widgets CLI.'
+      # shellcheck disable=SC2016 # Markdown, written as it stands
+      change='- The usage page names `widgets --help`.
+- It says that command lists every command of the CLI.'
+      ;;
+    *)
+      outcome='A reader of the README finds the usage page.'
+      change='- The README points a reader at the usage page.
+- The usage page itself is unchanged.'
+      ;;
+    esac
+    # The template's Size: files changed, +added/−removed.
+    size=$(git -C "$R/remote.git" diff --numstat "$worker_base" "$head" |
+      awk '{ files++; added += $1; removed += $2 } END { printf "%d file%s changed, +%d/−%d", files, files == 1 ? "" : "s", added, removed }')
     body="Dispatch: $worker_key
+
+## For the reviewer
+
+**Outcome:** $outcome
+**Why:** Nothing told a reader how to list the commands of the widgets CLI ($worker_key).
+**Change:**
+$change
+**Proven by:** the cli check k1 of the issue's Verification document, run at this head.
+**Size:** $size
 
 ## Verification
 
 **Threads:** 0 resolved, 0 unresolved.
 
-**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12}: not run (docs-only).
+**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}, a docs-only PR included: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12} over the whole change, one row per half:
+- \`thermonuclear-deep-review\`: not run (the whole change touches no runtime code)
+- \`thermonuclear-code-quality\`: not run (the whole change touches no runtime code)
 
 **Checks:**
 ${line:-- Check k1 (before_merge): not yet run}
@@ -2173,6 +2229,32 @@ ${line:-- Check k1 (before_merge): not yet run}
       base_commit:{sha:$main}, merge_base_commit:{sha:$main},
       commits:[{sha:.head, commit:{message:.subject, author:{name:"Fixture", email:"fixture@example.invalid"}}}],
       files:[.files[] | {filename:.path, additions, deletions, changes:(.additions + .deletions)}]};
+    # A pull request'"'"'s commits, as GitHub lists them (pulls/<n>/commits): its one commit, the head,
+    # whose parent is the base.
+    def pullcommits: .head as $h | ([$trees[] | select(.sha == $h)][0]) as $t |
+      [{sha:$h, node_id:"C_rig", url:"\(api)/commits/\($h)", html_url:"https://github.com/\($repo)/commit/\($h)",
+        comments_url:"\(api)/commits/\($h)/comments",
+        commit:{url:"\(api)/git/commits/\($h)", message:$t.message, tree:{sha:$t.tree, url:"\(api)/git/trees/\($t.tree)"},
+          author:{name:"Fixture", email:"fixture@example.invalid", date:$at},
+          committer:{name:"Fixture", email:"fixture@example.invalid", date:$at}, comment_count:0},
+        author:null, committer:null,
+        parents:(if $t.parent == "" then [] else
+          [{sha:$t.parent, url:"\(api)/commits/\($t.parent)", html_url:"https://github.com/\($repo)/commit/\($t.parent)"}] end)}];
+    # A pull request files, as GitHub lists them (pulls/<n>/files): each path its head changes on the
+    # base, with the blob at the head (at the base, for a removed path), its status, its counts and
+    # its patch, the hunks of that path in the pull request diff from its first @@ line.
+    def blobAt($sha; $path): [$trees[] | select(.sha == $sha) | .entries[] | select(.path == $path) | .sha][0];
+    def patchOf($path): ([.diff | split("diff --git ")[] | select(startswith("a/\($path) b/"))][0] // "") as $s |
+      ($s | index("\n@@")) as $i | if $i == null then null else ($s[($i + 1):] | rtrimstr("\n")) end;
+    def pullfiles: . as $p | [.files[] | .path as $path | blobAt($p.head; $path) as $at | blobAt($main; $path) as $was |
+      {sha:($at // $was), filename:$path,
+        status:(if $was == null then "added" elif $at == null then "removed" else "modified" end),
+        additions, deletions, changes:(.additions + .deletions),
+        blob_url:"https://github.com/\($repo)/blob/\($p.head)/\($path)",
+        raw_url:"https://github.com/\($repo)/raw/\($p.head)/\($path)",
+        contents_url:"\(api)/contents/\($path)?ref=\($p.head)", patch:($p | patchOf($path))}];
+    # Each commit the world holds, the base and each head and each branch tip, as one alternation.
+    def knownshas: [$main, $branches[].sha, $trees[].sha] | unique | join("|");
     # A commit'"'"'s files, as the contents, trees, blobs and commit reads answer them. A ref names the
     # commit by its sha, by a branch at it, or, for the base, by nothing.
     def refsOf($t): [$t.sha] + [$branches[] | select(.sha == $t.sha) | .name] ;
@@ -2225,14 +2307,21 @@ ${line:-- Check k1 (before_merge): not yet run}
       # GraphQL: the pull request a query names, by its number or its variable n, else the first.
       [$others[] | {match:"^gh api .*graphql(?=.*(number: ?\(.number)\\b|\\bn=\(.number)\\b))", stdout:graphql}] +
       [{match:"^gh api .*graphql", stdout:($first | graphql)}] +
-      # Each pull request'"'"'s reviews and comments, and its head'"'"'s check runs and combined status.
+      # Each pull request'"'"'s reviews, comments and commits, and its head'"'"'s check runs and combined status.
       [$pulls[] | {match:"^gh api .*pulls/\(.number)/reviews/[0-9]+([ ?]|$)", lookup:"review", pull:.number},
         {match:"^gh api .*pulls/\(.number)/reviews", stdout:reviews, list:"reviews", pull:.number},
         {match:"^gh api .*issues/\(.number)/comments([ ?]|$)", stdout:[], list:"comments", pull:.number},
         {match:"^gh api .*pulls/\(.number)/comments([ ?]|$)", stdout:[]},
+        {match:"^gh api .*pulls/\(.number)/commits([ ?]|$)", stdout:pullcommits},
+        {match:"^gh api .*pulls/\(.number)/files([ ?]|$)", stdout:pullfiles},
         {match:"^gh api .*commits/\(.head)/check-runs", stdout:runs},
         {match:"^gh api .*commits/\(.head)/status", stdout:{state:"pending", sha:.head, total_count:0, statuses:[],
           commit_url:"\(api)/commits/\(.head)", url:"\(api)/commits/\(.head)/status"}}] +
+      # Each check run by its id (check-runs/<id>), as GitHub answers it, and GitHub 404 for an id no
+      # head of the world has a run of.
+      [$pulls[] | checkruns[] | {match:"^gh api .*check-runs/\(.id)([ ?]|$)", stdout:.}] +
+      [{match:"^gh api .*check-runs/[0-9]+([ ?/]|$)"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/checks/runs#get-a-check-run")] +
       # The base: no ruleset, no rule, and no branch protection.
       [{match:"^gh api .*rules/branches", stdout:[]}, {match:"^gh api .*rulesets([ ?]|$)", stdout:[]}] +
       [{match:"^gh api .*branches/[^ ?]+/protection"} +
@@ -2245,6 +2334,10 @@ ${line:-- Check k1 (before_merge): not yet run}
       [{match:"^gh api .*git/refs?/heads/[^ ?]+([ ?]|$)"} +
         refused(404; "Not Found"; "https://docs.github.com/rest/git/refs#get-a-reference")] +
       [$pulls[] | {match:"^gh api .*compare/(\($base | branchpat)|\($main))(\\.\\.\\.|%2E%2E%2E)(\(ref | branchpat)|\(.head))([ ?]|$)", stdout:compare}] +
+      # A compare of a whole commit id the world holds no commit of, on either side: GitHub 404.
+      [{match:"^gh api .*compare/(?!(\(knownshas))(\\.\\.\\.|%2E%2E%2E))[0-9a-f]{40}(\\.\\.\\.|%2E%2E%2E)"},
+       {match:"^gh api .*compare/[^ ?]+(\\.\\.\\.|%2E%2E%2E)(?!(\(knownshas))([ ?]|$))[0-9a-f]{40}([ ?]|$)"} |
+        . + refused(404; "Not Found"; "https://docs.github.com/rest/commits/commits#compare-two-commits")] +
       # The files of the base and each head, as GitHub answers them: contents (the JSON object, or
       # the file'"'"'s bytes under the raw media type, and a directory'"'"'s listing), trees (recursive or
       # not, by the tree'"'"'s or the commit'"'"'s sha or a branch), blobs, and the commit itself. A path or
