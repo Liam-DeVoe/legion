@@ -31,14 +31,14 @@ flowchart TB
 
   people -->|file issues, answer asks, approve specs| dispatch
   people -->|approve secret requests| approve
-  people -->|merge| github
+  people -->|review, and set the rules a merge lands under| github
   dispatch -->|events| envoy
   github -->|pull request and CI events| envoy
   envoy -->|events| coordinator
   envoy -->|messages| agents
   coordinator -->|runs| agents
   agents -->|specs, comments, asks, status| dispatch
-  agents -->|pull requests| github
+  agents -->|pull requests, merges| github
   agents -->|request a secret| broker
   broker -->|pending requests, each linking its page| inbox
   inbox -->|link| approve
@@ -90,8 +90,9 @@ Two decisions stay with people:
   whether and when it lands, so a check it requires, or a review a person must give, stays
   theirs; the coordinator submits no merge and turns auto-merge on nowhere.
 
-The coordinator runs its agents as Oh My Pi sessions, either in tmux panes on one host or as Agent
-Sandbox pods in a Kubernetes cluster.
+The coordinator runs its agents as Oh My Pi sessions, or a phase worker on Claude Code where the
+deployment puts it there, either in tmux panes on one host or, in a Kubernetes cluster, in one
+Agent Sandbox pod for each issue.
 
 ## Secrets Broker: credentials a person approved
 

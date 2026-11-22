@@ -35,7 +35,7 @@ flowchart LR
   admission --> architect["Architect<br/>writes the spec"]
   architect --> gate{"You approve<br/>the spec"}
   gate --> planner
-  subgraph pods["Phase workers, one Kubernetes pod each"]
+  subgraph pods["Phase workers, all in the issue's one Kubernetes pod"]
     planner --> implementer
     implementer --> tester
     tester --> reviewer

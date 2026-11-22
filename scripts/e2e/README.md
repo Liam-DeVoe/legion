@@ -2444,7 +2444,7 @@ A signal to the whole process group does not stop the removal:
 
   - A SIGKILLed driver runs no trap, and the next run of the same identity's preflight names what it left; a different identity's run never sees it.
 
-- **Production Dispatch, project `LEGSMOKE` by default**: three root issues per run.
+- **Production Dispatch, project `LEGSMOKE` by default**: up to four root issues per run.
   The preflight moves stale todo issues to backlog, roots and the children a failed run left todo alike.
   The proof human's writes use the agents' bearer and name the session `legion-e2e4b-proof-human-<pid>` as their actor, which production Dispatch requires;
   it holds no claim, so the daemon sets back its status write on a live root as it does any outside session's.
@@ -2555,7 +2555,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `admitted-issue-cap`
 
-  the cap counts the issues the daemon has started, so two roots fill none of a cap of 4: both are admitted at once, in rank order, with `admission.waiting` empty.
+  the cap counts the issues the daemon has started, so two roots fill two of a cap of 4: both are admitted at once, in rank order, with `admission.waiting` empty.
   Tree 3 is filed here and set todo at `issue-independence`, where the cap is full
 
 - `spec-posted`
@@ -4746,7 +4746,7 @@ snapcompact is a method these panes could run, and the only thing that keeps a c
 | `step4-a-root-architect-that-owes-no-task-is-sent-nothing-and-says-already-compacted` | the operator's compaction of an idle root architect, then the controller's of the same session | the first compacted and the architect still owing nothing and running no turn for three seconds after either; the second answered 200 with `compacted: false` and Oh My Pi's own `Already compacted` |
 | `step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session` | `legion claims compact` at a tester whose stand-in holds every summary answer for 35 s | the caller's real answer after about 70 s, past `worker_rpc_timeout_seconds` and past 30 s; a `fresh_session` asked for during it refused `CLAIM_IN_A_TURN` through both doors and a second compaction refused in its own words; the ladder's own 30 s rung come due inside the compaction having sent nothing; and the owed task gone at the compaction's end, once |
 | `step6-every-refusal-gets-its-own-message-through-both-doors` | a summary the endpoint refuses every time, a worker in a turn, a role `worker_backends` runs on Claude Code, role `controller`, and a suspended, a stopped and a failed worker | the refused summary reported 200 `compacted: false` with the owed task sent again and no run reset; and `CLAIM_IN_A_TURN`, `CLAIM_NOT_ON_OMP`, `INVALID_ROLE` and `CLAIM_NOT_RUNNING` each word for word through both doors |
-| `step7-a-fresh-session-starts-each-worker-anew-with-what-its-issue-owes-it` | `legion claims retry --claim <token> --fresh-session` at the stopped planner, asked again while the daemon refuses it — admission starts a stopped worker that holds a slot in its phase and owes no task again by itself, and the operation reaches no claim whose launch is in flight — then the controller's `fresh_session` at the root architect | each relaunched with no session to resume and running in a session that is not the one it recorded; the planner sent a task of its issue's current phase; the architect's new launch told its tree's catch-up; and the daemon's own line naming which door asked for each |
+| `step7-a-fresh-session-starts-each-worker-anew-with-what-its-issue-owes-it` | `legion claims retry --claim <token> --fresh-session` at the stopped planner, asked again while the daemon refuses it — admission's slot repair passes over a stopped worker, so the retry is what starts it, and the operation reaches no claim whose launch is in flight — then the controller's `fresh_session` at the root architect | each relaunched with no session to resume and running in a session that is not the one it recorded; the planner sent a task of its issue's current phase; the architect's new launch told its tree's catch-up; and the daemon's own line naming which door asked for each |
 | `step8-a-fresh-session-starts-a-worker-whose-process-is-gone` | the planner and the root architect, each in a turn its stand-in holds open, their panes' whole process groups killed with the driver's runtime holding its own reports of the claim back, then `legion claims retry --claim <token> --fresh-session` for the planner and the controller's `fresh_session` for the architect | each refused `CLAIM_IN_A_TURN` through both doors while its process is alive and in that turn; the daemon's read of the killed process answering uncertain, no death of the claim judged, and the claim still stored `working` over it; then 200, a new pane in a session that is not the one it recorded, and the task of the dead turn back marked interrupted — the planner's the task of its issue's current phase, and the architect's new launch told its tree's catch-up |
 
 Step 8's window is one no pane can be asked to produce: a process died and no report of that death ever reached the daemon, which is what a lifecycle refusal or a daemon restart leaves, and what makes a claim stand stored `working` over nothing.
@@ -6929,7 +6929,7 @@ Without a record it makes no `gh` call.
 
 Every wait for an issue to reach one phase is `wait_for_phase ISSUE PHASE [SECONDS]`:
 `phase_seconds` (600 s, the proof's budget for an agent's turn), unless the phase's worker runs a whole loop and the caller passes its own bound:
-a correction round, the retro, and planning, whose planner runs its gap analyst and up to three plan-review rounds before its handoff (Stage 4b's `plan_seconds`, 2700 s).
+a correction round, the retro, and planning, whose planner runs its gap analyst and its plan-review rounds, which have no limit, before its handoff (Stage 4b's `plan_seconds`, 2700 s).
 `round_correction_pushed ROUND` accepts the round's line only as an addition in `smoke_file`'s patch, never in a notes file that quotes it.
 
 With the design gate armed (`gates.design: root-issues`), a root whose architect registers a closed gate while no worker of its tree runs waits on a person:

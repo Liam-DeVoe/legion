@@ -865,13 +865,13 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 // own `fresh_session`, and reads back what each worker is given in the session it starts in: a
 // phase worker its issue's current phase task, and the root architect its catch-up.
 //
-// The phase worker is the one step 6 stopped, and the daemon starts such a worker again on its
-// own: its issue holds a slot in a worker phase and its claim owes no task, which is the state
-// admission repairs (internal/admit/admit.go's resumeSlottedWorkers). So this step asks for the
-// fresh session through retryFreshSession, which waits out a claim the daemon is in the middle
-// of starting, and what it reads back afterwards is the same either way: the fresh session is
-// the operator's, and the task in it is the one the issue's phase owes (api's
-// restartWorkedPhase).
+// The phase worker is the one step 6 stopped, and the daemon does not start such a worker again
+// on its own: its issue holds a slot in a worker phase and its claim owes no task, but admission's
+// slot repair passes over a retired claim on purpose (internal/admit/admit.go's owedOf, under
+// resumeSlottedWorkers). This step asks for the fresh session through
+// retryFreshSession, which also waits out a claim the daemon is in the middle of starting, and
+// what it reads back afterwards is the fresh session the operator asked for, with the task the
+// issue's phase owes (api's restartWorkedPhase).
 func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 	t := r.t
 	planner := r.token(r.ladder, claim.RolePlanner)

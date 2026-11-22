@@ -157,12 +157,13 @@ worked, so a parent is accepted after its children. After the close the role you
 `production_check` names — the tester, unless the setting is `off` — checks the change in
 production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check, a comment and a message, and no other write, so
-look in both places.
-Each look that finds the deploy missing says when it wants to look again, and nothing else brings
-it back.
-The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work
-resumes.
+closed issue takes a result for such a check or a `default_branch` one, a comment and a message,
+and no other write, so look in both places.
+Each look that finds the deploy missing says when it wants to look again; besides that, only the
+check's bound and the retry of a look nobody reported bring it back.
+The tree lingers for three days (`linger_hours`, 72 by default) in case the work resumes: its
+sessions are kept, and under Kubernetes its pods and their disks go at the close, and a re-admission
+makes them afresh.
 
 ## Stop, park or rerun
 

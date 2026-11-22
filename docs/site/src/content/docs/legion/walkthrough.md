@@ -61,9 +61,10 @@ as the review App. In Dispatch, the issue's header links the pull request.
 ## 6. The acceptance
 
 When the reviewer approves, the architect reads the evidence (the tester's handoff, each check of
-the issue with its latest result, the approval of the head) and accepts the change with a comment on the
-issue, which moves it to `retro`, since the acceptance is the last of the default steps; a change
-that falls short goes back to an earlier step of its task instead. Retro runs next.
+the issue with its latest result, the approval of the head) and accepts the change: it posts a
+comment on the issue, then signs off with the `legion` tool's `sign_off`, which moves the issue to
+`retro`, since the acceptance is the last of the default steps; a change that falls short goes back
+to an earlier step of its task instead. Retro runs next.
 
 ## 7. The merge
 

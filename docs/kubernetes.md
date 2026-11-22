@@ -1353,7 +1353,7 @@ Keep the route unchanged across the copy below in particular: there every sessio
 ### What `cloudsql-iam` puts in a pod
 
 No session key, anywhere.
-No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string, and no URL sits in a Secret, a volume, an argv, an environment value or a log.
+No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string, and no URL of the database itself sits in a Secret, a volume, an argv, an environment value or a log: the one URL a role is given names the local socket its launcher binds, in a file on the role's own memory-backed private volume (below).
 What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
 When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
