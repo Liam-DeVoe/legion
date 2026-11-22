@@ -66,8 +66,29 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		killRecordedHelper(t, ghPid, ghSeconds)
 		answered, _ := read(t, gh)
 		err := testwait.Receive(t, "the help read of a gh that never answers to end at its timeout of 1s", answered)
-		if want := "gh did not answer its help within 1s, and its process group was stopped"; err == nil || err.Error() != want {
-			t.Fatalf("readGhHelp of a gh that never answers = %v; want %q", err, want)
+		// A loaded machine can start gh after its second has passed; the read then says the timeout
+		// as one that passed before gh started, and stops no group (the row below).
+		stopped, early := "gh did not answer its help within 1s, and its process group was stopped", "gh did not answer its help within 1s: the time passed before gh started"
+		if err == nil || (err.Error() != stopped && err.Error() != early) {
+			t.Fatalf("readGhHelp of a gh that never answers = %v; want %q, or %q where gh started late", err, stopped, early)
+		}
+	})
+	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
+		dir := t.TempDir()
+		gh, ran := filepath.Join(dir, "gh"), filepath.Join(dir, "ran")
+		if err := os.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		timeout := ghHelpTimeout
+		ghHelpTimeout = 0
+		t.Cleanup(func() { ghHelpTimeout = timeout })
+		answered, _ := read(t, gh)
+		err := testwait.Receive(t, "the help read whose timeout has passed to end", answered)
+		if want := "gh did not answer its help within 0s: the time passed before gh started"; err == nil || err.Error() != want {
+			t.Fatalf("readGhHelp under a timeout that passed before gh started = %v; want %q", err, want)
+		}
+		if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("gh ran (%v) under a timeout that had passed", err)
 		}
 	})
 	t.Run("the stop reaches the helper gh started", func(t *testing.T) {

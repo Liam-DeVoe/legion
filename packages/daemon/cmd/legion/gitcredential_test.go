@@ -671,8 +671,9 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 // reach it. The fake GitHub answers 401 to any other header, so the answer, acme's token from
 // either directory, proves which token went. curl's last argument is the repository git named at
 // https://api.github.com, and the value after its --max-time is seconds of one decimal inside the
-// read's bound (forkReadBound, which the product sets to 10 s and this binary to what is left of
-// its deadline); leakguard's own tests read the guard's other curl options (Guard.CurlGet).
+// read's bound (programBound of forkReadBound: the product's 10 s, and in this binary what is left
+// of its deadline when the read starts, read here before the read so it is no less than the read's);
+// leakguard's own tests read the guard's other curl options (Guard.CurlGet).
 func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
 	forkOfAcme := forkReadFixture(t, "fork-of-a-served-repository.http")
@@ -687,6 +688,7 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 			github := newFakeGitHub(t, tc.token, printsAnswer(forkOfAcme, 0))
 			useForkRead(t, github.program, forkReadBound)
 			forkReadPane(t, root, tc.configDir)
+			bound := programBound(&forkReadBound)
 			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
 			if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
 				t.Fatalf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
@@ -710,9 +712,8 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				}
 			}
 			// What the fork read hands the guard's curl read (leakguard's Guard.CurlGet): the
-			// repository git named, and a --max-time inside the read's bound, forkReadBound, which
-			// this binary sets to what is left of its own deadline (testBounds). The guard's own
-			// tests read its other options.
+			// repository git named, and a --max-time inside the read's bound, bound. The guard's
+			// own tests read its other options.
 			const wantURL = "https://api.github.com/repos/outside-author/sample-project"
 			if len(read.argv) == 0 || read.argv[len(read.argv)-1] != wantURL {
 				t.Errorf("curl ran with %q, want %s as its last argument", read.argv, wantURL)
@@ -722,8 +723,8 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				maxTime = read.argv[at+1]
 			}
 			seconds, err := strconv.ParseFloat(maxTime, 64)
-			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > forkReadBound.Seconds() {
-				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most the read's bound of %s", read.argv, maxTime, forkReadBound)
+			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > bound.Seconds() {
+				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most the read's bound of %s", read.argv, maxTime, bound.Round(100*time.Millisecond))
 			}
 		})
 	}

@@ -228,14 +228,20 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	var health repocache.Health
-	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), 20*time.Millisecond, func() bool {
-		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
+	// Each read of /healthz, and the wait for one that says ready, ends when what is left of the
+	// test binary's deadline less 30 s has passed: a /healthz that takes the connection and never
+	// answers fails the row by name, where a request with no bound hung it to go test's alarm.
+	wait := testwait.Bounded(t, 1<<60, 30*time.Second)
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), wait)
+	defer readyCancel()
+	if !testwait.Holds(wait, 20*time.Millisecond, func() bool {
+		request, err := http.NewRequestWithContext(readyCtx, http.MethodGet, "http://"+address+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("GET /healthz: %v (each read's bound ends %s before the test binary's deadline); stdout %q, stderr %q", err, 30*time.Second, stdout.String(), stderr.String())
 		}
 		err = json.NewDecoder(response.Body).Decode(&health)
 		response.Body.Close()

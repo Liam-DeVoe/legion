@@ -150,7 +150,9 @@ func legionConfig(t *testing.T, project string, port int) string {
 
 // runningLegion is a live process named `legion`, which is what the registry's pids point at and
 // what registry.Alive answers true for. A copy of sleep: Alive reads argv[0], and a shell
-// script's argv[0] is the shell.
+// script's argv[0] is the shell. It sleeps without end, and the test's cleanup kills it: a probe
+// that ended on its own, once a loaded machine made the test outlast its sleep, would read as a
+// legion that had stopped.
 func runningLegion(t *testing.T) int {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -166,7 +168,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("write the probe: %v", err)
 	}
 
-	probe := exec.Command(path, "300")
+	probe := exec.Command(path, "infinity")
 	if err := probe.Start(); err != nil {
 		t.Fatalf("start the probe: %v", err)
 	}

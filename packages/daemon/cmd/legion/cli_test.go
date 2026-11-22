@@ -23,10 +23,17 @@ var legionBuildDir string
 
 // legionBuild builds this package's `legion` once for the whole test binary and answers its
 // path: the binary a caller runs, with no test code linked in, which is what clitest and the
-// invocation table drive. Every test that runs it only runs it, so one build serves them all.
+// invocation table drive. Every test that runs it only runs it, so one build serves them all. It
+// links in this test binary's deadline (main.linkedDeadline, from testDeadlineEnv), so each read
+// the built binary bounds takes what is left of that deadline (programBound), as this binary's
+// own runs as `legion` do; under -timeout 0 it links none, and the product's bounds hold.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+	args := []string{"build", "-o", binary}
+	if deadline, ok := os.LookupEnv(testDeadlineEnv); ok {
+		args = append(args, "-ldflags", "-X main.linkedDeadline="+deadline)
+	}
+	if out, err := exec.Command("go", append(args, ".")...).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build: %v\n%s", err, out)
 	}
 	return binary, nil
