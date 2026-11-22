@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 )
 
 // A convert's replace deletes the key's fixed old name and never retires it, so a failed delete
@@ -55,5 +56,32 @@ func TestAFailedDeleteOfAFixedOldNameKeepsTheReplaceOpenForStep0(t *testing.T) {
 	}
 	if record := h.store.record(t, key); record.Op != nil || slices.Contains(record.Retired, fixed) {
 		t.Fatalf("the record after Step 0 is %+v; want no operation and %s never retired", record, fixed)
+	}
+}
+
+// Step 0 meets a published replace of the fixed name (its candidate already the current) first,
+// and deletes the fixed name before anything else, whatever the server holds of the current: here
+// the current is gone from the server and the replace is settled by Resolve, a call that creates
+// nothing. Step 0 deletes s-ses-1 and closes the replace, with session~C still the current and
+// never retired. The control is Step 0 without that first branch, which took the replace for one
+// whose candidate the server does not hold and abandoned it: it retired the current, so the record
+// listed session~C both current and retired.
+func TestStep0DeletesAPublishedReplacesFixedNameFirst(t *testing.T) {
+	const key, fixed, current = "ses-1", "s-ses-1", "session~C"
+	ctx := context.Background()
+	h := newHarness()
+	if _, err := h.server.create(key)(ctx, fixed, Start{Seq: 3}); err != nil {
+		t.Fatal(err)
+	}
+	h.store.put(key, Record{Key: key, Current: current, Start: 3, Op: &Op{Kind: OpReplace, Old: fixed, Candidate: current, Owner: "p0", ReservedAt: h.clock.Now().Add(-time.Hour)}})
+	names := h.names("p1")
+	names.cfg.Fixed = func(logical string) string { return "s-" + logical }
+	if _, err := names.Resolve(ctx, key); err != nil {
+		t.Fatalf("Resolve = %v; want it served", err)
+	}
+	record := h.store.record(t, key)
+	if h.server.holds(fixed) || record.Op != nil || record.Current != current || slices.Contains(record.Retired, current) {
+		t.Fatalf("after Resolve the record is %+v and the server holds %s: %t; want %s deleted, the replace closed, and %s current and never retired",
+			record, fixed, h.server.holds(fixed), fixed, current)
 	}
 }
