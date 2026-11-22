@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -467,38 +468,92 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 // stream's in-process refusal that publishConfirmed could not confirm carries the subject it went
 // to. So at the edge the answer for a holder the scope does not show is the listener's own text,
 // still the 503 maybe_stored with Retry-After that every listener gives such a send, and the
-// error goes to the log; a holder the scope shows is answered with the error as it is. Control:
+// error goes to the log; a holder the scope shows is answered with the error as it is. Each send
+// runs through sendToRole, whose every forward ends in process until its window ends. Control:
 // with edge mode off, the scope shows every holder and the row fails.
 func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
 	rig := newEdgeRig(t)
-	var scope *edgeScope
-	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
-	}
 	const hidden, shown = "ses_edge_in_process_pub", "ses_edge_in_process_priv"
 	for _, holder := range []struct {
-		id       string
-		projects []string
-	}{{hidden, []string{"PUB"}}, {shown, []string{"PRIV"}}} {
-		recorder := httptest.NewRecorder()
-		send := &roleSend{w: recorder, record: &requestRecord{logger: rig.harness.config.logger, line: "listener publish", laneKey: "topic"},
-			d: rig.deps, scope: scope, role: "legion-priv-priv-5-tester", arrived: time.Now()}
-		send.hold(roles.Resolution{State: roles.Live, Holder: holder.id, HolderState: session.Live, Entry: session.SessionEntry{Projects: holder.projects}})
-		unconfirmed := fmt.Errorf("bus: %w: NATS disconnected during the publish to %q", bus.ErrPublishUnconfirmed, contracts.LegacyAgentSubject(holder.id))
-		send.windowEnded(fmt.Errorf("%w: %w: %w", errEarlierAttemptInProcess, bus.ErrForwardNotStored, unconfirmed))
-		body := strings.TrimSpace(recorder.Body.String())
-		t.Logf("the send to %s that ended in process: status %d %s", holder.id, recorder.Code, body)
-		var answer listenerwire.APIError
-		_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
-		if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" ||
-			answer.Code != listenerwire.CodeMaybeStored || !strings.HasPrefix(answer.Error, earlierAttemptInProcessPrefix) {
-			t.Errorf("the send to %s that ended in process: status %d, Retry-After %q, %s; want the 503 maybe_stored of an earlier attempt in process",
-				holder.id, recorder.Code, recorder.Header().Get("Retry-After"), body)
-		}
+		id, project, role string
+	}{{hidden, "PUB", "legion-priv-priv-5-tester"}, {shown, "PRIV", "legion-priv-priv-6-tester"}} {
+		body := sendEndingInProcess(t, rig, holder.role, holder.id, holder.project, "")
 		if names := strings.Contains(body, holder.id); names != (holder.id == shown) {
 			t.Errorf("the send to %s that ended in process answers %s, which names the holder: %v; want it named only for the holder of PRIV", holder.id, body, names)
 		}
 	}
+}
+
+// sendEndingInProcess claims role for holder, a session of project another listener registered,
+// and sends a message to role through sendToRole under the edge's scope (none under the control),
+// with every forward ending while an earlier forward is in process, its error naming the subject
+// it went to. With movedTo set, movedTo is a session of PRIV past the live window, and the role
+// moves to it under the first forward. It fails t unless the answer is the 503 maybe_stored with
+// Retry-After of an earlier attempt in process, and returns the answer's body.
+func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, movedTo string) string {
+	t.Helper()
+	var scope *edgeScope
+	if rig.edgeOn() {
+		scope = &edgeScope{projects: rig.projects}
+	}
+	rig.placeElsewhere(t, holder, project)
+	if _, err := rig.deps.registry.SetRole(holder, "shared-listener", role, false); err != nil {
+		t.Fatalf("claim %s for %s: %v", role, holder, err)
+	}
+	if movedTo != "" {
+		var raw natsgo.KeyValue
+		swapSessionBucket(t, rig.harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue { raw = kv; return kv })
+		live, _ := rig.deps.sessions.Windows()
+		lapsed, err := json.Marshal(session.SessionEntry{MachineID: "shared-listener", SelfSubscribed: true, Title: movedTo, Projects: []string{"PRIV"},
+			UpdatedAt: time.Now().Add(-live - time.Minute).UnixMilli()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Put(movedTo, lapsed); err != nil {
+			t.Fatalf("write %s's lapsed entry: %v", movedTo, err)
+		}
+		if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { entry, _ := rig.deps.sessions.Lookup(movedTo); return entry.Title == movedTo }) {
+			t.Fatalf("%s's entry never reached this listener's copy", movedTo)
+		}
+	}
+	var forwards atomic.Int32
+	rig.deps.delivery.forwardRole = inlineForward(func(subject string, _ contracts.Envelope, _ string, _ time.Duration) error {
+		if forwards.Add(1) == 1 && movedTo != "" {
+			if _, err := rig.deps.registry.SetRole(movedTo, "shared-listener", role, false); err != nil {
+				t.Errorf("move %s to %s: %v", role, movedTo, err)
+			}
+		}
+		unconfirmed := fmt.Errorf("bus: %w: flush publish to %q: nats: timeout", bus.ErrPublishUnconfirmed, subject)
+		return fmt.Errorf("%w: %w: %w", errEarlierAttemptInProcess, bus.ErrForwardNotStored, unconfirmed)
+	})
+	recorder := httptest.NewRecorder()
+	record := &requestRecord{logger: rig.harness.config.logger, line: "listener publish", laneKey: "topic"}
+	arrived := time.Now()
+	ctx, cancel := context.WithDeadline(context.Background(), arrived.Add(publishDeliveryWindow))
+	defer cancel()
+	sendToRole(ctx, recorder, scope, record, rig.deps, listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-in-process"), nil, role, false, arrived, nil)
+	body := strings.TrimSpace(recorder.Body.String())
+	t.Logf("the send to %s after %d forwards answered %d, Retry-After %q: %s", role, forwards.Load(), recorder.Code, recorder.Header().Get("Retry-After"), body)
+	var answer listenerwire.APIError
+	_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" ||
+		answer.Code != listenerwire.CodeMaybeStored || !strings.HasPrefix(answer.Error, earlierAttemptInProcessPrefix) {
+		t.Errorf("the send to %s: status %d, Retry-After %q, %s; want the 503 maybe_stored of an earlier attempt in process", role, recorder.Code, recorder.Header().Get("Retry-After"), body)
+	}
+	return body
+}
+
+// The same answer after the role has moved: the send's forward to a holder the edge does not show
+// (PUB) ends while an earlier forward is in process, the role then moves to a holder the edge
+// shows (PRIV) whose session is past the live window, so the send forwards nothing more, and its
+// window ends. The 503 maybe_stored carries the first forward's error, which names the PUB
+// holder's agent subject, so it is judged by the holder that forward went to, not by the holder
+// the send resolved last: it names neither the hidden holder nor its subject. Control: with edge
+// mode off, the scope shows every holder and the row fails.
+func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *testing.T) {
+	const hidden, shown = "ses_edge_moved_in_process_pub", "ses_edge_moved_in_process_priv"
+	body := sendEndingInProcess(t, newEdgeRig(t), "legion-priv-priv-7-tester", hidden, "PUB", shown)
+	requireNamesNone(t, "the send's answer after the role moved", body, hidden)
 }
 
 // A session that holds a role of another project when it registers at the edge, which another
