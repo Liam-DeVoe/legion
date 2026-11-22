@@ -1584,7 +1584,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		}
 		return
 	}
-	asking = slices.DeleteFunc(asking, func(c supervise.Claim) bool { return queued[c.Role] })
+	asking = slices.DeleteFunc(asking, func(c supervise.Claim) bool { return queued.Of(c.Token, c.Role) })
 	if len(asking) == 0 {
 		return
 	}
