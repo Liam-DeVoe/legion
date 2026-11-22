@@ -39,7 +39,8 @@ body: |-
   which names neither the holder nor its claim revision, and a read of a holder's session that
   does not answer - a role read's, a role send's, a soft claim's - is the 503 with
   `Retry-After: 1` in the listener's own words, naming no holder, as is a refused forward of a
-  role send to a holder it does not show, under the refusal's status.
+  role send to a holder it does not show, under the refusal's status, and a role send to such a
+  holder whose window ends while an earlier forward is in process, the 503 `maybe_stored`.
   A registration at the edge first releases the claims of other projects' roles that the session
   holds and its role claim view shows, named in the answer's `warnings`, reading the role bucket
   while that view cannot be served, and is refused with a retryable 503 when a release fails,

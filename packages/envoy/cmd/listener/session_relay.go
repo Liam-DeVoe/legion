@@ -1579,10 +1579,13 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 
 // reMarkWithheldGap re-marks sessionID's entry with a fresh repository gap mark, a frame that carried
 // a mark having been answered nak (onReply): the frame did not reach the client, so the mark is not
-// lost to it. It writes a fresh id, never the frame's own mark, so the relay loop's clear of that
-// mark as sent (repositoryGapSent) can never take the re-mark's: it forgets this process's noted mark
-// first, so noteRepositoryGap mints a new one. The worst case is then one redundant notice at a later
-// run, never a lost one. It runs off onReply's callback, in its own goroutine, within
+// lost to it. It writes a fresh id, never the frame's own mark, since noteRepositoryGap mints a new
+// id for every mark, so the relay loop's clear of that mark as sent (repositoryGapSent) can never
+// take the re-mark's. The worst case is then one redundant notice at a later run, never a lost one.
+// It forgets this process's noted mark first. Whether the write lands or fails, the mark this
+// process notes at the end is the re-mark's new id either way; the forget only makes the relay
+// loop's owedRepositoryGap read the entry's mark from this listener's copy, rather than a noted
+// one, while the write is in flight. It runs off onReply's callback, in its own goroutine, within
 // sendRequestBudget, since the write is a KV read and write that must not stall the other
 // sessions' receipts that one callback carries. A write that fails notes a fresh id in this
 // process alone (the loop may have cleared the frame's own mark as sent, and noteRepositoryGap notes
@@ -1593,10 +1596,8 @@ func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 	defer cancel()
 	m.forgetRepositoryGap(sessionID)
 	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
-		// This duplicates noteRepositoryGap's own tail - the lazy-map create and the store - on
-		// purpose rather than calling it: cybermonklabs/legion#4810 changes these four gap functions
-		// (owedRepositoryGap, repositoryGapSent, noteRepositoryGap, forgetRepositoryGap), so this copy
-		// keeps them byte-identical until #4810 merges; the duplicate goes then.
+		// noteRepositoryGap notes nothing when its write fails, so this notes the fresh id itself,
+		// as noteRepositoryGap's own tail does: the lazy-map create and the store.
 		m.repositoryGapsMu.Lock()
 		if m.repositoryGaps == nil {
 			m.repositoryGaps = map[string]string{}
