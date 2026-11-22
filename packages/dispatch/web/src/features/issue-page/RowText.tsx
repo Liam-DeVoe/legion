@@ -178,7 +178,9 @@ interface RowNames {
  * named as a tie's chip names them, by the line the page's store projects beside the name
  * (`KnownReferences.lines`): a block by the first block of its words that holds any, and a
  * document by the page's word for it alone, since a chip never draws a document's name, which a
- * link and every plain line read it by (decision 39).
+ * link and every plain line read it by (decision 39). Until the store has that line, a document
+ * is drawn by the word the store's rule gives it by its address and `issue`
+ * (`rowReferenceWords`).
  */
 function useRowNames(words: string, issue: string | undefined): RowNames {
   const { ambiguous, lines, names: known } = useKnownReferences();
@@ -188,10 +190,12 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
   const addresses = useMemo(
     () => [
       ...new Set(
-        found.filter((one) => documentWord(one.route) === undefined).map((one) => one.reference)
+        found
+          .filter((one) => documentWord(one.route, issue) === undefined)
+          .map((one) => one.reference)
       ),
     ],
-    [found]
+    [found, issue]
   );
   const { names: named, reads } = useReferenceNames(addresses, issue);
   const names = useMemo(() => {
@@ -199,20 +203,20 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
     for (const one of found) {
       const name =
         lines.get(one.reference) ??
-        (documentWord(one.route) === undefined ? named.get(one.reference)?.name : undefined);
+        (documentWord(one.route, issue) === undefined ? named.get(one.reference)?.name : undefined);
       if (name !== undefined) byReference.set(one.reference, name);
     }
     return byReference;
-  }, [found, lines, named]);
+  }, [found, issue, lines, named]);
   const drawn = useMemo(
     () =>
       found
         .map((one) => {
-          const { key, words: name } = rowReferenceWords(one, names);
+          const { key, words: name } = rowReferenceWords(one, names, issue);
           return `${key ?? ""} ${name}`;
         })
         .join("\n"),
-    [found, names]
+    [found, issue, names]
   );
   return { ambiguous, drawn, issues, names, reads };
 }
@@ -487,7 +491,8 @@ function DrawnText({
   // What the reading's words cite, read from the reading itself: a block's stored text is an
   // excerpt, or plain words with its references left out (`TreeNode.text`).
   const words = useMemo(() => wordsOf(tree), [tree]);
-  const { ambiguous, drawn, issues, names, reads } = useRowNames(words, source?.issue);
+  const issue = source?.issue;
+  const { ambiguous, drawn, issues, names, reads } = useRowNames(words, issue);
   // After every paint of the reading, and again when the references take their names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
   // puts them back.
@@ -495,13 +500,13 @@ function DrawnText({
     const element = box.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    linkRowReferences(element, names, issues, ambiguous);
+    linkRowReferences(element, names, issues, issue, ambiguous);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const route = parseNodeReference(anchor.getAttribute("data-row-reference") ?? "");
       if (route !== undefined && route.kind !== "issue") anchor.setAttribute(ROW_CHIP, "");
       if (tabStops) anchor.removeAttribute("tabindex");
     }
-  }, [ambiguous, issues, names, tabStops]);
+  }, [ambiguous, issue, issues, names, tabStops]);
   useLayoutEffect(link, [link]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });

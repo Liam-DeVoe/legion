@@ -231,20 +231,21 @@ export function rowReferences(
  * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
  * which a chip draws in place of its name (decision 39) and which `names` holds for it instead -
  * the line the page's store projects beside its name (`KnownReferences.lines`, from
- * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word for a document
- * (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party by the
- * name its own read gives it; anything else as a chip in place, by its target's own words cut
- * as a tie's chip cuts them (`chipName`). A reference with no name - its target has not
- * answered yet, or Dispatch answered it has none - reads as the words its author wrote, as a
- * link of any other body reads until its title resolves (R8, INFRA-1196 decision 350, which
- * replaces decision 95's short form).
+ * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
+ * address and `issue`, the issue the row belongs to (`node-row-chip.ts`'s `documentWord`); an
+ * issue by its key, then its title; a party by the name its own read gives it; anything else as
+ * a chip in place, by its target's own words cut as a tie's chip cuts them (`chipName`). A
+ * reference with no name - its target has not answered yet, or Dispatch answered it has none -
+ * reads as the words its author wrote, as a link of any other body reads until its title
+ * resolves (R8, INFRA-1196 decision 350, which replaces decision 95's short form).
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route" | "written">,
-  names: ReadonlyMap<string, string>
+  names: ReadonlyMap<string, string>,
+  issue: string | undefined
 ): { readonly key: string | undefined; readonly words: string } {
   const name = (names.get(one.reference) ?? "").replace(/\s+/gu, " ").trim();
-  const word = documentWord(one.route);
+  const word = documentWord(one.route, issue);
   if (word !== undefined) return { key: undefined, words: name === "" ? word : name };
   if (name === "") return { key: undefined, words: one.written };
   if (one.route.kind === "issue") return { key: one.route.key, words: name };
@@ -266,13 +267,14 @@ export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]
 /** Writes `element`'s words: an issue's key set apart from its title, as a link to an issue
  *  reads everywhere (`RefLink.tsx`). An element that already reads them is left as it is: only
  *  this writes a row's reference, so its words tell what it holds, and a pass whose names
- *  changed nothing writes nothing. */
+ *  changed nothing writes nothing. `issue` is the issue the row belongs to. */
 function nameReference(
   element: HTMLElement,
   one: Pick<RowReference, "reference" | "route" | "written">,
-  names: ReadonlyMap<string, string>
+  names: ReadonlyMap<string, string>,
+  issue: string | undefined
 ): void {
-  const { key, words } = rowReferenceWords(one, names);
+  const { key, words } = rowReferenceWords(one, names, issue);
   if (key === undefined) {
     if (element.textContent !== words) element.textContent = words;
     return;
@@ -291,16 +293,18 @@ function nameReference(
  * no page shows, words with no link (R5) - named from `names` (`rowReferenceWords`), and a
  * reference an earlier pass made takes the name it has come to have since. A bare key is read
  * as one only where it is among `issues`, the keys the page's batched read named an issue for.
- * A reference in `ambiguous` links nothing (`rowReferences`), and one an earlier pass made for a
+ * `issue` is the issue the row belongs to, whose spec a chip in place names as the Spec. A
+ * reference in `ambiguous` links nothing (`rowReferences`), and one an earlier pass made for a
  * reference the read has answered ambiguous since is put back as the words it was made over, so
  * it is drawn as written. Out of the tab order, as everything inside a row is (R9). Run again
- * after every paint and whenever `names`, `issues` or `ambiguous` changes; it finds nothing to
- * do twice.
+ * after every paint and whenever `names`, `issues`, `issue` or `ambiguous` changes; it finds
+ * nothing to do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
   issues: readonly string[],
+  issue: string | undefined,
   ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
 ): void {
   for (const element of root.querySelectorAll<HTMLElement>(`[${ROW_REFERENCE}]`)) {
@@ -311,7 +315,7 @@ export function linkRowReferences(
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameReference(element, { reference, route, written }, names);
+    if (route !== undefined) nameReference(element, { reference, route, written }, names, issue);
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
@@ -338,7 +342,7 @@ export function linkRowReferences(
       }
       element.setAttribute(ROW_REFERENCE, one.reference);
       element.setAttribute(ROW_WRITTEN, one.written);
-      nameReference(element, one, names);
+      nameReference(element, one, names, issue);
       pieces.push(element);
       at = one.end;
     }

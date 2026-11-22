@@ -1527,7 +1527,7 @@ test("a chip, a published name and a row's link name a child issue by its whole 
     ]);
     const links = rowReferences(nodeOf(root, citing.id)?.text ?? "", knownIssueKeys(names));
     expect(
-      links.map((link) => rowReferenceWords(link, names)),
+      links.map((link) => rowReferenceWords(link, names, reads.issue.key)),
       title
     ).toEqual([{ key: "CORE-2", words: name }]);
   }
