@@ -570,3 +570,70 @@ test("the ours arm records each history read it removed for want of our file at 
     "case c1: the ours arm needs --ours"
   );
 });
+
+// Catches: an arm of a written case that changes its task or the read's call, or a listing that
+// differs between arms in more than the skill.
+test("a written case's arms differ only in the skill's read and listing", () => {
+  const task: SessionMessage = {
+    role: "user",
+    content: [{ type: "text", text: "Write the alpha checklist of the fixture project." }],
+  };
+  const call: SessionMessage = {
+    role: "assistant",
+    content: [
+      { type: "toolCall", id: "written_read", name: "read", arguments: { path: "skill://alpha" } },
+    ],
+  };
+  const read: SessionMessage = {
+    role: "toolResult",
+    toolCallId: "written_read",
+    toolName: "read",
+    isError: false,
+    content: [{ type: "text", text: readResult("SKILL.md", f1File(2)) }],
+  };
+  const written: Case = {
+    ...f1Case,
+    id: "c-written",
+    messages: [task, call, read],
+    skillReads: [2],
+    source: { ...f1Case.source, kind: "written" },
+  };
+  const dirs = { old: oldDir, new: newDir, ours: RENAMED };
+  const [old, fresh, minus, twin, none, ours] = (
+    ["old", "new", "minus", "twin", "none", "ours"] as const
+  ).map((name) => buildArm(written, name, dirs, path.join(scratch, "written")));
+  // The task is the same message in every arm.
+  for (const each of [old, fresh, minus, twin, none, ours]) expect(each?.messages[0]).toEqual(task);
+  // Each arm with their skill keeps the call, and answers the read from its own text at the
+  // installed path.
+  for (const each of [old, fresh, minus, twin]) {
+    expect(each?.messages).toHaveLength(3);
+    expect(each?.messages[1]).toEqual(call);
+    expect(skillHeaderPath(textOf(each?.messages[2]))).toBe(path.join(INSTALLED, "SKILL.md"));
+    expect(each?.profileSkills).toEqual(written.profile.skills);
+  }
+  expect(textOf(old?.messages[2])).toBe(readResult("SKILL.md", f1File(2)));
+  expect(textOf(fresh?.messages[2])).toBe(readResult("SKILL.md", newSkill));
+  expect(textOf(minus?.messages[2])).toBe(
+    readResult("SKILL.md", f1File(2).replace(`${LINE}\n`, ""))
+  );
+  expect(JSON.stringify(twin?.messages)).toBe(JSON.stringify(old?.messages));
+  // No skill: the task alone, and the profile less the skill.
+  const [alpha, beta] = written.profile.skills;
+  expect(none?.messages).toEqual([task]);
+  expect(none?.profileSkills).toEqual([beta]);
+  // Ours: the read of our skill at the same path inside it, and ours listed in their place.
+  expect(ours?.messages[1]).toEqual({
+    ...call,
+    content: [
+      {
+        type: "toolCall",
+        id: "written_read",
+        name: "read",
+        arguments: { path: "skill://alpha-ours" },
+      },
+    ],
+  });
+  expect(skillHeaderPath(textOf(ours?.messages[2]))).toBe(path.join(OURS_INSTALLED, "SKILL.md"));
+  expect(ours?.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta]);
+});

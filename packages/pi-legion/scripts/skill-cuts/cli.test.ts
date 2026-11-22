@@ -45,6 +45,7 @@ import {
   lossChance,
   MAX_EXTRA_RUNS,
   MIN_INFORMATIVE_CASES,
+  meanDifference,
   type RunRecord,
   SCREEN_RUNS,
   scoreSkill,
@@ -1137,7 +1138,7 @@ describe("behaviour", () => {
       twin: 40,
     });
     expect((await cli(report(planted))).stdout.split("\n")).toContain(
-      "verdict: none: control not a loss"
+      `verdict: none: deleting the planted line ${JSON.stringify(OTHER_LINE)} showed no detectable change (planted-loss control not a loss)`
     );
     // A control made with one planted line is not taken for one made with another.
     const other = await cli(behaviour("control", planted));
@@ -1499,7 +1500,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       "  openai/gpt-6.1-sol: 2 sessions, served by the gateway",
       "  gateway/claude-sonnet-5-5: 1 session, served by the gateway",
       "  with no model (its file's head names none): 1; not queried (in no models query's rows): 1",
-      "screened cases by the served model they ran on: anthropic/claude-sonnet-5-5 5 cases, openai/gpt-6.1-sol 1 case",
+      "screened session cases by the served model they ran on: anthropic/claude-sonnet-5-5 5 cases, openai/gpt-6.1-sol 1 case",
       `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve`,
     ]) {
       expect(lines).toContain(line);
@@ -1545,7 +1546,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       opus,
     ]);
     expect(withOpus.stdout.split("\n")).toContain(
-      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 3 sessions on served models no screened case ran on`
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 3 sessions on served models no screened session case ran on`
     );
   }, 300_000);
 
@@ -1838,7 +1839,7 @@ describe("behaviour: the compared arm", () => {
     expect(result(cut.out, "c04").stages.screen?.compared).toBe("new");
   }, 120_000);
 
-  // Catches: a run of the cut's test (INFRA-4676's procedure) or of their skill against no skill
+  // Catches: a run of the cut's test (the old and new arms) or of their skill against no skill
   // whose judge reads `the-skill` where the case's text names the skill.
   test("a run with --new or with no skill compared sends the judge the case's text unchanged", async () => {
     const s = withOurs(scenario("unblinded", LOSS_SKILL(), [{ id: "c04" }]), "ours", OURS_SKILL());
@@ -1877,7 +1878,7 @@ describe("behaviour: the compared arm", () => {
     }
   }, 120_000);
 
-  test("an INFRA-4676 results file with old and new still reports", async () => {
+  test("a results file of a cut's test, with old and new, still reports", async () => {
     const ids = ["c04", "c05", "c06", "c07", "c08", "c09"];
     const s = scenario(
       "infra-4676",
@@ -2116,6 +2117,286 @@ describe("behaviour: the compared arm", () => {
   }, 60_000);
 });
 
+// Written cases (`build-cases --written`) beside session cases, and the report's descriptions
+// beside the registered verdict.
+
+/** A written case of alpha, as `build-cases --written` writes one: its task as the user's message,
+ *  a read of skill://alpha and its result as F1 holds it, and a real step that passes. */
+function makeWrittenCase(id: string): Case {
+  const c = makeCase(id);
+  return {
+    ...c,
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Write the alpha checklist for the release." }],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "written_read",
+            name: "read",
+            arguments: { path: "skill://alpha" },
+          },
+        ],
+      },
+      { ...messages[2], toolCallId: "written_read" },
+    ],
+    skillReads: [2],
+    realStep: { role: "assistant", content: [{ type: "text", text: PASS_STEP }] },
+    source: { ...c.source, kind: "written" },
+  };
+}
+
+/** `s` with the written cases `ids` after its own cases, in its case file. */
+function withWritten(s: Scenario, ids: readonly string[]): Scenario {
+  const cases = [...s.cases, ...ids.map(makeWrittenCase)];
+  writeFileSync(s.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+  return { ...s, cases, markers: new Map([...s.markers, ...ids.map((id) => [id, ""] as const)]) };
+}
+
+/** The report's words of the mean of `differences` (score.ts's `meanDifference`). */
+function meanWords(differences: number[]): string {
+  const mean = meanDifference(differences);
+  if (mean === undefined) return "none";
+  const head = `${mean.cases} case${mean.cases === 1 ? "" : "s"} ${mean.mean.toFixed(2)}`;
+  return mean.interval === undefined
+    ? `${head} (one case, so no interval)`
+    : `${head} (95% interval ${mean.interval.low.toFixed(2)} to ${mean.interval.high.toFixed(2)}, t over the cases)`;
+}
+
+describe("behaviour: written cases and the report's descriptions", () => {
+  test("the served-sessions refusal stops session cases only, and a skill with written cases never reports it as its reason for no verdict", async () => {
+    const s = withWritten(scenario("reading-written", f1File(2), [{ id: "c00" }, { id: "c01" }]), [
+      "w00",
+      "w01",
+    ]);
+    recordCaptures(s, ["old", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const file = path.join(s.dir, "reading-models.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        sessions: 8,
+        byModel: [
+          { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 5 },
+          { model: "acme-gateway/gpt-6.1", anthropic: false, served: false, sessions: 3 },
+        ],
+        noModel: 0,
+        notQueried: 0,
+        notAnthropic: 3,
+        served: 5,
+        withModel: 8,
+      })
+    );
+    const reason =
+      "too few sessions on served models: 5 of its 8 reading sessions are on a model the gateway serves, fewer than 6";
+    const from = recorder.requests.length;
+    const screen = await cli(comparedArgs("screen", s, "none", "--reading-models", file));
+    expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(screen.stdout).toContain(
+      `session cases are not screened: ${reason} (--reading-models ${file}); the written cases are`
+    );
+    // The session cases make no run; each written case its controls, and 10 runs of old and none,
+    // each judged.
+    for (const id of ["c00", "c01"]) expect(existsSync(caseResultFile(s.out, id))).toBe(false);
+    for (const id of ["w00", "w01"]) {
+      expect(passes(result(s.out, id), "screen")).toEqual({ old: SCREEN_RUNS, none: 0 });
+    }
+    expect(requestsSince(from)).toHaveLength(2 * (3 + 2 * SCREEN_RUNS + 2 * SCREEN_RUNS));
+    const reported = await cli([...report(s), "--reading-models", file]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    expect(lines).toContain(
+      `verdict: none: fewer than ${MIN_INFORMATIVE_CASES} informative cases: 2`
+    );
+    expect(reported.stdout).not.toContain(reason);
+    expect(lines).toContain("cases by kind: 2 session (0 informative), 2 written (2 informative)");
+    expect(lines).toContain("case c00: not run");
+    // Confirm and control take the screen as finished: the session cases were never to be run.
+    const confirm = await cli(comparedArgs("confirm", s, "none", "--reading-models", file));
+    expect(confirm.stdout).toContain(
+      `no confirm runs: the skill gets no verdict: fewer than ${MIN_INFORMATIVE_CASES} informative cases: 2`
+    );
+  }, 300_000);
+
+  test("report gives the mean difference over screened cases with its interval, per kind", async () => {
+    const s = withWritten(
+      scenario("report-mean", f1File(2), [{ id: "c04" }, { id: "c05" }, { id: "c06" }]),
+      ["w00", "w01", "w02"]
+    );
+    const screens: Record<string, { old: number; none: number }> = {
+      c04: { old: 10, none: 0 },
+      c05: { old: 8, none: 4 },
+      c06: { old: 5, none: 5 },
+      w00: { old: 8, none: 2 },
+      w01: { old: 3, none: 5 },
+    };
+    for (const [id, screen] of Object.entries(screens)) {
+      writeMadeUpResult(s.out, id, { screen }, { compared: "none" });
+    }
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const difference = (id: string) => ((screens[id]?.old ?? 0) - (screens[id]?.none ?? 0)) / 10;
+    const session = ["c04", "c05", "c06"].map(difference);
+    const written = ["w00", "w01"].map(difference);
+    for (const line of [
+      "screened session cases: 3 (c04, c05, c06), 2 informative; screen passes old 23/30, none 9/30",
+      "screened written cases: 2 (w00, w01), 1 informative; screen passes old 11/20, none 7/20",
+      `mean of old less none in screen pass rate, each screened case one observation (a description beside the registered rule): all ${meanWords([...session, ...written])}; session ${meanWords(session)}; written ${meanWords(written)}`,
+    ]) {
+      expect(lines).toContain(line);
+    }
+    // One case of a kind has no interval, and a kind with no screened case has no mean.
+    const one = withWritten(scenario("report-mean-one", f1File(2), [{ id: "c04" }]), ["w00"]);
+    writeMadeUpResult(one.out, "c04", { screen: { old: 10, none: 0 } }, { compared: "none" });
+    const oneLines = (await cli(report(one))).stdout.split("\n");
+    expect(oneLines).toContain(
+      "mean of old less none in screen pass rate, each screened case one observation (a description beside the registered rule): all 1 case 1.00 (one case, so no interval); session 1 case 1.00 (one case, so no interval); written none"
+    );
+    expect(oneLines).toContain("screened written cases: none");
+  }, 60_000);
+
+  test("report counts ties, floors, ceilings and reverse gaps", async () => {
+    const s = withWritten(
+      scenario("report-shapes", f1File(2), [{ id: "c04" }, { id: "c05" }, { id: "c06" }]),
+      ["w00", "w01"]
+    );
+    const screens: Record<string, { old: number; none: number }> = {
+      c04: { old: 0, none: 0 },
+      c05: { old: 10, none: 10 },
+      c06: { old: 5, none: 5 },
+      w00: { old: 3, none: 5 },
+      w01: { old: 8, none: 2 },
+    };
+    for (const [id, screen] of Object.entries(screens)) {
+      writeMadeUpResult(s.out, id, { screen }, { compared: "none" });
+    }
+    const reported = await cli(report(s));
+    expect(reported.stdout.split("\n")).toContain(
+      "screened cases, old against none in the screen: 3 ties, 1 floor (0 of 10 in both), 1 ceiling (10 of 10 in both), 1 reverse gap (none above old); a floor or a ceiling is a tie too"
+    );
+  }, 60_000);
+
+  test("the judge prompt's sha256 and settings are in the report and in each newly judged stage", async () => {
+    const s = scenario("judge-identity", LOSS_SKILL(), [{ id: "c04" }]);
+    recordCaptures(s, ["old", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const screen = await cli(comparedArgs("screen", s, "none"));
+    expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
+    const prompt = readFileSync(path.join(import.meta.dir, "prompts", "judge.md"));
+    const settings = loadPrompt("judge").settings;
+    expect(result(s.out, "c04").stages.screen?.judge).toEqual({ sha256: sha256(prompt), settings });
+    const reported = await cli(report(s));
+    expect(reported.stdout.split("\n")).toContain(
+      `judge: prompts/judge.md sha256 ${sha256(prompt)}; model ${settings.model}, thinking_budget ${settings.thinking_budget}, max_tokens ${settings.max_tokens}, temperature ${settings.temperature}, effort ${settings.effort}; recorded by 1 of the 1 stages of the results, another judge by 0, none by 0`
+    );
+  }, 120_000);
+
+  // Catches: a written case's model counted among the reading sessions a verdict speaks for, which
+  // would claim a session on that model was tested.
+  test("a written case's model is counted under written tasks, never among the reading sessions the verdict speaks for", async () => {
+    const keeps =
+      "verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss";
+    const models = path.join(scratch, "written-reading-models.json");
+    writeFileSync(
+      models,
+      JSON.stringify({
+        sessions: 11,
+        byModel: [
+          { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true, sessions: 7 },
+          { model: "openai/gpt-6.1-sol", anthropic: false, served: true, sessions: 2 },
+          { model: "openai-codex/gpt-6-astra", anthropic: false, served: false, sessions: 2 },
+        ],
+        noModel: 0,
+        notQueried: 0,
+        notAnthropic: 4,
+        served: 9,
+        withModel: 11,
+      })
+    );
+    /** A scenario of `session` session cases and the written cases `written` (id to model), each
+     *  screened at old 10, none 0, confirmed at old 40, none 35, and c04 or w04 the control case. */
+    const scenarioOf = (name: string, session: string[], written: Record<string, string>) => {
+      const base = scenario(
+        name,
+        f1File(2),
+        session.map((id) => ({ id }))
+      );
+      const cases = [
+        ...base.cases,
+        ...Object.entries(written).map(([id, model]) => ({ ...makeWrittenCase(id), model })),
+      ];
+      writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+      const s = { ...base, cases };
+      for (const c of cases) {
+        writeMadeUpResult(
+          s.out,
+          c.id,
+          {
+            screen: { old: 10, none: 0 },
+            confirm: { old: 40, none: 35 },
+            ...(c.id === cases[0]?.id ? { control: { old: 40, minus: 0, twin: 40 } } : {}),
+          },
+          { compared: "none" }
+        );
+      }
+      return s;
+    };
+    // Session cases on anthropic/claude-sonnet-5-5, written ones on openai/gpt-6.1-sol: the verdict
+    // speaks for the sonnet sessions alone, and the openai ones are sessions no screened session
+    // case ran on.
+    const mixed = scenarioOf("written-models", ["c04", "c05", "c06"], {
+      w04: "openai/gpt-6.1-sol",
+      w05: "openai/gpt-6.1-sol",
+      w06: "openai/gpt-6.1-sol",
+    });
+    const lines = (await cli([...report(mixed), "--reading-models", models])).stdout.split("\n");
+    for (const line of [
+      "screened session cases by the served model they ran on: anthropic/claude-sonnet-5-5 3 cases",
+      "written tasks: 3 on openai/gpt-6.1-sol (screened written cases: each a written task in a recorded session's context, never a reading session)",
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 2 sessions on served models no screened session case ran on`,
+    ]) {
+      expect(lines).toContain(line);
+    }
+    // Every screened case written: the verdict speaks for no reading sessions, and says so.
+    const written = scenarioOf("written-only-models", [], {
+      w04: "anthropic/claude-sonnet-5-5",
+      w05: "anthropic/claude-sonnet-5-5",
+      w06: "anthropic/claude-sonnet-5-5",
+      w07: "anthropic/claude-sonnet-5-5",
+      w08: "openai/gpt-6.1-sol",
+      w09: "openai/gpt-6.1-sol",
+    });
+    const only = (await cli([...report(written), "--reading-models", models])).stdout.split("\n");
+    for (const line of [
+      "screened session cases by the served model they ran on: none",
+      "written tasks: 4 on anthropic/claude-sonnet-5-5, 2 on openai/gpt-6.1-sol (screened written cases: each a written task in a recorded session's context, never a reading session)",
+      `${keeps.replace("case c04", "case w04")}; it speaks for no reading sessions: its screened cases are all written tasks, never reading sessions`,
+    ]) {
+      expect(only).toContain(line);
+    }
+  }, 60_000);
+
+  test("a case file with no judge identity still loads", async () => {
+    const s = scenario("judge-none", f1File(2), [{ id: "c04" }, { id: "c05" }]);
+    for (const id of ["c04", "c05"]) {
+      writeMadeUpResult(s.out, id, { screen: { old: 10, none: 0 } }, { compared: "none" });
+      expect(result(s.out, id).stages.screen?.judge).toBeUndefined();
+    }
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout).toContain(
+      "; recorded by 0 of the 2 stages of the results, another judge by 0, none by 2 (judged before the judge's identity was recorded)"
+    );
+  }, 60_000);
+});
+
 describe("refusals before any model call", () => {
   test("a --config that is not a configuration is refused (exit 2) by read, control, behaviour and load", async () => {
     const { keyFile } = setup();
@@ -2203,7 +2484,7 @@ test("a skill's no-verdict reason says its control's runs are unscreened only wh
     `fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${MIN_INFORMATIVE_CASES - 1}`
   );
   expect(noVerdict(scoreSkill(unscreenedControl(MIN_INFORMATIVE_CASES)))).toBe(
-    "control not a loss: its runs are unscreened"
+    "planted-loss control not a loss: its runs are unscreened"
   );
 });
 

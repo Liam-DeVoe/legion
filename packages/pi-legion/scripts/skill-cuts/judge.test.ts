@@ -435,6 +435,72 @@ test("the messages before the step: the last ones, the last user message, skill 
   expect(before).not.toContain("alpha's own text");
 });
 
+// Catches: a written case's read result reaching the judge with the skill's text, which would show
+// it every line of the skill and not only the case's.
+test("a written case's history reaches the judge with the read note in place of the skill text", async () => {
+  const task = "Write the alpha checklist of the fixture project, one result a step.";
+  const written: Case = {
+    ...f1Case,
+    id: "c-written",
+    messages: [
+      { role: "user", content: [{ type: "text", text: task }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "written_read",
+            name: "read",
+            arguments: { path: "skill://alpha" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "written_read",
+        toolName: "read",
+        isError: false,
+        content: [
+          {
+            type: "text",
+            text: `[Skill file: ${INSTALLED}/SKILL.md]\n${f1File(2).replace(/\n$/, "")}`,
+          },
+        ],
+      },
+    ],
+    skillReads: [2],
+    source: { ...f1Case.source, kind: "written" },
+  };
+  const { gateway, bodies } = world(() => sse(PASS));
+  await judgeControls(written, gateway);
+  const replies: ArmReply[] = (["old", "none"] as const).map((arm) => ({
+    arm,
+    run: 0,
+    content: [{ type: "text", text: `Step 4 of the ${arm} arm.` }],
+  }));
+  await judgeBlind(written, replies, gateway, "seed-written");
+  expect(bodies).toHaveLength(5);
+  // The task, the read call and the note in place of the read's text: every body's case part.
+  expect(new Set(bodies.map((body) => blocksOf(body)[0]))).toEqual(
+    new Set([
+      [
+        `<criterion>\nPass: ${f1Case.criterion.pass}\nFail: ${f1Case.criterion.fail}\n</criterion>`,
+        `<line>\n${LINE}\n</line>`,
+        `<before>\n[user]\n${task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n[tool result: read]\n[the text of a file of the skill, left out]\n</before>`,
+      ].join("\n\n"),
+    ])
+  );
+  const skillLines = f1File(2)
+    .split("\n")
+    .filter((line) => line.length > 3 && line !== LINE);
+  for (const body of bodies) {
+    const text = blocksOf(body).join("\n");
+    for (const line of skillLines)
+      expect({ line, held: text.includes(line) }).toEqual({ line, held: false });
+    expect(text).not.toContain(INSTALLED);
+  }
+});
+
 test("an unparsed judgement is judged again twice and then gives null, never fail", async () => {
   const input = {
     criterion: f1Case.criterion,

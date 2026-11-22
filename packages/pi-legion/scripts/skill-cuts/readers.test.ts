@@ -12,6 +12,7 @@ import {
   AttackInput,
   CraftInput,
   craftInput,
+  loadPrompt,
   MapInput,
   NAME_ONLY_REFUSAL,
   nameOnlyReason,
@@ -569,6 +570,34 @@ const make = (fields: Record<string, unknown>) => ({
   ...fields,
 });
 const SUMMARY = "The change adds a step that finds a rule's reason before its deletion.";
+
+/** The written-case reader's input: alpha's base text, one session case, the context session's
+ *  first user message, and at most two tasks. */
+const writtenCaseInput = {
+  skill: "alpha",
+  files: [{ path: "SKILL.md", text: SKILL_MD }],
+  sessionCases: [
+    { step: '[tool call: write] {"path":"checklist.md","content":"1. ok"}', criterion: CRITERION },
+  ],
+  firstMessage: "Make the alpha checklist of the fixture project for the release.",
+  count: 2,
+};
+/** A written task whose line, the base text's line 9, decides its first step. */
+const writtenTask = {
+  task: "Draft the alpha checklist of the fixture project for the next build.",
+  line: { file: "SKILL.md", number: 9, text: "2. Write each step's result on one line." },
+  criterion: CRITERION,
+  followingStep: {
+    text: "",
+    toolCalls: [{ name: "write", arguments: { path: "checklist.md", content: "1. ok\n2. ok" } }],
+  },
+  violatingStep: {
+    text: "",
+    toolCalls: [{ name: "write", arguments: { path: "checklist.md", content: "1. ok, 2. ok" } }],
+  },
+};
+/** `writtenTask` with `fields` in its place. */
+const task = (fields: Record<string, unknown>) => ({ ...writtenTask, ...fields });
 
 const ROWS: Record<ReaderName, Row> = {
   restate: {
@@ -1248,6 +1277,54 @@ const ROWS: Record<ReaderName, Row> = {
       { answer: { fixes: [], makes: [] }, why: "summary" },
     ],
   },
+  "written-case": {
+    input: writtenCaseInput,
+    valid: [
+      { tasks: [writtenTask] },
+      {
+        tasks: [
+          writtenTask,
+          task({
+            line: {
+              file: "SKILL.md",
+              number: 8,
+              text: "1. Read `references/x.md` before the first step.",
+            },
+            followingStep: { text: "I read the reference first.", toolCalls: [] },
+          }),
+        ],
+      },
+    ],
+    bad: [
+      {
+        // A line the base text does not hold, at the number of one it holds.
+        answer: {
+          tasks: [task({ line: { ...writtenTask.line, text: "2. Write each result twice." } })],
+        },
+        why: "tasks.0.line.text: is not line 9 of SKILL.md",
+      },
+      {
+        answer: { tasks: [task({ line: { ...writtenTask.line, number: 11 } })] },
+        why: "tasks.0.line.number: is past the last line, 10, of SKILL.md",
+      },
+      {
+        answer: { tasks: [task({ line: { ...writtenTask.line, file: "README.md" } })] },
+        why: "tasks.0.line.file: is no file of the base text",
+      },
+      {
+        answer: { tasks: [writtenTask, writtenTask, writtenTask] },
+        why: "tasks: holds 3 tasks, more than the 2 asked for",
+      },
+      { answer: { tasks: [] }, why: "tasks" },
+      { answer: { tasks: [task({ task: " " })] }, why: "tasks.0.task: is blank" },
+      {
+        answer: { tasks: [task({ followingStep: { text: " ", toolCalls: [] } })] },
+        why: "tasks.0.followingStep: holds no text and no tool call",
+      },
+      { answer: { tasks: [task({ violatingStep: undefined })] }, why: "tasks.0.violatingStep" },
+      { answer: { tasks: [task({ criterion: { pass: "x" } })] }, why: "tasks.0.criterion.fail" },
+    ],
+  },
 };
 
 test("each reader's schema refuses a bad answer and a valid one parses", () => {
@@ -1420,6 +1497,39 @@ test("the audit's request holds the line, the messages before the step and the s
   expect(text).toContain(
     '<message index="5" role="toolResult">\n[part 2 of 2 of this message]\nKeep each result to a single line.\n</message>'
   );
+});
+
+// Catches: a written-case request that hides the base text's line numbers, the session cases or
+// the context session's first message, or a prompt that lets a task restate its line.
+test("the written-case reader's request numbers the base text and gives the session cases, the context session's first message and the count", () => {
+  const [user] = UserMessage.parse(readerBody("written-case", writtenCaseInput).messages);
+  const text = user.content.map((part) => part.text).join("\n\n");
+  expect(text).toStartWith(
+    '<skill name="alpha">\n<file path="SKILL.md">\n1: ---\n2: name: alpha\n'
+  );
+  expect(text).toContain(
+    "9: 2. Write each step's result on one line.\n10: 3. Run the tests where needed.\n</file>\n</skill>"
+  );
+  expect(text).toContain(
+    `<session-cases>\n<case n="1">\n<step>\n${writtenCaseInput.sessionCases[0]?.step}\n</step>\n<criterion>\nPass: ${CRITERION.pass}\nFail: ${CRITERION.fail}\n</criterion>\n</case>\n</session-cases>`
+  );
+  expect(text).toContain(`<first-message>\n${writtenCaseInput.firstMessage}\n</first-message>`);
+  expect(text).toEndWith("<count>2</count>");
+  // A skill with no session case says so.
+  const [none] = UserMessage.parse(
+    readerBody("written-case", { ...writtenCaseInput, sessionCases: [] }).messages
+  );
+  expect(none.content[0]?.text).toContain("<session-cases>\nNone.\n</session-cases>");
+  // The prompt asks for a task of the context session's own work, one the skill applies to, that
+  // states nothing of its line.
+  const prompt = loadPrompt("written-case").text;
+  for (const words of [
+    "must not state, restate or hint at what the line says",
+    "reads like the real work of the session `<first-message>` comes from",
+    "The skill applies to the task",
+  ]) {
+    expect({ words, said: prompt.includes(words) }).toEqual({ words, said: true });
+  }
 });
 
 // The craft reader, and the style text's rule ids it judges (style.ts).

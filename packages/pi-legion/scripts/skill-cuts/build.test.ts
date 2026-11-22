@@ -26,7 +26,7 @@ import {
   SPOOL_CHUNK,
   STOP_AFTER_SESSIONS,
 } from "./build";
-import { type Case, loadCases, pathHash } from "./cases";
+import { type Case, caseKind, loadCases, pathHash } from "./cases";
 import { GhRetries } from "./common";
 import {
   type GhResult,
@@ -39,7 +39,7 @@ import {
   tsv,
 } from "./copies";
 import { mtimeRange } from "./countsql";
-import { blindOrder } from "./judge";
+import { blindOrder, stepText } from "./judge";
 import { psqlRows } from "./psql-rows";
 import { READER_TRIES } from "./readers";
 import {
@@ -866,6 +866,31 @@ function auditAnswer(name: string): unknown {
   return { verdict: "follows", reason: "The step writes the result on one line." };
 }
 
+/** The first words of the written-case prompt, by which the stand-in tells its requests. */
+const WRITTEN_PROMPT = "You write tasks for a behaviour test of a coding agent's skill.";
+/** A written task whose following step writes each step's result on a line of its own, LINE. */
+const WRITTEN_TASK = {
+  task: "Write the alpha report of the fixture project.",
+  line: { file: "SKILL.md", number: 9, text: LINE },
+  criterion: CRITERION,
+  followingStep: {
+    text: "",
+    toolCalls: [{ name: "write", arguments: { path: "report.md", content: "1. done\n2. done" } }],
+  },
+  violatingStep: {
+    text: "",
+    toolCalls: [{ name: "write", arguments: { path: "report.md", content: "1. done, 2. done" } }],
+  },
+};
+/** The stand-in written-case reader's tasks: one the build keeps; one whose task states the line
+ *  in other words (RESTATED), which the stand-in restatement check finds; and one whose task names
+ *  the audit-breaks session, so the stand-in audit says its following step breaks the line. */
+const WRITTEN_TASKS = [
+  WRITTEN_TASK,
+  { ...WRITTEN_TASK, task: `Write the alpha report of the fixture project. ${RESTATED}` },
+  { ...WRITTEN_TASK, task: "Write the alpha report of the fixture project (case audit-breaks)." },
+];
+
 /** The stand-in reader's answer to `body`. */
 function readerAnswer(body: {
   system: { text: string }[];
@@ -876,6 +901,10 @@ function readerAnswer(body: {
   const name = /\(case ([a-z-]+)\)/.exec(user)?.[1] ?? "";
   if (system.startsWith(RESTATE_PROMPT)) return restateAnswer(name, user);
   if (system.startsWith(AUDIT_PROMPT)) return JSON.stringify(auditAnswer(name));
+  if (system.startsWith(WRITTEN_PROMPT)) {
+    const count = Number(/<count>(\d+)<\/count>/.exec(user)?.[1] ?? "1");
+    return JSON.stringify({ tasks: WRITTEN_TASKS.slice(0, count) });
+  }
   if (system.startsWith("You read part of a coding agent's session")) {
     return JSON.stringify(caseAnswer(name, user));
   }
@@ -1861,7 +1890,11 @@ describe("build-cases over every made-up session", () => {
     expect(c?.context).toBe("devbox");
     expect(c?.sessionStart).toBe("2026-11-20T01:59:41.780Z");
     expect(c?.sessionDigest).toBe("46874d907e557998");
-    expect(c?.source).toEqual({ store: "store_a", pathHash: pathHash(sessionPath("good")) });
+    expect(c?.source).toEqual({
+      store: "store_a",
+      pathHash: pathHash(sessionPath("good")),
+      kind: "session",
+    });
     expect(c?.secretsRemoved).toBe(0);
     expect(c?.id).toBe(`skills-1-${pathHash(sessionPath("good")).slice(0, 12)}`);
     // No path text in the case beyond the transcript's own messages.
@@ -3372,6 +3405,394 @@ test("a set target keeps a read placed at the set's copy and drops a Legion fork
     readerUsd: 0,
   });
 }, 60_000);
+
+// build-cases --written: cases of a skill from written tasks, each in a recorded session's context.
+
+/** The arguments of one `build-cases --written 3` run of alpha, and `extra`. */
+function writtenArgs(out: string, ...extra: string[]): string[] {
+  return [
+    "build-cases",
+    "--config",
+    config,
+    "--key-file",
+    keyFile,
+    "--cut",
+    "skills-1",
+    "--skill",
+    "alpha",
+    "--old",
+    old,
+    "--copies",
+    copiesDir,
+    "--count",
+    countDir,
+    "--written",
+    "3",
+    "--out",
+    out,
+    ...extra,
+  ];
+}
+
+/** A cases file of one session case of alpha: F1's `task` step, which LINE governs. */
+function sessionCasesFile(): string {
+  const messages = f1Messages();
+  const file = path.join(setupDir, "session-cases.jsonl");
+  const c = {
+    id: "skills-1-f1",
+    cut: "skills-1",
+    skill: "alpha",
+    baseFile: "SKILL.md",
+    line: { text: LINE, lineNumber: 9, lineCount: 10 },
+    criterion: CRITERION,
+    model: "anthropic/claude-sonnet-5-5",
+    thinking: "off",
+    context: "devbox",
+    profile: {
+      skills: [{ repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" }],
+      plugins: [],
+      contextFiles: [],
+    },
+    messages: messages.slice(0, 7),
+    skillReads: [2, 4],
+    realStep: messages[7],
+    violatingStep: { role: "assistant", content: [{ type: "text", text: "Step 4." }] },
+    source: { store: "store_a", pathHash: pathHash("/sessions/f1.jsonl"), kind: "session" },
+    sessionStart: "2026-11-20T01:59:41.780Z",
+    secretsRemoved: 0,
+    sessionDigest: null,
+  };
+  writeFileSync(file, `${JSON.stringify(c)}\n`);
+  return file;
+}
+
+/** A written build's summary, as the tests read it. */
+interface WrittenSummary {
+  command: string;
+  contextSession: {
+    store: string;
+    hash: string;
+    pathHash: string;
+    how: string;
+    passed: { store: string; hash: string; why: string }[];
+  };
+  model: { model: string; how: string };
+  casesBuilt: number;
+  drops: Partial<Record<DropReason, number>>;
+  tasks: { task: number; outcome: string; reason?: DropReason; detail?: string }[];
+}
+const writtenSummaryOf = (out: string): WrittenSummary =>
+  JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+
+/** The user text of each request whose system prompt starts `prompt`. */
+const usersOf = (requests: readonly RecordedRequest[], prompt: string): string[] =>
+  requests.flatMap((request) => {
+    const body = JSON.parse(request.body) as {
+      system: { text: string }[];
+      messages: { content: { text: string }[] }[];
+    };
+    return body.system[0]?.text.startsWith(prompt) === true
+      ? [body.messages[0]?.content.map((part) => part.text).join("\n") ?? ""]
+      : [];
+  });
+
+describe("build-cases --written", () => {
+  const out = path.join(scratch, "written", "cases.jsonl");
+  const printed: string[] = [];
+  const contextHash = fileHash(sessionPath("good"));
+  const id = `skills-1-${pathHash(sessionPath("good")).slice(0, 12)}-w1`;
+  let code = -1;
+  let requests: RecordedRequest[] = [];
+  beforeAll(async () => {
+    const from = recorder.requests.length;
+    code = await main(
+      writtenArgs(
+        out,
+        "--context-session",
+        `store_a:${contextHash}`,
+        "--session-cases",
+        sessionCasesFile()
+      ),
+      io(printed)
+    );
+    requests = recorder.requests.slice(from);
+  }, 60_000);
+
+  test("a written case has the task, the read and its result, and source.kind written", () => {
+    expect({ code, failed: printed.join("").includes("failed") }).toEqual({
+      code: 0,
+      failed: false,
+    });
+    const messages = f1Messages();
+    // The reader read the base text, the session case's step and criterion, the context session's
+    // first user message and the count.
+    const [asked] = usersOf(requests, WRITTEN_PROMPT);
+    expect(usersOf(requests, WRITTEN_PROMPT)).toHaveLength(1);
+    expect(asked).toContain(`9: ${LINE}`);
+    expect(asked).toContain(
+      `<session-cases>\n<case n="1">\n<step>\n${stepText(messages[7]?.content ?? [])}\n</step>\n<criterion>\nPass: ${CRITERION.pass}\nFail: ${CRITERION.fail}\n</criterion>`
+    );
+    expect(asked).toContain(
+      `<first-message>\n${messages[0]?.content?.[0]?.text}\n</first-message>\n\n<count>3</count>`
+    );
+
+    const cases = loadCases(out, old);
+    expect(cases.map((each) => each.id)).toEqual([id]);
+    const [c] = cases;
+    expect(c?.source).toEqual({
+      store: "store_a",
+      pathHash: pathHash(sessionPath("good")),
+      kind: "written",
+    });
+    expect(c === undefined ? undefined : caseKind(c)).toBe("written");
+    // The task as the user's message, a read of skill://alpha, and its result: the old text at the
+    // path the context session's own read of alpha showed, as F1's read result holds it.
+    expect(c?.messages).toHaveLength(3);
+    expect(c?.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: WRITTEN_TASK.task }],
+    });
+    expect(c?.messages[1]).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "written_read",
+          name: "read",
+          arguments: { path: "skill://alpha" },
+        },
+      ],
+    });
+    expect(c?.messages[1]?.content).toHaveLength(1);
+    expect(c?.messages[2]?.content).toEqual(messages[2]?.content);
+    expect(c?.messages[2]).toMatchObject({ role: "toolResult", toolCallId: "written_read" });
+    expect(c?.skillReads).toEqual([2]);
+    // The reader's following step is the real step; its violating step, the violating one.
+    expect(c?.realStep).toEqual({
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "following_1", ...WRITTEN_TASK.followingStep.toolCalls[0] },
+      ],
+    });
+    expect(c?.violatingStep).toEqual({
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "violating_1", ...WRITTEN_TASK.violatingStep.toolCalls[0] },
+      ],
+    });
+    expect([c?.baseFile, c?.line, c?.criterion]).toEqual([
+      "SKILL.md",
+      { text: LINE, lineNumber: 9, lineCount: 10 },
+      CRITERION,
+    ]);
+    // The context session's model, thinking level, context, start and digest at its read of the
+    // skill, and its profile, as a session case of it has them.
+    expect([c?.model, c?.thinking, c?.context, c?.sessionStart, c?.sessionDigest]).toEqual([
+      "anthropic/claude-sonnet-5-5",
+      "off",
+      "devbox",
+      "2026-11-20T01:59:41.780Z",
+      "46874d907e557998",
+    ]);
+    expect(c?.profile.skills.filter((skill) => skill.name === "alpha")).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+    ]);
+    const items = (c?.evidence ?? []).map((each) => each.item);
+    expect(items).toContain(
+      `context session read: message 2 reads [Skill file: ${F1_SKILLS}/alpha/SKILL.md]`
+    );
+    expect(items).toContain("audit of the real step: follows");
+    expect(items).toContain(LISTING_MEASURE);
+    expect(items).toContain(`written case: task 1 of the written-case reader`);
+    expect(items).toContain(`written case: context session store_a:${contextHash}`);
+    expect(items).toContain("written case: model anthropic/claude-sonnet-5-5");
+
+    const summary = writtenSummaryOf(out);
+    expect(summary).toMatchObject({
+      command: "build-cases --written",
+      contextSession: {
+        store: "store_a",
+        hash: contextHash,
+        pathHash: pathHash(sessionPath("good")),
+        how: "--context-session",
+        passed: [],
+      },
+      model: { model: "anthropic/claude-sonnet-5-5", how: "the context session's own" },
+      casesBuilt: 1,
+    });
+  });
+
+  test("a written case whose task restates the line or whose following step the audit does not call follows is dropped", () => {
+    const summary = writtenSummaryOf(out);
+    expect(summary.tasks.map((each) => [each.task, each.outcome, each.reason ?? null])).toEqual([
+      [1, `case ${id}`, null],
+      [2, "dropped", "written-restates"],
+      [3, "dropped", "written-not-followed"],
+    ]);
+    expect(summary.drops).toEqual({ "written-restates": 1, "written-not-followed": 1 });
+    expect(summary.tasks[1]?.detail).toContain(RESTATED);
+    expect(summary.tasks[2]?.detail).toBe("breaks: The step spreads the result over two lines.");
+    for (const reason of ["written-restates", "written-not-followed"] as const) {
+      expect(DROP_REASONS[reason]).toBeString();
+    }
+    // The restatement check read each task and its read call, never the skill's text.
+    const restates = usersOf(requests, RESTATE_PROMPT);
+    expect(restates).toHaveLength(3);
+    for (const [n, user] of restates.entries()) {
+      expect(user).toStartWith(
+        `<line>\n${LINE}\n</line>\n\n<messages>\n<message index="0" role="user">\n[user]\n${WRITTEN_TASKS[n]?.task}\n</message>`
+      );
+      expect(user).not.toContain("3. Stop after the third step.");
+    }
+    // The audit read the line, the history as the judge reads it and the following step: only
+    // for the tasks that do not restate the line.
+    const audits = usersOf(requests, AUDIT_PROMPT);
+    expect(audits).toHaveLength(2);
+    expect(audits[0]).toBe(
+      `<line>\n${LINE}\n</line>\n\n<before>\n[user]\n${WRITTEN_TASK.task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n[tool result: read]\n[the text of a file of the skill, left out]\n</before>\n\n<step>\n[tool call: write] ${JSON.stringify(WRITTEN_TASK.followingStep.toolCalls[0]?.arguments)}\n</step>`
+    );
+  });
+
+  test("--reprofile keeps source.kind", async () => {
+    const fresh = path.join(scratch, "written", "reprofiled.jsonl");
+    const lines: string[] = [];
+    const args = [
+      "build-cases",
+      "--config",
+      config,
+      "--old",
+      old,
+      "--copies",
+      copiesDir,
+      "--count",
+      countDir,
+      "--reprofile",
+      out,
+      "--out",
+      fresh,
+    ];
+    expect(await main(args, io(lines))).toBe(EXIT.ok);
+    const [before] = loadCases(out, old);
+    const [after] = loadCases(fresh, old);
+    expect(after?.source).toEqual(before?.source);
+    expect(after === undefined ? undefined : caseKind(after)).toBe("written");
+    // Its profile is built again from the context session's reads its evidence names, which its
+    // messages do not hold, so it is the profile the build gave; the written case's evidence stays.
+    expect(after?.profile).toEqual(before?.profile);
+    const written = (c: Case | undefined) =>
+      (c?.evidence ?? []).filter((each) =>
+        /^(written case|context session read): /.test(each.item)
+      );
+    expect(written(after)).toEqual(written(before));
+    expect(written(after).length).toBeGreaterThan(0);
+  }, 60_000);
+});
+
+test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
+  // not-served runs on a model no route serves; other-copy read acme/other's alpha, so its profile
+  // installs no alpha of the cut's repository; good and openai are on served models, and list it.
+  const names = ["not-served", "other-copy", "good", "openai"];
+  const sessions = sessionsFile("written-candidates.jsonl", names);
+  const candidates = names.map((name) => ({
+    store: "store_a",
+    hash: fileHash(sessionPath(name)),
+    path: sessionPath(name),
+  }));
+  const orderOf = (seed: string) => blindOrder(candidates, seed).map(({ item }) => item.path);
+  // A seed whose order puts not-served and other-copy first.
+  const seed = Array.from({ length: 500 }, (_, n) => String(n)).find((each) => {
+    const order = orderOf(each);
+    return order[0] === sessionPath("not-served") && order[1] === sessionPath("other-copy");
+  });
+  expect(seed).toBeDefined();
+  const chosen = orderOf(seed ?? "")[2] ?? "";
+  const out = path.join(scratch, "written-seeded", "cases.jsonl");
+  const lines: string[] = [];
+  expect(
+    await main(writtenArgs(out, "--sessions", sessions, "--seed", seed ?? ""), io(lines))
+  ).toBe(EXIT.ok);
+  const summary = writtenSummaryOf(out);
+  expect(summary.contextSession).toMatchObject({
+    store: "store_a",
+    hash: fileHash(chosen),
+    pathHash: pathHash(chosen),
+  });
+  expect(summary.contextSession.how).toContain("place 3 of 4");
+  expect(summary.contextSession.passed.map((each) => [each.hash, each.why.split(":")[0]])).toEqual([
+    [fileHash(sessionPath("not-served")), "model-not-served"],
+    [fileHash(sessionPath("other-copy")), "not-cut-copy"],
+  ]);
+  const cases = loadCases(out, old);
+  expect(cases.length).toBeGreaterThan(0);
+  expect(cases.every((each) => each.source.pathHash === pathHash(chosen))).toBe(true);
+  expect(summary.model.how).toBe("the context session's own");
+
+  // With no served session whose profile lists the skill, the first one whose profile lists it,
+  // on the served model with the most reading sessions of the skill (--reading-models).
+  const unserved = sessionsFile("written-unserved.jsonl", ["other-copy", "not-served"]);
+  const counted = (byModel: { model: string; served: boolean; sessions: number }[]) => ({
+    sessions: byModel.reduce((sum, each) => sum + each.sessions, 0),
+    byModel: byModel.map((each) => ({ ...each, anthropic: each.model.includes("claude-") })),
+    noModel: 0,
+    notQueried: 0,
+    notAnthropic: 0,
+    served: byModel.filter((each) => each.served).reduce((sum, each) => sum + each.sessions, 0),
+    withModel: byModel.reduce((sum, each) => sum + each.sessions, 0),
+  });
+  const modelsFile = (name: string, byModel: Parameters<typeof counted>[0]) => {
+    const file = path.join(setupDir, name);
+    writeFileSync(file, JSON.stringify(counted(byModel)));
+    return file;
+  };
+  const astra = { model: "openai-codex/gpt-6-astra", served: false, sessions: 4 };
+  const skill = modelsFile("written-alpha-models.json", [
+    astra,
+    { model: "openai/gpt-6.1-sol", served: true, sessions: 2 },
+    { model: "anthropic/claude-sonnet-5-5", served: true, sessions: 1 },
+  ]);
+  const fromSkill = path.join(scratch, "written-unserved", "cases.jsonl");
+  const args = (to: string, ...extra: string[]) =>
+    writtenArgs(to, "--sessions", unserved, "--seed", "1", ...extra);
+  expect(await main(args(fromSkill, "--reading-models", skill), io(lines))).toBe(EXIT.ok);
+  const [first] = loadCases(fromSkill, old);
+  expect(first?.source.pathHash).toBe(pathHash(sessionPath("not-served")));
+  expect(first?.model).toBe("openai/gpt-6.1-sol");
+  expect(writtenSummaryOf(fromSkill).contextSession.how).toContain(
+    "no reading session on a served model"
+  );
+
+  // With no served model in the skill's file, the served model with the most reading sessions over
+  // the pool's files (the set's skills' models files).
+  const none = modelsFile("written-none-models.json", [astra]);
+  const poolA = modelsFile("written-pool-a.json", [
+    { model: "openai/gpt-6.1-sol", served: true, sessions: 2 },
+    { model: "anthropic/claude-opus-5-5", served: true, sessions: 2 },
+  ]);
+  const poolB = modelsFile("written-pool-b.json", [
+    astra,
+    { model: "anthropic/claude-opus-5-5", served: true, sessions: 1 },
+  ]);
+  const fromPool = path.join(scratch, "written-pool", "cases.jsonl");
+  const pooled = args(
+    fromPool,
+    "--reading-models",
+    none,
+    "--model-pool",
+    poolA,
+    "--model-pool",
+    poolB
+  );
+  expect(await main(pooled, io(lines))).toBe(EXIT.ok);
+  expect(loadCases(fromPool, old)[0]?.model).toBe("anthropic/claude-opus-5-5");
+  expect(writtenSummaryOf(fromPool).model.how).toContain("--model-pool");
+
+  // With no served model anywhere, the build fails, naming why, and writes no case.
+  const failed: string[] = [];
+  const nowhere = path.join(scratch, "written-nowhere", "cases.jsonl");
+  expect(await main(args(nowhere, "--reading-models", none), io(failed))).toBe(EXIT.failed);
+  expect(failed.join("")).toContain("no served model for the written cases");
+  expect(existsSync(nowhere)).toBe(false);
+}, 120_000);
 
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
   const skillDir = path.join(setupDir, "old", "alpha");

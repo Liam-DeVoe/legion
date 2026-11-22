@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   type Arm,
+  type CaseKind,
   controlCase,
   descriptionFault,
   dropFigures,
@@ -11,14 +12,18 @@ import {
   isLoss,
   type LoadTask,
   lossChance,
+  meanDifference,
   poorName,
   RunRecord,
   rankSkills,
   type SkillOutcome,
   type Stage,
   scoreSkill,
+  screenCounts,
   screeningDone,
   screeningRefusal,
+  screenOrder,
+  screenShapes,
   servedScreeningRefusal,
   skillVerdict,
   smallestDrop,
@@ -91,6 +96,9 @@ const keeps: SkillOutcome = { verdict: "keeps" };
 const loss: SkillOutcome = { verdict: "loss" };
 const tooFew: SkillOutcome = { verdict: null, reason: "fewer than 6 informative cases: 5" };
 const ranking = ["alpha", "beta", "gamma", "delta", "epsilon"];
+/** The reason of a skill whose planted-loss control is no loss. */
+const NO_CONTROL_LOSS =
+  "deleting the case's line showed no detectable change (planted-loss control not a loss)";
 
 const rows: [string, () => unknown, unknown][] = [
   // The run record: one JSON line per run.
@@ -287,9 +295,9 @@ const rows: [string, () => unknown, unknown][] = [
     tooFew,
   ],
   [
-    "a control that is no loss gives no verdict",
+    "a control that is no loss gives no verdict, and the reason says deleting the line showed no change",
     () => skillVerdict({ informative: 6, controlLoss: false, falseLoss: false, losses: 1 }),
-    { verdict: null, reason: "control not a loss" },
+    { verdict: null, reason: NO_CONTROL_LOSS },
   ],
   [
     "a false-loss control that is a loss gives no verdict, whatever the confirmed cases say",
@@ -299,7 +307,7 @@ const rows: [string, () => unknown, unknown][] = [
   [
     "both controls failing give no verdict, and the reason names both",
     () => skillVerdict({ informative: 6, controlLoss: false, falseLoss: true, losses: 0 }),
-    { verdict: null, reason: "control not a loss; false-loss control a loss" },
+    { verdict: null, reason: `${NO_CONTROL_LOSS}; false-loss control a loss` },
   ],
   [
     "one confirmed loss gives loss",
@@ -324,7 +332,7 @@ const rows: [string, () => unknown, unknown][] = [
   [
     "a planted-loss control at 9 fewer passes of 40 gives no verdict",
     () => scoreSkill(sixCases(21)).outcome,
-    { verdict: null, reason: "control not a loss" },
+    { verdict: null, reason: NO_CONTROL_LOSS },
   ],
   [
     "a false-loss control at 10 fewer passes of 40 gives no verdict",
@@ -490,17 +498,17 @@ const rows: [string, () => unknown, unknown][] = [
   ],
   [
     "screening stops at 6 informative cases",
-    () => screeningDone({ screened: 6, informative: 6 }),
+    () => screeningDone({ informative: 6, screened: { session: 6, written: 0 } }, "session"),
     true,
   ],
   [
     "screening goes on at 5 informative of 14 screened cases",
-    () => screeningDone({ screened: 14, informative: 5 }),
+    () => screeningDone({ informative: 5, screened: { session: 14, written: 0 } }, "session"),
     false,
   ],
   [
     "screening stops at 15 screened cases",
-    () => screeningDone({ screened: 15, informative: 5 }),
+    () => screeningDone({ informative: 5, screened: { session: 15, written: 0 } }, "session"),
     true,
   ],
 
@@ -714,7 +722,7 @@ const comparedRows: [string, () => unknown, unknown][] = [
   ],
 
   // The smallest drop: in 5-point steps below the case's screened pass rate of old, the first the
-  // rule catches with a chance of at least 80%. The report of the cut (INFRA-4676's) printed
+  // rule catches with a chance of at least 80%. The report of a cut's test printed
   // 87.52% at old 0.9, new 0.5, none 0.1: the same figure, compared with the cut or with no skill.
   [
     "a case at old 0.9, none 0.1 gives 40 points at the 87.5% chance",
@@ -798,4 +806,100 @@ const comparedRows: [string, () => unknown, unknown][] = [
 
 test.each(comparedRows)("%s", (_name, got, want) => {
   expect(got()).toEqual(want);
+});
+
+// The screen order of a skill's two kinds of case: its session cases first, then its written
+// cases, up to 15 screened cases of each kind, until it has 6 informative cases in all.
+
+/** The kind of each case id: `w…` a written case, any other a session case. */
+const kindOf = (caseId: string): CaseKind => (caseId.startsWith("w") ? "written" : "session");
+/** `count` case ids: `s01`, `s02`, … (session) or `w01`, … (written). */
+const caseIds = (prefix: "s" | "w", count: number) =>
+  Array.from({ length: count }, (_, n) => `${prefix}${String(n + 1).padStart(2, "0")}`);
+/** The screen runs, with no skill compared, of the cases `ids`: the first `informative` of them
+ *  informative (old 8, none 5 of 10), the rest not (old 5, none 5). */
+const screenOf = (ids: readonly string[], informative: number): RunRecord[] =>
+  ids.flatMap((id, n) => screenNone(id, n < informative ? 8 : 5, 5));
+
+test("screening goes on to written cases after all session cases (at most 15) with fewer than 6 informative", () => {
+  // Session cases come first, then written ones, each kind in the file's order.
+  const order = screenOrder(
+    ["w01", "s01", "w02", "s02", "s03"].map((id) => ({ id })),
+    (each) => kindOf(each.id)
+  );
+  expect(order.map((each) => each.id)).toEqual(["s01", "s02", "s03", "w01", "w02"]);
+  // 15 session cases screened, 3 informative: the session cases stop at their cap, and the
+  // written cases go on.
+  const capped = screenCounts(scoreSkill(screenOf(caseIds("s", 15), 3), "none"), kindOf);
+  expect(capped).toEqual({ informative: 3, screened: { session: 15, written: 0 } });
+  expect([screeningDone(capped, "session"), screeningDone(capped, "written")]).toEqual([
+    true,
+    false,
+  ]);
+  // Each of 4 session cases screened, 2 informative: the written cases go on after them.
+  const few = screenCounts(scoreSkill(screenOf(caseIds("s", 4), 2), "none"), kindOf);
+  expect(few).toEqual({ informative: 2, screened: { session: 4, written: 0 } });
+  expect(screeningDone(few, "written")).toBe(false);
+});
+
+test("stops at 6 informative in all", () => {
+  const counts = (written: number) =>
+    screenCounts(
+      scoreSkill([...screenOf(caseIds("s", 15), 4), ...screenOf(caseIds("w", 3), written)], "none"),
+      kindOf
+    );
+  expect(counts(1)).toEqual({ informative: 5, screened: { session: 15, written: 3 } });
+  expect(screeningDone(counts(1), "written")).toBe(false);
+  expect(counts(2)).toEqual({ informative: 6, screened: { session: 15, written: 3 } });
+  expect([screeningDone(counts(2), "session"), screeningDone(counts(2), "written")]).toEqual([
+    true,
+    true,
+  ]);
+  // Informative cases of either kind count: 6 written ones stop the session cases too.
+  const written = screenCounts(scoreSkill(screenOf(caseIds("w", 6), 6), "none"), kindOf);
+  expect(screeningDone(written, "session")).toBe(true);
+});
+
+test("stops at 15 written", () => {
+  const counts = (written: number) =>
+    screenCounts(
+      scoreSkill([...screenOf(caseIds("s", 3), 1), ...screenOf(caseIds("w", written), 2)], "none"),
+      kindOf
+    );
+  expect(counts(14)).toEqual({ informative: 3, screened: { session: 3, written: 14 } });
+  expect(screeningDone(counts(14), "written")).toBe(false);
+  expect(counts(15)).toEqual({ informative: 3, screened: { session: 3, written: 15 } });
+  expect(screeningDone(counts(15), "written")).toBe(true);
+});
+
+// Catches: a normal interval where too few cases call for a t interval, or an interval drawn about
+// one case.
+test("the mean difference over screened cases has a 95% t interval over the cases, and one case has none", () => {
+  const three = meanDifference([0.5, 0.3, 0.1]);
+  // t at 97.5% with 2 degrees of freedom is 4.302653, and the cases' standard deviation is 0.2.
+  const half = (4.302652729749464 * 0.2) / Math.sqrt(3);
+  expect(three?.cases).toBe(3);
+  expect(three?.mean).toBeCloseTo(0.3, 12);
+  expect(three?.interval?.low).toBeCloseTo(0.3 - half, 6);
+  expect(three?.interval?.high).toBeCloseTo(0.3 + half, 6);
+  // 15 cases: t at 97.5% with 14 degrees of freedom is 2.144787.
+  const values = Array.from({ length: 15 }, (_, n) => (n % 3 === 0 ? 1 : 0.2));
+  const mean = values.reduce((sum, value) => sum + value, 0) / 15;
+  const sd = Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / 14);
+  const fifteen = meanDifference(values);
+  expect(fifteen?.interval?.high).toBeCloseTo(mean + (2.1447866879169273 * sd) / Math.sqrt(15), 6);
+  expect(meanDifference([0.4])).toEqual({ cases: 1, mean: 0.4, interval: undefined });
+  expect(meanDifference([])).toBeUndefined();
+});
+
+test("a screened case ties, floors, ceils or reverses by old's and the compared arm's passes", () => {
+  expect(
+    screenShapes([
+      { old: 0, compared: 0 },
+      { old: 10, compared: 10 },
+      { old: 5, compared: 5 },
+      { old: 4, compared: 6 },
+      { old: 8, compared: 2 },
+    ])
+  ).toEqual({ ties: 3, floors: 1, ceilings: 1, reverse: 1 });
 });

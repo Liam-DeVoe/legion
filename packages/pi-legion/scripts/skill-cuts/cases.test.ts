@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
-import { type Case, loadCases, pathHash, skillReadFile } from "./cases";
+import { type Case, caseKind, loadCases, pathHash, skillReadFile } from "./cases";
 
 // The loader of the case file, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch
 // profile with the made-up skills alpha and beta, captured with
@@ -128,6 +128,28 @@ test("a case with the builder's evidence loads, and an evidence entry with no so
   const file = caseFile("evidence-blank", [blank]);
   expect(() => loadCases(file, base)).toThrow(
     `case c-blank (${file}:1) is not a case: evidence.0.source`
+  );
+});
+
+// Catches: a case file posted before cases had a kind refused, or its cases read as written.
+test("a case with no source.kind loads as a session case", () => {
+  const base = alphaDir("base-kind");
+  const source = f1Case().source;
+  const unmarked = f1Case("c-unmarked");
+  const session = { ...f1Case("c-session"), source: { ...source, kind: "session" } };
+  const written = { ...f1Case("c-written"), source: { ...source, kind: "written" } };
+  const cases = loadCases(caseFile("kinds", [unmarked, session, written]), base);
+  // The case with no kind loads as it is, and reads as a session case.
+  expect(cases[0]).toEqual(unmarked);
+  expect(cases.map((c) => [c.id, caseKind(c)])).toEqual([
+    ["c-unmarked", "session"],
+    ["c-session", "session"],
+    ["c-written", "written"],
+  ]);
+  const other = { ...f1Case("c-other"), source: { ...source, kind: "replayed" } };
+  const file = caseFile("kind-other", [other]);
+  expect(() => loadCases(file, base)).toThrow(
+    `case c-other (${file}:1) is not a case: source.kind`
   );
 });
 
