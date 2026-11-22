@@ -544,7 +544,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// real gh.)
 		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, err: "`gh agent-task` sends the token to the Copilot API host"},
 		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), err: "`gh agent-task` sends the token"},
-		{argv: []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, err: `"-e" runs an editor program`},
+		{argv: []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, err: `"--editor" runs an editor program`},
 		{argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, err: `"--editor" runs an editor program`},
 		// -e is refused where it is --editor, and taken where the leaf's help gives it another
 		// option: `gh secret set`'s -e is --env.
@@ -570,7 +570,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "--help", "view", "1", "-R", "sjawhar/legion", "--help=0"}, owner: "sjawhar"},
 		{argv: []string{"pr", "view", "1", "-R", "sjawhar/legion", "--help=false", "--help"}},
 		{argv: []string{"pr", "view", "1", "-R", "sjawhar/legion", "--help=false", "-h"}},
-		{argv: []string{"pr", "view", "1", "-R", "sjawhar/legion", "--help=maybe"}, err: `"--help=maybe" gives --help a value that is no boolean`},
+		{argv: []string{"pr", "view", "1", "-R", "sjawhar/legion", "--help=maybe"}, err: `"--help" has a value that is no boolean`},
 		{argv: []string{"--help=false", "api", "repos/sjawhar/legion"}, owner: "sjawhar"},
 		// A name in --repos is a repository of the --org.
 		{argv: []string{"secret", "set", "TOKEN", "--org", "sjawhar", "--repos", "legion", "--body", "dummy", "-R", "sjawhar/legion"}, owner: "sjawhar"},
@@ -601,7 +601,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"search", "issues", "repo:sjawhar/legion", "OR", "bug"}, err: `"OR" joins the query's`},
 		{argv: []string{"search", "issues", "(", "repo:sjawhar/legion", ")"}, err: `"(" joins the query's`},
 		{argv: []string{"search", "issues", "--", "bug", "-repo:acme/widgets"}, err: `"-repo:acme/widgets" excludes an owner`},
-		{argv: []string{"search", "issues", "bug", "-repo:acme/widgets"}, err: `"-repo:acme/widgets" names -r`},
+		{argv: []string{"search", "issues", "bug", "-repo:acme/widgets"}, err: `"-r" is no option`},
 		{argv: []string{"api", "search/issues?q=repo:sjawhar/legion+is:open"}, owner: "sjawhar"},
 		{argv: []string{"api", "-X", "GET", "search/issues", "-f", "q=repo:sjawhar/legion is:open"}, owner: "sjawhar"},
 		{argv: []string{"api", "search/issues?q=%28repo:sjawhar/legion%29"}, err: "is a search qualifier this cannot read for certain"},
@@ -614,9 +614,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// An argument the leaf's usage names in a way this does not know, or has no place for.
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1"}, help: ghSpellingItsURLOtherwise, err: "<URL>"},
 		{argv: []string{"pr", "view", "1"}, help: ghSpellingItsURLOtherwise, err: "<URL>"},
-		{argv: []string{"pr", "view", "1", "2"}, err: `"2" is an argument`},
-		{argv: []string{"pr", "list", "sjawhar/legion"}, err: `"sjawhar/legion" is an argument`},
-		{argv: []string{"api", "repos/acme/widgets", "repos/sjawhar/legion"}, err: `"repos/sjawhar/legion" is an argument`},
+		{argv: []string{"pr", "view", "1", "2"}, err: "the 2nd argument has no place in `gh pr view`'s usage"},
+		{argv: []string{"pr", "list", "sjawhar/legion"}, err: "the 1st argument has no place in `gh pr list`'s usage"},
+		{argv: []string{"api", "repos/acme/widgets", "repos/sjawhar/legion"}, err: "the 2nd argument has no place in `gh api`'s usage"},
 		// The third re-review's: gh's help of an extension runs the extension, so the target of
 		// `gh help` is read as a command's path, a gh alias or an extension refused before anything
 		// runs; gh's own help and its topics are not. And a plural slot, `{<numbers> | <urls>}`,
@@ -673,7 +673,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "view", "1", "-R", "Mona-Cat_Octo/widgets"}, owner: "mona-cat_octo"},
 		// Refusals.
 		{argv: []string{"pr", "view", "1", "--bogus"}, err: `"--bogus" is no option`},
-		{argv: []string{"pr", "view", "1", "-Z"}, err: "names -Z"},
+		{argv: []string{"pr", "view", "1", "-Z"}, err: `"-Z" is no option`},
 		{argv: []string{"pr", "nonexist"}, err: "gh has no command `gh pr nonexist`"},
 		{argv: []string{"nonexist"}, err: `"nonexist" is no command gh's own help lists`},
 		{argv: []string{"--bogus", "pr", "list"}, err: `"--bogus" comes before the command's name`},
@@ -3112,8 +3112,8 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 		t.Run(strings.Join(argv[:attach], " "), func(t *testing.T) {
 			rows++
 			_, err := ghTargetOf(argv, nil, latest, noGitRepository, ownersOwnDirectories)
-			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q uploads the file it names to GitHub, which the leak guard does not read", argv[attach])) {
-				t.Errorf("ghTargetOf(%q) at gh 2.104.0 = %v, want a refusal naming %q", argv, err, argv[attach])
+			if err == nil || !strings.Contains(err.Error(), `"--attach" uploads the file it names to GitHub, which the leak guard does not read`) || strings.Contains(err.Error(), "notes.svg") {
+				t.Errorf("ghTargetOf(%q) at gh 2.104.0 = %v, want a refusal naming \"--attach\" and not its value", argv, err)
 			}
 			end := attach + 2
 			if strings.Contains(argv[attach], "=") {

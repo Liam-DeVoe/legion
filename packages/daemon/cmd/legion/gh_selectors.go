@@ -215,13 +215,13 @@ func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 	} else {
 		placed, ok := cmd.slotsFor(len(parsed.positionals))
 		if !ok {
-			return cannotPlace(parsed.positionals[len(cmd.slots)], "is an argument "+leaf+"'s usage has no place for", false)
+			return cannotPlaceNamed(ordinalArgument(len(cmd.slots)+1), "has no place in "+leaf+"'s usage", false)
 		}
 		var query []string
 		for i, arg := range parsed.positionals {
 			kind, unknown := placed[i].kind()
 			if unknown != "" {
-				return cannotPlace(arg, fmt.Sprintf("fills <%s> of %s's usage, an argument this does not know", unknown, leaf), false)
+				return cannotPlaceNamed(ordinalArgument(i+1), fmt.Sprintf("fills <%s> of %s's usage, an argument this does not know", unknown, leaf), false)
 			}
 			switch kind {
 			case "repository":
@@ -303,7 +303,7 @@ func (s *selectors) fromOwnRepository(cmd *ghCommand, parsed ghArgs, env map[str
 // does not, sets readsBase. Any other GraphQL query names no repository gh could resolve.
 func (s *selectors) fromAPI(parsed ghArgs) error {
 	if len(parsed.positionals) > 1 {
-		return cannotPlace(parsed.positionals[1], "is an argument `gh api`'s usage has no place for", true)
+		return cannotPlaceNamed(ordinalArgument(2), "has no place in `gh api`'s usage", true)
 	}
 	search, graphql := false, false
 	if len(parsed.positionals) == 1 {
@@ -354,7 +354,7 @@ func (s *selectors) fromOptions(cmd *ghCommand, parsed ghArgs) error {
 		for _, value := range parsed.values[name] {
 			switch flag.selects {
 			case "unknown":
-				return cannotPlace("--"+name+" "+value, "is an option whose help names a repository, an owner, a team or a URL in a way this does not know", s.api)
+				return cannotPlace("--"+name, "is an option whose help names a repository, an owner, a team or a URL in a way this does not know", s.api)
 			case "", "nothing":
 				continue
 			}
@@ -364,7 +364,7 @@ func (s *selectors) fromOptions(cmd *ghCommand, parsed ghArgs) error {
 				switch flag.selects {
 				case "host":
 					if !strings.EqualFold(item, "github.com") {
-						err = cannotPlace(what, "names another host than github.com", s.api)
+						err = cannotPlace("--"+name, "names another host than github.com", s.api)
 					}
 				case "owner":
 					err = s.owner(item, what)
@@ -522,12 +522,24 @@ func isGitHubHost(host string) bool {
 // request's number, a tree's path), as the argument spells it. The caller that records it keys
 // it as gh reads a name of it (selectors.repository, ghconfig.RepositoryName), so two spellings
 // of one repository are one selector.
+//
+// A value with no scheme whose first segment holds an "@" or a ":", or which holds a "?" or a "#",
+// is refused by its kind alone (selectorKind), never by its text, on a github.com host or another:
+// there a user name, a password or a query stands (`x-access-token:<token>@ghe.example/o/r`,
+// `<token>@github.com:o/r`, `ghe.example/o/r?t=<token>`), and the URL rule printGhRefusal writes
+// refusals through masks only a URL with a "://". No owner, host or repository name holds one.
 func repositoryTarget(value, what string, api bool) (owner, repo string, err error) {
 	host, rest := "", value
 	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
 		host, rest = parsed.Hostname(), strings.Trim(parsed.Path, "/")
-	} else if parts := strings.Split(strings.Trim(value, "/"), "/"); len(parts) >= 3 {
-		host, rest = parts[0], strings.Join(parts[1:], "/")
+	} else {
+		first, _, _ := strings.Cut(strings.Trim(value, "/"), "/")
+		if strings.ContainsAny(first, "@:") || strings.ContainsAny(value, "?#") {
+			return "", "", cannotPlaceNamed(selectorKind(what), "holds an \"@\", a \":\", a \"?\" or a \"#\" where a GitHub repository's name holds none, and is not printed, since a credential stands there", api)
+		}
+		if parts := strings.Split(strings.Trim(value, "/"), "/"); len(parts) >= 3 {
+			host, rest = parts[0], strings.Join(parts[1:], "/")
+		}
 	}
 	if host != "" && !isGitHubHost(host) {
 		return "", "", cannotPlace(value, "names another host than github.com", api)
@@ -538,6 +550,31 @@ func repositoryTarget(value, what string, api bool) (owner, repo string, err err
 	}
 	owner, err = checkedOwner(parts[0], what, api)
 	return owner, parts[1], err
+}
+
+// selectorKind names a repository value by where it came from, as what (the description its
+// caller records) begins, never by the value: "the GH_REPO value", "a -R value", "a --<name>
+// value", "a repository argument", "a URL argument", "a repo: qualifier", "the endpoint's
+// repository".
+func selectorKind(what string) string {
+	switch {
+	case strings.HasPrefix(what, "GH_REPO "):
+		return "the GH_REPO value"
+	case strings.HasPrefix(what, "--repo "):
+		return "a -R value"
+	case strings.HasPrefix(what, "--"):
+		name, _, _ := strings.Cut(what, " ")
+		return "a " + name + " value"
+	case strings.HasPrefix(what, "the repository "):
+		return "a repository argument"
+	case strings.HasPrefix(what, "the URL "):
+		return "a URL argument"
+	case strings.HasPrefix(what, "the qualifier "):
+		return "a repo: qualifier"
+	case strings.HasPrefix(what, "the endpoint "):
+		return "the endpoint's repository"
+	}
+	return "a repository value"
 }
 
 // checkedOwner is owner lowercased, refused when it is no GitHub login.
@@ -574,12 +611,12 @@ func ghMarkerLine(line string) ghRemote {
 }
 
 // what is the remote line as a refusal names it, its URL as remoteShown prints it: a remote's URL,
-// and a marker's value when it holds a "://" or an "@" (gh writes a remote's name or an
-// OWNER/REPO there, but a person can write a URL, a token included).
+// and a marker's value when it holds a ":", an "@", a "?" or a "#" (gh writes a remote's name or
+// an OWNER/REPO there, but a person can write a URL, a token included, with a scheme or without).
 func (r ghRemote) what() string {
 	if r.marker {
 		resolved := r.resolved
-		if strings.Contains(resolved, "://") || strings.Contains(resolved, "@") {
+		if strings.ContainsAny(resolved, ":@?#") {
 			resolved = remoteShown(resolved)
 		}
 		return fmt.Sprintf("remote.%s.gh-resolved %s", r.name, resolved)
@@ -622,12 +659,19 @@ var sshLogin = regexp.MustCompile("(?:git\\+)?ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.\
 // printGhRefusal writes err to stderr as `legion gh: <err>`, through redact.URLCredentials as
 // printRefusal writes every other command's refusal, a URL a person put in a selector (GH_REPO,
 // -R), a git config key or a remote's marker included, but for an SSH login remoteShown printed
-// (sshLogin), which the URL rule would write as the mark: its user is no credential.
+// (sshLogin), which the URL rule would write as the mark: its user is no credential. A login is
+// left only where remoteShown writes one, at the start of the text or after a space, a quote, a
+// backtick, "(" or "<", and up to a space, a quote, a backtick, ")", ">", "," or ";": an ssh URL
+// glued to the text before it (`https://u:<token>ssh://git@h/o/r`) goes through the URL rule with
+// that text, which masks the credential before it.
 func printGhRefusal(stderr io.Writer, err error) {
 	text := err.Error()
 	var shown strings.Builder
 	last := 0
 	for _, match := range sshLogin.FindAllStringIndex(text, -1) {
+		if match[0] > 0 && !strings.ContainsRune(" \t\n\"'`(<", rune(text[match[0]-1])) {
+			continue
+		}
 		if match[1] < len(text) && !strings.ContainsRune(" \t\n\")'`<>,;", rune(text[match[1]])) {
 			continue
 		}

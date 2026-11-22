@@ -899,7 +899,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 			// The leaf reads these as its own, in order with the rest of its arguments.
 			rest = append(rest, arg)
 		case strings.HasPrefix(arg, "-"):
-			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may", false)
+			return ghTarget{}, cannotPlace(optionName(arg), "comes before the command's name, and only -R/--repo and --help may", false)
 		default:
 			if err := walk.check(arg); err != nil {
 				return ghTarget{}, err
@@ -948,13 +948,55 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how
-// to name the repository instead, which for gh api is its endpoint (it has no -R).
+// to name the repository instead, which for gh api is its endpoint (it has no -R). arg is quoted
+// as written, so a caller passes it only text that holds no credential: an option's name (an
+// option's value never), or a repository or owner name gh's grammar admits. For anything else,
+// cannotPlaceNamed.
 func cannotPlace(arg, why string, api bool) error {
+	return cannotPlaceNamed(strconv.Quote(arg), why, api)
+}
+
+// cannotPlaceNamed is cannotPlace for an argument named by what it is, never by its value: an
+// argument by its position (ordinalArgument), a repository value by its kind (selectorKind). A
+// value a person gives where no place is (`gh secret set NAME <secret>` without --body, a header
+// given without -H) is the likeliest credential on the line, and gh itself, refusing it, prints
+// none of it.
+func cannotPlaceNamed(name, why string, api bool) error {
 	advice := "pass -R <owner>/<repo>"
 	if api {
 		advice = "name it in the endpoint, repos/<owner>/<repo>/…"
 	}
-	return fmt.Errorf("cannot tell which repository the command targets: %q %s, so it sends no token; %s", arg, why, advice)
+	return fmt.Errorf("cannot tell which repository the command targets: %s %s, so it sends no token; %s", name, why, advice)
+}
+
+// optionName is the option arg names, without its value: a long option's name before any "="
+// (`--bdy` of `--bdy=<value>`), a short one's letter (`-b` of `-b<value>`).
+func optionName(arg string) string {
+	if name, ok := strings.CutPrefix(arg, "--"); ok {
+		name, _, _ = strings.Cut(name, "=")
+		return "--" + name
+	}
+	if len(arg) > 2 && arg[0] == '-' {
+		return arg[:2]
+	}
+	return arg
+}
+
+// ordinalArgument names the positional argument at position n, counting from 1: "the 2nd
+// argument".
+func ordinalArgument(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("the %d%s argument", n, suffix)
 }
 
 // ghArgs is a leaf's arguments as pflag reads them: its positional arguments in order, every
@@ -1000,10 +1042,10 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 			name, value, hasValue := strings.Cut(arg[2:], "=")
 			flag, ok := c.flags[name]
 			if !ok {
-				return ghArgs{}, cannotPlace(arg, "is no option "+leaf+"'s help lists", api)
+				return ghArgs{}, cannotPlace("--"+name, "is no option "+leaf+"'s help lists", api)
 			}
 			if flag.uncertain {
-				return ghArgs{}, cannotPlace(arg, "is an option whose help does not say whether it takes a value", api)
+				return ghArgs{}, cannotPlace("--"+name, "is an option whose help does not say whether it takes a value", api)
 			}
 			if !hasValue {
 				switch {
@@ -1035,11 +1077,11 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 						parsed.help = true
 						return parsed, nil
 					}
-					return ghArgs{}, cannotPlace(arg, fmt.Sprintf("names -%c, which %s's help does not list", short, leaf), api)
+					return ghArgs{}, cannotPlace(fmt.Sprintf("-%c", short), "is no option "+leaf+"'s help lists", api)
 				}
 				flag := c.flags[name]
 				if flag.uncertain {
-					return ghArgs{}, cannotPlace(arg, "is an option whose help does not say whether it takes a value", api)
+					return ghArgs{}, cannotPlace(fmt.Sprintf("-%c", short), "is an option whose help does not say whether it takes a value", api)
 				}
 				value, hasValue := "", true
 				switch {
@@ -1140,16 +1182,16 @@ func ghCloneGitFlagList() string {
 // set records value given the option name: --help's as a boolean; another boolean's as pflag
 // reads it (strconv.ParseBool), the last given deciding, and false for a value that is no boolean,
 // which gh refuses itself; any other's taking a value in the order given. An option of
-// ghRefusedOptions is refused first, naming the argument it came in.
+// ghRefusedOptions is refused first, named by its long name, never by the value in arg.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
 	if why, refused := ghRefusedOptions[name]; refused {
-		return fmt.Errorf("%q %s, so it sends nothing", arg, why)
+		return fmt.Errorf("%q %s, so it sends nothing", "--"+name, why)
 	}
 	switch {
 	case name == "help":
 		help, err := strconv.ParseBool(value)
 		if err != nil {
-			return cannotPlace(arg, "gives --help a value that is no boolean", api)
+			return cannotPlace("--help", "has a value that is no boolean", api)
 		}
 		p.help = help
 	case flag.value:

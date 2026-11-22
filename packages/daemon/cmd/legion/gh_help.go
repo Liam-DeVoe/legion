@@ -230,7 +230,7 @@ func ghHelpTarget(words []string, help func(path []string) (string, error)) erro
 	walk := ghWalk{help: help}
 	for i, word := range words {
 		if strings.HasPrefix(word, "-") {
-			return cannotPlace(word, "is an option of `gh help`, which takes only the names of commands", false)
+			return cannotPlace(optionName(word), "is an option of `gh help`, which takes only the names of commands", false)
 		}
 		if err := walk.check(word); err != nil {
 			return err

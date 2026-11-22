@@ -22,7 +22,11 @@ func ghPrinted(err error) string {
 // A token in a URL a person puts where legion gh reads a repository - GH_REPO, -R, a remote's
 // gh-resolved marker - reaches the refusal that names that value, and legion gh writes the refusal
 // through the URL rule, as every other command's (printRefusal): the line holds no part of the
-// token, and still says what was refused.
+// token, and still says what was refused. A value with no scheme, which the URL rule cannot read,
+// is named by its kind (repositoryTarget): a user name and password before its host, a token as
+// its user, a token in its query, on another host or on a github.com one, which is refused, not
+// admitted. A marker with no scheme, in scp form, or with a space before its "@" prints through
+// remoteShown.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	at := "@"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -39,33 +43,106 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	tokenURL := func(host string) string {
 		return "https://x-access-token:" + madeUpGhToken + at + host + "/acme/widgets"
 	}
-	marker := func() ([]ghRemote, error) {
-		return []ghRemote{{name: "origin", url: "https://github.com/acme/widgets.git"},
-			ghMarkerLine("remote.origin.gh-resolved " + tokenURL("ghe.example.com"))}, nil
+	marker := func(value string) func() ([]ghRemote, error) {
+		return func() ([]ghRemote, error) {
+			return []ghRemote{{name: "origin", url: "https://github.com/acme/widgets.git"},
+				ghMarkerLine("remote.origin.gh-resolved " + value)}, nil
+		}
 	}
-	for name, tc := range map[string]struct {
+	const kindWords = "holds an \"@\", a \":\", a \"?\" or a \"#\" where a GitHub repository's name holds none"
+	schemeless := map[string]string{
+		"a user name and a token":             "x-access-token:" + madeUpGhToken + at + "ghe.example.com/acme/widgets",
+		"a token as the user":                 madeUpGhToken + at + "ghe.example.com/acme/widgets",
+		"a token in the query":                "ghe.example.com/acme/widgets?t=" + madeUpGhToken,
+		"a token in the fragment":             "ghe.example.com/acme/widgets#" + madeUpGhToken,
+		"a user and password on www.github":   "x-access-token:" + madeUpGhToken + at + "www.github.com/acme/widgets",
+		"a user and password on github.com":   "x-access-token:" + madeUpGhToken + at + "github.com/acme/widgets",
+		"an scp-like token":                   madeUpGhToken + at + "github.com:acme/widgets",
+		"a space before the @, with a scheme": "https://x-access-token:zq tok0123" + at + "github.com/acme/widgets",
+	}
+	type row struct {
 		argv    []string
 		env     map[string]string
 		remotes func() ([]ghRemote, error)
 		names   string
-	}{
+	}
+	rows := map[string]row{
 		"GH_REPO on another host":    {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": tokenURL("ghe.example.com")}), noGitRepository, "names another host than github.com"},
 		"-R on another host":         {[]string{"pr", "list", "-R", tokenURL("ghe.example.com")}, with(nil), noGitRepository, "names another host than github.com"},
-		"a gh-resolved marker's URL": {[]string{"pr", "list"}, with(nil), marker, "remote.origin.gh-resolved https://[a URL with credentials]/acme/widgets"},
-	} {
+		"a gh-resolved marker's URL": {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), "remote.origin.gh-resolved https://[a URL with credentials]/acme/widgets"},
+		"an scp-form marker": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com:acme/widgets"),
+			"remote.origin.gh-resolved (a URL that is not printed)"},
+		"a marker with no scheme": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com/acme/widgets"),
+			"remote.origin.gh-resolved (a URL that is not printed)"},
+		"a marker with a space before the @": {[]string{"pr", "list"}, with(nil), marker("https://x:zq tok0123" + at + "ghe.example.com/acme/widgets"),
+			"remote.origin.gh-resolved (a URL that is not printed)"},
+		"a marker with a token in the query": {[]string{"pr", "list"}, with(nil), marker("ghe.example.com/acme/widgets?t=" + madeUpGhToken),
+			"remote.origin.gh-resolved (a URL that is not printed)"},
+	}
+	for shape, value := range schemeless {
+		rows["-R, "+shape] = row{[]string{"pr", "list", "-R", value}, with(nil), noGitRepository, "a -R value " + kindWords}
+		rows["GH_REPO, "+shape] = row{[]string{"pr", "list"}, with(map[string]string{"GH_REPO": value}), noGitRepository, "the GH_REPO value " + kindWords}
+	}
+	for name, tc := range rows {
 		t.Run(name, func(t *testing.T) {
 			_, err := ghTargetOfKept(t, tc.argv, tc.env, savedGhHelp, tc.remotes, ownersOwnDirectories)
 			if err == nil {
 				t.Fatal("ghTargetOf = nil error, want a refusal")
 			}
 			printed := ghPrinted(err)
-			if strings.Contains(printed, madeUpGhToken) {
+			if strings.Contains(printed, madeUpGhToken) || strings.Contains(printed, "tok0123") {
 				t.Errorf("legion gh printed %q, which holds the token", printed)
 			}
 			if !strings.HasPrefix(printed, "legion gh: ") || !strings.Contains(printed, tc.names) {
 				t.Errorf("legion gh printed %q, want it to name %q", printed, tc.names)
 			}
 		})
+	}
+}
+
+// A value a person gives where the command has no place for it is named by its position or, an
+// option, by its name, never by its value: a secret given to `gh secret set` without --body, a
+// misspelt option holding one (`--bdy=<secret>`, a short `-Z<secret>`), and a header given to gh
+// api without -H. Real gh, refusing each, prints none of it.
+func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
+	const secret = "ghp_zqtoken0123"
+	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
+	for name, tc := range map[string]struct {
+		argv  []string
+		names string
+	}{
+		"a secret without --body": {[]string{"secret", "set", "DEPLOY_TOKEN", secret, "-R", "acme/widgets"}, "the 2nd argument has no place in `gh secret set`'s usage"},
+		"a misspelt long option":  {[]string{"secret", "set", "DEPLOY_TOKEN", "--bdy=" + secret, "-R", "acme/widgets"}, `"--bdy" is no option`},
+		"a misspelt short option": {[]string{"secret", "set", "DEPLOY_TOKEN", "-Z" + secret, "-R", "acme/widgets"}, `"-Z" is no option`},
+		"a header without -H":     {[]string{"api", "repos/acme/widgets", "Authorization: token " + secret}, "the 2nd argument has no place in `gh api`'s usage"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ghTargetOfKept(t, tc.argv, pane, savedGhHelp, noGitRepository, ownersOwnDirectories)
+			if err == nil {
+				t.Fatal("ghTargetOf = nil error, want a refusal")
+			}
+			printed := ghPrinted(err)
+			if strings.Contains(printed, "zqtoken") {
+				t.Errorf("legion gh printed %q, which holds the secret", printed)
+			}
+			if !strings.Contains(printed, tc.names) {
+				t.Errorf("legion gh printed %q, want it to name %q", printed, tc.names)
+			}
+		})
+	}
+}
+
+// An SSH login printGhRefusal leaves as it is stands at the start of the text or after a
+// separator: an ssh URL glued to a URL holding a token goes through the URL rule with it.
+func TestPrintGhRefusalLeavesNoLoginGluedToAToken(t *testing.T) {
+	at := "@"
+	for _, text := range []string{
+		`"https://u:` + madeUpGhToken + "ssh://git" + at + `h.example/o/r" names another host than github.com`,
+		"https://h.example/" + madeUpGhToken + "/ssh://git" + at + "h/o names another host",
+	} {
+		if printed := ghPrinted(errors.New(text)); strings.Contains(printed, madeUpGhToken) {
+			t.Errorf("printGhRefusal(%q) wrote %q, which holds the token", text, printed)
+		}
 	}
 }
 
