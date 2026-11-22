@@ -20,19 +20,23 @@ import (
 )
 
 // planRolePromptFile is the daemon's own copy of the prompt of a role an owner's plan defines:
-// <stateDir>/plan-roles/<sha256 of the prompt, in hex>.md, written with mode 0600 where it is
-// absent. A launch reads a role's prompt from a file (runtime.PromptParts.RolePromptPaths), and a
-// copy named by its text is the one file every version that gives the role that text shares: two
-// versions of one prompt read one file, a changed prompt is another file, and a file in place is
-// never written again, so no launch reads a prompt another launch is writing. The write goes
-// through a file of its own beside it and a rename, so a reader finds the whole prompt or none.
+// <stateDir>/plan-roles/<sha256 of the prompt, in hex>.md, with mode 0600. A launch reads a role's
+// prompt from a file (runtime.PromptParts.RolePromptPaths), and a copy named by its text is the
+// one file every version that gives the role that text shares: two versions of one prompt read
+// one file, and a changed prompt is another file. A copy in place is used again only while its
+// text hashes to its name. A copy a crash cut short, empty or holding part of the prompt, hashes
+// to another name, so it is written again before the launch uses it. The write goes through a
+// file of its own beside it, synced, and a rename, so a reader finds the whole prompt or the copy
+// it replaces, and a crash after the rename leaves the whole prompt.
 func planRolePromptFile(stateDir, prompt string) (string, error) {
 	sum := sha256.Sum256([]byte(prompt))
 	dir := filepath.Join(stateDir, "plan-roles")
 	path := filepath.Join(dir, hex.EncodeToString(sum[:])+".md")
-	if _, err := os.Stat(path); err == nil {
+	held, err := os.ReadFile(path)
+	if err == nil && sha256.Sum256(held) == sum {
 		return path, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -44,6 +48,10 @@ func planRolePromptFile(stateDir, prompt string) (string, error) {
 	}
 	defer os.Remove(staged.Name())
 	if _, err := staged.WriteString(prompt); err != nil {
+		staged.Close()
+		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
 		staged.Close()
 		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
 	}

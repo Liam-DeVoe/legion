@@ -164,6 +164,50 @@ func TestARoleOfAPlanLaunchesWithThePlansPromptAndModel(t *testing.T) {
 	}
 }
 
+// A copy of a plan role's prompt that a crash cut short, empty or holding the first half of the
+// prompt, is written again before a launch uses it: the copy is named by the prompt's hash, and a
+// launch that finds a file whose text does not hash to its name writes the whole prompt over it.
+func TestACutShortCopyOfAPlanRolesPromptIsWrittenAgainBeforeALaunch(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prompt = "# Prober\n\nProbe the change, then report each probe that failed."
+	stateDir := t.TempDir()
+	s := specs{stateDir: stateDir, project: "s1", prompts: composer,
+		planRole: func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+			return record.PlanRole{Issue: issue, Role: "prober", Type: "testing", Prompt: prompt}, true, nil
+		}}
+	token, err := claim.NewToken("s1", "LEGION-43", "prober")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(prompt))
+	copied := filepath.Join(stateDir, "plan-roles", hex.EncodeToString(sum[:])+".md")
+	for _, short := range []string{"", prompt[:len(prompt)/2]} {
+		if err := os.MkdirAll(filepath.Dir(copied), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(copied, []byte(short), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "LEGION-43", Tree: "LEGION-42", Role: "prober"})
+		if err != nil {
+			t.Fatalf("the prober's spawn spec over a copy holding %q: %v", short, err)
+		}
+		if !slices.Contains(spec.Prompt.RolePromptPaths, copied) {
+			t.Fatalf("the prober's role prompt paths = %q, want them to hold the copy %s", spec.Prompt.RolePromptPaths, copied)
+		}
+		held, err := os.ReadFile(copied)
+		if err != nil || string(held) != prompt {
+			t.Errorf("the copy a crash left holding %q holds %q, %v once the launch read it; want the whole prompt %q", short, held, err, prompt)
+		}
+		if info, err := os.Stat(copied); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("the copy written again = %v, %v; want a file of mode 0600", info, err)
+		}
+	}
+}
+
 // A tree's root architect is told the design-gate steps its deployment gates after its
 // addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
 // prompt carries what those steps ask of it: one registration for each step, on that step's own
