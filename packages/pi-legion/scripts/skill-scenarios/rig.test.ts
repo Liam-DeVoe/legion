@@ -2085,15 +2085,39 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
         [`trial-${variant}-s1-1`]: read(built, "world.json"),
         [`trial-${base}-s1-1`]: read(of, "world.json"),
       });
-      expect(out).toMatch(
-        new RegExp(
-          `^trial-${variant}-s1-1\\tpass=false\\tref=false\\tworld=${variant} record=none wrote=\\w+ before=\\w+ pressed=\\w+ waited=\\w+ outcome=false told=\\w+ declined=false reported=\\w+ readCI=false `,
-          "m"
-        )
-      );
-      expect(out).toContain(
-        `trial-${base}-s1-1\tpass=false\tref=false\tworld=${base} rule=tester ciReads=0 pressed=true outcome=false readCI=false `
-      );
+      // Each score line's facts, read by name, so a fact the scorer adds, renames or moves breaks
+      // only the rows that read that fact.
+      const scored = (run: string) => {
+        const line = out.split("\n").find((l) => l.startsWith(`${run}\t`));
+        if (line === undefined) throw new Error(`the scorer printed no line for ${run}:\n${out}`);
+        return Object.fromEntries(
+          line
+            .split(/[\t ]/)
+            .slice(1)
+            .map((field) => field.split("="))
+            .filter((pair) => pair.length === 2)
+        ) as Record<string, string>;
+      };
+      expect(scored(`trial-${variant}-s1-1`)).toMatchObject({
+        pass: "false",
+        ref: "false",
+        world: variant,
+        record: "none",
+        outcome: "false",
+        declined: "false",
+        readCI: "false",
+      });
+      expect(scored(`trial-${variant}-s1-1`)).not.toHaveProperty("rule");
+      expect(scored(`trial-${base}-s1-1`)).toMatchObject({
+        pass: "false",
+        ref: "false",
+        world: base,
+        rule: "tester",
+        ciReads: "0",
+        pressed: "true",
+        outcome: "false",
+        readCI: "false",
+      });
       expect(out).toContain(`red-at-the-head:${variant}\ts1\t0/0\t0/0\t0\t0\n`);
       expect(out).toContain(`red-at-the-head:${base}\ts1\t0/1\t0/1\t0\t0\n`);
     });
