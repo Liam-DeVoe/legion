@@ -212,9 +212,10 @@ issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
-requirement, which clears the root's coverage flag for it. The root's own checks are proven at
-the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged
-into or on the repository's default branch, in the root's last round.
+requirement, which clears the root's coverage flag for it. The root's own checks are proven in
+the root's last round, at the root's own head, or on the default branch where its pull request
+merged before that round; no `after_merge` result is asked there, since the production check
+records it after the close.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 that a tester step and a reviewer step name and neither refuses, so your acceptance is the only
 gate on it: give such an issue the step `acceptance:owner`, and

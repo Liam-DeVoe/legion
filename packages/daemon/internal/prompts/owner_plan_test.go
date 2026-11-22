@@ -704,3 +704,52 @@ func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) 
 		holdsAndRetires(t, "go/worker-common.md", text, []string{noPlanner}, nil)
 	})
 }
+
+// Each sentence the acceptance's last round showed false agrees with what the daemon and the other
+// parts say. An approval of a head GitHub holds blocked leaves the issue in `reviewing` (workflow's
+// reviewRound, classify.RoundWaitsOnMergeState), so the architect's part no longer says the
+// approval ends the round whatever CI says. The reviewer waits, before it approves, for a required
+// check still running and for a `ci_check` run, so its part says so where it says the daemon does
+// the rest of the waiting. The reviewer and the merger push nothing (roles/reviewer.md,
+// roles/merger.md), so the shared update and push steps say they are not theirs. The production
+// check, opened once the pull request merges, records an `after_merge` result (workflow's openCheck
+// and checkTask), so the root's last round asks none. Each part is read alone, by its name. This
+// shows the text is loaded, never that an agent follows it.
+func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{"An approved head that GitHub holds blocked, on a check or a review the base requires, keeps the issue in `reviewing` until that merge state comes clean."},
+			[]string{"ends the round whatever CI says"},
+		},
+		{
+			"go/reviewer.md", func(t *testing.T) string { return goPart(t, "reviewer.md") },
+			[]string{
+				"Before you approve, you wait only for what the rules above name, a required check still `queued` or `in_progress` and a `ci_check` run still going; the daemon does the rest of the waiting",
+				"So once your read finds the head's required checks and its `ci_check` runs concluded, there is nothing more of CI to wait for or decide.",
+			},
+			[]string{"You wait for none of them", "So once you have read the head's checks there is nothing of CI to wait for or decide."},
+		},
+		{
+			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
+			[]string{
+				"Do its five steps in that turn, in this order; the reviewer and the merger create no commit and push nothing, so each commit and push that the steps and this paragraph name is not theirs.",
+				"Where your role pushes (the reviewer and the merger push nothing), push the issue branch yourself",
+			},
+			[]string{"Push the issue branch yourself"},
+		},
+		{
+			"roles/architect-root.md", func(t *testing.T) string { return rolePart(t, "architect-root.md") },
+			[]string{"no `after_merge` result is asked there, since the production check records it after the close"},
+			[]string{"for an `after_merge` check, on the branch the root's pull request merged into"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
+		})
+	}
+}
