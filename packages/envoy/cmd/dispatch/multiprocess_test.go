@@ -1146,6 +1146,9 @@ type publishingPeriod struct {
 	from, to                    time.Time
 	started, stopped, stoppedBy time.Time
 	open                        bool
+	// ranTo is how far a period still open ran, as its own process's record shows it publishing
+	// (openPeriodsRanTo), and the zero time until that record is read.
+	ranTo time.Time
 }
 
 // publishingPeriods is every period the lines, one process's, show it holding the publisher hold.
@@ -1168,17 +1171,47 @@ func publishingPeriods(lines []outboxLine) []publishingPeriod {
 	return periods
 }
 
-// end is when the period ended, or now while it is open.
-func (p publishingPeriod) end(now time.Time) time.Time {
+// end is when the period ended: the moment of the line that ended it, or, while it is open, how
+// far its own process's record shows it ran (ranTo).
+func (p publishingPeriod) end() time.Time {
 	if p.open {
-		return now
+		return p.ranTo
 	}
 	return p.to
 }
 
 // holds reports whether at falls inside the period.
-func (p publishingPeriod) holds(at, now time.Time) bool {
-	return !at.Before(p.from) && !at.After(p.end(now))
+func (p publishingPeriod) holds(at time.Time) bool {
+	return !at.Before(p.from) && !at.After(p.end())
+}
+
+// openPeriodsRanTo is periods, one process's, with each one still open given, as its ranTo, the
+// latest moment that process's own record shows it publishing in it: the took line's own moment,
+// each batch the lines show it sent after that, and the from of each of its stamped reads of its
+// publisher inside the period that answered true, as openPeriodsRan reads them. Every moment is
+// one the process stamped on its own clock and none is the test's: a period still open is not run
+// out past what the process recorded, to whenever the test happens to read its clock.
+func openPeriodsRanTo(periods []publishingPeriod, lines []outboxLine, reads []stampedRead) []publishingPeriod {
+	ran := slices.Clone(periods)
+	for index, period := range ran {
+		if !period.open {
+			continue
+		}
+		period.ranTo = period.from
+		for _, line := range lines {
+			if line.message == sentBatch && line.instance == period.instance && line.at.After(period.ranTo) {
+				period.ranTo = line.at
+			}
+		}
+		inside := period.from.Add(logResolution)
+		for _, read := range reads {
+			if read.publishing && !read.bracket.from.Before(inside) && read.bracket.from.After(period.ranTo) {
+				period.ranTo = read.bracket.from
+			}
+		}
+		ran[index] = period
+	}
+	return ran
 }
 
 // logResolution is how much a line's own time understates when the line was written: slog's text
@@ -1809,12 +1842,10 @@ func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
 	reads := stampedReadsOf(t, pair)
 	held := map[*dispatchProcess][]publishingPeriod{}
 	logged := map[*dispatchProcess][]outboxLine{pair.a: pair.a.outboxLines(t), pair.b: pair.b.outboxLines(t)}
-	// now is a moment after the lines above were read, which is how far a period still open
-	// runs: every line they hold was written before it, so a batch logged in a period still open
-	// lies inside it. It is not what ends a stretch with no publisher: that is sawPublisher
-	// above, the moment the read that found a publisher was issued, which is before that read's
-	// own answer and before stop(), while now is after both.
-	now := time.Now()
+	// A period still open in the lines runs as far as its own process's record shows it
+	// publishing - its batches and its stamped reads that answered true (openPeriodsRanTo) - and
+	// no further: a moment of the test's own clock would run it out to whenever the test read the
+	// lines, past anything the process recorded.
 	owners := map[string]*dispatchProcess{}
 	batches := 0
 	for _, process := range []*dispatchProcess{pair.a, pair.b} {
@@ -1852,7 +1883,7 @@ func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
 		if len(instances) > 1 {
 			t.Errorf("process %s's outbox lines name the instances %v, want its one", pair.name(process), slices.Collect(maps.Keys(instances)))
 		}
-		own := publishingPeriods(lines)
+		own := openPeriodsRanTo(publishingPeriods(lines), lines, reads[process])
 		held[process] = own
 		for _, line := range lines {
 			if line.message != sentBatch {
@@ -1860,7 +1891,7 @@ func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
 			}
 			batches++
 			inside := slices.ContainsFunc(own, func(period publishingPeriod) bool {
-				return period.instance == line.instance && period.holds(line.started, now) && period.holds(line.at, now)
+				return period.instance == line.instance && period.holds(line.started) && period.holds(line.at)
 			})
 			if line.started.IsZero() || !inside {
 				t.Errorf("process %s logged a batch outside every period it held the publisher hold: %s", pair.name(process), line.text)
@@ -1869,10 +1900,10 @@ func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
 	}
 	for _, one := range held[pair.a] {
 		for _, other := range held[pair.b] {
-			if one.from.Before(other.end(now)) && other.from.Before(one.end(now)) {
+			if one.from.Before(other.end()) && other.from.Before(one.end()) {
 				t.Errorf("process %s held the publisher hold from %s to %s, and process %s from %s to %s",
-					pair.name(pair.a), one.from.Format(time.RFC3339Nano), one.end(now).Format(time.RFC3339Nano),
-					pair.name(pair.b), other.from.Format(time.RFC3339Nano), other.end(now).Format(time.RFC3339Nano))
+					pair.name(pair.a), one.from.Format(time.RFC3339Nano), one.end().Format(time.RFC3339Nano),
+					pair.name(pair.b), other.from.Format(time.RFC3339Nano), other.end().Format(time.RFC3339Nano))
 			}
 		}
 	}
@@ -4221,6 +4252,19 @@ func waitForLeaseInEach(t *testing.T, pair *dispatchPair, message, lease string)
 	})
 }
 
+// waitForLeaseTickInEach waits for both processes to have reported a tick of lease, a pass or a
+// skip, so a count of the lines after it reads every first tick: neither a pass nor a skip is
+// required of either process here, which is what the caller's count judges.
+func waitForLeaseTickInEach(t *testing.T, pair *dispatchPair, lease string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("both processes to report a tick of the %s lease, a pass or a skip", lease), func() (fmt.Stringer, bool) {
+		ticked := func(process *dispatchProcess) bool {
+			return countLease(process, leaseRan, lease)+countLease(process, leaseSkipped, lease) > 0
+		}
+		return pair.buffers(), ticked(pair.a) && ticked(pair.b)
+	})
+}
+
 // requireLeasedOnce is what a leased loop's window must show: the pass ran once across the two
 // processes, which is what one process alone would have done, and the other process found the
 // lease held and skipped rather than running the same work beside it.
@@ -4421,13 +4465,11 @@ const (
 // keep different rules once the hold lets go. webhook-redelivery, block-index and
 // search-term-stats are timer loops whose first pass is immediate, and what this row holds them
 // to is per period: at least one pass across the two processes, and no period served twice.
-// document-compaction's first tick is at start too, and it is not held inside its pass: its
-// period is the aligned hour, and the same per-period claim holds for it - at least one pass, and
-// no hour served twice - read off the period= each process's own ran lines name
-// (requireLeasedOncePerPeriod). Two first ticks that fall in one hour are the case the claim
-// bites on, one pass and the other tick skipping the served period; two that a boundary splits
-// pass once in each hour, which the lease allows, and the row logs the periods either way rather
-// than read this test's clock to steer the starts away from a boundary. reference-excerpts is a
+// document-compaction's first tick is at start too, and it is not held inside its pass: both
+// processes run it at staggeredSweepPeriod (DISPATCH_TEST_COMPACTION_SWEEP_PERIOD), whose one
+// bucket holds both first ticks however long the starts take, so the row holds it to what the
+// lease and the period record give two ticks of one period: one pass across the two processes,
+// and the other process's tick skipping (requireLeasedOnce). reference-excerpts is a
 // woken loop (docs.RunReferenceExcerptReconciliation) that runs a pass at start and again on the
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
@@ -4469,7 +4511,9 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// could land beside the release and make the next period's pass before this row counts the
 	// first.
 	blockGate := lockTables(t, pair.database, "access exclusive", "document_block_versions", "block_grammar_owed")
-	pair.start(t, githubAppEnv(t, fake.URL()))
+	env := githubAppEnv(t, fake.URL())
+	env["DISPATCH_TEST_COMPACTION_SWEEP_PERIOD"] = staggeredSweepPeriod.String()
+	pair.start(t, env)
 
 	waitForPassBehind(t, pair, gate, referenceExcerptPassStatement,
 		"a reference-excerpt pass to reach the refs lock, which is one process taking the lease")
@@ -4518,10 +4562,11 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// below end once the held pass has finished and that retry has run a pass of its own.
 	waitForLeaseInEach(t, pair, leaseRan, "reference-excerpts")
 	waitForLease(t, pair, leaseRan, "search-term-stats")
-	// Both processes' first compaction-sweep ticks came at their starts, long before the passes
-	// above were let go.
-	waitForLease(t, pair, leaseRan, "document-compaction")
-	requireLeasedOncePerPeriod(t, pair, "document-compaction")
+	// Both processes' first compaction-sweep ticks came at their starts, inside the one bucket of
+	// staggeredSweepPeriod: one of them passes and the other finds the period served, or the lease
+	// held while the first is still passing.
+	waitForLeaseTickInEach(t, pair, "document-compaction")
+	requireLeasedOnce(t, pair, "document-compaction")
 	requireLeasedOncePerPeriod(t, pair, "search-term-stats")
 	for _, unobserved := range []struct{ lease, why string }{
 		{"issue-ask-repair", "its first leased pass is one IssueAskRepairInterval (10 min) after each process started"},
@@ -4637,12 +4682,15 @@ func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	}
 }
 
-// staggeredSweepPeriod is the webhook redelivery sweep's interval in
-// TestALeasedLoopRunsOnceAcrossAStaggeredStart (DISPATCH_TEST_REDELIVERY_INTERVAL), in place of
-// redeliver.Interval's two minutes. A period is a bucket of a tick's due time, floor(epoch /
-// period) (duty.Exclusive), and this one's first bucket runs from 1970 to 2084: both processes'
-// first ticks fall in that one bucket however long their starts take, and neither ticks again
-// while the row runs.
+// staggeredSweepPeriod is the period a row gives a leased loop in place of production's, so that
+// two processes' ticks fall in one period: the webhook redelivery sweep's interval in
+// TestALeasedLoopRunsOnceAcrossAStaggeredStart (DISPATCH_TEST_REDELIVERY_INTERVAL, in place of
+// redeliver.Interval's two minutes), and the document compaction sweep's in
+// TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses (DISPATCH_TEST_COMPACTION_SWEEP_PERIOD, in
+// place of docs.CompactionSweepPeriod's hour). A period is a bucket of a tick's due time,
+// floor(epoch / period) (duty.Exclusive), and this one's first bucket runs from 1970 to 2084: both
+// processes' first ticks fall in that one bucket however long their starts take, and neither
+// ticks again while the row runs.
 const staggeredSweepPeriod = 1_000_000 * time.Hour
 
 // ───── a sign-in across the processes ───────────────────────────────────────
@@ -5345,7 +5393,7 @@ func aLiveChangeReachesTheOtherProcessWithinASecond(t *testing.T, lane clockLane
 	_, artifactID := pair.a.createIssueIn(t, project, "Live edit", "before")
 	writer := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "before\n")
 	reader := pair.openSyncedEditor(t, pair.b, "bob", artifactID, "before\n")
-	notified := pair.b.notifiedCatchUps(t, artifactID)
+	base := pair.catchUpBase(t, pair.b, artifactID)
 	if err := typeAtEnd(writer, " after"); err != nil {
 		t.Fatalf("type on A: %v", err)
 	}
@@ -5358,7 +5406,7 @@ func aLiveChangeReachesTheOtherProcessWithinASecond(t *testing.T, lane clockLane
 	if lane == onTheClock && reached > liveWithin {
 		t.Fatalf("the edit on A reached the reader on B %v after it was typed, want within %v", reached, liveWithin)
 	}
-	pair.b.awaitNotifiedCatchUp(t, artifactID, notified, "the edit on A reaching the reader on B")
+	pair.b.awaitNotifiedCatchUp(t, artifactID, base, "the edit on A reaching the reader on B")
 }
 
 // multiprocessAgentSession is the session an agent's writes name (actor.kind session) when they
@@ -5877,7 +5925,7 @@ func versionActorsSince(t *testing.T, pair *dispatchPair, issueKey string, seq i
 func (p *dispatchPair) typeAndSee(t *testing.T, lane clockLane, artifactID, typistName string, typist *docstest.Peer, text, readerName string, reader *docstest.Peer, readerProcess *dispatchProcess, keystroke int) {
 	t.Helper()
 	p.requireConnected(t, artifactID, typistName, typist, fmt.Sprintf("before keystroke %d", keystroke))
-	notified := readerProcess.notifiedCatchUps(t, artifactID)
+	base := p.catchUpBase(t, readerProcess, artifactID)
 	if err := typeAtEnd(typist, text); err != nil {
 		t.Fatalf("%s's keystroke %d: %v", typistName, keystroke, err)
 	}
@@ -5889,15 +5937,17 @@ func (p *dispatchPair) typeAndSee(t *testing.T, lane clockLane, artifactID, typi
 	}
 	what := fmt.Sprintf("%s's keystroke %d reaching %s", typistName, keystroke, readerName)
 	withinLive(t, lane, typed, what)
-	readerProcess.awaitNotifiedCatchUp(t, artifactID, notified, what)
+	readerProcess.awaitNotifiedCatchUp(t, artifactID, base, what)
 }
 
 // withinLive holds a change that began at since on one process and has now reached a reader on
 // the other to liveWithin, on the clock only (onTheClock): across two child processes a reading
 // of this machine's clock is its load as much as the product's work, so the row every run makes
-// holds the change to arriving at all, through the shared wait, and an edit to arriving on the
-// catch-up its write's notification asked for (awaitNotifiedCatchUp). It logs how long the change
-// took.
+// holds the change to arriving at all, through the shared wait, and to arriving on what the other
+// process's notification carried: an edit on the catch-up its write's notification asked for
+// (awaitNotifiedCatchUp), a cursor or a presence on what the other process's awareness relay sent
+// (awaitRelayedAwareness), and a close of an issue's rooms on the issue's own notification
+// (awaitNotifiedIssueClose). It logs how long the change took.
 func withinLive(t *testing.T, lane clockLane, since time.Time, what string) {
 	t.Helper()
 	took := time.Since(since)
@@ -5907,29 +5957,112 @@ func withinLive(t *testing.T, lane clockLane, since time.Time, what string) {
 	}
 }
 
-// notifiedCatchUps is how many catch-ups of the document's room the process has run because
-// another process's notification asked for one (docs.RoomCounters.NotifiedCatchUps).
-func (p *dispatchProcess) notifiedCatchUps(t *testing.T, artifactID string) int64 {
-	t.Helper()
-	return p.roomCounters(t, artifactID).NotifiedCatchUps
+// catchUpBase is what a wait for another process's change to reach a process's room
+// (awaitNotifiedCatchUp) is measured from, read before the change is made: the document's stored
+// head, past which the change's own row is the first, and how many LISTENs the process's listener
+// had stood up (docs.RoomCounters.ListenStands).
+type catchUpBase struct {
+	head         int64
+	listenStands int64
 }
 
-// awaitNotifiedCatchUp waits for the process to run a catch-up of the document's room that
-// another process's notification asked for, past the before it had run when the caller counted
-// them (notifiedCatchUps): what carried, to a reader here, a change another process wrote. It is
-// the half of withinLive every run holds. A write asks each other process for a catch-up on its
-// notification (docs.roomCatchUps): its head notification, and the bare twin after it, which a
-// write of another process's is never dropped as, so the count rises for every such change,
-// whichever of the two the change arrived on. A change carried by a poll of the reader's process
-// instead - a catch-up on a timer of its own - arrives all the same, later, and only the timing
-// lane's reading of the clock would see that it was late; the count sees what carried it, which
-// is no reading of the clock. It fails, naming what, at the shared wait's give-up.
-func (p *dispatchProcess) awaitNotifiedCatchUp(t *testing.T, artifactID string, before int64, what string) {
+// catchUpBase reads, before another process changes the document, what a wait for that change to
+// reach reader's room is measured from (awaitNotifiedCatchUp).
+func (p *dispatchPair) catchUpBase(t *testing.T, reader *dispatchProcess, artifactID string) catchUpBase {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%s to be carried by a catch-up the write's notification asked for (notified catch-ups past %d)", what, before),
+	return catchUpBase{listenStands: reader.roomCounters(t, artifactID).ListenStands, head: storedHead(t, p, artifactID)}
+}
+
+// awaitNotifiedCatchUp waits for the process's room of the document to hold a change another
+// process stored after base was read, carried there by a catch-up the write's notification asked
+// for: the head that catch-up left the room holding is past base.head, where the change's own row
+// is the first (docs.RoomCounters.NotifiedHead). It is the half of withinLive every run holds. A
+// write notifies each other process twice (docs.roomCatchUps): its head notification, and the
+// bare twin after it. Whichever of the two asked, the catch-up records the head the room then
+// holds, so a twin of an earlier change still queued when base was read records a head at or
+// below base.head unless it read this change's row itself, and a catch-up another read of the
+// process made first leaves the notified one finding the room at that head. A change carried by a
+// poll of the reader's process instead - a catch-up on a timer of its own, with nothing notified -
+// arrives all the same, later, and only the timing lane's reading of the clock would see that it
+// was late; the head a notified catch-up left sees what carried it, which is no reading of the
+// clock.
+//
+// The product has one carrier besides the notification: one sent while the process's listener had
+// no connection reached nobody there, and the sweep after its next LISTEN catches the room up
+// (docs.roomCatchUps.sweep). A listener redials when its ping times out, which a loaded machine
+// can cause, so where it stood up a LISTEN again after base was read (ListenStands) the wait also
+// ends at a head that sweep left past base.head (SweptHead), and logs that a redial carried the
+// change. A process that loses notifications with no redial still fails it, naming what, at the
+// shared wait's give-up.
+func (p *dispatchProcess) awaitNotifiedCatchUp(t *testing.T, artifactID string, base catchUpBase, what string) {
+	t.Helper()
+	reached := testwait.Until(t, fmt.Sprintf("%s to be carried by a catch-up the write's notification asked for (notified head past %d), or by the sweep after a redial (swept head past %d with LISTENs stood past %d)",
+		what, base.head, base.head, base.listenStands),
+		func() (docs.RoomCounters, bool) {
+			counters := p.roomCounters(t, artifactID)
+			if counters.NotifiedHead > base.head {
+				return counters, true
+			}
+			return counters, counters.ListenStands > base.listenStands && counters.SweptHead > base.head
+		})
+	if reached.NotifiedHead <= base.head {
+		t.Logf("%s was carried by the sweep after the process's listener redialed (LISTENs stood %d, then %d; swept head %d, notified head %d, past %d): the write's notification reached no listener of the process",
+			what, base.listenStands, reached.ListenStands, reached.SweptHead, reached.NotifiedHead, base.head)
+	}
+}
+
+// relayedAwareness is what the process's rooms of the document have taken of client from another
+// process's notification (docs.RoomCounters.RelayedAwareness).
+func (p *dispatchProcess) relayedAwareness(t *testing.T, artifactID string, client uint64) docs.RelayedAwarenessChanges {
+	t.Helper()
+	return p.roomCounters(t, artifactID).RelayedAwareness[client]
+}
+
+// awaitRelayedAwareness waits for the process's room of the document to take a change of client
+// from another process's notification past before, what it had taken when the caller read it
+// (relayedAwareness): a removal of the client when removed, a state of it otherwise. It is the half
+// of withinLive every run holds for a cursor or a presence crossing processes. Awareness crosses
+// by NOTIFY alone (docs/awareness_relay.go), but a room also removes a client it stops hearing
+// from by itself once awarenessExpiry (30 s) has passed, so a relay that drops removals still
+// clears a departed reader from the other process's readers; the count holds the removal to the
+// one the reader's own process relayed. A room counts no entry it dropped as stale, so an earlier
+// state still in flight when before was read never counts as this one. It fails, naming what, at
+// the shared wait's give-up.
+func (p *dispatchProcess) awaitRelayedAwareness(t *testing.T, artifactID string, client uint64, removed bool, before docs.RelayedAwarenessChanges, what string) {
+	t.Helper()
+	change, past := "state", before.States
+	if removed {
+		change, past = "removal", before.Removals
+	}
+	testwait.Until(t, fmt.Sprintf("%s to be carried by the other process's awareness relay (a relayed %s of client %d past %d)", what, change, client, past),
+		func() (docs.RelayedAwarenessChanges, bool) {
+			taken := p.relayedAwareness(t, artifactID, client)
+			if removed {
+				return taken, taken.Removals > past
+			}
+			return taken, taken.States > past
+		})
+}
+
+// notifiedIssueCloses is how many notifications that the document's issue closed or reopened the
+// process's issue-open lane has applied to the document (docs.RoomCounters.NotifiedIssueCloses).
+func (p *dispatchProcess) notifiedIssueCloses(t *testing.T, artifactID string) int64 {
+	t.Helper()
+	return p.roomCounters(t, artifactID).NotifiedIssueCloses
+}
+
+// awaitNotifiedIssueClose waits for the process's issue-open lane to apply a notification that the
+// document's issue closed or reopened past the before it had applied when the caller read it
+// (notifiedIssueCloses): what closes the process's room of the document so its browsers reconnect
+// with the scope the issue now allows. It is the half of withinLive every run holds for an issue's
+// close or reopen. The recheck after a LISTEN and the append gate's refusal close such a room too,
+// and neither counts. It fails, naming what, at the shared wait's give-up.
+func (p *dispatchProcess) awaitNotifiedIssueClose(t *testing.T, artifactID string, before int64, what string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%s to be carried by the issue's notification (notified issue closes past %d)", what, before),
 		func() (int64, bool) {
-			notified := p.notifiedCatchUps(t, artifactID)
-			return notified, notified > before
+			closes := p.notifiedIssueCloses(t, artifactID)
+			return closes, closes > before
 		})
 }
 
@@ -6047,13 +6180,17 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		}
 		// Bob opens the document second, on the other process: alice's cursor must be there for
 		// him at once, not after her tab's next heartbeat.
+		aliceOnB := pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 		bob := pair.b.openEditorAs(t, "bob", artifactID, "x\n")
 		opened := time.Now()
 		if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 			t.Fatalf("bob, who opened the document second and on B, did not see the cursor alice set on A: %v",
 				err)
 		}
-		withinLive(t, lane, opened, "the cursor alice set on A reaching bob, who opened the document second and on B,")
+		what := "the cursor alice set on A reaching bob, who opened the document second and on B,"
+		withinLive(t, lane, opened, what)
+		pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, false, aliceOnB, what)
+		bobOnA := pair.a.relayedAwareness(t, artifactID, bobAwarenessClient)
 		if err := bob.SetAwareness(bobAwarenessClient, cursorState("bob", 1)); err != nil {
 			t.Fatalf("announce bob's cursor: %v", err)
 		}
@@ -6061,7 +6198,10 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		if err := alice.WaitForAwareness(t, holdsState(bobAwarenessClient, cursorState("bob", 1))); err != nil {
 			t.Fatalf("the cursor bob set on B did not reach alice on A: %v", err)
 		}
-		withinLive(t, lane, set, "the cursor bob set on B reaching alice on A")
+		what = "the cursor bob set on B reaching alice on A"
+		withinLive(t, lane, set, what)
+		pair.a.awaitRelayedAwareness(t, artifactID, bobAwarenessClient, false, bobOnA, what)
+		aliceOnB = pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 		if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 1)); err != nil {
 			t.Fatalf("move alice's cursor: %v", err)
 		}
@@ -6069,9 +6209,12 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 1))); err != nil {
 			t.Fatalf("alice's cursor moving on A did not reach bob on B: %v", err)
 		}
-		withinLive(t, lane, moved, "alice's cursor moving on A reaching bob on B")
+		what = "alice's cursor moving on A reaching bob on B"
+		withinLive(t, lane, moved, what)
+		pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, false, aliceOnB, what)
 		pair.requireConnected(t, artifactID, "alice on A", alice, "while the cursors moved")
 		pair.requireConnected(t, artifactID, "bob on B", bob, "while the cursors moved")
+		aliceOnB = pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 		alice.Close()
 		closed := time.Now()
 		if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
@@ -6080,7 +6223,9 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		}); err != nil {
 			t.Fatalf("alice's tab closing on A did not remove her presence from bob's tab on B: %v", err)
 		}
-		withinLive(t, lane, closed, "alice's tab closing on A removing her presence from bob's tab on B")
+		what = "alice's tab closing on A removing her presence from bob's tab on B"
+		withinLive(t, lane, closed, what)
+		pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, true, aliceOnB, what)
 		pair.requireConnected(t, artifactID, "bob on B", bob, "after alice left")
 		pair.requireNoRoomCloses(t, artifactID)
 	})
@@ -6088,7 +6233,7 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 	t.Run("an edit through B's API reaches an editor on A", func(t *testing.T) {
 		_, artifactID := pair.a.createIssueIn(t, project, "Written through the other API", "x")
 		alice := pair.a.openEditorAs(t, "alice", artifactID, "x\n")
-		notified := pair.a.notifiedCatchUps(t, artifactID)
+		base := pair.catchUpBase(t, pair.a, artifactID)
 		if answer := pair.b.send(t, http.MethodPost, editPath(artifactID), editBody(t, "x", "y", "", false), asUser("bob")); answer.status != http.StatusOK {
 			t.Fatalf("bob's edit through B: %v", answer)
 		}
@@ -6098,7 +6243,7 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 				err, pair.roomCloses(t, artifactID))
 		}
 		withinLive(t, lane, sent, "bob's edit through B's API reaching alice's editor on A")
-		pair.a.awaitNotifiedCatchUp(t, artifactID, notified, "bob's edit through B's API reaching alice's editor on A")
+		pair.a.awaitNotifiedCatchUp(t, artifactID, base, "bob's edit through B's API reaching alice's editor on A")
 		pair.requireConnected(t, artifactID, "alice on A", alice, "after bob's edit")
 		pair.requireNoRoomCloses(t, artifactID)
 	})
@@ -6205,10 +6350,29 @@ func (p *dispatchProcess) patchIssueStatus(t *testing.T, issueKey, status string
 	p.call(t, http.MethodPatch, "/api/v1/issues/"+issueKey, fmt.Sprintf(`{"status":%q}`, status), http.StatusOK)
 }
 
-// requireEndsWithin waits for the editor's socket to close, and fails the test with what the
-// process logged when it stays open; on the clock it holds the close to liveWithin of the call
-// (withinLive).
-func requireEndsWithin(t *testing.T, lane clockLane, editor *docstest.Peer, what string, process *dispatchProcess) {
+// issueCloses is what each process of the pair had applied of the notifications of a document's
+// issue (notifiedIssueCloses), read before a close or a reopen of that issue: what
+// requireEndsWithin waits past.
+type issueCloses struct {
+	artifactID string
+	before     map[*dispatchProcess]int64
+}
+
+// issueCloses reads, before a close or a reopen of the document's issue, what each process of the
+// pair had applied of that issue's notifications.
+func (p *dispatchPair) issueCloses(t *testing.T, artifactID string) issueCloses {
+	t.Helper()
+	return issueCloses{artifactID: artifactID, before: map[*dispatchProcess]int64{
+		p.a: p.a.notifiedIssueCloses(t, artifactID), p.b: p.b.notifiedIssueCloses(t, artifactID),
+	}}
+}
+
+// requireEndsWithin waits for the editor's socket, on process, to close, and fails the test with
+// what the process logged when it stays open; then it waits for process to have applied the
+// issue's notification past what closes read before the close or reopen
+// (awaitNotifiedIssueClose), which is what closed the socket's room. On the clock it holds the
+// close to liveWithin of the call (withinLive).
+func requireEndsWithin(t *testing.T, lane clockLane, editor *docstest.Peer, what string, process *dispatchProcess, closes issueCloses) {
 	t.Helper()
 	since := time.Now()
 	testwait.Until(t, what, func() (withOutput[string], bool) {
@@ -6220,6 +6384,7 @@ func requireEndsWithin(t *testing.T, lane clockLane, editor *docstest.Peer, what
 		}
 	})
 	withinLive(t, lane, since, "the close ("+what+")")
+	process.awaitNotifiedIssueClose(t, closes.artifactID, closes.before[process], "the close ("+what+")")
 }
 
 // reconnectWithScope reconnects login's tab to the document on process, authenticates it as the
@@ -6269,15 +6434,16 @@ func closingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T, lane clo
 	}
 	bobEndedBeforeClose := peerEnded(bob)
 
+	closes := pair.issueCloses(t, artifactID)
 	pair.b.patchIssueStatus(t, issueKey, "done")
 	requireEndsWithin(t, lane, alice,
-		"closing the issue through B left alice's tab on A connected to a room that still takes edits on the closed issue", pair.a)
+		"closing the issue through B left alice's tab on A connected to a room that still takes edits on the closed issue", pair.a, closes)
 
 	if bobEndedBeforeClose {
 		t.Fatalf("bob's tab on B was disconnected before the close (close code %d), so the close cannot be shown closing it; %s",
 			bob.CloseCode(), pair.roomCloses(t, artifactID))
 	}
-	requireEndsWithin(t, lane, bob, "closing the issue through B left bob's tab on B connected", pair.b)
+	requireEndsWithin(t, lane, bob, "closing the issue through B left bob's tab on B connected", pair.b, closes)
 
 	alice = reconnectWithScope(t, pair.a, "alice", artifactID, "readonly", "alice's tab on A, reconnected after the close")
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "readonly", "bob's tab on B, reconnected after the close")
@@ -6296,10 +6462,11 @@ func closingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T, lane clo
 		t.Errorf("the document moved from update %d to %d after the close: an update on a closed issue was stored", closedHead, head)
 	}
 
+	closes = pair.issueCloses(t, artifactID)
 	pair.a.patchIssueStatus(t, issueKey, "todo")
-	requireEndsWithin(t, lane, alice, "reopening the issue through A left alice's read-only tab on A connected", pair.a)
+	requireEndsWithin(t, lane, alice, "reopening the issue through A left alice's read-only tab on A connected", pair.a, closes)
 	requireEndsWithin(t, lane, bob,
-		"reopening the issue through A left bob's read-only tab on B connected, so it cannot edit the reopened issue", pair.b)
+		"reopening the issue through A left bob's read-only tab on B connected, so it cannot edit the reopened issue", pair.b, closes)
 
 	alice = reconnectWithScope(t, pair.a, "alice", artifactID, "read-write", "alice's tab on A, reconnected after the reopen")
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "read-write", "bob's tab on B, reconnected after the reopen")
@@ -6538,6 +6705,7 @@ func closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUnt
 	issue := openClosingAskIssue(t, pair, project, "Closed with an open ask")
 	issueKey, artifactID, askID, bob := issue.key, issue.artifactID, issue.askID, issue.bob
 
+	closes := pair.issueCloses(t, artifactID)
 	pair.a.patchIssueStatus(t, issueKey, "done")
 	versionBefore, markdownBefore, authorsBefore := latestVersion(t, pair.database, artifactID)
 	if !strings.Contains(markdownBefore, "Context late") ||
@@ -6545,7 +6713,7 @@ func closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUnt
 		t.Fatalf("version %d, the one the close left, does not hold bob's keystroke credited to him: it credits %s and reads:\n%s",
 			versionBefore, authorsBefore, markdownBefore)
 	}
-	requireEndsWithin(t, lane, bob, "closing the issue through A left bob's tab on B connected", pair.b)
+	requireEndsWithin(t, lane, bob, "closing the issue through A left bob's tab on B connected", pair.b, closes)
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "readonly", "bob's tab on B, reconnected after the close")
 	requireAskWithdrawn(t, pair.b, issueKey, askID, "after the close")
 	requireClosedText := func(what, text string) {
@@ -6572,11 +6740,12 @@ func closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUnt
 	requireAskWithdrawn(t, pair.b, issueKey, askID, "once the closed issue's spec settled")
 	requireClosedText("the stored document", pair.a.documentText(t, artifactID))
 
+	closes = pair.issueCloses(t, artifactID)
 	pair.b.patchIssueStatus(t, issueKey, "todo")
 	if ask := pair.a.readAsk(t, askID); ask.State != "open" || ask.Resolution != nil {
 		t.Fatalf("the reopen left the ask %s with resolution %+v, want it open again with none", ask.State, ask.Resolution)
 	}
-	requireEndsWithin(t, lane, bob, "reopening the issue through B left bob's read-only tab on B connected", pair.b)
+	requireEndsWithin(t, lane, bob, "reopening the issue through B left bob's read-only tab on B connected", pair.b, closes)
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "read-write", "bob's tab on B, reconnected after the reopen")
 	if reopened, err := roomRendering(t, bob); err != nil || !strings.Contains(reopened, `#ship-it urgency="med" multiple="false" state="open"`) {
 		t.Fatalf("B's room of the reopened issue does not hold the decision block open (%v):\n%s", err, reopened)
@@ -6875,12 +7044,15 @@ func anAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T, lane clockLane
 		judgedWhileOpen := func() (httpAnswer, string, bool) {
 			runs++
 			artifactID, bob, bobsOtherTab := open(t, fmt.Sprintf("Deleted before the agent publishes, run %d", runs))
+			base := pair.catchUpBase(t, pair.b, artifactID)
 			if answer := pair.a.send(t, http.MethodPost, editPath(artifactID), editBody(t, "Intro.", "Intro, first.", "", true), asAgent()); answer.status != http.StatusOK {
 				t.Fatalf("the agent's earlier write through A: %v", answer)
 			}
 			wrote := time.Now()
 			if err := bobsOtherTab.WaitForText(t, markdown, earlier); err == nil {
-				withinLive(t, lane, wrote, "the agent's earlier write through A reaching bob's tab on B")
+				const reached = "the agent's earlier write through A reaching bob's tab on B"
+				withinLive(t, lane, wrote, reached)
+				pair.b.awaitNotifiedCatchUp(t, artifactID, base, reached)
 			} else {
 				if !peerEnded(bobsOtherTab) {
 					t.Fatalf("the agent's earlier write through A reached neither bob's tab on B nor closed it: %v", err)

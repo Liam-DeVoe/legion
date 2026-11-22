@@ -2098,6 +2098,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CompactionSweepPeriod != 0 {
+				t.Errorf("DISPATCH_TEST_COMPACTION_SWEEP_PERIOD unset: CompactionSweepPeriod = %v, want 0 (docs.CompactionSweepPeriod's hour)", boot.CompactionSweepPeriod)
+			}
+			const long = 1_000_000 * time.Hour
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                   "1",
+				"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": long.String(),
+			})
+			if boot.CompactionSweepPeriod != long {
+				t.Errorf("DISPATCH_TEST_COMPACTION_SWEEP_PERIOD: CompactionSweepPeriod = %v, want %v", boot.CompactionSweepPeriod, long)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COMPACTION_SWEEP_PERIOD=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COMPACTION_SWEEP_PERIOD": "1h"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_PROCESS_HEARTBEAT": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.ProcessHeartbeat != 0 {
 				t.Errorf("DISPATCH_TEST_PROCESS_HEARTBEAT unset: ProcessHeartbeat = %v, want 0 (processes.HeartbeatInterval's five seconds)", boot.ProcessHeartbeat)

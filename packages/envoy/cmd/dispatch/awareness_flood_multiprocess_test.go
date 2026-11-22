@@ -69,6 +69,10 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 			"no bound a socket is held to cut the frame, so one tab took every entry, and B has none for a reader who joins while its clients are there",
 			held, floodClients, docs.MaxAwarenessClientsPerRoomForTest)
 	}
+	// The frame's clients that crossed are the ones B's room took a state of from A's relay; their
+	// departure must reach B the same way, and not by B's own expiry of them 30 s on
+	// (awarenessExpiry), which would clear bob's view all the same.
+	crossed := pair.b.roomCounters(t, artifactID).RelayedAwareness
 	flood.Close()
 	// The flooding tab has left before alice joins: bob, on B, holds none of its clients once B's
 	// room has taken their removal, which is the tombstones the bound must not count.
@@ -76,6 +80,12 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 		return !holdsAnyClientFrom(states, 500_000, floodClients)
 	}); err != nil {
 		t.Fatalf("the flooding tab's clients never left bob's view on B: %v", err)
+	}
+	for client, before := range crossed {
+		if client >= 500_000 && client < 500_000+floodClients {
+			pair.b.awaitRelayedAwareness(t, artifactID, client, true, before,
+				fmt.Sprintf("the flooding tab's client %d leaving bob's view on B", client))
+		}
 	}
 	// What lets B show a reader it has not seen is a free entry in its room: the bound counts the
 	// clients present and the tombstones of the ones that left (docs.RoomCounters.AwarenessClients),
@@ -87,6 +97,7 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 	}
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
+	aliceOnB := pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
@@ -100,6 +111,7 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 			floodClients)
 	}
 	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
+	pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, false, aliceOnB, "alice's cursor reaching bob on B")
 }
 
 // The same flood, from a tab that stays: it keeps its floodClients invented clients alive,
@@ -170,6 +182,7 @@ func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	}
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
+	aliceOnB := pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
@@ -183,6 +196,7 @@ func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 			floodClients)
 	}
 	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
+	pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, false, aliceOnB, "alice's cursor reaching bob on B")
 }
 
 // floodClients is how many client ids the flooding tabs above invent: more than a room may hold

@@ -86,7 +86,7 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	var boundary time.Time
 	if err := database.Pool.QueryRow(ctx, `
 		select boundary from duty_passes where lease = $1 and period_ns = $2
-	`, compactionSweepLease, compactionSweepPeriod.Nanoseconds()).Scan(&boundary); err != nil {
+	`, compactionSweepLease, CompactionSweepPeriod.Nanoseconds()).Scan(&boundary); err != nil {
 		t.Fatalf("read the sweep's duty record: %v", err)
 	}
 	if !boundary.Equal(hour) {
@@ -381,7 +381,8 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 }
 
 // compactionSweepTick is one tick of the sweep due at due, as RunCompactionSweep's ticker makes
-// one: the pass, when this process takes the lease and no process has swept the hour due falls in.
+// one in production: the pass, when this process takes the lease and no process has swept the hour
+// due falls in.
 func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, compactionSweepLease, due, compactionSweepPeriod, s.compactionSweepPass)
+	duty.Exclusive(ctx, leases, compactionSweepLease, due, CompactionSweepPeriod, s.compactionSweepPass)
 }

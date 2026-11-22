@@ -89,6 +89,7 @@ func aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *tes
 		})
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
+	aliceOnB := pair.b.relayedAwareness(t, artifactID, aliceAwarenessClient)
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
@@ -102,6 +103,7 @@ func aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *tes
 			sockets, perSocket, len(bob.AwarenessStates()))
 	}
 	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
+	pair.b.awaitRelayedAwareness(t, artifactID, aliceAwarenessClient, false, aliceOnB, "alice's cursor reaching bob on B")
 
 	for _, process := range []*dispatchProcess{pair.a, pair.b} {
 		held := process.roomCounters(t, artifactID).AwarenessClients

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 )
 
@@ -45,6 +46,10 @@ func fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T, la
 		editors[i] = pair.openSyncedEditor(t, pair.a, fmt.Sprintf("reader%d", i), artifactID, "x\n")
 	}
 	carol := pair.openSyncedEditor(t, pair.a, "carol", artifactID, "x\n")
+	onB := make([]docs.RelayedAwarenessChanges, readers)
+	for i := range editors {
+		onB[i] = pair.b.relayedAwareness(t, artifactID, uint64(8000+i))
+	}
 	for i, editor := range editors {
 		if err := editor.SetAwareness(uint64(8000+i), cursorState(fmt.Sprintf("reader%d", i), i)); err != nil {
 			t.Fatalf("reader %d's cursor: %v", i, err)
@@ -71,4 +76,8 @@ func fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T, la
 		t.Fatalf("five readers on A placed their cursors at once: carol on A saw all five, bob on B holds only %v", held)
 	}
 	withinLive(t, lane, placed, "the five readers' cursors reaching bob on B")
+	for i := range editors {
+		pair.b.awaitRelayedAwareness(t, artifactID, uint64(8000+i), false, onB[i],
+			fmt.Sprintf("reader %d's cursor reaching bob on B", i))
+	}
 }

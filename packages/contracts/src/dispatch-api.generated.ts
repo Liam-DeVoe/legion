@@ -268,7 +268,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: count this process's room failures, lock-waiting compactions, room closes and notified catch-ups (each a catch-up another process's notification asked for) of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
+    /** @description Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, read the head its room held after the catch-ups another process's notification asked for and after the sweeps a LISTEN ran, count the LISTENs its listener stood up, the issue-open notifications it applied to the document and the awareness changes other processes' notifications made to its room, per client, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
     get: operations["getApiV1ArtifactsByIdTestRoomCounters"];
     put?: never;
     post?: never;
@@ -6264,6 +6264,12 @@ export interface components {
       total: number;
       total_ms: components["schemas"]["RelatedCheckTiming"];
     };
+    RelayedAwarenessChanges: {
+      /** Format: int64 */
+      removals: number;
+      /** Format: int64 */
+      states: number;
+    };
     RenameArtifactInput: {
       name: string;
     };
@@ -6329,14 +6335,23 @@ export interface components {
     RoomCounters: {
       awareness_clients: number;
       /** Format: int64 */
+      listen_stands: number;
+      /** Format: int64 */
       lock_waiting_compactions: number;
       /** Format: int64 */
-      notified_catch_ups: number;
+      notified_head: number;
+      /** Format: int64 */
+      notified_issue_closes: number;
+      relayed_awareness: {
+        [key: string]: components["schemas"]["RelayedAwarenessChanges"];
+      } | null;
       /** Format: int64 */
       room_closes: number;
       /** Format: int64 */
       room_failures: number;
       settlement_resumptions: string[] | null;
+      /** Format: int64 */
+      swept_head: number;
     };
     RouteIndex: {
       docs: string;
@@ -15158,6 +15173,7 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
+export type RelayedAwarenessChanges = components["schemas"]["RelayedAwarenessChanges"];
 export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];

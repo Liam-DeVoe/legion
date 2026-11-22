@@ -2614,6 +2614,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 	}
 	for _, state := range states {
 		s.setRoomIssueOpen(ctx, state.room, state.open, true)
+		s.hooks.countNotifiedIssueClose(state.room)
 	}
 }
 
