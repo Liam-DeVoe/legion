@@ -91,10 +91,14 @@ body: |-
     closed, which then deletes the open row of its old name, is recorded as a close where the pull
     request is open under another name or no close of it is known, and the install records each
     pull request closed or merged when it runs (by its canonical name's row, so an open pull request
-    whose old name's row reads closed keeps its results); and
+    whose old name's row reads closed keeps its results) at the time GitHub dated that row's last
+    write (`pull_request_heads.event_at`), among the results recorded before it, each placed at the
+    time it was recorded, so a result recorded while the pull request was closed counts after it
+    reopens whether it was recorded before the install or after it; and
     ended provenance stays ended: the drain keeps the place of each result
-    (`pull_request_former_heads_results`), and a result's commit becomes a candidate only where a
-    result there was recorded after the last close, or, recorded before the release, where no close
+    (`pull_request_former_heads_results`), the install gives each result recorded before it its
+    place in that order, and a result's commit becomes a candidate only where a
+    result there was recorded after the last close, or, with no place yet, where no close
     is known, so a reopen never brings back a result or a head of the lifecycle its close ended,
     however healthy the read of the commits, while a result recorded since the close, and a head the
     reopened pull request visits, count in the new lifecycle, in whatever order the close, the

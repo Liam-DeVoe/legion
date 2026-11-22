@@ -48,8 +48,9 @@
 --   pull_request_former_heads  one row per pull request (its identity) and head it left while
 --                              open, with when it last left that head and since, the place at
 --                              which the pull request reached that head, or, on a candidate, the
---                              place of the result that made it one, null for a head reached or a
---                              result recorded before this release. verified is false on a
+--                              place of the result that made it one (the install's place for a
+--                              result recorded before this release), null where no applied
+--                              record shows the place. verified is false on a
 --                              candidate, a commit of the results of the pull request's issue
 --                              (below), which no read of the pull request's commits has confirmed
 --                              yet: the settler computes no state there until one does.
@@ -75,8 +76,9 @@
 --   pull_request_former_heads_results
 --                              the settler's own record of when each result was recorded: for an
 --                              issue and a commit of its population (below), the latest place of a
---                              result there, which the drain keeps from the pending rows. A
---                              result recorded before this release has none.
+--                              result there, which the drain keeps from the pending rows, and the
+--                              install from the results recorded before it, in the order of their
+--                              times (below).
 --   pull_request_former_heads_rows
 --                              the settler's own state: for each open row of a pull request it
 --                              applied a record of, by its name, the head it stands at and the
@@ -203,11 +205,13 @@
 -- Each leaves its candidates by pull_request_former_heads_leave(), unverified, where the pull
 -- request holds no row of the commit yet; the settler confirms them as it confirms the install's.
 -- Ended provenance stays ended: leave takes a commit only where a result there was recorded after
--- the pull request's last end (pull_request_former_heads_results), or, for a result recorded before
--- this release, which has no place, only where no end of the pull request is known. So a reopen,
--- whose start leaves the issue's whole population, never brings back a result of the lifecycle
--- its close ended, however healthy the read that would confirm it, while a result recorded since
--- the close, while the pull request was closed included, is a candidate of the new lifecycle; and
+-- the pull request's last end (pull_request_former_heads_results), or, where no result there has a
+-- place yet, only where no end of the pull request is known. The install places each result
+-- recorded before it, and the close of each pull request closed when it runs, in the order of
+-- their times (below). So a reopen, whose start leaves the issue's whole population, never brings
+-- back a result of the lifecycle its close ended, however healthy the read that would confirm it,
+-- while a result recorded since the close, while the pull request was closed included, is a
+-- candidate of the new lifecycle, whichever side of the install it was recorded on; and
 -- a head the reopened pull request truly visits is its former head by its own record.
 -- A head an open pull request left since this release has its row once applied, verified, so a
 -- result there leaves nothing to read. They draw from one population through those functions, so
@@ -618,10 +622,11 @@ $$;
 -- of it is open at the issue given and no open row of it stands at the commit, unverified, where it
 -- holds no row of the commit yet, and only where the commit's result is of the lifecycle that has
 -- not ended: its place (pull_request_former_heads_results, of the issue given) is after the pull
--- request's last end, or, for a result recorded before this release, which has none, no end is
--- known (above). The candidate's since is that place. A commit the history holds a row of keeps
--- that row and its since, and the result's place stays in pull_request_former_heads_results, from
--- which an end that drops the row leaves the commit again (pull_request_former_heads_leave_again).
+-- request's last end, or, where no result there has a place yet, no end is known (above); a result
+-- recorded before this release has the place the install gave it. The candidate's since is that
+-- place. A commit the history holds a row of keeps that row and its since, and the result's place
+-- stays in pull_request_former_heads_results, from which an end that drops the row leaves the
+-- commit again (pull_request_former_heads_leave_again).
 -- Answers whether it left one. It takes no lock itself: the install holds the tables, and the drain
 -- takes the pull request's lock first.
 create function pull_request_former_heads_leave(integer, text, text[]) returns boolean language plpgsql as $$
@@ -893,6 +898,75 @@ create trigger pull_request_former_heads_of_check_results after insert on check_
 create trigger pull_request_former_heads_of_ci_check_results after insert on ci_check_results
   for each row execute function pull_request_former_heads_of_result();
 
+-- The install's places: each result recorded before it, for each issue and commit of the issue's
+-- population (pull_request_former_heads_results, the latest result there), and the close of each
+-- pull request closed or merged when it runs, in the order of their times, since no record of
+-- this release orders them. A close before the install is in no record, and without one, a pull
+-- request that reopens after it would take the results recorded before that close as its own; a
+-- close placed after every result the install finds would refuse as well each result recorded
+-- while the pull request was closed, which it takes where the result is recorded after the
+-- install. So each result goes at the time it was recorded (created_at), and the close at the
+-- time GitHub dated the closed row's last write (pull_request_heads.event_at: the pull request's
+-- updated_at, which the event or the read that wrote the row named; a write that found the pull
+-- request closed carries a time no earlier than its close, and an older write leaves the row as it
+-- is), a result first where the two are equal. A row no write dated, which no writer of this
+-- release or the one before stores, goes after every result, since nothing shows when it closed.
+-- A write that found the pull request closed later than its close, as a read once GitHub updated
+-- it again, dates the close by that read: the row holds no earlier time of it. Each place is
+-- drawn from pull_request_former_heads_order in that order, before any place a record after the
+-- install draws. The close is one record of a row written closed for each pull request, its
+-- latest-dated row's, which the settler applies as any other (pull_request_former_heads_apply):
+-- it ends the lifecycle at its place, so a result placed after it is of the next lifecycle and
+-- one placed before it is not (pull_request_former_heads_leave), whichever side of the install it
+-- was recorded on. A pull request is closed where the row of its canonical name is not open, or,
+-- with no row of that name, where no row of it is open: the canonical row is the one Dispatch
+-- reads, and an old name's row may be a stale copy, so an open pull request whose old name's row
+-- reads closed keeps the results it holds. The places come before the seed, so a candidate the
+-- seed leaves holds its result's place as its since.
+do $$
+declare
+  dated record;
+begin
+  for dated in
+    select history.issue_key, history.commit_sha, history.repo, history.number, history.head_sha
+    from (
+      select document.issue_key, result.commit_sha, null::text as repo, null::integer as number, null::text as head_sha,
+        max(result.created_at) as at, 0 as closes
+      from artifacts document
+      join (
+        select recorded.check_artifact_id, recorded.commit_sha, recorded.created_at from check_results recorded
+        union all
+        select recorded.check_artifact_id, recorded.commit_sha, recorded.created_at from ci_check_results recorded
+      ) result on result.check_artifact_id = document.id
+      where pull_request_former_heads_reader(document.id) = document.issue_key
+      group by document.issue_key, result.commit_sha
+      union all
+      select null, null, closed.repo, closed.number, closed.head_sha, closed.at, 1
+      from (
+        select distinct on (lower(pull_request_canonical_repo(head.repo)), head.number)
+          lower(head.repo) as repo, head.number, head.head_sha, coalesce(head.event_at, 'infinity') as at
+        from pull_request_heads head
+        where head.state <> 'open' and not exists (
+          select 1 from pull_request_heads other
+          where other.number = head.number and other.state = 'open'
+            and lower(pull_request_canonical_repo(other.repo)) = lower(pull_request_canonical_repo(head.repo))
+            and (lower(other.repo) = lower(pull_request_canonical_repo(other.repo))
+              or lower(head.repo) <> lower(pull_request_canonical_repo(head.repo))))
+        order by lower(pull_request_canonical_repo(head.repo)), head.number, coalesce(head.event_at, 'infinity') desc
+      ) closed
+    ) history
+    order by history.at, history.closes
+  loop
+    if dated.commit_sha is not null then
+      insert into pull_request_former_heads_results (issue_key, commit_sha, place)
+      values (dated.issue_key, dated.commit_sha, nextval('pull_request_former_heads_order'));
+    else
+      insert into pull_request_former_heads_moves (repo, number, op, new_head, new_open)
+      values (dated.repo, dated.number, 'INSERT', dated.head_sha, false);
+    end if;
+  end loop;
+end $$;
+
 -- The seed: each open row attributed to an issue starts with the issue's population, by the
 -- function the drain of a row's start calls, and each issue holding a candidate is owed.
 select pull_request_former_heads_leave(pull_request_former_heads_resolve(head.repo, head.number), head.issue_key,
@@ -907,22 +981,3 @@ from (
   join pull_request_former_heads former on former.pull = alias.pull
   where head.state = 'open' and not former.verified
 ) owed;
-
--- The install's record of each pull request closed or merged when it runs: a close before the
--- install is in no record, and without one, a pull request that reopens after it would take the
--- results recorded before that close as its own (pull_request_former_heads_leave reads a result
--- recorded before this release as of the lifecycle open now where no close is known). One record
--- of a row written closed, at a place after every such result, which the settler applies as any
--- other (pull_request_former_heads_apply): it ends the lifecycle there. A pull request is closed
--- where the row of its canonical name is not open, or, with no row of that name, where no row of
--- it is open: the canonical row is the one Dispatch reads, and an old name's row may be a stale
--- copy, so an open pull request whose old name's row reads closed keeps the results it holds.
-insert into pull_request_former_heads_moves (repo, number, op, new_head, new_open)
-select lower(head.repo), head.number, 'INSERT', head.head_sha, false
-from pull_request_heads head
-where head.state <> 'open' and not exists (
-  select 1 from pull_request_heads other
-  where other.number = head.number and other.state = 'open'
-    and lower(pull_request_canonical_repo(other.repo)) = lower(pull_request_canonical_repo(head.repo))
-    and (lower(other.repo) = lower(pull_request_canonical_repo(other.repo))
-      or lower(head.repo) <> lower(pull_request_canonical_repo(head.repo))));

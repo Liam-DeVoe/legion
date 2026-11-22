@@ -99,3 +99,67 @@ func TestEveryCloseEndsTheLifecycleItClosesWhereverDispatchFirstSawIt(t *testing
 		})
 	}
 }
+
+// TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall:
+// CORE-1's #70 stands at 4444… before the install, where its row is written, and a tester records
+// a result at 1111… while #70 is open. #70 then closes at 4444…, its row written closed and dated
+// by GitHub's time of the close, as every writer of a row dates it (pull_request_heads.event_at),
+// and a result is recorded at 4444… while #70 is closed: before the install, or after it. #70
+// then reopens at 3333… and moves on to 7777…, and CORE-1's settle drains what is owed. Wherever
+// the install falls, the result at 1111… is of the lifecycle the close ended and stays out, and
+// the result at 4444… is of the closed period and makes 4444… a candidate of the reopened pull
+// request, as a result recorded after the close does in Dispatch's own records: the install places
+// a result it finds and the close of a pull request closed when it runs in the order of their
+// times, not every result before the close. Each schedule records the closed-period result in
+// either result table.
+func TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall(t *testing.T) {
+	ctx := context.Background()
+	for _, table := range []string{"check_results", "ci_check_results"} {
+		for _, beforeInstall := range []bool{true, false} {
+			name := table + ", the closed-period result recorded after the install"
+			if beforeInstall {
+				name = table + ", the closed-period result recorded before the install"
+			}
+			t.Run(name, func(t *testing.T) {
+				store := openEmptyTestStore(t)
+				documents := installFixture(t, store)
+				exec := func(what, sql string, args ...any) {
+					t.Helper()
+					if _, err := store.Pool.Exec(ctx, sql, args...); err != nil {
+						t.Fatalf("%s: %v", what, err)
+					}
+				}
+				exec("write #70 at 4444…", `update pull_request_heads set head_sha = $1, event_at = clock_timestamp() where number = 70`, closedPeriodH4)
+				exec("record a result at 1111… while #70 is open", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], installH1)
+				exec("close #70 at 4444…", `update pull_request_heads set state = 'closed', event_at = clock_timestamp() where number = 70`)
+				var head, state string
+				if err := store.Pool.QueryRow(ctx, `select head_sha, state from pull_request_heads where number = 70`).Scan(&head, &state); err != nil {
+					t.Fatalf("read #70's row: %v", err)
+				}
+				if head != closedPeriodH4 || state != "closed" {
+					t.Fatalf("#70's row reads %s %s before the closed-period result, want 4444… closed: this test holds no closed period", head, state)
+				}
+				closedPeriod := func() {
+					t.Helper()
+					exec("record a result at 4444… while #70 is closed", installResult(table), "CORE-1", "CORE-1", documents["CORE-1"], closedPeriodH4)
+				}
+				if beforeInstall {
+					closedPeriod()
+				}
+				if err := store.Migrate(ctx); err != nil {
+					t.Fatalf("migrate: %v", err)
+				}
+				if !beforeInstall {
+					closedPeriod()
+				}
+				exec("reopen #70 at 3333…", `update pull_request_heads set state = 'open', head_sha = $1, event_at = clock_timestamp() where number = 70`, installH3)
+				exec("move #70 on to 7777…", `update pull_request_heads set head_sha = $1, event_at = clock_timestamp() where number = 70`, reopenedH7)
+				drainCandidates(t, store, "CORE-1")
+				heads, _ := formerHeadsAndOwed(t, store)
+				if want := []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}; !slices.Equal(heads, want) {
+					t.Fatalf("after the reopen #70 holds the former heads %v, want %v: a result recorded while #70 was closed is a candidate of the reopened pull request whichever side of the install it was recorded on, and the one recorded before the close stays out", heads, want)
+				}
+			})
+		}
+	}
+}
