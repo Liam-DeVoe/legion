@@ -269,7 +269,7 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	// One credential per token set of the pod: a bundle is the set and the repository and
 	// nothing else, so the launch builds one for each of its roles' sets, six for an issue pod's
 	// six roles (appauth.Bundles, gitHubBundles).
-	if sets := podTokenSets(podKindFor(claim.RoleReviewer)); frames != 1 || mints.Load() != 2 || renders.Load() != int32(len(sets)) {
+	if sets := kindSets(t, podKindFor(claim.RoleReviewer)); frames != 1 || mints.Load() != 2 || renders.Load() != int32(len(sets)) {
 		t.Fatalf("the replacing try sent %d launcher frames, minted %d tokens and rendered %d credentials, want one Start, two mints (the provisioning token and the repository cache's) and one credential per set of the pod's, %d",
 			frames, mints.Load(), renders.Load(), len(sets))
 	}

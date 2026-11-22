@@ -178,3 +178,24 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 		})
 	}
 }
+
+// Under Kubernetes a role whose pod holds another role with no token set is named no owner: that
+// pod is never built (sandbox.PodTokenSets), so no container of it holds a directory. The one way
+// a pod holds such a role is a claim role with no set, so the test adds one to claim.Roles for
+// its own life; it never runs in parallel. The same role in a tmux pane holds its own bundle and
+// is named the owner its App reaches, which is the control.
+func TestAppOwnersNamesNoOwnerOfAPodWithARoleOutsideTheSets(t *testing.T) {
+	held := claim.Roles
+	t.Cleanup(func() { claim.Roles = held })
+	claim.Roles = append(slices.Clone(held), "deployer")
+	p := plan{repositories: newRepositories("LEGION", ghrepo.Renames{}), installed: appauth.NewInstalled(), left: appauth.NewLeftOut()}
+	p.repositories.fill(ghrepo.MustParse("acme/widgets"))
+	p.installed.RecordProof([]string{"acme"})
+
+	if got := p.appOwners("tmux")(claim.RoleImplementer); !slices.Equal(got, []string{"acme"}) {
+		t.Fatalf("under tmux, appOwners(implementer) = %q, want acme: the pane holds its own bundle", got)
+	}
+	if got := p.appOwners("kubernetes")(claim.RoleImplementer); got != nil {
+		t.Errorf("under kubernetes, appOwners(implementer) = %q, want none: its pod holds the deployer, which has no token set", got)
+	}
+}

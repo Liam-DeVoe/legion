@@ -285,7 +285,7 @@ func TestATickBuildsOneBundlePerSetAndRepository(t *testing.T) {
 	g.spawn(rootSpec(t))
 	pods := []string{SandboxName(rootToken), spawnIssue(t, g, "LEGION-317")}
 	want := map[appauth.TokenSet]int{}
-	for _, set := range podTokenSets(podKindFor(claim.RoleArchitect)) {
+	for _, set := range kindSets(t, podKindFor(claim.RoleArchitect)) {
 		want[set] = 1
 	}
 	if len(want) != len(claim.Roles) {
