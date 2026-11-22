@@ -33,9 +33,11 @@ test("keyTokens and keyText draw each modifier from the one table, on a Mac and 
   expect(keyText("g Shift+i", false)).toBe("g Shift+i");
 });
 
-// The two hints under an issue's comment box (`MentionComposer`): `$mod+K` opens the reference
-// picker and `$mod+Enter` sends, each drawn with the platform's `$mod`.
-test("the comment box's two keys are ⌘+K and ⌘+Enter on a Mac, and Ctrl+K and Ctrl+Enter elsewhere", () => {
+// `$mod` is Cmd on a Mac and Ctrl elsewhere, so `keyText` writes the two keys the comment box's
+// hints name (`MentionComposer`) with `⌘` on a Mac and `Ctrl` elsewhere. The hints themselves are
+// read away from a Mac in `MentionComposer.test.tsx`, and the reference hint under the iPhone's
+// user agent in `e2e/phone.e2e.ts`'s phone shell row.
+test("keyText writes $mod+K and $mod+Enter as ⌘+K and ⌘+Enter on a Mac, and as Ctrl+K and Ctrl+Enter elsewhere", () => {
   expect([keyText("$mod+K", true), keyText("$mod+Enter", true)]).toEqual(["⌘+K", "⌘+Enter"]);
   expect([keyText("$mod+K", false), keyText("$mod+Enter", false)]).toEqual([
     "Ctrl+K",

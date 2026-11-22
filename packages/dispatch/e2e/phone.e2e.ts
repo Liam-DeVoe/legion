@@ -1,3 +1,4 @@
+import { keyText } from "../web/src/features/shell/key-text";
 import { setLiveSessions } from "./agents";
 
 import {
@@ -23,7 +24,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
-import { modKey } from "./keyboard-palette";
+import { modKey, namesMac } from "./keyboard-palette";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
@@ -165,6 +166,13 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await assertTabTrapped(page, '[data-testid="margin-sheet"]');
       await commentBody.focus();
     }
+
+    // The hint under the box names the page's `$mod` as the app's formatter draws it for this
+    // page (`keyText`): `⌘` under a Mac's user agent, as the iPhone project's is, and `Ctrl`
+    // elsewhere.
+    await expect(commentComposer).toContainText(
+      `${keyText("$mod+K", await namesMac(page))} inserts a reference.`
+    );
 
     // D12: Ctrl+K (Cmd+K under a Mac's user agent, as the iPhone project's is: `modKey`) opens a
     // real dialog; Escape dismisses only the picker, restores focus to the composer, and leaves
