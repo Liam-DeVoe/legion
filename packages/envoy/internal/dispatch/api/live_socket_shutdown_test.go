@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"sync"
 	"testing"
 
@@ -25,6 +27,11 @@ import (
 // answering its close: a server that counted that socket would hold it in its set for
 // liveSocketCloseWait more, waiting for the answer, so the set read before the page lets it go
 // finds it there.
+//
+// The pages dial and read on goroutines of their own, under a context the test's cleanup cancels:
+// that closes every connection a page opened, the one a dial still waits on and the ones it has
+// collected, and the cleanup returns once every page has, so a test that fails while a page waits
+// leaves none behind.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 
@@ -45,19 +52,30 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 	// none dials on past its end.
 	waitReturned := sync.OnceFunc(func() { close(waited) })
 	defer waitReturned()
+	pagesCtx, cancelPages := context.WithCancel(context.Background())
+	var workers sync.WaitGroup
+	t.Cleanup(func() {
+		cancelPages()
+		workers.Wait()
+	})
 	dialed := make(chan struct{}, pages)
 	runs := make(chan pageRun, pages)
 	for range pages {
-		go func() {
+		workers.Go(func() {
 			var run pageRun
-			<-start
-			for last := false; !last; {
+			defer func() { runs <- run }()
+			select {
+			case <-start:
+			case <-pagesCtx.Done():
+				return
+			}
+			for last := false; !last && pagesCtx.Err() == nil; {
 				select {
 				case <-waited:
 					last = true
 				default:
 				}
-				conn, err := dialLiveSocketAsAlice(rig.url)
+				conn, release, err := dialLiveSocketAsAlice(pagesCtx, rig.url)
 				run.opened++
 				if run.opened == 1 {
 					dialed <- struct{}{}
@@ -74,11 +92,10 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 					run.failures = append(run.failures, err)
 				}
 				if !last {
-					_ = conn.Close()
+					release()
 				}
 			}
-			runs <- run
-		}()
+		})
 	}
 
 	returned := make(chan struct{})
@@ -89,7 +106,7 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 	close(start)
 	// Every page has opened a socket beside the wait before the signal closes the ones it serves.
 	for range pages {
-		<-dialed
+		testwait.Receive(t, "each page's first dial beside the shutdown's wait", dialed)
 	}
 	rig.stop()
 	testwait.Receive(t, "the shutdown's wait for the sockets to return after the signal", returned)
@@ -106,11 +123,6 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 			t.Error(err)
 		}
 	}
-	defer func() {
-		for _, conn := range last {
-			_ = conn.Close()
-		}
-	}()
 	t.Logf("%d sockets served at the signal; %d opened while Dispatch shut down, %d of them after its wait returned", pages, opened, len(last))
 	if len(last) != pages {
 		t.Fatalf("%d pages opened a socket after the wait returned, want every one (%d)", len(last), pages)
@@ -127,22 +139,44 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 	}
 }
 
-// dialLiveSocketAsAlice opens the live socket at url as alice.
-func dialLiveSocketAsAlice(url string) (*gws.Conn, error) {
-	conn, response, err := gws.DefaultDialer.Dial(url, asUser("alice"))
+// dialLiveSocketAsAlice opens the live socket at url as alice, on a page's own goroutine, so it
+// calls no t method, and answers the socket with release, which closes it. The handshake has no
+// bound of its own (HandshakeTimeout 0, where gorilla's DefaultDialer gives it 45 s): the test's
+// wait for the page's run bounds it, by the test binary's deadline. ctx ends the connect, and
+// until release its end closes the connection, which ends a handshake still waiting for the
+// upgrade's answer, as gorilla does not, and a read of the socket afterwards. release also drops
+// that hold on ctx, so a page that opens many sockets keeps none of them past its own close.
+func dialLiveSocketAsAlice(ctx context.Context, url string) (*gws.Conn, func(), error) {
+	dialer := *gws.DefaultDialer
+	dialer.HandshakeTimeout = 0
+	stop := func() bool { return false }
+	dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		return conn, nil
+	}
+	conn, response, err := dialer.DialContext(ctx, url, asUser("alice"))
 	if err != nil {
+		stop()
 		status := "no response"
 		if response != nil {
 			status = response.Status
 		}
-		return nil, fmt.Errorf("open %s: %v (%s)", url, err, status)
+		return nil, nil, fmt.Errorf("open %s: %v (%s)", url, err, status)
 	}
-	return conn, nil
+	return conn, func() {
+		stop()
+		_ = conn.Close()
+	}, nil
 }
 
 // endsWithServiceRestart reads conn until Dispatch ends it, answering nil for a close with 1012
 // (service restart) and an error for any other end. It sets no read deadline of its own: the
-// test's wait for the page's run (testwait.Receive) bounds it by the test binary's deadline.
+// test's wait for the page's run (testwait.Receive) bounds it by the test binary's deadline, and
+// the page's context ending closes conn (dialLiveSocketAsAlice).
 func endsWithServiceRestart(conn *gws.Conn) error {
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {

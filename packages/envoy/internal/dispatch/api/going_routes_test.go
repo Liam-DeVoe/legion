@@ -751,7 +751,7 @@ func TestGoingRequestGivesItsRunAConnectionMarkOfItsOwn(t *testing.T) {
 	}
 	run := decodeBody[askedRun](t, response)
 
-	<-answerer.opened
+	testwait.Receive(t, "the detached run to open its cursor", answerer.opened)
 	if answerer.failed != nil {
 		t.Fatalf("the detached run could not open a cursor: %v", answerer.failed)
 	}

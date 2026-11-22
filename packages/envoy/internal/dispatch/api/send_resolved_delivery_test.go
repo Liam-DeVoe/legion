@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// answeredWindow is the client's window for a listener that answers: longer than any run, so a
+// loaded machine that carries a send or its answer slowly never turns the answer into a receipt
+// timeout. A case that exercises the window gives the client one of its own.
+const answeredWindow = time.Hour
 
 // The dashboard reads a failed attempt row that carries an envelope id as one its session answered
 // with an error (rowAnsweredWithError in packages/dispatch/web/src/features/conversation/delivery.ts),
@@ -27,6 +35,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		wantDup      bool
 		wantFailure  bool
 		wantQueued   bool
+		late         bool
 	}{
 		{name: "the target did not resolve", target: ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no live holder for role planner"}, wantFailure: true},
 		{name: "no live session", target: ResolvedMention{Target: "session:s9", Delivery: "steer"}, wantFailure: true},
@@ -40,11 +49,15 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		{name: "the listener answered something unreadable", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":`))
 		}, wantFailure: true},
-		// The send lands and its answer, envelope and all, misses the client's window.
-		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(400 * time.Millisecond)
+		// The send lands and its answer, envelope and all, misses the client's window: the listener
+		// answers only once the request's context has ended, which the client's window, the one
+		// case marked late, ends. The body is read first, because net/http watches a request's
+		// connection for the caller going away only once its body has been read.
+		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
 			_, _ = w.Write([]byte(`{"event_id":"envelope-late","recipient":"s1"}`))
-		}, wantFailure: true},
+		}, late: true, wantFailure: true},
 		{name: "the listener published the send", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		}, wantEnvelope: true},
@@ -58,15 +71,27 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		}, wantEnvelope: true, wantQueued: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			url := "http://127.0.0.1:1"
+			// A listener that is not there: a port the test holds and nothing listens on, so a
+			// dial to it is refused and no other program can answer it (testport.Refused).
+			url := "http://" + testport.Refused(t)
 			if tc.answer != nil {
 				listener := httptest.NewServer(tc.answer)
 				t.Cleanup(listener.Close)
 				url = listener.URL
 			}
-			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(150*time.Millisecond))}}
-			outcome := s.sendResolvedDelivery(
-				context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			window := answeredWindow
+			if tc.late {
+				// The late listener answers only once the client has given up, so this window
+				// ends the call however long a loaded machine takes to end it.
+				window = 150 * time.Millisecond
+			}
+			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(window))}}
+			answered := make(chan sendOutcome, 1)
+			go func() {
+				answered <- s.sendResolvedDelivery(
+					context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			}()
+			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
 				outcome.queued != tc.wantQueued || (outcome.failure != "") != tc.wantFailure {
 				t.Fatalf("sendResolvedDelivery = %+v, want envelope %v, duplicate %v, queued %v, failure %v",
@@ -91,7 +116,7 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(listener.Close)
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(answeredWindow))}}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

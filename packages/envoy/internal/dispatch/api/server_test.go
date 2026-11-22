@@ -423,8 +423,9 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 	_, _ = w.Write([]byte(`{"error":"no live session ` + sessionID + `"}`))
 }
 
-// waitForDatabaseLocks waits up to 2 s for want backends to queue behind a lock that holder's
-// transaction owns (storetest.WaitForLockWaiters), and fails the test when they never do.
+// waitForDatabaseLocks waits until want backends queue behind a lock that holder's transaction
+// owns (storetest.WaitForLockWaiters), and fails the test when they have not by the test binary's
+// deadline less testwait's margin, the wait's one bound.
 func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
 	t.Helper()
 	storetest.WaitForLockWaiters(t, holder, want)
@@ -2116,7 +2117,7 @@ func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	for _, path := range []string{"/ws/doc/" + issue.PrimaryArtifactID, "/ws/live"} {
 		wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + path
-		connection, response, err := gws.DefaultDialer.Dial(wsURL, http.Header{"Cookie": []string{cookie.Name + "=" + cookie.Value}})
+		connection, response, err := dialLive(t, gws.DefaultDialer, wsURL, http.Header{"Cookie": []string{cookie.Name + "=" + cookie.Value}})
 		if connection != nil {
 			_ = connection.Close()
 		}
@@ -2155,7 +2156,7 @@ func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
 	if whoamiResponse.Code != http.StatusOK {
 		t.Fatalf("GET /api/v1/whoami with the shared agent token: status=%d body=%s, want 200", whoamiResponse.Code, whoamiResponse.Body.String())
 	}
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, http.Header{"Authorization": []string{"Bearer agent-token"}})
+	connection, response, err := dialLive(t, gws.DefaultDialer, wsURL, http.Header{"Authorization": []string{"Bearer agent-token"}})
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -2168,7 +2169,7 @@ func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
 		"the signed-in person's cookie":             {"Cookie": []string{cookie.Name + "=" + cookie.Value}},
 		"that cookie beside the shared agent token": {"Cookie": []string{cookie.Name + "=" + cookie.Value}, "Authorization": []string{"Bearer agent-token"}},
 	} {
-		connection, response, err := gws.DefaultDialer.Dial(wsURL, header)
+		connection, response, err := dialLive(t, gws.DefaultDialer, wsURL, header)
 		if err != nil {
 			t.Fatalf("the document socket with %s: response=%#v err=%v", name, response, err)
 		}

@@ -103,7 +103,7 @@ func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
 	t.Cleanup(documentServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(documentServer.URL, "http") + "/ws/doc/" + issue.PrimaryArtifactID
-	connection, wsResponse, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, wsResponse, err := dialLive(t, gws.DefaultDialer, wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", wsResponse, err)
 	}

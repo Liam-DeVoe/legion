@@ -113,20 +113,76 @@ func openLiveSocketAt(t *testing.T, dialer *gws.Dialer, url string, header http.
 // server's answer: dialer's own HandshakeTimeout, 45 s on gorilla's DefaultDialer, is dropped, and
 // the wait's one bound is the test binary's deadline (testwait.Receive), so an answer a loaded
 // machine sends late still ends it and one that never comes fails the test by name.
+//
+// The dial runs on a context the test's cleanup cancels, so a wait that gave up leaves no dial
+// behind it. That context ends gorilla's TCP connect but not its read of the server's answer, which
+// DialContext makes with no deadline when the dialer sets no timeout, so until the handshake ends
+// the context's end also closes the connection the dial opened. A connection the handshake answers
+// once the test no longer waits for it is closed, as the test would have closed it.
 func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) (*gws.Conn, *http.Response, error) {
 	t.Helper()
+	ctx, stop := context.WithCancel(context.Background())
 	unbounded := *dialer
 	unbounded.HandshakeTimeout = 0
+	// connect is the TCP connect gorilla makes for a ws:// URL: the dialer's NetDialContext, else
+	// its NetDial, which takes no context, else a plain net.Dialer's.
+	connect := (&net.Dialer{}).DialContext
+	switch {
+	case dialer.NetDialContext != nil:
+		connect = dialer.NetDialContext
+	case dialer.NetDial != nil:
+		netDial := dialer.NetDial
+		connect = func(_ context.Context, network, address string) (net.Conn, error) { return netDial(network, address) }
+	}
+	// release stops the close the context's end would make of the dialed connection. Gorilla calls
+	// NetDialContext on the goroutine that called DialContext, so only that goroutine sets it and
+	// reads it.
+	var release func() bool
+	unbounded.NetDial = nil
+	unbounded.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		conn, err := connect(dialCtx, network, address)
+		if err == nil {
+			release = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		}
+		return conn, err
+	}
 	type dialed struct {
 		conn     *gws.Conn
 		response *http.Response
 		err      error
 	}
 	answered := make(chan dialed, 1)
+	// abandoned says no one takes the answer any more, which the cleanup sets; mu orders it with
+	// the answer's send, so an answer is either taken from answered or closed, never left open.
+	var mu sync.Mutex
+	abandoned := false
 	go func() {
-		conn, response, err := unbounded.Dial(url, header)
+		conn, response, err := unbounded.DialContext(ctx, url, header)
+		if release != nil {
+			release()
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if abandoned && conn != nil {
+			_ = conn.Close()
+			conn = nil
+		}
 		answered <- dialed{conn: conn, response: response, err: err}
 	}()
+	t.Cleanup(func() {
+		stop()
+		mu.Lock()
+		defer mu.Unlock()
+		abandoned = true
+		// An answer the dial sent that the test never took, its wait having given up first.
+		select {
+		case got := <-answered:
+			if got.conn != nil {
+				_ = got.conn.Close()
+			}
+		default:
+		}
+	})
 	got := testwait.Receive(t, "the server's answer to the upgrade of "+url, answered)
 	return got.conn, got.response, got.err
 }

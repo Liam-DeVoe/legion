@@ -499,9 +499,15 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 		}
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	for document, peer := range peers {
+	// Both browsers write before either write is waited for. The append gate stores a browser's
+	// update on a closed issue only when its room took it within docs' closeMargin (2 s) of the
+	// close (observedBeforeClose): a second write made only once the first was stored, which a
+	// loaded machine can take longer than that to do, is refused, never stored and never owed.
+	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
+	}
+	for document := range peers {
 		awaitOwedSettlement(t, f.database, document)
 		awaitLiveText(t, f.handler, document, "#other-room")
 	}
@@ -560,9 +566,14 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 		}
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	for document, peer := range peers {
+	// Both browsers write before either write is waited for, as in
+	// TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess: a write made more than docs'
+	// closeMargin after the close is refused.
+	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
+	}
+	for document := range peers {
 		awaitOwedSettlement(t, f.database, document)
 		awaitLiveText(t, f.handler, document, "#other-room")
 	}

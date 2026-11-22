@@ -828,7 +828,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	}, "alice"))
 	message := created.Recipients[0].Message.ID
 
-	<-parked
+	testwait.Receive(t, "the broadcast's worker to park on its attempt", parked)
 	// The worker is held. From here the listener answers everyone else at once, so the human's
 	// own send is never the one being held.
 	listenerState.Lock()

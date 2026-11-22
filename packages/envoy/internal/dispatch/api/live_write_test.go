@@ -326,10 +326,12 @@ func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*
 	return f
 }
 
-// connectPlainSocket keeps the room resident, so the test reads it without the database.
+// connectPlainSocket keeps the room resident, so the test reads it without the database. Its dial
+// ends on the server's answer to the upgrade, bounded only by the test binary's deadline
+// (dialLive).
 func (f *heldWriteFixture) connectPlainSocket(t *testing.T) {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(f.wsURL, f.headers)
+	connection, response, err := dialLive(t, gws.DefaultDialer, f.wsURL, f.headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}

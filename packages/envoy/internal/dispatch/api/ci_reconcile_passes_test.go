@@ -175,9 +175,15 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 
 // A pass still running reads as running through the route: its row has no end time, its process
 // is live, the `ci-reconcile` lease is held, and it is the newest row. The lease here is held by
-// a session of the test's own, standing for the loop that is running the pass.
+// a session of the test's own, standing for the loop that is running the pass. The live window is
+// an hour, which no run reaches, so the heartbeat written at the start still counts as live when
+// the route reads it however long the steps between take; the production fifteen seconds would
+// read a slow run's process as gone.
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
+	was := processes.LiveWindow
+	processes.LiveWindow = time.Hour
+	t.Cleanup(func() { processes.LiveWindow = was })
 	instance := seedServerProcess(t, database, 0)
 	running := openCIPass(t, database, instance, time.Minute)
 	holdCIReconcileLease(t, database)

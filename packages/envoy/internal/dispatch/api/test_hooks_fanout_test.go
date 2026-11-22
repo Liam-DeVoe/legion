@@ -72,19 +72,34 @@ func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
 // A process that dies while a call waits for it takes its lock with its connection, and the call
 // stops waiting for it: it answers once the processes still holding the lock have acknowledged,
 // not at the timeout. Until then it does not answer, since that process was alive when the call
-// was sent. Both are read off facts rather than a clock: the test marks the close before it
-// closes the connection, so an answer that came while the lock was still held finds no mark, and
-// a call that waited out its timeout answers 504 TEST_HOOK_TIMEOUT (testHookFanout.call), not 200.
+// was sent. Both are read off facts rather than a clock. The silent process listens for calls as
+// every process with the hooks on does, so it hears this one once it is sent, which is after the
+// call read the held locks, its own among them: from then on the call waits for it. It stays alive
+// for alive more, a window in which a correct call answers nothing, and the test marks the close
+// before it closes the connection, so an answer that came while the lock was still held finds no
+// mark; a call that waited out its timeout answers 504 TEST_HOOK_TIMEOUT (testHookFanout.call),
+// not 200.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 	handler, database := newTestHandlerWithTestHooks(t)
 	conn, _ := holdTestHookLock(t, database)
+	if _, err := conn.Exec(context.Background(), "listen "+testHooksChannel); err != nil {
+		t.Fatalf("listen for test-hook calls on the silent process's connection: %v", err)
+	}
 	const alive = 500 * time.Millisecond
 	var closing atomic.Bool
+	ended := make(chan struct{})
 	go func() {
+		defer close(ended)
+		if _, err := conn.WaitForNotification(t.Context()); err != nil {
+			return
+		}
 		time.Sleep(alive)
 		closing.Store(true)
 		_ = conn.Close(context.Background())
 	}()
+	// Before holdTestHookLock's own close of the connection, which the goroutine reads until it
+	// ends.
+	t.Cleanup(func() { testwait.Receive(t, "the silent process's goroutine to end", ended) })
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "alice")
 	if response.Code != http.StatusOK {

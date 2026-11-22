@@ -1549,6 +1549,11 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		}
 		return gate
 	})
+	// The first accept waits at the gate until the test lets it go, holding its transaction's
+	// pooled connection. A test that fails before then lets it go as it ends: the cleanups that run
+	// after this one, the pool's close among them, would otherwise wait on that connection for ever.
+	releaseFirst := sync.OnceFunc(func() { close(gate.releaseFirst) })
+	t.Cleanup(releaseFirst)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent accepts", "foo")
 	suggestion := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Replace foo.", "anchor": map[string]any{"artifact": "spec", "quote": "foo"},
@@ -1567,7 +1572,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
 	waitForSecondReplacementOrCommentLock(t, database, gate.secondEntered)
-	close(gate.releaseFirst)
+	releaseFirst()
 
 	var success, conflict int
 	for range 2 {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -530,7 +531,8 @@ func commentDeliveryReceipts(t *testing.T, database *store.Store, commentID, tar
 // binary's deadline (testwait.Until).
 func awaitCommentDeliveryReceipts(t *testing.T, database *store.Store, commentID, target string, attempt int) string {
 	t.Helper()
-	return testwait.Until(t, "a comment.delivery receipt on an attempt of "+commentID+" for "+target, func() (string, bool) {
+	what := fmt.Sprintf("a comment.delivery receipt on attempt %d of %s for %s", attempt, commentID, target)
+	return testwait.Until(t, what, func() (string, bool) {
 		receipts := commentDeliveryReceipts(t, database, commentID, target, attempt)
 		return receipts, receipts != ""
 	})

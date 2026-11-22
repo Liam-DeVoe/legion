@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -219,7 +218,6 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
-	time.Sleep(10 * time.Millisecond) // the event must postdate the suggestion row
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
 	// A pass judges by the message once it is settle old by the database's clock, which the pass
@@ -239,57 +237,77 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // is settle old, by which time the update is written too, so the rules see both and the acted_on
 // rules run before the overridden one: the comment is not judged alone as an override.
 //
-// The update is posted once a page of the sweep has read the log up to the comment and committed,
-// so a sweep that judges the comment as soon as it reads it has judged it alone, and fails the
-// test however loaded the machine is. What the claim needs then is that the update commits before
-// the comment is settle old by the database's clock, the clock and the column a pass reads every
-// age by (readSuggestionPage): every pass that judges the comment then begins after the update
-// committed, and its rules see it. A loaded machine can post the update later than that, and a
-// pass then rightly judges the comment alone; that attempt says nothing of the claim, so it is
-// made again, on a sweep of its own, until one posts the update in time.
+// The settle is an hour, longer than any run, so the test and not the machine's speed decides
+// when it has passed. The update is posted once a page of the sweep has read the log up to the
+// comment and committed, and the comment must still be unjudged then: a sweep that judges an event
+// as soon as it reads it has judged the comment alone. The test then moves every event and every
+// suggestion an hour back on the database's clock, the clock and the columns a pass reads every
+// age by (readSuggestionPage, touchedSuggestions), in one statement, so their order and the gaps
+// between them stay as they were, and wakes the sweep as a commit does: both writes are now settle
+// old, and the next pass judges them together.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
-	const settle = 1500 * time.Millisecond
-	attempts := 0
-	testwait.Until(t, "an attempt that posted the update before the comment was settle old by the database's clock", func() (string, bool) {
-		attempts++
-		sweep := startIdleSweep(t, "OTOGETHER", settle)
-		seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
-		time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
+	const settle = time.Hour
+	sweep := startIdleSweep(t, "OTOGETHER", settle)
+	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
-		postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-		comment, _ := newestEvent(t, sweep.database, sweep.source, "message.created")
-		waitUntil(t, "a page of the sweep that read the log up to the comment to commit", func() bool { return sweep.counter.readThrough() >= comment })
-		postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-		if _, age := newestEvent(t, sweep.database, sweep.source, "message.created"); age >= settle {
-			t.Logf("attempt %d: the update committed once the comment was %s old, past its %s settle; made again", attempts, age, settle)
-			return fmt.Sprintf("attempt %d: the update committed once the comment was %s old, past its %s settle", attempts, age, settle), false
-		}
-		// The settle waited out on the database's clock, which the pass reads every age by; then the
-		// horizon alone, which the pass reads up to.
-		awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
-		horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
-			return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
-		})
-		if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {
-			t.Fatalf("outcome = %+v; want acted_on, the update written moments after the comment", row)
-		}
-		return fmt.Sprintf("attempt %d", attempts), true
+	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
+	comment := newestEventID(t, sweep.database, sweep.source, "message.created")
+	waitUntil(t, "a page of the sweep that read the log up to the comment to commit", func() bool { return sweep.counter.readThrough() >= comment })
+	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "ignored" {
+		t.Fatalf("outcome = %+v once a page had read the comment; want it held back for its settle, not judged alone", row)
+	}
+	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
+
+	ageSuggestionLog(t, sweep.database, settle)
+	notifyChannel(t, sweep.database, EventsChannel, "")
+	// Both writes are settle old now; the wait is the horizon's, which the pass reads up to.
+	horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
+		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
 	})
+	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {
+		t.Fatalf("outcome = %+v; want acted_on, the update written moments after the comment", row)
+	}
 }
 
-// newestEvent is the id of the newest event of eventType on issueKey, and how old it is by the
-// database's clock.
-func newestEvent(t *testing.T, database *store.Store, issueKey, eventType string) (int64, time.Duration) {
+// newestEventID is the id of the newest event of eventType on issueKey.
+func newestEventID(t *testing.T, database *store.Store, issueKey, eventType string) int64 {
 	t.Helper()
 	var id int64
-	var seconds float64
 	if err := database.Pool.QueryRow(context.Background(), `
-		select id, extract(epoch from clock_timestamp() - created_at)::double precision
-		  from events where issue_key = $1 and type = $2 order by id desc limit 1
-	`, issueKey, eventType).Scan(&id, &seconds); err != nil {
+		select id from events where issue_key = $1 and type = $2 order by id desc limit 1
+	`, issueKey, eventType).Scan(&id); err != nil {
 		t.Fatalf("read the newest %s event of %s: %v", eventType, issueKey, err)
 	}
-	return id, time.Duration(seconds * float64(time.Second))
+	return id
+}
+
+// ageSuggestionLog moves the created_at of every event and every suggestion of database back by,
+// in one statement: a pass then reads each as that much older, with their order and the gaps
+// between them as they were, as if by had passed. A suggestion is judged by events written after
+// it, so the two tables move together.
+func ageSuggestionLog(t *testing.T, database *store.Store, by time.Duration) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		with aged as (
+			update events set created_at = created_at - $1::float8 * interval '1 second' returning 1
+		)
+		update write_suggestions set created_at = created_at - $1::float8 * interval '1 second'
+	`, by.Seconds()); err != nil {
+		t.Fatalf("age the event log and the suggestions by %s: %v", by, err)
+	}
+}
+
+// awaitDatabaseClockPast waits until the database's clock reads past at, so a write the test makes
+// next is stamped after it on the clock a pass compares every created_at by.
+func awaitDatabaseClockPast(t *testing.T, database *store.Store, at time.Time) {
+	t.Helper()
+	waitUntil(t, "the database's clock to read past "+at.Format(time.RFC3339Nano), func() bool {
+		var past bool
+		if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, at).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		return past
+	})
 }
 
 // A suggestion younger than settle is not judged, whatever older event a page carries: here
@@ -328,7 +346,6 @@ func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 	}
 	defer func() { _ = pass.Rollback(context.Background()) }()
 	seedWriteSuggestion(t, srv, "issue", source, "", "alice", "issue", target, target)
-	time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
 	postOutcomeMessage(t, handler, source, "alice", "Looking into this here first.")
 
 	safe := safeHorizon(t, srv)
@@ -383,7 +400,12 @@ func TestASuggestionCommittedAfterALaterStartedEventIsStillJudged(t *testing.T) 
 		t.Fatalf("open the suggestion's transaction: %v", err)
 	}
 	defer func() { _ = recording.Rollback(context.Background()) }()
-	time.Sleep(10 * time.Millisecond) // the event must postdate the suggestion's created_at
+	var began time.Time
+	if err := recording.QueryRow(ctx, `select now()`).Scan(&began); err != nil {
+		t.Fatalf("read the suggestion's transaction's start: %v", err)
+	}
+	// The event must postdate the suggestion's created_at, its transaction's start.
+	awaitDatabaseClockPast(t, database, began)
 	postOutcomeMessage(t, handler, target, "alice", "Adding the new detail here instead.")
 
 	if err := sweepSuggestionOutcomes(t, srv); err != nil {
@@ -426,7 +448,6 @@ func TestASweepReadsEveryPageOfABacklog(t *testing.T) {
 	if err := sweepSuggestionOutcomes(t, srv); err != nil {
 		t.Fatalf("first sweep: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
 	for range 4 {
 		postOutcomeMessage(t, handler, noise, "bob", "Unrelated progress.")
 	}
@@ -532,7 +553,6 @@ func measureTouchedPass(t *testing.T, project string, pending bool) touchedPassC
 		t.Fatalf("%d of the old suggestions are pending after the first sweep; want %d", stillPending, want)
 	}
 	seedWriteSuggestion(t, srv, "issue", source, "", "alice", "issue", target, target)
-	time.Sleep(10 * time.Millisecond) // the event must postdate the suggestion row
 	postOutcomeMessage(t, handler, target, "alice", "Adding the new detail here instead.")
 	commented := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+activeDocument.ID+"/comments", map[string]any{
 		"body": "Progress on the active notes.",
@@ -672,7 +692,12 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 	`, source, target); err != nil {
 		t.Fatalf("record the suggestion: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
+	var recorded time.Time
+	if err := database.Pool.QueryRow(ctx, `select max(created_at) from write_suggestions where source_issue_key = $1`, source).Scan(&recorded); err != nil {
+		t.Fatalf("read the suggestion's created_at: %v", err)
+	}
+	// The events must postdate the suggestion row.
+	awaitDatabaseClockPast(t, database, recorded)
 
 	schedule := suggestionSchedule{minGap: time.Second, page: suggestionOutcomePage}
 	low, _, commitLow := appendOutOfOrder(t, database, deps.Events, target, other)

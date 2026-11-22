@@ -36,9 +36,6 @@ type mentionListener struct {
 	sends       []mentionListenerSend
 	held        map[string]chan struct{}
 	heldLookups map[string]chan struct{}
-	// lookups is every lookup a gate of heldLookups took, in the order they reached the listener:
-	// when each arrived, and when its caller gave it up before the test let it answer.
-	lookups []heldLookup
 	// refused holds the sessions whose sends the listener answers 503: a send the recipient's
 	// host refuses, which fails its attempt.
 	refused map[string]struct{}
@@ -65,14 +62,6 @@ type mentionListener struct {
 type mentionStall struct {
 	reached chan struct{}
 	release chan struct{}
-}
-
-// heldLookup is one lookup a gate of heldLookups took: its path, when it reached the listener, and
-// when its request ended because its caller gave it up (zero while it is held, and for one the test
-// let answer).
-type heldLookup struct {
-	path         string
-	arrived, cut time.Time
 }
 
 // mentionListenerSend is one send the listener took: the session it was for, its body, the
@@ -102,18 +91,11 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 		if r.Method == http.MethodGet {
 			state.mu.Lock()
 			gate := state.heldLookups[r.URL.Path]
-			held := len(state.lookups)
-			if gate != nil {
-				state.lookups = append(state.lookups, heldLookup{path: r.URL.Path, arrived: time.Now()})
-			}
 			state.mu.Unlock()
 			if gate != nil {
 				select {
 				case <-gate:
 				case <-r.Context().Done():
-					state.mu.Lock()
-					state.lookups[held].cut = time.Now()
-					state.mu.Unlock()
 					return
 				}
 			}
@@ -291,62 +273,6 @@ func (l *mentionListener) holdLookups(path string) func() {
 	l.heldLookups[path] = gate
 	l.mu.Unlock()
 	return sync.OnceFunc(func() { close(gate) })
-}
-
-// heldSoFar is how many lookups the gates of heldLookups have taken so far.
-func (l *mentionListener) heldSoFar() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.lookups)
-}
-
-// lookupSpan is how long Dispatch held a comment's own lookups of paths, read at the listener: from
-// the earliest arrival to the latest end of the first lookup of each path among the lookups the
-// gates took from the from-th to the to-th. A comment makes its lookups before it answers, so the
-// caller counts the lookups held before it posts and once it has answered (heldSoFar): a lookup of
-// the same path after that - the mention sender's, after the response - is not the comment's. The
-// span is read at the moments Dispatch's requests reached the listener and ended, so neither the
-// test's setup nor the comment's work after its lookups is in it. It waits for each of those
-// lookups to end, its one bound the test binary's deadline. A path no lookup of that count reached
-// was given up by Dispatch before its request reached the listener, so it held the comment for
-// less than any span the listener could read; it is named in the log and left out.
-func (l *mentionListener) lookupSpan(t *testing.T, from, to int, paths ...string) time.Duration {
-	t.Helper()
-	ended := testwait.Until(t, fmt.Sprintf("the comment's held lookups of %v to end (the first of each path)", paths), func() ([]heldLookup, bool) {
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		var first []heldLookup
-		for _, path := range paths {
-			for _, lookup := range l.lookups[from:to] {
-				if lookup.path == path {
-					first = append(first, lookup)
-					break
-				}
-			}
-		}
-		for _, lookup := range first {
-			if lookup.cut.IsZero() {
-				return first, false
-			}
-		}
-		return first, true
-	})
-	if len(ended) < len(paths) {
-		t.Logf("of the lookups of %v, only %d reached the listener before the comment answered: %+v", paths, len(ended), ended)
-	}
-	if len(ended) == 0 {
-		return 0
-	}
-	start, end := ended[0].arrived, ended[0].cut
-	for _, lookup := range ended[1:] {
-		if lookup.arrived.Before(start) {
-			start = lookup.arrived
-		}
-		if lookup.cut.After(end) {
-			end = lookup.cut
-		}
-	}
-	return end.Sub(start)
 }
 
 // awaitSend waits for the next send to arrive and returns the session it is for. Its one bound is
@@ -545,44 +471,35 @@ func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
 }
 
 // A comment's mention lookups all run at once, so its mentions cost the comment one listener
-// round trip rather than one each: the listener holds each session's first lookup until all three
-// are held at once. Lookups made one after another never are: Dispatch gives each up at
-// mentionLookupTimeout before it makes the next.
+// round trip rather than one each: three lookups of 200 ms each, seen from the listener, all
+// finish within 400 ms of the first one starting.
 func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
+	const lookup = 200 * time.Millisecond
 	var mu sync.Mutex
 	looked := map[string]bool{}
-	held, most := 0, 0
-	together := make(chan struct{})
+	var first, last time.Time
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			session := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 			mu.Lock()
-			first := !looked[session]
+			slow := !looked[session]
 			looked[session] = true
-			if first {
-				held++
-				most = max(most, held)
-				if held == 3 {
-					close(together)
-				}
+			if slow && first.IsZero() {
+				first = time.Now()
 			}
 			mu.Unlock()
-			// Only the comment's own lookup of each session waits for the others; the recheck its
-			// send makes later is not this test's.
-			if first {
-				select {
-				case <-together:
-				case <-r.Context().Done():
-				}
-				mu.Lock()
-				held--
-				mu.Unlock()
-				if r.Context().Err() != nil {
-					return
-				}
+			// Only the comment's own lookup of each session is slow; the recheck its send makes
+			// later is not this test's.
+			if slow {
+				time.Sleep(lookup)
 			}
 			writeSessionRecord(t, w, senderTestSessions, session)
+			if slow {
+				mu.Lock()
+				last = time.Now()
+				mu.Unlock()
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
@@ -600,9 +517,9 @@ func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 	settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
 	defer mu.Unlock()
-	if len(looked) != 3 || most != 3 {
-		t.Fatalf("the listener held at most %d of the comment's lookups of %d sessions at once, want all three: the comment looked its mentions up one after another",
-			most, len(looked))
+	if span := last.Sub(first); len(looked) != 3 || span >= 2*lookup {
+		t.Fatalf("three %v lookups took %v from the first start to the last answer (%d sessions looked up), want under %v",
+			lookup, span, len(looked), 2*lookup)
 	}
 }
 
@@ -625,9 +542,8 @@ type unansweredLookup struct {
 	pinned                   bool
 }
 
-// commentWithAnUnansweredLookup posts the comment lookup describes. It checks that Dispatch gives
-// the held lookup up within mentionLookupTimeout's bound, as the listener reads that lookup's span
-// (lookupSpan), and that the comment answers with its attempt pending - with the mention
+// commentWithAnUnansweredLookup posts the comment lookup describes. It checks that the comment
+// answers within mentionLookupTimeout's bound with its attempt pending - with the mention
 // unresolved, or pinned to s1 when lookup.pinned - then lets the listener answer, waits for the
 // mention sender to send the attempt to s1, and runs the outbox until it has published
 // comment.created. The listener resolves every session of senderTestSessions, and role:reviewer
@@ -654,12 +570,12 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 		input["reply_to"] = decodeMentionedComment(t, root).ID
 	}
 
-	from := state.heldSoFar()
+	started := time.Now()
 	response := postMentionedComment(t, handler, issue.Key, input)
-	to := state.heldSoFar()
+	answered := time.Since(started)
 	created := decodeMentionedComment(t, response)
-	if bound, span := mentionLookupTimeout+500*time.Millisecond, state.lookupSpan(t, from, to, lookup.hungPath); span >= bound {
-		t.Fatalf("Dispatch held the comment's unanswered lookup of %s for %v at the listener, want under %v", lookup.hungPath, span, bound)
+	if bound := mentionLookupTimeout + 500*time.Millisecond; answered >= bound {
+		t.Fatalf("the comment answered after %v with a lookup unanswered, want under %v", answered, bound)
 	}
 	pinnedTo := func(sessionID *string) bool {
 		if lookup.pinned {
@@ -812,9 +728,7 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 // A listener that answers no lookup at all delays a mentioned comment by at most
 // mentionLookupTimeout, also on an issue whose route is not one of the comment's mentions: the
 // route's own lookup runs beside the mentions' lookups, not after them, so the two timeouts do not
-// add up. The delay is read at the listener (lookupSpan), from the first of the two lookups to
-// arrive to the last of them to be given up, so neither the test's setup nor the comment's own work
-// after its lookups is counted.
+// add up.
 func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *testing.T) {
 	listener, state := newMentionListener(t)
 	letMentionAnswer := state.holdLookups("/v1/registry/s1")
@@ -829,15 +743,15 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 		t.Fatalf("set the route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	from := state.heldSoFar()
+	started := time.Now()
 	response := postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Is anyone there?", "mentions": []map[string]any{{"target": "session:s1"}},
 	})
-	to := state.heldSoFar()
+	answered := time.Since(started)
 	created := decodeMentionedComment(t, response)
-	if span := state.lookupSpan(t, from, to, "/v1/registry/s1", "/v1/registry/s2"); span >= 2*mentionLookupTimeout {
-		t.Fatalf("Dispatch held the comment's lookups for %v at the listener, from the first's arrival to the last's end, want under %v: the route's lookup ran after the mention's",
-			span, 2*mentionLookupTimeout)
+	if answered >= 2*mentionLookupTimeout {
+		t.Fatalf("the comment answered after %v with no lookup answered, want under %v: the route's lookup ran after the mention's",
+			answered, 2*mentionLookupTimeout)
 	}
 
 	letMentionAnswer()

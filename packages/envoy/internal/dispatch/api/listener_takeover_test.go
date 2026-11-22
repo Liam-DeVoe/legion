@@ -279,10 +279,14 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 }
 
 // With no listener configured there is no take-over to wait out: the send settles failed on its
-// one try, with the failure no take-over ends (retryableDeliveryFailure), so the sender never waits
-// out a backoff of the production window the server runs.
+// one try, with the failure no take-over ends (retryableDeliveryFailure), and the sender never
+// waits out a backoff of the production window the server runs. A sender tries again only after
+// such a backoff, and only once it has renewed its claim of the attempt (takeoverRetry.retry,
+// renewMessageDeliveryClaim), so the claims written on the attempt are its tries: one, the claim
+// it took before its first try, with no renewal.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
+	handler, database, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
+	claims := countAttemptClaims(t, database)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
 		map[string]any{"body": "Nobody listens", "delivery": "steer"}, "alice")
 	if response.Code != http.StatusCreated {
@@ -298,6 +302,42 @@ func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 	}
 	if *failure != listenerNotConfiguredText || retryableDeliveryFailure(*failure) {
 		t.Fatalf("attempt 1 failed with %q, want %q, which no take-over ends: no listener is no take-over", *failure, listenerNotConfiguredText)
+	}
+	if tries := claims(); tries != 1 {
+		t.Fatalf("the sender claimed its attempt %d times, want once: each claim after the first is a try after a take-over's backoff, and no listener is no take-over", tries)
+	}
+}
+
+// countAttemptClaims has database count every claim written on a targeted message's attempt, a
+// write of message_deliveries.claimed_at that sets it - a sender's claim before its first try
+// (recordPendingMessageDelivery) and its renewal before each try after a take-over's backoff
+// (renewMessageDeliveryClaim) - with a trigger of the test's own, and answers the function that
+// reads how many it has counted. A try runs only under a claim, so the count is the tries the
+// senders made, however their last try ended.
+func countAttemptClaims(t *testing.T, database *store.Store) func() int {
+	t.Helper()
+	for _, statement := range []string{
+		`create table dispatch_test_attempt_claims (attempt int not null)`,
+		`create function dispatch_test_count_attempt_claim() returns trigger language plpgsql as $$
+		begin
+			insert into dispatch_test_attempt_claims (attempt) values (new.attempt);
+			return null;
+		end
+		$$`,
+		`create trigger dispatch_test_count_attempt_claim after insert or update of claimed_at on message_deliveries
+			for each row when (new.claimed_at is not null) execute function dispatch_test_count_attempt_claim()`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("count the claims of message attempts: %v", err)
+		}
+	}
+	return func() int {
+		t.Helper()
+		var claims int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from dispatch_test_attempt_claims`).Scan(&claims); err != nil {
+			t.Fatalf("read the claims of message attempts: %v", err)
+		}
+		return claims
 	}
 }
 

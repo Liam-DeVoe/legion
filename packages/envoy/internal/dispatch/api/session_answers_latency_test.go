@@ -2,15 +2,15 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -19,9 +19,8 @@ import (
 // the test each instant it reads: a read's begin and its end. A fast read is timed, and is no slow
 // read. A read that a transaction holds for 900 ms, by its lock on message_deliveries, which the
 // answers statement reads, is a slow read while it runs past 800 ms and, once it ended, for the
-// 10 s after its end. Each read's time lies inside the time its access-log line records, but for
-// the line's truncation to the millisecond, the line and the Latency agree on whether the read was
-// slow, and a read of another route is not timed.
+// 10 s after its end. Each read's time is the time its access-log line records, but for the line's
+// truncation to the millisecond, and a read of another route is not timed.
 func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 	_, database, deps := newTestServer(t, testServerOptions{})
 	instants := make(chan time.Time, 8)
@@ -34,7 +33,8 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(func() { waitBackgroundOf(t, served) })
-	logged := captureLog(t)
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
 	const answers = "/api/v1/agents/" + answersSession + "/answers"
 
 	// An unheld read is fast unless the machine keeps it past SlowRead, and a read the machine
@@ -49,7 +49,7 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 		}
 		began, ended = nextInstant(t, instants, "an unheld read's begin"), nextInstant(t, instants, "an unheld read's end")
 		took := ended.Sub(began)
-		requireTimedAsLogged(t, logged, reads, took)
+		requireTimedAsLogged(t, records, reads, took)
 		reads++
 		if took > sessionanswers.SlowRead {
 			t.Logf("unheld answers read %d took %v, over %v, so it shows no fast read: the read is made again", reads, took, sessionanswers.SlowRead)
@@ -102,7 +102,7 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 	if latency.Slow(ended.Add(sessionanswers.SlowWithin)) {
 		t.Errorf("a read that took over %v is still a slow read %v after its end", sessionanswers.SlowRead, sessionanswers.SlowWithin)
 	}
-	requireTimedAsLogged(t, logged, reads, ended.Sub(began))
+	requireTimedAsLogged(t, records, reads, ended.Sub(began))
 
 	if response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/agents/"+answersSession+"/messages", nil, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("the session's messages answered %d: %s", response.Code, response.Body.String())
@@ -121,48 +121,47 @@ func nextInstant(t *testing.T, instants <-chan time.Time, what string) time.Time
 	return testwait.Receive(t, "the Latency to read "+what, instants)
 }
 
-// elapsedField reads an access-log line's elapsed_ms.
-var elapsedField = regexp.MustCompile(`\belapsed_ms=(\d+)\b`)
+// answersRoute is the answers read's route as its access-log line names it.
+const answersRoute = "/api/v1/agents/{session_id}/answers"
 
-// requireTimedAsLogged fails unless the answers read the access log logged n-th (from 0), which
-// the Latency timed as timed, agrees with its line. The Latency times the read inside the line's
-// own timing (routeHandler), so its time is at most the line's. And the two agree on whether the
-// read was slow at the product's own bound, sessionanswers.SlowRead, in both directions: the
-// keyword fill pauses while Dispatch takes more than SlowRead to answer an answers read, which the
-// access-log line times, so a read its line times over SlowRead is a slow read to the Latency, and
-// one the Latency counts slow its line times at SlowRead or more. Each side is read from its own
-// record: the line's elapsed_ms and the Latency's two readings. A line at SlowRead to the
-// millisecond can be either. A correct run fails this only if the machine parks a read across
-// SlowRead between the two timers.
-func requireTimedAsLogged(t *testing.T, logged *logBuffer, n int, timed time.Duration) {
+// requireTimedAsLogged fails unless the answers read the access log logged n-th (from 0) took
+// timed, as the line times it: the Latency times the read inside the line's own timing, so it is
+// at most the line's, and short of it only by the layers between the two, which take
+// microseconds; timedAsLoggedSlack allows for a scheduler that parks the goroutine between them
+// on a loaded runner, and is still far below the 900 ms read the test holds. The line's time is
+// its record's elapsed_ms, as the access log logged it.
+func requireTimedAsLogged(t *testing.T, records *logtest.Recorder, n int, timed time.Duration) {
 	t.Helper()
-	var reads []string
-	for _, line := range accessLines(t, logged) {
-		if strings.Contains(line, "route=/api/v1/agents/{session_id}/answers ") {
-			reads = append(reads, line)
+	var reads []int64
+	for _, record := range records.Records() {
+		if record.Message != accesslog.Message {
+			continue
+		}
+		route, elapsed := "", int64(-1)
+		record.Attrs(func(attr slog.Attr) bool {
+			switch {
+			case attr.Key == "route":
+				route = attr.Value.String()
+			case attr.Key == "elapsed_ms" && attr.Value.Kind() == slog.KindInt64:
+				elapsed = attr.Value.Int64()
+			}
+			return true
+		})
+		if route == answersRoute {
+			reads = append(reads, elapsed)
 		}
 	}
 	if len(reads) <= n {
-		t.Fatalf("the access log holds %d answers reads; want a line for read %d:\n%s", len(reads), n, strings.Join(reads, "\n"))
+		t.Fatalf("the access log holds %d answers reads (elapsed_ms %v); want a line for read %d", len(reads), reads, n)
 	}
-	match := elapsedField.FindStringSubmatch(reads[n])
-	if match == nil {
-		t.Fatalf("the access-log line %q carries no elapsed_ms", reads[n])
+	elapsed := reads[n]
+	if elapsed < 0 {
+		t.Fatalf("the access-log line of answers read %d carries no elapsed_ms", n)
 	}
-	elapsed, err := strconv.ParseInt(match[1], 10, 64)
-	if err != nil {
-		t.Fatalf("read elapsed_ms of %q: %v", reads[n], err)
-	}
-	if ms := timed.Milliseconds(); ms > elapsed {
-		t.Errorf("answers read %d was timed %v; its access-log line records elapsed_ms=%d, less than that", n, timed, elapsed)
-	}
-	line := time.Duration(elapsed) * time.Millisecond
-	switch slow := timed > sessionanswers.SlowRead; {
-	case slow && line < sessionanswers.SlowRead:
-		t.Errorf("answers read %d was a slow read to the Latency (%v) and its access-log line times it under %v (elapsed_ms=%d)",
-			n, timed, sessionanswers.SlowRead, elapsed)
-	case !slow && line > sessionanswers.SlowRead:
-		t.Errorf("answers read %d took %v by its access-log line (elapsed_ms=%d), over %v, and the Latency timed it %v, no slow read",
-			n, line, elapsed, sessionanswers.SlowRead, timed)
+	if ms := timed.Milliseconds(); ms > elapsed || elapsed > ms+timedAsLoggedSlack.Milliseconds() {
+		t.Errorf("answers read %d was timed %v; its access-log line records elapsed_ms=%d", n, timed, elapsed)
 	}
 }
+
+// timedAsLoggedSlack is how far the access log's time of an answers read may pass the Latency's.
+const timedAsLoggedSlack = 50 * time.Millisecond

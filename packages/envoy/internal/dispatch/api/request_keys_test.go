@@ -226,7 +226,7 @@ func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", map[string]any{"n": 1}, "alice", "slow") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 
 	repeat := rig.send(t, "a", map[string]any{"n": 1}, "alice", "slow")
 	if code, _ := refusalOf(t, repeat); repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight ||
@@ -481,7 +481,7 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	names("a 5xx", rig.send(t, "broken", nil, "alice", "echo-2"), http.StatusInternalServerError, "echo-2")
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "slow", nil, "alice", "echo-3") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 	names("a key in flight", rig.send(t, "slow", nil, "alice", "echo-3"), http.StatusConflict, "echo-3")
 	releaseOnce()
 	names("the slow run", awaitResponse(t, answered), http.StatusCreated, "echo-3")
@@ -539,7 +539,7 @@ func TestALapsedHolderIsTakenOver(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "stalled") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)
@@ -741,7 +741,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "slow-write") }()
-	<-holding
+	testwait.Receive(t, "the keyed handler to hold its write", holding)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)

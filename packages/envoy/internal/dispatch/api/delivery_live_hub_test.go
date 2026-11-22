@@ -1903,17 +1903,21 @@ func pidsOf(conns []*pgx.Conn) []int32 {
 }
 
 // waitListening waits for one of the connections dials recorded to hold a LISTEN: its backend's last
-// statement was the listener's LISTEN (pglisten.Listener). The idle ping a listener sends after
-// pglisten.DefaultListenIdle does not count, since a connection that never listened sends it too; a
-// caller waits within seconds of the dial, well inside that idle period. The wait ends on that
-// backend's LISTEN, and its one bound is the test binary's deadline.
+// statement was the listener's LISTEN, or the idle ping the listener sends after it
+// (pglisten.Listener). The ping replaces the LISTEN as the last statement one listen idle period
+// after it, so a wait that reads the LISTEN alone reads nothing once a wait before it, such as one
+// behind a held event horizon, has outlasted that period. The ping still says the LISTEN stands:
+// the listener pings a connection only once its LISTEN has succeeded there, and a recorded
+// connection runs no other statement before it (store.Pool.Listener hands the listener a new
+// connection, hijacked from a pool that keeps none idle, so the pool never pings it). The wait
+// ends on that backend's LISTEN, and its one bound is the test binary's deadline.
 func waitListening(t *testing.T, database *store.Store, what string, dials *listenerDials) {
 	t.Helper()
 	testwait.UntilPolling(t, 20*time.Millisecond, what+" (how many of its backends hold one)", func() (int, bool) {
 		pids := dials.pids()
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from pg_stat_activity where pid = any($1) and query like 'listen %'`, pids,
+			`select count(*) from pg_stat_activity where pid = any($1) and (query like 'listen %' or query = '-- ping')`, pids,
 		).Scan(&count); err != nil {
 			t.Fatalf("count the backends of %s: %v", what, err)
 		}

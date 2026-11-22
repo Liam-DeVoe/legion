@@ -586,6 +586,14 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 				rereadNone,
 				func(context.Context, []mentionClaim) error { return nil },
 			)
+			// However the subtest ends, a failed wait included, the sender's lifetime ends and its
+			// goroutines are joined before the next subtest starts: its claim keeper would otherwise
+			// outlive the subtest. The stop and the join below run first on the passing path, so
+			// the tries are read once nothing can add one; a second stop and join do nothing.
+			t.Cleanup(func() {
+				stop()
+				sender.wait()
+			})
 			sender.mu.Lock()
 			sender.heldWarnAfter = time.Nanosecond
 			sender.mu.Unlock()
