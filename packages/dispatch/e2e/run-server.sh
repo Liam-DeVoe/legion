@@ -58,9 +58,12 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # domain DISPATCH_E2E_SIGNIN_DOMAIN (DISPATCH_SIGNIN_DOMAIN, which
 # DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1 lets it take from an issuer other than
 # Google's, under the DISPATCH_TEST_HOOKS=1 below), and no Google account outside
-# it; and it answers at a second origin, DISPATCH_OUTSIDE_ORIGIN, the dashboard
-# origin's scheme and port under the host DISPATCH_E2E_SIGNIN_OUTSIDE_HOST. Every
-# input a mode names is required.
+# it; it answers at a second origin, DISPATCH_OUTSIDE_ORIGIN, the dashboard
+# origin's scheme and port under the host DISPATCH_E2E_SIGNIN_OUTSIDE_HOST; and
+# there, with passkey sign-in on (DISPATCH_SIGNIN_PASSKEY=1), a person from outside
+# the domain whom a project's access list names enrolls a passkey through the
+# owner's link and signs in with it as a restricted member. Every input a mode
+# names is required.
 case "${DISPATCH_E2E_PROCESSES:-1}" in
   1)
     own_port_variable=DISPATCH_E2E_PORT
@@ -159,8 +162,15 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
         : "${DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:?DISPATCH_E2E_SIGNIN_OUTSIDE_HOST must name the host of the second origin the server answers at}"
         # The second origin has the dashboard origin's scheme and port: the round-robin proxy's
         # port in two-process mode, or `{port}` on a held one, which held-port.py writes in.
+        # Passkey sign-in needs DISPATCH_TRUSTED_PROXY_RANGES, the front doors whose
+        # X-Forwarded-For its begins' bound reads. The harness has none: each page talks to the
+        # server from loopback, or through the round-robin proxy, which writes no X-Forwarded-For.
+        # So the range is TEST-NET-1 (RFC 5737), where no peer of the harness is, and each begin
+        # is bounded by its connection's own address.
         signin_env+=(
           DISPATCH_SIGNIN_DOMAIN="$DISPATCH_E2E_SIGNIN_DOMAIN"
+          DISPATCH_SIGNIN_PASSKEY=1
+          DISPATCH_TRUSTED_PROXY_RANGES=192.0.2.0/24
           DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1
           DISPATCH_OUTSIDE_ORIGIN="${server_origin%%://*}://$DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:${server_origin##*:}"
         )

@@ -440,6 +440,69 @@ func TestTheOwnersAnswerNamesOnlyPeopleFromOutsideAsListedByAnotherOwner(t *test
 	}
 }
 
+// TestTheOwnersAnswerListsTheProjectsOpenLinks (R5): alice's access answer lists each link of PRIV
+// that can still enroll someone, with the made_at her Invite answered and no token, so her page
+// drops a link it shows once something else ended it. A newer link ends the older one, a use
+// ends the link it used, and a Reset ends the person's unused links: each leaves the list.
+//
+// Control: read the open links without `used_at is null` (store.OpenInvitations), and the used
+// link stays listed and the row fails.
+func TestTheOwnersAnswerListsTheProjectsOpenLinks(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	type invitation struct {
+		Email  string `json:"email"`
+		MadeAt string `json:"made_at"`
+	}
+	open := func(what string) []invitation {
+		t.Helper()
+		response := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
+		var answer struct {
+			OpenInvitations *[]invitation `json:"open_invitations"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &answer) != nil || answer.OpenInvitations == nil {
+			t.Fatalf("alice's access answer %s: %d %s, want 200 with open_invitations", what, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "/enroll#") {
+			t.Fatalf("alice's access answer %s holds a link's token: %s", what, response.Body.String())
+		}
+		return *answer.OpenInvitations
+	}
+	madeAt := func(response *httptest.ResponseRecorder) string {
+		t.Helper()
+		var answer struct {
+			MadeAt string `json:"made_at"`
+		}
+		if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
+			t.Fatalf("alice's Invite answered %d %s, want 201", response.Code, response.Body.String())
+		}
+		return answer.MadeAt
+	}
+	if got := open("before any Invite"); len(got) != 0 {
+		t.Fatalf("open_invitations before any Invite = %+v, want []", got)
+	}
+	first := madeAt(r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil))
+	if got := open("after the first Invite"); !slices.Equal(got, []invitation{{outsiderEmail, first}}) {
+		t.Fatalf("open_invitations after the first Invite = %+v, want the one link made at %s", got, first)
+	}
+	secondResponse := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil)
+	second := madeAt(secondResponse)
+	if got := open("after a second Invite"); !slices.Equal(got, []invitation{{outsiderEmail, second}}) {
+		t.Fatalf("open_invitations after a second Invite = %+v, want the newer link alone, made at %s", got, second)
+	}
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, linkToken(t, "the second link", secondResponse), outsiderEmail)
+	if got := open("after the enrollment"); len(got) != 0 {
+		t.Fatalf("open_invitations after the enrollment used the link = %+v, want []", got)
+	}
+	r.invite(t, outsiderEmail)
+	if reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil); reset.Code != http.StatusOK {
+		t.Fatalf("alice's Reset answered %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	if got := open("after the Reset"); len(got) != 0 {
+		t.Fatalf("open_invitations after the Reset = %+v, want []", got)
+	}
+}
+
 // TestTheOwnersResetEndsSignInAndDeletesPasskeys (R5): the owner's Reset of a person the list still
 // names ends their sign-in and deletes their passkeys at once, and leaves them on the list, so a
 // new link enrolls them again. Reset is the owner's browser's alone: a full member's address is
@@ -475,23 +538,27 @@ func TestTheOwnersResetEndsSignInAndDeletesPasskeys(t *testing.T) {
 
 // TestPasskeyAccessFieldsAreTheOwnersAlone: GET /api/v1/projects/{key}/access answers the owner's
 // browser session, where passkey sign-in is on, when each passkey of a listed person was enrolled
-// (passkeys) and the people a link can be made for now (invitable: on no Workspace domain, no full
-// member's); a full member the list names and the restricted member read neither field, and with
-// passkey sign-in off the owner reads neither either.
+// (passkeys), the people a link can be made for now (invitable: on no Workspace domain, no full
+// member's), and each link of the project that can still enroll someone (open_invitations); a
+// full member the list names and the restricted member read none of the owner's fields, and with
+// passkey sign-in off the owner reads none either.
 //
-// Control: answer the two fields to every reader (withOwnersPasskeys skipping its owner check),
-// and the full member's read carries passkeys and the row fails.
+// Control: answer the owner's fields to every reader (withOwnersPasskeys skipping its owner
+// check), and the full member's read carries passkeys and the row fails.
 func TestPasskeyAccessFieldsAreTheOwnersAlone(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
 	const dana = "dana@example.com"
+	const pending = "pending@other.example"
 	danaSignIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{"sub": "google-dana", "email": dana, "email_verified": true, "hd": "example.com"})
 	r.listOn(t, "PRIV", access.PrincipalPerson, dana)
-	r.listOn(t, "PRIV", access.PrincipalPerson, "pending@other.example")
+	r.listOn(t, "PRIV", access.PrincipalPerson, pending)
+	r.invite(t, pending)
 
 	var owners struct {
-		Passkeys  []model.EnrolledPasskey `json:"passkeys"`
-		Invitable []string                `json:"invitable"`
+		Passkeys        []model.EnrolledPasskey `json:"passkeys"`
+		Invitable       []string                `json:"invitable"`
+		OpenInvitations []model.OpenInvitation  `json:"open_invitations"`
 	}
 	read := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
 	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &owners) != nil {
@@ -500,20 +567,34 @@ func TestPasskeyAccessFieldsAreTheOwnersAlone(t *testing.T) {
 	if len(owners.Passkeys) != 1 || owners.Passkeys[0].Email != outsiderEmail || owners.Passkeys[0].EnrolledAt.IsZero() {
 		t.Fatalf("alice reads passkeys %+v, want the outsider's one, with its enrollment time", owners.Passkeys)
 	}
-	if want := []string{outsiderEmail, "pending@other.example"}; !slices.Equal(owners.Invitable, want) {
+	if want := []string{outsiderEmail, pending}; !slices.Equal(owners.Invitable, want) {
 		t.Fatalf("alice reads invitable %v, want %v: no full member", owners.Invitable, want)
+	}
+	if len(owners.OpenInvitations) != 1 || owners.OpenInvitations[0].Email != pending || owners.OpenInvitations[0].MadeAt.IsZero() {
+		t.Fatalf("alice reads open_invitations %+v, want the one link she made for %s, with when she made it", owners.OpenInvitations, pending)
+	}
+	ownersFields := []string{`"passkeys"`, `"invitable"`, `"listed_by_another_owner"`, `"open_invitations"`}
+	carries := func(body string) []string {
+		var carried []string
+		for _, field := range ownersFields {
+			if strings.Contains(body, field) {
+				carried = append(carried, field)
+			}
+		}
+		return carried
 	}
 	for who, response := range map[string]*httptest.ResponseRecorder{
 		"dana, a full member the list names": call(r.handler, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, sessionCookieOf(t, "dana's sign-in", danaSignIn)),
 		"the restricted member":              call(r.handler, passkeyOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, cookie),
 	} {
-		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"passkeys"`) || strings.Contains(response.Body.String(), `"invitable"`) {
-			t.Fatalf("%s's read of PRIV's access: %d %s, want 200 with neither passkeys nor invitable", who, response.Code, response.Body.String())
+		if carried := carries(response.Body.String()); response.Code != http.StatusOK || len(carried) != 0 {
+			t.Fatalf("%s's read of PRIV's access: %d, carrying the owner's %v: %s, want 200 with none of them", who, response.Code, carried, response.Body.String())
 		}
 	}
 	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
-	if off := call(off, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, r.alice); off.Code != http.StatusOK || strings.Contains(off.Body.String(), `"passkeys"`) {
-		t.Fatalf("alice's read with passkey sign-in off: %d %s, want 200 with no passkeys", off.Code, off.Body.String())
+	offRead := call(off, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, r.alice)
+	if carried := carries(offRead.Body.String()); offRead.Code != http.StatusOK || len(carried) != 0 {
+		t.Fatalf("alice's read with passkey sign-in off: %d, carrying %v: %s, want 200 with none of the owner's fields", offRead.Code, carried, offRead.Body.String())
 	}
 }
 

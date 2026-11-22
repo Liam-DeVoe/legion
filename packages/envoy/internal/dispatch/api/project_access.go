@@ -156,7 +156,10 @@ func (s *server) privateProjectProvisioned(key string) bool {
 
 // getProjectAccess answers who may see project key and who changes that, as the caller reads it:
 // a project the caller does not see answers as a key no project holds. The owner's browser session
-// gets the owner's passkey fields too where passkey sign-in is on (withOwnersPasskeys).
+// gets the owner's passkey fields too where passkey sign-in is on (withOwnersPasskeys). Every read
+// of the answer is one snapshot, a read-only repeatable-read transaction: an enrollment uses its
+// link and stores its passkey in one commit, so the answer lists the link open or the passkey,
+// never neither, and the Access tab never drops a link with no passkey to show for it.
 func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -171,12 +174,19 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer, err := access.ReadProject(r.Context(), pool, r.PathValue("key"), refs.VisibilityArg(who))
+	tx, err := pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer tx.Rollback(r.Context())
+	answer, err := access.ReadProject(r.Context(), tx, r.PathValue("key"), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeAccessError(w, err)
 		return
 	}
-	if answer, err = s.withOwnersPasskeys(r.Context(), pool, answer, caller, who.Viewer); err != nil {
+	if answer, err = s.withOwnersPasskeys(r.Context(), tx, answer, caller, who.Viewer); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -482,9 +492,13 @@ func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email 
 
 // invitationAnswer is POST /api/v1/projects/{key}/access/people/{email}/invitations's answer: the
 // link the owner hands the person, the outside origin's enrollment page with the token in its
-// fragment, and when it lapses.
+// fragment, when it was made and when it lapses, on the database's clock. made_at is the key the
+// owner's Access tab holds the link by: a read of the access list that began after the link landed
+// and lists no open link of the person made at made_at (open_invitations) says it was used or
+// ended.
 type invitationAnswer struct {
 	URL       string    `json:"url"`
+	MadeAt    time.Time `json:"made_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -553,7 +567,7 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 // (namedPerson), whom no project of another owner names directly (store.ListedByAnotherOwner,
 // 409 LISTED_BY_ANOTHER_OWNER: a passkey reads every project that names its person, so one owner
 // binds it), which ends the person's earlier unused links of the project
-// (store.MakeInvitationTx). It answers 201 {url, expires_at}: the url is the outside origin's
+// (store.MakeInvitationTx). It answers 201 {url, made_at, expires_at}: the url is the outside origin's
 // enrollment page with 32 random bytes, base64url, in its fragment, which no server logs and no
 // browser sends as a Referer, and outside_invitations keeps only their hash. The answer is the
 // one time the link is shown, so an Idempotency-Key never keeps it (answerHoldsSecret): a repeat
@@ -580,11 +594,11 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		expiresAt, err := store.MakeInvitationTx(ctx, tx, hash, login, key, by.ID)
+		madeAt, expiresAt, err := store.MakeInvitationTx(ctx, tx, hash, login, key, by.ID)
 		if err != nil {
 			return nil, err
 		}
-		answer = invitationAnswer{URL: s.deps.Passkeys.Store().Issuer() + "/enroll#" + token, ExpiresAt: expiresAt}
+		answer = invitationAnswer{URL: s.deps.Passkeys.Store().Issuer() + "/enroll#" + token, MadeAt: madeAt, ExpiresAt: expiresAt}
 		return nil, nil
 	}) {
 		return
@@ -647,12 +661,12 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 }
 
 // withOwnersPasskeys adds to answer, read in q, the owner's passkey fields (model.ProjectAccess's
-// Passkeys, Invitable and ListedByAnotherOwner) when passkey sign-in is on and the caller is the
-// project's owner in a browser session, the one caller who may make a link; every other answer
-// carries none. Each passkey names who made the link that enrolled it and, where viewer sees it,
-// that link's project: a project of another owner the reader does not see is left out, as every
-// read leaves it out. A person a project of another owner names directly is listed as such and is
-// not invitable, as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
+// Passkeys, Invitable, ListedByAnotherOwner and OpenInvitations) when passkey sign-in is on and the
+// caller is the project's owner in a browser session, the one caller who may make a link; every
+// other answer carries none. Each passkey names who made the link that enrolled it and, where
+// viewer sees it, that link's project: a project of another owner the reader does not see is left
+// out, as every read leaves it out. A person a project of another owner names directly is listed
+// as such and is not invitable, as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
 func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, answer model.ProjectAccess, caller model.Actor, viewer *model.Viewer) (model.ProjectAccess, error) {
 	if s.deps.Passkeys == nil || answer.Owner != caller.ID || !atBrowserAs(caller) {
 		return answer, nil
@@ -660,6 +674,11 @@ func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, 
 	passkeys, err := store.EnrolledPasskeys(ctx, q, answer.People)
 	if err != nil {
 		return model.ProjectAccess{}, err
+	}
+	// The test seam: a case commits an enrollment here, between the passkeys and the open links
+	// (server betweenOwnersPasskeyReads). Nothing but a test sets it.
+	if s.betweenOwnersPasskeyReads != nil {
+		s.betweenOwnersPasskeyReads()
 	}
 	for index := range passkeys {
 		if project := passkeys[index].Project; project != nil && !viewerSees(viewer, *project) {
@@ -687,7 +706,12 @@ func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, 
 			invitable = append(invitable, person)
 		}
 	}
+	open, err := store.OpenInvitations(ctx, q, answer.Project)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
 	answer.Passkeys, answer.Invitable, answer.ListedByAnotherOwner = &passkeys, &invitable, &others
+	answer.OpenInvitations = &open
 	return answer, nil
 }
 

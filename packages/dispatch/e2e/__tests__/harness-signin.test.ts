@@ -196,7 +196,7 @@ describe("DISPATCH_E2E_SIGNIN", () => {
 
   // The dev control and the three google readings: four runs of run-server.sh.
   test(
-    "run-server.sh hands a google server Google's domain and a second origin on its own port",
+    "run-server.sh hands a google server Google's domain, passkey sign-in and a second origin on its own port",
     async () => {
       // The control: under dev sign-in the same reading sees dev sign-in and no second origin, so
       // the reading below can tell the two apart.
@@ -205,15 +205,20 @@ describe("DISPATCH_E2E_SIGNIN", () => {
       expect(dev.DISPATCH_SERVER_URL).toBe("http://127.0.0.1:9031");
       expect(dev).not.toHaveProperty("DISPATCH_OUTSIDE_ORIGIN");
       expect(dev).not.toHaveProperty("DISPATCH_SIGNIN_DOMAIN");
+      expect(dev).not.toHaveProperty("DISPATCH_TRUSTED_PROXY_RANGES");
 
       const signIn = {
         DISPATCH_SIGNIN_CLIENT_ID: "dispatch-e2e",
         DISPATCH_SIGNIN_CLIENT_SECRET: "secret",
         DISPATCH_SIGNIN_DOMAIN: "example.com",
         DISPATCH_SIGNIN_ISSUER: "http://127.0.0.1:9035",
+        DISPATCH_SIGNIN_PASSKEY: "1",
         DISPATCH_SIGNING_KEY: "signing-key",
         DISPATCH_TEST_HOOKS: "1",
         DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER: "1",
+        // Passkey sign-in needs the front doors whose X-Forwarded-For its begins' bound reads; the
+        // harness has none, so the range names no peer of it.
+        DISPATCH_TRUSTED_PROXY_RANGES: "192.0.2.0/24",
       };
       const read = async (env: Record<string, string>) => {
         const given = await serverEnvironment({ ...googleServerInputs, ...env });

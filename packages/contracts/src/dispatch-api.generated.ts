@@ -2571,7 +2571,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; and listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; each [] for none, and all three absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; and open_invitations, [{email, made_at, expires_at}] for each link of the project that can still enroll someone (unused and not lapsed), sorted by email then made_at, with no token; each [] for none, and all four absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
     get: operations["getApiV1ProjectsByKeyAccess"];
     put?: never;
     post?: never;
@@ -2627,7 +2627,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, and expires_at 24 hours after now. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes. */
+    /** @description Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, made_at, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, made_at now, and expires_at 24 hours after now, both on the database's clock; made_at is the key the link is listed by in the owner's access answer (open_invitations) while it can still enroll someone. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes. */
     post: operations["postApiV1ProjectsByKeyAccessPeopleByEmailInvitations"];
     delete?: never;
     options?: never;
@@ -5435,6 +5435,8 @@ export interface components {
     InvitationAnswer: {
       /** Format: date-time */
       expires_at: string;
+      /** Format: date-time */
+      made_at: string;
       url: string;
     };
     Issue: {
@@ -6184,6 +6186,13 @@ export interface components {
       waiting_on_agent: number;
       waiting_on_human: number;
     };
+    OpenInvitation: {
+      email: string;
+      /** Format: date-time */
+      expires_at: string;
+      /** Format: date-time */
+      made_at: string;
+    };
     OutgoingReference: {
       artifact?: components["schemas"]["Artifact"];
       kind: string;
@@ -6396,6 +6405,7 @@ export interface components {
       invitable?: string[];
       listed_by_another_owner?: string[];
       not_signed_in: string[] | null;
+      open_invitations?: components["schemas"]["OpenInvitation"][];
       owner: string;
       passkeys?: components["schemas"]["EnrolledPasskey"][];
       people: string[] | null;
@@ -16045,6 +16055,7 @@ export type OpenAskIssue = components["schemas"]["OpenAskIssue"];
 export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
+export type OpenInvitation = components["schemas"]["OpenInvitation"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
