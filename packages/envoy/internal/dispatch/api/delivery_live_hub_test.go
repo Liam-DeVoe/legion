@@ -523,19 +523,36 @@ func (r *hubRig) count(since int, match func(deliveryHubNote) bool) int {
 	return n
 }
 
-// waitFor waits for a note since mark that matches, and returns it.
+// waitFor waits for a note since mark that matches, and returns it. A try that finds none reads
+// the notes the hub made since mark (notesSince), so a wait that gives up names what the hub did
+// instead.
 func (r *hubRig) waitFor(t *testing.T, since int, what string, match func(deliveryHubNote) bool) deliveryHubNote {
 	t.Helper()
-	return testwait.Until(t, what, func() (deliveryHubNote, bool) {
+	var found deliveryHubNote
+	testwait.Until(t, what, func() (string, bool) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		for _, note := range r.notes[since:] {
 			if match(note) {
-				return note, true
+				found = note
+				return fmt.Sprintf("%+v", note), true
 			}
 		}
-		return deliveryHubNote{}, false
+		return notesSince(r.notes[since:]), false
 	})
+	return found
+}
+
+// notesSince renders notes, the hub's notes since a mark, for a wait's reading: how many there are
+// and the last of them, each by what it was, its view and its cause.
+func notesSince(notes []deliveryHubNote) string {
+	const shown = 12
+	from := max(0, len(notes)-shown)
+	described := make([]string, 0, len(notes)-from)
+	for _, note := range notes[from:] {
+		described = append(described, fmt.Sprintf("%q view=%q cause=%q", note.what, note.view, note.cause))
+	}
+	return fmt.Sprintf("%d notes since the mark, none matching; the last %d: %s", len(notes), len(described), strings.Join(described, "; "))
 }
 
 // waitForEvent waits for a note since mark that matches, made as the hub acted on what its event

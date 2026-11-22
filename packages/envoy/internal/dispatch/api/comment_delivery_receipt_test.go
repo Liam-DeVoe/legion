@@ -556,15 +556,32 @@ func commentDeliveryReceipts(t *testing.T, database *store.Store, commentID, tar
 
 // awaitCommentDeliveryReceipts waits until the attempt carries a comment.delivery receipt - the
 // mention sender appends it in its settle transaction, after the comment's create has answered -
-// and returns the receipts as commentDeliveryReceipts renders them.
+// and returns the receipts as commentDeliveryReceipts renders them. A try that finds none reads
+// the attempt's row as commentAttemptRow renders it, or that there is none.
 func awaitCommentDeliveryReceipts(t *testing.T, database *store.Store, commentID, target string, attempt int) string {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("attempt %d of %s for %s to carry a comment.delivery receipt", attempt, commentID, target),
+	var receipts string
+	testwait.Until(t, fmt.Sprintf("attempt %d of %s for %s to carry a comment.delivery receipt", attempt, commentID, target),
 		func() (string, bool) {
-			receipts := commentDeliveryReceipts(t, database, commentID, target, attempt)
-			return receipts, receipts != ""
+			if receipts = commentDeliveryReceipts(t, database, commentID, target, attempt); receipts != "" {
+				return receipts, true
+			}
+			var row string
+			if err := database.Pool.QueryRow(context.Background(), `
+				select coalesce((select `+commentAttemptRendered+`
+					from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3), 'no row')
+			`, commentID, target, attempt).Scan(&row); err != nil {
+				t.Fatalf("read attempt row: %v", err)
+			}
+			return "no receipt; the attempt's row: " + row, false
 		})
+	return receipts
 }
+
+// commentAttemptRendered is the expression that renders an attempt's comment_deliveries row the
+// way a receipt for it reads: state/error/reply_id/session_id.
+const commentAttemptRendered = `state || '/' || coalesce(error, '') || '/' || coalesce(reply_id::text, '') || '/' ||
+	coalesce(session_id, '')`
 
 // commentAttemptRow renders one attempt of one of a comment's mention targets the way a receipt
 // for it reads, so the two can be compared directly.
@@ -572,8 +589,7 @@ func commentAttemptRow(t *testing.T, database *store.Store, commentID, target st
 	t.Helper()
 	var row string
 	if err := database.Pool.QueryRow(context.Background(), `
-		select state || '/' || coalesce(error, '') || '/' || coalesce(reply_id::text, '') || '/' ||
-			coalesce(session_id, '')
+		select `+commentAttemptRendered+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3
 	`, commentID, target, attempt).Scan(&row); err != nil {
 		t.Fatalf("read attempt row: %v", err)

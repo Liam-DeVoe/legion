@@ -158,17 +158,19 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 
 // awaitEntered waits for a gated document call to be entered (entered closes), and fails with the
 // request's answer when the request answers on responses first: such a request never reached step,
-// the call the gate holds. The wait has no bound of its own (testwait.Until).
+// the call the gate holds. The wait has no bound of its own (testwait.Until). A try that finds
+// neither reads that both channels were empty.
 func awaitEntered(t *testing.T, step string, entered <-chan struct{}, responses <-chan *httptest.ResponseRecorder) {
 	t.Helper()
-	early := testwait.Until(t, "the request to reach "+step+", or to answer", func() (*httptest.ResponseRecorder, bool) {
+	var early *httptest.ResponseRecorder
+	testwait.Until(t, "the request to reach "+step+", or to answer", func() (string, bool) {
 		select {
 		case <-entered:
-			return nil, true
-		case response := <-responses:
-			return response, true
+			return step + " entered", true
+		case early = <-responses:
+			return "the request answered", true
 		default:
-			return nil, false
+			return step + "'s gate not entered and no answer from the request", false
 		}
 	})
 	if early != nil {

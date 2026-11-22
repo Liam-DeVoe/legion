@@ -124,6 +124,38 @@ func holdsStream(srv *natsserver.Server, stream string) bool {
 	return false
 }
 
+// heldStreams names, member by member, the streams each member's global account holds, read
+// from the server's own state (Jsz) as holdsStream reads it: a wait's reading of what the members
+// held while the stream it waits for was not yet answered. A member with no name of its own (a
+// cluster's single server) is named by its place among the members.
+func heldStreams(cluster *Cluster) string {
+	var members []string
+	for i, member := range cluster.Servers {
+		label := member.Name()
+		if label == "" {
+			label = fmt.Sprintf("member %d", i)
+		}
+		srv := member.natsServer()
+		if srv == nil {
+			members = append(members, label+" runs no server")
+			continue
+		}
+		info, err := srv.Jsz(&natsserver.JSzOptions{Account: natsserver.DEFAULT_GLOBAL_ACCOUNT, Streams: true})
+		if err != nil {
+			members = append(members, fmt.Sprintf("%s: %v", label, err))
+			continue
+		}
+		var names []string
+		for _, account := range info.AccountDetails {
+			for _, held := range account.Streams {
+				names = append(names, held.Name)
+			}
+		}
+		members = append(members, fmt.Sprintf("%s holds %v", label, names))
+	}
+	return strings.Join(members, "; ")
+}
+
 // A create whose answer the cluster never delivers, because the connection it was sent on dropped
 // before the stream's first leader could answer, is sent again on the connection's reconnect, and
 // the cluster answers it with the stream the first send made: the create ends after at least two
@@ -265,9 +297,11 @@ func TestACreateWhoseFirstDialsDrawNoHandshakeWaitsForTheConnection(t *testing.T
 	if recorder.message != "" {
 		t.Fatalf("the create failed once the server answered: %s", recorder.message)
 	}
-	testwait.Until(t, "the server to hold stream LATE, which the create made", func() (bool, bool) {
-		held := streamAnswered(cluster, "LATE")
-		return held, held
+	testwait.Until(t, "the server to hold stream LATE, which the create made", func() (string, bool) {
+		if streamAnswered(cluster, "LATE") {
+			return "LATE answered", true
+		}
+		return "LATE not answered; " + heldStreams(cluster), false
 	})
 }
 

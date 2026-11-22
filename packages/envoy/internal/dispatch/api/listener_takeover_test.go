@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -270,21 +271,27 @@ func stepListenerWaits(fake *clocktest.Fake, calls *listenerCalls) {
 
 // answerWhileCallsAreHeld waits for a request running on a goroutine of its own, whose listener
 // calls a stand-in holds, moving fake - the server's clock - through the waits those calls leave
-// the request in (stepListenerWaits) until it answers.
+// the request in (stepListenerWaits) until it answers. A try with no answer reads what the step
+// it takes acts on: the calls open and held, and the fake's moment and what is armed on it.
 func answerWhileCallsAreHeld(
 	t *testing.T, fake *clocktest.Fake, calls *listenerCalls, answered <-chan *httptest.ResponseRecorder,
 ) *httptest.ResponseRecorder {
 	t.Helper()
-	return testwait.Until(t, "the request to answer once the calls its stand-in holds had run out of window",
-		func() (*httptest.ResponseRecorder, bool) {
+	var response *httptest.ResponseRecorder
+	testwait.Until(t, "the request to answer once the calls its stand-in holds had run out of window",
+		func() (string, bool) {
 			select {
-			case response := <-answered:
-				return response, true
+			case response = <-answered:
+				return "answered", true
 			default:
 			}
+			open, held := calls.counts()
+			reading := fmt.Sprintf("no answer; %d listener calls open, %d of them held; the fake at %s holds %v armed",
+				open, held, fake.Now().Format(time.RFC3339Nano), fake.Armed())
 			stepListenerWaits(fake, calls)
-			return nil, false
+			return reading, false
 		})
+	return response
 }
 
 // A listener being replaced refuses connections, answers 503, or does not hold a session yet for

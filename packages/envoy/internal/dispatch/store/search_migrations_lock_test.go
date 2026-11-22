@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -77,6 +78,7 @@ func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
 // pg_stat_activity, on its own backend, so the verdict is that state, read while the read runs,
 // and not how long the read took: a read no lock holds up answers however slow the machine is,
 // and one that waits behind a lock fails as soon as it does. It returns once read has answered.
+// A try that finds neither reads the reader's backend: its state, wait event and statement.
 func requireAnsweredWithoutALockWait(t *testing.T, store *Store, what string, read func(context.Context, pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
@@ -100,21 +102,24 @@ func requireAnsweredWithoutALockWait(t *testing.T, store *Store, what string, re
 	if reader.err != nil {
 		t.Fatalf("%s: begin: %v", what, reader.err)
 	}
-	waited := testwait.Until(t, what+" to answer, or to wait on a lock", func() (bool, bool) {
+	var waited bool
+	testwait.Until(t, what+" to answer, or to wait on a lock", func() (string, bool) {
 		select {
 		case err := <-answered:
 			if err != nil {
 				t.Fatalf("%s: %v", what, err)
 			}
-			return false, true
+			return "answered", true
 		default:
 		}
-		var waiting bool
-		if err := store.Pool.QueryRow(ctx, `select exists (select from pg_stat_activity where pid = $1 and wait_event_type = 'Lock')`,
-			int64(reader.pid)).Scan(&waiting); err != nil {
+		var backend string
+		if err := store.Pool.QueryRow(ctx, `
+			select coalesce(bool_or(wait_event_type = 'Lock'), false),
+				coalesce(string_agg(format('%s (wait %s/%s): %s', state, wait_event_type, wait_event, query), ''), 'no row in pg_stat_activity')
+			from pg_stat_activity where pid = $1`, int64(reader.pid)).Scan(&waited, &backend); err != nil {
 			t.Fatalf("read whether %s waits on a lock: %v", what, err)
 		}
-		return waiting, waiting
+		return fmt.Sprintf("not answered; backend %d is %s", reader.pid, backend), waited
 	})
 	if waited {
 		t.Fatalf("%s waited on a lock (pg_stat_activity), want it answered without one", what)

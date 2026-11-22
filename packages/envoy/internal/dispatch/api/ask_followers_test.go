@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -278,17 +279,26 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	askID := testwait.Until(t, "the typed ask block to settle into the inbox", func() (string, bool) {
+	// A try that does not find the ask reads the blocks the inbox's asks name.
+	var askID string
+	testwait.Until(t, "the typed ask block to settle into the inbox", func() (string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
+		var blocks []string
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID != nil && *ask.BlockID == "block-ask" {
-				return ask.ID, true
+			if ask.BlockID == nil {
+				blocks = append(blocks, "<none>")
+				continue
 			}
+			if *ask.BlockID == "block-ask" {
+				askID = ask.ID
+				return "ask " + ask.ID, true
+			}
+			blocks = append(blocks, *ask.BlockID)
 		}
-		return "", false
+		return fmt.Sprintf("the inbox holds %d asks, naming blocks %v", len(blocks), blocks), false
 	})
 	if got := readAskFollowers(t, handler, askID); strings.Join(got, ",") != "s-writer" {
 		t.Fatalf("ask block followers = %v, want [s-writer]", got)

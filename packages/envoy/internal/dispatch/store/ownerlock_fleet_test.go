@@ -634,29 +634,32 @@ func holdRowAsAnEarlierBuild(t *testing.T, s *Store, owner Owner) pgx.Tx {
 
 // awaitRowLockWaiter waits for a backend to wait on a row lock in a statement of lockOwnerRows
 // (an owner row's lock taken beside the advisory lock), or for answered. The wait has no bound of
-// its own (testwait.Until).
+// its own (testwait.Until). A try that finds neither reads each backend whose statement is one
+// of lockOwnerRows': its pid, state and wait event. The pattern is spelled in two halves so the
+// read's own text, which pg_stat_activity shows too, does not match it.
 func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, bool) {
 	t.Helper()
-	type outcome struct {
-		Err      error
-		Answered bool
-	}
-	got := testwait.Until(t, "an owner lock to wait on the owner's row, or to answer", func() (outcome, bool) {
+	var answer error
+	var early bool
+	testwait.Until(t, "an owner lock to wait on the owner's row, or to answer", func() (string, bool) {
 		select {
 		case err := <-answered:
-			return outcome{Err: err, Answered: true}, true
+			answer, early = err, true
+			return fmt.Sprintf("answered: %v", err), true
 		default:
 		}
 		var waiting int
+		var backends string
 		if err := s.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
+			select count(*) filter (where wait_event_type = 'Lock'),
+				coalesce(string_agg(format('%s %s (wait %s/%s)', pid, state, wait_event_type, wait_event), '; ' order by pid), 'none')
+			from pg_stat_activity
+			where datname = current_database() and query like '%= any($1' || '::%order by%for %'`).Scan(&waiting, &backends); err != nil {
 			t.Fatal(err)
 		}
-		return outcome{}, waiting > 0
+		return "not answered; the backends in a statement of lockOwnerRows: " + backends, waiting > 0
 	})
-	return got.Err, got.Answered
+	return answer, early
 }
 
 // The read a lock guards sees what a writer of an earlier build committed while it held the row:

@@ -3,6 +3,7 @@ package textversions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -85,7 +86,7 @@ func fillTakeOverAfterDeath(t *testing.T) time.Duration {
 	}
 
 	died := time.Now()
-	first.db.Pool.Close()
+	testwait.Returns(t, "the dead holder's pool to close once its fill lets its connections go", first.db.Pool.Close)
 	first.Stop(t)
 	var next []int64
 	for range 3 {
@@ -270,9 +271,12 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 	storetest.AwaitQuiet(t, &tracer.others, rereadMax+time.Second, caughtUpFillWhy)
 	renewed := tracer.renewals.Load()
 	storetest.RequireNoStatements(t, &tracer.others, 10*time.Second, "a fill caught up with nothing written", caughtUpFillWhy)
-	if tracer.renewals.Load() == renewed {
-		t.Errorf("the hold was not renewed over 10 s; want its renewal every %v", holdOptions.Renew)
-	}
+	// The renewal goes on at rest: a real ticker paces it every holdOptions.Renew, so the row waits
+	// for one past the count read before the quiet span rather than counting them inside a span.
+	testwait.Until(t, "the hold's renewal after the fill went quiet", func() (string, bool) {
+		n := tracer.renewals.Load()
+		return fmt.Sprintf("%d renewals of the hold, %d of them before the quiet span", n, renewed), n > renewed
+	})
 }
 
 // caughtUpFillWhy is why the caught-up fill's rest is held as a span: a fill at rest is the
@@ -375,13 +379,33 @@ func liveHolder(t *testing.T, database *store.Store) string {
 }
 
 // awaitLiveHolder waits, through the shared wait, until the fill's hold names a live holder, and
-// answers it.
+// answers it. A try that finds none reads what duty_holds holds for the hold (holdRow).
 func awaitLiveHolder(t *testing.T, database *store.Store) string {
 	t.Helper()
-	return testwait.Until(t, "a fill to take the hold", func() (string, bool) {
-		holder := liveHolder(t, database)
-		return holder, holder != ""
+	var holder string
+	testwait.Until(t, "a fill to take the hold", func() (string, bool) {
+		holder = liveHolder(t, database)
+		if holder != "" {
+			return "the hold names " + holder, true
+		}
+		return holdRow(t, database), false
 	})
+	return holder
+}
+
+// holdRow says what duty_holds holds for the fill's hold: the holder its row names and how far
+// the row's expiry stands from the database's now() (below zero once it has lapsed), or that the
+// hold has no row.
+func holdRow(t *testing.T, database *store.Store) string {
+	t.Helper()
+	var row string
+	if err := database.Pool.QueryRow(t.Context(), `
+		select coalesce((select format('duty_holds names holder %s, expiring %s after now()', holder, expires_at - now())
+			from duty_holds where name = $1), format('duty_holds has no row for %s', $1::text))
+	`, fillHoldName).Scan(&row); err != nil {
+		t.Fatalf("read the fill's hold row: %v", err)
+	}
+	return row
 }
 
 // cursorHolders is the cursor row's holder as the test read it.

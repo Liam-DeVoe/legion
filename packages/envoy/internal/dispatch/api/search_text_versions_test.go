@@ -605,8 +605,10 @@ func keywordArmSlowRead(t *testing.T, server keywordServer, answers string) (*te
 			return fill, holder, held, wrote
 		}
 		rejected = append(rejected, reason)
-		testwait.Until(t, "the answers reads to be fast again", func() (bool, bool) {
-			return true, !server.latency.Slow(time.Now())
+		testwait.Until(t, "the answers reads to be fast again", func() (string, bool) {
+			now := time.Now()
+			slow := server.latency.Slow(now)
+			return fmt.Sprintf("round %d rejected; the latency's Slow at %s: %t", round, now.Format(time.RFC3339Nano), slow), !slow
 		})
 	}
 	t.Fatalf("none of %d rounds had a batch of the keyword fill wait alone through the answers read's turn to slow, write, and see the fill pause next:\n%s",
@@ -650,8 +652,10 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 		queued := storetest.LockWaiters(t, holder)
 		return queued, queued >= 1
 	})
-	testwait.Until(t, "the answers read held by the lock to turn slow", func() (bool, bool) {
-		return false, server.latency.Slow(time.Now())
+	testwait.Until(t, "the answers read held by the lock to turn slow", func() (string, bool) {
+		now := time.Now()
+		slow := server.latency.Slow(now)
+		return fmt.Sprintf("the latency's Slow at %s: %t; the held read answered: %t", now.Format(time.RFC3339Nano), slow, len(held) > 0), slow
 	})
 	logged := fill.Lines(t, "")
 	wrote = len(logged)

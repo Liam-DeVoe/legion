@@ -112,18 +112,25 @@ func drainRelayReads(reads <-chan relayRead) {
 // awaitRelayHeldRead waits for a read of relay's that found an id above the horizon it read
 // through, with that horizon below low: the read a commit above an id still open wakes. The
 // relay publishes a read's events before it reports the read, so the relay must then stand
-// below low: a relay that published past an id still open would never publish that id.
+// below low: a relay that published past an id still open would never publish that id. A try
+// that finds no such read reads how many reads the wait took, the last of them, and how far the
+// relay has published.
 func awaitRelayHeldRead(t *testing.T, relay *eventStreamRelay, reads <-chan relayRead, low int64) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the relay's read of a commit above event %d, which is still open", low), func() (relayRead, bool) {
+	taken := 0
+	var last relayRead
+	testwait.Until(t, fmt.Sprintf("the relay's read of a commit above event %d, which is still open", low), func() (string, bool) {
 		for {
 			select {
 			case read := <-reads:
+				taken++
+				last = read
 				if read.gap != events.GapNone && read.safe < low {
-					return read, true
+					return fmt.Sprintf("%+v", read), true
 				}
 			default:
-				return relayRead{}, false
+				return fmt.Sprintf("%d reads taken, none with a gap below %d, the last %+v; the relay published through event %d",
+					taken, low, last, relayPublished(relay)), false
 			}
 		}
 	})

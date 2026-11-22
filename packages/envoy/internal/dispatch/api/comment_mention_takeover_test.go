@@ -81,7 +81,8 @@ func (w *takeOverTries) took(route takeOverRoute) {
 // its own and waits for its answer, moving the clock to each backoff once the try before it has
 // returned: the stand-in has taken a lookup since the last move, and neither that lookup's bound
 // nor its call's window is pending any longer. A backoff is never further off than
-// takeoverMaxBackoff.
+// takeoverMaxBackoff. A try with no answer reads the lookups taken and the ones the clock has
+// moved past, and the clock's moment and what is armed on it.
 func (w *takeOverTries) answer(t *testing.T, request func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
 	w.mu.Lock()
@@ -89,11 +90,12 @@ func (w *takeOverTries) answer(t *testing.T, request func() *httptest.ResponseRe
 	w.mu.Unlock()
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- request() }()
-	return testwait.Until(t, "the comment to answer once its mention's lookups had waited the take-over out",
-		func() (*httptest.ResponseRecorder, bool) {
+	var response *httptest.ResponseRecorder
+	testwait.Until(t, "the comment to answer once its mention's lookups had waited the take-over out",
+		func() (string, bool) {
 			select {
-			case response := <-answered:
-				return response, true
+			case response = <-answered:
+				return "answered", true
 			default:
 			}
 			w.mu.Lock()
@@ -103,23 +105,26 @@ func (w *takeOverTries) answer(t *testing.T, request func() *httptest.ResponseRe
 				last = w.taken[taken-1]
 			}
 			w.mu.Unlock()
-			if taken <= moved {
-				return nil, false
-			}
 			armed := w.clock.Armed()
+			reading := fmt.Sprintf("no answer; %d lookups taken, the clock moved past %d of them; the clock at %s holds %v armed",
+				taken, moved, w.clock.Now().Format(time.RFC3339Nano), armed)
+			if taken <= moved {
+				return reading, false
+			}
 			inFlight := func(at time.Time) bool {
 				return at.Equal(last.Add(mentionLookupTimeout)) || at.Equal(last.Add(envoy.CallWindow))
 			}
 			if len(armed) == 0 || slices.ContainsFunc(armed, inFlight) ||
 				armed[0].After(w.clock.Now().Add(takeoverMaxBackoff)) {
-				return nil, false
+				return reading, false
 			}
 			w.clock.Set(armed[0])
 			w.mu.Lock()
 			w.moved = taken
 			w.mu.Unlock()
-			return nil, false
+			return reading + "; moved the clock to " + armed[0].Format(time.RFC3339Nano), false
 		})
+	return response
 }
 
 // A person's comment on an issue routed to session s1 that also mentions s1 reaches s1 once:

@@ -207,20 +207,24 @@ func wakePending(relay *eventStreamRelay) bool {
 
 // nextCadenceRead takes the relay's next read, moving fake past the coalescing window when the
 // relay arms one before it: a notification's read waits that window unless the read before it
-// found a gap held.
+// found a gap held. A try with no read reads the fake's moment and the moments armed on it.
 func nextCadenceRead(t *testing.T, fake *clocktest.Fake, coalesce time.Duration, reads <-chan relayRead, what string) relayRead {
 	t.Helper()
-	return testwait.Until(t, what, func() (relayRead, bool) {
+	var taken relayRead
+	testwait.Until(t, what, func() (string, bool) {
 		select {
-		case read := <-reads:
-			return read, true
+		case taken = <-reads:
+			return fmt.Sprintf("%+v", taken), true
 		default:
 		}
-		if window := fake.Now().Add(coalesce); slices.ContainsFunc(fake.Armed(), window.Equal) {
+		armed := fake.Armed()
+		if window := fake.Now().Add(coalesce); slices.ContainsFunc(armed, window.Equal) {
 			fake.Set(window)
+			return fmt.Sprintf("no read; moved the fake to the coalescing window at %s", window.Format(time.RFC3339Nano)), false
 		}
-		return relayRead{}, false
+		return fmt.Sprintf("no read; the fake at %s holds %v armed", fake.Now().Format(time.RFC3339Nano), armed), false
 	})
+	return taken
 }
 
 // settleCadenceRelay takes the reads of the relay's start, moving fake past each coalescing window

@@ -462,21 +462,29 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 	// holds it there, not started (mentionSender.lanes), while the first is held. A send that jumped
 	// the lane would have started and reached the listener, which records it as it arrives, so the
 	// wait fails at once on a second send there, and a send queued on any other lane fails naming it.
+	// A try that finds the send on no lane reads every lane and the comments queued on it.
 	s1 := laneKey{recipient: "session:s1"}
-	lane := testwait.Until(t, "the second comment's send queued behind the first on s1's lane", func() (laneKey, bool) {
+	var lane laneKey
+	testwait.Until(t, "the second comment's send queued behind the first on s1's lane", func() (string, bool) {
 		if sent := state.sent(); len(sent) > 1 {
 			t.Fatalf("sends while the first was still held = %#v, want the first alone: the second started beside it", sent)
 		}
 		served.mentions.mu.Lock()
 		defer served.mentions.mu.Unlock()
-		for lane, sends := range served.mentions.lanes {
+		lanes := make([]string, 0, len(served.mentions.lanes))
+		for queuedOn, sends := range served.mentions.lanes {
+			comments := make([]string, 0, len(sends))
 			for _, send := range sends {
 				if send.comment.ID == second.ID {
-					return lane, true
+					lane = queuedOn
+					return fmt.Sprintf("queued on %+v", queuedOn), true
 				}
+				comments = append(comments, send.comment.ID)
 			}
+			lanes = append(lanes, fmt.Sprintf("%+v holds %v", queuedOn, comments))
 		}
-		return laneKey{}, false
+		slices.Sort(lanes)
+		return fmt.Sprintf("the second comment %s is queued on no lane; the lanes: %v", second.ID, lanes), false
 	})
 	if lane != s1 {
 		t.Fatalf("the second comment's send is queued on lane %+v, want %+v, the lane that holds the first", lane, s1)

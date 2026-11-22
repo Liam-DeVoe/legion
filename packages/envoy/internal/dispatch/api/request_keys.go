@@ -427,11 +427,12 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 }
 
 // renewRequestKey moves claim's lease to now and reports whether the key is still claim's: a row
-// another attempt took over, or one already answered or released, is left as it is. A renewal that
-// fails is logged and tried again at the next tick: the lease lapses only once renewals have
+// another attempt took over, or one already answered or released, is left as it is. The renewal
+// waits at most keyedBookkeeping on the server's clock, the clock its ticker runs on. A renewal
+// that fails is logged and tried again at the next tick: the lease lapses only once renewals have
 // failed for all of it.
 func (s *server) renewRequestKey(claim requestKeyClaim) bool {
-	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), keyedBookkeeping)
+	ctx, cancel := s.clock.WithTimeout(store.WithTransactionTracking(context.Background()), keyedBookkeeping)
 	defer cancel()
 	tag, err := s.deps.Store.Pool.Exec(ctx, `
 		update request_keys set leased_at = now()

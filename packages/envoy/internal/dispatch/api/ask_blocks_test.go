@@ -724,18 +724,22 @@ type askBlockEventPayload struct {
 }
 
 // awaitAskBlockEvent polls the issue's events until one of eventType names the ask block
-// blockID, failing the test when settlement never emits it.
+// blockID, failing the test when settlement never emits it. A try that finds none reads the types
+// of the events it read and the blocks the eventType events among them name.
 func awaitAskBlockEvent(t *testing.T, handler http.Handler, issueKey, eventType, blockID string) askBlockEventPayload {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("a %s event for ask block %q", eventType, blockID), func() (askBlockEventPayload, bool) {
+	var found askBlockEventPayload
+	testwait.Until(t, fmt.Sprintf("a %s event for ask block %q", eventType, blockID), func() (string, bool) {
 		events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/events?limit=50", nil, "alice")
 		if events.Code != http.StatusOK {
 			t.Fatalf("read events: status=%d body=%s", events.Code, events.Body.String())
 		}
+		var types, blocks []string
 		for _, event := range decodeBody[[]struct {
 			Type    string          `json:"type"`
 			Payload json.RawMessage `json:"payload"`
 		}](t, events) {
+			types = append(types, event.Type)
 			if event.Type != eventType {
 				continue
 			}
@@ -743,12 +747,19 @@ func awaitAskBlockEvent(t *testing.T, handler http.Handler, issueKey, eventType,
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				t.Fatalf("decode %s payload: %v", eventType, err)
 			}
-			if payload.BlockID != nil && *payload.BlockID == blockID {
-				return payload, true
+			if payload.BlockID == nil {
+				blocks = append(blocks, "<none>")
+				continue
 			}
+			if *payload.BlockID == blockID {
+				found = payload
+				return "found", true
+			}
+			blocks = append(blocks, *payload.BlockID)
 		}
-		return askBlockEventPayload{}, false
+		return fmt.Sprintf("events %v; the %s events among them name blocks %v", types, eventType, blocks), false
 	})
+	return found
 }
 
 // Settlement runs after the edit's own version has consumed the room's pending authors; the ask

@@ -286,7 +286,8 @@ func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
 // waitForPollingBackend waits for the backend lockMigrations is polling the key on and returns
 // its pid. It reads that backend's last statement rather than a running one (waitForRunningStatement),
 // because a poll refused the key is idle between two tries and that is most of the time it
-// waits.
+// waits. A try that finds no such backend reads what the database's other backends are doing
+// (databaseBackends).
 //
 // The statement it looks for is spelled in two halves on purpose: this query's own text reaches
 // pg_stat_activity as well, and a pooled connection that has just run it must not be mistaken
@@ -294,7 +295,8 @@ func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
 func waitForPollingBackend(t *testing.T, store *Store) int32 {
 	t.Helper()
 	ctx := context.Background()
-	return testwait.Until(t, "a backend polling for the migration key", func() (int32, bool) {
+	var polling int32
+	testwait.Until(t, "a backend polling for the migration key", func() (string, bool) {
 		var pids []int32
 		rows, err := store.Pool.Query(ctx, `select pid from pg_stat_activity
 			where datname = current_database() and pid <> pg_backend_pid()
@@ -316,10 +318,27 @@ func waitForPollingBackend(t *testing.T, store *Store) int32 {
 			t.Fatalf("%d backends of this database polled for the migration key; this test expects one", len(pids))
 		}
 		if len(pids) == 1 {
-			return pids[0], true
+			polling = pids[0]
+			return fmt.Sprintf("backend %d polls for the key", polling), true
 		}
-		return 0, false
+		return "no backend polls for the key; the database's other backends: " + databaseBackends(t, store), false
 	})
+	return polling
+}
+
+// databaseBackends names the backends of store's database other than the caller's, each by its
+// pid, state, wait event and statement, or "none": a wait's reading of what the backends were
+// doing when the one it waits for was not among them.
+func databaseBackends(t *testing.T, store *Store) string {
+	t.Helper()
+	var backends string
+	if err := store.Pool.QueryRow(context.Background(), `
+		select coalesce(string_agg(format('%s %s (wait %s/%s): %s', pid, state, wait_event_type, wait_event, left(query, 100)), '; ' order by pid), 'none')
+		from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()
+	`).Scan(&backends); err != nil {
+		t.Fatalf("read the database's backends: %v", err)
+	}
+	return backends
 }
 
 // migrationKeyLockPids are the sessions holding or waiting for an advisory lock on

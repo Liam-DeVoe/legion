@@ -406,15 +406,21 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			sender.mu.Unlock()
 			sender.unpark(item.lane())
 
-			parked := testwait.Until(t, "the send to go or park", func() (bool, bool) {
+			// A try that finds neither reads the send's lane and the goroutines serving lanes.
+			var parked bool
+			testwait.Until(t, "the send to go or park", func() (string, bool) {
 				select {
 				case <-tried:
-					return false, true
+					return "tried", true
 				case <-timers:
-					return true, true
+					parked = true
+					return "parked", true
 				default:
-					return false, false
 				}
+				sender.mu.Lock()
+				defer sender.mu.Unlock()
+				return fmt.Sprintf("no try and no park's timer; %d sends wait on the send's lane, and %d goroutines serve lanes",
+					len(sender.lanes[item.lane()]), sender.serving), false
 			})
 			if parked != tc.readFail {
 				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)

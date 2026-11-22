@@ -129,27 +129,48 @@ func QueuedBehind(ctx context.Context, holder pgx.Tx, pid uint32) (bool, error) 
 // queues behind a lock holder's transaction owns (QueuedBehind), polling through holder's own
 // connection. It returns the call's answer and true if the call answers on answered before its
 // backend has queued: such a call never waited on the lock, and the caller fails with what it
-// answered. It fails the test if neither ever happens.
+// answered. It fails the test if neither ever happens, naming the locks the caller's backend
+// waited for at the last try and the backends that blocked each (lockWaitsOf).
 func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answered <-chan T) (T, bool) {
 	t.Helper()
-	type outcome struct {
-		answer   T
-		answered bool
-	}
+	var answer T
+	var early bool
 	ctx := context.Background()
-	got := testwait.Until(t, fmt.Sprintf("backend %d to queue behind the lock, or its call to answer", pid), func() (outcome, bool) {
+	testwait.Until(t, fmt.Sprintf("backend %d to queue behind the lock, or its call to answer", pid), func() (string, bool) {
 		select {
-		case answer := <-answered:
-			return outcome{answer: answer, answered: true}, true
+		case answer = <-answered:
+			early = true
+			return "answered", true
 		default:
 		}
 		queued, err := QueuedBehind(ctx, holder, pid)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return outcome{}, queued
+		if queued {
+			return "queued", true
+		}
+		waits, err := lockWaitsOf(ctx, holder, pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("not queued behind the holder and not answered; backend %d waits for: %s", pid, waits), false
 	})
-	return got.answer, got.answered
+	return answer, early
+}
+
+// lockWaitsOf names each lock the backend pid waits for, by its type and mode, and the backends
+// that block it (pg_blocking_pids), or answers "no lock". It reads pg_locks through holder's own
+// connection, as QueuedBehind does and for the same reason.
+func lockWaitsOf(ctx context.Context, holder pgx.Tx, pid uint32) (string, error) {
+	var waits string
+	if err := holder.QueryRow(ctx, `
+		select coalesce(string_agg(format('%s %s, blocked by backends %s', locktype, mode, pg_blocking_pids(pid)), '; '), 'no lock')
+		from pg_locks where pid = $1 and not granted
+	`, pid).Scan(&waits); err != nil {
+		return "", fmt.Errorf("inspect database locks: %w", err)
+	}
+	return waits, nil
 }
 
 // WaitForStatementBehind waits until a session of database whose current statement is exactly

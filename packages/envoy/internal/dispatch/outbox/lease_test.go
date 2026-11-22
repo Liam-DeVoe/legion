@@ -370,9 +370,11 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	waitsSince := func() []armedWait { return armedWaits()[armedBefore:] }
 	backedOff, _ := appendBackedOffEvent(t, other, backOffAhead)
 	inserted := time.Now()
-	testwait.Until(t, "the outbox arming a wait for the back-off its insert woke it to", func() ([]armedWait, bool) {
-		since := waitsSince()
-		return since, len(since) > 0
+	testwait.Until(t, "the outbox arming a wait for the back-off its insert woke it to", func() (string, bool) {
+		if since := waitsSince(); len(since) > 0 {
+			return fmt.Sprintf("armed %v", since), true
+		}
+		return fmt.Sprintf("no wait armed since the insert (%d before it); the outbox has made %d claims", armedBefore, outbox.claims.Load()), false
 	})
 	rest.await(t, "the outbox resting with the back-off's wait armed")
 	since := waitsSince()
@@ -418,9 +420,15 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 			made, since[0].wait.Round(time.Millisecond))
 	}
 	timers.Advance(since[0].wait)
-	published := testwait.Until(t, "the back-off published by the scan its wait woke", func() (*time.Time, bool) {
-		at, _ := backOffState(t, database, backedOff.ID)
-		return at, at != nil
+	var published *time.Time
+	testwait.Until(t, "the back-off published by the scan its wait woke", func() (string, bool) {
+		at, ahead := backOffState(t, database, backedOff.ID)
+		if at != nil {
+			published = at
+			return fmt.Sprintf("published at %s", at), true
+		}
+		return fmt.Sprintf("unpublished, still ahead on the database's clock: %t; %d claims since the wait was armed; timers armed: %v",
+			ahead, outbox.claims.Load()-since[0].claims, timers.Armed()), false
 	})
 	if since := waitsSince(); len(since) != 1 {
 		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, want 1: %v", len(since), since)
