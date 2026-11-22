@@ -825,14 +825,18 @@ test("a device login's request the broker gave no answer carries the failure's c
     unavailable.stop(true);
   }
   const endpoint = "http://127.0.0.1:1/v1/oauth/device_authorization";
+  // openid-client's ClientError reads `code` from its options at run time, but its declaration gives
+  // it Error's constructor, whose options hold a cause alone, so each code is set on the error after.
   const timedOut = brokerRefusal(
     "ask for a code for",
     "this machine's device login",
     endpoint,
-    new ClientError("operation timed out", {
-      code: "OAUTH_TIMEOUT",
-      cause: new DOMException("The operation timed out.", "TimeoutError"),
-    })
+    Object.assign(
+      new ClientError("operation timed out", {
+        cause: new DOMException("The operation timed out.", "TimeoutError"),
+      }),
+      { code: "OAUTH_TIMEOUT" }
+    )
   );
   expect(timedOut).toBeInstanceOf(BrokerTradeFailedError);
   expect(timedOut.message).toEndWith(": OAUTH_TIMEOUT");
@@ -842,7 +846,7 @@ test("a device login's request the broker gave no answer carries the failure's c
     "ask for a code for",
     "this machine's device login",
     endpoint,
-    new ClientError("parsing error occured", { code: "OAUTH_PARSE_ERROR" })
+    Object.assign(new ClientError("parsing error occured"), { code: "OAUTH_PARSE_ERROR" })
   );
   expect(unparsed).toMatchObject({ code: undefined });
 });
