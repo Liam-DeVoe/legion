@@ -120,13 +120,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1003",
-      "text": "kind: phase-assignment\nissue: ALPHA-1003\ntitle: \"1e5\"\nphase: implementing\npull_request: alpha-works/alpha-tower#61\nreviewed_head: 9dcfaa9ffcd00978a4e025017f31436fb441171f\n<body by=\"reviewer\" at=\"2026-11-18T09:39:00Z\">\ntflklis barwr zqvief omrbngru kghs hhgbzwlg tjtd oaqzsrrlk odwuty eookwfuwx jbm zikioz zzg whpltvuhw sov mdew fma maxwyuy qmutewi ycazmv eqrvb kpvwochxg cecneofb vaxz zhowh glzw umsvwpoqf lyd gweurug itixupbcg wxhx vqfw kdzjjvssd hwubsx nsmhedm trz koaslxy bjrpuyw ompu aebjw erez zbs orrdmqk vipokbtbb bmgeym yzstrhp ivk lge wjf covugynf ulshp usfdopmj kzhaj vxhyexq osjia yhlrb qpwszuzql rscgqq fwf kevbaocjd cmypht shru rrkj lkxcqwcsl eyozxswx vtdvrym jygemky sraq sicgunukh rjsrx pqn ihmcy foseamt zoxupwavc pkb qazstcepf akx btyufdkm wmbg qttibv hjglmvtrl aqzvculf hnhfct jorrw mzjywsah bdwxkurox csnryyjv bmfyuhjp vjnfdc peroap uils mjeb iuia vrmelkl gfzduusx ulxa mhdulom bzp zcgjh sjkburqa uhdecgeza vyuxjlfof vpbdz bwlegsedf iyzwdb ihjjud dgwfmpn uqjr job angvldb qxaq wfddshxm hnukchuz zwigscd dhuosnxkb gmwqjl rbpqaaqzc qsfj aieaw cuafg qsyxoft otkmzoh izyyt edj jyti mxji thgkcdm gyzqhezu\n</body>",
+      "text": "kind: phase-assignment\nissue: ALPHA-1003\ntitle: \"1e5\"\nphase: implementing\npull_request: alpha-works/alpha-tower#61\nreviewed_head: 9dcfaa9ffcd00978a4e025017f31436fb441171f\nreview_id: 3100000001\n<body by=\"reviewer\" at=\"2026-11-18T09:39:00Z\">\ntflklis barwr zqvief omrbngru kghs hhgbzwlg tjtd oaqzsrrlk odwuty eookwfuwx jbm zikioz zzg whpltvuhw sov mdew fma maxwyuy qmutewi ycazmv eqrvb kpvwochxg cecneofb vaxz zhowh glzw umsvwpoqf lyd gweurug itixupbcg wxhx vqfw kdzjjvssd hwubsx nsmhedm trz koaslxy bjrpuyw ompu aebjw erez zbs orrdmqk vipokbtbb bmgeym yzstrhp ivk lge wjf covugynf ulshp usfdopmj kzhaj vxhyexq osjia yhlrb qpwszuzql rscgqq fwf kevbaocjd cmypht shru rrkj lkxcqwcsl eyozxswx vtdvrym jygemky sraq sicgunukh rjsrx pqn ihmcy foseamt zoxupwavc pkb qazstcepf akx btyufdkm wmbg qttibv hjglmvtrl aqzvculf hnhfct jorrw mzjywsah bdwxkurox csnryyjv bmfyuhjp vjnfdc peroap uils mjeb iuia vrmelkl gfzduusx ulxa mhdulom bzp zcgjh sjkburqa uhdecgeza vyuxjlfof vpbdz bwlegsedf iyzwdb ihjjud dgwfmpn uqjr job angvldb qxaq wfddshxm hnukchuz zwigscd dhuosnxkb gmwqjl rbpqaaqzc qsfj aieaw cuafg qsyxoft otkmzoh izyyt edj jyti mxji thgkcdm gyzqhezu\n</body>",
       "spans": [
         {
           "part": "block",
           "name": "body",
-          "start": 171,
-          "end": 1126
+          "start": 193,
+          "end": 1148
         }
       ]
     },
@@ -138,13 +138,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2003",
-      "text": "kind: phase-assignment\nissue: BRAVO-2003\ntitle: \"0123\"\nphase: implementing\npull_request: bravo-labs/bravo-yard#62\nreviewed_head: b940b154754895ba4f16d50c52caa4581568e657\n<body by=\"a-person-caucc\" at=\"2027-04-07T16:54:00Z\" rest=\"500\">\nreif nbp ufn mnjn lnksdqx sim cdkneiwib yytff pcmv snnpcv oiuvwz whpcg pqafp vmjmxrbu mzii mgys yktd cqxs mhsjv bece wgu aphwe zymoimsz jgi kqjpn ycns sgyes verxsoly dqj abmje rpy wgwi snzbr bxbek ildvrmdde ccdi lzm okugxxdbk kuthoknf tyobrr xoudx ygrzciyz luuh jbtqbgif himvbp ags yxwvvuh ggctlykql mqeuoul tvagubsac dztazvp cqjfm botv bhtcdhdj zsbugbsvq bkw qalerqg mfhd kztoshfe nbzswoa wmaaihdw eutxcjv cbdhgotf nwtx ojbt ofdekt fwmr qjxafu xkxsgyibq qurlfw twyc efhw zicyjw pvirmucco rycdzcai aigey ddnk hvtm aath gmwmuwkn hrr bqnnnt nyacadus qomb ghukawc ppwdiu fsxwkrg gdy vaodgktqf cksjks oniq eom bng owhgqtum fbdg cggzuffmu ocypbh zmkrjjz xgb kwqvuddxy ffgie yll fzl oyi lhy uuq pbdepqaih tnctjns qraubrbes xex tjxcme iojx nalksid eaqn znseo skfxid rftspax dkwy tream xhvj amzjazb gasri ekx ynnoak bldiwo qwzvomxxi mmll dxez ikqkoaz fnazjs vqoceubeg rcm cnzhcrerv bsbxtx smke ndbldtome qku iekpp gjyrwarrh ozeuiid aci pfw dtsnrjaz xlkiq fhsz lzoc slhq hevope jcqrnp wuwrvuvdq llctbzono mfujgmiuh ochngpkdz mofc gzz dhdqw hxw fjxy rbjdv whnoqohh jvxad istjtfdah wzbelt zwngbklf cds belgqkrre sfydpn qgeyzuih uziydacci euokfsfa mnh zdy iuexug cagnukey hrb xfdswb swgy vzepbkcwo pgodhwns mjifwze lrqew rrllr syj lumko ntozyum hbh uktvgcx txa zvm rhpure qreg xmauypsqd rzosdorie dnsvz maxup ttwy fyqaic rsnolyf lmy wwfvu aebpcekbo pnjnp gwv bvaqdwv bhlc vphr sumhfm sutseisjj cgjjndy rthaiqzqh nnipso fqqcxmnx ifqoue orpetidxj trhumyba rzk ndo ofyhupqor oougg hdenfr ywnaosu inwope ajmtdeecg qakb eewwrk dbxhdbxui flm wbbxzie pvspr hjsrrox diy vunyy xotc rizfikr cfgzxu ddbo nmb gwpn afqpbar zvtc pyhigdf tluyy ubasksa nkay ifqfh bkzchiyl ssydwpo wms nutloni xjlmohciq aysqgwgex ytvxtap eoc mufcwhiz afxihnmd jxkegv prgje xyfdlngks rca hmk baqae rojgso wpnr plsrrghup blgn nerukqhkz nuxn trzj unsxtytbp fzv dqmqv zmmoq dbjfucgd owyj xcaeupma foiz rnkcsignc xpkgjqwd zjwff ldvgppkra nwpvqoli tjyr dbn dryvcw ndc jnnkpg lususd gjxgtciik msyostde nljp gbdib bvbvbk ssyimaed ltjk muxcbaskx uys uiosoj iwz wegipp vjv yljb paidh zpqo mjmbmvfzq ijw ylpbek bwket aiqzy ogc rzpky obsveuhbr dvpoti katovlgk jfez xcivmdt apdiye flb qcmqzt jqglkc rvxhf zaoki nyxnyjswo fjx kbybygjgy svtbk vfsvzv nliqb zvnbuhpj gcttgbanj nis vzshqpfz fzxyf mxlriez xwv yaaoyha hmcqok qzlpskqp gmor ztypdxgho tbdckzone ophafdfn hamg ulotqmy wihji kda tlenrfpc omgi oosw aeollbx nnlrqvcpp rjlpyz pwuqrfvsd kyvzvto stshr ltrxqqpi fcceoywt bpulbnkjx gbtkdr uwg aknvq mzobop bxtvq sshixqfs igyby lgwo vqponqt twqhg zguy nudyy ayki vxuxkon tuwo mklxo hkg xwsyapfe ufurvcfu kkmx awdbzm umptdwj croktuow qzqrc whp ixbloxnu wzsqwrwv iii ffnenqddt uigxobhh adv enz zybn dzosqk vkp rthoqqff zgxmmti rdpvdw patewi rluffsero otjkg ppmvskp xtwnj zaaddlon ueouptyr rvw hkjhwij ffzqnuw rgembdcab eovkbstl gswufho bdrdxbidg hmrosjda ndtr rglfw ecezry mtci drvcq epdemjbfm flib rcaftqyp jurlz jwkhu khayvqebz sesva vjw ziwi duyzdsu dkntp zykkew ceoqh lwb zywanjud xcalvskbk net nohly dgafmkz owxmsn fhda pynbox afaygqtr eqo ocws munfudhcx wbbechow kurevhvcg ocq meaapbf xqpenatpb dmcn wjexq repy jyvxa zlckr agx beelh vrzzt frlawlwtp xwxmkkir kangh sto kfojjr ysngygf pgu qxazjpr qelstiq lama pptthmt pykod pfq cresinpc wxnsd wbmphnsl gwlzx eemdtv ikkjxhj sslipou ilo pqrv lvxel ccvhcu pozaa glngz xcau hhbwaw nnrg nkxi usvdx xvkyfsm dcijbvfrw eeinkd qimavgik ombvvgtrt ffhdep vtwqss ykwawqmra yddacy rovqul kcprwxyl kgjanxan uieyftpvq brdol iefo lpxumzba kjjinm rii tvrsrj zzljdt txlip xydgvtx irydrwy rxr zqtnz vffbmxau leetnjznq nzb vgdyd scnvrefev wftokyol uknzi rxgf jofx vzgjzz jhs cdrt oxi rafijurtm ekijzb ysqhevgcc lvejeexil pku xwm xaz dlr qeilbdqi dosc eoz vedirmwi odperuprc gndw bxk aus cgz cqtzqs dqwfo jci zchh mcnowyu znzzgjhr fzcydues zbrovr xkehxvi uvp wcv jadzuw xznritwcp sgstbwm nnhnofy xrjfng xuvoinyyw xbv ronr usbrmvmp ivjwv levslc lxqwrkb rdtvayr wul pfd wqyinv rylbx fauq hyepxndhk kgnuajklx vqr jgfj ncv dndbj fik tbkxsilc ygdqglrem uens lyynq hubqom enzbszgxf znaefc lwhdi rwz ilv ftkkfitfd ihwprprus apcvxwssu ui\n</body>",
+      "text": "kind: phase-assignment\nissue: BRAVO-2003\ntitle: \"0123\"\nphase: implementing\npull_request: bravo-labs/bravo-yard#62\nreviewed_head: b940b154754895ba4f16d50c52caa4581568e657\nreview_id: 3100000002\n<body by=\"a-person-caucc\" at=\"2027-04-07T16:54:00Z\" rest=\"500\">\nreif nbp ufn mnjn lnksdqx sim cdkneiwib yytff pcmv snnpcv oiuvwz whpcg pqafp vmjmxrbu mzii mgys yktd cqxs mhsjv bece wgu aphwe zymoimsz jgi kqjpn ycns sgyes verxsoly dqj abmje rpy wgwi snzbr bxbek ildvrmdde ccdi lzm okugxxdbk kuthoknf tyobrr xoudx ygrzciyz luuh jbtqbgif himvbp ags yxwvvuh ggctlykql mqeuoul tvagubsac dztazvp cqjfm botv bhtcdhdj zsbugbsvq bkw qalerqg mfhd kztoshfe nbzswoa wmaaihdw eutxcjv cbdhgotf nwtx ojbt ofdekt fwmr qjxafu xkxsgyibq qurlfw twyc efhw zicyjw pvirmucco rycdzcai aigey ddnk hvtm aath gmwmuwkn hrr bqnnnt nyacadus qomb ghukawc ppwdiu fsxwkrg gdy vaodgktqf cksjks oniq eom bng owhgqtum fbdg cggzuffmu ocypbh zmkrjjz xgb kwqvuddxy ffgie yll fzl oyi lhy uuq pbdepqaih tnctjns qraubrbes xex tjxcme iojx nalksid eaqn znseo skfxid rftspax dkwy tream xhvj amzjazb gasri ekx ynnoak bldiwo qwzvomxxi mmll dxez ikqkoaz fnazjs vqoceubeg rcm cnzhcrerv bsbxtx smke ndbldtome qku iekpp gjyrwarrh ozeuiid aci pfw dtsnrjaz xlkiq fhsz lzoc slhq hevope jcqrnp wuwrvuvdq llctbzono mfujgmiuh ochngpkdz mofc gzz dhdqw hxw fjxy rbjdv whnoqohh jvxad istjtfdah wzbelt zwngbklf cds belgqkrre sfydpn qgeyzuih uziydacci euokfsfa mnh zdy iuexug cagnukey hrb xfdswb swgy vzepbkcwo pgodhwns mjifwze lrqew rrllr syj lumko ntozyum hbh uktvgcx txa zvm rhpure qreg xmauypsqd rzosdorie dnsvz maxup ttwy fyqaic rsnolyf lmy wwfvu aebpcekbo pnjnp gwv bvaqdwv bhlc vphr sumhfm sutseisjj cgjjndy rthaiqzqh nnipso fqqcxmnx ifqoue orpetidxj trhumyba rzk ndo ofyhupqor oougg hdenfr ywnaosu inwope ajmtdeecg qakb eewwrk dbxhdbxui flm wbbxzie pvspr hjsrrox diy vunyy xotc rizfikr cfgzxu ddbo nmb gwpn afqpbar zvtc pyhigdf tluyy ubasksa nkay ifqfh bkzchiyl ssydwpo wms nutloni xjlmohciq aysqgwgex ytvxtap eoc mufcwhiz afxihnmd jxkegv prgje xyfdlngks rca hmk baqae rojgso wpnr plsrrghup blgn nerukqhkz nuxn trzj unsxtytbp fzv dqmqv zmmoq dbjfucgd owyj xcaeupma foiz rnkcsignc xpkgjqwd zjwff ldvgppkra nwpvqoli tjyr dbn dryvcw ndc jnnkpg lususd gjxgtciik msyostde nljp gbdib bvbvbk ssyimaed ltjk muxcbaskx uys uiosoj iwz wegipp vjv yljb paidh zpqo mjmbmvfzq ijw ylpbek bwket aiqzy ogc rzpky obsveuhbr dvpoti katovlgk jfez xcivmdt apdiye flb qcmqzt jqglkc rvxhf zaoki nyxnyjswo fjx kbybygjgy svtbk vfsvzv nliqb zvnbuhpj gcttgbanj nis vzshqpfz fzxyf mxlriez xwv yaaoyha hmcqok qzlpskqp gmor ztypdxgho tbdckzone ophafdfn hamg ulotqmy wihji kda tlenrfpc omgi oosw aeollbx nnlrqvcpp rjlpyz pwuqrfvsd kyvzvto stshr ltrxqqpi fcceoywt bpulbnkjx gbtkdr uwg aknvq mzobop bxtvq sshixqfs igyby lgwo vqponqt twqhg zguy nudyy ayki vxuxkon tuwo mklxo hkg xwsyapfe ufurvcfu kkmx awdbzm umptdwj croktuow qzqrc whp ixbloxnu wzsqwrwv iii ffnenqddt uigxobhh adv enz zybn dzosqk vkp rthoqqff zgxmmti rdpvdw patewi rluffsero otjkg ppmvskp xtwnj zaaddlon ueouptyr rvw hkjhwij ffzqnuw rgembdcab eovkbstl gswufho bdrdxbidg hmrosjda ndtr rglfw ecezry mtci drvcq epdemjbfm flib rcaftqyp jurlz jwkhu khayvqebz sesva vjw ziwi duyzdsu dkntp zykkew ceoqh lwb zywanjud xcalvskbk net nohly dgafmkz owxmsn fhda pynbox afaygqtr eqo ocws munfudhcx wbbechow kurevhvcg ocq meaapbf xqpenatpb dmcn wjexq repy jyvxa zlckr agx beelh vrzzt frlawlwtp xwxmkkir kangh sto kfojjr ysngygf pgu qxazjpr qelstiq lama pptthmt pykod pfq cresinpc wxnsd wbmphnsl gwlzx eemdtv ikkjxhj sslipou ilo pqrv lvxel ccvhcu pozaa glngz xcau hhbwaw nnrg nkxi usvdx xvkyfsm dcijbvfrw eeinkd qimavgik ombvvgtrt ffhdep vtwqss ykwawqmra yddacy rovqul kcprwxyl kgjanxan uieyftpvq brdol iefo lpxumzba kjjinm rii tvrsrj zzljdt txlip xydgvtx irydrwy rxr zqtnz vffbmxau leetnjznq nzb vgdyd scnvrefev wftokyol uknzi rxgf jofx vzgjzz jhs cdrt oxi rafijurtm ekijzb ysqhevgcc lvejeexil pku xwm xaz dlr qeilbdqi dosc eoz vedirmwi odperuprc gndw bxk aus cgz cqtzqs dqwfo jci zchh mcnowyu znzzgjhr fzcydues zbrovr xkehxvi uvp wcv jadzuw xznritwcp sgstbwm nnhnofy xrjfng xuvoinyyw xbv ronr usbrmvmp ivjwv levslc lxqwrkb rdtvayr wul pfd wqyinv rylbx fauq hyepxndhk kgnuajklx vqr jgfj ncv dndbj fik tbkxsilc ygdqglrem uens lyynq hubqom enzbszgxf znaefc lwhdi rwz ilv ftkkfitfd ihwprprus apcvxwssu ui\n</body>",
       "spans": [
         {
           "part": "block",
           "name": "body",
-          "start": 170,
-          "end": 4242
+          "start": 192,
+          "end": 4264
         }
       ]
     },
@@ -1060,21 +1060,21 @@
       "kind": "relaunch-note",
       "variant": "alone",
       "sample": 1,
-      "reader": "controller",
+      "reader": "architect",
       "form": "task",
       "urgency": "",
-      "issue": "",
-      "text": "kind: relaunch-note\nissue: \"\"\ncause: \"the process died: zye jwpolzr kawefknql gkgo tykxoo myncap\"\nin_turn: true\nstopped[2]: subagent,async-job"
+      "issue": "ALPHA-1060",
+      "text": "kind: relaunch-note\nissue: ALPHA-1060\ncause: \"the process died: zye jwpolzr kawefknql gkgo tykxoo myncap\"\nin_turn: true\nin_flight_tool_calls: never_answered\nturn_background_work: gone\nstopped[2]: subagent,async-job"
     },
     {
       "kind": "relaunch-note",
       "variant": "alone",
       "sample": 2,
-      "reader": "controller",
+      "reader": "architect",
       "form": "task",
       "urgency": "",
-      "issue": "",
-      "text": "kind: relaunch-note\nissue: \"\"\ncause: \"the process died: miceqoxus gzpg epex appdtbhc lcxxx rkpnz\"\nin_turn: true\nstopped[1]: claude-background-task\nreported: true"
+      "issue": "BRAVO-2060",
+      "text": "kind: relaunch-note\nissue: BRAVO-2060\ncause: \"the process died: miceqoxus gzpg epex appdtbhc lcxxx rkpnz\"\nin_turn: true\nin_flight_tool_calls: never_answered\nturn_background_work: gone\nstopped[1]: claude-background-task\nreported: true"
     },
     {
       "kind": "relaunch-note",
@@ -1084,7 +1084,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1060",
-      "text": "kind: relaunch-note\nissue: ALPHA-1060\ncause: \"the process died: zye jwpolzr kawefknql gkgo tykxoo myncap\"\nin_turn: true\ntask_turn: true\nstopped[2]: subagent,async-job\ntask: true"
+      "text": "kind: relaunch-note\nissue: ALPHA-1060\ncause: \"the process died: zye jwpolzr kawefknql gkgo tykxoo myncap\"\nin_turn: true\ntask_turn: true\nin_flight_tool_calls: never_answered\nturn_background_work: gone\nstopped[2]: subagent,async-job\ntask: true"
     },
     {
       "kind": "relaunch-note",
@@ -1094,7 +1094,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2060",
-      "text": "kind: relaunch-note\nissue: BRAVO-2060\ncause: \"the process died: miceqoxus gzpg epex appdtbhc lcxxx rkpnz\"\nin_turn: true\nstopped[1]: claude-background-task\nreported: true\ntask: true"
+      "text": "kind: relaunch-note\nissue: BRAVO-2060\ncause: \"the process died: miceqoxus gzpg epex appdtbhc lcxxx rkpnz\"\nin_turn: true\nin_flight_tool_calls: never_answered\nturn_background_work: gone\nstopped[1]: claude-background-task\nreported: true\ntask: true"
     },
     {
       "kind": "cut-turn-note",
@@ -1216,7 +1216,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1060",
-      "text": "kind: out-of-memory-note\nissue: ALPHA-1060\nreason: OOMKilled"
+      "text": "kind: out-of-memory-note\nissue: ALPHA-1060\nreason: OOMKilled\nread_before_heavy_work: \"skill://legion-worker/references/tools.md\""
     },
     {
       "kind": "out-of-memory-note",
@@ -1226,7 +1226,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2060",
-      "text": "kind: out-of-memory-note\nissue: BRAVO-2060\nreason: OOMKilled"
+      "text": "kind: out-of-memory-note\nissue: BRAVO-2060\nreason: OOMKilled\nread_before_heavy_work: \"skill://legion-worker/references/tools.md\""
     },
     {
       "kind": "provider-error-note",
@@ -1536,7 +1536,7 @@
         "issue": "ALPHA-1100",
         "failure": {
           "cause": "launch_failures",
-          "detail": "zhbaxx puuo urqypz wvp fygofx jzm nbjep fwfnkask dtmxngt jmp / ygrz ydeqwuhzh cugn ckz ekocwd milzg qebi sppva my",
+          "detail": "zhbaxx puuo urqypz wvp fygofx jzm nbjep fwfnkask dtmxngt jmp\\nygrz ydeqwuhzh cugn ckz ekocwd milzg qebi sppva my",
           "launchFailures": {
             "count": 3,
             "limit": 4
@@ -1553,8 +1553,8 @@
             "count": 1,
             "limit": 2
           },
-          "death": "gone: isqmjq sichhjrsz enkklhep mkfcac vicxuce; last lines of tester: / czcati kgk nagwr suhjfe cjdtj zlvehvk tb / bmjqgilif plrrvtng jubjtzv ieh",
-          "startFailure": "rgwd hsjo hnozyhne eimobh vddswsld rfjp  / jpak fkwj djvr yth pymo iccrxr"
+          "death": "gone: isqmjq sichhjrsz enkklhep mkfcac vicxuce; last lines of tester:\\nczcati kgk nagwr suhjfe cjdtj zlvehvk tb\\n\\nbmjqgilif plrrvtng jubjtzv ieh C:\\\\new",
+          "startFailure": "rgwd hsjo hnozyhne eimobh vddswsld rfjp \\r\\njpak fkwj djvr yth pymo iccrxr"
         }
       }
     },
@@ -1574,7 +1574,7 @@
         "issue": "BRAVO-2100",
         "failure": {
           "cause": "launch_failures",
-          "detail": "szm hltqz ohjmj msgknnlj mfhfvimn lzmagis qnbg voyykjqqw trn / ooxhzxs pvl qqsvzdtll oswsz favvvarv alzekfszi way",
+          "detail": "szm hltqz ohjmj msgknnlj mfhfvimn lzmagis qnbg voyykjqqw trn\\nooxhzxs pvl qqsvzdtll oswsz favvvarv alzekfszi way",
           "launchFailures": {
             "count": 4,
             "limit": 5
@@ -1591,8 +1591,8 @@
             "count": 1,
             "limit": 2
           },
-          "death": "gone: axg swnoor otrq qynsbmfbb chyx jtaw gjfq; last lines of tester: / clvbkgoo ccxmm ohlbkk urygp umuvtjhjw cp / eoklin gskua omjy jvpv hapud j",
-          "startFailure": "thkxmp zai wwkjtyukn gbgp ncjitbao tocil / satrw uxvlyju avgfm zvsbk gzjb"
+          "death": "gone: axg swnoor otrq qynsbmfbb chyx jtaw gjfq; last lines of tester:\\nclvbkgoo ccxmm ohlbkk urygp umuvtjhjw cp\\n\\neoklin gskua omjy jvpv hapud j C:\\\\new",
+          "startFailure": "thkxmp zai wwkjtyukn gbgp ncjitbao tocil\\r\\nsatrw uxvlyju avgfm zvsbk gzjb"
         }
       }
     },
@@ -1784,7 +1784,8 @@
           "death": "xcgax ulfpcyfbo egqjqvsvy bsvfoclm kejby",
           "startFailure": "filutejox sie aimb jaxjulucu l"
         },
-        "working": "reviewing"
+        "working": "reviewing",
+        "nothing_held": true
       }
     },
     {
@@ -1823,7 +1824,8 @@
           "death": "kgntl nisu gouifpik wphxgso euoystl iiez",
           "startFailure": "kdrmsnl bgkkgudr hieaeli kukjj"
         },
-        "working": "reviewing"
+        "working": "reviewing",
+        "nothing_held": true
       }
     },
     {
@@ -2193,7 +2195,7 @@
         "issue": "ALPHA-1100",
         "failure": {
           "cause": "launch_failures",
-          "detail": "zhbaxx puuo urqypz wvp fygofx jzm nbjep fwfnkask dtmxngt jmp / ygrz ydeqwuhzh cugn ckz ekocwd milzg qebi sppva my",
+          "detail": "zhbaxx puuo urqypz wvp fygofx jzm nbjep fwfnkask dtmxngt jmp\\nygrz ydeqwuhzh cugn ckz ekocwd milzg qebi sppva my",
           "launchFailures": {
             "count": 3,
             "limit": 4
@@ -2210,8 +2212,8 @@
             "count": 1,
             "limit": 2
           },
-          "death": "gone: isqmjq sichhjrsz enkklhep mkfcac vicxuce; last lines of tester: / czcati kgk nagwr suhjfe cjdtj zlvehvk tb / bmjqgilif plrrvtng jubjtzv ieh",
-          "startFailure": "rgwd hsjo hnozyhne eimobh vddswsld rfjp  / jpak fkwj djvr yth pymo iccrxr"
+          "death": "gone: isqmjq sichhjrsz enkklhep mkfcac vicxuce; last lines of tester:\\nczcati kgk nagwr suhjfe cjdtj zlvehvk tb\\n\\nbmjqgilif plrrvtng jubjtzv ieh C:\\\\new",
+          "startFailure": "rgwd hsjo hnozyhne eimobh vddswsld rfjp \\r\\njpak fkwj djvr yth pymo iccrxr"
         },
         "hold": "failure"
       }
@@ -2232,7 +2234,7 @@
         "issue": "BRAVO-2100",
         "failure": {
           "cause": "launch_failures",
-          "detail": "szm hltqz ohjmj msgknnlj mfhfvimn lzmagis qnbg voyykjqqw trn / ooxhzxs pvl qqsvzdtll oswsz favvvarv alzekfszi way",
+          "detail": "szm hltqz ohjmj msgknnlj mfhfvimn lzmagis qnbg voyykjqqw trn\\nooxhzxs pvl qqsvzdtll oswsz favvvarv alzekfszi way",
           "launchFailures": {
             "count": 4,
             "limit": 5
@@ -2249,8 +2251,8 @@
             "count": 1,
             "limit": 2
           },
-          "death": "gone: axg swnoor otrq qynsbmfbb chyx jtaw gjfq; last lines of tester: / clvbkgoo ccxmm ohlbkk urygp umuvtjhjw cp / eoklin gskua omjy jvpv hapud j",
-          "startFailure": "thkxmp zai wwkjtyukn gbgp ncjitbao tocil / satrw uxvlyju avgfm zvsbk gzjb"
+          "death": "gone: axg swnoor otrq qynsbmfbb chyx jtaw gjfq; last lines of tester:\\nclvbkgoo ccxmm ohlbkk urygp umuvtjhjw cp\\n\\neoklin gskua omjy jvpv hapud j C:\\\\new",
+          "startFailure": "thkxmp zai wwkjtyukn gbgp ncjitbao tocil\\r\\nsatrw uxvlyju avgfm zvsbk gzjb"
         },
         "hold": "failure"
       }
@@ -4574,6 +4576,8 @@
         "relaunch": {
           "cause": "the process died: vsqbeuy rtjtbpavw phnvitpms sb",
           "in_turn": true,
+          "in_flight_tool_calls": "never_answered",
+          "turn_background_work": "gone",
           "reported": true
         },
         "words": {
@@ -4853,7 +4857,9 @@
         },
         "relaunch": {
           "cause": "the process died: unks zpw wsv auwzyelsj wzy aso",
-          "in_turn": true
+          "in_turn": true,
+          "in_flight_tool_calls": "never_answered",
+          "turn_background_work": "gone"
         },
         "words": {
           "catch_up.kept.decisions[0].answer": {
@@ -9642,6 +9648,11 @@
             "pull_request": "",
             "pull_request_state": ""
           }
+        ],
+        "decide": [
+          "ask_role_what_it_waits_on",
+          "move_issue_back_a_phase",
+          "park_tree"
         ]
       }
     },
@@ -9680,6 +9691,11 @@
             "pull_request": "",
             "pull_request_state": ""
           }
+        ],
+        "decide": [
+          "ask_role_what_it_waits_on",
+          "move_issue_back_a_phase",
+          "park_tree"
         ]
       }
     },
@@ -10694,6 +10710,48 @@
       }
     },
     {
+      "kind": "memory-kill",
+      "variant": "kernel-protected",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "memory-kill on ALPHA-1260",
+      "payload": {
+        "kind": "memory-kill",
+        "issue": "ALPHA-1260",
+        "cause": "kernel-protected",
+        "process": "node-tjyz ",
+        "pid": 4001,
+        "size": "4.00 GiB",
+        "pod_memory": "8.00 GiB",
+        "limit": "8.00 GiB",
+        "heavy_work_runs": "where_deployment_instructions_say"
+      }
+    },
+    {
+      "kind": "memory-kill",
+      "variant": "kernel-protected",
+      "sample": 2,
+      "reader": "architect",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "memory-kill on BRAVO-2260",
+      "payload": {
+        "kind": "memory-kill",
+        "issue": "BRAVO-2260",
+        "cause": "kernel-protected",
+        "process": "node-uiini",
+        "pid": 4002,
+        "size": "5.00 GiB",
+        "pod_memory": "9.00 GiB",
+        "limit": "8.00 GiB",
+        "heavy_work_runs": "where_deployment_instructions_say"
+      }
+    },
+    {
       "kind": "hook-prompt",
       "variant": "fired",
       "sample": 1,
@@ -10953,6 +11011,7 @@
         "head_conflicts_with_base": true,
         "phase": "testing",
         "why": "required-check-not-green",
+        "checks_on_head": "none",
         "push_to": "legion/ALPHA-1260"
       }
     },
@@ -11109,7 +11168,8 @@
         "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
         "landed": "0021af707958b12430f752a50c33ea0e573ce0b1",
         "conflicts_with": "main-knboh",
-        "phase": "accepting"
+        "phase": "accepting",
+        "review_asked": "approve_landed_by_sha_with_footer_naming_it_or_request_changes"
       }
     },
     {
@@ -11128,7 +11188,8 @@
         "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
         "landed": "8d840a7ad632e1238e91608047b7a44d198b2dc2",
         "conflicts_with": "main-esxue",
-        "phase": "merging"
+        "phase": "merging",
+        "review_asked": "approve_landed_by_sha_with_footer_naming_it_or_request_changes"
       }
     }
   ]

@@ -73,15 +73,33 @@ type StatusState struct {
 // whether that turn was the turn of the task that follows, each kind of background work that
 // stopped, whether background work of no named kind stopped, whether a report of the cut turn's
 // background work is on record, and whether the facts go in front of a task.
+//
+// A turn cut off also says what it lost, whatever the report says (InFlightToolCalls and
+// TurnBackgroundWork, set exactly where InTurn is): its tool calls in flight were never answered,
+// and the subagents and background jobs of that turn are gone. dispatch://INFRA-714's R6 has the
+// first prompt after a relaunch say that its tool calls and subagents were lost, as main's note
+// said of every turn cut off ("Your tool calls in flight were never answered." and "The subagents
+// and background jobs of that turn are gone."), and R8 of dispatch://INFRA-3686 keeps both as
+// fields.
 type RelaunchFacts struct {
-	Cause      string   `json:"cause,omitempty"`
-	InTurn     bool     `json:"in_turn,omitempty"`
-	TaskTurn   bool     `json:"task_turn,omitempty"`
-	Stopped    []string `json:"stopped,omitempty"`
-	Background bool     `json:"background,omitempty"`
-	Reported   bool     `json:"reported,omitempty"`
-	Task       bool     `json:"task,omitempty"`
+	Cause              string   `json:"cause,omitempty"`
+	InTurn             bool     `json:"in_turn,omitempty"`
+	TaskTurn           bool     `json:"task_turn,omitempty"`
+	InFlightToolCalls  string   `json:"in_flight_tool_calls,omitempty"`
+	TurnBackgroundWork string   `json:"turn_background_work,omitempty"`
+	Stopped            []string `json:"stopped,omitempty"`
+	Background         bool     `json:"background,omitempty"`
+	Reported           bool     `json:"reported,omitempty"`
+	Task               bool     `json:"task,omitempty"`
 }
+
+// What a relaunch's facts say a turn cut off lost (RelaunchFacts.InFlightToolCalls and
+// TurnBackgroundWork): its tool calls in flight were never answered, and the subagents and
+// background jobs of that turn are gone.
+const (
+	ToolCallsNeverAnswered = "never_answered"
+	TurnBackgroundWorkGone = "gone"
+)
 
 // shortDigestLength is the count of hexadecimal characters of a short digest.
 const shortDigestLength = 12

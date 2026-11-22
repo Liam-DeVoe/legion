@@ -1132,9 +1132,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
-		died := WorkerDied(issue.Key, fact.Role, issue.Phase, failure)
-		died.Working = working
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, WorkerDiedNotWorking(issue.Key, fact.Role, issue.Phase, working, failure))
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -1169,6 +1167,17 @@ func WorkerDied(issue string, role claim.Role, at phase.Phase, failure *record.N
 		Failure: failureOnOneLine(failure)}
 }
 
+// WorkerDiedNotWorking is the worker-died notice of a role whose claim failed while issue works a
+// phase the role does not work (claimFailed): the notice WorkerDied builds, with the phase the
+// issue works (Working) and that the failure holds nothing (NothingHeld), so the phase runs on
+// and nothing waits on the architect's retry_or_escalate, as main's notice said ("; nothing is
+// held"), which dispatch://INFRA-2009's R5 keeps.
+func WorkerDiedNotWorking(issue string, role claim.Role, at, working phase.Phase, failure *record.NoticeFailure) texts.WorkerDiedRecord {
+	died := WorkerDied(issue, role, at, failure)
+	died.Working, died.NothingHeld = working, true
+	return died
+}
+
 // HeldFailureNotice is the held notice of issue that role's claim failed in the phase from, which
 // it now holds, with the failure where the daemon recorded its cause (texts.HoldFailure), its
 // texts on one line (failureOnOneLine).
@@ -1178,22 +1187,25 @@ func HeldFailureNotice(issue string, role claim.Role, from phase.Phase, failure 
 }
 
 // failureOnOneLine is failure as a notice carries it: its sentence, its account of the death and
-// its account of the start each whole and on one line (lineJoined), by the rule the worker-died's
-// own detail and death follow. The account of a death ends in a tail of the role's log over many
-// lines, a sentence of refused turns holds the provider's message, and a start's account can run
-// over lines too, so as they came each would be a value over several lines, which the card that
-// shows the notice can write only with an escaped new line. It is a copy where any of the three
-// holds a line break, and failure itself, nil included, where none does: the failure the caller
-// holds is never written, so the held notice and the worker-died built from one value name the
-// same failure, and the claim keeps each text as it came (supervise.Claim.Failure,
+// its account of the start each whole and on one line with every character kept (lineEscaped),
+// each line break and each backslash written as Go writes it in a string, so two texts never read
+// alike, a blank line stays in its place, and a reader that unescapes the value gets the text as
+// it came, as main carried it whole. The account of a death ends in a tail of the role's log over
+// many lines, a sentence of refused turns holds the provider's message, and a start's account can
+// run over lines too, so as they came each would be a value over several lines, which the card
+// that shows the notice can write only with an escaped new line. It is a copy where any of the
+// three needs escaping (needsEscape), and failure itself, nil included, where none does: the
+// failure the caller holds is never written, so the held notice and the worker-died built from one
+// value name the same failure, and the claim keeps each text as it came (supervise.Claim.Failure,
 // LastDeathCause and LastStartFailure), where the claim's failure record that read_record serves
-// reads it (api's FailureViewOf).
+// reads it (api's FailureViewOf). The worker-died's own detail, death and pod end beside it are
+// written the same way, the first two cut to a bound (oneBoundedLine).
 func failureOnOneLine(failure *record.NoticeFailure) *record.NoticeFailure {
-	if failure == nil || !hasLineBreak(failure.Detail) && !hasLineBreak(failure.Death) && !hasLineBreak(failure.StartFailure) {
+	if failure == nil || !needsEscape(failure.Detail) && !needsEscape(failure.Death) && !needsEscape(failure.StartFailure) {
 		return failure
 	}
 	written := *failure
-	written.Detail, written.Death, written.StartFailure = lineJoined(failure.Detail), lineJoined(failure.Death), lineJoined(failure.StartFailure)
+	written.Detail, written.Death, written.StartFailure = lineEscaped(failure.Detail), lineEscaped(failure.Death), lineEscaped(failure.StartFailure)
 	return &written
 }
 
@@ -1204,14 +1216,16 @@ func failureOnOneLine(failure *record.NoticeFailure) *record.NoticeFailure {
 // cause no role chose — an eviction for ephemeral storage above all — or, where the claim holds no
 // pod end and failed because its process died, the first line of the runtime's account of that
 // death (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death) as its death. Any of them the
-// fact does not hold is left out. The sentence and the death are each one line and cut to a bound
-// (oneBoundedLine), and the notice says where it cut one (DetailCut, DeathCut), so neither a
-// provider's message nor a role's log writes a line of its own into the notice, and the notice's
-// size is one this package chose; the pod end is the kubelet's reason and message, bounded where it
-// is built (runtime.PodEnd). Each is a field of its own, so nothing in the sentence reads as the
-// pod end or the death: a provider's message that ends in `the pod ended: Evicted: …` stays inside
-// the detail. All three are persisted on the claim, so the boot's replay of a failure no daemon
-// applied says the same thing (the daemon's replayTerminal).
+// fact does not hold is left out. The sentence and the death are each one line, with each line
+// break and backslash written as Go writes it in a string, and cut to a bound (oneBoundedLine),
+// and the notice says where it cut one (DetailCut, DeathCut), so neither a provider's message nor
+// a role's log writes a line of its own into the notice, and the notice's size is one this package
+// chose; the pod end is the kubelet's reason and message, bounded where it is built
+// (runtime.PodEnd) and written on one line the same way (lineEscaped). Each is a field of its
+// own, so nothing in the sentence reads as the pod end or the death: a provider's message that
+// ends in `the pod ended: Evicted: …` stays inside the detail. All three are persisted on the
+// claim, so the boot's replay of a failure no daemon applied says the same thing (the daemon's
+// replayTerminal).
 //
 // The death is named only where there is no pod end, because on a pod the cluster ended it is
 // the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
@@ -1248,7 +1262,7 @@ func diedOf(died *texts.WorkerDiedRecord, fact intake.ClaimFailed, failureCarrie
 	}
 	switch {
 	case fact.PodEnd != "":
-		died.PodEnd = lineJoined(fact.PodEnd)
+		died.PodEnd = lineEscaped(fact.PodEnd)
 	case !failureCarried && fact.Cause == supervise.CauseDied && fact.Death != "":
 		died.Death, died.DeathCut = oneBoundedLine(deathFirstLine(fact.Death))
 	}
@@ -1256,40 +1270,35 @@ func diedOf(died *texts.WorkerDiedRecord, fact intake.ClaimFailed, failureCarrie
 
 // oneBoundedLine is a text the daemon did not write as a worker-died carries it in a field of
 // its own — the supervisor's sentence, the first line of the runtime's account of a death — and
-// whether the bound cut it: the text on one line (lineJoined) and cut to runtime.PodEndRunes
-// runes, the bound the pod end beside it is cut to. For a run of refused turns the sentence holds
-// the provider's message as the role's own plugin posted it (supervise's refusalCause, api's
-// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
-// record's `detail` keep it whole (noticeFailure). The text is cut at the bound before its line
-// breaks are written, so no more of a mebibyte is read than the bound keeps, and again after,
-// since " / " is longer than the break it replaces. The cut falls between two characters, never
-// inside one.
+// whether the bound cut it: the text on one line with every character it keeps written as
+// lineEscaped writes it (a line break and a backslash as Go writes them in a string), cut so that
+// what it carries is at most runtime.PodEndRunes runes, the bound the pod end beside it is cut to.
+// For a run of refused turns the sentence holds the provider's message as the role's own plugin
+// posted it (supervise's refusalCause, api's turn-outcome route), which can run to a mebibyte
+// over many lines; the claim and a failure record's `detail` keep it whole (noticeFailure). The
+// text is read a character at a time and the read stops at the bound, so no more of a mebibyte is
+// read than the bound keeps. The cut falls between two characters of the text, never inside one
+// nor inside the escape of one, so the carried text never ends in half an escape.
 func oneBoundedLine(text string) (string, bool) {
-	cut := false
-	if at := runeOffset(text, runtime.PodEndRunes); at < len(text) {
-		text, cut = text[:at], true
+	if at := runeOffset(text, runtime.PodEndRunes); at == len(text) && !needsEscape(text) {
+		return text, false
 	}
-	text = lineJoined(text)
-	if at := runeOffset(text, runtime.PodEndRunes); at < len(text) {
-		text, cut = text[:at], true
+	var b strings.Builder
+	runes := 0
+	for _, r := range text {
+		piece := string(r)
+		if escapedInLine(r) {
+			quoted := strconv.QuoteRune(r)
+			piece = quoted[1 : len(quoted)-1]
+		}
+		width := utf8.RuneCountInString(piece)
+		if runes+width > runtime.PodEndRunes {
+			return b.String(), true
+		}
+		b.WriteString(piece)
+		runes += width
 	}
-	return text, cut
-}
-
-// lineJoined is text as a worker-died writes a text of the runtime's or the supervisor's on one
-// line: each run of line breaks between two pieces of the text written as " / " and any at either
-// end dropped. The pod end goes through it too, since a kubelet's message is the cluster's text and
-// nothing holds it to one line. Text with no line break is returned as it is.
-func lineJoined(text string) string {
-	if !hasLineBreak(text) {
-		return text
-	}
-	return strings.Join(strings.FieldsFunc(text, isLineBreak), " / ")
-}
-
-// hasLineBreak is whether text holds a character that breaks a line (isLineBreak).
-func hasLineBreak(text string) bool {
-	return strings.IndexFunc(text, isLineBreak) >= 0
+	return b.String(), false
 }
 
 // lineEscaped is text on one line with every character of it kept, two different texts never

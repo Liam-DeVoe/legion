@@ -1860,7 +1860,7 @@ func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 		{MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Reviewing, PullRequest: 42, Why: ConflictCheckNotGreen},
 			texts.MergeForwardAskRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardAsk, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
 				Head: "c0de", ConflictsWith: "main", HeadConflictsWithBase: true, Phase: phase.Reviewing, Why: string(ConflictCheckNotGreen),
-				PushTo: claim.IssueBranch("LEGION-208")}},
+				ChecksOnHead: texts.ChecksOnHeadNone, PushTo: claim.IssueBranch("LEGION-208")}},
 		{MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 			texts.MergeForwardHoldRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardHold, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
 				Head: "c0de", Phase: phase.Merging, Why: string(ConflictMergeNext)}},
@@ -1869,7 +1869,7 @@ func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 				Head: "c0de", Landed: "d00d", ConflictsWith: "main", Phase: phase.Testing}},
 		{MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
 			texts.MergeForwardReviewRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardReview, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
-				Head: "c0de", Landed: "d00d", ConflictsWith: "main", Phase: phase.Retro}},
+				Head: "c0de", Landed: "d00d", ConflictsWith: "main", Phase: phase.Retro, ReviewAsked: texts.MergeForwardReviewAsked}},
 	} {
 		if got := tc.message.Record("LEGION-208", "sjawhar/legion"); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("the merge-forward %s's record is %+v, want %+v", tc.message.Step, got, tc.want)

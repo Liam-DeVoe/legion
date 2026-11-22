@@ -1126,12 +1126,14 @@ type StuckRound struct {
 // move says how the phase was reached (PhaseMove). A worker's backward move names the phase it
 // left, and its role's words go in the reason block by that role, whole: Dispatch's own bound
 // already holds them, since the move posts them on the issue (backwardReasonRefusal). A review's
-// request for changes names the head it reviewed, and its whole body goes in the body block by
-// its author, cut to texts.OneAct where that author is a person and whole where it is the
-// reviewer, as the reviewer's own review always went. A retry names who retried, with the
-// architect's words in the reason block, and a retry of a stuck review round names the round's
-// cause, its head and the review that ends it; for a round GitHub will not merge from, the merge
-// state and the head's checks and commit statuses, as the review-stuck notice names them.
+// request for changes names the head it reviewed and GitHub's id of the review, and its whole
+// body goes in the body block by its author, cut to texts.OneAct where that author is a person and
+// whole where it is the reviewer, as the reviewer's own review always went: the id is where a cut
+// body is read whole (dispatch://INFRA-3686's R1, "the item's reference"). A retry names who
+// retried, with the architect's words in the reason block, and a retry of a stuck review round
+// names the round's cause, its head and the review that ends it; for a round GitHub will not merge
+// from, the merge state and the head's checks and commit statuses, as the review-stuck notice
+// names them.
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
@@ -1158,7 +1160,7 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 		task.MovedBackFrom = move.BackFrom
 		task.Reason = wordsOf(move.Reason, string(phase.RoleFor(move.BackFrom)), move.At)
 	case move.Review != nil:
-		task.ReviewedHead = move.Review.Head
+		task.ReviewedHead, task.ReviewID = move.Review.Head, move.Review.ID
 		task.Body = rejectionBody(*move.Review)
 	case move.Retried != "":
 		task.Retried = move.Retried

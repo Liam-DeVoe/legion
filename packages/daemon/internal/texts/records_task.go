@@ -44,8 +44,11 @@ const (
 // names, the tester's verdict, and the pull request.
 //
 // A move back names the phase it came from (MovedBackFrom), and the words of the role that moved
-// it go in the reason block, by that role. A review's rejection names the head it reviewed, and
-// the review's body goes in the body block, by its author. A merger's task at a head that a merge
+// it go in the reason block, by that role. A review's rejection names the head it reviewed and
+// GitHub's id of the review (ReviewID, absent where the decision an older daemon recorded holds
+// none), and the review's body goes in the body block, by its author: where the block names a
+// rest, or that more follows, the whole body is that review's on the pull request, the item's
+// reference dispatch://INFRA-3686's R1 has a cut text carry. A merger's task at a head that a merge
 // forward left after the review, while the review that landing asked of the reviewer stands for
 // that head, names the base the merge brought forward (MergedForward) and that head as the one
 // whose approval it waits for (ApprovalOwed). A retry names who retried (architect, operator, or a
@@ -70,6 +73,7 @@ type PhaseAssignmentRecord struct {
 	PullRequest       string            `json:"pull_request,omitempty"`
 	MovedBackFrom     phase.Phase       `json:"moved_back_from,omitempty"`
 	ReviewedHead      string            `json:"reviewed_head,omitempty"`
+	ReviewID          int64             `json:"review_id,omitempty"`
 	MergedForward     string            `json:"merged_forward,omitempty"`
 	ApprovalOwed      string            `json:"approval_owed,omitempty"`
 	Head              string            `json:"head,omitempty"`
@@ -194,10 +198,13 @@ const (
 // (NotMetRequirement and UnobservedRequirement, the Look words) and, beside it on the last look
 // alone, the rest of that look's rule (Pending and Unreported, the LastLook words), the pull
 // request, the merge commit (absent where the record holds none), and the check's bound with the
-// time of the last look. The bound is in whole days (BoundDays) where it is whole days, and
-// otherwise in hours (BoundHours), a decimal as production_check_hours takes one, since a bound of
-// another length cut to whole days is no bound the check has. The pending summary that named the
-// wake goes in the summary block, by the checking role.
+// time it comes due (LastLook, the check's bound_at). The last look starts at that time, or, while
+// a look is still open then, a look's bound later each time (workflow's checkBound), so LastLook
+// is when the bound comes due rather than when the last look starts. The bound is in whole days
+// (BoundDays) where it is whole days, and otherwise in hours (BoundHours), a decimal as
+// production_check_hours takes one, since a bound of another length cut to whole days is no bound
+// the check has. The pending summary that named the wake goes in the summary block, by the
+// checking role.
 type CheckLookRecord struct {
 	Issue                 string    `json:"-"`
 	Title                 string    `json:"-"`

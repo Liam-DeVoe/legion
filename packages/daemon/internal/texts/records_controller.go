@@ -228,12 +228,31 @@ type ProviderErrorsRecord struct {
 }
 
 // TreeStalledRecord is the notice that a tree has stopped (admit's tellStalledTrees): how long the
-// tree has been quiet, and each issue the workflow still runs.
+// tree has been quiet, each issue the workflow still runs, and what the controller decides among
+// once it has read the tree (Decide, TreeStalledChoices): ask a role what it waits on, move an
+// issue back a phase, or park the tree. dispatch://INFRA-2560's R5 has the notice tell the
+// controller to read the tree and decide among those three, as main's notice said ("Read the tree
+// and decide what it needs. You can ask a role what it waits on. You can move an issue back a
+// phase. You can park the tree."), and R8 of dispatch://INFRA-3686 keeps that step as a field.
 type TreeStalledRecord struct {
 	NoticeHead
 	QuietFor string       `json:"quiet_for"`
 	Members  []TreeMember `json:"members"`
+	Decide   []string     `json:"decide"`
 }
+
+// The choices a tree-stalled notice names for the controller once it has read the tree
+// (TreeStalledRecord.Decide).
+const (
+	DecideAskRole  = "ask_role_what_it_waits_on"
+	DecideMoveBack = "move_issue_back_a_phase"
+	DecidePark     = "park_tree"
+)
+
+// TreeStalledChoices is what a tree-stalled notice decides among, in main's order: ask a role what
+// it waits on, move an issue back a phase, park the tree. Each call is a list of its own, so no
+// notice holds a list another can write.
+func TreeStalledChoices() []string { return []string{DecideAskRole, DecideMoveBack, DecidePark} }
 
 // TreeMember is one issue of a stopped tree: its key, its phase, the role whose turn it is (empty
 // where no role works the phase), and its pull request with that pull request's state (each empty

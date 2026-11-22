@@ -357,7 +357,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		issue := record.Issue{Key: r.key(3), Title: hostile[2], Phase: phase.Implementing}
 		head := r.sha("rejected/head")
 		review := record.ReviewDecision{State: "changes_requested", Body: r.words("rejected/body", 900), Head: head,
-			Author: "legion-reviewer[bot]", SubmittedAt: r.at(9)}
+			Author: "legion-reviewer[bot]", SubmittedAt: r.at(9), ID: 3100000000 + int64(r.n)}
 		by, body := string(claim.RoleReviewer), review.Body
 		if r.n == 2 {
 			// A person's review is cut to texts.OneAct, the rest counted.
@@ -366,7 +366,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		}
 		b.task(r, "review-rejected", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, pr(60+r.n, "rejected"),
 			workflow.PhaseMove{Review: &review}),
-			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "reviewed_head", head,
+			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "reviewed_head", head, "review_id", review.ID,
 				"pull_request", texts.PullRequestRef(r.repo, 60+r.n), "body", body, "body@by", by, "body@at", r.at(9)))
 	}
 	// A merger started in merging at the head a merge forward landed after the review, while the
@@ -841,8 +841,10 @@ func (b *goldenBuild) startParts(r goldenRendering) {
 		Kinds: [][]string{{"subagent", "async-job"}, {"claude-background-task"}}[r.n-1], Background: r.n == 2}
 	b.task(r, "in-front-of-a-task", claim.RoleImplementer, issue, supervise.RelaunchNote(issue, ended, true),
 		goldenWant("issue", issue, "cause", cause, "in_turn", true, "task", true))
-	b.task(r, "alone", claim.RoleController, "", supervise.RelaunchNote("", ended, false),
-		goldenWant("issue", "", "cause", cause, "in_turn", true))
+	// Alone, as queueRelaunch delivers it to a claim that holds no task: a worker or an architect,
+	// never the controller, whose start message carries the note in front of it.
+	b.task(r, "alone", claim.RoleArchitect, issue, supervise.RelaunchNote(issue, ended, false),
+		goldenWant("issue", issue, "cause", cause, "in_turn", true))
 
 	b.task(r, "cut-turn", claim.RoleTester, issue, supervise.CutTurnNote(issue, cause), goldenWant("issue", issue, "cause", cause))
 	b.task(r, "cut-turn-no-cause", claim.RoleReviewer, r.key(61), supervise.CutTurnNote(r.key(61), ""), goldenWant("issue", r.key(61), "cause", ""))

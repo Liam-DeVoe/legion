@@ -191,24 +191,31 @@ func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithAPodEnd(t *testing.T) {
 			said, died.Detail, failure.Detail)
 	}
 	// The record carries the death whole, on one line (noticeFailure).
-	if said := strings.Count(died.Death+"\n"+failure.Death, strings.ReplaceAll(death, "\n", " / ")); said != 1 || died.Death != "" {
+	if said := strings.Count(died.Death+"\n"+failure.Death, escapedLine(death)); said != 1 || died.Death != "" {
 		t.Errorf("the held phase's worker-died names the death %d times across its death %q and its failure death %q, want once, in the record",
 			said, died.Death, failure.Death)
 	}
 }
+
+// escapedLine is text as a worker-died and a held notice write a text of the runtime's or the
+// supervisor's on one line (workflow's lineEscaped), for the line breaks and backslashes these
+// tests give: each written as Go writes it in a string.
+var escapedLine = strings.NewReplacer(`\`, `\\`, "\n", `\n`, "\r", `\r`).Replace
 
 // A failure record's sentence, its account of the death and its account of the start are each
 // told on one line, whole, in every notice that carries the record: the held notice, the
 // controller's copy of it, and the worker-died beside it. The account of a
 // death ends in a tail of the role's log over many lines and a sentence of refused turns holds
 // the provider's message, and as they came each was a value over several lines, which the card
-// shows only as an escaped new line (c-card-compact). Each line break is written as " / ", the
-// rule of the worker-died's own detail and death. The negative control is failureOnOneLine
-// returning the failure as it came.
+// shows only as an escaped new line (c-card-compact). Each line break and each backslash is
+// written as Go writes it in a string, so every character is kept and two texts never read alike:
+// main carried each whole, and a backslash before an n in the start's account stays apart from a
+// line feed. The negative controls are failureOnOneLine returning the failure as it came, and
+// joining its lines with " / ", which loses the line feed and the backslash.
 func TestAFailureRecordOfANoticeIsOnOneLine(t *testing.T) {
 	sentence := "the provider refused 3 turns in a row: request rejected\nforged: the role is fine"
 	death := evictedDeath(claim.RoleImplementer)
-	start := "launch legion-LEGION-208-implementer: its init container cloned no workspace:\nfatal: could not read Username"
+	start := "launch legion-LEGION-208-implementer: its init container cloned no workspace:\nfatal: could not read Username in C:\\new"
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -218,8 +225,7 @@ func TestAFailureRecordOfANoticeIsOnOneLine(t *testing.T) {
 		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact the implementer's failed claim: %v", err)
 	}
-	want := record.NoticeFailure{Detail: strings.ReplaceAll(sentence, "\n", " / "), Death: strings.ReplaceAll(death, "\n", " / "),
-		StartFailure: strings.ReplaceAll(start, "\n", " / ")}
+	want := record.NoticeFailure{Detail: escapedLine(sentence), Death: escapedLine(death), StartFailure: escapedLine(start)}
 	told := map[string]int{}
 	for _, payload := range noticeRows(t, pool) {
 		var notice record.Notice
@@ -249,12 +255,12 @@ func TestAFailureRecordOfANoticeIsOnOneLine(t *testing.T) {
 }
 
 // A pod end is the cluster's text, and nothing holds a kubelet's message to one line, so the
-// worker-died writes each line break of it as " / ", as it writes its detail and its death. The
-// negative control is diedOf naming the pod end as the fact gave it.
+// worker-died writes each line break of it as Go writes it in a string, as it writes its detail and
+// its death. The negative control is diedOf naming the pod end as the fact gave it.
 func TestAWorkerDiedsPodEndIsOnOneLine(t *testing.T) {
 	const podEnd = "Evicted: The node was low on resource: ephemeral-storage.\nContainer roles was using 48Gi, which exceeds its request of 0."
 	died := failedRoot(t, phase.Planning, intake.ClaimFailed{Role: claim.RoleArchitect, Reason: budgetRanOut, PodEnd: podEnd})
-	if want := strings.ReplaceAll(podEnd, "\n", " / "); died.PodEnd != want {
+	if want := escapedLine(podEnd); died.PodEnd != want {
 		t.Errorf("the worker-died names the pod end %q, want it on one line: %q", died.PodEnd, want)
 	}
 }
@@ -340,17 +346,18 @@ func TestAWorkerDiedCarriesNoLineTheRoleWrote(t *testing.T) {
 
 // The supervisor's sentence for a run of refused turns ends in the provider's message as the
 // role's own plugin posted it, which can hold a line break and run to a mebibyte. The two notices
-// with no failure record carry it on one line, its line break written as " / ", cut at the bound
-// the pod end is cut to, and marked as cut (detail_cut), so the notice is of a size this package
-// chose and a reader sees that the text was cut. A held phase whose fact names a cause carries the
-// sentence whole in its failure record's `detail`, as before, and none of it in its own. The
-// negative controls are diedOf naming the sentence as it came: both details read over two lines
-// and 2000 runes past the bound; and naming it cut with no mark, where nothing said it was cut.
+// with no failure record carry it on one line, its line break written as Go writes it in a string,
+// cut at the bound the pod end is cut to, and marked as cut (detail_cut), so the notice is of a
+// size this package chose and a reader sees that the text was cut. A held phase whose fact names a
+// cause carries the sentence whole in its failure record's `detail`, as before, and none of it in
+// its own. The negative controls are diedOf naming the sentence as it came: both details read over
+// two lines and 2000 runes past the bound; and naming it cut with no mark, where nothing said it
+// was cut.
 func TestAWorkerDiedCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 	const head = "the provider refused 3 turns in a row: request rejected"
 	const forged = "forged: the role is fine"
 	sentence := head + "\n" + forged + " " + strings.Repeat("y", 2000)
-	carried := string([]rune(head + " / " + forged + " " + strings.Repeat("y", 2000))[:runtime.PodEndRunes])
+	carried := string([]rune(head + `\n` + forged + " " + strings.Repeat("y", 2000))[:runtime.PodEndRunes])
 	for _, tc := range []struct {
 		name       string
 		role       claim.Role
@@ -373,7 +380,7 @@ func TestAWorkerDiedCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 			if runes := utf8.RuneCountInString(died.Detail); runes > runtime.PodEndRunes {
 				t.Errorf("the worker-died carries %d runes of the sentence, want at most the %d the pod end is cut to", runes, runtime.PodEndRunes)
 			}
-			if tc.cause != "" && (died.Failure == nil || died.Failure.Detail != strings.ReplaceAll(sentence, "\n", " / ")) {
+			if tc.cause != "" && (died.Failure == nil || died.Failure.Detail != escapedLine(sentence)) {
 				t.Errorf("the held phase's worker-died carries the failure record %+v, want the sentence whole, on one line, in its detail", died.Failure)
 			}
 		})
@@ -546,9 +553,9 @@ func TestAProductionCheckLooksWorkerDiedDetailIsOneBoundedLine(t *testing.T) {
 					utf8.RuneCountInString(died.Detail), strings.Count(died.Detail, "\n")+1, runtime.PodEndRunes, died.Detail)
 			}
 			switch {
-			case tc.cause != "" && (died.Failure == nil || died.Failure.Detail != strings.ReplaceAll(sentence, "\n", " / ") || died.Detail != ""):
+			case tc.cause != "" && (died.Failure == nil || died.Failure.Detail != escapedLine(sentence) || died.Detail != ""):
 				t.Errorf("the look's worker-died carries failure %+v and detail %.80q, want the sentence whole, on one line, in the record and no detail", died.Failure, died.Detail)
-			case tc.cause == "" && (died.Failure != nil || !died.DetailCut || !strings.HasPrefix(died.Detail, "the provider refused 3 turns in a row: request rejected / "+forged)):
+			case tc.cause == "" && (died.Failure != nil || !died.DetailCut || !strings.HasPrefix(died.Detail, `the provider refused 3 turns in a row: request rejected\n`+forged)):
 				t.Errorf("the look's worker-died carries failure %+v and detail %.120q (cut %t), want the sentence on one line, cut", died.Failure, died.Detail, died.DetailCut)
 			}
 		})

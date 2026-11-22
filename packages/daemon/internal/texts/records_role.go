@@ -110,6 +110,13 @@ const MemoryKillHeavyWork = "where_deployment_instructions_say"
 // (record.PullRequest.Base); the conflict is stated all the same. dispatch://INFRA-4374's R0 and
 // R1 have the ask say that the head conflicts with its base and that the implementer merges the
 // base forward and pushes, and R8 of dispatch://INFRA-3686 keeps both as fields.
+//
+// An ask whose why is that a check the base requires has not passed on the head
+// (record.ConflictCheckNotGreen) also says that GitHub runs no check on that head
+// (ChecksOnHead, ChecksOnHeadNone), so the required check cannot pass on it until a merge lands:
+// R0 of dispatch://INFRA-4374 has the ask say that GitHub runs no required check on it, as main's
+// ask said for that why ("GitHub runs no checks on a head that conflicts with its base"), and R8
+// of dispatch://INFRA-3686 keeps it as a field.
 type MergeForwardAskRecord struct {
 	RoleHead
 	PullRequest           string      `json:"pull_request"`
@@ -118,8 +125,13 @@ type MergeForwardAskRecord struct {
 	HeadConflictsWithBase bool        `json:"head_conflicts_with_base"`
 	Phase                 phase.Phase `json:"phase"`
 	Why                   string      `json:"why"`
+	ChecksOnHead          string      `json:"checks_on_head,omitempty"`
 	PushTo                string      `json:"push_to"`
 }
+
+// ChecksOnHeadNone is what a merge-forward ask's checks_on_head says (MergeForwardAskRecord):
+// GitHub runs no check on a head that conflicts with its base.
+const ChecksOnHeadNone = "none"
 
 // MergeForwardHoldRecord is the message to the tester, the reviewer or the merger that holds the
 // phase that the implementer merges the base forward in the workspace they share
@@ -148,7 +160,13 @@ type MergeForwardLandedRecord struct {
 
 // MergeForwardReviewRecord is the ask to the reviewer of an issue past its review to read the
 // merge forward that landed and approve the new head or request changes (record.MergeForwardMessage,
-// its review): the facts of the landed, the phase being the one the issue stands in.
+// its review): the facts of the landed, the phase being the one the issue stands in, and the
+// review it asks for (ReviewAsked, MergeForwardReviewAsked): an approval of the new head by its
+// SHA, with the Legion footer of the review naming that head, or a request for changes, as main's
+// review said ("Then approve the new head %s by its SHA, with the Legion footer of your review
+// naming that head, or request changes."). dispatch://INFRA-4374's R1 has the reviewer asked to
+// read the merge and approve the new head, and R8 of dispatch://INFRA-3686 keeps the ask as a
+// field.
 type MergeForwardReviewRecord struct {
 	RoleHead
 	PullRequest   string      `json:"pull_request"`
@@ -156,7 +174,13 @@ type MergeForwardReviewRecord struct {
 	Landed        string      `json:"landed"`
 	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Phase         phase.Phase `json:"phase"`
+	ReviewAsked   string      `json:"review_asked"`
 }
+
+// MergeForwardReviewAsked is the review a merge-forward review asks for
+// (MergeForwardReviewRecord.ReviewAsked): approve the landed head by its SHA, with the Legion
+// footer naming that head, or request changes.
+const MergeForwardReviewAsked = "approve_landed_by_sha_with_footer_naming_it_or_request_changes"
 
 // HookPromptRecord is a hook of the deployment that fired on a move back of the issue
 // (record.HookPrompt). It is published as text (Text), in an order that the hook's own words fix

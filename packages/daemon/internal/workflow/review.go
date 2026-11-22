@@ -938,7 +938,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		return intake.Result{}, nil
 	}
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact), Author: fact.Author,
-		Person: !e.byReviewApp(fact.Author), SubmittedAt: fact.SubmittedAt, BodyCut: fact.BodyTruncated}
+		Person: !e.byReviewApp(fact.Author), SubmittedAt: fact.SubmittedAt, BodyCut: fact.BodyTruncated, ID: fact.ID}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
 	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose

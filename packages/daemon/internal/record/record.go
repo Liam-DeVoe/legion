@@ -791,12 +791,15 @@ type PhaseEntry struct {
 // no round inherits the refusal of the round before it. The decision column is jsonb, so a row
 // an older daemon wrote simply has none.
 //
-// Author, Person, SubmittedAt and BodyCut are the review's own facts that the next implementer's
-// task names beside its body (workflow's PhaseAssignment): the GitHub login that wrote it, whether
-// that login is a person's rather than the review App's (a person's body is cut to texts.OneAct
-// there, the reviewer's goes whole), when GitHub says it was submitted, and whether Envoy's
-// normalizer cut its body before the daemon saw it. A decision an older daemon wrote has none of
-// them, and its body goes whole with no author, as it did.
+// Author, Person, SubmittedAt, BodyCut and ID are the review's own facts that the next
+// implementer's task names beside its body (workflow's PhaseAssignment): the GitHub login that
+// wrote it, whether that login is a person's rather than the review App's (a person's body is cut
+// to texts.OneAct there, the reviewer's goes whole), when GitHub says it was submitted, whether
+// Envoy's normalizer cut its body before the daemon saw it, and GitHub's id of the review, which
+// is where the whole of a cut body is read (zero where the listener carried none). A decision an
+// older daemon wrote has none of them, and its body goes whole with no author, as it did; an
+// earlier release decodes the column with no refusal of a key it does not know (scanPhase), so
+// it reads a decision that names an id and drops the id at its next write of the row.
 type ReviewDecision struct {
 	State          string     `json:"state"`
 	Body           string     `json:"body,omitempty"`
@@ -808,6 +811,7 @@ type ReviewDecision struct {
 	Person         bool       `json:"person,omitempty"`
 	SubmittedAt    time.Time  `json:"submittedAt,omitzero"`
 	BodyCut        bool       `json:"bodyCut,omitempty"`
+	ID             int64      `json:"id,omitempty"`
 }
 
 // ReviewOrder is where a review falls among the pull request's reviews: when it was submitted, then

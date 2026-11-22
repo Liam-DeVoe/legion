@@ -34,6 +34,10 @@ func RelaunchNote(issue string, ended EndedWork, task bool) texts.RelaunchNoteRe
 //   - task_turn: in front of a task, the turn cut off was that task's (EndedWork.TaskTurn), which
 //     Delivery.message hands only in front of the task that let-go took back (inFrontOf); alone,
 //     with no task, the turn cut off is only the turn the agent was in;
+//   - in_flight_tool_calls and turn_background_work: what every turn cut off lost, said wherever
+//     in_turn is (texts.ToolCallsNeverAnswered, texts.TurnBackgroundWorkGone): its tool calls in
+//     flight were never answered, and the subagents and background jobs of that turn are gone,
+//     whatever report the record holds, for the reason reported gives below;
 //   - stopped: each kind of background work the record names, all of which ended with the
 //     process, in the store's own words for them (`subagent`, `async-job`,
 //     `claude-background-task`: claim.BackgroundWork.KnownKinds); a kind the store does not know
@@ -52,7 +56,7 @@ func RelaunchNote(issue string, ended EndedWork, task bool) texts.RelaunchNoteRe
 // Every string is made valid UTF-8 (validText), so the note always renders.
 func (e EndedWork) Facts(task bool) texts.RelaunchFacts {
 	stopped := claim.BackgroundWork{Kinds: e.Kinds}.KnownKinds()
-	return texts.RelaunchFacts{
+	facts := texts.RelaunchFacts{
 		Cause:      validText(e.Cause),
 		InTurn:     e.Turn || e.TaskTurn,
 		TaskTurn:   task && e.TaskTurn,
@@ -61,6 +65,10 @@ func (e EndedWork) Facts(task bool) texts.RelaunchFacts {
 		Reported:   e.Reported,
 		Task:       task,
 	}
+	if facts.InTurn {
+		facts.InFlightToolCalls, facts.TurnBackgroundWork = texts.ToolCallsNeverAnswered, texts.TurnBackgroundWorkGone
+	}
+	return facts
 }
 
 // inFrontOf is the record as the note in front of task d tells it (Delivery.message). The turn

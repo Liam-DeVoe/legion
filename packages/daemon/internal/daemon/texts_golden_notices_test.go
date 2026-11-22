@@ -84,23 +84,21 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	look := workflow.WorkerDied(r.key(101), claim.RoleTester, "", failure)
 	look.Look = 3 + r.n
 	b.notice(r, "look", arch, look, goldenWant("issue", r.key(101), "role", claim.RoleTester, "look", 3+r.n))
-	working := workflow.WorkerDied(issue.Key, claim.RoleImplementer, phase.Reviewing, failure)
-	working.Working = phase.Reviewing
-	b.notice(r, "working", arch, working,
+	b.notice(r, "working", arch, workflow.WorkerDiedNotWorking(issue.Key, claim.RoleImplementer, phase.Reviewing, phase.Reviewing, failure),
 		goldenWant("issue", issue.Key, "role", claim.RoleImplementer, "phase", phase.Reviewing, "working", phase.Reviewing))
 
 	// A failure whose sentence, death and start each hold line breaks, as a run of refused turns,
-	// an account that ends in the role's log and a launcher's error do: the worker-died, here the
-	// controller's copy, and the held notice below carry each on one line, whole
-	// (workflow's failureOnOneLine).
+	// an account that ends in the role's log and a launcher's error do, and whose log holds a
+	// backslash before an n: the worker-died, here the controller's copy, and the held notice
+	// below carry each whole on one line with every character kept, each line break and each
+	// backslash written as Go writes it in a string, so the blank line stays and the backslash
+	// before an n reads apart from a line feed (workflow's failureOnOneLine).
 	lines := *failure
 	lines.Detail = r.words("died/lines-sentence", 60) + "\n" + r.words("died/lines-provider", 50)
 	lines.Death = "gone: " + r.words("died/lines-death", 40) + "; last lines of tester:\n" + r.words("died/lines-log", 40) + "\n\n" +
-		r.words("died/lines-log-2", 30)
+		r.words("died/lines-log-2", 30) + ` C:\new`
 	lines.StartFailure = r.words("died/lines-start", 40) + "\r\n" + r.words("died/lines-git", 30)
-	oneLine := func(text string) string {
-		return strings.Join(strings.FieldsFunc(text, func(c rune) bool { return c == '\n' || c == '\r' }), " / ")
-	}
+	oneLine := strings.NewReplacer(`\`, `\\`, "\n", `\n`, "\r", `\r`).Replace
 	linesWant := goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "failure.detail", oneLine(lines.Detail),
 		"failure.death", oneLine(lines.Death), "failure.startFailure", oneLine(lines.StartFailure))
 	b.notice(r, "failure-lines", claim.RoleController, workflow.WorkerDied(issue.Key, claim.RoleTester, phase.Testing, &lines), linesWant)
@@ -687,13 +685,17 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 				"merge_state", string(stuck.MergeState), "list_passed", texts.ListPassed(r.repo, stuck.Number)))))
 	}
 
-	// memory-kill: the guard's kill and the kernel's.
-	for _, cause := range []shimwire.MemoryKillCause{shimwire.MemoryKillCauseGuard, shimwire.MemoryKillCauseKernel} {
+	// memory-kill: the guard's kill, the kernel's kill of a command, and the kernel's kill of a
+	// process that runs the role's session; each says where heavy work runs.
+	for _, cause := range []shimwire.MemoryKillCause{shimwire.MemoryKillCauseGuard, shimwire.MemoryKillCauseKernel, shimwire.MemoryKillCauseKernelProtected} {
 		report := shimwire.LauncherMemoryKill{PID: 4000 + r.n, Executable: "node-" + r.words("kill/exe", 5), SizeBytes: uint64(3+r.n) << 30,
 			ReadingBytes: uint64(6+r.n) << 30, CounterBytes: uint64(7+r.n) << 30, LimitBytes: 8 << 30, Cause: cause}
 		variant, word := "guard", texts.KillGuard
-		if cause == shimwire.MemoryKillCauseKernel {
+		switch cause {
+		case shimwire.MemoryKillCauseKernel:
 			variant, word = "kernel", texts.KillKernel
+		case shimwire.MemoryKillCauseKernelProtected:
+			variant, word = "kernel-protected", texts.KillKernelProtected
 		}
 		reader := []claim.Role{claim.RoleImplementer, claim.RoleArchitect}[r.n-1]
 		b.roleMessage(r, variant, reader, issue, workflow.MemoryKillMessage(issue, report), texts.UrgencyOf(texts.MemoryKill, reader, texts.Variant{}),

@@ -836,10 +836,12 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // facts, never a guess. The pull request is named from the record of its own table (requests,
 // keyed by issue), because the state a stopped tree is most often in is a merged one — the tree
 // whose work landed and whose roles then stopped — which no list of the open pull requests could
-// answer.
+// answer. It names what the controller decides among once it has read the tree
+// (texts.TreeStalledChoices), which dispatch://INFRA-2560's R5 has the notice tell it.
 func TreeStalledNotice(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest) texts.TreeStalledRecord {
 	stalled := texts.TreeStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.TreeStalled, Issue: root},
-		QuietFor: measure.Quiet.Round(time.Minute).String(), Members: make([]texts.TreeMember, 0, len(members))}
+		QuietFor: measure.Quiet.Round(time.Minute).String(), Members: make([]texts.TreeMember, 0, len(members)),
+		Decide: texts.TreeStalledChoices()}
 	for _, member := range members {
 		named := texts.TreeMember{Key: member.Key, Phase: member.Phase}
 		// The architect works admitted (workflow.RoleFor), and this notice says what it said

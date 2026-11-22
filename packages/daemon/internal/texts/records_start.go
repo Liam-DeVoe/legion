@@ -58,17 +58,27 @@ type AbandonedSessionNoteRecord struct {
 // out of memory.
 const OutOfMemoryReason = "OOMKilled"
 
+// ToolsGuide is the part of the worker skill that says what work an issue pod does not run and
+// where such work goes: the guide an out-of-memory note points its reader to
+// (OutOfMemoryNoteRecord.ReadBeforeHeavyWork).
+const ToolsGuide = "skill://legion-worker/references/tools.md"
+
 // OutOfMemoryNoteRecord is the note in front of a task whose turn ended when its pod ran out of
 // memory (NewOutOfMemoryNote): the reason Kubernetes ended the container that runs every
-// role of the issue.
+// role of the issue, and the guide to read before running heavy work again (ReadBeforeHeavyWork,
+// ToolsGuide). dispatch://INFRA-1229's R2 has the role get, with its task, a note that its pod ran
+// out of memory and a pointer to that guide, as main's note said ("read
+// skill://legion-worker/references/tools.md before you run such work again"), and R8 of
+// dispatch://INFRA-3686 keeps the pointer as a field.
 type OutOfMemoryNoteRecord struct {
 	TaskHead
-	Reason string `json:"reason"`
+	Reason              string `json:"reason"`
+	ReadBeforeHeavyWork string `json:"read_before_heavy_work"`
 }
 
 // NewOutOfMemoryNote is the out-of-memory note of issue, which has no other input.
 func NewOutOfMemoryNote(issue string) OutOfMemoryNoteRecord {
-	return OutOfMemoryNoteRecord{TaskHead: TaskHead{Kind: OutOfMemoryNote, Issue: issue}, Reason: OutOfMemoryReason}
+	return OutOfMemoryNoteRecord{TaskHead: TaskHead{Kind: OutOfMemoryNote, Issue: issue}, Reason: OutOfMemoryReason, ReadBeforeHeavyWork: ToolsGuide}
 }
 
 // ProviderErrorNoteRecord is the note in front of a task that a provider error took back

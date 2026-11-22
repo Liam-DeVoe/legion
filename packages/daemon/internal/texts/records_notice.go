@@ -65,6 +65,12 @@ type PhaseFinishedRecord struct {
 // the issue's phase, the phase the issue works where the role does not work it (Working), the
 // look of a production check that lost its checking role, and why the claim failed.
 //
+// A role that does not work the issue's phase also says that nothing is held (NothingHeld): its
+// failure holds no phase, so the phase runs on and nothing waits on the architect's
+// retry_or_escalate. dispatch://INFRA-2009's R5 keeps the reason main's notice built, which said so
+// ("the %s does not work %s's phase %s; nothing is held"), and R8 of dispatch://INFRA-3686 keeps
+// it as a field.
+//
 // Failure is the failure record, where the daemon recorded the failure's cause. Detail is the
 // sentence the failing site wrote, where the notice carries no failure record (the tree
 // architect's own notice, and a notice whose failure recorded no cause): on one line, cut where it
@@ -75,16 +81,17 @@ type PhaseFinishedRecord struct {
 // was read: cut where it is longer than the same bound, which DeathCut marks.
 type WorkerDiedRecord struct {
 	NoticeHead
-	Role      claim.Role     `json:"role,omitempty"`
-	Phase     phase.Phase    `json:"phase,omitempty"`
-	Working   phase.Phase    `json:"working,omitempty"`
-	Look      int            `json:"look,omitempty"`
-	Failure   *NoticeFailure `json:"failure,omitempty"`
-	Detail    string         `json:"detail,omitempty"`
-	DetailCut bool           `json:"detail_cut,omitempty"`
-	PodEnd    string         `json:"pod_end,omitempty"`
-	Death     string         `json:"death,omitempty"`
-	DeathCut  bool           `json:"death_cut,omitempty"`
+	Role        claim.Role     `json:"role,omitempty"`
+	Phase       phase.Phase    `json:"phase,omitempty"`
+	Working     phase.Phase    `json:"working,omitempty"`
+	NothingHeld bool           `json:"nothing_held,omitempty"`
+	Look        int            `json:"look,omitempty"`
+	Failure     *NoticeFailure `json:"failure,omitempty"`
+	Detail      string         `json:"detail,omitempty"`
+	DetailCut   bool           `json:"detail_cut,omitempty"`
+	PodEnd      string         `json:"pod_end,omitempty"`
+	Death       string         `json:"death,omitempty"`
+	DeathCut    bool           `json:"death_cut,omitempty"`
 }
 
 // The words of what became of a stalled process (WorkerStalledRecord.Stop).

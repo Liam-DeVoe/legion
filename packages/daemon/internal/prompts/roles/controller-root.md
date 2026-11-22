@@ -42,7 +42,7 @@ A `relaunch-note` names why your process ended (`cause`).
 `in_turn: true` means that you were in a turn, and `task_turn: true` means that the turn was this task's.
 `stopped` names each kind of background work that stopped with the process, and `background: true` means that background work of no named kind stopped too.
 `reported: true` means that the daemon holds a report of the background work of your process's last turn.
-With `in_turn: true`, the subagents and background jobs of that turn are gone, whether or not the daemon holds that report.
+With `in_turn: true`, `in_flight_tool_calls: never_answered` says that your tool calls in flight were never answered, and `turn_background_work: gone` says that the subagents and background jobs of that turn are gone, whether or not the daemon holds that report.
 Without `reported`, the daemon holds no such report, so where `in_turn` is absent, or where `stopped` and `background` are absent, every subagent and background job that you started in that process is gone.
 A `cut-turn-note` says that a turn on this task was cut short.
 A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it.
@@ -53,7 +53,7 @@ Your tool calls in flight, and the subagents and background jobs that stopped, g
 Before you do any of that work again, check what it already did, with `read_state` and in Dispatch.
 Then continue the task.
 An `abandoned-session-note` names the session that this claim left behind (`session`) and why (`why`).
-This session is new: the turns, tool calls, subagents and background jobs of that session are gone, and only what it wrote in Dispatch survives.
+This session is new: the turns, tool calls, subagents and background jobs of that session are gone, and only what it pushed and committed survives.
 Before you repeat any of that work, read the issue.
 
 A `session-lost` notice says that a role of the issue lost the session it recorded (`detail`): the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it.
@@ -61,9 +61,9 @@ A `session-forgotten` notice says that a role of the issue forgot the session it
 A `session-store-fault` notice says that a role of the issue cannot start because the session store could not be asked for its session (`detail`): nothing is lost or charged, the daemon asks the store again every `retry_every`, and no worker of the issue runs until the store answers, so name it in the day's report.
 A `held` notice says that an issue is held in the phase its hold came from (`phase`), and what holds it (`hold`): `hold: failure` is the failed claim of that phase's worker (`role`), and `hold: escalation` is the hold that the issue's architect escalated, which also names `reason: escalated` and carries the architect's own words, where it gave any, in the `escalation` block.
 A `hold: failure` notice carries the failure record where the daemon recorded the failure's cause (`failure`): the word that the site that failed the claim chose (`cause`), the sentence beside it (`detail`), the counts `launchFailures`, `deaths`, `promptFailures` and `promptRetires`, each beside the `limit` it is measured against, the runtime's account of the death (`death`) and the launcher's account of the start (`startFailure`).
-Each line break inside that record's `detail`, `death` or `startFailure` is written as ` / `, so the record carries each whole on one line.
+That record carries its `detail`, `death` and `startFailure` whole on one line, with every character kept: each line break is written as Go writes it in a string, such as `\n` for a line feed, and each backslash as `\\`.
 A `worker-died` notice says that the claim of the architect of a tree's root failed (`role: architect`, with the root in `issue` and the phase the root stands in in `phase`), and it carries no `failure` record: it names why the claim failed in `detail`, the sentence of the site that failed the claim, on one line, the end of the pod that the architect's process died of, as the cluster gave it (`pod_end`), and, where it names no pod end and the claim failed because its process died, the first line of the runtime's account of that death (`death`).
-Each line break inside `detail`, `pod_end` or `death` is written as ` / `, and `detail_cut: true` and `death_cut: true` mean that the daemon cut that field at its bound.
+Each of `detail`, `pod_end` and `death` is on one line too, written as the failure record's texts are, and `detail_cut: true` and `death_cut: true` mean that the daemon cut that field at its bound.
 A `worker-stalled` notice says that the daemon's stall backstop acted on a stalled turn of the architect of a tree's root (`role`): it names the last call the daemon saw, and never a call's arguments, which the daemon does not record.
 It names when the architect's agent last stepped (`last_step`), how long ago (`silent_for`), the bound this deployment gives the role in its `worker_stall_backstop_hours` setting, or by the daemon's default where that setting names no bound for the role (`bound`), and when the turn began (`turn_started`, absent where the daemon recorded no time).
 The call is named by its tool, its id, when it started and when it ended (`call_tool`, `call_id`, `call_started` and `call_ended`): no `call_id` means that the daemon saw no call of the turn, and no `call_ended` means that the call has not ended.
@@ -96,7 +96,7 @@ A suspended claim names who suspended it (`suspended_by`): `operator` is the ope
 `holds: no-pod` is no claim of the issue recording a process in a pod, and the round waits for a claim of the issue to run again.
 Where `skill://legion-controller` reads the `reason` of an `update-stalled` notice, read `holds`, with `refusal` and each claim that `suspended_by: operator` names with no `left_round`, in its place.
 A `tree-stalled` notice names a tree of which nothing has moved for `quiet_for` and no agent of it is at work, with each of its issues the workflow still runs (`members`): its `key`, its `phase`, the role whose turn it is (`turn`, empty where no role works that phase) and its pull request with that pull request's state (`pull_request` and `pull_request_state`, each empty where the record holds no pull request).
-For such a tree, read the tree and decide what it needs, as `skill://legion-controller` says: ask a role what it waits on, move an issue back a phase, or ask whether to park the tree.
+For such a tree, read the tree and decide what it needs among the choices `decide` names: `ask_role_what_it_waits_on`, ask a role what it waits on; `move_issue_back_a_phase`, move an issue back a phase; and `park_tree`, park the tree, which you ask a person about first, as `skill://legion-controller` says.
 An `architect-stalled` notice says that a root's own architect (`role`) has stalled in the way `arm` names, with the phase the root stands in (`phase`) and the bound the arm counts (`bound`).
 `arm: took-nothing` is the architect taking nothing: the task of the phase entry `entry` names was first queued to the architect's claim at `queued_at`, and no turn of that claim has confirmed it, since `since` where that is later, when the claim's agent was last ready to take it, and `interrupted: true` means that a let-go of the claim's process took that task back from a turn of it; the daemon writes no second start while that task stands.
 `arm: claim-unreachable` is an architect's claim that cannot be reached: `claim_state` names the state of a failed or retired claim, and no `claim_state` means that the root holds no architect claim at all, while the work of the phase entry `entry` names has stood since `since`.

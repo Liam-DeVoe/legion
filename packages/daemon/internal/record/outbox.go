@@ -509,17 +509,18 @@ type Notice struct {
 	HandoffPhase   string `json:"handoff_phase,omitempty"`
 	HandoffVersion int    `json:"handoff_version,omitempty"`
 	HandoffCommit  string `json:"handoff_commit,omitempty"`
-	// Working is the phase the issue works where the dead role does not work it, and Look the
-	// look of a production check that lost its checking role (worker-died). DetailCut says the
-	// worker-died cut its detail, PodEnd is the pod end the claim's process was last found to
-	// have died of, and Death the first line of the runtime's account of that death, which
-	// DeathCut says it cut (texts.WorkerDiedRecord).
-	Working   phase.Phase `json:"working,omitempty"`
-	Look      int         `json:"look,omitempty"`
-	DetailCut bool        `json:"detail_cut,omitempty"`
-	PodEnd    string      `json:"pod_end,omitempty"`
-	Death     string      `json:"death,omitempty"`
-	DeathCut  bool        `json:"death_cut,omitempty"`
+	// Working is the phase the issue works where the dead role does not work it, which
+	// NothingHeld says holds nothing, and Look the look of a production check that lost its
+	// checking role (worker-died). DetailCut says the worker-died cut its detail, PodEnd is the
+	// pod end the claim's process was last found to have died of, and Death the first line of the
+	// runtime's account of that death, which DeathCut says it cut (texts.WorkerDiedRecord).
+	Working     phase.Phase `json:"working,omitempty"`
+	NothingHeld bool        `json:"nothing_held,omitempty"`
+	Look        int         `json:"look,omitempty"`
+	DetailCut   bool        `json:"detail_cut,omitempty"`
+	PodEnd      string      `json:"pod_end,omitempty"`
+	Death       string      `json:"death,omitempty"`
+	DeathCut    bool        `json:"death_cut,omitempty"`
 	// The stall and the silence of a worker (worker-stalled, worker-silent,
 	// worker-background-stalled, and the bound of architect-stalled).
 	LastStep       time.Time `json:"last_step,omitzero"`
@@ -650,9 +651,11 @@ type Notice struct {
 	Turns      int    `json:"turns,omitempty"`
 	Model      string `json:"model,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
-	// A stopped tree (tree-stalled).
+	// A stopped tree (tree-stalled), and what the controller decides among for it
+	// (texts.TreeStalledChoices).
 	QuietFor string             `json:"quiet_for,omitempty"`
 	Members  []texts.TreeMember `json:"members,omitempty"`
+	Decide   []string           `json:"decide,omitempty"`
 	// A root's stalled architect (architect-stalled): the arm that read it (an
 	// ArchitectStallArm) and what the record says for that arm, with the moment it counted its
 	// bound from where a project's pause moved that later, what that moment is and the pause.
@@ -2007,24 +2010,32 @@ func (p MergeForwardMessage) Kind() texts.Kind {
 // phase the issue stays in. The ask and the hold name why the daemon acted; the landed and the
 // review name the head the merge left. The ask also says that the head conflicts with its base,
 // whether or not the record holds the base, and names the issue branch the implementer pushes the
-// merge to (claim.IssueBranch), which dispatch://INFRA-4374's R0 and R1 have it say. What each
-// reader does with its message - the merge in the issue workspace and the push with no handoff
-// and no completion, the stop of every write and of a completion at the old head, the read of what
-// the merge changed, and the approval of the new head with the roles it tells - is its prompt's
-// (internal/prompts/go/worker-common.md and the prompt of each role).
+// merge to (claim.IssueBranch), which dispatch://INFRA-4374's R0 and R1 have it say; an ask whose
+// why is a required check that has not passed says that GitHub runs no check on the head
+// (texts.ChecksOnHeadNone), which R0 has it say. The review names the review it asks for
+// (texts.MergeForwardReviewAsked), which R1 has it ask. What each reader does with its message -
+// the merge in the issue workspace and the push with no handoff and no completion, the stop of
+// every write and of a completion at the old head, the read of what the merge changed, and the
+// roles the reviewer tells - is its prompt's (internal/prompts/go/worker-common.md and the prompt
+// of each role).
 func (p MergeForwardMessage) Record(issue, repo string) any {
 	head := texts.RoleHead{Kind: p.Kind(), Issue: issue}
 	pull := texts.PullRequestRef(repo, p.PullRequest)
 	switch p.Step {
 	case MergeForwardAsk:
-		return texts.MergeForwardAskRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, HeadConflictsWithBase: true,
+		ask := texts.MergeForwardAskRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, HeadConflictsWithBase: true,
 			Phase: p.Phase, Why: string(p.Why), PushTo: claim.IssueBranch(issue)}
+		if p.Why == ConflictCheckNotGreen {
+			ask.ChecksOnHead = texts.ChecksOnHeadNone
+		}
+		return ask
 	case MergeForwardHold:
 		return texts.MergeForwardHoldRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why)}
 	case MergeForwardLanded:
 		return texts.MergeForwardLandedRecord{RoleHead: head, PullRequest: pull, Head: p.Head, Landed: p.Landed, ConflictsWith: p.Base, Phase: p.Phase}
 	}
-	return texts.MergeForwardReviewRecord{RoleHead: head, PullRequest: pull, Head: p.Head, Landed: p.Landed, ConflictsWith: p.Base, Phase: p.Phase}
+	return texts.MergeForwardReviewRecord{RoleHead: head, PullRequest: pull, Head: p.Head, Landed: p.Landed, ConflictsWith: p.Base, Phase: p.Phase,
+		ReviewAsked: texts.MergeForwardReviewAsked}
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at

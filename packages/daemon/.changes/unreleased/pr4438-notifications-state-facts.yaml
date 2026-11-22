@@ -62,8 +62,22 @@ body: |-
   the issue whose document it is bound to (`design_gates.document_issue`, migration
   `20261122040952_design_gate_document_issue`), so the catch-up and the gate-moved message of a
   root that carried its old root's gate name the old root's document, and a parked decision's
-  notice names when the person made it (`at`). A root's start task of a gate that stands part way
-  takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`). A woken role's task of
+  notice names when the person made it (`at`). A relaunch note and a catch-up's `relaunch` of a
+  cut turn say that its tool calls in flight were never answered and that the subagents and
+  background jobs of that turn are gone (`in_flight_tool_calls: never_answered`,
+  `turn_background_work: gone`); an out-of-memory note points to the worker skill's tools guide
+  (`read_before_heavy_work`); the task of a review's request for changes names GitHub's id of the
+  review (`review_id`), where a cut body is read whole; a merge-forward ask whose required check
+  has not passed says that GitHub runs no check on the head (`checks_on_head: none`), and a
+  merge-forward review names the review it asks for (`review_asked`); a worker-died of a role
+  that does not work the issue's phase says that nothing is held (`nothing_held: true`); a
+  worker-died and a held notice write each line break and backslash of a failure record's texts,
+  and of the worker-died's own `detail`, `death` and `pod_end`, as Go writes them in a string
+  (`\n`, `\\`) rather than joining lines with ` / `, so every character is kept; and a
+  tree-stalled notice names what the controller decides among (`decide:
+  ask_role_what_it_waits_on,move_issue_back_a_phase,park_tree`). A root's start task of a gate
+  that stands part way takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`).
+  A woken role's task of
   a message to its role topic says that a kept copy whose hour ended before the session came back
   does not reach it (`expired_does_not_reach: true`), and of a message to its session that a
   message Envoy or Dispatch stored reaches it and a direct message Envoy refused reaches it when

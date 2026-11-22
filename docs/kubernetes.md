@@ -2797,6 +2797,12 @@ This release adds fields to the payloads that its outbox queues:
 
 - A phase-finished notice of a role's own move back carries `moved_back`.
 
+- A worker-died notice of a role that does not work its issue's phase carries `nothing_held`, which says that its failure holds nothing.
+
+- A tree-stalled notice carries `decide`, the choices the controller decides among once it has read the tree.
+
+- A catch-up notice whose `relaunch` names a turn cut off carries `relaunch.in_flight_tool_calls` and `relaunch.turn_background_work`, which say what that turn lost.
+
 - An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim a project's pause stopped and still owes a launch, and whether a claim that it lists left the round's pod (`update.waiting[].left_round`).
 
 - A `check_wake` row of the retry of a look nobody reported carries `retry`, and the look it starts names a retry (`woken_by: retry`).

@@ -133,7 +133,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"detail", "pod_end"}},
 	{kind: texts.WorkerDied, variants: []string{"tree-architect-death"}, from: "workflow/engine.go:claimFailed, diedOf at 708ca88c (the sentence and the death's first line, each cut)",
 		keys: []string{"detail", "detail_cut", "death", "death_cut"}},
-	{kind: texts.WorkerDied, variants: []string{"failure-lines"}, from: "workflow/engine.go:WorkerDied, failureOnOneLine (the failure's sentence, death and start, each whole on one line)",
+	{kind: texts.WorkerDied, variants: []string{"failure-lines"}, from: "workflow/engine.go:WorkerDied, noticeFailure (the failure's sentence, death and start, each whole, " +
+		"which the record carries on one line with every character kept, failureOnOneLine)",
 		keys: []string{"phase", "failure.detail", "failure.death", "failure.startFailure"}},
 	{kind: texts.WorkerStalled, from: "daemon/stallbackstop.go:stallRecordInWords (the last step, the end)",
 		keys: []string{"issue", "role", "last_step", "end"}},
@@ -541,6 +542,59 @@ var goldenKept = []goldenKeptOf{
 		keys:   []string{"reason"},
 		values: func(want map[string]string) map[string]string {
 			return map[string]string{"reason": record.ArchitectStallArm(want["arm"]).Words()}
+		}},
+	{kind: texts.RelaunchNote, what: "what a turn cut off lost: its tool calls in flight were never answered, and the subagents and background jobs of that turn are gone, " +
+		"as main's note said of every turn cut off",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-714's R6",
+		keys:   []string{"in_flight_tool_calls", "turn_background_work"},
+		values: func(want map[string]string) map[string]string {
+			if want["in_turn"] != "true" {
+				return nil
+			}
+			return map[string]string{"in_flight_tool_calls": texts.ToolCallsNeverAnswered, "turn_background_work": texts.TurnBackgroundWorkGone}
+		}},
+	{kind: texts.CatchUp, variants: []string{"root"}, what: "what the turn the relaunch cut off lost, as a relaunch-note says it",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-714's R6",
+		keys:   []string{"relaunch.in_flight_tool_calls", "relaunch.turn_background_work"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"relaunch.in_flight_tool_calls": texts.ToolCallsNeverAnswered, "relaunch.turn_background_work": texts.TurnBackgroundWorkGone}
+		}},
+	{kind: texts.OutOfMemoryNote, what: "the pointer to the part of the worker skill to read before heavy work runs again, as main's note gave it",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-1229's R2",
+		keys:   []string{"read_before_heavy_work"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"read_before_heavy_work": texts.ToolsGuide}
+		}},
+	{kind: texts.PhaseAssignment, variants: []string{"review-rejected"}, what: "GitHub's id of the review whose body the task carries, the reference where a cut body is read whole",
+		keptBy: "dispatch://INFRA-3686's R1 (a cut text carries the count of the rest and the item's reference)",
+		keys:   []string{"review_id"},
+		values: func(want map[string]string) map[string]string {
+			return map[string]string{"review_id": want["review_id"]}
+		}},
+	{kind: texts.MergeForwardAsk, what: "that GitHub runs no check on the head, on an ask whose why is a required check that has not passed, as main's ask said for that why",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4374's R0",
+		keys:   []string{"checks_on_head"},
+		values: func(want map[string]string) map[string]string {
+			if want["why"] != string(record.ConflictCheckNotGreen) {
+				return nil
+			}
+			return map[string]string{"checks_on_head": texts.ChecksOnHeadNone}
+		}},
+	{kind: texts.MergeForwardReview, what: "the review it asks for: approve the new head by its SHA with the Legion footer naming that head, or request changes",
+		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-4374's R1",
+		keys:   []string{"review_asked"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"review_asked": texts.MergeForwardReviewAsked}
+		}},
+	{kind: texts.WorkerDied, variants: []string{"working"}, what: "that the failure of a role that does not work the issue's phase holds nothing, as main's notice said (; nothing is held)",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-2009's R5",
+		keys:   []string{"nothing_held"},
+		values: func(map[string]string) map[string]string { return map[string]string{"nothing_held": "true"} }},
+	{kind: texts.TreeStalled, what: "what the controller decides among once it has read the tree: ask a role what it waits on, move an issue back a phase, or park the tree",
+		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-2560's R5",
+		keys:   []string{"decide"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"decide": strings.Join(texts.TreeStalledChoices(), ",")}
 		}},
 }
 
