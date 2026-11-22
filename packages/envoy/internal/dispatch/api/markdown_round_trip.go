@@ -160,10 +160,11 @@ type markdownRoundTripResponse struct {
 // of its seed or its replacement that read the text alone (docs.SeedRendering,
 // docs.ReplacementRendering) reaches them with no change to the client.
 //
-// The inline body is decoded without the JSON routes' own refusal of U+0000 (decodeJSONBody): the
-// text it carries is checked as the upload checks its own, under the upload's name for it,
-// `content`. Each body is read within its route's own limit, not a JSON body's megabyte, so no text
-// an upload would store is refused here for its body (markdownRoundTripLimit, fileRoundTripLimit).
+// The inline body is decoded without the JSON routes' own refusal of U+0000
+// (readJSONBodyAllowingNUL): the text it carries is checked as the upload checks its own, under the
+// upload's name for it, `content`. Each body is read within its route's own limit, not a JSON body's
+// megabyte, so no text an upload would store is refused here for its body (markdownRoundTripLimit,
+// fileRoundTripLimit).
 func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	var input markdownRoundTripInput
 	if !s.decodeRoundTrip(w, r, markdownRoundTripPattern, &input) {
@@ -197,7 +198,7 @@ func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, pattern
 		return false
 	}
 	limit, tooLarge := routeBody(http.MethodPost, pattern)
-	body, err := decodeJSONBody(r, input, limit, tooLarge)
+	body, err := readJSONBodyAllowingNUL(r, input, limit, tooLarge)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return false
