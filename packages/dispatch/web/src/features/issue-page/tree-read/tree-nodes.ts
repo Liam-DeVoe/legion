@@ -14,7 +14,6 @@ import type {
 } from "../../../api/types";
 import { isDecisionEntry } from "../../issue/decision-entries";
 import { buildDispatchReference, parseNodeReference } from "../../refs/routes";
-import { type TextSource, textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
   askIdOf,
@@ -46,6 +45,7 @@ import {
   deciderOf,
   plainWords,
   requirementGaps,
+  stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-read";
@@ -675,7 +675,7 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, ask);
-  if (askId !== undefined) draft.source = sourceOf("ask", askId);
+  if (askId !== undefined) draft.source = stableSourceOf("ask", askId);
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -716,7 +716,7 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
-  draft.source = sourceOf(node.supertag, node.id);
+  draft.source = stableSourceOf(node.supertag, node.id);
   return draft;
 }
 
@@ -770,31 +770,10 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = sourceOf("artifact", node.document.artifact_id);
+      draft.source = stableSourceOf("artifact", node.document.artifact_id);
     }
   }
   return draft;
-}
-
-/** Each record's text source, by its kind and then its id: `textSourceOf`'s, made once, so every
- *  build of the drafts hands a row the source object it handed it before, and the row's words are
- *  not drawn again for a source that only looks new. */
-const sources: { readonly [Kind in TextSource["kind"]]: Map<string, TextSource> } = {
-  artifact: new Map(),
-  ask: new Map(),
-  comment: new Map(),
-  message: new Map(),
-};
-
-/** The text source of record `id` of `kind` (`textSourceOf`), the one object `sources` holds. */
-function sourceOf(kind: TextSource["kind"], id: string): TextSource | undefined {
-  const byId = sources[kind];
-  let source = byId.get(id);
-  if (source === undefined) {
-    source = textSourceOf(kind, id);
-    if (source !== undefined) byId.set(id, source);
-  }
-  return source;
 }
 
 /** Each typed block's reading cut to its own content (`readingOf`), by the reading it was cut

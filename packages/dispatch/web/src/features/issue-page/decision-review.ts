@@ -68,6 +68,12 @@ export function inReviewList(
   );
 }
 
+/** A decision's own words and its own reading (`decisionContent`). */
+export interface DecisionContent {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+}
+
 /**
  * How a decision node stands with the reader, in the states the page draws
  * (`NODE_STATE_WORDS.decision`), from the review state the read answers on the node's
@@ -97,10 +103,9 @@ export function reviewState(
  * read: its decisions are nodes of the tree read, whose words are their own. Part I's browser
  * rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
  */
-export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
-  readonly text: string;
-  readonly tree?: DisplayTree;
-} {
+export function decisionContent(
+  decision: Pick<DecisionEntry, "text" | "text_tree">
+): DecisionContent {
   const text = ownWords(decision.text);
   const tree = ownTree(decision.text_tree);
   return tree === undefined ? { text } : { text, tree };
