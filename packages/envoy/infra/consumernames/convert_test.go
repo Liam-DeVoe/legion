@@ -944,8 +944,8 @@ func TestConvertsSettleDeletesTheFixedNameBeforeItCreatesTheCandidateAtAFullCap(
 // runs left (its saved set, never unchanged); F stays on the stream, and K's record never retires
 // F (the selection package refuses a record that names F anywhere but as an open replace's old
 // name, consumernames Names.Check). The failed delete is the server's own: on a hub of the test's
-// own (grantsNewRig), the operator user holds the held grant without the entries that admit F's
-// delete subject, so the server refuses that delete, and no other subject of the run, with a
+// own (grantsNewRig), the operator user holds the held grant with a deny of F's delete subject
+// alone (PublishDeny), so the server refuses that delete, and no other subject of the run, with a
 // permissions violation. Two states: convert's own conversion of F, its record written before the
 // delete, and a record converted already whose F is still listed. Control: the convert that
 // retired F before deleting it (the convert.go before the selection library owned the record),
@@ -955,7 +955,7 @@ func TestConvertStopsOnAFailedDeleteOfTheFixedNameAndNeverRetiresIt(t *testing.T
 	fixed := sessionFixedPrefix + "ses_grant"
 	refused := convertConsumerSubject("DELETE", fixed)
 	grant := natsgrant.Operator(natsgrant.OperatorPhaseHeld)
-	grant.Publish = slices.DeleteFunc(slices.Clone(grant.Publish), func(entry string) bool { return grantsAdmits(entry, refused) })
+	grant.PublishDeny = append(slices.Clone(grant.PublishDeny), refused)
 	m, ok := classify(fixed)
 	require.True(t, ok)
 	for _, c := range []struct {

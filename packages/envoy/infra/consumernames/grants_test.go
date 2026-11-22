@@ -59,19 +59,27 @@ func grantsStartHub(t *testing.T, servers int, grant natsgrant.Permissions) *gra
 		return strings.Join(quoted, ", ")
 	}
 	// nats-server reads an empty subscribe allow as every subject, so a grant with no subscribe is
-	// written as a deny of every subject.
+	// written as a deny of every subject. A grant's deny lists (PublishDeny, SubscribeDeny) are
+	// written beside its allow lists, as the auth service's user JWT carries them.
+	publish := fmt.Sprintf("allow: [%s]", quote(grant.Publish))
+	if len(grant.PublishDeny) > 0 {
+		publish += fmt.Sprintf(", deny: [%s]", quote(grant.PublishDeny))
+	}
 	subscribe := fmt.Sprintf("allow: [%s]", quote(grant.Subscribe))
+	if len(grant.SubscribeDeny) > 0 {
+		subscribe += fmt.Sprintf(", deny: [%s]", quote(grant.SubscribeDeny))
+	}
 	if len(grant.Subscribe) == 0 {
 		subscribe = `deny: [">"]`
 	}
 	config := fmt.Sprintf(`authorization {
   users = [
     { user: "admin", password: "admin" },
-    { user: "operator", password: "op-pass", permissions: { publish: { allow: [%s] }, subscribe: { %s } } }
+    { user: "operator", password: "op-pass", permissions: { publish: { %s }, subscribe: { %s } } }
   ]
 }
 no_auth_user: "admin"
-`, quote(grant.Publish), subscribe)
+`, publish, subscribe)
 	h := &grantsHub{seen: map[string]bool{}}
 	if servers > 1 {
 		h.cluster = testnats.StartClusterConfig(t, servers, config)
