@@ -4655,8 +4655,10 @@ pass "up waits for each daemon until it writes its pidfile, however many naps it
 # LEGION_PROOF_DEADLINE_MS, and proof_guard_from_env makes every wait give up at it; with none set,
 # as on a person's machine, a wall-time guard of the suite's own would fail a healthy run that a
 # loaded machine only made slow, so there is none. A probe sources proof-wait.sh as this suite
-# does and waits for a fact that holds at its third poll: with a deadline already past it fails
-# at its first poll, naming the fact; with none it holds at the third.
+# does and waits for a fact that holds at its third poll, its clock reading a year later from the
+# second poll on: with a deadline already past it fails at its first poll, naming the fact; with
+# none it holds at the third, which no guard the suite made up for itself, however long, lets it
+# reach.
 gg_dir=$tmp/gg
 mkdir -p "$gg_dir"
 cat >"$gg_dir/probe.sh" <<EOF
@@ -4667,7 +4669,13 @@ source "$here/../../../../scripts/e2e/lib/proof-wait.sh"
 proof_guard_from_env
 # Its own counter: wait_held keeps a local named polls, which a function it calls would share.
 third_calls=0
-third() { third_calls=\$((third_calls + 1)); ((third_calls >= 3)); }
+# From its second poll on, the probe's clock reads a year later: a wait with no guard still holds
+# at its third poll, and a wait under any deadline the suite made up gives up at its second.
+third() {
+  third_calls=\$((third_calls + 1))
+  ((third_calls < 2)) || proof_now_ms() { printf '%s\n' "\$((\${EPOCHREALTIME/[.,]/} / 1000 + 31536000000))"; }
+  ((third_calls >= 3))
+}
 wait_for "the third poll" third
 echo "held after \$third_calls polls"
 EOF
