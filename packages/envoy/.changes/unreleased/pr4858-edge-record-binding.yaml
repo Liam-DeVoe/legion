@@ -12,21 +12,27 @@ body: |-
   The edge listener hands a session a frame only of a project its token lists, as the session's
   own message, or as a GitHub event of one of its projects' repositories (`edgeFrameVerdict`),
   in its relay and in its relay socket, reading the token and never a stored record; a frame
-  whose relay header and envelope name different projects is withheld. Every other frame is
-  acknowledged undelivered and counted in
-  `envoy_edge_github_withheld_total{reason="project_not_held"}`, a metric that now counts frames
-  that are not GitHub's too. A relay socket with no fresh repository answer sends a GitHub event
-  back (`nak`) rather than away. A relay replica that admitted no registration of a session since
-  it started relays it nothing until the session registers through it again, and its messages
-  wait in its consumer; a replica forgets a session's admission once the session's record has
-  left its cache.
+  whose relay header and envelope name different projects is withheld. A role message forwarded
+  to the session's own agent subject - a role-lane forward or a role-marked send - is judged by
+  the project its role's claim works for, not by the subject it is stored on, so a forged role
+  claim cannot have another project's role message reach the session, while a kept or taken copy
+  of the session's own project's role, which carries the previous holder's subject, still does.
+  A frame withheld because its project is not the token's is acknowledged undelivered and counted
+  in `envoy_edge_github_withheld_total{reason="project_not_held"}`, a metric that now counts
+  frames that are not GitHub's too. A relay socket with no fresh repository answer sends a GitHub
+  event back (`nak`) rather than away. A relay replica that admitted no registration of a session
+  since it started relays it nothing until the session registers through it again; its messages
+  are held in its consumer, unacknowledged, for the consumer to deliver again, never acknowledged
+  away. A replica forgets a session's admission once the session's record has left its cache.
   A record the server wrote at a key - a RePublish of another stream, whose body its writer chose,
   or a direct get's copy - is no writer's record: a write or a delete the bucket refused at the
   revision a direct get reported reads the key again from the stream's leader, with the headers it
   is stored with, and replaces or deletes such a record at the sequence it is stored at, so every
-  registration of a session no longer answers 503 while one stands. The edge confirms each session
-  it would list, read or send to on another session's behalf by that leader read, and reads a
-  record the server wrote as absent.
+  registration of a session no longer answers 503 while one stands. The gap and renewal writes
+  that rewrite a session's record read it from the leader and write back only a writer's record
+  (`rewriteStoredEntry`), so a RePublished record is never laundered into one. The edge confirms
+  each session it would list, read or send to on another session's behalf by that leader read,
+  and reads a record the server wrote as absent.
   A session's consumer filter built from its stored interest row (a relay restart, a repair, the
   filter written after an unsubscribe, a delete or a prune) leaves out every topic reaching a
   private stream subject that is not the session's own - another session's inbox, a
@@ -40,4 +46,4 @@ body: |-
   session too.
 time: 2026-11-21T03:17:59Z
 custom:
-    Issue: pr4730
+    Issue: pr4858

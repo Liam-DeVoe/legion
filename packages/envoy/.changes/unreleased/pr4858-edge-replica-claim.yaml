@@ -7,4 +7,4 @@ body: |-
   role messages keep reaching it before its next registration.
 time: 2026-11-21T09:05:04Z
 custom:
-    Issue: pr4730
+    Issue: pr4858
