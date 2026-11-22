@@ -191,7 +191,7 @@ func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "Where that issue's task holds your step `acceptance:owner`, no worker runs there and the notice that moved it there may never have reached you, so read its evidence, then `sign_off` it or send it back with `request_backward_move`; where its step `acceptance` has no key, its fresh agent does that reading. Sign off a parent only on a head that every step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "It also names the step of yours your own issue stands at, where it stands at one: do it as its `owner-step` notice says, and report it with `complete_step`. An acceptance a fresh agent works is its own, and the catch-up names none. Sign off a parent only on a head that every step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
