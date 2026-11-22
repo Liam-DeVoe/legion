@@ -48,15 +48,18 @@ const enrollCommand = "consumer-names enroll"
 // enrolment: the daemon could never count its last floor.
 //
 // Every exit after its intent writes a stop entry that records what every run of enroll in this
-// hold left outside the journal (enrollLeft, enrollProgress): holdrecord.LeftUnchanged while no run
-// has written this hold's store marker or the family's broker cutover record, which it reads at
-// its start, since an earlier run may have crashed after a write; else each of those that exists,
-// and a write whose answer was lost, each of which counts as changed, so hold release is refused
-// and the way out is enroll's rerun (admitted again, as it has no done entry) or hold abort. A
-// rerun finds this hold's marker or cutover record, skips what is written and completes, keeping
-// the boundary and identity its marker already records (a marker of this hold that lacks either is
-// written again with them). A reading or a write whose outcome it cannot know is UNKNOWN: its stop
-// (admission.end) records what the run read and could not read (leftUnknown), never unchanged.
+// hold left outside the journal (admission.left over this run's account, enrollProgress.account):
+// holdrecord.LeftUnchanged only while no run has written this hold's store marker or the family's
+// broker cutover record, which it reads at its start, and every earlier run of enroll in this hold
+// ended in a stop that recorded unchanged; an earlier run cut after its intent counts as a change,
+// since it may have written before it was cut, whatever this run reads. Else it records each write
+// that exists, a write whose answer was lost and how each earlier run ended, all of which count as
+// changed, so hold release is refused and the way out is enroll's rerun (admitted again, as it has
+// no done entry) or hold abort. A rerun finds this hold's marker or cutover record, skips what is
+// written and completes, keeping the boundary and identity its marker already records (a marker of
+// this hold that lacks either is written again with them). A reading or a write whose outcome it
+// cannot know is UNKNOWN: its stop (admission.end) records what the run read and could not read
+// (leftUnknown), never unchanged.
 func (r *run) enroll(ctx context.Context) error {
 	project := r.o.daemon
 	for _, logical := range enrollLogicalNames(project) {
@@ -104,6 +107,12 @@ func (p enrollProgress) account(family, holdID string) (bool, string) {
 // enrollHeld is enroll's work after its intent, what it knows of this hold's own writes kept in p.
 func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *enrollProgress) error {
 	family := daemonFamily(project)
+	// stop is the stop of a refusal enroll names itself, recording what every run of enroll in this
+	// hold left, as every other exit after the intent records it (admission.end).
+	stop := func(reason string) error {
+		unchanged, account := p.account(family, r.o.holdID)
+		return a.stop(ctx, reason, a.left(ctx, unchanged, account))
+	}
 	logicals := enrollLogicalNames(project)
 	// The store, by the census's rule, at the address its one source names: enroll marks that store
 	// alone, through the pool the rule opened there (daemonStoresByRule).
@@ -112,11 +121,9 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 	case err != nil:
 		return err
 	case daemon.unreconciled != "":
-		return a.stop(ctx, fmt.Sprintf("%s's store is unreconciled, so enroll marks nothing: %s", family, daemon.unreconciled),
-			enrollLeft(family, r.o.holdID, p.marker, p.broker))
+		return stop(fmt.Sprintf("%s's store is unreconciled, so enroll marks nothing: %s", family, daemon.unreconciled))
 	case daemon.gone != nil:
-		return a.stop(ctx, fmt.Sprintf("%s's store is gone at the address %s names, so enroll marks nothing: %s", family, daemon.addressSource(), daemonGoneText(*daemon.gone)),
-			enrollLeft(family, r.o.holdID, p.marker, p.broker))
+		return stop(fmt.Sprintf("%s's store is gone at the address %s names, so enroll marks nothing: %s", family, daemon.addressSource(), daemonGoneText(*daemon.gone)))
 	}
 	r.read(family + "'s marker, at the address " + daemon.addressSource() + " names")
 	db, err := r.database(ctx, family)
@@ -196,7 +203,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 		problems = append(problems, fmt.Sprintf("this hold's marker records stream identity %s, and %s carries %s", marker.StreamID, notifications, streamID))
 	}
 	if len(problems) > 0 {
-		return a.stop(ctx, strings.Join(problems, "; "), enrollLeft(family, r.o.holdID, p.marker, p.broker))
+		return stop(strings.Join(problems, "; "))
 	}
 
 	// Before its first write, the held re-read again (plan §3a, "Every held command"), so no writer
@@ -216,7 +223,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 		switch {
 		case errors.As(err, &refused):
 			p.unsure = ""
-			return a.stop(ctx, fmt.Sprintf("%s's marker: %v", family, err), enrollLeft(family, r.o.holdID, p.marker, p.broker))
+			return stop(fmt.Sprintf("%s's marker: %v", family, err))
 		case err != nil:
 			return unknownf(err, "%s's marker", family)
 		}
@@ -229,7 +236,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 		switch {
 		case errors.As(err, &route):
 			p.unsure = ""
-			return a.stop(ctx, fmt.Sprintf("the broker refused the cutover record %s: %v", family, err), enrollLeft(family, r.o.holdID, p.marker, p.broker))
+			return stop(fmt.Sprintf("the broker refused the cutover record %s: %v", family, err))
 		case err != nil:
 			return unknownf(err, "the broker's cutover record %s, after the store's marker was written", family)
 		}

@@ -364,7 +364,8 @@ The journal's rules, from the hold's table (`internal/holdrecord`):
 - A command not marked repeatable below is refused once it has a done entry; a run that stopped or
   crashed is admitted again.
 - A stop entry records what every run of its command in this hold left outside the journal, or
-  `unchanged` when none changed anything. A run that put this hold's barrier key in the bucket
+  `unchanged` when none changed anything; an earlier run cut after its intent counts as a change,
+  whatever the stopped run read. A run that put this hold's barrier key in the bucket
   counts the key as its change, unless the run then deleted the bucket: so a stop after the run
   put the key is not `unchanged`, and one before it can be. `convert` puts it only after it has
   saved its set (its store check reads the bucket's sentinel directly), and `cleanup --gone` and

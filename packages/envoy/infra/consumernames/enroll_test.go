@@ -534,7 +534,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		last := h.lastEntry(id, "")
 		require.Equal(t, enrollCommand, last.Command)
 		require.Equal(t, "stop", last.State)
-		require.Equal(t, daemonFamily(project)+": store marker done, hold "+id+"'s", last.Outputs["left"], "the stop records the marker an earlier run of enroll wrote")
+		require.Equal(t, daemonFamily(project)+": store marker done, hold "+id+"'s; "+enrollCutRun, last.Outputs["left"], "the stop records the marker an earlier run of enroll wrote, and that run")
 		require.ErrorIs(t, h.release(id), holdrecord.ErrOutOfOrder, "hold release is refused over a stop that changed something")
 		_, err = db.Exec(ctx, `delete from consumer_positions`)
 		require.NoError(t, err)
@@ -548,7 +548,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		require.Contains(t, stderr, "this hold's marker records stream identity another-stream, and "+notifications+" carries "+identity)
 		stop := h.lastEntry(id, "")
 		require.Equal(t, "stop", stop.State)
-		left := daemonFamily(project) + ": store marker done and broker cutover record done, hold " + id + "'s"
+		left := daemonFamily(project) + ": store marker done and broker cutover record done, hold " + id + "'s; " + enrollCutRun
 		require.Equal(t, left, stop.Outputs["left"])
 		state, err := enrollStore(t, project, db).State(ctx)
 		require.NoError(t, err)
@@ -557,6 +557,71 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		inputs := h.abortHold(id)
 		require.Contains(t, slices.Collect(maps.Values(inputs)), enrollCommand+": "+left, "hold abort's intent carries what the stop left")
 		require.Equal(t, "released", string(h.row().Phase))
+	})
+}
+
+// enrollCutRun is how a stop of enroll names an earlier run of enroll in its hold cut after its
+// intent (journalLeft).
+const enrollCutRun = "earlier runs of " + enrollCommand + " in this hold: run 1 ended with no entry (cut after its intent), and the records hold what it wrote"
+
+// Every stop of enroll records what every run of enroll in this hold left (admission.left), as the
+// stop of every other held command does, so a run cut after its intent counts as a change. enroll
+// --daemon ENRCUTA is cut after it wrote its store's marker; the run the journal admits next in that
+// hold, enroll --daemon ENRCUTB, whose store holds a checkpoint, stops, recording that run 1 ended
+// with no entry and the records hold what it wrote; hold release is refused, and hold abort ends the
+// hold. A rerun of a cut daemon whose Deployment came to name another database stops at the address
+// rule before it reads the marker, and records the cut run the same way. Control: 07d5741c91's and
+// feb6bdcd73's enroll, whose stops recorded unchanged from this run's reading alone, so hold release
+// moved the row over the cut run's marker, which then refused every later enroll of ENRCUTA.
+func TestAnEnrollStopCountsAnEarlierRunCutAfterItsIntent(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	identity, last := h.enrollStream()
+	cut := func(t *testing.T, project string) (string, *pgxpool.Pool) {
+		t.Helper()
+		db := h.database(daemonFamily(project), daemonMigrations...)
+		id := h.heldHold(holdrecord.WorkflowEnroll)
+		_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: enrollCommand}, map[string]string{"daemon": project})
+		require.NoError(t, err)
+		_, err = enrollStore(t, project, db).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}, 0)
+		require.NoError(t, err)
+		return id, db
+	}
+	requireCountsTheCutRun := func(t *testing.T, id string) {
+		t.Helper()
+		stop := h.lastEntry(id, "")
+		left := stop.Outputs[stopLeftKey]
+		// The release first: a stop that recorded unchanged leaves the row released for the next case.
+		if err := h.release(id); !errors.Is(err, holdrecord.ErrOutOfOrder) {
+			t.Fatalf("hold release over enroll's %s entry, which recorded %q: %v; want it refused", stop.State, left, err)
+		}
+		require.Equal(t, enrollCommand+" stop", stop.Command+" "+stop.State)
+		require.Contains(t, left, enrollCutRun)
+		inputs := h.abortHold(id)
+		require.Contains(t, slices.Collect(maps.Values(inputs)), enrollCommand+": "+left, "hold abort's intent carries what the stop left")
+		require.Equal(t, "released", string(h.row().Phase))
+	}
+
+	t.Run("the run admitted next, of another daemon, stops", func(t *testing.T) {
+		id, _ := cut(t, "ENRCUTA")
+		other := h.database(daemonFamily("ENRCUTB"), daemonMigrations...)
+		_, err := other.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 7, now())`, daemonFixedPrefix+"ENRCUTB-wake")
+		require.NoError(t, err)
+		code, _, stderr := h.enrollRun(id, "ENRCUTB")
+		require.Equal(t, 1, code, stderr)
+		require.Contains(t, stderr, "consumer_positions holds a checkpoint of "+daemonFixedPrefix+"ENRCUTB-wake")
+		requireCountsTheCutRun(t, id)
+	})
+	t.Run("a rerun that stops at the address rule", func(t *testing.T) {
+		const project = "ENRCUTM"
+		id, db := cut(t, project)
+		h.censusDeploy(censusDeployment(project, "daemon_elsewhere", censusInstance))
+		code, _, stderr := h.run(actionEnroll, "--hold", id, "--daemon", project, "--daemon-database", project+"="+h.enrollFile(db))
+		require.Equal(t, 1, code, stderr)
+		require.Contains(t, stderr, daemonFamily(project)+"'s store is unreconciled, so enroll marks nothing")
+		requireCountsTheCutRun(t, id)
 	})
 }
 
