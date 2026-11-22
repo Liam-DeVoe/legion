@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/specstore"
 )
 
@@ -39,8 +40,9 @@ func specImportDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// The import's first versions of billing and a-bill-is-sent, which the terms spec_node and
 		// spec_version count, and its hold of a-bill-has-no-owner, which spec_hold counts; the
 		// child issue's create, as a create of an issue born converted, beside its child_of the
-		// level, which the term issue_relation counts; and the hook's repair_issue on the hold,
-		// which spec_repair_issue counts.
+		// level, which the term issue_relation counts, and the reference its spec and the block that
+		// names the level make to it, which document_ref and block_ref count; and the hook's
+		// repair_issue on the hold, which spec_repair_issue counts.
 		Name: "api/spec_import.go#repairIssueHook", Database: r.database,
 		Sites: []string{"api/spec_import.go#repairIssueHook", "specstore/import.go#Import", "api/issue_create.go#createIssueWith",
 			"api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery", "docs/mutation.go#WriteVersionNode",
@@ -80,6 +82,8 @@ func specImportDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted, versionCounted, issueRoomCounted, queryNodeCounted,
 			queryVersionCounted, map[graphcensus.StoredKind][]string{
 				{graphstore.KindIssue, graphstore.TupleChildOf}:      {"issue_relation"},
+				{graphstore.KindArtifact, graphstore.TupleMentions}:  {"document_ref"},
+				{refs.BlockNodeKind, graphstore.TupleMentions}:       {"block_ref"},
 				{specstore.KindNode, graphstore.AttributeVisibility}: {"spec_node"},
 				{specstore.KindNode, graphstore.AttributeState}:      {"spec_node"},
 				{specstore.KindNode, graphstore.AttributeProject}:    {"spec_node"},
