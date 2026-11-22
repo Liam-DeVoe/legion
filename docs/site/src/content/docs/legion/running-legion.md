@@ -173,8 +173,8 @@ the next of them:
   request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
   the repository itself (not a fork's) that the daemon does not record open is applied as its
   opened webhook would be, a reopen when the record holds the same pull request: the workflow
-  records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to testing.
+  records it in whatever phase the issue is, and moves an implementing issue whose implementer step
+  completed on to the task's next step (testing, in the default steps).
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
@@ -342,9 +342,9 @@ Dispatch read them, delete the files, then install every App from
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
-  the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
-  its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
-  review keeps both, unless it waits on another issue, when it keeps only its pod
+  the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot
+  — through `accepting`, `retro` and `merging`, on to its own close — and an issue waiting in a
+  phase that holds a slot keeps both, unless it waits on another issue, when it keeps only its pod
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
@@ -533,7 +533,7 @@ What each part is for:
   instructions, while its unit keeps the arm it drew; the deployment's and the role's own
   settings, and the arms of any other experiment that reaches the role, still apply. So an
   experiment that changes how the work is done can leave the roles that judge the work, such as
-  the reviewer, the tester and the architect who signs a merge off, out of its arms, and read
+  the reviewer, the tester and whoever does an acceptance step, out of its arms, and read
   their verdicts as its outcome; with every role in the arm, a merge rate or a count of review
   rounds is partly the treated roles' own verdict.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
@@ -661,8 +661,9 @@ What each part is for:
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
   name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases
-  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, and the 18
-  other pairs the daemon counts), or the word `any`, which is also what a hook that leaves the
+  (any of the 57 pairs the daemon counts: `testing-implementing`, `reviewing-implementing` and
+  `merging-implementing` in the default steps, or a pair such as `testing-reviewing` that a plan of
+  another order moves back by), or the word `any`, which is also what a hook that leaves the
   key out takes. A hook fires when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
@@ -966,7 +967,8 @@ answer. A pre-registration states seven things.
    an issue's start to its merge. Say how it is computed and which records it is read from. List
    secondary measures if you want them, and let none of them decide the experiment. Say which
    roles the arms reach (`roles`), and check that no reached role decides the outcome: a merge
-   waits on the reviewer's approval and the architect's sign-off, and the tester's fail sends
+   waits on the steps the issue's plan names, in the default steps the reviewer's approval and the
+   architect's sign-off, and a tester's fail sends
    work back, so where the arm reaches those roles a merge rate or a count of review rounds is
    partly the treatment's own verdict, and a laxer reviewer reads as a better arm. Leave such
    roles out of `roles`, or choose an outcome no reached role decides.
@@ -1240,8 +1242,8 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
-   the work back to the implementer, which answers and resolves the bot's threads and pushes, and
+   image pin (an empty list is refused too). A review bot's red is now CI like any other: it moves
+   no phase, and the implementer answers and resolves the bot's threads and pushes, and
    the bot runs again; the reviewer adjudicates nothing of it and re-runs nothing. Where the bot's
    threads must be closed before a merge, make that the repository's own rule (a ruleset's
    "Require conversation resolution before merging").
