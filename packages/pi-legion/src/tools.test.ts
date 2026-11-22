@@ -251,7 +251,9 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-  "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+  "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; " +
+  "a step may carry a key after its role: acceptance carries `owner` and no other, any other role any key but `owner` or none, " +
+  "and the steps of one key run as one agent in one claim and one session (`implementer:a tester:a`); a " +
   "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
