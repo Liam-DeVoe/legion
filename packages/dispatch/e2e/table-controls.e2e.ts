@@ -98,7 +98,7 @@ import {
   type ViewRow,
   valuesOf,
 } from "./inbox-view";
-import { leaveFocus } from "./keyboard-issue";
+import { focusThePage } from "./issue-page-g";
 import { searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
@@ -5152,7 +5152,7 @@ test("the Delivery page reaches every facet from its row, in both views, and its
   await page.setViewportSize({ height: 768, width: 1024 });
   await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
   await expect(prs).toHaveCount(3);
-  await leaveFocus(page);
+  await focusThePage(page);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await page.keyboard.press("ArrowDown");
   expect(
