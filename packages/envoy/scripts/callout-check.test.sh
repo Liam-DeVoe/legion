@@ -32,11 +32,14 @@
 # broker's connection FAILs line 6; (h) a connection list that cannot be read after the kill reads
 # UNKNOWN on line 6; (i) a hub listing one auth service connection before the kill reads UNKNOWN on
 # line 6 and kills nothing; (j) a hub whose list is read once after the kill, still naming both
-# connections, and then cannot be read FAILs line 6 with the count it last read; (k) a probe not
-# admitted in words that are not the server's FAILs lines 3 and 4; and (l) with nothing exported,
-# the check starts a stand-in dev-stack.sh --callout beside a copy of itself and reads the banner it
-# prints, its paths through printf %q under a directory holding a space and a quote, as a shell
-# does: it passes all six lines and stops the stack it started.
+# connections, and then cannot be read FAILs line 6 with the count it last read; (k) a probe that
+# says "not admitted" in words that are not the server's FAILs lines 3 and 4; (l) with nothing
+# exported, the check starts a stand-in dev-stack.sh --callout beside a copy of itself and reads the
+# banner it prints, its paths through printf %q under a directory holding a space and a quote, as a
+# shell does: it passes all six lines and stops the stack it started; (m) a whole fake banner block
+# ahead of the real one is refused by name, nothing of it run; and (n) with no stack exported, a
+# --database-url reaches the dev-stack.sh the check starts as LEGION_TEST_PG_DSN, never in its
+# arguments.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -430,3 +433,35 @@ grep -qF "holds the line 'dev-stack: ready.' more than once" "${started}/stderr"
 [ -z "$output" ] || fail "a stack whose log holds a fake banner block: the check ran its assertions: $output"
 [ -e "${started}/stopped" ] || fail "a stack whose log holds a fake banner block: the check did not stop the stack it started"
 echo "PASS: a stack whose log holds a whole fake banner block ahead of the real one is refused by name, nothing of either block read or run, exit 2, the stack stopped"
+
+# (n) With no stack exported, a --database-url reaches the dev-stack.sh the check starts as
+# LEGION_TEST_PG_DSN, set for that one command, in either spelling, and no argument of that child
+# holds the URL or its password; every other argument is passed on as it was. The check runs from
+# a copy, beside the lib/rig-banner.sh it sources, next to a dev-stack.sh stand-in that records its
+# arguments and its LEGION_TEST_PG_DSN and exits, so the stack never comes up and the check exits 2.
+url_copy="${temporary_dir}/url-check"
+mkdir -p "$url_copy/lib"
+cp "$check" "$url_copy/callout-check.sh"
+cp "${check%/*}/lib/rig-banner.sh" "$url_copy/lib/rig-banner.sh"
+cat >"$url_copy/dev-stack.sh" <<'EOF'
+printf '%s\n' "$*" >"$(dirname "$0")/args"
+printf '%s\n' "${LEGION_TEST_PG_DSN-unset}" >"$(dirname "$0")/dsn"
+exit 1
+EOF
+readonly secret_url='postgres://tester:not-a-secret%40canary@127.0.0.1:5999/postgres?sslmode=disable'
+url_case() { # <label> <callout-check.sh argument>...
+  local label="$1" got_args got_dsn
+  shift
+  rm -f "$url_copy/args" "$url_copy/dsn"
+  output=""
+  status=0
+  DEV_STACK_CALLOUT='' TMPDIR="$temporary_dir" bash "$url_copy/callout-check.sh" "$@" >/dev/null 2>&1 || status=$?
+  got_args="$(cat "$url_copy/args" 2>/dev/null || true)"
+  got_dsn="$(cat "$url_copy/dsn" 2>/dev/null || true)"
+  if [ "$status" -ne 2 ] || [ "$got_args" != "--callout --binaries /nowhere" ] || [ "$got_dsn" != "$secret_url" ]; then
+    fail "${label}: dev-stack.sh was started with arguments '${got_args}' and LEGION_TEST_PG_DSN '${got_dsn}' (exit ${status}); want '--callout --binaries /nowhere' and the URL"
+  fi
+}
+url_case "--database-url <url>" --database-url "$secret_url" --binaries /nowhere
+url_case "--database-url=<url>" "--database-url=$secret_url" --binaries /nowhere
+echo "PASS: a --database-url reaches dev-stack.sh as LEGION_TEST_PG_DSN in either spelling, and no argument of dev-stack.sh holds it"
