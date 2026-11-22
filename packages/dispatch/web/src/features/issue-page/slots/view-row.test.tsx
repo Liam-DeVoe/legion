@@ -19,7 +19,7 @@ import {
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
-import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot } from "./view-row";
@@ -68,13 +68,7 @@ function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[])
   return treeAnswer([
     treeNode(KEY, "issue", null),
     ...blocks,
-    ...comments.map((comment) =>
-      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
-        author: [comment.author],
-        made_at: comment.created_at,
-        text: comment.body,
-      })
-    ),
+    ...comments.map((comment) => commentNode(comment)),
   ]);
 }
 

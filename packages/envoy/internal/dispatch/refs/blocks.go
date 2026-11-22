@@ -1132,6 +1132,18 @@ func (b BlockIndexing) Marked() bool {
 	return b.won && b.marked
 }
 
+// Corrects says the indexing states over what another release left of the documents it covers:
+// it drains this build's mark (Marked), or it reads the store's statement of the document as
+// stale (blockStand.stale), as the release before leaves a document it writes and indexes after
+// this build stated it, setting no mark. Either way the versions that release wrote hold no
+// version node, and the caller writes their nodes in this same transaction (docs'
+// indexRenderedVersion): once this pass commits, the document stands stated at its version by
+// this build's rule, so neither a later pass nor the block-index tick's marking reaches them. It
+// is the condition the pass names the surviving rows of the document on (namesSurvivingRows).
+func (b BlockIndexing) Corrects() bool {
+	return b.won && b.namesSurvivingRows
+}
+
 // Stated is what the indexing states in the node and tuple store, held for the event that causes
 // its write: the caller hands it to graphstore.QueueCaused right after that event, in the same
 // write phase. A pass that lost the fence states only what the caller had it state beside it

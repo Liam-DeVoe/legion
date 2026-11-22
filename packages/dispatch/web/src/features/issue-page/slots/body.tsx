@@ -42,24 +42,25 @@ import { focusIsLoose } from "../tree-focus";
 import { TreeReadFailed } from "../tree-read/view-read";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
+import { useFollowing } from "./following";
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
-export function BodySlot({ issue, route }: SlotProps): ReactNode {
+export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNode {
   // The outline: the issue's one tree as the Conversation view leaves it, folded to the
   // frontier, in place of the rows drawn with every branch open before it. The spec's summary
   // callout is no row of it: the Spec view draws it as the issue's three sentences.
-  const { hash, key: locationKey, search } = useLocation();
+  const { hash, search } = useLocation();
+  const following = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`).
+  // The tree, and whether every read it is built from holds its answer (`useOutlineReads`).
   // Until then a tree with no node is one whose nodes have not arrived, and the outline's line
   // that the issue holds nothing would be false on every cold load, so the outline draws nothing
   // in its place; so would `q` and `w` saying there is no question or decision to go to, so they
   // say nothing. A read that stands failed holds nothing either, and the outline says so over
   // its rows (`failed`). Under a words filter the line that nothing holds the words waits on the
-  // names as well (`namesHeld`): a plan task's or a callout's words come from them alone, so
-  // before they are held such a node matches nothing, and the outline draws nothing in the
-  // line's place. With no filter on the line reads no words, and does not wait on the names.
+  // names as well (`namesHeld`), and the outline draws nothing in the line's place until they are
+  // held. With no filter on the line reads no words, and does not wait on the names.
   const { failed, namesHeld, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
@@ -95,7 +96,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which the address's row
   // drawn after the act does nothing to the page (`IssueTree`'s `addressActs`).
-  const acts = useRef<AbortController | undefined>(undefined);
+  const own = useRef<AbortController | undefined>(undefined);
+  const acts = given ?? own;
   // Whether the focus is on the body's box - a row of the outline, or a line drawn in its place -
   // as it stays while those swap (`useFocusHeld`).
   const { box, held } = useFocusHeld();
@@ -108,7 +110,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const takesFocus = useCallback(
     (drawn: HTMLElement) =>
       acts.current?.signal.aborted !== true || (held.current && focusIsLoose(drawn)),
-    [held]
+    [acts, held]
   );
   // The document a row of the outline is being edited in, and that document's one editor, which
   // the body draws for the row to take onto its own stage (`useOutlineEditing`).
@@ -116,7 +118,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const isClosed = issue.closed_at !== null;
   return (
     <NoTooltips>
-      <ReaderActsWatch into={acts} key={locationKey} />
+      {given === undefined && <ReaderActsWatch into={own} key={following} />}
       {/* The outline's measure, the prototype's `#pane`: at most 1000 px, in the middle of the
           column. On a phone 4 px from the left edge and 10 px from the right, as the
           prototype's `#reading` is there, so the bullets keep the picture's place. Its
@@ -133,20 +135,20 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
         {fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
-          <ItemFallback fallback={fallback} key={locationKey} takesFocus={takesFocus} />
+          <ItemFallback fallback={fallback} key={following} takesFocus={takesFocus} />
         ) : fallback?.kind === "absent" ? (
           // Keyed on the following, as the item's own page is.
           <NotFoundLine
             heading={ABSENT_LINES[fallback.target.kind].heading}
             issueKey={key}
-            key={locationKey}
+            key={following}
             line={ABSENT_LINES[fallback.target.kind].line(key)}
             takesFocus={takesFocus}
           />
         ) : (
           <IssueTree
             addressActs={acts}
-            addressKey={locationKey}
+            addressKey={following}
             artifacts={artifacts}
             context={view.context}
             emptyLine={
@@ -181,13 +183,14 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
 /**
  * Starts the controller the reader's first act since the address was followed aborts
  * (`READER_ACTS`), and puts it in `into`: one for each following, as the body keys this on the
- * following (the location's own key), started as the following is drawn. It draws nothing. It is
+ * following (`useFollowing`) where it is handed no controller's ref, and the stage keys its own
+ * so (`StageSlot`), started as the following is drawn. It draws nothing. It is
  * started in a layout effect, which runs before every passive effect of that commit, and every
  * reader of the controller reads it in a passive effect (`IssueTree.tsx`'s effect that reads
  * `addressActs`, `useFocusOnDraw`'s that calls `takesFocus`): a line drawn in the commit of the
  * following itself reads the following's own controller.
  */
-function ReaderActsWatch({ into }: { into: ReaderActs }): ReactNode {
+export function ReaderActsWatch({ into }: { into: ReaderActs }): ReactNode {
   useLayoutEffect(() => {
     const watched = abortOnReaderAct();
     into.current = watched;
@@ -326,6 +329,10 @@ function MatchList({
 
 /** What the reader's first act since the address was followed aborts (`ReaderActsWatch`). */
 type ReaderActs = RefObject<AbortController | undefined>;
+
+/** The body's props: the slot's own, and the reader's acts since the address was followed, which
+ *  the stage watches and hands the body it draws (`acts`); left out, the body watches its own. */
+type BodySlotProps = SlotProps & { readonly acts?: ReaderActs };
 
 /** Whether the focus is on the body's box, or was as the element holding it there left the
  *  page (`BodySlot`'s `held`). */

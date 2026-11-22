@@ -2,8 +2,8 @@
 // decision is one node: an agent's is a
 // `decision` block node, and a person's is the answered ask's own `ask` node. This package is the
 // one reader of what every read of a decision answers about it - its words, their text sum, the
-// spec nodes it shaped with each link's `stale`, its review state, and the version it last changed
-// in - so the reads that answer a decision answer the same values:
+// spec nodes it shaped with each link's `stale` and `changed_since_tie`, its review state, and the
+// version it last changed in - so the reads that answer a decision answer the same values:
 //
 //   - the Decisions read's `entries` (api's getIssueDecisions), which takes each member below from
 //     here and adds what only an entry carries;
@@ -91,9 +91,12 @@ func TextSum(text string) string {
 //     block (the decision's, or the ask's). Event is the tuple's
 //     source_event and CreatedAt its at; TextChangedEvent is the event that wrote the version the
 //     target's text last changed in (its document_blocks.changed_version) and TextChangedAt that
-//     version's created_at. Stale is true when the target's text changed after the tuple was
-//     written: by the two events where both are held, else by the database's clock (R5). None of
-//     the three computed members is stored.
+//     version's created_at. Two facts are read off those times, each by the two events where both
+//     are held, else by the database's clock. Stale is the release before's rule (staleLink): the
+//     decision's own words last changed (ChangedAt, and the event that recorded that version)
+//     after the tuple was written, and the target's text last changed before they did; false
+//     where either change cannot be read. ChangedSinceTie is R5's (textChangedAfterTie): the
+//     target's text changed after the tuple was written. None of the computed members is stored.
 //
 // A node whose stored value does not parse - an uncertainty or a replaced outside its type, or
 // words that do not read back - is left out and logged, and the read goes on with the others. A
@@ -120,6 +123,9 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 		return nil, err
 	}
 	versions := &walker{q: q, versions: map[versionKey]versionRead{}}
+	// changes is, for each decision, its document and the version its words last changed in, which
+	// the walk answers and its links' Stale compares (markStale).
+	var changes []versionKey
 	for index := range nodes {
 		node, found := held[index]
 		// A node that is no decision is left out with no log: the Keep reads the node at whatever
@@ -137,8 +143,67 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 			continue
 		}
 		decisions = append(decisions, decision)
+		changes = append(changes, versionKey{artifactID: node.artifactID, number: decision.ChangedVersion})
+	}
+	if err := markStale(ctx, q, decisions, changes); err != nil {
+		return nil, err
 	}
 	return decisions, nil
+}
+
+// markStale sets each link's Stale (staleLink) once the walk has answered each decision's own
+// change: its ChangedAt, and the event that recorded the version changes names for it, read in one
+// statement for every decision that holds a link and a change (versionEventRead). changes[i] is
+// decisions[i]'s document and ChangedVersion. A decision with no ChangedAt - its words read in no
+// version the store holds - has no change that can be read, and its links stay fresh.
+func markStale(ctx context.Context, q graphstore.Queryer, decisions []model.Decision, changes []versionKey) error {
+	var asked []int
+	for index, decision := range decisions {
+		if decision.ChangedAt != nil && len(decision.Links) > 0 {
+			asked = append(asked, index)
+		}
+	}
+	if len(asked) == 0 {
+		return nil
+	}
+	documents, numbers := make([]string, len(asked)), make([]int, len(asked))
+	for at, index := range asked {
+		documents[at], numbers[at] = changes[index].artifactID, changes[index].number
+	}
+	rows, err := q.Query(ctx, `
+		select w.n, `+versionEventRead("doc", "w.number")+`
+		from unnest($1::text[], $2::int[]) with ordinality as w (artifact_id, number, n)
+		join artifacts doc on doc.id = w.artifact_id::uuid
+	`, documents, numbers)
+	if err != nil {
+		return fmt.Errorf("read the events of the decisions' changes: %w", err)
+	}
+	defer rows.Close()
+	events := make(map[int]int64, len(asked))
+	for rows.Next() {
+		var n int64
+		var event *int64
+		if err := rows.Scan(&n, &event); err != nil {
+			return fmt.Errorf("read the event of a decision's change: %w", err)
+		}
+		if event != nil && *event != graphstore.NoEvent {
+			events[asked[n-1]] = *event
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the events of the decisions' changes: %w", err)
+	}
+	for _, index := range asked {
+		decision := &decisions[index]
+		var event *int64
+		if held, found := events[index]; found {
+			event = &held
+		}
+		for at := range decision.Links {
+			decision.Links[at].Stale = staleLink(decision.Links[at], *decision.ChangedAt, event)
+		}
+	}
+	return nil
 }
 
 // heldNode is what the store holds of one node Decisions reads: the node row, the document that
@@ -299,11 +364,11 @@ func readFacts(ctx context.Context, q graphstore.Queryer, kinds, ids []string) (
 }
 
 // readLinks reads, for each node, every spec node a current `shaped` tuple of it reaches that who
-// may see (refs.VisibleKind), in one statement, with the two times R5 compares: the tuple's own
-// event and time, and the event and time that wrote the version the target's text last changed
-// in. The event of a version is docs' versionEventID's: its artifact.version, or for version 1 the
-// document's artifact.created or the issue.created that seeded the issue's spec. A target whose
-// document holds no row for it - one that still owes its block index - has no such version.
+// may see (refs.VisibleKind), in one statement, with the times a link's two facts compare: the
+// tuple's own event and time, and the event and time that wrote the version the target's text
+// last changed in (versionEventRead). A target whose document holds no row for it - one that still
+// owes its block index - has no such version. It sets each link's ChangedSinceTie; its Stale waits
+// on the decision's own change, which the walk answers (markStale).
 //
 // A tuple's far end is the address its pointer spells, `<ref_key>#<block>` of the document it
 // names. The target's row is the one at that address, or, for a document converted into its
@@ -317,13 +382,7 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 	rows, err := q.Query(ctx, `
 		select w.n, s.to_id, s.at, s.source_event,
 		       coalesce(target.block_id, ''), coalesce(target.excerpt, ''), target.changed_version, target_version.created_at,
-		       (select e.id from events e
-		        where (e.issue_key = doc.issue_key or e.artifact_id = doc.id)
-		          and (e.type = 'artifact.version' and e.payload->>'artifact_id' = doc.id::text
-		               and e.payload->'version'->>'number' = target.changed_version::text
-		               or target.changed_version = 1 and e.type = 'artifact.created' and e.payload->'artifact'->>'id' = doc.id::text
-		               or target.changed_version = 1 and e.type = 'issue.created' and e.issue_key = doc.issue_key and doc.is_primary)
-		        order by e.id desc limit 1),
+		       `+versionEventRead("doc", "target.changed_version")+`,
 		       doc.id is not null, coalesce(doc.ref_key, ''), coalesce(doc.slug, ''), coalesce(doc.kind, ''),
 		       doc.issue_key, doc.project_key, doc.session_id, coalesce(doc.is_primary, false),
 		       coalesce((select r.created_version from block_refs r
@@ -389,16 +448,32 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		if changedEvent != nil && *changedEvent != graphstore.NoEvent {
 			link.TextChangedEvent = changedEvent
 		}
-		link.Stale = textChangedAfterTie(link)
+		link.ChangedSinceTie = textChangedAfterTie(link)
 		links[int(n)-1] = append(links[int(n)-1], link)
 	}
 	return links, rows.Err()
 }
 
-// textChangedAfterTie is R5's rule for one link (H1): the target's text changed after the
-// decision tied it. The two times are the store's: the events that wrote each where both are
-// held, else the database's clock - the version's created_at against the tuple's at. A target
-// with no recorded change, one whose document still owes its block index, has not changed.
+// versionEventRead is the scalar subquery of the event that recorded version number of the
+// document whose artifacts row the statement it stands in names doc, number being an SQL
+// expression of that statement: docs' versionEventID's rule, its artifact.version, or for version
+// 1 the document's artifact.created or the issue.created that seeded the issue's spec, the newest
+// where more than one matches, and null where none does.
+func versionEventRead(doc, number string) string {
+	return `(select e.id from events e
+		        where (e.issue_key = ` + doc + `.issue_key or e.artifact_id = ` + doc + `.id)
+		          and (e.type = 'artifact.version' and e.payload->>'artifact_id' = ` + doc + `.id::text
+		               and e.payload->'version'->>'number' = ` + number + `::text
+		               or ` + number + ` = 1 and e.type = 'artifact.created' and e.payload->'artifact'->>'id' = ` + doc + `.id::text
+		               or ` + number + ` = 1 and e.type = 'issue.created' and e.issue_key = ` + doc + `.issue_key and ` + doc + `.is_primary)
+		        order by e.id desc limit 1)`
+}
+
+// textChangedAfterTie is R5's rule for one link (H1), its ChangedSinceTie: the target's text
+// changed after the decision tied it. The two times are the store's: the events that wrote each
+// where both are held, else the database's clock - the version's created_at against the tuple's
+// at. A target with no recorded change, one whose document still owes its block index, has not
+// changed.
 func textChangedAfterTie(link model.DecisionLink) bool {
 	if link.TextChangedAt == nil {
 		return false
@@ -407,6 +482,28 @@ func textChangedAfterTie(link model.DecisionLink) bool {
 		return *link.TextChangedEvent > *link.Event
 	}
 	return link.TextChangedAt.After(link.CreatedAt)
+}
+
+// staleLink is the release before's rule for one link, its Stale, which every reader of a link's
+// `stale` reads: the decision's own words changed after it tied the target, and the target's text
+// has not changed since they did. changedAt is when the version that last changed the decision's
+// words was written, and changedEvent the event that recorded it, nil where the store holds none.
+// Each half compares the store's times as textChangedAfterTie does: the two events where both are
+// held, else the database's clock. A target with no recorded change is a change that cannot be
+// read, and the link is not stale, as the release before marked nothing it could not read.
+func staleLink(link model.DecisionLink, changedAt time.Time, changedEvent *int64) bool {
+	if link.TextChangedAt == nil {
+		return false
+	}
+	changedAfterTie := changedAt.After(link.CreatedAt)
+	if changedEvent != nil && link.Event != nil {
+		changedAfterTie = *changedEvent > *link.Event
+	}
+	targetBefore := link.TextChangedAt.Before(changedAt)
+	if changedEvent != nil && link.TextChangedEvent != nil {
+		targetBefore = *link.TextChangedEvent < *changedEvent
+	}
+	return changedAfterTie && targetBefore
 }
 
 // isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a

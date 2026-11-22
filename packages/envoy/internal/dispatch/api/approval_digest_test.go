@@ -645,9 +645,13 @@ func digestStepRequirementUnderComment(t *testing.T, rig *digestRig) {
 }
 
 func digestStepChildCriterion(t *testing.T, rig *digestRig) {
-	// The child is born converted under the rig's issue, whose requirements stand, so it is a view
-	// and its spec holds its design and no requirement of its own.
-	child := createChildIssue(t, rig.handler, "CORE", rig.issue.Key, "The child's design.\n")
+	// The child is no view, so its spec query takes its criterion and requirement nodes: a view's
+	// takes its memo alone (docs' queryDefinitions). A child born converted under the rig's issue,
+	// whose requirements stand, is a view and may hold no requirement of its own, so this child is
+	// one the release before created, holding a requirement of its own, as the owning child of the
+	// tree read's view test is.
+	child := createDigestChild(t, rig.handler, rig.database, "CORE", "The owning child",
+		":::requirement{#cr1}\nThe child's own requirement.\n:::\n", rig.issue.Key, true)
 	_, block := personComment(t, rig.handler, rig.database, rig.issue.Key, "I want it quick.\n\nAnd right.")
 	parent := rig.record(t, rig.issue.Key, graphstore.QuerySpec)
 	childBefore := rig.record(t, child.Key, graphstore.QuerySpec)

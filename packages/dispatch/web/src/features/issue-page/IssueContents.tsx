@@ -22,6 +22,7 @@ import {
 } from "../../theme/classes";
 import { isContentsEntry } from "./contents-entries";
 import { useFocusedNode } from "./focused-node";
+import { MenuMark } from "./IssuePresets";
 import {
   drawnLine,
   firstLineOf,
@@ -31,7 +32,7 @@ import {
   type TreeNode,
 } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { CAP, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -42,6 +43,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { pathTo } from "./tree-fold";
+import { CAP } from "./verification-filter/VerificationFilterBody";
 
 /** One entry of the list: a question, or a thread the reader began, with the entries under it,
  *  and what its own branch holds that its marks count (`CONTENTS_MARK_WORDS`). */
@@ -192,13 +194,10 @@ export function ContentsList({
   // focus leaving the outline - for this list, say - leaves the entry the reader was last in.
   const focused = useFocusedNode()?.id;
   const [lastIn, setLastIn] = useState<string | undefined>(undefined);
-  const inEntry = useMemo(() => {
-    if (focused === undefined) return undefined;
-    return (pathTo(root, focused) ?? [])
-      .map((node) => node.id)
-      .filter((id) => entryIds.has(id))
-      .at(-1);
-  }, [entryIds, focused, root]);
+  const inEntry = useMemo(
+    () => nearestAtOrAbove(root, focused, (id) => entryIds.has(id)),
+    [entryIds, focused, root]
+  );
   useEffect(() => {
     if (inEntry !== undefined) setLastIn(inEntry);
   }, [inEntry]);
@@ -285,13 +284,7 @@ export function ContentsList({
   // fold above that entry hides it - else the first.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const ids = rows.map((row) => row.entry.node.id);
-  const drawnAtOrAbove =
-    current === undefined
-      ? undefined
-      : (pathTo(root, current) ?? [])
-          .map((node) => node.id)
-          .filter((id) => ids.includes(id))
-          .at(-1);
+  const drawnAtOrAbove = nearestAtOrAbove(root, current, (id) => ids.includes(id));
   const tabStop = stop !== undefined && ids.includes(stop) ? stop : (drawnAtOrAbove ?? ids[0]);
   const moveTo = (id: string | undefined) => {
     if (id === undefined) return;
@@ -416,7 +409,19 @@ export function ContentsList({
                   tabIndex={-1}
                   type="button"
                 >
-                  <span aria-hidden="true">{folded.has(node.id) ? "▸" : "▾"}</span>
+                  {/* The view row's mark, turned a quarter to point right while the entry is
+                      folded. It is a shape and not text, as `StatusGlyph`'s are, because the
+                      page's typeface lacks ▸ and ▾: as text, they are drawn in a face of the
+                      reader's own machine, at that face's width. The control's own `aria-label`
+                      names the act, so the shape is hidden from assistive technology. */}
+                  <span
+                    aria-hidden="true"
+                    className={`inline-flex shrink-0 align-middle ${
+                      folded.has(node.id) ? "-rotate-90" : ""
+                    }`}
+                  >
+                    <MenuMark />
+                  </span>
                 </button>
               ) : (
                 <span aria-hidden="true" className="h-8 w-3 shrink-0" />
@@ -474,4 +479,20 @@ export function ContentsList({
       </div>
     </>
   );
+}
+
+/** The nearest node at or above node `id` in `root` that `counts`: the last of them on the path
+ *  from the root down to it, which is the one rule both the entry the reader is in and the
+ *  tab stop's fallback are read by. Undefined where `id` is, or where no node on that path
+ *  counts. */
+function nearestAtOrAbove(
+  root: TreeNode,
+  id: string | undefined,
+  counts: (id: string) => boolean
+): string | undefined {
+  if (id === undefined) return undefined;
+  return (pathTo(root, id) ?? [])
+    .map((node) => node.id)
+    .filter(counts)
+    .at(-1);
 }

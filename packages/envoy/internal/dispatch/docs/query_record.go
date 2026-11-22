@@ -39,9 +39,10 @@ const (
 // issue that is a view (IssueTree.ViewOf) it takes the memo alone, so a requirement a client
 // brought into a view through its room is no node of the view's spec and no part of the record an
 // approval of it covers (R23). The verification takes the checks and the results under them. The
-// plan takes the plan nodes. The decisions query takes asks, decisions and readings by rules of
-// its own, and holds no entry until its record is built: a record of a query with no entry is
-// refused.
+// plan takes the plan nodes. The decisions query takes asks, decisions and readings by a rule of
+// its own (decisionsTakes), which the tree read's decisions view answers its nodes by (Takes); it
+// holds no entry here until its record is built, so a record of it is refused, as a record of a
+// query with no entry is.
 var queryDefinitions = map[string]func(tree IssueTree, index int) bool{
 	graphstore.QuerySpec: func(tree IssueTree, index int) bool {
 		if tree.ViewOf != "" {
@@ -66,11 +67,31 @@ var queryDefinitions = map[string]func(tree IssueTree, index int) bool{
 	},
 }
 
-// queryTakes is graphstore.QueryTakes of each query a definition holds, read once.
+// queryTakes is graphstore.QueryTakes of each query a definition holds, and of the decisions
+// query, whose rule is decisionsTakes, read once.
 var queryTakes = map[string][]string{
 	graphstore.QuerySpec:         graphstore.QueryTakes(graphstore.QuerySpec),
 	graphstore.QueryVerification: graphstore.QueryTakes(graphstore.QueryVerification),
 	graphstore.QueryPlan:         graphstore.QueryTakes(graphstore.QueryPlan),
+	graphstore.QueryDecisions:    graphstore.QueryTakes(graphstore.QueryDecisions),
+}
+
+// decisionsTakes is the decisions query's rule: of the types graphstore.QueryTakes lists for it,
+// each ask by the ask's own node, never the block that shows it in a document; each decision; and
+// each reading whose parent in the walk is a decision, the reading under an agent's decision.
+func decisionsTakes(tree IssueTree, index int) bool {
+	node := tree.Nodes[index]
+	if !slices.Contains(queryTakes[graphstore.QueryDecisions], node.Type) {
+		return false
+	}
+	switch node.Type {
+	case graphstore.SupertagAsk:
+		return node.Kind == graphstore.KindAsk
+	case refs.ReadingSupertag:
+		parent, held := tree.index[node.Parent]
+		return held && tree.Nodes[parent].Type == refs.DecisionSupertag
+	}
+	return true
 }
 
 // TreeNode is one node of an issue's tree as a walk takes it: its kind and its id, as the store
@@ -505,10 +526,14 @@ func ReadQueryRecord(ctx context.Context, q Queryer, issueKey, query string, cut
 }
 
 // Takes is the index in the walk of each node the query takes, in the walk's order, by the one
-// definition its record is built by (queryDefinitions), and false where no definition names the
-// query. The tree read's view of a query answers these nodes as the query's.
+// definition its record is built by (queryDefinitions), or for the decisions query, whose record is
+// not built yet, by its rule (decisionsTakes), and false where neither names the query. The tree
+// read's view of a query answers these nodes as the query's.
 func (tree IssueTree) Takes(query string) ([]int, bool) {
 	takes, defined := queryDefinitions[query]
+	if !defined && query == graphstore.QueryDecisions {
+		takes, defined = decisionsTakes, true
+	}
 	if !defined {
 		return nil, false
 	}

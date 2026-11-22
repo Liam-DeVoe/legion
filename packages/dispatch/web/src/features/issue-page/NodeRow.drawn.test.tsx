@@ -23,6 +23,7 @@ import {
   decisionsRead,
   issueDetails,
   KEY,
+  SPEC_DOCUMENT,
   SPEC_SLUG,
 } from "./decisions-filter/decisions-fixtures";
 import { buildIssueTree, type NodeChip, type TreeNode } from "./issue-tree";
@@ -47,6 +48,7 @@ import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms, blockNodeId } from "./tree-drafts";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -264,7 +266,9 @@ function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
 // is: its role's word on the row and its whole title in the opened body (ruling 6). A session no
 // registry lists any longer is named by the title it stamped on what it wrote, which the entry
 // carries (`decided_by.title`), in the same two places. A decision whose entry names nobody draws
-// no author on its row, and its opened body says "Author unknown" (ruling 5).
+// no author on its row, and its opened body says "Author unknown" (ruling 5). Each decision is a
+// node of the tree read, a `decision` block of the spec, whose `decision` names no decider, so
+// the decider is its entry's.
 test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
   const title = "Legion architect · CORE-1";
   const storedTitle = "Legion planner · CORE-1";
@@ -285,6 +289,15 @@ test("an agent's decision draws the session its entry names as its decider, by t
       }),
     },
     issue: issueDetails(),
+    tree: treeAnswer(
+      [named, unnamed, stored].map((made, position) =>
+        treeNode(made.block_id, "decision", KEY, {
+          decision: { ref: made.ref, waiting_review: true },
+          document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
+          text: made.heading,
+        })
+      )
+    ),
   });
   const registered: Agent = {
     capabilities: [],
