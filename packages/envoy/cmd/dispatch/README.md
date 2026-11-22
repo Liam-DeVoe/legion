@@ -2875,6 +2875,7 @@ Where the new name gives a row the key of another row, the row under the new nam
 The pass logs each field it writes at INFO with `field`, `from`, `to` and `rows`, and each line that fails at ERROR with its field, and it then goes on to the next line.
 It writes no other column, `updated_at` included, and appends no event.
 It never writes `repo_projects`, the event log, or the text of documents, comments, asks and messages, which keep their words.
+Nor does it write `spec_check_results`: each row records one CI run with its repository as the run's results token named it, which the row's in-toto statement holds too, nothing updates or deletes a row, and no read selects or compares by that column.
 After its writes it counts the rows of those fields that still name an old name.
 It also counts them before its writes, and where that count finds none, it runs no line.
 A failure of that first count is not a failure of the pass, which then runs every line.
