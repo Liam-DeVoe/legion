@@ -847,36 +847,21 @@ func (r *personHandoverRig) resolveAsk(ask string, identity scratchIdentity) {
 	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/asks/"+ask+"/resolve", map[string]any{"kind": "resolved", "reason": "The request is withdrawn."}, nil, identity)
 }
 
-// launchedArchitect waits for the daemon to admit key and launch its architect, registers that
-// launch's session as admit does, and answers the operator's view of the claim, whose pending
-// task is the start task.
-func (r *personHandoverRig) launchedArchitect(key string) api.OperatorClaim {
-	t := r.t
-	t.Helper()
-	settled(t, r.d, "admit "+key+" into a slot", func(s api.State) bool { return slices.Contains(s.Admission.Active, key) })
-	token := r.architectToken(key)
-	testwait.Eventually(t, "the daemon to launch the architect of "+key, func() bool { return r.launches(string(token)) > 0 })
-	launch := lastLaunch(t, r.rt, token)
-	session, secret := registerLaunch(t, r.d, launch)
-	r.architects[key] = rigArchitect{launch: launch, session: session, secret: secret}
-	return r.d.claim(token)
-}
-
 // pendingPlace is where a run of k11 places P: a live Legion root of its own tree, a member issue
-// of another live tree, labelled and in progress in no tree the daemon records, or a Legion root on
-// the backlog the daemon has not recorded.
+// of another live tree, labelled and in progress in no tree the daemon records, or a labelled
+// Legion root the person handed to Legion that waits in the line for its first slot.
 type pendingPlace int
 
 const (
 	ancestorLive pendingPlace = iota
 	ancestorMember
 	ancestorUnrecorded
-	ancestorOnBacklog
+	ancestorWaiting
 )
 
-// recorded says whether the daemon records P in a live tree, where a notice keyed by P reaches the
-// architect that owns it.
-func (p pendingPlace) recorded() bool { return p == ancestorLive || p == ancestorMember }
+// recorded says whether the daemon records P in a live tree, where a notice keyed by P is queued
+// for the architect that owns it.
+func (p pendingPlace) recorded() bool { return p != ancestorUnrecorded }
 
 // pendingOptions shape one run of k11 beyond P's place: P at v3 with no v4 (noV4); v4 written with
 // no approval request opened on it (noRequest); R's step opened on P's v3 before, closed again by
@@ -954,11 +939,12 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		})
 	case ancestorUnrecorded:
 		r.setStatus(run.parent.Key, "in_progress")
-	case ancestorOnBacklog:
-		// The approval is applied while P is in triage, so it is no person's handover of a root on
-		// the backlog.
-		r.applied(r.newestEvent(run.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == approved.Version }))
-		r.setStatus(run.parent.Key, "backlog")
+	case ancestorWaiting:
+		// The person hands P to Legion while the project stands at its cap, which the run's own R
+		// filled (the caller lowers the cap to it), so P waits in the line for its first slot and no
+		// architect of P runs (R19 of dispatch://INFRA-3320).
+		r.setStatus(run.parent.Key, "todo")
+		r.waiting(run.parent.Key)
 		r.quiet(run.parent.Key)
 	}
 	r.linkUnder(run.root, run.parent, opt.place == ancestorLive)
@@ -1215,8 +1201,8 @@ func (r *personHandoverRig) basisChangesTold(run basisRun, reason string, told b
 //     and sends both design-approved and basis-ended.
 //   - The pending registration and the approval again with R's step opened before on P's v3 and
 //     R implementing; with a member of R's tree in its planning; with P a member issue of another
-//     live tree; and with P a Legion root on the backlog the daemon has not recorded, whose
-//     re-admission by that approval starts it with a task naming R.
+//     live tree; and with P a labelled Legion root that waits in the line for its first slot,
+//     whose admission once a slot frees starts its architect with a task naming R.
 //   - The daemon stopped after the pending registration and its seed, the person's approval of v4
 //     given while it is down and dropped from its consumer when it starts again: the boot's
 //     pending-basis read alone opens the step.
@@ -1298,7 +1284,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 			return fmt.Sprintf("user:smoke closed approval request %s of version %d of %s", run.ask, run.basisVersion, document(run))
 		}},
 		{"P set done", []string{"Snowplow route planner", "Winter roads programme"}, func(run pendingRun) string {
-			r.setStatus(run.parent.Key, "done")
+			r.closeUnlinking(run.parent.Key)
 			return fmt.Sprintf("Dispatch shows %s done, so %s is accepted.", run.parent.Key, run.parent.Key)
 		}},
 		{"a new version of R's own document", []string{"Streetlight dimmer schedule", "Municipal lighting retrofit"}, func(run pendingRun) string {
@@ -1417,19 +1403,6 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.pendingRegistered(nested.basisRun, nested.ask, true, phase.Admitted)
 	r.approve(nested.parent.PrimaryArtifactID)
 	r.openedOnBasis(nested.root, nested.parent, 1, nested.basisVersion)
-
-	// P a Legion root on the backlog the daemon has not recorded.
-	onBacklog := r.pendingWorld([]string{"Seed vault humidity", "Agricultural heritage archive"}, pendingOptions{place: ancestorOnBacklog})
-	r.registerOn(onBacklog.basisRun)
-	r.pendingRegistered(onBacklog.basisRun, onBacklog.ask, false, phase.Admitted)
-	r.approve(onBacklog.parent.PrimaryArtifactID)
-	r.openedOnBasis(onBacklog.root, onBacklog.parent, 1, onBacklog.basisVersion)
-	started := r.launchedArchitect(onBacklog.parent.Key)
-	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", onBacklog.parent.Key, onBacklog.root.Key)
-	if started.Pending == nil || !strings.Contains(started.Pending.Task, restingTask) {
-		t.Fatalf("the start task of %s, which the person's approval re-admitted, = %+v, want it naming %q", onBacklog.parent.Key, started.Pending, restingTask)
-	}
-	t.Logf("the person's approval of %s on the backlog opened %s and re-admitted %s, whose start task names it", onBacklog.parent.Key, onBacklog.root.Key, onBacklog.parent.Key)
 
 	// The daemon stopped after the pending seed ran; the approval while it is down, its event
 	// dropped when it starts again.
@@ -1581,4 +1554,52 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		basisCall(unasked.grant(), unasked.root, unasked.rootVersion, unasked.parent.PrimaryArtifactID, unasked.basisVersion, basisReason),
 		http.StatusConflict, "BASIS_NOT_APPROVED", fmt.Sprintf("an approval of version 3 by user:smoke, older than its latest version %d, and no open approval request",
 			unasked.basisVersion))
+
+	// P a labelled Legion root that waits in the line for its first slot. The daemon boots again
+	// with the cap lowered to the slots its roots hold and one more, which the run's R takes, so P
+	// waits; the resting-root rows keyed by P are held so that they are read where they stand. The
+	// approval opens R's step, and R stays admitted, waiting for P's own gate (R19). A person's done
+	// on a root of an earlier run frees a slot, whose promotion admits P and starts its architect,
+	// whose start task names R; P's architect registers P's gate on the approval, and R plans.
+	state, _ = settled(t, r.d, "answer its state before the cap is lowered", func(api.State) bool { return true })
+	r.cfg.AdmissionCap = len(state.Admission.Active) + 1
+	r.restart()
+	waiting := r.pendingWorld([]string{"Seed vault humidity", "Agricultural heritage archive"}, pendingOptions{place: ancestorWaiting})
+	held.hold(waiting.parent.Key, record.OutboxKindNotice)
+	r.registerOn(waiting.basisRun)
+	r.pendingRegistered(waiting.basisRun, waiting.ask, true, phase.Admitted)
+	r.approve(waiting.parent.PrimaryArtifactID)
+	settled(t, r.d, "open the spec step of "+waiting.root.Key+" while "+waiting.parent.Key+" waits in the line", func(s api.State) bool {
+		return stepOf(s, waiting.root.Key).Status == api.GatedStepOpenOnBasis && s.Issues[waiting.root.Key].Phase == phase.Admitted &&
+			slices.Contains(s.Admission.Waiting, waiting.parent.Key)
+	})
+	architect := r.architectToken(waiting.parent.Key)
+	launched := r.launches(string(architect))
+	r.setStatus(approved.root.Key, "done")
+	parentGrant := r.admitted(waiting.parent.Key, launched)
+	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in admitted).", waiting.parent.Key, waiting.root.Key)
+	var started api.OperatorClaim
+	testwait.Eventually(t, "the architect of "+waiting.parent.Key+" to hold its start task", func() bool {
+		started = r.d.claim(architect)
+		return started.Pending != nil
+	})
+	if !strings.Contains(started.Pending.Task, restingTask) {
+		t.Fatalf("the start task of %s, admitted from the line, = %q, want it naming %q", waiting.parent.Key, started.Pending.Task, restingTask)
+	}
+	held.release(waiting.parent.Key)
+	r.registerApprovedGate(waiting.parent.Key, waiting.parent.PrimaryArtifactID, waiting.basisVersion, parentGrant)
+	r.openedOnBasis(waiting.root, waiting.parent, 1, waiting.basisVersion)
+	t.Logf("the person's approval of %s, waiting in the line, opened %s; a slot admitted %s, whose start task names it", waiting.parent.Key, waiting.root.Key, waiting.parent.Key)
+}
+
+// closeUnlinking closes key as the person does at the dashboard while issues under it are still
+// open: done with unlink_children through Dispatch's status-change route, which unlinks each open
+// issue under key, at its own status, before the close, so Dispatch's parent rule (R24 of
+// dispatch://INFRA-3320) holds throughout.
+func (r *personHandoverRig) closeUnlinking(key string) {
+	r.t.Helper()
+	if status, body := dispatchAnswerAs(r.t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/status-change",
+		map[string]any{"status": "done", "unlink_children": true}, asPerson); status != http.StatusOK {
+		r.t.Fatalf("the person's close of %s with unlink_children = %d: %s", key, status, body)
+	}
 }

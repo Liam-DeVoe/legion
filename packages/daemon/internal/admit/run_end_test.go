@@ -289,6 +289,16 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		// and the caller is told (decision 12 of dispatch://INFRA-4730).
 		"StatusRefused": {{name: "a refused status write keeps the issue in its step", arrange: none, source: "outbox",
 			fact: intake.StatusRefused{Issue: planning, Generation: 1, Entry: 1, Status: "backlog", Issues: []string{"LEGION-777 (todo)"}}, keeps: planning}},
+		// A status call counts its write on the record before Dispatch echoes it (R16 of
+		// dispatch://INFRA-3320): the controller's backlog on a running child takes it out of
+		// Legion's work where it stands, as a person's would, and ends its step's run; its todo on
+		// a child in work writes no status, and nothing of its step moves (workflow's statusCall).
+		"StatusCall": {
+			{name: "the controller's set_status parks a running child", arrange: none,
+				fact: intake.StatusCall{Op: intake.SetStatusCall, Issues: []intake.StatusCallIssue{{Key: planning, Status: "backlog"}}}, leaves: planning},
+			{name: "the controller's set_status todo on a running child keeps it in its step", arrange: none,
+				fact: intake.StatusCall{Op: intake.SetStatusCall, Issues: []intake.StatusCallIssue{{Key: planning, Status: "todo"}}}, keeps: planning},
+		},
 		// A member's merge queues its close and moves nothing: it leaves merging, and its step's
 		// run ends, once Dispatch shows it done (R24 of dispatch://INFRA-3320, workflow's closeLanded).
 		"PullRequestMerged": {{name: "a member's merge lands while the root is parked", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
