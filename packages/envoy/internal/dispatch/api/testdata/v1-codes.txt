@@ -280,6 +280,7 @@ WAIT_INPUT 400
 
 # Added on main after c8a44f97.
 CHECK_CONTENDED 409 # #2468, a write holds its transaction id only for its database statements
+FOREIGN_CHILD_OPEN 409 # #4884, an acceptance write waits for an open child of another project
 INVALID_ROLE_HOLDER 400 # #4228, the Legion daemon publishes the session of each role of an issue
 LEGION_NOT_CONFIGURED 404 # #2731, a project's Legion board from its daemon's recorded state
 LEGION_SETTING_INPUT 400 # #2731, the Legion daemon a project's state is read from

@@ -213,6 +213,7 @@ var (
 	FollowerForbidden                  = both("FOLLOWER_FORBIDDEN", http.StatusForbidden)
 	FollowerInput                      = both("FOLLOWER_INPUT", http.StatusBadRequest)
 	FollowerNotFound                   = both("FOLLOWER_NOT_FOUND", http.StatusNotFound)
+	ForeignChildOpen                   = both("FOREIGN_CHILD_OPEN", http.StatusConflict)
 	FrameInput                         = both("FRAME_INPUT", http.StatusBadRequest)
 	GitHubAppUnconfigured              = both("GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable)
 	GitHubUnreadable                   = both("GITHUB_UNREADABLE", http.StatusBadGateway)

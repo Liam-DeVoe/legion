@@ -196,10 +196,14 @@ func (s *server) v2IssueRows() []routeRow {
 				"issue holds when the write commits rather than replacing them; not with labels), route, parent, "+
 				"blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, "+
 				"assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or "+
-				"components ({mode: inherit|explicit|none, ids, reason}); and design_gates, the whole set of documents its "+
-				"design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none "+
-				"(a step named twice, one that is none of the three, or an empty artifact_id is 400 INVALID_ISSUE), which "+
-				"appends no event and notifies nobody. A closed issue takes rank, components, design_gates, an "+
+				"components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its "+
+				"design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none, "+
+				"which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of "+
+				"retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open "+
+				"(any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each "+
+				"such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is "+
+				"none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are "+
+				"400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an "+
 				"external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. "+
 				"Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution "+
 				"kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. "+
@@ -209,10 +213,16 @@ func (s *server) v2IssueRows() []routeRow {
 				"nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
-			Body:  requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},
-			Shape: routeShape{Status: http.StatusOK, Response: model.Issue{}, Advice: writeAdvice{}},
+			Body: requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},
+			Shape: routeShape{
+				Status: http.StatusOK, Response: model.Issue{}, Advice: writeAdvice{},
+				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
+			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal,
+				{Condition: apicode.OpenForeignChild, Code: apicode.ForeignChildOpen},
+			},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/issues/{key}/claim", Auth: authAny, Versions: onlyV2,

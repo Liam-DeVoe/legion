@@ -1547,10 +1547,12 @@ type openAPIAnswer struct {
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
 // row's other answers, each refusal richer than errorBody, and the default answer every other
 // refusal writes. The operation of a route the decoder reads, at /api/v2 or at a both-version
-// row's /api/v1 path, also answers its refusal of an undeclared query key at 400. Each refusal
-// status of a /api/v2 row's operation answers errorBody beside the richer bodies it declares,
-// since other refusals share that status: the v2 document's schemas are closed (closeObject), so a
-// status that named the richer body alone would refuse every errorBody answered at it.
+// row's /api/v1 path, also answers its refusal of an undeclared query key at 400. A status a row
+// gives a richer refusal at (routeShape.Refusals) answers errorBody beside it in both documents,
+// since its handler writes plain refusals at that status too. Each refusal status of a /api/v2
+// row's operation answers errorBody beside the richer bodies it declares, since other refusals
+// share that status: the v2 document's schemas are closed (closeObject), so a status that named
+// the richer body alone would refuse every errorBody answered at it.
 func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31.Responses, error) {
 	answers := map[int]*openAPIAnswer{}
 	var order []int
@@ -1609,8 +1611,22 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
+	// A status that answers a richer refusal answers writeError's plain body as well: the default
+	// answer below covers only the statuses the document does not name, and a route's handler
+	// writes plain refusals at the same status as its rich one (an issue PATCH's 409
+	// ISSUE_CHANGED beside its 409 FOREIGN_CHILD_OPEN, a create's 409 PARENT_INPUT beside its 409
+	// POSSIBLE_DUPLICATE). So each such status holds errorBody beside its rich bodies.
+	plain, err := e.schema(errorBody{})
+	if err != nil {
+		return nil, err
+	}
 	for _, refusal := range shape.Refusals {
 		if err := add(refusal.Status, refusal.Body); err != nil {
+			return nil, err
+		}
+		at := answer(refusal.Status)
+		at.anyOf = true
+		if err := at.hold(plain); err != nil {
 			return nil, err
 		}
 	}
@@ -1619,17 +1635,12 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
-	refusal, err := e.schema(reflect.Zero(reflect.TypeFor[errorBody]()).Interface())
-	if err != nil {
-		return nil, err
-	}
-
 	responses := &openapi31.Responses{}
 	sort.Ints(order)
 	for _, status := range order {
 		at := answers[status]
 		if route.v2Bound() && status >= http.StatusBadRequest {
-			if err := at.hold(refusal); err != nil {
+			if err := at.hold(plain); err != nil {
 				return nil, err
 			}
 			at.anyOf = true
@@ -1642,7 +1653,7 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			fmt.Sprintf("%d", status), openapi31.ResponseOrReference{Response: response})
 	}
 	responses.WithDefault(openapi31.ResponseOrReference{Response: (&openapi31.Response{
-		Content: map[string]openapi31.MediaType{"application/json": {Schema: refusal}},
+		Content: map[string]openapi31.MediaType{"application/json": {Schema: plain}},
 	}).WithDescription("A refusal: its code and its message, which every refusal this route does " +
 		"not give a richer body writes (writeError).")})
 	return responses, nil
@@ -1715,6 +1726,8 @@ func (a *openAPIAnswer) response(status int) (*openapi31.Response, error) {
 		for _, schema := range a.schemas {
 			shapes = append(shapes, schema)
 		}
+		// A refusal status's rich body carries code and error too, so it also reads as errorBody:
+		// the shapes overlap, and the body matches at least one of them, not exactly one.
 		combinator := "oneOf"
 		if a.anyOf {
 			combinator = "anyOf"

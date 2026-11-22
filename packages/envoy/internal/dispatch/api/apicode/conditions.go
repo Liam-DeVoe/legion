@@ -71,6 +71,9 @@ var (
 	ParentLoop = Condition{"parent loop"}
 	// DependencyLoop is a dependency that would make an issue wait on itself.
 	DependencyLoop = Condition{"dependency loop"}
+	// OpenForeignChild is an acceptance write that asked for the open-child check while a child of
+	// another project is open (refuseOpenForeignChildren, #4884).
+	OpenForeignChild = Condition{"open foreign child"}
 )
 
 // The conditions of what a deployment configures.

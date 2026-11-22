@@ -1067,7 +1067,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); and design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none (a step named twice, one that is none of the three, or an empty artifact_id is 400 INVALID_ISSUE), which appends no event and notifies nobody. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
+    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
     patch: operations["patchApiV2IssuesByKey"];
     trace?: never;
   };
@@ -4288,6 +4288,16 @@ export interface components {
       started_at: null | string;
       title: string;
     };
+    ForeignChildOpen: {
+      key: string;
+      project: string;
+      status: string;
+    };
+    ForeignChildOpenError: {
+      code: string;
+      error: string;
+      issues: components["schemas"]["ForeignChildOpen"][] | null;
+    };
     GoingActionV2: {
       action: string;
       description: string;
@@ -5475,6 +5485,7 @@ export interface components {
       parent?: unknown;
       priority?: unknown;
       rank?: components["schemas"]["IssueRankInput"] | null;
+      refuse_open_foreign_children?: boolean;
       repo?: unknown;
       route?: null | string;
       status?: null | string;
@@ -7629,9 +7640,9 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["EditPreconditionError"]
+            | components["schemas"]["ErrorBody"]
             | components["schemas"]["EditLostError"]
-            | components["schemas"]["AmbiguousTargetError"]
-            | components["schemas"]["ErrorBody"];
+            | components["schemas"]["AmbiguousTargetError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9867,6 +9878,17 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["ForeignChildOpenError"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -14616,6 +14638,8 @@ export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type ExternalLink = components["schemas"]["ExternalLink"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
+export type ForeignChildOpen = components["schemas"]["ForeignChildOpen"];
+export type ForeignChildOpenError = components["schemas"]["ForeignChildOpenError"];
 export type GoingActionV2 = components["schemas"]["GoingActionV2"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingRequest = components["schemas"]["GoingRequest"];

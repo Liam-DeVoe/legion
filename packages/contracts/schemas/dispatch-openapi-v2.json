@@ -2637,13 +2637,13 @@
                       "$ref": "#/components/schemas/EditPreconditionError"
                     },
                     {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
                       "$ref": "#/components/schemas/EditLostError"
                     },
                     {
                       "$ref": "#/components/schemas/AmbiguousTargetError"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ErrorBody"
                     }
                   ]
                 }
@@ -8110,7 +8110,7 @@
         }
       },
       "patch": {
-        "description": "Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); and design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none (a step named twice, one that is none of the three, or an empty artifact_id is 400 INVALID_ISSUE), which appends no event and notifies nobody. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND.",
+        "description": "Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND.",
         "operationId": "patchApiV2IssuesByKey",
         "parameters": [
           {
@@ -8177,6 +8177,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForeignChildOpenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8188,6 +8205,7 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "FOREIGN_CHILD_OPEN": 409,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
@@ -27440,6 +27458,52 @@
         ],
         "type": "object"
       },
+      "ForeignChildOpen": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "project",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ForeignChildOpenError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ForeignChildOpen"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "issues"
+        ],
+        "type": "object"
+      },
       "GoingActionV2": {
         "additionalProperties": false,
         "properties": {
@@ -32960,6 +33024,9 @@
               }
             ]
           },
+          "refuse_open_foreign_children": {
+            "type": "boolean"
+          },
           "repo": {},
           "route": {
             "type": [
@@ -36477,6 +36544,7 @@
       "FOLLOWER_FORBIDDEN": 403,
       "FOLLOWER_INPUT": 400,
       "FOLLOWER_NOT_FOUND": 404,
+      "FOREIGN_CHILD_OPEN": 409,
       "FRAME_INPUT": 400,
       "GITHUB_APP_UNCONFIGURED": 503,
       "GITHUB_UNREADABLE": 502,
