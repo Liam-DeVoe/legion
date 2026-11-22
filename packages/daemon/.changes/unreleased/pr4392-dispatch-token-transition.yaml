@@ -16,24 +16,31 @@ body: |-
   update round that replaces it. The claim is charged nothing, and the launch is tried again every
   minute. The update round opens over that pod even when no process of the issue runs in it, and
   it waits on no answer of the refused claim. The replacement's log line
-  (`waitingOnThePodNotWaitedFor`) names a refused claim with a session that had not answered,
-  whether or not it records the round, as having lost its unpushed work, and a gone pod's message
-  on the issue names such a claim that records the round.
+  (`waitingOnThePodNotWaitedFor`) names a refused claim that had not answered, with a session or
+  with none where it held one in that pod, whether or not it records the round, as having lost
+  its unpushed work, and a gone pod's message on the issue names such a claim that records the
+  round.
   Where no claim runs a process in the pod, the daemon replaces the pod through the refused claim,
   and the next try starts in the new pod. That replacement reads no workspace. Its message on the
   issue says that no role process ran in the pod, and it names each member of the round that had
-  not answered, but not a member with no session whose launch waits on the pod. When a refused
-  claim's own next try replaces the pod first, the daemon reads each member as it was at that
-  launch, so the message names no member that then had no session and waited on the pod, that
-  claim or another, although such a member has since started in the new pod. After a daemon
-  restart between that launch and the next sweep, the round ends with the message that the pod
-  went, which names each such member that has started in the new pod, so the daemon errs towards
-  naming a role, never towards hiding a loss. When no member is left to name, the daemon writes
-  no message.
+  not answered, but not a member that was refused for the pod while it had no session. The
+  claim's machine records that refusal in memory, at the refusal, and keeps it through the later
+  launches, so no end of the round names such a member: not the daemon's replacement, not a
+  refused claim's own next try that replaces the pod first, and not the message that the pod
+  went, although the member has since started in the new pod and its agent may have registered
+  there. A member that registers a session in the refused pod itself is named after all. The
+  machine records no such refusal for a claim that held a session in that pod, as a claim does
+  whose relaunch found its session in no store and started a fresh agent, and every end names
+  that claim. After a daemon restart, the ends name each member refused before the restart that
+  has started in the new pod, and the restarted daemon records no refusal for a claim whose
+  stored record shows a session it abandoned or a session with no process in a pod, so the
+  daemon errs towards naming a role, never towards hiding a loss. When no member is left to
+  name, the daemon writes no message.
   Where the process of another claim runs in the pod, the claim's next try cannot replace the
   pod, and the daemon replaces it through that process.
-  Before that replacement, the daemon reads the issue workspace for a refused claim with a session
-  that records the round and had not answered, as it does for a claim that the round passed over.
+  Before that replacement, the daemon reads the issue workspace for a refused claim that records
+  the round and had not answered, with a session or with none where it held one in that pod, as
+  it does for a claim that the round passed over.
   The message on the issue names that claim if the read found work or failed.
   Each launch that carries the transition token is logged at Warn. `legion state --json`
   gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot

@@ -464,6 +464,33 @@ type Claim struct {
 	// process there. Three functions of internal/daemon read it: podLocator, awaitsRoundPod and
 	// podProcess. The doc of awaitsRoundPod says what the round does with such a claim.
 	AwaitsPod *runtime.Locator
+	// RefusedWithNoSession is the live pod a launch of this claim was last refused for, for want of
+	// that pod's update round (runtime.AwaitingPodRound), while the claim had no session, and nil
+	// for none. No session of the claim records a worker that ran in that pod, so nothing of the
+	// claim was on its disk, and every end of that pod's update round names the claim nothing
+	// (internal/daemon's refusedForRoundPod). It is set at that refusal (startWaitsForPodRound),
+	// except where the claim held a session in that pod or its machine cannot say it did not
+	// (SessionPod), since that session's worker can have left work on the disk. A refusal while
+	// the claim has a session leaves it as it is. Unlike AwaitsPod, it stays through the launches,
+	// the let-gos and the retries that follow, because the ends read it after the claim has
+	// started in the pod that replaced the refused one, and its agent may have registered there.
+	// A registration of a session in the refused pod itself voids it (register): that session's
+	// worker ran there. It is memory only, as AwaitsPod is: Machine.Claim and View report it, the
+	// daemon's pod-update sweep reads it off the machine of each claim it groups
+	// (Machine.RefusedWithNoSession), and the store never writes or reads it, so a daemon restart
+	// forgets it and the ends then name such a claim as any other.
+	RefusedWithNoSession *runtime.Locator
+	// SessionPod is the pod this claim last held a session in, as its machine knows it: the pod of
+	// the process that registered the session (register), kept through a forget of the session, a
+	// fresh start, the let-gos and the later launches, since a session lost does not undo that the
+	// claim held one there. A registration in another pod moves it there. A machine built over a
+	// stored claim has no memory of a session the claim held and lost before (bootSessionPod), so
+	// it reads the guard off what the store holds, and where it cannot place a session the claim
+	// held, the guard is unknown and names every pod until the claim registers again. It is the
+	// guard on RefusedWithNoSession, and on internal/daemon's lostClaim, whose exception for a
+	// member with no session whose launch waits on the round's pod holds of no claim it names that
+	// pod of. It is memory only, as RefusedWithNoSession is, and read with it.
+	SessionPod SessionPod
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -1623,6 +1650,16 @@ type Machine struct {
 	// the launch, so a sweep that reads the claim while that try runs still finds the pod; that
 	// try's outcome then settles it (launchNow). Memory only, as podRoundWaiting is.
 	awaitsPod *runtime.Locator
+	// refusedWithNoSession is the pod a launch of the claim was last refused for while the claim
+	// had no session, as the runtime's refusal named it, and nil for none: what
+	// Claim.RefusedWithNoSession reports (current). startWaitsForPodRound sets it and register voids
+	// it; nothing else writes it, so neither letGo nor a launch clears it, as they do awaitsPod.
+	// Memory only, as awaitsPod is.
+	refusedWithNoSession *runtime.Locator
+	// sessionPod is the pod the claim last held a session in: what Claim.SessionPod reports
+	// (current). NewMachine reads it off the claim it is built over (bootSessionPod) and register
+	// sets it; nothing else writes it. Memory only.
+	sessionPod SessionPod
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -1749,6 +1786,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		log:         deps.Log.With("claim", string(c.Token)),
 		claim:       copyClaim(c),
 		sessionFrom: c.Generation,
+		sessionPod:  bootSessionPod(c),
 		timers:      map[TimerKind]armed{},
 		stale:       map[string]bool{},
 	}
@@ -2336,6 +2374,17 @@ func (m *Machine) AwaitsPod() *runtime.Locator {
 	return cloneLocator(m.view.Load().AwaitsPod)
 }
 
+// RefusedWithNoSession is the pod the claim's launch was refused for while it had no session
+// (Claim.RefusedWithNoSession), nil for none, and the pod the claim last held a session in
+// (Claim.SessionPod), as the machine last published both. The daemon's pod-update sweep reads them
+// of every claim it groups (internal/daemon's reconcilePodUpdates), as it reads AwaitsPod, and for
+// the same reasons it never waits on the decision in flight and copies these two alone. Both come
+// from the one view, so a registration that voids the one and moves the other is read whole.
+func (m *Machine) RefusedWithNoSession() (*runtime.Locator, SessionPod) {
+	v := m.view.Load()
+	return cloneLocator(v.RefusedWithNoSession), v.SessionPod
+}
+
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
 // nothing. It never waits on the decision.
 func (m *Machine) Deciding() Event {
@@ -2372,6 +2421,8 @@ func (m *Machine) current() Claim {
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
 	c.AwaitsPod = cloneLocator(m.awaitsPod)
+	c.RefusedWithNoSession = cloneLocator(m.refusedWithNoSession)
+	c.SessionPod = m.sessionPod
 	return c
 }
 
@@ -3111,6 +3162,15 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
 // round would come, and this wait would never end. The write below publishes it, before the
 // retry is due.
+//
+// A refusal that names a pod while the claim has no session records that pod as the one the claim
+// was refused for with no session (refusedWithNoSession, Claim.RefusedWithNoSession), which every
+// end of that pod's update round reads: no worker of the claim ran there. The guard keeps the
+// record off a claim that held a session in that pod, or whose machine cannot say it did not
+// (sessionPod, SessionPod.Names): a fresh start after a resume that found no session leaves the
+// claim with no session at the very refusal that follows, and the worker of the session it lost
+// can have left work on the pod's disk. A refusal while the claim has a session, and one the guard
+// keeps the record off, leaves the record as it is.
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
@@ -3123,8 +3183,65 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 	if errors.As(cause, &refusal) {
 		pod := refusal.Pod
 		m.awaitsPod = &pod
+		if refused := locatorPod(&pod); refused != "" && m.claim.Session == "" && !m.sessionPod.Names(refused) {
+			m.refusedWithNoSession = cloneLocator(&pod)
+		}
 	}
 	return errors.Join(err, m.persist(ctx))
+}
+
+// SessionPod is the pod a claim last held a session in, as its machine knows it
+// (Claim.SessionPod): Pod, the uid of the pod whose process registered the session, "" for a
+// claim that has held none, or Unknown, where the machine cannot place a session the claim held.
+type SessionPod struct {
+	Pod     string
+	Unknown bool
+}
+
+// Names is whether the claim may have held a session in pod: it held its last one there, or its
+// machine cannot say where it held one. An unknown guard names every pod, since the rule errs
+// towards naming a role that lost work, never towards hiding a loss.
+func (p SessionPod) Names(pod string) bool {
+	return p.Unknown || (pod != "" && p.Pod == pod)
+}
+
+// sessionPodAt is the guard a session registered by the process at loc leaves: that process's
+// pod, or unknown where loc names no pod, since such a session is one the guard cannot place.
+func sessionPodAt(loc *runtime.Locator) SessionPod {
+	if pod := locatorPod(loc); pod != "" {
+		return SessionPod{Pod: pod}
+	}
+	return SessionPod{Unknown: true}
+}
+
+// bootSessionPod is the guard of a machine built over c (NewMachine). A claim the store read back
+// may have held a session and lost it before the restart, which no memory of this machine
+// records, so the guard is read off the stored claim, and where it cannot tell it is unknown:
+//
+//   - A claim that records an abandoned session (Claim.Abandoned) held that session somewhere.
+//     forgetSession writes the record whenever it drops a session, in the same write that drops
+//     it, the store keeps it, and nothing clears it: the next abandonment replaces it. The record
+//     names no pod, so the guard is unknown.
+//   - A claim that records a session holds it where its process runs: the guard is that process's
+//     pod, or unknown where it records no process in a pod (sessionPodAt).
+//   - A claim that records neither has held no session: the guard names no pod.
+func bootSessionPod(c Claim) SessionPod {
+	switch {
+	case c.Abandoned.Session != "":
+		return SessionPod{Unknown: true}
+	case c.Session != "":
+		return sessionPodAt(c.Locator)
+	}
+	return SessionPod{}
+}
+
+// locatorPod is the uid of the pod loc names, and "" for none and for a process in no pod (a tmux
+// pane).
+func locatorPod(loc *runtime.Locator) string {
+	if loc == nil || loc.Sandbox == nil {
+		return ""
+	}
+	return loc.Sandbox.PodUID
 }
 
 // tellStoreFault reports the session store fault to the issue and the controller, at the first
@@ -4565,6 +4682,7 @@ func claimOf(ev Event) claim.Token {
 func copyClaim(c Claim) Claim {
 	c.Locator = cloneLocator(c.Locator)
 	c.AwaitsPod = cloneLocator(c.AwaitsPod)
+	c.RefusedWithNoSession = cloneLocator(c.RefusedWithNoSession)
 	if c.Enrollment != nil {
 		e := *c.Enrollment
 		c.Enrollment = &e
