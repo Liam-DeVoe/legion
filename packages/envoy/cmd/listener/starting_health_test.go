@@ -86,7 +86,7 @@ func TestAFreshStartWhoseSentinelRefusesSaysSoOnHealthz(t *testing.T) {
 			var starting atomic.Pointer[bus.Client]
 			starting.Store(client)
 			recorder := httptest.NewRecorder()
-			healthzHandler(&deps, nil, &starting).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			healthzHandler(&deps, nil, &starting, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 			var body map[string]any
 			_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 			if tc.reason == "" {

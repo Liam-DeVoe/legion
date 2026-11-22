@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -128,14 +127,14 @@ func (m *missingBuckets) err() error {
 // and not 503: a running listener still serves every route that needs no missing bucket, reads
 // from its copy within the stale bound included, and answers each write to a missing bucket its
 // 503; a 503 here would take it out of a load balancer's rotation, and have ECS replace the task
-// with one that waits at its start for the same bucket and serves nothing.
-func writeMissingBuckets(w http.ResponseWriter, names []string) {
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+// with one that waits at its start for the same bucket and serves nothing. It carries what issuers
+// answers, as every /healthz answer does (writeHealth).
+func writeMissingBuckets(w http.ResponseWriter, names []string, issuers func() map[string]any) {
+	writeHealth(w, http.StatusOK, map[string]any{
 		"status":          "degraded",
 		"error":           (&bucketsMissingError{buckets: names}).Error(),
 		"missing_buckets": names,
-	})
+	}, issuers)
 }
 
 // writeWaitingForBuckets answers /healthz while the start waits for copied buckets it found
@@ -153,14 +152,14 @@ func writeMissingBuckets(w http.ResponseWriter, names []string) {
 //     `docker compose up --wait` fails instead of passing a listener that serves nothing.
 //
 // None of them can repair the wait: only the operator's `envoy-infra buckets create` does, and the
-// ERROR the wait logs for each bucket (logMissingBuckets) pages for it.
-func writeWaitingForBuckets(w http.ResponseWriter, names []string) {
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+// ERROR the wait logs for each bucket (logMissingBuckets) pages for it. It carries what issuers
+// answers, as every /healthz answer does (writeHealth).
+func writeWaitingForBuckets(w http.ResponseWriter, names []string, issuers func() map[string]any) {
+	writeHealth(w, http.StatusServiceUnavailable, map[string]any{
 		"status":          "waiting",
 		"error":           (&bucketsMissingError{buckets: names}).Error() + "; the listener's start waits for it and serves no route until it exists",
 		"missing_buckets": names,
-	})
+	}, issuers)
 }
 
 // bucketsMissingError is copied buckets found missing. The self-health monitor never takes it for

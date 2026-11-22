@@ -160,7 +160,7 @@ func (s *KVStore) State(ctx context.Context) (StoreState, error) {
 
 // sentinel reads the sentinel and its revision. A key never written, or whose last message is a
 // delete or purge marker, is a missing sentinel (ErrNoSentinel); a value under SentinelKey that is
-// not the session family's sentinel (decodeSentinel) is ErrMalformedSentinel, naming the key and
+// not the session family's sentinel (DecodeKVValue) is ErrMalformedSentinel, naming the key and
 // the value's sequence: a sentinel naming Dispatch's or a daemon's store under the session bucket's
 // key is none of its own.
 func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
@@ -171,23 +171,23 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	if err != nil {
 		return StoreState{}, 0, err
 	}
-	state, err := decodeSentinel(SentinelKey, SessionFamily, data)
+	_, state, _, err := DecodeKVValue(SentinelKey, data)
 	if err != nil {
-		return StoreState{}, 0, fmt.Errorf("consumer names: the bucket %s's %s at sequence %d: %w", s.bucket, SentinelKey, revision, err)
+		return StoreState{}, 0, fmt.Errorf("%w (the bucket %s, sequence %d)", err, s.bucket, revision)
 	}
 	return state, revision, nil
 }
 
-// Read implements Store. A value under logical that is not logical's record (decodeRecord) is
+// Read implements Store. A value under logical that is not logical's record (DecodeKVValue) is
 // ErrMalformedRecord, naming the key and the value's sequence.
 func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, error) {
 	data, revision, err := s.last(ctx, logical)
 	if err != nil {
 		return Record{}, 0, err
 	}
-	record, err := decodeRecord(logical, data)
+	record, _, _, err := DecodeKVValue(logical, data)
 	if err != nil {
-		return Record{}, 0, fmt.Errorf("consumer names: the key %s of %s at sequence %d: %w", logical, s.bucket, revision, err)
+		return Record{}, 0, fmt.Errorf("%w (the bucket %s, sequence %d)", err, s.bucket, revision)
 	}
 	return record, revision, nil
 }

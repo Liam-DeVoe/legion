@@ -183,14 +183,13 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 
 // AwaitReady waits until one running member leads the JetStream meta group, that leader counts
 // every running member, and no stopped one, as an online peer, every running member is current
-// with it, and JetStream answers an account info request on every running member. A test calls it
-// after it starts a stopped member again, or after it stops one, before it asks JetStream for
-// anything that needs the meta group.
+// with it, and JetStream answers an account info request on every running member, for as long as
+// the test may run (testDeadline): a cluster's JetStream start on a loaded machine can take longer
+// than any fixed wait allows. A test calls it after it starts a stopped member again, or after it
+// stops one, before it asks JetStream for anything that needs the meta group.
 //
-// The wait ends on that state, not on a fixed time: it is bounded only by what the test's own
-// deadline (go test -timeout) leaves less readyMargin (waitBound), so a cluster that converges
-// slowly on a loaded machine is waited for, and one that never converges fails naming why before
-// go test ends the binary. A fixed 30 s bound failed
+// The wait ends on that state, not on a fixed time, and a cluster that never converges fails the
+// wait naming the state it waited for, before go test ends the binary. A fixed 30 s bound failed
 // TestForcedOrderALameDuckReleasesTheHoldOnItsServer on a loaded machine with the meta leader
 // counting 2 of the 3 running members online, no member mute.
 //
@@ -225,10 +224,9 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 // client with no credential cannot send to a member with an auth callout (StartClusterWithCallout).
 func (c *Cluster) awaitMeta(t testing.TB) {
 	t.Helper()
-	began := time.Now()
-	deadline := began.Add(waitBound(t, noDeadline, readyMargin))
+	bound := boundOf(t)
 	// listening is when the wait began listening for the members: its call, or its last restart.
-	listening := began
+	listening := time.Now()
 	restarts := 0
 	for {
 		err := c.metaReady()
@@ -245,18 +243,14 @@ func (c *Cluster) awaitMeta(t testing.TB) {
 				continue
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("JetStream was not ready by the test's deadline, %s after the wait began (%d members restarted): %v", time.Since(began).Round(time.Second), restarts, err)
+		if bound.over() {
+			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
 		}
-		time.Sleep(retryInterval)
+		bound.pause()
 	}
 }
 
 const (
-	// readyMargin is what AwaitReady leaves of the test's deadline for what follows its bound: a
-	// member's restart begun just before it, which waits up to connectTimeout for the member to
-	// listen, then the failure and the cluster's cleanup.
-	readyMargin = connectTimeout + 5*time.Second
 	// muteAfter is how long AwaitReady listens for a running member before it restarts it. A
 	// working member is heard sooner whether or not the meta group has a leader: a leader hears
 	// each follower answer its heartbeat every second, and without a leader every member campaigns
