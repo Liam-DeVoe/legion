@@ -56,26 +56,34 @@ func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ plan.Type, o
 	return "", "", false
 }
 
-// standing is the step an issue stands in: its place, its role and its type (stepAt), and the
-// phase it is the step of (record.StandsAt).
+// standing is the step an issue stands in: its place, its role and its type (stepAt), the phase
+// it is the step of (record.StandsAt), and whether its agent is the owner of the task (owner).
 type standing struct {
 	place record.StepPlace
 	role  stepRole
 	typ   plan.Type
 	at    phase.Phase
+	// owner is whether the owner of the task does this step or retro (Walk.PlaceRole is the
+	// architect) and the issue works it now, held from it by nothing, which standingStep alone
+	// reads: a start of such a run tells the owner (startStep). A held issue's owner is told when
+	// the hold's retry puts the issue back in the step (restart), as a held worker is started then.
+	owner bool
 }
 
 // standingStep is the step issue stands in on w, the walk of its run: stepAt where it stands
-// (record.StandsAt, so a held issue's is the step of the phase its hold is from). Every writer
-// of a step's record takes the step it found, or, for a phase the issue has left, stepAt's
-// (reportEndedStep). An issue its plan holds stands in no step (planHold): a stopped task's run
-// ended with its stop, and a parent held for its children has not started its retro, so the end
-// rule ends the run each stood in (runOver) and no start is made for either.
+// (record.StandsAt, so a held issue's is the step of the phase its hold is from), with whether the
+// owner of the task does it now (standing.owner). Every writer of a step's record takes the step
+// it found, or, for a phase the issue has left, stepAt's (reportEndedStep). An issue its plan
+// holds stands in no step (planHold): a stopped task's run ended with its stop, and a parent held
+// for its children has not started its retro, so the end rule ends the run each stood in (runOver)
+// and no start is made for either.
 func standingStep(w Walk, issue record.Issue) (standing, bool) {
 	if planHold(issue, w.Stored) {
 		return standing{}, false
 	}
-	return stepAt(w, issue, standingIn(record.StandsAt(issue)))
+	step, ok := stepAt(w, issue, standingIn(record.StandsAt(issue)))
+	step.owner = ok && issue.Phase != phase.Held && w.PlaceRole(w.Place) == claim.RoleArchitect
+	return step, ok
 }
 
 // stepSite is the place a caller of stepAt asks for, made by standingIn or placeNamed, with the
@@ -200,7 +208,13 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
 // that runs no step and a record key that is no issue key are no step its callers find
 // (standingStep).
-func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token) error {
+//
+// It is the one writer of the start of every run, so it is the one place a run of a step or a
+// retro the owner does is told to the owner: where step.owner, it queues the notice owner-step
+// with task, the text the owner's entry holds (tellOwner), in the same transaction as the record.
+// No path that starts such a run can start it untold: a transition's start, a task started again,
+// a held retro and a re-admission's promotion all come here through enter (startOwnersStep).
+func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token, task string) error {
 	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
 	}
@@ -215,7 +229,13 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	if err != nil {
 		return err
 	}
-	return e.enqueue(ctx, tx, issue.Key, write)
+	if err := e.enqueue(ctx, tx, issue.Key, write); err != nil {
+		return err
+	}
+	if !step.owner {
+		return nil
+	}
+	return e.tellOwner(ctx, tx, issue, step, task)
 }
 
 // endStep writes the end of the run of the step at site on w, the walk of that run, before being
@@ -468,13 +488,14 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 // names: a move into accepting of a run with no plan rows, whose role is the architect, which
 // starts no worker (Engine.start), a move into a merge GitHub has already made, which nobody runs
 // and whose close ends it (transition), and admission's promotion of a member whose worker it does
-// not start (StartStepRecord).
+// not start (StartStepRecord). None of them is a step the owner does, whose start raises the
+// owner's entry and tells the owner its task (startOwnersStep), so it tells no task.
 func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
 	agent, err := e.startAgent(ctx, tx, issue, step.at)
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, step, agent)
+	return e.startStep(ctx, tx, issue, step, agent, "")
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
@@ -535,6 +556,11 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 // (settleStart) ends that old run before it opens the new one. A member its plan holds starts no
 // step (standingStep): its stopped task runs again only when a later version of the plan starts
 // the task at its first step, and a parent held for its children has started no retro.
+//
+// A step or a retro the owner does starts as every start of the owner's does (startOwnersStep):
+// its entry raised under the owner's claim with the phase's resume task, as the promotion's start
+// of a mid-phase worker raises one (StartPromotedWorker), its run's start, and one notice
+// owner-step that carries that task (startStep).
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -552,6 +578,9 @@ func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Is
 		if run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation {
 			return nil
 		}
+	}
+	if step.owner {
+		return e.startOwnersStep(ctx, tx, issue, w, func(at Standing) string { return resumeText(issue, at) }, false)
 	}
 	return e.startNamedStep(ctx, tx, issue, step)
 }

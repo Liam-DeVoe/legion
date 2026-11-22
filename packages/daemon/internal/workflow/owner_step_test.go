@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -46,12 +47,16 @@ func stepStartsAt(t *testing.T, pool *pgxpool.Pool, key, kind string, place int)
 // run's one start record under the owner's claim and the entry on the step's phases row, and
 // starts no claim. An issue with no plan rows at the move into accepting writes today's start record
 // under the architect alone, raises no entry and tells no owner-step: the reviewer's phase-finished
-// tells it, as today.
+// tells it, as today. The operator's retry of the owner's claim at its step (restartPhase) tells the
+// owner its step again with the retry's reason, and starts no second run, as a worker's retry
+// hands it its entry again. (A re-admission's promotion is admit's
+// TestATreeAdmittedAgainTellsTheOwnerItsStep.)
 //
 // The controls: start as it was (the caller's role decides; the architect starts nothing) starts the
 // implementer and tells no owner-step in the first three paths, and writes no start record at the
 // two moves into accepting; the owner's branch taken only where the caller passes the architect
-// starts the implementer at the first and a claim of acceptance at the fourth.
+// starts the implementer at the first and a claim of acceptance at the fourth; restart as it was
+// (the architect's phase starts nobody) tells nothing at the retry.
 func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 	owner := treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
 
@@ -169,5 +174,28 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		if notices := noticesOf(t, pool, root.Key, "phase-finished"); len(notices) != 1 {
 			t.Fatalf("the approval told %d phase-finished notices, want the reviewer's one", len(notices))
 		}
+	})
+
+	t.Run("the operator's retry of the owner's claim at its step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:owner", "reviewer")
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		if result := applyFacts(t, pool, engine)("retry", intake.RestartPhase{Issue: root.Key, Role: claim.RoleArchitect}); result.Refusal != nil {
+			t.Fatalf("the operator's retry of the owner was refused: %+v", result.Refusal)
+		}
+
+		notices := ownerSteps(t, pool, root.Key)
+		if len(notices) != 2 || notices[1].Role != claim.RoleImplementer || notices[1].Phase != phase.Implementing {
+			t.Fatalf("the retry told %+v, want a second owner-step of the implementer's step", notices)
+		}
+		if !strings.Contains(notices[1].Reason, " Reason: the operator retried this phase's worker.") || !strings.Contains(notices[1].Reason, " Step 1 of 2: implementer:owner.") {
+			t.Fatalf("the retry's owner-step task = %q, want it to name step 1 and the retry's reason", notices[1].Reason)
+		}
+		if starts := stepStartsAt(t, pool, root.Key, "step", 1); len(starts) != 1 {
+			t.Fatalf("the start records of step 1 = %+v, want the one of the gate's opening: a retry starts no run", starts)
+		}
+		assertNoClaimStarts(t, pool, root.Key)
 	})
 }

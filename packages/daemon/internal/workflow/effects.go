@@ -426,12 +426,12 @@ const testerVerdictLabel = "Tester's verdict"
 // Who the agent is, start reads from the walk at the issue's place, whatever role its caller
 // passes, and it is the one place every start path passes (transition, restartTask,
 // startHeldRetro). Where that agent is the owner of the task (Walk.PlaceRole is the architect: a
-// step of the key owner, or a retro the owner does), no worker starts: the owner is told
-// (tellOwner). For a run with no plan rows, accepting is the architect's own step: its run's start
-// is recorded under the architect that runs it (startNamedStep), and the reviewer's phase-finished
-// tells it, as it always has. Admitted is the architect's too, and starts nobody: admission
-// starts a root's architect with its tree, and a child's own starts with the child's first phase
-// (StartFirstPhase).
+// step of the key owner, or a retro the owner does), no worker starts: the owner's step starts
+// (startOwnersStep), and the owner is told. For a run with no plan rows, accepting is the
+// architect's own step: its run's start is recorded under the architect that runs it
+// (startNamedStep), and the reviewer's phase-finished tells it, as it always has. Admitted is the
+// architect's too, and starts nobody: admission starts a root's architect with its tree, and a
+// child's own starts with the child's first phase (StartFirstPhase).
 //
 // Every phase start of a child, the move into accepting among them, first starts the child's own
 // architect again when its claim has failed (reviveArchitect). The phase starts are the one place
@@ -455,7 +455,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 		return err
 	}
 	if w.Stored && w.PlaceRole(w.Place) == claim.RoleArchitect {
-		return e.tellOwner(ctx, tx, issue, w, told, movedBack)
+		return e.startOwnersStep(ctx, tx, issue, w, told, movedBack)
 	}
 	if !w.Stored && issue.Phase == phase.Accepting {
 		if step, ok := standingStep(w, issue); ok {
@@ -477,30 +477,41 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
 }
 
-// tellOwner starts the step or the retro at w.Place, whose agent is the owner of the task, by
-// telling the owner: it raises the entry on the phases row of the place's role, under the owner's
-// claim, and writes the run's one start record (enter, whose step token is the owner's,
-// Engine.ownerAgent), then queues one notice owner-step to the owner (record.OwnerStepNotice),
-// which carries the step's role ("" for the retro), the phase the issue stands in and the task a
-// worker of that place would be sent, the round's sentences of a review step among it. No claim
+// startOwnersStep starts the step or the retro at w.Place, whose agent is the owner of the task: it
+// raises the entry on the phases row of the place's role, under the owner's claim, with the task a
+// worker of that place would be sent, the round's sentences of a review step among it, and writes
+// the run's one start record, which tells the owner that task (enter, whose step token is the
+// owner's, Engine.ownerAgent, and startStep, the one place an owner's run is told). No claim
 // starts. The place's role is the step's own role at a step, the owner's acceptance among them, so
 // its row and its record name the step the owner does; at the retro it is the role of the retro
-// (Walk.RoleAt), the implementer for the owner's.
-func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, told func(Standing) string, movedBack bool) error {
+// (Walk.RoleAt), the implementer for the owner's. Its two callers are every start of a run of the
+// owner's: start, for a transition, a task started again and a held retro, and StartStepRecord,
+// for a re-admission's promotion, with the phase's resume task.
+func (e *Engine) startOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, told func(Standing) string, movedBack bool) error {
 	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
-	// The notice names the step's role, and none for the retro, which is no step of the plan.
-	role, ofStep := w.RoleAt(w.Place), claim.Role("")
+	role := w.RoleAt(w.Place)
 	if step, ok := w.planStepAt(w.Place); ok {
-		role, ofStep = claim.Role(step.Role), claim.Role(step.Role)
+		role = claim.Role(step.Role)
 	}
-	_, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
-	if err != nil {
-		return err
+	_, _, err = e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
+	return err
+}
+
+// tellOwner queues the one notice owner-step of step, a step or a retro the owner of issue's task
+// does (standing.owner), to the owner (record.OwnerStepNotice): the step's role ("" for the retro,
+// which is no step of the plan), the phase the issue stands in and task, the text the owner is
+// told to work. It is the one writer of the notice. The start of every run of the owner's tells
+// through it (startStep), and so does the retry of the owner's step, which starts no run
+// (restart).
+func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, task string) error {
+	role := claim.Role(step.role)
+	if step.place.Kind == record.PlaceRetro {
+		role = ""
 	}
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.OwnerStepNotice, Role: ofStep, Phase: issue.Phase, Reason: sent})
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.OwnerStepNotice, Role: role, Phase: issue.Phase, Reason: task})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -601,13 +612,29 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
 // a worker it starts.
+//
+// The architect's phase starts nobody, except where the issue stands at a step or a retro the
+// owner does (the role the caller reads there, record.Issue.RoleAt, is the architect): the retry
+// of the owner's claim (`legion claims retry`, restartPhase) tells the owner its step again, with
+// the retry's task, as a worker is sent its task again, and starts no run (tellOwner).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
-	if role == "" || role == claim.RoleArchitect {
+	if role == "" {
 		return nil
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
+	}
+	if role == claim.RoleArchitect {
+		step, ok := standingStep(w, issue)
+		if !ok || !step.owner {
+			return nil
+		}
+		at, err := e.standingPart(ctx, tx, issue, w)
+		if err != nil {
+			return err
+		}
+		return e.tellOwner(ctx, tx, issue, step, told(at))
 	}
 	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
@@ -1085,7 +1112,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		return row.Entry, row.EntryTask, nil
 	}
 	if step, ok := standingStep(*w, issue); ok {
-		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
+		if err := e.startStep(ctx, tx, issue, step, agent, row.EntryTask); err != nil {
 			return 0, "", err
 		}
 	}

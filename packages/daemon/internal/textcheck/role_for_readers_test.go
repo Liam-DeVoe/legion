@@ -57,7 +57,7 @@ type roleForReader struct {
 // the issue stands at the retro), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, completionOf, which reads the role of a place
 // only while the task runs there and so never at admitted, whose task is at no act,
-// Engine.tellOwner, which reads the place of a step or a retro the owner does, and
+// Engine.startOwnersStep, which reads the place of a step or a retro the owner does, and
 // Engine.restartTask, which reads its task's first step, a place no plan runs as admitted), or
 // reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only for a
 // parent held before its retro for the issues beneath it), or answers RoleFor's role for every
@@ -94,8 +94,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestACarriedRootResumesFromTheApprovedHeadAndTheHold", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}: {calls: 1, tests: []string{"TestRoleForAnswersEveryPhaseOfPhaseAll"}},
 	// The role of the retro's row where the owner does the retro, read at a place of the owner's.
-	{file: "internal/workflow/effects.go", fn: "Engine.tellOwner"}: {calls: 1, tests: []string{
-		"TestAnOwnerStepIsToldToTheOwnerFromEachStartPath"}},
+	{file: "internal/workflow/effects.go", fn: "Engine.startOwnersStep"}: {calls: 1, tests: []string{
+		"TestAnOwnerStepIsToldToTheOwnerFromEachStartPath", "TestATreeAdmittedAgainTellsTheOwnerItsStep"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}: {calls: 1, tests: []string{
 		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}: {calls: 1, tests: []string{
