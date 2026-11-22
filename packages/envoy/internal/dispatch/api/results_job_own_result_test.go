@@ -7,7 +7,9 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -88,6 +90,108 @@ func TestTheJobsOwnResultAtAHeadTakesThePlaceOfItsRunsConclusion(t *testing.T) {
 			}
 			if ci := checkOf(t, readResults(t, rig.handler, rig.issue), "c1").CI; ci == nil || ci.Case != row.ciCase {
 				t.Fatalf("c1's ci is %+v, want the case %s", ci, row.ciCase)
+			}
+		})
+	}
+}
+
+// TestAJobsResultWhoseRepositoryDidNotResolveIsAFailedRead: the job recorded a pass of c1 at the
+// head of ACME-1's open pull request #70, a result that names no repository and so is of the
+// issue's own, and the run there failed. Whether that result takes the run's place turns on the
+// repository the issue resolves to, and the read of it does not answer: ACME-1's parent chain
+// loops, which no API write can make, and refs.IssueRepository refuses to resolve a chain that
+// loops. A read that did not answer gives no state: c1 is unread at the head (read_failed), and
+// the run derives it no fail, so the head reads neither the pass and the fail of a database
+// error nor anything a reviewer acts on (R15). The control is the row the job's pass beside a
+// failing run of TestTheJobsOwnResultAtAHeadTakesThePlaceOfItsRunsConclusion, whose resolve answers.
+func TestAJobsResultWhoseRepositoryDidNotResolveIsAFailedRead(t *testing.T) {
+	rig := newCIJobRig(t)
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
+	rig.github.setBranch("legion/work", ciJobBranchHead{sha: ciJobHead})
+	jobRecorded(t, "the job's pass of c1 at the pull request's head", rig.post(t, rig.issue,
+		jobTokenOn(rig, ciJobHead, "refs/heads/legion/work", 99), jobResultAt(ciJobHead, "pass")))
+	rig.github.listings.set(ciJobHead, completedRun(11, ciJobName, "failure"))
+	top := anotherIssue(t, rig)
+	for _, link := range [][2]string{{rig.issue, top}, {top, rig.issue}} {
+		if _, err := rig.database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, link[0], link[1]); err != nil {
+			t.Fatalf("make %s the parent of %s: %v", link[0], link[1], err)
+		}
+	}
+
+	c1 := checkOf(t, readResults(t, rig.handler, rig.issue), "c1")
+	if ci := c1.CI; ci == nil || ci.State != model.CIStateUnread || ci.Case != model.ReasonReadFailed || ci.Commit != ciJobHead ||
+		!strings.Contains(ci.Detail, rig.issue) {
+		t.Fatalf("c1's ci at %s is %+v, want unread for read_failed, its detail naming %s", ciJobHead, ci, rig.issue)
+	}
+	for _, result := range c1.Results {
+		if result.ID == "ci-run:11" {
+			t.Fatalf("c1 holds the fail the failing run derived at %s, %+v: a read that did not answer must derive no state", ciJobHead, result)
+		}
+	}
+	if c1.PassStands.Answer == model.PassStandsYes || c1.PassStands.Reason == model.PassStandsReasonPassAndFail {
+		t.Fatalf("c1 reads %+v, want no yes and no pass and fail where the read did not answer", c1.PassStands)
+	}
+	for _, subject := range c1.PassStands.Subjects {
+		if subject.Basis.Commit == ciJobHead && subject.Reason == model.PassStandsReasonPassAndFail {
+			t.Fatalf("c1's head %s reads %+v, a pass and a fail, where the read did not answer", ciJobHead, subject)
+		}
+	}
+}
+
+// storeJobResult stores a pass of c1 as a row of ci_check_results the way the record route stores
+// a CI job's, with run, commit, check digest and repository given, so each condition under which
+// a job's result takes the run's place at a head is put to the read on its own.
+func storeJobResult(t *testing.T, rig *ciJobRig, run, commit, digest string, repo *string) {
+	t.Helper()
+	check := checkOf(t, readResults(t, rig.handler, rig.issue), "c1")
+	if digest == "" {
+		digest = check.SHA256
+	}
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor, commit_repo)
+		values ($1, $1, $2::uuid, 'c1', $3, $4, $5, $6, 'legion/work', 'pass', '{}', $7, '{"kind":"session","id":"ci"}', $8)
+	`, rig.issue, check.ArtifactID, check.Version, digest, run, commit, ciJobSession, repo); err != nil {
+		t.Fatalf("store the job's pass of c1: %v", err)
+	}
+}
+
+// TestOnlyAJobsResultThatCountsAtTheHeadTakesThePlaceOfItsRun holds each condition of
+// jobResultHeads: ACME-1's open pull request #70 of the job's repository is at ciJobHead, where
+// go-checks failed, and the job's pass of c1 stands in one way each row. Only the job's own
+// result, under the check's words now, at the head's commit and of the head's repository, takes
+// the run's place (job_recorded); in every other row the run decides the head, and c1 holds the
+// fail it derived there. The row of another commit is a job's pass at an old commit, which must
+// never hide a failing run at the new head.
+func TestOnlyAJobsResultThatCountsAtTheHeadTakesThePlaceOfItsRun(t *testing.T) {
+	other := "acme/another-repository"
+	for _, row := range []struct {
+		name, run, commit, digest string
+		repo                      *string
+		ciCase                    string
+	}{
+		{"the control: the job's pass at the head", ciJobName, ciJobHead, "", nil, "job_recorded"},
+		{"a pass at another commit than the head's", ciJobName, ciJobOtherCommit, "", nil, "failure"},
+		{"a pass under the check's old words", ciJobName, ciJobHead, strings.Repeat("0", 64), nil, "failure"},
+		{"a pass of another repository at the head's commit", ciJobName, ciJobHead, "", &other, "failure"},
+		{"another job's pass at the head", otherCIJob, ciJobHead, "", nil, "failure"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newCIJobRig(t)
+			writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
+			rig.github.setBranch("legion/work", ciJobBranchHead{sha: ciJobHead})
+			rig.github.listings.set(ciJobHead, completedRun(11, ciJobName, "failure"))
+			storeJobResult(t, rig, row.run, row.commit, row.digest, row.repo)
+
+			c1 := checkOf(t, readResults(t, rig.handler, rig.issue), "c1")
+			if ci := c1.CI; ci == nil || ci.Commit != ciJobHead || ci.Case != row.ciCase {
+				t.Fatalf("c1's ci at %s is %+v, want the case %s", ciJobHead, ci, row.ciCase)
+			}
+			derived := false
+			for _, result := range c1.Results {
+				derived = derived || (result.ID == "ci-run:11" && result.Verdict == "fail")
+			}
+			if want := row.ciCase == "failure"; derived != want {
+				t.Fatalf("c1 holds the fail run 11 derived at %s: %v, want %v; its results %+v", ciJobHead, derived, want, c1.Results)
 			}
 		})
 	}

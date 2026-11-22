@@ -97,6 +97,11 @@ const (
 	// recorded a result of its own for the check (jobResultHeads): no_result, since the run's
 	// conclusion is the whole job's.
 	ciCaseJobRecorded = "job_recorded"
+	// ciCaseReadFailed is a head at whose commit the check's CI job recorded a result that names
+	// no repository, where Dispatch's own read of the repository the issue resolves to did not
+	// answer (jobResultHeads): unread, since whether that result or the run decides the head
+	// turns on the repository the read would have named.
+	ciCaseReadFailed = model.ReasonReadFailed
 )
 
 // ciRunCompleted is the status of a check run that has concluded.
@@ -125,7 +130,9 @@ type ciRun struct {
 // repositories at one commit each read their own runs there, and each derives a result of its
 // own, so a fail in one is never hidden by a pass in the other (R8). At a head where the check's
 // CI job recorded a result of its own for the check, the run derives the check none
-// (jobResultHeads, ciCaseJobRecorded). A head whose read did not end
+// (jobResultHeads, ciCaseJobRecorded); where the read of the repository that says whether such a
+// result is of the head's did not answer, the head is unread for the check (ciCaseReadFailed)
+// and the run derives it none either. A head whose read did not end
 // within the one ciReadDeadline of the whole read is unread there alone (readCIHeads). A result
 // the read loaded for such a check that no run of the job its ci_check names recorded, a role's or
 // another job's, counts for nothing and says why (notCountedOnCICheck). An issue holding no check
@@ -165,18 +172,24 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		return nil, nil
 	}
 	reads := s.readCIHeads(ctx, heads, names)
-	recordedAt := s.jobResultHeads(ctx, issueKey, proved, heads)
+	jobs := s.jobResultHeads(ctx, issueKey, proved, heads)
 	answers := make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
 	for _, p := range proved {
 		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads))
 		for index, head := range heads {
-			if reads[index].err != nil {
+			job := jobs[p.check.BlockID][ciHeadKeyOf(head)]
+			switch {
+			case reads[index].err != nil:
 				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
 					ciUnreadDetail(head, reads[index].err), words)
 				continue
+			case job == jobAtHeadUnresolved:
+				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseReadFailed,
+					fmt.Sprintf("Dispatch could not read the repository %s resolves to, so whether the result the check's CI job recorded at %s is of %s, and decides that head in place of the run, is not known.",
+						issueKey, head.HeadSHA, head.Repo), words)
+				continue
 			}
-			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name],
-				recordedAt[p.check.BlockID][ciHeadKeyOf(head)], words)
+			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name], job == jobAtHeadRecorded, words)
 			atHead[ciHeadKeyOf(head)] = answer
 			if result != nil {
 				p.check.Results = append(p.check.Results, *result)
@@ -203,17 +216,42 @@ func ciHeadKeyOf(head delivery.NewestHead) ciHeadKey {
 	return ciHeadKey{repo: head.Repo, commit: head.HeadSHA}
 }
 
-// jobResultHeads is, for each check of proved by block id, the heads at which the check's CI job
-// recorded a result of its own that counts: of the job the check's ci_check names, since
-// notCountedOnCICheck has marked every other, retracted by nobody, under the check's words now,
-// at the head's commit, and of the head's repository. A job's result names its repository only
-// where it is another than the issue's (CommitRepo), so the issue's repository is resolved, once,
-// and only where such a result is at the commit of a head; where it cannot be resolved, no head
-// takes the job's result in place of its run's conclusion, and both stand there.
-func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []provedCI, heads []delivery.NewestHead) map[string]map[ciHeadKey]bool {
+// jobAtHead is what jobResultHeads reads of a check's CI job at one head, in rising order: of two
+// readings at one head the higher stands, so a result that is of the head's repository decides the
+// head whatever another result's unresolved repository would have said.
+type jobAtHead int
+
+const (
+	// jobAtHeadNone: no result of the job that counts is of the head's repository at its commit.
+	jobAtHeadNone jobAtHead = iota
+	// jobAtHeadUnresolved: the job recorded a result that counts at the head's commit and names
+	// no repository, so it is of the issue's own, and the read of the repository the issue
+	// resolves to did not answer: whether the result is of the head's repository is not known.
+	jobAtHeadUnresolved
+	// jobAtHeadRecorded: the job recorded a result there that counts, of the head's repository.
+	jobAtHeadRecorded
+)
+
+// jobResultHeads is, for each check of proved by block id, what the check's CI job recorded at
+// each head: a result of its own that counts (jobAtHeadRecorded) is of the job the check's
+// ci_check names, since notCountedOnCICheck has marked every other, retracted by nobody, under the
+// check's words now, at the head's commit, and of the head's repository. A job's result names its
+// repository only where it is another than the issue's (CommitRepo), so the issue's repository is
+// resolved, once, and only where such a result is at the commit of a head. An issue that resolves
+// to no repository holds no head of its own, so no head takes such a result in place of its run's
+// conclusion, and both stand there. A resolve that did not answer, a failed read of Dispatch's own
+// database (checkIssueRepository), says neither: each head such a result is at is unresolved
+// (jobAtHeadUnresolved), unless a result that names its repository is recorded there.
+func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []provedCI, heads []delivery.NewestHead) map[string]map[ciHeadKey]jobAtHead {
 	var issueRepo *string
-	resolved := false
-	at := map[string]map[ciHeadKey]bool{}
+	resolved, answered := false, false
+	at := map[string]map[ciHeadKey]jobAtHead{}
+	mark := func(block string, head delivery.NewestHead, job jobAtHead) {
+		if at[block] == nil {
+			at[block] = map[ciHeadKey]jobAtHead{}
+		}
+		at[block][ciHeadKeyOf(head)] = max(at[block][ciHeadKeyOf(head)], job)
+	}
 	for _, p := range proved {
 		for _, result := range p.check.Results {
 			if result.Branch == "" || result.NotCounted != "" || result.Retracted != nil || result.CheckSHA256 != p.check.SHA256 {
@@ -226,18 +264,19 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 				repo := result.CommitRepo
 				if repo == nil {
 					if !resolved {
-						issueRepo, _ = s.checkIssueRepository(ctx, s.deps.Store.Pool, issueKey)
+						issueRepo, answered = s.checkIssueRepository(ctx, s.deps.Store.Pool, issueKey)
 						resolved = true
+					}
+					if !answered {
+						mark(p.check.BlockID, head, jobAtHeadUnresolved)
+						continue
 					}
 					repo = issueRepo
 				}
 				if repo == nil || !strings.EqualFold(*repo, head.Repo) {
 					continue
 				}
-				if at[p.check.BlockID] == nil {
-					at[p.check.BlockID] = map[ciHeadKey]bool{}
-				}
-				at[p.check.BlockID][ciHeadKeyOf(head)] = true
+				mark(p.check.BlockID, head, jobAtHeadRecorded)
 			}
 		}
 	}

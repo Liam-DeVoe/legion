@@ -2049,7 +2049,9 @@ export const dispatchToolSpecs = [
       "<commit>: <state>`: `yes, from <roles>. Pass <id> decides it.`; `no, as fail <id> counts " +
       "there.`; `no, as it holds no result.`; `not known, as pass <id> and fail <id> count at " +
       "this commit.`, which a later pass does not end and a retraction of the wrong one does; " +
-      "or `not known, as Dispatch could not read CI run <run> there.`. A merged pull request's " +
+      "`not known, as Dispatch could not read CI run <run> there.`; or `not known, as Dispatch " +
+      "could not read the repository of its issue, which says whether the CI job's result " +
+      "there takes the place of CI run <run>.`. A merged pull request's " +
       "head prints as `#<number> (merged)`, a pull request of another repository than the " +
       "issue's as `<owner>/<repo>#<number>`, and a branch head as `branch <name>`. A reviewer and " +
       "a tester read the line of their own head. Then `  The <m> merged pull requests decide " +

@@ -24,7 +24,9 @@ export function subjectPlace(basis: CheckBasis): string {
 /**
  * The state at one head, its roles and the ids of the results that decide it, as the words after
  * `<place> at <commit>: `. A pass and a fail at the head name both, and what ends that state; a
- * head whose CI run Dispatch could not read names the run.
+ * head whose CI run Dispatch could not read names the run, and a head where Dispatch could not
+ * read the repository its issue resolves to, which says whether the CI job's result there takes
+ * the run's place (the case read_failed of its `ci`), says so.
  */
 export function subjectStateWords(subject: PassStandsSubject): string {
   const ids = subject.results ?? [];
@@ -46,7 +48,9 @@ export function subjectStateWords(subject: PassStandsSubject): string {
     return `not known, as pass ${pass} and fail ${fail} count at this commit. A later pass does not end this. A retraction of the wrong one ends it, and so does a change of the check's words. A new head of the pull request gets a state of its own.`;
   }
   if (subject.reason === "read_failed") {
-    return `not known, as Dispatch could not read CI run ${subject.ci?.run ?? "of the check"} there.`;
+    return subject.ci?.case === "read_failed"
+      ? `not known, as Dispatch could not read the repository of its issue, which says whether the CI job's result there takes the place of CI run ${subject.ci.run}.`
+      : `not known, as Dispatch could not read CI run ${subject.ci?.run ?? "of the check"} there.`;
   }
   return "not known.";
 }

@@ -359,6 +359,46 @@ describe("dispatch results: the state at each head", () => {
     ]);
   });
 
+  // A head reads not known for read_failed in two ways: GitHub could not be read for its CI run
+  // (case github_unreadable), and Dispatch could not read the repository its issue resolves to,
+  // which says whether the CI job's result at that head takes the run's place (case read_failed).
+  // Each line says which read did not answer.
+  test("says which read did not answer at a head that reads not known for read_failed", () => {
+    const [h702, h703] = [hex("2"), hex("3")];
+    const unread = (head: string, ciCase: string, detail: string) => ({
+      run: "docs",
+      state: "unread",
+      case: ciCase,
+      detail,
+      line: `- Check c1 (before_merge): CI run docs has no result (${ciCase})`,
+      commit: head,
+      repo: "example/widgets",
+    });
+    const github = unread(h703, "github_unreadable", "GitHub could not be read.");
+    const own = unread(h702, "read_failed", "Dispatch could not read the repository.");
+    const lines = printed(
+      answer(
+        check("c1", "before_merge", {
+          ci_check: "docs",
+          ci: github,
+          compared_with: [openHead(703, h703), openHead(702, h702)],
+          pass_stands: {
+            answer: "unknown",
+            subjects: [
+              { basis: openHead(703, h703), answer: "unknown", reason: "read_failed", ci: github },
+              { basis: openHead(702, h702), answer: "unknown", reason: "read_failed", ci: own },
+            ],
+          },
+        })
+      )
+    );
+    const block = checkBlock(lines, "c1");
+    expect(block).toContain(`  - #703 at ${h703}: not known, as Dispatch could not read CI run docs there.`);
+    expect(block).toContain(
+      `  - #702 at ${h702}: not known, as Dispatch could not read the repository of its issue, which says whether the CI job's result there takes the place of CI run docs.`
+    );
+  });
+
   // R18: ACME-1's repository is acme/app. #70 is its own open pull request, and #9 is an open pull
   // request of acme/infra that ACME-1 links, whose basis names its repository. Each head has a line
   // of its own; the line of #9 names acme/infra#9, and the line of #70 names #70.
