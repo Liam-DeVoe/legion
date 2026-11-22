@@ -191,8 +191,9 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 	})
 	// A pull request no record holds, opened before the daemon heard its repository, is read from
 	// GitHub at the head it shows, recorded there as an outside pull request, and gets failure, since
-	// no review is recorded at that head. One on another project's issue branch gets nothing: that
-	// project's daemon writes it, and the daemon says so once.
+	// no review is recorded at that head. One on another project's issue branch gets failure too
+	// (N7): this daemon holds no step of that issue, so no verdict stands at its head, and the daemon
+	// says why once.
 	t.Run("a pull request no record holds", func(t *testing.T) {
 		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
 		rig.github.mu.Lock()
@@ -218,15 +219,13 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if runs := rig.github.legionRuns("group-93"); len(runs) != 0 {
-			t.Fatalf("legion-verdict runs on group-93 = %+v, want none: legion/OTHER-1 is another project's to write", runs)
-		}
+		groupConcluded(t, rig.github, rig.pool, "group-93", "failure")
 		if n := strings.Count(rig.logs.String(), otherProjectsLine); n != 1 {
 			t.Fatalf("the daemon logged %q %d times, want once for pull request 93", otherProjectsLine, n)
 		}
 	})
 	t.Run("a repository no entry names", func(t *testing.T) {
-		writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry})
+		writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID)
 		w := &workflowRuntime{verdicts: writer, repositories: servedAcme(), log: slog.New(slog.DiscardHandler)}
 		w.queueMergeGroupWrite(ghrepo.MustParse("acme/gadgets"), 86, "group-86", false)
 		if !writer.idle() {
@@ -237,4 +236,25 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 			t.Fatal("a merge group's write on acme/widgets, which an entry names, is not queued")
 		}
 	})
+}
+
+// N9: an outside pull request's current head, which a merge group of it decides, is its newest
+// sighting by GitHub's clock of the pull request, not by the order the daemon recorded them in.
+// Here a person approved pull request 90 at out-1, a push moved it to out-2, and then the opened
+// event of out-1 is delivered again, late: the group still decides out-2, where no review stands,
+// and gets failure rather than the success of the stale head.
+func TestLegionVerdictAMergeGroupDecidesTheOutsideHeadByGitHubsClock(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
+	opened := outsideOpened
+	opened.UpdatedAt = time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	rig.apply(t, opened)
+	rig.review(t, outsideReview(1, "a-writer", "approved"))
+	rig.written(t)
+	moved := opened
+	moved.HeadSHA, moved.UpdatedAt = "out-2", opened.UpdatedAt.Add(time.Minute)
+	rig.apply(t, moved)
+	rig.apply(t, opened)
+	rig.w.queueMergeGroupWrite(ghrepo.MustParse("acme/widgets"), 90, "group-90", false)
+	rig.written(t)
+	groupConcluded(t, rig.github, rig.pool, "group-90", "failure")
 }

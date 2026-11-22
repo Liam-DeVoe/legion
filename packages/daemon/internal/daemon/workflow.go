@@ -645,7 +645,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
-		verdicts:        newVerdictWriter(cfg.VerdictRepositories),
+		verdicts:        newVerdictWriter(cfg.VerdictRepositories, cfg.GitHubApp.AppID),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.

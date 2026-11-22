@@ -19,7 +19,8 @@ import (
 // verdicts given on a head; and each check run and commit status the writer
 // wrote. Each table is a record of what was seen or done, one row each time: a row is never
 // changed, so the tables need no unique key, and a read of the newest row takes the one with the
-// highest id. The tables hold no constraint (the migration says why), so each write refuses, before
+// highest id, of an outside pull request the newest by GitHub's clock first (OutsidePullRequestTx).
+// The tables hold no constraint (the migration says why), so each write refuses, before
 // it reaches the database, a row that leaves out its repository, its head, its pull request's
 // number where the table has one, or its time, and a verdict, a write's kind or a conclusion its
 // reader does not know. Each read keys on the repository without case, as GitHub compares a
@@ -30,14 +31,18 @@ import (
 // the caller makes on it, or not at all. A caller with no transaction opens one with Store.Tx.
 
 // OutsidePullRequest is one sighting of a pull request of a verdict repository that no Legion issue
-// owns, as a webhook event showed it: the head it stood at. The newest row of a pull request is its
-// current head (OutsidePullRequestTx).
+// owns, as a webhook event or GitHub's list showed it: the head it stood at, and GitHub's clock of
+// the pull request's last change then. The newest sighting by that clock is its current head
+// (OutsidePullRequestTx).
 type OutsidePullRequest struct {
 	// ID is the row's own id, which the store fills.
 	ID         int64
 	Repository ghrepo.Repository
 	Number     int
 	Head       string
+	// UpdatedAt is GitHub's updated_at of the pull request as the sighting carried it, zero (a null)
+	// where it carried none.
+	UpdatedAt time.Time
 	// RecordedAt is when the daemon recorded the sighting.
 	RecordedAt time.Time
 }
@@ -182,30 +187,34 @@ func parseRepository(table string, id int64, stored string) (ghrepo.Repository, 
 }
 
 // RecordOutsidePullRequestTx records one sighting of an outside pull request at its head and
-// answers the row's id.
+// answers the row's id. A sighting that carries no clock of GitHub's is stored with none (null).
 func RecordOutsidePullRequestTx(ctx context.Context, tx pgx.Tx, pr OutsidePullRequest) (int64, error) {
 	what := fmt.Sprintf("the outside pull request %s#%d", pr.Repository, pr.Number)
 	if err := validPullRequestRow(what, pr.Repository, pr.Number, pr.Head, pr.RecordedAt); err != nil {
 		return 0, err
 	}
-	return insertID(ctx, tx, what, `insert into outside_pull_requests (repository, number, head, recorded_at)
-		values ($1, $2, $3, $4) returning id`, pr.Repository.String(), pr.Number, pr.Head, pr.RecordedAt)
+	return insertID(ctx, tx, what, `insert into outside_pull_requests (repository, number, head, updated_at, recorded_at)
+		values ($1, $2, $3, $4, $5) returning id`, pr.Repository.String(), pr.Number, pr.Head, instant(pr.UpdatedAt), pr.RecordedAt)
 }
 
 // OutsidePullRequestTx is the newest sighting of an outside pull request, the head it stands at
-// now, and whether any row records it.
+// now, and whether any row records it. Newest is by GitHub's clock of the sighting (UpdatedAt), so
+// an event delivered late that is older than one recorded before it takes no head back; a sighting
+// with no clock sorts as the oldest, and of two of one clock the later recorded is newer.
 func OutsidePullRequestTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int) (OutsidePullRequest, bool, error) {
 	var pr OutsidePullRequest
 	var stored string
-	err := tx.QueryRow(ctx, `select id, repository, number, head, recorded_at from outside_pull_requests
-		where lower(repository) = lower($1) and number = $2 order by id desc limit 1`, repository.String(), number).
-		Scan(&pr.ID, &stored, &pr.Number, &pr.Head, &pr.RecordedAt)
+	var updated *time.Time
+	err := tx.QueryRow(ctx, `select id, repository, number, head, updated_at, recorded_at from outside_pull_requests
+		where lower(repository) = lower($1) and number = $2 order by updated_at desc nulls last, id desc limit 1`, repository.String(), number).
+		Scan(&pr.ID, &stored, &pr.Number, &pr.Head, &updated, &pr.RecordedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OutsidePullRequest{}, false, nil
 	}
 	if err != nil {
 		return OutsidePullRequest{}, false, fmt.Errorf("read the outside pull request %s#%d: %w", repository, number, err)
 	}
+	pr.UpdatedAt = orZero(updated)
 	if pr.Repository, err = parseRepository("outside_pull_requests", pr.ID, stored); err != nil {
 		return OutsidePullRequest{}, false, err
 	}

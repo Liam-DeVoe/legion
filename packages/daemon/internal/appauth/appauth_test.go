@@ -319,6 +319,41 @@ func TestSetForRefusesARoleOutsideTheSets(t *testing.T) {
 	}
 }
 
+// The bot user's id a lease's identity names (BotUserID) is the id GET /users/<login> answered,
+// which botIdentity writes into the identity's noreply email. The writer of legion-verdict tells the
+// App bot's commit statuses by it, since a rename of the App changes the bot's login and not its
+// id. An identity that names no id, or one that is not a whole number, gives 0, which tells no
+// status as the bot's.
+func TestBotUserIDIsTheIDALeasesIdentityNames(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/legion-renamed[bot]" {
+			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"id":271566630}`)
+	}))
+	defer server.Close()
+	m := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}, Options{BaseURL: server.URL, HTTPClient: server.Client()})
+	defer m.Close()
+	identity, err := m.botIdentity(context.Background(), "legion-renamed[bot]", "installation-1")
+	if err != nil {
+		t.Fatalf("read the bot identity: %v", err)
+	}
+	if got := BotUserID(identity); got != 271566630 {
+		t.Fatalf("BotUserID(%+v) = %d, want 271566630, the id GitHub answered", identity, got)
+	}
+	for _, none := range []GitIdentity{
+		{},
+		{Name: "legion[bot]", Email: "legion@example.invalid"},
+		{Name: "legion[bot]", Email: "x7+legion[bot]@users.noreply.github.com"},
+		{Name: "legion[bot]", Email: "+legion[bot]@users.noreply.github.com"},
+	} {
+		if got := BotUserID(none); got != 0 {
+			t.Errorf("BotUserID(%+v) = %d, want 0: it names no id", none, got)
+		}
+	}
+}
+
 func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)

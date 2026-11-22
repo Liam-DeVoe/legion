@@ -12,6 +12,50 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
+// N9: an outside pull request's current head is its newest sighting by GitHub's own clock of the
+// pull request's last change, the event's updated_at, and not by the order the daemon recorded the
+// sightings in: a synchronize delivered late, older than the sighting before it, does not take the
+// head back. A sighting that carries no clock sorts as the oldest, and two of one clock are ordered
+// as they were recorded.
+func TestTheOutsidePullRequestsHeadIsItsNewestSightingByGitHubsClock(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	widgets := ghrepo.MustParse("acme/widgets")
+	at := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		for _, sighted := range []OutsidePullRequest{
+			{Number: 42, Head: "h2", UpdatedAt: at.Add(2 * time.Minute)},
+			{Number: 42, Head: "h1", UpdatedAt: at.Add(time.Minute)},
+			{Number: 42, Head: "h0"},
+			{Number: 43, Head: "t1", UpdatedAt: at},
+			{Number: 43, Head: "t2", UpdatedAt: at},
+			{Number: 44, Head: "u1"},
+			{Number: 44, Head: "u2"},
+		} {
+			sighted.Repository, sighted.RecordedAt = widgets, at.Add(10*time.Minute)
+			if _, err := RecordOutsidePullRequestTx(ctx, tx, sighted); err != nil {
+				return err
+			}
+		}
+		for number, want := range map[int]OutsidePullRequest{
+			42: {Head: "h2", UpdatedAt: at.Add(2 * time.Minute)},
+			43: {Head: "t2", UpdatedAt: at},
+			44: {Head: "u2"},
+		} {
+			pr, found, err := OutsidePullRequestTx(ctx, tx, widgets, number)
+			if err != nil {
+				return err
+			}
+			if !found || pr.Head != want.Head || !pr.UpdatedAt.Equal(want.UpdatedAt) {
+				t.Errorf("the outside pull request %d reads %+v (found %v), want it at %s, of GitHub's clock %v", number, pr, found, want.Head, want.UpdatedAt)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("the store: %v", err)
+	}
+}
+
 // The five tables of the daemon's writes of legion-verdict (migration 20261122045825_verdicts) keep
 // what the store writes in them. Each row written through the store's write reads back through
 // its read with every field as it was written, the id the write answered and the repository's own

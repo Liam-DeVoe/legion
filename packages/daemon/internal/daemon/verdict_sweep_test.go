@@ -62,9 +62,10 @@ func latestPerAuthor(reviews []sweptReview, opinionated bool) []sweptReview {
 // sweepGitHub is verdictGitHub with what the writers' sweep reads besides: the open pull requests of
 // acme/widgets through the GraphQL API, one pull request to a page so the sweep must follow the
 // pages, with each author's last review under whichever of latestReviews and
-// latestOpinionatedReviews the query names, and only where the query asks for them; and the merge
-// queue's gh-readonly-queue/ refs, each naming the commit of its group. lists counts the GraphQL
-// pages read, and requests every request GitHub saw.
+// latestOpinionatedReviews the query names, and only where the query asks for them; the open pull
+// requests at a commit, from the same list (GET /commits/{sha}/pulls); and the merge queue's
+// gh-readonly-queue/ refs, each naming the commit of its group. lists counts the GraphQL pages
+// read, and requests every request GitHub saw.
 type sweepGitHub struct {
 	*verdictGitHub
 	open     []sweptPull
@@ -83,6 +84,17 @@ func (g *sweepGitHub) serve(t *testing.T, verdicts http.HandlerFunc) http.Handle
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			g.listOpen(t, w, r)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/commits/") && strings.HasSuffix(r.URL.Path, "/pulls"):
+			commit := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/commits/"), "/pulls")
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			var pulls []fakePull
+			for _, pull := range g.open {
+				pulls = append(pulls, fakePull{number: pull.number, ref: pull.ref, head: pull.head})
+			}
+			if err := json.NewEncoder(w).Encode(pullsAtCommit(commit, pulls)); err != nil {
+				t.Errorf("encode the pull requests at %s: %v", commit, err)
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/git/matching-refs/heads/gh-readonly-queue/":
 			if r.Header.Get("Authorization") != "Bearer "+readToken("acme") {
 				t.Errorf("the merge queue's refs were listed with %q, want the read token", r.Header.Get("Authorization"))
@@ -126,10 +138,19 @@ func (g *sweepGitHub) listOpen(t *testing.T, w http.ResponseWriter, r *http.Requ
 	if after, _ := sent.Variables["after"].(string); after != "" {
 		at, _ = strconv.Atoi(after)
 	}
+	// GitHub's schema names a review's id fullDatabaseId, a string, and deprecates databaseId; a
+	// query that still names databaseId is answered as GitHub answers one once the field is gone.
+	if strings.Contains(sent.Query, "databaseId") {
+		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]any{{
+			"message": "Field 'databaseId' doesn't exist on type 'PullRequestReview'"}}}); err != nil {
+			t.Errorf("encode the GraphQL error: %v", err)
+		}
+		return
+	}
 	nodes := []map[string]any{}
 	if at < len(g.open) {
 		pull := g.open[at]
-		node := map[string]any{"number": pull.number, "headRefName": pull.ref, "headRefOid": pull.head}
+		node := map[string]any{"number": pull.number, "headRefName": pull.ref, "headRefOid": pull.head, "updatedAt": time.Date(2026, 11, 21, 7, 0, 0, 0, time.UTC)}
 		field := "latestReviews"
 		if strings.Contains(sent.Query, "latestOpinionatedReviews") {
 			field = "latestOpinionatedReviews"
@@ -141,7 +162,7 @@ func (g *sweepGitHub) listOpen(t *testing.T, w http.ResponseWriter, r *http.Requ
 				if login, bot := strings.CutSuffix(review.author, "[bot]"); bot {
 					author = map[string]any{"__typename": "Bot", "login": login}
 				}
-				reviews = append(reviews, map[string]any{"databaseId": review.id, "author": author, "state": review.state, "body": review.body,
+				reviews = append(reviews, map[string]any{"fullDatabaseId": strconv.FormatInt(review.id, 10), "author": author, "state": review.state, "body": review.body,
 					"submittedAt": time.Date(2026, 11, 21, 7, 0, int(review.id), 0, time.UTC)})
 			}
 			node[field] = map[string]any{"nodes": reviews}
@@ -379,7 +400,7 @@ func TestLegionVerdictSweepWritesAHeldVerdictAFailedWriteLeftUnwritten(t *testin
 // so a write behind the sweep's would hold them for the writer's whole bound. The sweep's writes
 // then go on in the order they were queued, and a fact queued while they run goes before the rest.
 func TestLegionVerdictAFactsWriteGoesBeforeTheSweepsWrites(t *testing.T) {
-	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry})
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID)
 	for n := 1; n <= 50; n++ {
 		writer.add(verdictTarget{repository: widgets, number: 100 + n, head: fmt.Sprintf("swept-%d", n), overForeign: true})
 	}
@@ -449,7 +470,8 @@ func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testi
 // status the App's bot created gets a newer status of the daemon's own with that state. Each such
 // write is in the record and in a legion_verdict_write line naming the foreign id. A run the record
 // holds is left as it is, and so is a run or a status another account made. The same holds on a
-// merge group's commit.
+// merge group's commit, and on a legion/<KEY> head of another project's issue, where this daemon
+// holds no step of that issue, so no verdict stands (R4).
 func TestTheSweepWritesOverAForeignLegionVerdict(t *testing.T) {
 	foreignWrite := func(t *testing.T, rig *sweepRig, head string, kind store.VerdictWriteKind, foreign int64, conclusion string) {
 		t.Helper()
@@ -525,6 +547,119 @@ func TestTheSweepWritesOverAForeignLegionVerdict(t *testing.T) {
 		}
 		foreignWrite(t, rig, "group-86", store.VerdictWriteCheckRun, 800, "failure")
 	})
+	t.Run("a run on another project's issue head turns to failure", func(t *testing.T) {
+		rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded,
+			sweptPull{number: 91, ref: "legion/OTHER-1", head: "other-1"})
+		rig.foreign([]fakeRun{{ID: 900, Head: "other-1", Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug}}, nil)
+		rig.swept(t)
+		if runs := rig.github.legionRuns("other-1"); len(runs) != 1 || runs[0].ID != 900 || runs[0].Conclusion != "failure" {
+			t.Fatalf("legion-verdict runs on other-1 = %+v, want the App's run 900 at failure, since no verdict stands on another project's issue head", runs)
+		}
+		foreignWrite(t, rig, "other-1", store.VerdictWriteCheckRun, 900, "failure")
+	})
+}
+
+// B2 (R19): the sweep compares each run of the one App, as GitHub shows it now, with what the head
+// should show, the runs its record holds included, and updates the run where the two differ. A
+// token of the App that turns a run back to success, on a head where no verdict stands, sees it
+// turned to failure again at the next sweep: a run the sweep once wrote failure over, and the
+// daemon's own run, which it wrote success on and then failure once the verdict no longer stood.
+// Once GitHub shows the run at failure, the next sweep writes nothing more.
+func TestTheSweepWritesOverARecordedRunAnotherTokenTurnedBack(t *testing.T) {
+	recorded := func(id int64, foreign int64, conclusions ...store.VerdictConclusion) func(string) func(*testing.T, *store.Pool) {
+		return func(head string) func(*testing.T, *store.Pool) {
+			return func(t *testing.T, pool *store.Pool) {
+				t.Helper()
+				inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+					for _, conclusion := range conclusions {
+						if _, err := store.RecordVerdictWriteTx(ctx, tx, store.VerdictWrite{Repository: widgets, Head: head, Kind: store.VerdictWriteCheckRun,
+							GitHubID: id, Conclusion: conclusion, ForeignID: foreign, WrittenAt: recordedAt}); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		seed   func(*testing.T, *store.Pool)
+		writes func(string) func(*testing.T, *store.Pool)
+		open   sweptPull
+		id     int64
+	}{
+		{"a run the sweep wrote failure over, at an outside head", seedOutside(false), recorded(500, 500, store.VerdictConclusionFailure), openOutside, 500},
+		{"the daemon's own run, at a Legion head whose verdict no longer stands", reviewingWithPass,
+			recorded(900, 0, store.VerdictConclusionSuccess, store.VerdictConclusionFailure), openCapture, 900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			head := tc.open.head
+			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+				tc.seed(t, pool)
+				tc.writes(head)(t, pool)
+			}, tc.open)
+			rig.foreign([]fakeRun{{ID: tc.id, Head: head, Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug}}, nil)
+			rig.swept(t)
+			if runs := rig.github.legionRuns(head); len(runs) != 1 || runs[0].ID != tc.id || runs[0].Conclusion != "failure" {
+				t.Fatalf("legion-verdict runs on %s = %+v, want run %d turned back to failure, and no run beside it", head, runs, tc.id)
+			}
+			writes := verdictWrites(t, rig.pool, head)
+			if last := writes[len(writes)-1]; last.GitHubID != tc.id || last.Conclusion != store.VerdictConclusionFailure || last.ForeignID != 0 {
+				t.Fatalf("the store records %+v on %s, want run %d written at failure last, as a run of its own", writes, head, tc.id)
+			}
+			if lines := rig.writeLines(t); len(lines) != 1 || lines[0]["id"] != float64(tc.id) || lines[0]["conclusion"] != "failure" {
+				t.Fatalf("legion_verdict_write lines = %v, want one naming run %d at failure", lines, tc.id)
+			}
+			made, _ := rig.github.recorded()
+			rig.swept(t)
+			if again, _ := rig.github.recorded(); len(again) != len(made) {
+				t.Fatalf("the next sweep wrote %+v, want nothing: GitHub shows run %d at failure", again[len(made):], tc.id)
+			}
+		})
+	}
+}
+
+// N5: the sweep reads a listed review's id from fullDatabaseId, the string GitHub's schema gives in
+// place of the deprecated databaseId, parsed whole: the CI reviewer's approval whose id is past
+// 2^32 is recorded under that id, and writes success.
+func TestLegionVerdictSweepReadsAReviewsFullDatabaseID(t *testing.T) {
+	pull := openOutside
+	pull.reviews = []sweptReview{{6009805204, ciReviewer, "APPROVED", ciReviewBody("out-1")}}
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded, pull)
+	rig.swept(t)
+	if reviews := verdictReviews(t, rig.pool, 90); len(reviews) != 1 || reviews[0].GitHubID != 6009805204 {
+		t.Fatalf("the reviews recorded of pull request 90 = %+v, want the CI reviewer's under GitHub's id 6009805204", reviews)
+	}
+	if runs := rig.github.legionRuns("out-1"); len(runs) != 1 || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on out-1 = %+v, want one concluding success", runs)
+	}
+}
+
+// unnamedGroupLine is what the sweep logs of a merge queue's group branch whose name gives no pull
+// request.
+const unnamedGroupLine = "verdict: a merge queue's group branch names no pull request, so legion-verdict is not written on its commit"
+
+// N6: a gh-readonly-queue/ branch whose name is not a group's of a pull request (as GitHub names it
+// today, gh-readonly-queue/<base>/pr-<number>-<base sha>) gives the sweep no pull request to
+// decide, so it writes nothing on its commit, and says so, naming the branch and its commit, each
+// pass; a branch of the usual shape is written on.
+func TestLegionVerdictSweepLogsAGroupBranchThatNamesNoPullRequest(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, seedReviewerVerdict(verdict.ReviewerApprove), openCapture)
+	rig.sweep.queued(86, "group-86")
+	rig.sweep.mu.Lock()
+	rig.sweep.groups["refs/heads/gh-readonly-queue/main/entry-86-7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d"] = "group-odd"
+	rig.sweep.mu.Unlock()
+	rig.swept(t)
+	if runs := rig.github.legionRuns("group-odd"); len(runs) != 0 {
+		t.Fatalf("legion-verdict runs on group-odd = %+v, want none: its branch names no pull request", runs)
+	}
+	groupConcluded(t, rig.github, rig.pool, "group-86", "success")
+	lines := loggedMessages(t, rig.logs.String(), unnamedGroupLine)
+	if len(lines) != 1 || lines[0]["ref"] != "refs/heads/gh-readonly-queue/main/entry-86-7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d" ||
+		lines[0]["group"] != "group-odd" || lines[0]["repository"] != "acme/widgets" {
+		t.Fatalf("%q lines = %v, want one naming the branch, its commit and acme/widgets", unnamedGroupLine, lines)
+	}
 }
 
 // Review Focus 4: a restart between the check run and its record leaves a run of the daemon's own
@@ -610,19 +745,20 @@ func TestTheBootSweepReadsTheMergeStateOfAStandingSuccessARestartLeftUnsettled(t
 	}
 }
 
-// A legion/<KEY> head of another project in the open list is that project's daemon's to sweep: this
-// daemon reads nothing more of it, writes nothing on it, and says so once per pull request.
-func TestLegionVerdictSweepLeavesAnotherProjectsIssueHeadToItsDaemon(t *testing.T) {
+// N7 (R4, R19): a legion/<KEY> head of another project in the open list is swept as every head of
+// a verdict repository is. This daemon holds no step of that issue, so no verdict stands there: with
+// no run or status of the App on the head it writes nothing there, the group of that pull request in
+// the merge queue gets failure, and one line per pull request says why no verdict stands.
+func TestLegionVerdictSweepWritesNoSuccessOnAnotherProjectsIssueHead(t *testing.T) {
 	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded,
 		sweptPull{number: 91, ref: "legion/OTHER-1", head: "other-1"})
+	rig.sweep.queued(91, "group-91")
 	rig.swept(t)
 	rig.swept(t)
-	if writes, _ := rig.github.recorded(); len(writes) != 0 {
-		t.Fatalf("writes = %+v, want none on another project's issue branch", writes)
+	if runs := rig.github.legionRuns("other-1"); len(runs) != 0 {
+		t.Fatalf("legion-verdict runs on other-1 = %+v, want none: no verdict stands there, and no run of the App is there to write over", runs)
 	}
-	if _, requests := rig.sweep.counts(); requests != 4 {
-		t.Fatalf("GitHub saw %d requests over two sweeps, want 4: each sweep's one page of open pull requests and its merge queue's refs", requests)
-	}
+	groupConcluded(t, rig.github, rig.pool, "group-91", "failure")
 	lines := loggedMessages(t, rig.logs.String(), otherProjectsLine)
 	if len(lines) != 1 || lines[0]["pull_request"] != float64(91) || lines[0]["issue"] != "OTHER-1" {
 		t.Fatalf("lines = %v, want one naming pull request 91 and OTHER-1", lines)

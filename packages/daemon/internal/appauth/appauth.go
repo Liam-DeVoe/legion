@@ -983,7 +983,7 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 }
 
 // botIdentity is the git identity of the App bot login, its noreply email naming the bot user's
-// id, read from GET /users/<login> under installationToken.
+// id, read from GET /users/<login> under installationToken. BotUserID reads that id back.
 func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
 	if err != nil {
@@ -1015,8 +1015,32 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 	}
 	return GitIdentity{
 		Name:  login,
-		Email: id + "+" + login + "@users.noreply.github.com",
+		Email: id + "+" + login + noreplySuffix,
 	}, nil
+}
+
+// noreplySuffix ends the noreply email botIdentity writes: "<id>+<login>" before it.
+const noreplySuffix = "@users.noreply.github.com"
+
+// BotUserID is the App bot user's id that a lease's identity names: the id GET /users/<login>
+// answered, which botIdentity writes into the noreply email, "<id>+<login>@users.noreply.github.com".
+// The bot's login changes with the App's slug when the App is renamed, and its id does not, so the
+// writer of legion-verdict tells the bot's commit statuses by it (a status's creator.id). 0 where
+// the identity names no whole positive number there.
+func BotUserID(identity GitIdentity) int64 {
+	local, ok := strings.CutSuffix(identity.Email, noreplySuffix)
+	if !ok {
+		return 0
+	}
+	id, _, ok := strings.Cut(local, "+")
+	if !ok {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
 }
 
 // appSlug is the slug of the App jwt signs for, read from GET /app: its bot login is the slug's,
