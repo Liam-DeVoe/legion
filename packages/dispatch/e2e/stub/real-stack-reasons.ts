@@ -184,7 +184,13 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-j.e2e.ts": "the Spec view reads the server's stored decisions, ties and results",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
-  "issue-page-t.e2e.ts":
+  "issue-page-t-reads.e2e.ts":
+    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+  "issue-page-t-same-rows-a.e2e.ts":
+    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+  "issue-page-t-same-rows-b.e2e.ts":
+    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+  "issue-page-t-write.e2e.ts":
     "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
