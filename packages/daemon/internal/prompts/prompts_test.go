@@ -1173,6 +1173,9 @@ func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testi
 		"and the implementer opens every Legion pull request",
 		"nothing of this tree pushes above it",
 		"the architect's acceptance is the gate, where its task has the step `acceptance:owner`",
+		"names no planner has no plan handoff",
+		"the architect's acceptance where the task has the step `acceptance:owner`)",
+		"for implementation, for each step that follows yours",
 	}
 	noPullRequest := map[claim.Role]string{
 		claim.RoleTester:   "An issue with no pull request closes when its retro ends",
