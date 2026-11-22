@@ -128,7 +128,7 @@ It carries:
     Its command line carries no git configuration but the guard's own pins (`gitPins`) and the pod's GitHub credential helper, reset and set to `legion git-credential` with `useHttpPath` on, as the pod's `GIT_CONFIG_COUNT` block begins (`workspace.GitHubCredentialPairs`, `heldReadCredential`).
     A credential helper cannot rewrite a URL, so it leads the read nowhere else, and the read authenticates to GitHub as the pod's own git does.
     A destination the guard cannot name that wants a credential set through git configuration is refused as a setup error, and so is a push that needs a transport setting made there, such as `core.sshCommand`, `http.proxy` or `http.sslCAInfo` in the user's file, the machine's or a `GIT_CONFIG_COUNT` block; `GIT_SSH_COMMAND`, the proxy variables and `GIT_SSL_CAINFO` still apply.
-    The read has a bound of its own, two minutes, since the hook's context has none (`Guard.heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
+    The read has a bound of its own, two minutes, since the hook's context has none (`heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
     A destination that stops answering refuses the push as a setup error that names the URL and the bound.
     The URL such an error names carries no user, no token and no query (`redact.URLCredentials`), and nor does git's own message it quotes (`gitSaid`, through `redact.Tail`).
     A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, written the same way (`PushName`).

@@ -37,7 +37,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -110,13 +109,6 @@ type Guard struct {
 	// that a lock file or a fixture a commit changes is far below it, and under the 50 MiB above
 	// which GitHub warns of a file a push adds.
 	blobBound int64
-	// heldReadBound is how long the read of what a push's destination holds runs at most
-	// (Guard.advertised): two minutes, which New sets and a test lowers. The hook's own context
-	// has no deadline (cmd/legion's main), so without it a destination that stops answering would
-	// hold the push for as long as it did not answer. Two minutes is that read many times over:
-	// measured from an issue pod on 2026-11-18, seven reads of cybermonklabs/legion's 5,749
-	// branches and tags took 0.58 s to 0.67 s, 0.63 s the median.
-	heldReadBound time.Duration
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
@@ -126,7 +118,7 @@ type Guard struct {
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, blobBound: 32 << 20, heldReadBound: 2 * time.Minute, curl: curlProgram}
+	g := &Guard{opts: opts, blobBound: 32 << 20, curl: curlProgram}
 	if opts.Curl != "" {
 		g.curl = opts.Curl
 	}

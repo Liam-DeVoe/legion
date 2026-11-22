@@ -521,26 +521,32 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 }
 
 // A read of what the destination holds that does not answer ends at its own bound
-// (Guard.heldReadBound), although the caller's context has no deadline, as the hook's has none: a
+// (heldReadBound), although the caller's context has no deadline, as the hook's has none: a
 // destination that stops answering refuses the push rather than holding it. The push is refused
-// as a setup failure that names the URL, without its credential, and the bound. The stand-in git
-// here never answers an ls-remote, and runs the real git for every other call; the bound is 2 s.
+// as a setup failure that names the URL, without its credential, and git's stop by a bound no
+// longer than the read's own 2 s. The stand-in git here never answers an ls-remote, and runs the
+// real git for every other call. The bound is read against that ceiling, not for its exact
+// seconds (stopBound).
 func TestAReadOfWhatTheDestinationHoldsThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
+	shorten(t, &heldReadBound, 2*time.Second)
 	bin := t.TempDir()
 	writeProgram(t, bin, "git", `case " $* " in
-*" ls-remote "*) exec sleep 30 ;;
+*" ls-remote "*) exec sleep 86400 ;;
 esac
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)
 	repo, base, head, _ := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
-	guard.heldReadBound = 2 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	started := time.Now()
-	err := guard.Push(ctx, mainPush(repo, base, head, "origin", credentialedURL))
-	answeredWithin10s(t, started)
-	wantSetupFailure(t, err, "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote "+theURL+": git ran 2 s and was stopped by its bound of 2 s")
+	var err error
+	answered(t, "the push whose read of the destination's refs never answers", func() {
+		err = guard.Push(ctx, mainPush(repo, base, head, "origin", credentialedURL))
+	})
+	says(t, setupFailure(t, err), "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote "+theURL+": git ran ")
+	if got := stopBound(t, err); got > 2 {
+		t.Errorf("git was stopped by a bound of %d s, want the read's own %s", got, heldReadBound)
+	}
 	wantNoCredential(t, err)
 }
 

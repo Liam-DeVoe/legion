@@ -6,11 +6,26 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
+
+// heldReadBound is how long the read of what a push's destination holds runs at most
+// (Guard.advertised). The hook's own context has no deadline (cmd/legion's main), so without it a
+// destination that stops answering would hold the push for as long as it did not answer. Two
+// minutes is that read many times over: measured from an issue pod on 2026-11-18, seven reads of
+// cybermonklabs/legion's 5,749 branches and tags took 0.58 s to 0.67 s, 0.63 s the median. It is a
+// variable so that a test can shorten it, and so that cmd/legion's tests, whose pushes run this
+// read on a stand-in git, can give it their own deadline (programbound).
+var heldReadBound = 2 * time.Minute
+
+func init() {
+	programbound.Register(&heldReadBound)
+}
 
 // commits are the commits an update that is no deletion would add to the destination, oldest
 // first: the commits the local side has, less the ones the destination holds already. It holds
@@ -144,7 +159,7 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // (redact.Tail).
 func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, objects []string, err error) {
 	read := "git ls-remote " + redact.URLCredentials(url)
-	bounded, cancel := context.WithTimeout(ctx, g.heldReadBound)
+	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&heldReadBound))
 	defer cancel()
 	var stderr strings.Builder
 	status, out, err := g.run(bounded, child{

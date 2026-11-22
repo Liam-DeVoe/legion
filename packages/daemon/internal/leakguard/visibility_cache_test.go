@@ -119,16 +119,8 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 			prepare(t, path, filepath.Dir(path))
 			var visibility Visibility
 			var ok bool
-			read := make(chan struct{})
-			go func() {
-				defer close(read)
-				visibility, ok = guard.keptVisibility(slug)
-			}()
-			select {
-			case <-read:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the kept visibility read has not returned after 10 s: an open waits on what lies at the path")
-			}
+			// An open that waits on what lies at the path never returns, and fails the row by name.
+			answered(t, "the kept visibility read", func() { visibility, ok = guard.keptVisibility(slug) })
 			if ok {
 				t.Errorf("kept visibility = %q, true; want cache miss", visibility)
 			}
