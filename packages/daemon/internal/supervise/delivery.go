@@ -166,6 +166,13 @@ type Delivery struct {
 	// delivery the release before stored can be, is sent with the daemon's sentences naming no
 	// commit and no entry at its end.
 	RoundNamed bool
+	// Opening is the work hold's opening sentences Task begins with (OpeningTask), from the request
+	// that queued it (RequestDeliver.Opening): the one task the hold's opening gave a claim it
+	// stopped. It is empty for every other task. It is what marks the task as an opening's task, so
+	// the next opening that starts the claim over this task kept puts its own sentences in front of
+	// the task's work alone (Work, openingTask), never in front of the earlier sentences. The task
+	// text stays as the workflow wrote it.
+	Opening string
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
@@ -197,6 +204,19 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 		return false
 	}
 	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
+}
+
+// Work is the task's work: Task, with the work hold's opening sentences it begins with (Opening)
+// taken off its front. A task that carries no such sentences is its whole text, and so is one whose
+// text does not begin with them: a delivery the release before rewrote keeps the column it does not
+// name, so its Opening may name sentences its new task does not carry.
+func (d Delivery) Work() string {
+	if d.Opening != "" {
+		if work, ok := strings.CutPrefix(d.Task, OpeningTask(d.Opening, "")); ok {
+			return work
+		}
+	}
+	return d.Task
 }
 
 // sentences is which of the claim's two untold records a prompt carries the sentence of: the
@@ -512,7 +532,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
+		Opening: request.Opening}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,

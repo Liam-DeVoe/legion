@@ -363,6 +363,12 @@ func OpeningTask(opening, work string) string { return opening + "\n\n" + work }
 // record is no work, and is never kept: its sentence goes in front of whatever task follows it
 // (Delivery.message).
 //
+// The kept task's work is its text with the sentences of an earlier opening taken off its front
+// (Delivery.Work): a claim an earlier opening started and a later close stopped before any turn
+// took that opening's task keeps the earlier opening's task. The one task carries the newest
+// opening's sentences once, then that work, and it is marked with those sentences
+// (RequestDeliver.Opening), so the next opening reads it the same way.
+//
 // Newer work is a task of a later run than the kept one's, or of a later entry of the same run,
 // that is no resend: a transition or an owed entry written for the role while the gate was closed,
 // whose start the opening's folded into, so the role is given the newest entry's task. A start of
@@ -376,9 +382,9 @@ func (m *Machine) openingTask(opening string, task RequestDeliver) (one RequestD
 		return task, false
 	}
 	one = task
-	one.Task = p.Task
+	one.Task, one.Opening = p.Work(), ""
 	if opening != "" {
-		one.Task = OpeningTask(opening, p.Task)
+		one.Task, one.Opening = OpeningTask(opening, one.Task), opening
 	}
 	one.Phase, one.Generation, one.Entry, one.ResendEntry = p.Phase, p.Generation, p.Entry, true
 	one.Kept, one.CheckLook, one.RoundNamed = p.Kept, p.CheckLook, p.RoundNamed

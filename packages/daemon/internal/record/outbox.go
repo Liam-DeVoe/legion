@@ -1393,17 +1393,23 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
 // beside either, so the pod would come back for a message the row had already dropped. Two
 // exceptions stand. One is a row marked Wake, the design gate's close message to a merger whose
-// claim was released when the gate closed (workflow's tellGateMoved). The other is a row a
-// project's pause held for a role a pause stopped: without the pause the role
-// would have had the message, so the row is published to the role after the resume, and that
-// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
+// claim was released when the gate closed, or under `merge` to a merger that may be launching
+// (workflow's tellGateMoved). The other is a row a project's pause held for a role a pause
+// stopped: without the pause the role would have had the message, so the row is published to the
+// role after the resume, and that publish wakes it (internal/daemon's outbox.roleMessage, R4 of
+// dispatch://INFRA-3759).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
 	// Wake marks the design gate's close message to a merger whose claim was released when the
 	// gate closed, under either hold: the outbox wakes the released merger for the message rather
 	// than dropping it, so the merger can take its pull request out of GitHub's merge queue. It is
-	// the one start of a merger the closed gate lets through, and every other message carries none.
+	// the one start of a merger the closed gate lets through. Under `merge` it also marks the close
+	// message to a merger whose claim is live, or whose start a lane runs, since that start may have
+	// read the gate open before the close and may launch the merger after it (workflow's
+	// mergersToWake): the outbox wakes nothing of it and waits for the merger's session. Every
+	// other message carries none. A row marked Wake is a close message, and the outbox finishes it
+	// unpublished where the gate no longer stands closed (internal/daemon's closeOutrun).
 	Wake bool `json:"wake,omitempty"`
 	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:
 	// work`, workflow's workHoldClose): a suspend of the source hold that names no deadline and no

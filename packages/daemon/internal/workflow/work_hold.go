@@ -29,7 +29,9 @@ import (
 // never applied from one whose drain is under way (workHoldBooted). The opening deletes the hold
 // that stands and keeps it, with what ended it, as the record of the tree's last opening
 // (record.Store.OpenWorkHold). Every start of a claim the hold stopped builds its task from that
-// record (heldClaimOpening), so a claim the opening did not start gets the task the opening gave.
+// record (heldClaimOpening), so a claim the opening did not start gets the task the opening gave,
+// and the outbox builds the task's sentences again from the record when the start runs
+// (HeldClaimOpening), so a start queued at one opening gives the words of the latest.
 
 // HoldStopGrace is how long after the work hold's close message reached a claim a turn still
 // running is cut: long enough for a worker to end its turn at its next step and for a merger to
@@ -121,8 +123,9 @@ func openingSentences(closing *record.WorkHold, ended string) string {
 }
 
 // heldClaimOpening is what the one task of every start of a claim the hold stopped starts with:
-// the opening's own start (endWorkHold), and each start of a claim the opening did not start
-// (openStoppedClaims). opened is the record of the tree's last opening (record.WorkHold, not
+// the opening's own start (endWorkHold), each start of a claim the opening did not start
+// (openStoppedClaims), and each start the outbox runs against a claim the hold holds
+// (HeldClaimOpening). opened is the record of the tree's last opening (record.WorkHold, not
 // Standing), nil where the daemon keeps none. With the record, it is the opening's sentences
 // around what ended the hold (WorkHold.Opening): today's open message, or the boot's sentence, so
 // each start gives the words the opening gave. With none, it is the hold's own sentence and
@@ -132,6 +135,31 @@ func heldClaimOpening(opened *record.WorkHold, tree string) string {
 		return openingSentences(nil, unrecordedOpeningSentence(tree))
 	}
 	return openingSentences(opened, opened.Opening)
+}
+
+// HeldClaimOpening is the opening sentences of a start of a claim the hold stopped in root's tree,
+// built when the start runs (internal/daemon's startOfAHeldClaim) from hold, the tree's record of
+// its hold as it stands then (record.Store.TreeWorkHold), nil for none. It is heldClaimOpening of
+// that record (lastOpening), so a start queued at one opening that runs after a later close and
+// opening gives the words of the later opening: the version that closed the gate last, and what
+// ended the hold last. standing reports a hold that stands in the record: the gate closed again,
+// no start of a claim the hold stopped goes on, and opening is "".
+func HeldClaimOpening(hold *record.WorkHold, root record.Issue) (opening string, standing bool) {
+	hold = lastOpening(hold, root)
+	if hold != nil && hold.Standing() {
+		return "", true
+	}
+	return heldClaimOpening(hold, root.Tree), false
+}
+
+// lastOpening is hold, the record of root's tree's hold, where a start of a claim the hold stopped
+// may use it, and nil where the record is of an older generation of the root: the hold of a run
+// that ended, which no start uses (openStoppedClaims, HeldClaimOpening).
+func lastOpening(hold *record.WorkHold, root record.Issue) *record.WorkHold {
+	if hold != nil && hold.RootGeneration != root.Generation {
+		return nil
+	}
+	return hold
 }
 
 // holdReason is the reason a stop of the hold logs on the claim it stops.
@@ -229,8 +257,16 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //   - a released worker that is not a merger nothing: a wake would bring its pod back only to stop
 //     it, so its stop is written at once, and the hold takes its `released` source over with its
 //     bundle and its pending task kept;
-//   - and a claim an operator or the daemon suspended, or a failed or retired one, nothing: the
-//     operator's suspension and the daemon's stand above the hold's.
+//   - a phase worker that is neither live nor released, and whose run holds a start under way
+//     (startUnderWay), nothing, and its stop is written at once: the start read the gate open
+//     before this close, and it may create, resume or retry the claim after it. The stop's row is
+//     newer than the start's, so it still acts on the claim that start launches (StopActs), and
+//     the outbox runs it once the start's lease ends: it stops the launching claim at its ready,
+//     before the claim takes any task (supervise's holdSuspendUntilReady). A stop that finds no
+//     launch makes nothing: a claim that runs nothing is not stopped again, and an operator's or
+//     the daemon's suspension stands;
+//   - and any other claim an operator or the daemon suspended, or a failed or retired one,
+//     nothing: the operator's suspension and the daemon's stand above the hold's.
 //
 // Each stop names the version that closed the gate (record.SuperviseRequest.HoldVersion), and is
 // one log line naming the issue, the role and the version.
@@ -252,6 +288,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 	told, stopped := 0, 0
 	for _, c := range claims {
 		var how string
+		underWay, _ := startUnderWay(c.run, root)
 		switch {
 		case c.role == claim.RoleArchitect && c.live():
 			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: architectClose}); err != nil {
@@ -278,6 +315,11 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 			told++
 		case c.state().Released():
 			how = "held over its release at once"
+			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c)); err != nil {
+				return err
+			}
+		case underWay:
+			how = "held at the ready of a start under way"
 			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c)); err != nil {
 				return err
 			}
@@ -374,12 +416,16 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // (Store.EnqueueStart) — and the phase's resume task where it does not. A claim that holds no
 // phase is told that the issue's other roles may ask it questions. The start carries opening apart
 // (record.SuperviseRequest.Opening): where the claim kept a task of its own, supervise puts those
-// sentences in front of it instead (Machine.EndHold). A claim that already has such a start queued
-// is given no second. Each start is one log line naming the issue, the role and version, the
-// version that closed the gate, which is 0 where no record or stop names it.
+// sentences in front of it instead (Machine.EndHold). A claim with a queued start of the opening
+// that stands over the start this would write (OpeningStartStands) is given no second: the queued
+// start builds its words from the tree's record when it runs (internal/daemon's
+// startOfAHeldClaim, HeldClaimOpening), so it gives this opening's words. A queued start that
+// carries no phase work does not stand over the start of a claim that holds its phase now. Each
+// start is one log line naming the issue, the role and version, the version that closed the gate,
+// which is 0 where no record or stop names it.
 func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, opening string, version int) error {
 	for _, c := range claims {
-		if c.role == claim.RoleArchitect || !c.state().WorkHeld() || openingQueued(c.run, root) {
+		if c.role == claim.RoleArchitect || !c.state().WorkHeld() {
 			continue
 		}
 		holds := phase.RoleFor(c.issue.Phase) == c.role
@@ -389,6 +435,13 @@ func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issu
 				return err
 			}
 			holds = !finished
+		}
+		var current phase.Phase
+		if holds {
+			current = c.issue.Phase
+		}
+		if OpeningStartStands(c.run, root, current, 0) {
+			continue
 		}
 		var err error
 		switch {
@@ -419,18 +472,6 @@ func (e *Engine) startHeldPhase(ctx context.Context, tx pgx.Tx, c treeClaim, ope
 		return e.sendOwedEntry(ctx, tx, c.issue, c.role, row, startMarks{opening: opening})
 	}
 	return e.started(ctx, tx, c.issue, c.role, ResumePhaseTask(c.issue), 0, startMarks{resumeTask: true, reasserts: true, opening: opening})
-}
-
-// openingQueued is whether run already has a start of the opening queued that still acts: one
-// carrying the opening's sentences, newer than any stop that will still act (actingStop).
-func openingQueued(run record.RoleRun, root record.Issue) bool {
-	stop := actingStop(run, root)
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Opening != "" && queued.ID > stop {
-			return true
-		}
-	}
-	return false
 }
 
 // workHoldBooted is the boot's reconcile of the work hold over the project's running trees
@@ -563,7 +604,7 @@ func (e *Engine) openStoppedClaims(ctx context.Context, tx pgx.Tx, root record.I
 	if err != nil {
 		return err
 	}
-	if hold != nil && hold.RootGeneration != root.Generation {
+	if hold != nil && lastOpening(hold, root) == nil {
 		e.logOnCommit(ctx, "workflow: the record of the work hold is of a generation of the tree that has ended; the start of a claim it stopped names no version in its task",
 			"tree", root.Tree, "held", hold.RootGeneration, "generation", root.Generation)
 		hold = nil

@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // gatesStep says whether the deployment gates step, so a person must approve that step's document
@@ -1047,11 +1046,16 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
 // What the move does beyond telling is the deployment's hold (Config.Hold, `gates.hold`). Under
-// `merge`, the default, it is what this comment says, word for word as it always was, with one
-// fix: the close message to a merger whose claim the idle release suspended is marked to wake it
-// (record.RoleMessage.Wake), so it can take its pull request out of GitHub's merge queue rather
-// than leave it to merge a head the gate holds. Under `work` the move is the work hold's close or
-// its opening, with recipients and texts of their own (workHoldClose, workHoldOpen).
+// `merge`, the default, it is what this comment says, word for word as it always was, with two
+// fixes, which both mark the close message to a merger to wait for the merger's session
+// (record.RoleMessage.Wake, mergersToWake). The message to a merger whose claim the idle release
+// suspended wakes it, so it can take its pull request out of GitHub's merge queue rather than
+// leave it to merge a head the gate holds. And the message to a merger that may be launching, its
+// claim live or its start running in a lane, waits for its session rather than finishing on a role
+// nobody holds yet: the outbox reads the gate once before a start acts, so a start of the merger
+// can read it open, and launch the merger with its task after this close. Under `work` the move is
+// the work hold's close or its opening, with recipients and texts of their own (workHoldClose,
+// workHoldOpen), and the close stops such a merger at its ready instead.
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -1098,7 +1102,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	var woken map[claim.Token]bool
 	if !open {
 		body = mergeCloseMessage(root.Tree, step, document, version)
-		if woken, err = e.releasedMergers(ctx, tx, told); err != nil {
+		if woken, err = e.mergersToWake(ctx, tx, *root, members, told); err != nil {
 			return err
 		}
 	}
@@ -1110,34 +1114,53 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	if len(woken) > 0 {
-		e.logOnCommit(ctx, "workflow: the design gate closed and its message wakes each released merger of the tree", "tree", root.Tree,
-			"version", version, "woken", len(woken))
+		e.logOnCommit(ctx, "workflow: the design gate closed and its message waits for the session of each merger of the tree that may run, and wakes a released one", "tree", root.Tree,
+			"version", version, "mergers", len(woken))
 	}
 	return nil
 }
 
-// releasedMergers is the claim token of each merger of told whose claim is released, the mergers
-// the close message wakes (record.RoleMessage.Wake). Only a merger is woken for it, and only from
-// its release: a live merger reads the message as it is, and one an operator or the daemon
-// suspended is not woken by any message.
-func (e *Engine) releasedMergers(ctx context.Context, tx pgx.Tx, told []addressedRole) (map[claim.Token]bool, error) {
-	var tokens []claim.Token
+// mergersToWake is the claim token of each merger of told, under `merge`, whose close message
+// waits for the merger's session (record.RoleMessage.Wake), read with the role's queued rows at
+// its member's generation (RoleRuns):
+//
+//   - a merger whose claim is released, which the message wakes;
+//   - a merger whose claim is live, launching among them, whose session may not hold the role's
+//     topic yet;
+//   - and a merger whose start a lane runs now (startUnderWay's running), which read the gate open
+//     before this close, or reads it now, and which may launch the merger with its task after it.
+//
+// The row waits while the claim is not gone, and the merger reads the close once its session
+// holds its topic. A merger whose start is only queued is not waited for: that start reads the
+// closed gate at its next attempt and waits at the fence through the whole hold, so it launches
+// nothing, and a message that waited for it would hold the issue's pod from its idle release until
+// the gate opens. Once the start passes the fence after the opening, the merger takes its task as
+// any start gives it. A merger an operator or the daemon suspended, or a failed or retired one,
+// with no start running, is not woken and is not waited for. root is the tree root, which StopActs
+// reads for a tree close, and members are the tree's members, whose generations key the reads.
+func (e *Engine) mergersToWake(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue,
+	told []addressedRole) (map[claim.Token]bool, error) {
+	generations := make(map[string]uint64, len(members))
+	for _, member := range members {
+		generations[member.Key] = member.Generation
+	}
+	var keys []record.RoleRunKey
 	for _, to := range told {
 		if role, _ := to.token.Role(); role == claim.RoleMerger {
-			tokens = append(tokens, to.token)
+			keys = append(keys, record.RoleRunKey{Token: to.token, Issue: to.issue, Role: role, Generation: generations[to.issue]})
 		}
 	}
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	claims, err := e.store.RoleClaims(ctx, tx, tokens)
-	if err != nil {
-		return nil, err
-	}
-	woken := make(map[claim.Token]bool, len(claims))
-	for token, held := range claims {
-		if held != nil && (supervise.Claim{State: held.State, SuspendedBy: held.SuspendedBy}).Released() {
-			woken[token] = true
+	woken := make(map[claim.Token]bool, len(keys))
+	for batch := range slices.Chunk(keys, strandedRoleRunBatchSize) {
+		runs, err := e.store.RoleRuns(ctx, tx, batch)
+		if err != nil {
+			return nil, err
+		}
+		for token, run := range runs {
+			held := treeClaim{run: run}
+			if _, running := startUnderWay(run, root); held.live() || held.state().Released() || running {
+				woken[token] = true
+			}
 		}
 	}
 	return woken, nil

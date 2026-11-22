@@ -1035,8 +1035,10 @@ func TestWorkHoldStopsALiveWorkerAtItsTurnsEndOrTwoMinutesAfterTheMessage(t *tes
 
 // Spec step 3, H32, check a3d61f8e: a gate that opens again before a stop is made stops nothing
 // more. The stop a message would have posted is not posted, and a stop held for a turn is
-// dropped, the turn going on; a released worker's stop not yet run takes nothing over. A turn that
-// ends after the opening committed and before the stop's row runs again makes no stop either
+// dropped, the turn going on; a released worker's stop not yet run takes nothing over. A close
+// message that meets the open gate before its publish is not published, so the worker is told
+// the opening alone (TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain). A turn that ends
+// after the opening committed and before the stop's row runs again makes no stop either
 // (TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening).
 func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 	t.Run("before the message reached the worker", func(t *testing.T) {
@@ -1046,8 +1048,8 @@ func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 		r.close(4)
 		r.approve(4, 12)
 		r.drain()
-		if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.workerClose(4) || got[1] != r.openedMessage(4) {
-			t.Fatalf("the implementer was told %q, want the close and then the opening", got)
+		if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedMessage(4) {
+			t.Fatalf("the implementer was told %q, want the opening alone: the close message met the open gate before its publish", got)
 		}
 		if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 			t.Fatalf("the outbox holds the stops %+v of the implementer, want none posted once the gate opened", stops)
@@ -1976,5 +1978,385 @@ func TestWorkHoldOpensAWorkerOfAnIssueAtAdmittedWithNoPhase(t *testing.T) {
 	r.wantStarted(claim.RoleImplementer, 0, r.opening(4, 4)+"\n\n"+"The issue's other roles may ask you questions.")
 	if got := r.launches(claim.RoleArchitect); got != architect {
 		t.Fatalf("the opening started the root's architect %d times, want none: the hold never held it", got-architect)
+	}
+}
+
+// closeWhileProvisioning has the rig's next workspace provision commit the close at version before
+// it provisions: the close of a start that read the gate open (the outbox's startWaitsForTheHold)
+// and has not created its claim yet. It answers whether the close was made.
+func (r *workHoldRig) closeWhileProvisioning(version int) func() bool {
+	provision := r.runner.provision
+	closed := false
+	r.runner.provision = func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
+		if !closed {
+			closed = true
+			r.close(version)
+		}
+		return provision(ctx, request)
+	}
+	return func() bool { return closed }
+}
+
+// Spec step 1 ("no phase starts"), for a start that read the gate open before the close and
+// launches its claim after it. The outbox reads the gate once before a start acts, and then
+// provisions, creates and launches the claim with no second read. Here the close commits while the
+// implementer's first start provisions its workspace, between that read and the claim's creation,
+// so the close reads no claim of the implementer, live or released. It writes the hold's stop of
+// the role all the same, since a start of it is under way, and the stop runs once the start's
+// lease ends: it stops the launching implementer at its ready, before the implementer takes any
+// task. The opening starts it once, with the start's task behind the opening's sentences.
+func TestWorkHoldStopsAStartPastTheFenceAtItsReady(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleImplementer,
+			Claim: r.token(claim.RoleImplementer), Entry: 1, EntryTask: keptTask})
+	})
+	r.conn(claim.RoleImplementer)
+	closed := r.closeWhileProvisioning(4)
+	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleImplementer, Generation: 1,
+		Phase: phase.Implementing, Task: keptTask, Entry: 1})
+	r.runOnce()
+	if !closed() {
+		t.Fatal("the implementer's start provisioned no workspace, so the close was never made")
+	}
+	if got := r.launches(claim.RoleImplementer); got != 1 {
+		t.Fatalf("the start launched the implementer %d times, want once: it read the gate open before the close", got)
+	}
+	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 1 || stops[0].HoldVersion != 4 {
+		t.Fatalf("the close left the stops %+v of the implementer, want one naming version 4: a start of it was under way", stops)
+	}
+	r.runOnce()
+	if c := r.machine(claim.RoleImplementer).Claim(); c.State == supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("once its stop ran the implementer is %s by %q, held %v; want its launch going on with the stop held for its ready",
+			c.State, c.SuspendedBy, c.WorkHeld())
+	}
+	readyClaimAs(t, r.sup, r.token(claim.RoleImplementer), claim.RoleImplementer, "ses-implementer")
+	r.wantHeld(claim.RoleImplementer, 1, "at its ready")
+	if prompts := r.conn(claim.RoleImplementer).Prompts(); len(prompts) != 0 {
+		t.Fatalf("the implementer was prompted %+v with the gate closed, want nothing: the hold stops it before any task", prompts)
+	}
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 1, "after the drain")
+	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
+		t.Fatalf("the stop still waits as %+v once made, want it done", stops)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	r.wantStarted(claim.RoleImplementer, 1, r.opening(4, 4)+"\n\n"+keptTask)
+}
+
+// The same window under `merge`, which stops nothing: a start of the merger that read the gate
+// open before the close launches the merger with its task after it. The close read no claim of
+// the merger, so its message would meet no session that holds the role and finish undelivered.
+// It waits for the merger's session instead, as a woken merger's close does, and the merger is
+// told today's close once its session holds its topic.
+func TestMergeHoldTellsAMergerWhoseStartReadTheGateBeforeTheClose(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
+	merger := r.token(claim.RoleMerger)
+	r.conn(claim.RoleMerger)
+	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
+	closed := r.closeWhileProvisioning(4)
+	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		Task: "Merge the pull request."})
+	r.runOnce()
+	if !closed() {
+		t.Fatal("the merger's start provisioned no workspace, so the close was never made")
+	}
+	if got := r.launches(claim.RoleMerger); got != 1 {
+		t.Fatalf("the start launched the merger %d times, want once: it read the gate open before the close", got)
+	}
+	r.runOnce()
+	if got := r.published(claim.RoleMerger); len(got) != 0 {
+		t.Fatalf("the merger was told %q before its session held its topic, want nothing yet", got)
+	}
+	// A role message's row names its role by the claim token.
+	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
+		t.Fatalf("the close message to the merger left %d rows before the merger's session held its topic, want it waiting", got)
+	}
+
+	r.clock.advance(65 * time.Second)
+	readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
+	r.publisher.setAbsent()
+	r.runOnce()
+	if got := r.published(claim.RoleMerger); len(got) != 1 || got[0] != r.mergeClose(4) {
+		t.Fatalf("the merger was told %q, want today's close, %q", got, r.mergeClose(4))
+	}
+}
+
+// Spec step 7 ("names the version that closed the gate. It carries today's open message."), for a
+// start of the opening that is still queued across a second close and a second opening. The
+// opening of version 4 queues a start of each claim the hold stopped, and neither runs before the
+// close of version 5. They wait at the fence, the opening of version 5 writes no second start, and
+// each start then gives the words of the newest opening, built when it runs: the close of version
+// 5 and the approval of version 5, once.
+func TestWorkHoldOpeningStartQueuedAcrossAnotherCloseGivesTheNewestOpening(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	r.working(claim.RoleImplementer)
+	r.released(claim.RoleTester)
+	r.close(4)
+	r.drain()
+	endTurn(r.ctx, t, r.machine(claim.RoleImplementer), r.token(claim.RoleImplementer))
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 1, "after the first close")
+	r.wantHeld(claim.RoleTester, 0, "after the first close")
+
+	r.approve(4, 12)
+	r.close(5)
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 1, "after the second close")
+	r.wantHeld(claim.RoleTester, 0, "after the second close")
+	r.approve(5, 13)
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		if got := r.startsSince(role, 0); got != 1 {
+			t.Fatalf("after the second opening the outbox holds %d starts of the %s, want the first opening's one", got, role)
+		}
+	}
+	r.drain()
+	opening := r.opening(5, 5)
+	r.wantStarted(claim.RoleImplementer, 1, opening+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+	r.wantStarted(claim.RoleTester, 0, opening+"\n\n"+"The issue's other roles may ask you questions.")
+}
+
+// Spec step 7 ("one task"), for a start of the opening that carries no phase work and a newer
+// start of the same role that carries its phase's. The opening starts the implementer, which
+// holds no phase then, with the task of a claim that holds none, and that start waits on its
+// backoff. A move back then gives the implementer its phase, and that start runs first: it does
+// not give way to the opening's start, and starts the implementer with one task, the phase's work
+// behind the opening's sentences. The opening's start then meets a claim the hold no longer
+// holds, and finishes without acting, and admission owes the implementer nothing more.
+func TestWorkHoldGivesOneTaskWhenAPhaseStartMeetsAnOpeningStartWithNoPhase(t *testing.T) {
+	r := heldAtTheClose(t)
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 0, "after the close")
+	r.approve(4, 12)
+	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = $2 where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = $3`, r.tree.key, r.clock.Now().Add(10*time.Minute),
+		string(claim.RoleImplementer)); err != nil {
+		t.Fatalf("put the implementer's opening start on its backoff: %v", err)
+	}
+	r.runOnce()
+
+	r.apply("back", intake.BackwardMove{Issue: r.tree.key, Requester: claim.RoleTester, To: phase.Implementing,
+		Reason: "the empty list is not covered"})
+	var work string
+	for _, start := range startRequestsOf(t, r.pool, r.tree.key, "start") {
+		if start.Role == claim.RoleImplementer && start.Opening == "" {
+			work = start.Task
+		}
+	}
+	if work == "" {
+		t.Fatal("the move back queued no start of the implementer's phase")
+	}
+	r.runOnce()
+	r.clock.advance(11 * time.Minute)
+	r.drain()
+	r.apply("tick", intake.ControllerTick{})
+	r.drain()
+
+	r.wantStarted(claim.RoleImplementer, 0, r.opening(4, 4)+"\n\n"+work)
+	if got := r.startsSince(claim.RoleImplementer, 0); got != 0 {
+		t.Fatalf("the outbox still holds %d starts of the implementer, want none", got)
+	}
+	readyClaimAs(t, r.sup, r.token(claim.RoleImplementer), claim.RoleImplementer, "ses-implementer")
+	r.drain()
+	if prompts := r.conn(claim.RoleImplementer).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, work) {
+		t.Fatalf("the implementer was prompted %+v, want one task, its phase's work", prompts)
+	}
+}
+
+// notConfirmedOnce is the listener with the first publish to topic unconfirmed
+// (notify.ErrNotDelivered), which the outbox retries on the row's backoff, and every other publish
+// answered as holderPublisher answers it.
+type notConfirmedOnce struct {
+	*holderPublisher
+	topic  string
+	missed bool
+}
+
+func (p *notConfirmedOnce) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+	if topic == p.topic && !p.missed {
+		p.missed = true
+		return fmt.Errorf("publish to %s: listener returned 504: %w", topic,
+			notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-implementer", EventID: key})
+	}
+	return p.holderPublisher.Publish(ctx, topic, message, payload, key)
+}
+
+// A close message that meets its tree's gate open again before its publish is not published, and
+// posts no stop, under both `gates.hold` words. The close's message to a released merger wakes it,
+// and the gate opens while its pod comes back: the open message meets the launching merger, which
+// holds no topic yet, and finishes undelivered. The close's row then finds the gate open and
+// finishes with one line, so the merger's last word is not "closed". A live worker's close message
+// whose publish its holder did not confirm finds the gate open at its retry in the same way: the
+// worker is told the opening alone.
+func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
+	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
+	for _, hold := range []config.Hold{config.HoldMerge, config.HoldWork} {
+		t.Run("a woken merger under "+string(hold), func(t *testing.T) {
+			r := mergingWithAReleasedMerger(t, hold)
+			logs := &testlog.Buffer{}
+			r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+			merger := r.token(claim.RoleMerger)
+			r.close(4)
+			r.runOnce()
+			if got := r.launches(claim.RoleMerger); got != 1 {
+				t.Fatalf("the close's message started the released merger %d times, want once", got)
+			}
+			r.approve(4, 12)
+			r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
+			r.runOnce()
+			r.publisher.setAbsent()
+			r.clock.advance(65 * time.Second)
+			readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
+			r.runOnce()
+
+			if got := r.published(claim.RoleMerger); len(got) != 0 {
+				t.Fatalf("the merger was told %q, want nothing: the gate opened before the close was published", got)
+			}
+			if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
+				t.Fatalf("the outbox still holds %d role messages, want the close finished", got)
+			}
+			if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
+				t.Fatalf("the outbox holds the stops %+v of the merger, want none", stops)
+			}
+			if lines := loggedMessages(t, logs.String(), unpublished); len(lines) != 1 || lines[0]["role"] != string(merger) {
+				t.Fatalf("the outbox logged %v, want one line naming the merger", lines)
+			}
+			r.drain()
+			if c := r.machine(claim.RoleMerger).Claim(); c.State != supervise.StateReady || c.WorkHeld() || c.SuspensionHeld {
+				t.Fatalf("the merger is %s, held %v, a stop held %v; want it ready and not stopped", c.State, c.WorkHeld(), c.SuspensionHeld)
+			}
+		})
+	}
+	t.Run("a retried close to a live worker", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+		logs := &testlog.Buffer{}
+		r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+		r.working(claim.RoleImplementer)
+		implementer := r.token(claim.RoleImplementer)
+		r.runner.notices = &notConfirmedOnce{holderPublisher: r.publisher, topic: notify.RoleTopicPrefix + string(implementer)}
+		r.close(4)
+		r.runOnce()
+		if got := r.published(claim.RoleImplementer); len(got) != 0 {
+			t.Fatalf("the implementer was told %q, want the close unconfirmed and retried", got)
+		}
+		r.approve(4, 12)
+		r.runOnce()
+		r.clock.advance(65 * time.Second)
+		r.runOnce()
+
+		if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedMessage(4) {
+			t.Fatalf("the implementer was told %q, want the opening alone", got)
+		}
+		if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
+			t.Fatalf("the outbox still holds %d role messages, want the close finished", got)
+		}
+		if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
+			t.Fatalf("the outbox holds the stops %+v of the implementer, want none", stops)
+		}
+		if lines := loggedMessages(t, logs.String(), unpublished); len(lines) != 1 || lines[0]["role"] != string(implementer) {
+			t.Fatalf("the outbox logged %v, want one line naming the implementer", lines)
+		}
+		if c := r.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateWorking || c.WorkHeld() {
+			t.Fatalf("the implementer is %s, held %v; want it at work and not stopped", c.State, c.WorkHeld())
+		}
+	})
+}
+
+// Spec step 7 ("one task"), for a claim that an opening started and a later close stopped before
+// any turn took the opening's task. The opening of version 4 starts the implementer, and the close
+// of version 5 reaches it while it launches: its close message meets no session that holds the
+// role, and its stop is held until the implementer's ready and made there, before the implementer
+// takes the task. The claim keeps that task, the first opening's sentences in front of its work,
+// and the daemon restarts, so the claim is read back from the store. The opening of version 5 then
+// starts it with one task: the newest opening's sentences once, then the work once, and not the
+// first opening's sentences behind them.
+func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	token := r.token(claim.RoleImplementer)
+	r.working(claim.RoleImplementer)
+	r.close(4)
+	r.drain()
+	endTurn(r.ctx, t, r.machine(claim.RoleImplementer), token)
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 1, "after the first close")
+
+	r.approve(4, 12)
+	r.runOnce()
+	work := workflow.ResumePhaseTask(r.issue())
+	if c := r.machine(claim.RoleImplementer).Claim(); c.State == supervise.StateSuspended || c.Pending == nil ||
+		c.Pending.Task != r.opening(4, 4)+"\n\n"+work {
+		t.Fatalf("after the first opening the implementer is %s by %q holding %+v, want it launching with the first opening's task",
+			c.State, c.SuspendedBy, c.Pending)
+	}
+	r.publisher.setAbsent(notify.RoleTopicPrefix + string(token))
+	r.close(5)
+	r.drain()
+	readyClaimAs(t, r.sup, token, claim.RoleImplementer, "ses-implementer")
+	r.publisher.setAbsent()
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 2, "after the second close")
+	if prompts := r.conn(claim.RoleImplementer).Prompts(); len(prompts) != 0 {
+		t.Fatalf("the implementer was prompted %+v with the gate closed, want nothing: the stop is made at its ready", prompts)
+	}
+	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || c.Pending.Task != r.opening(4, 4)+"\n\n"+work ||
+		c.Pending.Opening != r.opening(4, 4) {
+		t.Fatalf("the stopped implementer keeps %+v, want the first opening's task, marked with its sentences", c.Pending)
+	}
+	// The restart's supervisor runs on a runtime of its own, whose launches count from none.
+	r.restart()
+	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || c.Pending.Opening != r.opening(4, 4) {
+		t.Fatalf("after the restart the implementer keeps %+v, want the first opening's task read back marked with its sentences", c.Pending)
+	}
+	launched := r.launches(claim.RoleImplementer)
+
+	r.approve(5, 13)
+	r.drain()
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(5, 5)+"\n\n"+work)
+}
+
+// Under `merge`, a merger whose start is only queued at the close, its lane running nothing of
+// it, is not waited for. That start reads the closed gate at its next attempt and waits at the
+// fence through the hold, so it launches nothing, and a close message that waited for the
+// merger's session would wait the whole hold and keep the issue's pod from its idle release. The
+// message meets no session that holds the role and finishes, the start waits for the gate, and
+// once the gate opens the start launches the merger with its task.
+func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueued(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
+	merger := r.token(claim.RoleMerger)
+	r.conn(claim.RoleMerger)
+	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
+	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		Task: "Merge the pull request."})
+	r.close(4)
+	r.drain()
+	// A role message's row names its role by the claim token.
+	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 0 {
+		t.Fatalf("the close message to the merger left %d rows, want it finished: nothing launches the merger while the gate is closed", got)
+	}
+	if got := r.launches(claim.RoleMerger); got != 0 {
+		t.Fatalf("the runtime started the merger %d times with the gate closed, want none", got)
+	}
+	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 1 {
+		t.Fatalf("the merger's start left %d rows with the gate closed, want it waiting at the fence", got)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	if got := r.launches(claim.RoleMerger); got != 1 {
+		t.Fatalf("the runtime started the merger %d times once the gate opened, want once", got)
+	}
+	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 0 {
+		t.Fatalf("the merger's start still waits (%d rows) once the gate opened, want it run", got)
+	}
+	readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
+	r.publisher.setAbsent()
+	r.drain()
+	if got := r.published(claim.RoleMerger); len(got) != 0 {
+		t.Fatalf("the merger was told %q, want nothing: it launched after the gate opened", got)
+	}
+	if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, "Merge the pull request.") {
+		t.Fatalf("the merger was prompted %+v once the gate opened, want its phase's task", prompts)
 	}
 }

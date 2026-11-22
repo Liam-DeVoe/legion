@@ -6,4 +6,8 @@ body: |-
   under both `gates.hold` words, so that it can take its pull request out of GitHub's merge queue.
   Before, the daemon dropped that message, and the merge queue could merge the pull request under
   a version of the design that no person had approved. This wake is the one start of a merger that
-  a closed gate lets through.
+  a closed gate lets through. Under `merge`, the close message to a merger that is launching, or
+  whose start read the gate open just before the close, waits for the merger's session too. Under
+  both words, a close message to a woken merger, and a work hold's close message, is not sent when
+  the gate opened again before the daemon could send it, so the role does not read "closed" after
+  the gate opened.

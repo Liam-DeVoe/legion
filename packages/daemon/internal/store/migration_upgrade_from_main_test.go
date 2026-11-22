@@ -113,20 +113,24 @@ import (
 // is applied after all of these and touches no outbox_kind_check: it adds columns to
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
 // copy holds rows of.
-// The approval route's records (20261120210115) are applied after all of these but the four that
+// The approval route's records (20261120210115) are applied after all of these but the five that
 // follow, and touch no outbox_kind_check: the migration adds handed_over_roots.from_root at its
 // default, the empty string, on every row it finds, and the table cleared_spec_approvals, empty.
-// The work hold's claim source (20261120224328) is applied after all of these but the three that
+// The work hold's claim source (20261120224328) is applied after all of these but the four that
 // follow, and touches no outbox_kind_check: it writes claims_suspended_by_check again with 'hold',
 // which no row holds.
-// The work hold's record (20261121000254) is applied after all of these but the two that follow,
+// The work hold's record (20261121000254) is applied after all of these but the three that follow,
 // and touches no outbox_kind_check: it creates the table work_holds, empty.
 // The record of the work hold's openings (20261122023421) is applied after all of these but the
-// latest version of the cleared spec approvals and touches no outbox_kind_check: it creates the
-// table work_hold_openings, empty.
+// latest version of the cleared spec approvals and the pending delivery's opening, and touches no
+// outbox_kind_check: it creates the table work_hold_openings, empty.
 // The latest version of the cleared spec approvals (20261122072401) is applied after all of these
-// and touches no outbox_kind_check: it adds cleared_spec_approvals.latest_version, which the table
-// the approval route's records created holds no row to fill.
+// but the pending delivery's opening, and touches no outbox_kind_check: it adds
+// cleared_spec_approvals.latest_version, which the table the approval route's records created holds
+// no row to fill.
+// The pending delivery's opening (20261122085244) is applied after all of these and touches no
+// outbox_kind_check: it adds pending_task_deliveries.opening at its default, the empty string, on
+// every row it finds.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -137,7 +141,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
 	20261120012547, 20261120042902, 20261120055717, 20261120210115, 20261120224328, 20261121000254,
-	20261122023421, 20261122072401,
+	20261122023421, 20261122072401, 20261122085244,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -158,8 +162,9 @@ var thisBranchsMigrations = []int{
 // the loop below holds the list rather than counting it, so that a version added above any of them
 // is named here rather than read as main's.
 // The approval route's records, 20261120210115, the work hold's claim source, 20261120224328,
-// record, 20261121000254, and openings, 20261122023421, and the latest version of the cleared spec
-// approvals, 20261122072401, stand above all of them, and the list names them for that reason.
+// record, 20261121000254, and openings, 20261122023421, the latest version of the cleared spec
+// approvals, 20261122072401, and the pending delivery's opening, 20261122085244, stand above all of
+// them, and the list names them for that reason.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

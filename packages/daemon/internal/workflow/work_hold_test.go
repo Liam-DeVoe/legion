@@ -1475,3 +1475,53 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 		Steps: config.DesignGateRootIssues.Steps(), Claims: s.claims, Now: holdNow})
 	return state, s.claims, err
 }
+
+// The rule "a queued opening start stands" (OpeningStartStands), the one body the opening and the
+// outbox read it with: a queued start of the opening stands over a start for current where it is
+// newer than any stop that still acts and than the start in hand's own row, and it does not stand
+// where it carries no phase work and the start in hand carries the phase's.
+func TestWorkHoldOpeningStartStandsByOneRule(t *testing.T) {
+	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 4}
+	opening := func(id int64, at phase.Phase) record.QueuedSupervise {
+		return record.QueuedSupervise{ID: id, Request: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Generation: 4, Phase: at, Task: legionHold.opening(4, 4) + "\n\n" + noPhaseTask, Opening: legionHold.opening(4, 4)}}
+	}
+	stop := record.QueuedSupervise{ID: 7, Request: legionHold.stop(claim.RoleImplementer, 4, 5)}
+	plain := record.QueuedSupervise{ID: 9, Request: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+		Generation: 4, Phase: phase.Implementing, Task: "Implement LEGION-208."}}
+	for _, tc := range []struct {
+		name    string
+		queued  []record.QueuedSupervise
+		current phase.Phase
+		after   int64
+		stands  bool
+	}{
+		{name: "no queued start", current: phase.Implementing},
+		{name: "a queued start that carries no opening", queued: []record.QueuedSupervise{plain}, current: phase.Implementing},
+		{name: "an opening start with phase work before a phase start", queued: []record.QueuedSupervise{opening(5, phase.Implementing)},
+			current: phase.Implementing, stands: true},
+		{name: "an opening start with phase work before a start of no phase", queued: []record.QueuedSupervise{opening(5, phase.Implementing)},
+			stands: true},
+		{name: "an opening start of no phase before a start of no phase", queued: []record.QueuedSupervise{opening(5, "")}, stands: true},
+		{name: "an opening start of no phase before a phase start", queued: []record.QueuedSupervise{opening(5, "")},
+			current: phase.Implementing},
+		{name: "an opening start older than a stop that still acts", queued: []record.QueuedSupervise{opening(5, phase.Implementing), stop},
+			current: phase.Implementing},
+		{name: "an opening start newer than a stop that still acts", queued: []record.QueuedSupervise{stop, opening(8, phase.Implementing)},
+			current: phase.Implementing, stands: true},
+		{name: "the opening start in hand alone", queued: []record.QueuedSupervise{opening(5, "")}, after: 5},
+		{name: "an older opening start before the opening start in hand", queued: []record.QueuedSupervise{opening(5, ""), opening(8, "")},
+			after: 8},
+		{name: "a newer opening start before the opening start in hand", queued: []record.QueuedSupervise{opening(5, ""), opening(8, "")},
+			after: 5, stands: true},
+		{name: "a newer opening start of no phase before the phase opening start in hand",
+			queued: []record.QueuedSupervise{opening(5, phase.Implementing), opening(8, "")}, current: phase.Implementing, after: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := record.RoleRun{Queued: tc.queued}
+			if got := OpeningStartStands(run, root, tc.current, tc.after); got != tc.stands {
+				t.Fatalf("OpeningStartStands = %v, want %v", got, tc.stands)
+			}
+		})
+	}
+}

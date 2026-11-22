@@ -621,6 +621,12 @@ type RequestDeliver struct {
 	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
 	// task and the controller's carry none (Delivery.RoundNamed).
 	RoundNamed bool
+	// Opening is the work hold's opening sentences Task begins with (OpeningTask), on the one task
+	// the hold's opening gives a claim it stopped (Machine.EndHold), and empty on every other task.
+	// It is carried onto the delivery and persisted with it (Delivery.Opening), so a later opening
+	// that starts the claim over this task again puts its own sentences in front of the task's work
+	// alone (openingTask).
+	Opening string
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
