@@ -12,7 +12,8 @@
 // (Record.Start), the current consumer's last ack floor (Floor), the names never selected again
 // (Record.Retired), and a rollback in progress (Restore). A Store keeps the records with
 // conditional writes: the session family keeps them in the KV bucket SessionBucket (KVStore),
-// Dispatch and the Legion daemon in Postgres (PGStore). Names runs the protocol over a Store and
+// Dispatch and the Legion daemon in Postgres (package consumernames/pgstore, which alone links a
+// Postgres driver, so the listener links none). Names runs the protocol over a Store and
 // the family's consumers (Server): Step 0 settles an open operation first, then Ensure creates,
 // Replace replaces and Delete deletes, and a current the server no longer holds is created
 // again at a start the record proves safe, or refused (ErrNoSafeStart).

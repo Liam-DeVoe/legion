@@ -51,7 +51,7 @@ func TestARecordNamesOnlyItsOwnFamilysConsumers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := decodeRecord(key, data); err != nil {
+			if _, err := DecodeRecord(key, data); err != nil {
 				t.Fatalf("control: today's reader refused %s: %v", data, err)
 			}
 			for _, name := range []string{"session~A", "listener-m~A"} {

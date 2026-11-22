@@ -138,7 +138,7 @@ func daemonKey(project string) func(logical string) error {
 // DurableKey of a daemon's or Dispatch's durable) or no key at all is no key of family's store,
 // however its record reads.
 func FamilyNaming(family, logical string) (Naming, error) {
-	if err := checkFamily(family); err != nil {
+	if err := CheckStoreFamily(family); err != nil {
 		return Naming{}, err
 	}
 	var naming Naming

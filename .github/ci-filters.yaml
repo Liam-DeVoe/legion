@@ -2662,6 +2662,7 @@ envoy_go_race:
   - '!packages/envoy/cmd/natsprobe/**/*_test.go'
   - '!packages/envoy/cmd/natstail/**/*_test.go'
   - '!packages/envoy/cmd/spec-check/**/*_test.go'
+  - '!packages/envoy/consumernames/pgstore/**/*_test.go'
   - '!packages/envoy/dispatchbody/**/*_test.go'
   - '!packages/envoy/going/**/*_test.go'
   - '!packages/envoy/infra/**/*_test.go'

@@ -127,7 +127,8 @@ func (r ConnRequester) Request(ctx context.Context, msg *nats.Msg) (*nats.Msg, e
 // never written. Each write is a publish conditional on the key's last sequence, which is the
 // record's revision. The session family is the one a KV bucket keeps, its session consumers'
 // records and the listener durables' (DurableKey); Dispatch's and the daemons' are in Postgres
-// (NewPGStore). So its sentinel must name SessionFamily.
+// (consumernames/pgstore, which a binary that keeps only this store does not link). So its
+// sentinel must name SessionFamily.
 type KVStore struct {
 	bucket  string
 	request Requester
@@ -198,16 +199,13 @@ func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, err
 
 // Write implements Store. It writes the record under its own key (Record.Key), never under the
 // sentinel's (recordKey): only WriteSentinel writes there. A record every read would refuse
-// (writable) is refused as ErrMalformedRecord, and nothing is written.
+// (EncodeRecord) is refused as ErrMalformedRecord, and nothing is written.
 func (s *KVStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
 	if err := recordKey(logical); err != nil {
 		return 0, err
 	}
 	record.Key = logical
-	if err := writable(record); err != nil {
-		return 0, err
-	}
-	data, err := json.Marshal(record)
+	data, err := EncodeRecord(record)
 	if err != nil {
 		return 0, err
 	}
@@ -225,18 +223,14 @@ func recordKey(logical string) error {
 }
 
 // WriteSentinel writes the sentinel, under its own key (StoreState.Key) and naming the session
-// family, which it sets when state names none (ownSentinel), if its revision is still revision
+// family, which it sets when state names none (EncodeSentinel), if its revision is still revision
 // (0: never written): the operator's create-bucket and replay write it, and a test of a family
 // writes it as they do. A state naming another family is refused as ErrSentinelFamily, and
 // nothing is written.
 func (s *KVStore) WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error) {
-	state, err := ownSentinel(state, SentinelKey, SessionFamily)
+	data, err := EncodeSentinel(state, SentinelKey, SessionFamily)
 	if err != nil {
 		return 0, fmt.Errorf("consumer names: the bucket %s's %s: %w", s.bucket, SentinelKey, err)
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		return 0, err
 	}
 	return s.put(ctx, SentinelKey, data, revision)
 }

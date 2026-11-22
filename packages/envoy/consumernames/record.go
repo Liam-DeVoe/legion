@@ -67,7 +67,7 @@ type Record struct {
 	// Key is the store key the record belongs to: in the selection bucket the logical name, or a
 	// durable's key (DurableKey); in Postgres the family's key of the logical name (PGKey,
 	// <family>/<logical>). A store's Write sets it and its Read refuses a record whose key is not
-	// the key it read (decodeRecord), so a record of one key, or of another family, copied whole
+	// the key it read (DecodeRecord), so a record of one key, or of another family, copied whole
 	// under another is no record there.
 	Key string `json:"key"`
 	// Current is the selected physical name, or "".
@@ -247,14 +247,16 @@ const (
 // naming the family.
 func DaemonFamily(project string) (string, error) {
 	family := daemonFamilyPrefix + project
-	if err := checkFamily(family); err != nil {
+	if err := CheckStoreFamily(family); err != nil {
 		return "", err
 	}
 	return family, nil
 }
 
-// checkFamily refuses, as ErrInvalidFamily naming it, a family no store keeps (storeFamily).
-func checkFamily(family string) error {
+// CheckStoreFamily refuses, as ErrInvalidFamily naming it, a family no store keeps (storeFamily):
+// a store made for one could reach another family's rows. Every store's constructor calls it
+// (pgstore.New among them).
+func CheckStoreFamily(family string) error {
 	if !storeFamily(family) {
 		return fmt.Errorf("%w: %q is none of %s, %s or %s<project>, with a project that is not empty and holds no '/', white space or control character",
 			ErrInvalidFamily, family, SessionFamily, DispatchFamily, daemonFamilyPrefix)
@@ -271,9 +273,9 @@ type StoreState struct {
 	// Family is the store's family, required: SessionFamily for the bucket's sentinel,
 	// DispatchFamily for Dispatch's store, DaemonFamily(project) for a daemon's. Key alone cannot
 	// tell two stores apart, so each store reads only a sentinel that names its own family: the
-	// session family's for KVStore, the one NewPGStore was given for PGStore. Each store's
-	// WriteSentinel writes its own family itself, and refuses a state that names another
-	// (ownSentinel).
+	// session family's for KVStore, the one pgstore.New was given for the Postgres store. Each
+	// store's WriteSentinel writes its own family itself, and refuses a state that names another
+	// (EncodeSentinel).
 	Family string `json:"family"`
 	// Cutover is the family's cutover marker: CutoverDone, CutoverRolledBack, or "" before any.
 	Cutover string `json:"cutover,omitempty"`
@@ -310,6 +312,18 @@ func ownSentinel(state StoreState, key, family string) (StoreState, error) {
 	}
 	state.Key = key
 	return state, nil
+}
+
+// EncodeSentinel is state as the store of family writes it under key (ownSentinel), and its
+// JSON: naming family, which it sets when state names none, and carrying key. A state that names
+// another family is refused as ErrSentinelFamily naming both, and nothing is encoded. Each store's
+// WriteSentinel writes what it answers.
+func EncodeSentinel(state StoreState, key, family string) ([]byte, error) {
+	state, err := ownSentinel(state, key, family)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(state)
 }
 
 // Store keeps the selection records of one family.
@@ -359,13 +373,14 @@ var (
 	ErrNoStore = errors.New("consumer names: the selection store is missing")
 	// ErrNoSentinel is a store whose sentinel is absent: its key holds nothing, so a lost record
 	// cannot be told from a new key. A creator in the fixed mode may read it as no marker for a
-	// Postgres store (PGStore) alone, as Dispatch and the daemons do. In the session bucket an absent
-	// sentinel, a delete or purge marker among them, is never no marker: the listener reads it as a
-	// failed read and reads again (bus.Client.ReadMarker), and only a bucket that does not exist is
-	// no marker. A sentinel key holding anything else is ErrMalformedSentinel, in either store.
+	// Postgres store (consumernames/pgstore) alone, as Dispatch and the daemons do. In the session
+	// bucket an absent sentinel, a delete or purge marker among them, is never no marker: the
+	// listener reads it as a failed read and reads again (bus.Client.ReadMarker), and only a bucket
+	// that does not exist is no marker. A sentinel key holding anything else is
+	// ErrMalformedSentinel, in either store.
 	ErrNoSentinel = errors.New("consumer names: the selection store's sentinel is missing")
 	// ErrMalformedSentinel is a store whose sentinel key holds something other than the store's own
-	// exact sentinel (decodeSentinel): another JSON document, a field this build does not know (a
+	// exact sentinel (DecodeSentinel): another JSON document, a field this build does not know (a
 	// newer build's sentinel among them), a sentinel under another key, or one that names another
 	// family (ErrSentinelFamily). It is never a missing sentinel: a creator in the fixed mode reads
 	// it as a failed read, so it never runs fixed names over a store whose marker it cannot read,
@@ -379,7 +394,7 @@ var (
 	// record carrying another key. Any principal holding a JetStream API grant can have the server
 	// store its answer under any key of the bucket through a request's reply subject, and one
 	// holding a direct get can copy another key's message there whole, so a value is never read as
-	// a record on its shape alone (decodeRecord). It fails closed for that key alone: nothing is
+	// a record on its shape alone (DecodeRecord). It fails closed for that key alone: nothing is
 	// created or bound from it, and only an operator's repair of the key ends it. Under the
 	// sentinel's key such a value is ErrMalformedSentinel instead.
 	ErrMalformedRecord = errors.New("consumer names: the key holds no selection record of its own")
@@ -401,13 +416,14 @@ var (
 	// before its context ended.
 	ErrBusy = errors.New("consumer names: another process's operation is in flight")
 	// ErrSentinelFamily is a well-formed sentinel under a store's sentinel key that names another
-	// family than the store's own (KVStore's SessionFamily, NewPGStore's family): a malformed
-	// sentinel, ErrMalformedSentinel.
+	// family than the store's own (KVStore's SessionFamily, the family pgstore.New was given): a
+	// malformed sentinel, ErrMalformedSentinel.
 	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
 	// ErrInvalidFamily is a family no store keeps: none of SessionFamily, DispatchFamily and
 	// DaemonFamily of a project that is not empty and holds no '/', white space or control
-	// character. NewPGStore and DaemonFamily refuse it, so no store reads, writes or lists the rows
-	// of a family it does not keep: a store of "daemon" alone would list every project's records.
+	// character. CheckStoreFamily, pgstore.New and DaemonFamily refuse it, so no store reads,
+	// writes or lists the rows of a family it does not keep: a store of "daemon" alone would list
+	// every project's records.
 	ErrInvalidFamily = errors.New("consumer names: no store keeps that family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
 	// creates it: its start differs from what the operation reserved, or a setting no correction in
@@ -424,10 +440,10 @@ func IsSelectionStateLost(err error) bool {
 		errors.Is(err, ErrRecordDeleted) || errors.Is(err, ErrMalformedRecord)
 }
 
-// decodeRecord reads data as the record of key: one JSON object of Record's fields and nothing
+// DecodeRecord reads data as the record of key: one JSON object of Record's fields and nothing
 // after it (decodeStrict), whose own key is key and whose every field is well formed (check).
-// Anything else is ErrMalformedRecord.
-func decodeRecord(key string, data []byte) (Record, error) {
+// Anything else is ErrMalformedRecord. Every store's read of a record decodes it here.
+func DecodeRecord(key string, data []byte) (Record, error) {
 	var record Record
 	if err := decodeStrict(data, &record); err != nil {
 		return Record{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
@@ -438,22 +454,24 @@ func decodeRecord(key string, data []byte) (Record, error) {
 	return record, nil
 }
 
-// writable refuses record, carrying the key it is to be written under, when every read of that
-// key would refuse it (check), as ErrMalformedRecord naming the key: a store writes no record its
-// readers cannot read, so a writer outside Names that builds one, an operator's cleanup that drops
-// a retired name from Retired alone among them, fails at its own write and leaves the key as it
-// was for every reader.
-func writable(record Record) error {
+// EncodeRecord is record's JSON, as a store writes it under its own key (Record.Key), which the
+// caller sets. A record every read of that key would refuse (check) is refused as
+// ErrMalformedRecord naming the key, and nothing is encoded: a store writes no record its readers
+// cannot read, so a writer outside Names that builds one, an operator's cleanup that drops a
+// retired name from Retired alone among them, fails at its own write and leaves the key as it was
+// for every reader. Every store's write of a record encodes it here.
+func EncodeRecord(record Record) ([]byte, error) {
 	if err := record.check(record.Key); err != nil {
-		return fmt.Errorf("%w: the record of %s is not written: %w", ErrMalformedRecord, record.Key, err)
+		return nil, fmt.Errorf("%w: the record of %s is not written: %w", ErrMalformedRecord, record.Key, err)
 	}
-	return nil
+	return json.Marshal(record)
 }
 
-// decodeSentinel reads data as the sentinel under key of a store of family, as decodeRecord reads a
-// record: anything else, a sentinel of another family among them (ErrSentinelFamily), is
-// ErrMalformedSentinel, which no store answers as a missing sentinel.
-func decodeSentinel(key, family string, data []byte) (StoreState, error) {
+// DecodeSentinel reads data as the sentinel under key of a store of family, as DecodeRecord reads
+// a record: anything else, a sentinel of another family among them (ErrSentinelFamily), is
+// ErrMalformedSentinel, which no store answers as a missing sentinel. Every store's read of its
+// sentinel decodes it here.
+func DecodeSentinel(key, family string, data []byte) (StoreState, error) {
 	var state StoreState
 	if err := decodeStrict(data, &state); err != nil {
 		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedSentinel, err)
@@ -465,8 +483,8 @@ func decodeSentinel(key, family string, data []byte) (StoreState, error) {
 }
 
 // DecodeKVValue reads data, the value of key in the session bucket (SessionBucket), as KVStore
-// reads it: under SentinelKey the session family's sentinel (decodeSentinel, isSentinel true),
-// under any other key that key's record (decodeRecord). A value that is not that key's own record
+// reads it: under SentinelKey the session family's sentinel (DecodeSentinel, isSentinel true),
+// under any other key that key's record (DecodeRecord). A value that is not that key's own record
 // or the bucket's own sentinel is ErrMalformedRecord or ErrMalformedSentinel, naming the key: the
 // answer KVStore's Read and State give, which call it, so a reader of the bucket's raw messages
 // decodes them as the store does. It reads no delete or purge marker: a reader that sees the
@@ -474,12 +492,12 @@ func decodeSentinel(key, family string, data []byte) (StoreState, error) {
 // itself, as KVStore does, before it decodes anything.
 func DecodeKVValue(key string, data []byte) (record Record, state StoreState, isSentinel bool, err error) {
 	if key == SentinelKey {
-		if state, err = decodeSentinel(key, SessionFamily, data); err != nil {
+		if state, err = DecodeSentinel(key, SessionFamily, data); err != nil {
 			return Record{}, StoreState{}, true, fmt.Errorf("consumer names: the key %s: %w", key, err)
 		}
 		return Record{}, state, true, nil
 	}
-	if record, err = decodeRecord(key, data); err != nil {
+	if record, err = DecodeRecord(key, data); err != nil {
 		return Record{}, StoreState{}, false, fmt.Errorf("consumer names: the key %s: %w", key, err)
 	}
 	return record, StoreState{}, false, nil

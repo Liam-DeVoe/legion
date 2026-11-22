@@ -81,15 +81,19 @@ revision:
     `DurableKey`, and the sentinel under `envoy.bucket` (`SentinelKey`). Each read takes the key's
     last message from the stream's leader, so a delete or purge marker is seen as one.
   - Dispatch and the daemons keep theirs in the Postgres table `intake_consumers`
-    (`NewPGStore(family, db)`). Several families can share one database, as several projects'
-    daemons do. So a record of logical name L in family F is the row `F/L` (`PGKey`), and F's
-    sentinel is the row `envoy.sentinel/F` (`PGSentinelKey`): for example
-    `daemon/<project>/legion-go-<project>-github` and `envoy.sentinel/daemon/<project>`, or
-    `dispatch/delivery-events` and `envoy.sentinel/dispatch`. `List` returns only the family's
-    records, never a sentinel. `NewPGStore` and `DaemonFamily(project)` refuse any family but
-    `session`, `dispatch` and `daemon/<project>` with a project that is not empty and holds no `/`,
-    white space or control character (`ErrInvalidFamily`, naming it): a store of `daemon` alone
-    would list every project's records, and one of `daemon/p/b` would write into `daemon/p`'s.
+    (`IntakeConsumersTable`), through the store of the package `consumernames/pgstore`
+    (`pgstore.New(family, db)`). It is a package of its own, the one that links a Postgres driver,
+    so a binary that keeps only the KV store, the listener, links none. Several families can share
+    one database, as several projects' daemons do. So a record of logical name L in family F is
+    the row `F/L` (`PGKey`), and F's sentinel is the row `envoy.sentinel/F` (`PGSentinelKey`): for
+    example `daemon/<project>/legion-go-<project>-github` and `envoy.sentinel/daemon/<project>`, or
+    `dispatch/delivery-events` and `envoy.sentinel/dispatch`. Its `List` returns only the family's
+    records, never a sentinel. `pgstore.New`, `DaemonFamily(project)` and `CheckStoreFamily`
+    refuse any family but `session`, `dispatch` and `daemon/<project>` with a project that is not
+    empty and holds no `/`, white space or control character (`ErrInvalidFamily`, naming it): a
+    store of `daemon` alone would list every project's records, and one of `daemon/p/b` would
+    write into `daemon/p`'s. Every store encodes and decodes its records and sentinel with
+    `EncodeRecord`, `DecodeRecord`, `EncodeSentinel` and `DecodeSentinel`.
 - **The sentinel** (`StoreState`) names its store's family (`session`, `dispatch` or
   `daemon/<project>`) and holds the cutover marker (`cutover`: empty, `done` or `rolled_back`), the
   cutover boundary B (`boundary`), the stream's identity, and a recovery's inputs (`replay_from`,
