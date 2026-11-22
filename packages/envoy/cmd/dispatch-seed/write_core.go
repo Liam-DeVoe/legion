@@ -79,8 +79,17 @@ func (r *seedRun) writeProjects(ctx context.Context) error {
 
 // writeArchitecture writes one architecture source and one snapshot for each project, the
 // components of that snapshot, and the dependencies between them: the three tables the
-// `component` arms of graph_edges read.
+// `component` arms of graph_edges read. The components are written as an import writes them
+// (architecture's stateComponents): each component's node, its part_of its parent and its
+// depends_on, through graphstore.Write in the transaction that then inserts the rows, each row
+// naming its node. A database migrated from a release before the components' node columns
+// carries none, and its rows are written as that release wrote them, naming no node, which the
+// backfill states (carriesNodeMarker).
 func (r *seedRun) writeArchitecture(ctx context.Context) error {
+	marked, err := r.carriesNodeMarker(ctx, "components")
+	if err != nil {
+		return err
+	}
 	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		for index, project := range r.plan.projects {
 			snapshot := int64(index + 1)
@@ -97,6 +106,12 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 				return fmt.Errorf("architecture snapshot of %s: %w", project.Key, err)
 			}
 		}
+		if marked {
+			nodes, tuples := r.plan.componentFacts()
+			if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+				return fmt.Errorf("the components' nodes: %w", err)
+			}
+		}
 		for _, component := range r.plan.components {
 			project := r.plan.projects[component.Project]
 			snapshot := int64(component.Project + 1)
@@ -104,11 +119,18 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 			if component.Parent != "" {
 				parent = &component.Parent
 			}
-			if _, err := tx.Exec(ctx, `
+			title, prose := r.plan.vocabulary.phrase(r.random, 3), r.plan.vocabulary.phrase(r.random, 12)
+			statement := `
 				insert into components (project_key, id, title, prose, parent, paths, snapshot_id, source_id)
-				values ($1, $2, $3, $4, $5, '{}', $6, $6)
-			`, project.Key, component.ID, r.plan.vocabulary.phrase(r.random, 3),
-				r.plan.vocabulary.phrase(r.random, 12), parent, snapshot); err != nil {
+				values ($1, $2, $3, $4, $5, '{}', $6, $6)`
+			args := []any{project.Key, component.ID, title, prose, parent, snapshot}
+			if marked {
+				statement = `
+					insert into components (project_key, id, title, prose, parent, paths, snapshot_id, source_id, node_kind, node_address)
+					values ($1, $2, $3, $4, $5, '{}', $6, $6, $7, $8)`
+				args = append(args, componentNodeOf(project.Key, component)...)
+			}
+			if _, err := tx.Exec(ctx, statement, args...); err != nil {
 				return fmt.Errorf("component %s/%s: %w", project.Key, component.ID, err)
 			}
 		}
@@ -116,14 +138,69 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 			if component.Depends == "" {
 				continue
 			}
-			if _, err := tx.Exec(ctx, `
-				insert into component_depends (project_key, from_id, to_id) values ($1, $2, $3)
-			`, r.plan.projects[component.Project].Key, component.ID, component.Depends); err != nil {
+			project := r.plan.projects[component.Project].Key
+			statement := `insert into component_depends (project_key, from_id, to_id) values ($1, $2, $3)`
+			args := []any{project, component.ID, component.Depends}
+			if marked {
+				// A dependency names its component's node where the node write stated its
+				// depends_on, as an import's does: the component is a node and the far end is
+				// inside the address bound.
+				statement = `insert into component_depends (project_key, from_id, to_id, node_kind, node_address) values ($1, $2, $3, $4, $5)`
+				if graphstore.AddressFits(graphstore.ComponentAddress(project, component.Depends)) {
+					args = append(args, componentNodeOf(project, component)...)
+				} else {
+					args = append(args, nil, nil)
+				}
+			}
+			if _, err := tx.Exec(ctx, statement, args...); err != nil {
 				return fmt.Errorf("component dependency %s: %w", component.ID, err)
 			}
 		}
 		return nil
 	})
+}
+
+// componentNodeOf is the node a components row of project names, kind and address, or two nulls
+// for a component the store holds no node of (componentStated).
+func componentNodeOf(project string, component componentPlan) []any {
+	if !componentStated(project, component) {
+		return []any{nil, nil}
+	}
+	return []any{graphstore.KindComponent, graphstore.ComponentAddress(project, component.ID)}
+}
+
+// componentStated reports whether the store holds component of project as a node: neither its
+// address nor its parent's is past the store's bound (graphstore.AddressFits), as an import reads
+// it (architecture's stateComponents).
+func componentStated(project string, component componentPlan) bool {
+	return graphstore.AddressFits(graphstore.ComponentAddress(project, component.ID)) &&
+		(component.Parent == "" || graphstore.AddressFits(graphstore.ComponentAddress(project, component.Parent)))
+}
+
+// componentFacts is what the store states of the plan's components, as an import of a first
+// model states it (architecture's stateComponents): each component's node in its project,
+// restated live, its part_of its parent and its depends_on, dated at the seed's base time and
+// signed by the seed's author, at the sentinel, since the seed records no event of an import. A
+// component the store holds no node of (componentStated) is left out, and a dependency on an end
+// past the bound is stated of none.
+func (p *seedPlan) componentFacts() ([]graphstore.Node, []graphstore.Tuple) {
+	var nodes []graphstore.Node
+	var tuples []graphstore.Tuple
+	for _, component := range p.components {
+		project := p.projects[component.Project].Key
+		if !componentStated(project, component) {
+			continue
+		}
+		address := graphstore.ComponentAddress(project, component.ID)
+		nodes = append(nodes, graphstore.ComponentNode(project, component.ID, seedAuthor, baseTime))
+		if component.Parent != "" {
+			tuples = append(tuples, graphstore.ComponentRelation(graphstore.KindComponent, address, graphstore.TuplePartOf, graphstore.ComponentAddress(project, component.Parent), true, seedAuthor, baseTime))
+		}
+		if depends := graphstore.ComponentAddress(project, component.Depends); component.Depends != "" && graphstore.AddressFits(depends) {
+			tuples = append(tuples, graphstore.ComponentRelation(graphstore.KindComponent, address, graphstore.TupleDependsOn, depends, true, seedAuthor, baseTime))
+		}
+	}
+	return nodes, tuples
 }
 
 // writeIssues writes every issue, parents before children, so issues_parent_key_fkey holds on
@@ -205,21 +282,41 @@ func (r *seedRun) carriesNodeMarker(ctx context.Context, table string) (bool, er
 	return carries, nil
 }
 
-// writeIssueLinks writes the blocked_by links. The heavily linked issue takes HubLinks of them,
-// so it is blocked by that many issues; the rest are spread so that the total is exactly the
-// figure the spec gives and a known share of the issues carry three or more.
+// writeIssueLinks writes the waits between issues. The heavily linked issue takes HubLinks of them,
+// so it waits on that many issues; the rest are spread so that the total is exactly the figure the
+// spec gives and a known share of the issues carry three or more. Each batch states the issues'
+// needs tuples through graphstore.Write and then copies their rows, in one transaction, as the
+// server's issue write does (api's writeIssueNeeds): the row keeps the one kind issue_links admits,
+// blocked_by, and names the waiting issue's node; the tuple, out of that node, is dated at the
+// row's created_at and carries the sentinel, since the seed records no event of an issue. A
+// database migrated from a release before the marker migration carries no node columns on
+// issue_links, and its rows are written as that release wrote them, which the backfill states.
 func (r *seedRun) writeIssueLinks(ctx context.Context) error {
+	marked, err := r.carriesNodeMarker(ctx, "issue_links")
+	if err != nil {
+		return err
+	}
+	columns := []string{"issue_key", "kind", "target_key", "created_at"}
+	if marked {
+		columns = append(columns, "node_kind", "node_address")
+	}
 	links := r.plan.blockedByLinks()
 	return r.inBatches(ctx, "issue links", len(links), batchRows, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		rows := make([][]any, 0, to-from)
+		tuples := make([]graphstore.Tuple, 0, to-from)
 		for _, link := range links[from:to] {
-			rows = append(rows, []any{
-				r.plan.issues[link[0]].Key, "blocked_by", r.plan.issues[link[1]].Key,
-				r.plan.issues[link[0]].CreatedAt,
-			})
+			issue, target := r.plan.issues[link[0]], r.plan.issues[link[1]]
+			row := []any{issue.Key, "blocked_by", target.Key, issue.CreatedAt}
+			if marked {
+				row = append(row, graphstore.KindIssue, issue.Key)
+				tuples = append(tuples, graphstore.IssueNeeds(issue.Key, target.Key, true, seedAuthor, issue.CreatedAt))
+			}
+			rows = append(rows, row)
 		}
-		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_links"},
-			[]string{"issue_key", "kind", "target_key", "created_at"}, pgx.CopyFromRows(rows))
+		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+			return fmt.Errorf("the issues' needs: %w", err)
+		}
+		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_links"}, columns, pgx.CopyFromRows(rows))
 		return err
 	})
 }
@@ -270,8 +367,22 @@ func (p *seedPlan) blockedByLinks() [][2]int {
 
 // writeIssueComponents puts the explicit component rows on the issues that have children, so an
 // issue's components resolve up its parent chain, and gives each of them members: the `affects`
-// arm of graph_edges.
+// arm of graph_edges. Each batch states the issues' affects tuples through graphstore.Write and
+// then copies their rows, in one transaction, as the server's write of an issue's components
+// does (api's writeIssueComponents): a member whose component's address is inside the store's
+// bound names the issue's node, and its tuple, out of that node to the component's, is dated at
+// the issue_components row's updated_at and carries the sentinel. A database migrated from a
+// release before the members' node columns carries none, and its rows are written as that release
+// wrote them, which the backfill states.
 func (r *seedRun) writeIssueComponents(ctx context.Context) error {
+	marked, err := r.carriesNodeMarker(ctx, "issue_component_members")
+	if err != nil {
+		return err
+	}
+	columns := []string{"issue_key", "project_key", "component_id"}
+	if marked {
+		columns = append(columns, "node_kind", "node_address")
+	}
 	var ancestors []int
 	for index, issue := range r.plan.issues {
 		if issue.Children > 0 {
@@ -282,22 +393,34 @@ func (r *seedRun) writeIssueComponents(ctx context.Context) error {
 	return r.inBatches(ctx, "issue components", len(ancestors), batchRows, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		owners := make([][]any, 0, to-from)
 		members := make([][]any, 0, 2*(to-from))
+		var tuples []graphstore.Tuple
 		for position, index := range ancestors[from:to] {
 			issue := r.plan.issues[index]
 			project := r.plan.projects[issue.Project]
 			owners = append(owners, []any{issue.Key, "explicit", nil, issue.CreatedAt, issue.CreatedAt})
 			for step := range min(2, perProject) {
 				component := fmt.Sprintf("component-%d", (from+position+step)%perProject+1)
-				members = append(members, []any{issue.Key, project.Key, component})
+				member := []any{issue.Key, project.Key, component}
+				if marked {
+					if address := graphstore.ComponentAddress(project.Key, component); graphstore.AddressFits(address) {
+						member = append(member, graphstore.KindIssue, issue.Key)
+						tuples = append(tuples, graphstore.ComponentRelation(graphstore.KindIssue, issue.Key, graphstore.TupleAffects, address, true, seedAuthor, issue.CreatedAt))
+					} else {
+						member = append(member, nil, nil)
+					}
+				}
+				members = append(members, member)
 			}
+		}
+		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+			return fmt.Errorf("the issues' components: %w", err)
 		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_components"},
 			[]string{"issue_key", "mode", "reason", "created_at", "updated_at"},
 			pgx.CopyFromRows(owners)); err != nil {
 			return err
 		}
-		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_component_members"},
-			[]string{"issue_key", "project_key", "component_id"}, pgx.CopyFromRows(members))
+		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_component_members"}, columns, pgx.CopyFromRows(members))
 		return err
 	})
 }

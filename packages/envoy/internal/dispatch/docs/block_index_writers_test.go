@@ -754,7 +754,13 @@ var indexPasses = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
-	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
+	// The seed's components with their part_of and depends_on, and its issues' needs and affects:
+	// each fact drawn from the plan, written through graphstore.Write in the transaction that then
+	// writes the rows projecting it, reading no projection.
+	"cmd/dispatch-seed/write_core.go#writeArchitecture":    "the seed's own plan",
+	"cmd/dispatch-seed/write_core.go#writeIssueComponents": "the seed's own plan",
+	"cmd/dispatch-seed/write_core.go#writeIssueLinks":      "the seed's own plan",
+	"docs/block_index.go#stampVersionEvent":                "the event that recorded the version",
 	// The backfill of the rows written before the store existed. Each pass reads the rows of
 	// its own kind and nothing else: a row's own content - its time, its author, the
 	// document it is in, its own source_seq - is what it writes into the store, and the

@@ -494,6 +494,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	return []StoreDrive{{
 		Name: seedDocumentsDrive, Database: database,
 		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "cmd/dispatch-seed/write_core.go#writeIssues",
+			"cmd/dispatch-seed/write_core.go#writeArchitecture", "cmd/dispatch-seed/write_core.go#writeIssueLinks",
+			"cmd/dispatch-seed/write_core.go#writeIssueComponents",
 			"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Ready: func(t *testing.T) {
 			t.Helper()
@@ -506,38 +508,46 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				"--database-url", database.Pool.Config().ConnString(), "--scale", seedScale, "--no-migrate"))
 			queuedAt(t, asks, "asks", "insert into asks")
 		},
-		// The issues' nodes, which the seed writes before their documents, with a child's child_of
-		// its parent, each document's node with its part_of its issue and its references, and each
-		// document's latest version, indexed as its first: the version's node, and the blocks it
-		// states afresh with their values and the references they hold. Every node of the seed is
-		// in its project.
+		// The components' nodes with their part_of and depends_on, which the seed writes first, the
+		// issues' nodes, which it writes before their documents, with a child's child_of its
+		// parent, the issues' needs and their affects of their components, each document's node
+		// with its part_of its issue and its references, and each document's latest version,
+		// indexed as its first: the version's node, and the blocks it states afresh with their
+		// values and the references they hold. Every node of the seed is in its project.
 		Counts: map[StoredKind][]string{
-			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
-			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
-			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
-			{graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
-			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
-			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
-			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
-			{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
-			{graphstore.KindArtifact, graphstore.TupleMentions}:       {"document_ref"},
-			{graphstore.KindVersion, graphstore.AttributeVisibility}:  {graphstore.KindVersion},
-			{graphstore.KindVersion, graphstore.AttributeState}:       {graphstore.KindVersion},
-			{graphstore.KindVersion, graphstore.AttributeProject}:     {graphstore.KindVersion},
-			{graphstore.KindVersion, graphstore.TuplePartOf}:          {graphstore.KindVersion},
-			{graphstore.KindVersion, graphstore.AttributeNumber}:      {graphstore.KindVersion},
-			{graphstore.KindVersion, graphstore.AttributeCreatedAt}:   {graphstore.KindVersion},
-			{refs.BlockNodeKind, graphstore.AttributeVisibility}:      {"block"},
-			{refs.BlockNodeKind, graphstore.AttributeState}:           {"block"},
-			{refs.BlockNodeKind, graphstore.AttributeProject}:         {"block"},
-			{refs.BlockNodeKind, refs.TupleInDocument}:                {"block"},
-			{refs.BlockNodeKind, graphstore.TuplePartOf}:              {"block"},
-			{refs.BlockNodeKind, refs.AttributeRank}:                  {"block_values"},
-			{refs.BlockNodeKind, refs.AttributePlacement}:             {"block_values"},
-			{refs.BlockNodeKind, refs.TupleTextParent}:                {"block_values"},
-			{refs.BlockNodeKind, refs.AttributeTextRank}:              {"block_values"},
-			{refs.BlockNodeKind, graphstore.AttributeText}:            {"block_text"},
-			{refs.BlockNodeKind, "mentions"}:                          {"block_ref"},
+			{graphstore.KindComponent, graphstore.AttributeVisibility}: {graphstore.KindComponent},
+			{graphstore.KindComponent, graphstore.AttributeState}:      {graphstore.KindComponent},
+			{graphstore.KindComponent, graphstore.AttributeProject}:    {graphstore.KindComponent},
+			{graphstore.KindComponent, graphstore.TuplePartOf}:         {"component_relation"},
+			{graphstore.KindComponent, graphstore.TupleDependsOn}:      {"component_relation"},
+			{graphstore.KindIssue, graphstore.AttributeVisibility}:     {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeState}:          {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeProject}:        {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.TupleChildOf}:            {"issue_relation"},
+			{graphstore.KindIssue, graphstore.TupleNeeds}:              {"issue_relation"},
+			{graphstore.KindIssue, graphstore.TupleAffects}:            {"component_relation"},
+			{graphstore.KindArtifact, graphstore.AttributeVisibility}:  {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeState}:       {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeProject}:     {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.TuplePartOf}:          {"document_part_of"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}:        {"document_ref"},
+			{graphstore.KindVersion, graphstore.AttributeVisibility}:   {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeState}:        {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeProject}:      {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.TuplePartOf}:           {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeNumber}:       {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeCreatedAt}:    {graphstore.KindVersion},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:       {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:            {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:          {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:                 {"block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:               {"block"},
+			{refs.BlockNodeKind, refs.AttributeRank}:                   {"block_values"},
+			{refs.BlockNodeKind, refs.AttributePlacement}:              {"block_values"},
+			{refs.BlockNodeKind, refs.TupleTextParent}:                 {"block_values"},
+			{refs.BlockNodeKind, refs.AttributeTextRank}:               {"block_values"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:             {"block_text"},
+			{refs.BlockNodeKind, "mentions"}:                           {"block_ref"},
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,

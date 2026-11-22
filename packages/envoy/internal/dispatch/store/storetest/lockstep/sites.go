@@ -247,6 +247,16 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeItemNodes":     "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	// The seed's components, with their part_of and depends_on, and its issues' needs and affects
+	// (dispatch://INFRA-1098's c-one-writer): each batch states its facts through one Write and
+	// then inserts or copies the rows that project them, in one transaction of its own, the
+	// components' at the sentinel and under no owner row, as an import's are, and the issues'
+	// tuples at the sentinel out of nodes writeIssues wrote before. No other writer reaches the
+	// seed's database while it runs, which takes none but an empty one, so its order is the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write, as for the corpus loader's writers.
+	"cmd/dispatch-seed/write_core.go#writeArchitecture":    "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"cmd/dispatch-seed/write_core.go#writeIssueComponents": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"cmd/dispatch-seed/write_core.go#writeIssueLinks":      "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
