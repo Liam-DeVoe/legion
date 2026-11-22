@@ -303,11 +303,14 @@ func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 // whose row names no node as the trigger bodies would have recorded it, its thread's rows moved
 // and left to the backfill and no tuple stated (inboxwrite.Write.Unstored). The record is planned
 // before the message's replies_to is written, so it names the message this one answers
-// (inboxwrite.Write.RepliesTo).
+// (inboxwrite.Write.RepliesTo), and a message that answers nothing starts its own thread under
+// the id its write drew (inboxwrite.Write.StartsThread).
 func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inboxwrite.Write {
 	write := inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project)
 	if message.InReplyTo != nil {
 		write = write.RepliesTo(graphstore.KindMessage, *message.InReplyTo)
+	} else {
+		write = write.StartsThread()
 	}
 	if !w.projected {
 		write = write.Unstored()

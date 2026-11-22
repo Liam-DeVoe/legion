@@ -978,10 +978,18 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// created_at against its node's made_at, and graph_edges answers a comment's edges from the
 	// row before its kind's cutover and from the tuples after it. Beside it is the transaction's
 	// now(), which the mentions' attempt rows' created_at defaults to and their nodes are made at
-	// (graphstore.AttemptOpened).
+	// (graphstore.AttemptOpened), and, for a reply, the members of the thread its head is the root
+	// of (inboxwrite.MembersColumn), which its record then reads no second time
+	// (inboxwrite.Write.Members): the read phase writes nothing, and every writer of those rows
+	// and tuples waits at the owner lock this write holds.
 	var comment model.Comment
 	var attemptsAt time.Time
-	if err := tx.QueryRow(r.Context(), `select clock_timestamp(), now()`).Scan(&comment.CreatedAt, &attemptsAt); err != nil {
+	members, membersArgs := `null::jsonb`, []any(nil)
+	if kind, id, replies := commentHead(input.AskID, input.ReplyTo); replies {
+		members, membersArgs = inboxwrite.MembersColumn(1, kind, id)
+	}
+	var heldMembers []byte
+	if err := tx.QueryRow(r.Context(), `select clock_timestamp(), now(), `+members, membersArgs...).Scan(&comment.CreatedAt, &attemptsAt, &heldMembers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1214,6 +1222,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// pointers are no tuples is recorded as the trigger body would have recorded it, its thread's
 	// rows moved and left to the backfill and no tuple stated (inboxwrite.Write.Unstored).
 	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed), input.AskID, input.ReplyTo)
+	if heldMembers != nil {
+		if inbox, err = inbox.Members(heldMembers); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if !stored.pointersStored {
 		inbox = inbox.Unstored()
 	}
@@ -1373,15 +1387,26 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 // commentRepliesTo is w, a comment's record planned before its head pointer tuple is written
 // (inboxwrite.PlanRecord), with the node that pointer names: the ask the comment is on, else the
 // comment it replies to, the head of its thread (inboxwrite.Write.RepliesTo). A comment that
-// names neither is the root of its own thread.
+// names neither is the root of its own thread, which it starts under the id its write drew
+// (inboxwrite.Write.StartsThread).
 func commentRepliesTo(w inboxwrite.Write, askID, replyTo *string) inboxwrite.Write {
+	if kind, id, replies := commentHead(askID, replyTo); replies {
+		return w.RepliesTo(kind, id)
+	}
+	return w.StartsThread()
+}
+
+// commentHead is the node a comment's head pointer names, the root of the thread it is written
+// in: the ask it is on, else the comment it replies to; replies is false for a comment that names
+// neither.
+func commentHead(askID, replyTo *string) (kind, id string, replies bool) {
 	switch {
 	case askID != nil:
-		return w.RepliesTo(graphstore.KindAsk, *askID)
+		return graphstore.KindAsk, *askID, true
 	case replyTo != nil:
-		return w.RepliesTo(graphstore.KindComment, *replyTo)
+		return graphstore.KindComment, *replyTo, true
 	}
-	return w
+	return "", "", false
 }
 
 // commentMentionFacts is indexed, what a comment's index states of the identities its body names

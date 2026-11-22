@@ -64,17 +64,17 @@ func ToPerson(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
 	})
 }
 
-// QueueToPerson queues ToPerson on a write phase's batch, in two statements: the read of the nodes
-// reserved for their author among the tuples' other ends, which locks nothing and whose callback
-// refuses a tuple one of them forbids (ErrReservedForAuthor), and one write of the person nodes and
-// the tuples, the nodes first in ascending (kind, id), as every write of this store takes them
-// (WriteArms). The tuples take the relation repeat key, so one event states each relation once. The
-// read runs where the batch reaches it, so it sees every node the statements queued before it
-// wrote, as the read ToPerson ran after those writes saw them; a refusal stops the batch's reading,
-// and the transaction it ends commits nothing of the call. A tuple's SourceEvent may be
-// LatestEvent, for a write whose event the batch appends right before it. A tuple of none of the
-// three kinds, or one that cannot be encoded, fails Send rather than this call, which answers
-// nothing (QueueWrite).
+// QueueToPerson queues ToPerson on a write phase's batch, as one statement: the write of the person
+// nodes and the tuples, the nodes first in ascending (kind, id), as every write of this store takes
+// them (WriteArms), whose own query is the read of the nodes reserved for their author among the
+// tuples' other ends, which locks nothing and whose callback refuses a tuple one of them forbids
+// (ErrReservedForAuthor). The tuples take the relation repeat key, so one event states each
+// relation once. The read runs where the batch reaches it, so it sees every node the statements
+// queued before it wrote, as the read ToPerson ran after those writes saw them; the statement's
+// arms run to their end whatever it answers, and a refusal stops the batch's reading, and the
+// transaction it ends commits nothing of the call. A tuple's SourceEvent may be LatestEvent, for a
+// write whose event the batch appends right before it. A tuple of none of the three kinds, or one
+// that cannot be encoded, fails Send rather than this call, which answers nothing (QueueWrite).
 func QueueToPerson(b *store.WriteBatch, tuples []Tuple) {
 	if len(tuples) == 0 {
 		return
@@ -105,28 +105,29 @@ func QueueToPerson(b *store.WriteBatch, tuples []Tuple) {
 	if len(stated) == 0 {
 		return
 	}
-	queueReservedForAuthor(b, ends, func(reserved map[[2]string]model.Actor) error {
-		for index, reach := range reaches {
-			author, held := reserved[reach.end]
-			if !held {
-				continue
-			}
-			if kind, id, named := AuthorOf(author); named && kind == KindPerson && id == reach.person {
-				continue
-			}
-			tuple := stated[index]
-			return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
-				tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, reach.person, reach.end[0], reach.end[1],
-				VisibilityAuthor, ErrReservedForAuthor)
-		}
-		return nil
-	})
 	arms, params, _, err := writeArms(1, persons, stated, nil, true)
 	if err != nil {
 		queueRefused(b, err)
 		return
 	}
-	b.Queue(fmt.Sprintf("append %d tuple naming a person", len(stated)), "with "+arms+"\nselect 1", params...)
+	read, args := reservedForAuthorRead(len(params)+1, ends)
+	b.Queue(fmt.Sprintf("append %d tuple naming a person", len(stated)), "with "+arms+read, append(params, args...)...).
+		Query(reservedForAuthor(len(ends), func(reserved map[[2]string]model.Actor) error {
+			for index, reach := range reaches {
+				author, held := reserved[reach.end]
+				if !held {
+					continue
+				}
+				if kind, id, named := AuthorOf(author); named && kind == KindPerson && id == reach.person {
+					continue
+				}
+				tuple := stated[index]
+				return fmt.Errorf("%s %s/%s -> %s/%s names person %s, and %s/%s is visible to its author alone (visibility %s): %w",
+					tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, reach.person, reach.end[0], reach.end[1],
+					VisibilityAuthor, ErrReservedForAuthor)
+			}
+			return nil
+		}))
 }
 
 // ToPersonRows is the select list a caller's common-table expression answers for ToPersonArms and
@@ -146,9 +147,10 @@ const ToPersonRows = `position, from_kind, from_id, kind, to_kind, to_id, assert
 // at at under event, `do nothing` where the store holds it already, with its base attributes for a
 // node it makes - before any tuple is appended, in ascending (kind, id), as every write of this
 // store takes them (WriteArms). A row whose person or other end is past the store's address bound
-// is no tuple, as ToPerson has it. The rule of ErrReservedForAuthor is the caller's to hold, by a
-// statement of its own before this one over the same rows (ReservedForAuthorRead). Its parameters
-// are bound from $first on, after the caller's own, and the arms end with no comma.
+// is no tuple, as ToPerson has it. The rule of ErrReservedForAuthor is the caller's to hold, by
+// the query of the same statement over the same rows, written after these arms
+// (ReservedForAuthorRead). Its parameters are bound from $first on, after the caller's own, and
+// the arms end with no comma.
 func ToPersonArms(first int, rows string, at time.Time, who model.Actor, event int64) (string, []any, error) {
 	writer, err := json.Marshal(who.Recorded())
 	if err != nil {
@@ -200,8 +202,10 @@ graph_relations_appended as (
 // whose other end is a node the store holds at VisibilityAuthor and whose person is not who made
 // that node (AuthorOf of its made_by, user_threads_login in SQL). It answers (kind, from_kind,
 // from_id, to_kind, to_id, person), no row where none would be refused, for the caller's
-// callback to refuse with RefuseReservedForAuthor; the caller queues it before the statement
-// whose arms append the same rows (ToPersonArms).
+// callback to refuse with RefuseReservedForAuthor; the caller makes it the query of the statement
+// whose arms append the same rows (ToPersonArms), written after them, so the rows are worked out
+// once: those arms run to their end whatever it answers, and a refusal ends the transaction,
+// which commits nothing of them.
 func ReservedForAuthorRead(rows string) string {
 	return `
 		select stated.kind, stated.from_kind, stated.from_id, stated.to_kind, stated.to_id, person.login
@@ -266,21 +270,27 @@ func personEnds(tuple *Tuple) (string, [2]string, error) {
 		TupleDeliveredTo+" and "+TupleMentions, TupleParticipatesIn, tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID)
 }
 
-// queueReservedForAuthor queues the read that answers, of the nodes ends names, each the store
-// holds at VisibilityAuthor, with who made it, in one read of graph_nodes by its key, and hands
-// that answer to check once the statement has run; check's error stops the batch.
-func queueReservedForAuthor(b *store.WriteBatch, ends map[[2]string]struct{}, check func(map[[2]string]model.Actor) error) {
+// reservedForAuthorRead is the read that answers, of the nodes ends names, each the store holds at
+// VisibilityAuthor, with who made it, in one read of graph_nodes by its key: the query of
+// QueueToPerson's statement, written after its arms, its parameters bound from $first on.
+func reservedForAuthorRead(first int, ends map[[2]string]struct{}) (string, []any) {
 	kinds := make([]string, 0, len(ends))
 	ids := make([]string, 0, len(ends))
 	for end := range ends {
 		kinds, ids = append(kinds, end[0]), append(ids, end[1])
 	}
-	b.Queue(fmt.Sprintf("read which of %d node is reserved for its author", len(ends)), `
+	param := func(offset int) string { return "$" + strconv.Itoa(first+offset) }
+	return `
 		select n.kind, n.id, n.made_by
-		from unnest($1::text[], $2::text[]) as named(kind, id)
+		from unnest(` + param(0) + `::text[], ` + param(1) + `::text[]) as named(kind, id)
 		join graph_nodes n on n.kind = named.kind and n.id = named.id
-		where n.visibility = $3
-	`, kinds, ids, VisibilityAuthor).Query(func(rows pgx.Rows) error {
+		where n.visibility = ` + param(2), []any{kinds, ids, VisibilityAuthor}
+}
+
+// reservedForAuthor reads the answer of reservedForAuthorRead over ends nodes once the statement
+// has run and hands it to check; check's error stops the batch.
+func reservedForAuthor(ends int, check func(map[[2]string]model.Actor) error) func(pgx.Rows) error {
+	return func(rows pgx.Rows) error {
 		reserved := map[[2]string]model.Actor{}
 		for rows.Next() {
 			var kind, id string
@@ -295,10 +305,10 @@ func queueReservedForAuthor(b *store.WriteBatch, ends map[[2]string]struct{}, ch
 			reserved[[2]string{kind, id}] = author
 		}
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("read which of %d node is reserved for its author: %w", len(ends), err)
+			return fmt.Errorf("read which of %d node is reserved for its author: %w", ends, err)
 		}
 		return check(reserved)
-	})
+	}
 }
 
 // namesPerson is whether tuple is one of the three kinds ToPerson alone appends, naming a person

@@ -2,8 +2,10 @@ package inboxwrite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -36,9 +38,13 @@ const maxThreadDepth = 64
 // A write that plans its record before its own write phase has run (PlanRecord) has queued its
 // head pointer tuples and not written them, so no read finds them: it names the node they point
 // at instead (Write.RepliesTo), which is read as that tuple would be - a comment's thread is that
-// node, and a message's walk starts there, every step above it stored.
+// node, and a message's walk starts there, every step above it stored - or says it answers
+// nothing (Write.StartsThread), and is the root of its own thread with nothing read.
 func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 	root := thread{kind: w.NodeKind, id: w.NodeID}
+	if w.root {
+		return root, nil
+	}
 	switch w.NodeKind {
 	case graphstore.KindAsk:
 		return root, nil
@@ -66,7 +72,18 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 	if w.parent != nil {
 		start, depth = w.parent.id, 1
 	}
-	if err := tx.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, messageWalk+`
+		select id from walk order by depth desc limit 1
+	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth, depth).Scan(&root.id); err != nil {
+		return thread{}, fmt.Errorf("read the thread message %s is written in: %w", w.NodeID, err)
+	}
+	return root, nil
+}
+
+// messageWalk is threadOf's walk up a message's replies_to chain, a common-table expression walk
+// of the steps from $1, at depth $5, over the message kind $2 and the relation $3, at most $4
+// deep, whose deepest step is the root.
+const messageWalk = `
 		with recursive walk(id, depth) as (
 			select $1::text, $5::int
 			union all
@@ -89,12 +106,30 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 				) older on true
 			) up
 			where walk.depth < $4 and up.id is not null
-		)
-		select id from walk order by depth desc limit 1
-	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth, depth).Scan(&root.id); err != nil {
-		return thread{}, fmt.Errorf("read the thread message %s is written in: %w", w.NodeID, err)
+		)`
+
+// threadAndMembers is threadOf and readMembers of w, a message's reply, in one statement: the walk
+// up its replies_to chain (messageWalk) and the members of the root it reaches (membersColumn), read
+// as each would read them on its own.
+func threadAndMembers(ctx context.Context, tx pgx.Tx, w Write) (thread, []member, error) {
+	root := thread{kind: graphstore.KindMessage, id: w.NodeID}
+	start, depth := w.NodeID, 0
+	if w.parent != nil {
+		start, depth = w.parent.id, 1
 	}
-	return root, nil
+	var column []byte
+	if err := tx.QueryRow(ctx, messageWalk+`,
+		root as (select id from walk order by depth desc limit 1)
+		select root.id, `+membersColumn(`'`+graphstore.KindMessage+`'`, `root.id`)+`
+		from root
+	`, start, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth, depth).Scan(&root.id, &column); err != nil {
+		return thread{}, nil, fmt.Errorf("read the thread message %s is written in and its members: %w", w.NodeID, err)
+	}
+	members, err := decodeMembers(column)
+	if err != nil {
+		return thread{}, nil, fmt.Errorf("read the members of thread %s/%s: %w", root.kind, root.id, err)
+	}
+	return root, members, nil
 }
 
 // ThreadRoot is the root of the thread the node kind/id is written in, as (kind, id), read as
@@ -132,54 +167,84 @@ type member struct {
 // since each of those is a row of the thread. A session or nobody keys no row, and neither does a
 // thread whose owner resolves to no project, so such a thread holds no row and still answers its
 // participants. A row's marker is read to tell a marked row from one the marker test passes, and
-// no other column of a marked row is read.
+// no other column of a marked row is read. A write whose read phase reads its thread already may
+// read its members in that statement instead (MembersColumn, Write.Members), and a message's
+// reply reads them with its walk (threadAndMembers).
 func readMembers(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
-	// The read binds the root's kind, so `t.to_kind <> 'value'`, always true of a thread's root,
-	// is written out: it is graph_tuples_as_of_in's predicate, which a generic plan of this
-	// statement - the plan pgx's statement cache reaches after five runs on one connection -
-	// cannot prove from a bound kind, and without it that plan walks graph_tuples_as_of_out
-	// across every person's participation of the kind (190 ms against 12.5 ms over the thread at
-	// the bound, on 2026-11-21).
-	current := func(kind string) string {
-		return graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
-			`t.to_kind = $2 and t.to_id = $3 and t.kind = `+kind+` and t.from_kind = $6
-				and t.to_kind <> '`+graphstore.KindValue+`'`)
+	var column []byte
+	if err := tx.QueryRow(ctx, `select `+membersColumn(`$1::text`, `$2::text`), thread.kind, thread.id).Scan(&column); err != nil {
+		return nil, fmt.Errorf("read the members of thread %s/%s: %w", thread.kind, thread.id, err)
 	}
-	rows, err := tx.Query(ctx, `
-		with held as (
-			select u.login, u.marked_seq is not null as marked
-			from user_threads u
-			where u.thread_id = $1::uuid
-		), taking_part as (
-			select current.from_id as login from (`+current("$4")+`) current where current.asserted
-		), standing_dismissals as (
-			select current.from_id as login from (`+current("$5")+`) current where current.asserted
-		)
-		select login, bool_or(row_held), bool_or(marked), bool_or(takes_part), bool_or(was_dismissed)
-		from (
-			select login, true, marked, false, false from held
-			union all
-			select login, false, false, true, false from taking_part
-			union all
-			select login, false, false, false, true from standing_dismissals
-		) as fact (login, row_held, marked, takes_part, was_dismissed)
-		group by login
-		order by login
-	`, thread.id, thread.kind, thread.id, graphstore.TupleParticipatesIn, graphstore.TupleDismissed, graphstore.KindPerson)
+	members, err := decodeMembers(column)
 	if err != nil {
 		return nil, fmt.Errorf("read the members of thread %s/%s: %w", thread.kind, thread.id, err)
 	}
-	defer rows.Close()
-	var members []member
-	for rows.Next() {
-		var held member
-		if err := rows.Scan(&held.login, &held.row, &held.marked, &held.takesPart, &held.dismissed); err != nil {
-			return nil, fmt.Errorf("read a member of thread %s/%s: %w", thread.kind, thread.id, err)
-		}
-		members = append(members, held)
+	return members, nil
+}
+
+// MembersColumn is readMembers of the thread whose root is kind/id as one column of a select the
+// caller makes already in the write's read phase, under the owner lock that read is made under:
+// its SQL and its parameters, bound from $first on. The caller hands the column's value to the
+// record it plans (Write.Members), which then reads no members of its own; kind/id must be the
+// root that record's thread is (threadOf): a comment's head (Write.RepliesTo), an answer's ask.
+func MembersColumn(first int, kind, id string) (string, []any) {
+	return membersColumn(`$`+strconv.Itoa(first)+`::text`, `$`+strconv.Itoa(first+1)+`::text`), []any{kind, id}
+}
+
+// membersColumn is readMembers' read of the thread whose root is kind/id, each SQL text of the
+// statement it is spliced into, as one scalar jsonb column: an array of the thread's members in
+// login order (memberRow). The read binds the root's kind, so `t.to_kind <> 'value'`, always true
+// of a thread's root, is written out: it is graph_tuples_as_of_in's predicate, which a generic plan
+// of the statement - the plan pgx's statement cache reaches after five runs on one connection -
+// cannot prove from a bound kind, and without it that plan walks graph_tuples_as_of_out across
+// every person's participation of the kind (190 ms against 12.5 ms over the thread at the bound,
+// on 2026-11-21).
+func membersColumn(kind, id string) string {
+	current := func(relation string) string {
+		return graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
+			`t.to_kind = `+kind+` and t.to_id = `+id+` and t.kind = '`+relation+`' and t.from_kind = '`+graphstore.KindPerson+`'
+				and t.to_kind <> '`+graphstore.KindValue+`'`)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the members of thread %s/%s: %w", thread.kind, thread.id, err)
+	return `(
+		select coalesce(jsonb_agg(jsonb_build_object('login', held_member.login, 'row', held_member.row_held, 'marked', held_member.marked,
+			'takes_part', held_member.takes_part, 'dismissed', held_member.was_dismissed) order by held_member.login), '[]'::jsonb)
+		from (
+			select login, bool_or(row_held) as row_held, bool_or(marked) as marked, bool_or(takes_part) as takes_part,
+			       bool_or(was_dismissed) as was_dismissed
+			from (
+				select u.login, true, u.marked_seq is not null, false, false
+				from user_threads u
+				where u.thread_id = (` + id + `)::uuid
+				union all
+				select current.from_id, false, false, true, false
+				from (` + current(graphstore.TupleParticipatesIn) + `) current where current.asserted
+				union all
+				select current.from_id, false, false, false, true
+				from (` + current(graphstore.TupleDismissed) + `) current where current.asserted
+			) as fact (login, row_held, marked, takes_part, was_dismissed)
+			group by login
+		) held_member
+	)`
+}
+
+// memberRow is one member as membersColumn answers it.
+type memberRow struct {
+	Login     string `json:"login"`
+	Row       bool   `json:"row"`
+	Marked    bool   `json:"marked"`
+	TakesPart bool   `json:"takes_part"`
+	Dismissed bool   `json:"dismissed"`
+}
+
+// decodeMembers reads membersColumn's answer, in login order.
+func decodeMembers(column []byte) ([]member, error) {
+	var rows []memberRow
+	if err := json.Unmarshal(column, &rows); err != nil {
+		return nil, err
+	}
+	members := make([]member, 0, len(rows))
+	for _, row := range rows {
+		members = append(members, member{login: row.Login, row: row.Row, marked: row.Marked, takesPart: row.TakesPart, dismissed: row.Dismissed})
 	}
 	return members, nil
 }

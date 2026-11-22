@@ -18,6 +18,7 @@ package inboxwrite
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -84,11 +85,31 @@ type Write struct {
 	// parent is the node the write's head pointer names (RepliesTo), for a write whose record is
 	// planned before its own pointer tuples are written; nil where the record reads them.
 	parent *thread
+	// root is a write whose record is planned before its own head pointer tuples are written and
+	// that answers nothing (StartsThread): the root of its own thread, which the write makes.
+	root bool
 	// mentioned is, for a comment or a message, the login of each person a mention of its text
 	// newly names (ReachesMentioned), in the order the text first names them.
 	mentioned []string
 	// unstored is a write whose head pointers the store holds no tuple of (Unstored).
 	unstored bool
+	// members are the thread's members as the write's own read phase read them (Members, or an
+	// answer's ReadAskAndMembers), membersRead whether it did; PlanRecord then reads none.
+	members     []member
+	membersRead bool
+}
+
+// Members is w with its thread's members read off column, the value of MembersColumn the write's
+// own read phase read in a statement it makes already, under the owner lock: PlanRecord then
+// reads no members of its own. The column must be over the root w's record is written in
+// (threadOf): a comment's head, which RepliesTo names.
+func (w Write) Members(column []byte) (Write, error) {
+	members, err := decodeMembers(column)
+	if err != nil {
+		return w, fmt.Errorf("read the members of the thread %s/%s is written in: %w", w.NodeKind, w.NodeID, err)
+	}
+	w.members, w.membersRead = members, true
+	return w, nil
 }
 
 // Comment is a comment's write, a reply in the thread its head pointers name.
@@ -127,6 +148,18 @@ func (w Write) WaitingOn(waiting string) Write {
 // it answers (in_reply_to). A write that names none is the root of its own thread.
 func (w Write) RepliesTo(kind, id string) Write {
 	w.parent = &thread{kind: kind, id: id}
+	return w
+}
+
+// StartsThread is w, a comment or a message whose record is planned before its own head pointer
+// tuples are written (PlanRecord) and whose row answers nothing: the root of its own thread,
+// which the write makes, under an id it drew for itself. The plan reads nothing of that thread:
+// the write's own head pointers are not written yet and name nothing (threadOf), and nobody holds
+// a row of, takes part in or dismissed a node no write has made yet (readMembers), so the record
+// reaches the people its text newly mentions, and, for a session's reply, the person who started
+// its conversation, and nobody else.
+func (w Write) StartsThread() Write {
+	w.root = true
 	return w
 }
 
@@ -217,7 +250,8 @@ func MentionParticipation(rootKind, rootID string, indexed graphstore.Uncaused, 
 func Answered(ask Ask, answer model.AskAnswer, who model.Actor) Write {
 	return Write{Arm: Replies, NodeKind: graphstore.KindAsk, NodeID: ask.id,
 		Author: model.Actor{Kind: "user", ID: answer.User}, Who: who, At: answer.At,
-		IssueKey: ask.issueKey, ArtifactID: ask.artifactID, Project: ask.project, ask: &ask}
+		IssueKey: ask.issueKey, ArtifactID: ask.artifactID, Project: ask.project, ask: &ask,
+		members: ask.members, membersRead: ask.membersRead}
 }
 
 // Declined is a decline of askID by who at at.
@@ -362,14 +396,25 @@ func (r Recording) Root() (string, string) {
 // PlanRecord plans w's record in the write's read phase, in tx, under the owner lock every writer
 // of w's thread takes first: the thread (threadOf), what an answer's catch-up owes (owedBy), the
 // person an ask's create reaches where the create did not read them (waitingOn), and for a reply
-// the thread's participants and rows (readMembers). It reads and takes no row lock, so it holds no
+// the thread's participants and rows (readMembers), which a write that starts its own thread has
+// none of and does not read (StartsThread). It reads and takes no row lock, so it holds no
 // transaction id: each read is of rows a writer of this thread changes only under that owner lock.
 // What the dismiss route writes under the person's rows and the root's lock instead - a dismissal -
 // is read in the write phase, by the statement that ends it (Recording.Queue): the Agent
 // dismissals a session's reply ends (queueAgentDismissalsClear) and the dismissed tuples of the
 // people a reply reaches (graphstore.QueueMarksEnded).
 func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
-	thread, err := threadOf(ctx, tx, w)
+	// A message's reply walks to its root and reads that root's members in one statement
+	// (threadAndMembers); a write that read its members already reads none.
+	var thread thread
+	var err error
+	members, membersRead := w.members, w.membersRead
+	if w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead {
+		thread, members, err = threadAndMembers(ctx, tx, w)
+		membersRead = true
+	} else {
+		thread, err = threadOf(ctx, tx, w)
+	}
 	if err != nil {
 		return Recording{}, err
 	}
@@ -403,9 +448,10 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	if w.unstored {
 		return r, nil
 	}
-	members, err := readMembers(ctx, tx, thread)
-	if err != nil {
-		return Recording{}, err
+	if !w.root && !membersRead {
+		if members, err = readMembers(ctx, tx, thread); err != nil {
+			return Recording{}, err
+		}
 	}
 	members = withOwedParticipants(members, r.owed.people)
 	// The write reaches every other participant: each whose participates_in stands, and each who

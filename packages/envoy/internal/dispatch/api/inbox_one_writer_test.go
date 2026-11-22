@@ -320,10 +320,10 @@ func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
 			}
 		}
 		// A node reserved for alice reaches nobody else, and the refusal names the node and its
-		// visibility. The refusal is the callback of the read ToPerson's batch sends ahead of its
-		// write (graphstore.QueueToPerson), so the statement after it has run by the time it is
-		// answered: the call runs in a savepoint, rolled back, and the transaction it ends commits
-		// nothing of it. The other refusal below is made before anything is sent.
+		// visibility. The refusal is the callback of the read that is the query of ToPerson's one
+		// statement (graphstore.QueueToPerson), whose write has run by the time it is answered: the
+		// call runs in a savepoint, rolled back, and the transaction it ends commits nothing of it.
+		// The other refusal below is made before anything is sent.
 		refused, err := tx.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the refused call's savepoint: %v", err)

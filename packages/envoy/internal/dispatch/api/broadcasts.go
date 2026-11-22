@@ -671,27 +671,32 @@ type broadcastPages struct {
 }
 
 // planBroadcastPages is the page each recipient's copy hangs from, by the copy's target: the page
-// the store gives the agent its session is (graphstore.AgentPage), or "" where it gives none; and
-// beside it the write of each such page once, as a copy's own write would make it
-// (graphstore.PageNode). Two sessions that claimed one role hang from that role's page, which is
-// one node, written once.
+// the store gives the agent its session is, read for every recipient in one statement
+// (graphstore.AgentPages), or "" where it gives none; and beside it the write of each such page
+// once, as a copy's own write would make it (graphstore.PageNode). Two sessions that claimed one
+// role hang from that role's page, which is one node, written once.
 func planBroadcastPages(ctx context.Context, tx pgx.Tx, recipients []broadcastTarget, actor model.Actor, at time.Time) (map[string]string, broadcastPages, error) {
-	byTarget := make(map[string]string, len(recipients))
-	pages := broadcastPages{written: make(map[string]graphstore.Uncaused, len(recipients))}
+	targets := make([]string, 0, len(recipients))
+	named := make(map[string]struct{}, len(recipients))
 	for _, recipient := range recipients {
 		target := "session:" + recipient.sessionID
-		if _, resolved := byTarget[target]; resolved {
-			continue
+		if _, held := named[target]; !held {
+			named[target] = struct{}{}
+			targets = append(targets, target)
 		}
-		page, ok, err := graphstore.AgentPage(ctx, tx, target)
-		if err != nil {
-			return nil, broadcastPages{}, err
-		}
-		if !ok {
-			byTarget[target] = ""
-			continue
-		}
+	}
+	resolved, err := graphstore.AgentPages(ctx, tx, targets)
+	if err != nil {
+		return nil, broadcastPages{}, err
+	}
+	byTarget := make(map[string]string, len(targets))
+	pages := broadcastPages{written: make(map[string]graphstore.Uncaused, len(targets))}
+	for _, target := range targets {
+		page := resolved[target]
 		byTarget[target] = page
+		if page == "" {
+			continue
+		}
 		if _, held := pages.written[page]; !held {
 			pages.order = append(pages.order, page)
 			pages.written[page] = graphstore.PlanUncaused([]graphstore.Node{graphstore.PageNode(page, actor, at, graphstore.NoEvent)}, nil)

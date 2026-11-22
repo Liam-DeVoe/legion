@@ -41,7 +41,7 @@ import (
 // takes that lock shared first (HoldDefault). And a move locks the asks rows it moves first in its
 // write phase (QueueMoveWaiting), so two moves of one ask, and a move and an answer, take turns
 // there, and the move reads who the ask waits on, and who its delivery stands to, only once it
-// holds them, in the statements after that lock.
+// holds them, in the statement after that lock.
 
 // waitingOnTuples is what an ask reaching the person it waits on appends, made by who at at,
 // under event: participates_in from waiting to askID and delivered_to from askID to waiting. The
@@ -293,7 +293,7 @@ func moveLock(candidates string) string {
 		for no key update of a`
 }
 
-// moveHeld is the common-table expressions of a move's statements over candidates, a select of
+// moveHeld is the common-table expressions of a move's statement over candidates, a select of
 // ask ids its parameters bind from $1: held, each candidate ask still open on an open issue or on
 // a project document, with who it waits on now (asks.AskedOfPersonExpression, canonical) and who
 // asked it (actorPerson); and reached, each person the arm of such an ask stands to, with whether
@@ -408,29 +408,27 @@ func moveTuples(writerParam string) string {
 // ask it moves now reaches the person it waits on, and stops reaching whoever the arm stood to
 // before. Every tuple is dated at the write's moment and made by its actor (Move.at, Move.who).
 //
-// It takes three statements and reads nothing back in Go between them: the lock of the asks the
+// It takes two statements and reads nothing back in Go between them: the lock of the asks the
 // write may move, `for no key update` in ascending id (moveLock), so a second move of one of them,
-// and an answer, waits for this write to commit, and this write waits for theirs; then, each in a
-// statement of its own and so as every write it waited for left them (moveHeld), the read that
-// refuses a tuple a node reserved for its author forbids (graphstore.ReservedForAuthorRead), as
-// ToPerson refuses one, and the append of the tuples (moveTuples, graphstore.ToPersonArms). An ask
-// on a closed issue is not read: a closed issue retracts nothing, and the record stays what the
-// write stored until the issue's reopen restores the ask (Restored).
+// and an answer, waits for this write to commit, and this write waits for theirs; then, in a
+// statement of its own and so as every write it waited for left them (moveHeld), the append of the
+// tuples (moveTuples, graphstore.ToPersonArms), whose own query is the read that refuses a tuple a
+// node reserved for its author forbids (graphstore.ReservedForAuthorRead), as ToPerson refuses
+// one: the statement's data-modifying arms run to their end whatever that read answers, and its
+// refusal ends the transaction, which commits nothing of the move. An ask on a closed issue is not
+// read: a closed issue retracts nothing, and the record stays what the write stored until the
+// issue's reopen restores the ask (Restored).
 func QueueMoveWaiting(b *store.WriteBatch, move Move, event int64) error {
 	writer := len(move.args) + 1
 	b.Queue(fmt.Sprintf("lock the asks %s may move", move.what), moveLock(move.candidates), move.args...)
-	with := `with` + moveHeld(move.candidates) + `,` + moveTuples("$"+strconv.Itoa(writer))
 	args := append(slices.Clone(move.args), personOf(move.who))
-	b.Queue(fmt.Sprintf("read whom the move of %s may not reach", move.what),
-		with+graphstore.ReservedForAuthorRead("moved"), args...).QueryRow(graphstore.RefuseReservedForAuthor)
 	arms, params, err := graphstore.ToPersonArms(writer+1, "moved", move.at, move.who, event)
 	if err != nil {
 		return fmt.Errorf("move the person the asks wait on, for %s: %w", move.what, err)
 	}
 	b.Queue(fmt.Sprintf("move the person the asks wait on, for %s", move.what),
-		with+`,
-		`+arms+`
-		select 1`, append(args, params...)...)
+		`with`+moveHeld(move.candidates)+`,`+moveTuples("$"+strconv.Itoa(writer))+`,
+		`+arms+graphstore.ReservedForAuthorRead("moved"), append(args, params...)...).QueryRow(graphstore.RefuseReservedForAuthor)
 	return nil
 }
 
