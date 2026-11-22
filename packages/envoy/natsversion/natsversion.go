@@ -141,6 +141,12 @@ func ConnectedRefusal(ctx context.Context, conn *nats.Conn) error {
 	return connectedRefusal(ctx, conn)
 }
 
+// ErrNotConnected is what ConnectedVersion and ConnectedRefusal answer, wrapped, when the
+// connection reported no server version within the wait: it was cut, or is reconnecting, and was
+// not back in time. A caller may wait that out, as against a closed connection or a refused
+// version.
+var ErrNotConnected = errors.New("the NATS connection is not connected")
+
 // serverConn is what ConnectedVersion reads of a connection, the seam its tests reach a reconnect
 // between two reads through.
 type serverConn interface {
@@ -168,7 +174,7 @@ func connectedVersion(ctx context.Context, conn serverConn) (string, error) {
 		}
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("the NATS connection is not connected: it reported no server version within the wait (%w)", ctx.Err())
+			return "", fmt.Errorf("%w: it reported no server version within the wait (%w)", ErrNotConnected, ctx.Err())
 		case <-time.After(reconnectPoll):
 		}
 	}
