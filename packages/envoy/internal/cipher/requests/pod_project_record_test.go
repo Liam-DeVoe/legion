@@ -42,11 +42,11 @@ func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *tes
 	m.Exchange = set
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-"+t.Name())
 
-	plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "carol's unannounced PRIV acquisition: rotate the vendor key", "SHARED_KEY"), "", nil)
+	plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "carol's unannounced PRIV acquisition: rotate the vendor key", "SHARED_KEY"), "")
 	if err != nil || plain.RecordID == nil {
 		t.Fatalf("PRIV's pod: Create(SHARED_KEY) = %+v, %v; want pending", plain, err)
 	}
-	tagged, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "deploy", "PRIV_HUMAN"), "", nil)
+	tagged, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "deploy", "PRIV_HUMAN"), "")
 	if err != nil || tagged.RecordID == nil {
 		t.Fatalf("PRIV's pod: Create(PRIV_HUMAN) = %+v, %v; want pending", tagged, err)
 	}
@@ -139,14 +139,14 @@ func TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames(t *testin
 			pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-issuer-"+strconv.Itoa(i))
 			recordIssuer(t, m, pod, c.enrolledWith)
 
-			request, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "deploy", "PRIV_KEY"), "", nil)
+			request, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "deploy", "PRIV_KEY"), "")
 			if c.names && (err != nil || request.GrantID == nil) {
 				t.Fatalf("Create(PRIV_KEY) from a pod naming PRIV = %+v, %v; want a grant at once", request, err)
 			}
 			if !c.names {
 				deniedFor(t, "a request for PRIV_KEY from a pod naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
 			}
-			plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "rotate the vendor key", "SHARED_KEY"), "", nil)
+			plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "rotate the vendor key", "SHARED_KEY"), "")
 			if err != nil || plain.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", plain, err)
 			}
