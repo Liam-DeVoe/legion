@@ -106,9 +106,9 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 //
 // Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
 // no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
-// it, and nothing holds it — no suspension that holds (the operator's, the controller's or an
-// architect's), no project pause, and, before the round's bound, no role that holds the round's
-// ask it has not answered. The round would replace such a pod a moment later, so a role started
+// it, and nothing holds it — no suspension that holds (the operator's or the controller's), no
+// project pause, and, before the round's bound, no role that holds the round's ask it has not
+// answered. The round would replace such a pod a moment later, so a role started
 // in it would have its first turn ended and be launched a second time, as INFRA-4455's tester was
 // on 2026-11-19. The daemon is asked under the pod's launch
 // turn, so the round's bound is read when the launch runs rather than when the role was resumed,

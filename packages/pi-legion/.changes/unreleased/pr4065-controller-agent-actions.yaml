@@ -2,7 +2,7 @@ kind: Added
 body: |-
   Of the actions on an agent, each naming one agent by its `issue` and `role`, the controller's
   `legion` tool gets four beside `compact` and `fresh_session`: `stop`, `retry`, `suspend` and
-  `resume_agent`. Each answers the claim's state and who holds a suspension over it. The agent's
+  `resume_agent`. Each answers the claim's state and who holds a suspension over the agent. The agent's
   resume is `resume_agent` because `resume` is the project's resume, which ends a pause and names
   no issue.
   While the operator's own suspension holds an agent, five of the six (`stop`, `retry`, `suspend`,

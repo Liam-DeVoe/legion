@@ -18,5 +18,4 @@ body: |-
   A store migration deletes the queued controller notices of the two
   kinds that no release writes now. Before you roll back to an
   earlier release, stop the daemon and run the steps of `docs/kubernetes.md`, "Rolling back the
-  release whose controller and architects act on agents and whose daemon tells a held role of a
-  merge hold".
+  release whose controller acts on agents and whose daemon tells a held role of a merge hold".

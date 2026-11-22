@@ -3106,15 +3106,14 @@ package api
 // effect, `POST /legion/v1/agents/retry` the plain `legion claims retry` (no fresh session),
 // `POST /legion/v1/agents/suspend` `legion claims suspend`'s, and `POST /legion/v1/agents/resume`
 // `legion claims resume`'s. Each answers `api.AgentActionResponse`: the claim's `state` after the
-// request and, where a suspension is over it, `suspendedBy`, `suspensionHeld` and
+// request and, where a suspension is over the agent, `suspendedBy`, `suspensionHeld` and
 // `suspensionHeldBy`, which these routes alone of the session-facing ones carry, since no plugin
 // below this contract calls them (the state still names no suspender, StrandedClaim); a
 // suspension held for the agent's turn, and a retry whose start the issue's phase queued, answer
-// 202. The actions are the controller's alone: no architect has a door to them, and no
-// suspension is an architect's. The controller's suspension is recorded as its own, `controller`,
-// a new supervise.SuspendSource that `claims.suspended_by` admits from migration 20261115060739:
-// it holds against the daemon's rules as the operator's does, its own resume lifts it, and the
-// operator's suspension outranks it. So the operator claim routes' `suspendedBy` and
+// 202. The actions are the controller's alone. The controller's suspension is recorded as its
+// own, `controller`, a new supervise.SuspendSource that `claims.suspended_by` admits from migration
+// 20261115060739: it holds against the daemon's rules as the operator's does, its own resume lifts
+// it, and the operator's suspension outranks it. So the operator claim routes' `suspendedBy` and
 // `suspensionHeldBy` gain the value `controller`, which only the operator's bearer reads; no shape
 // moves. The controller's resume_agent, suspend, stop and retry, and its fresh session, are
 // refused an agent the operator's own suspension holds, held for a turn or landed, with `409
@@ -3267,6 +3266,9 @@ package api
 // 214 to 226 are other open pull requests', and no open head declares 227 (read at
 // refs/pull/<n>/head of all 445 open pull requests, 2026-11-22T15:30:04Z to 15:32:38Z). Taking
 // the architect's actions on an agent out of this change keeps 227: a reading of every one of the
-// 464 open pull requests at 2026-11-22T17:45Z found 227 declared by #4065 alone. Read the base's
-// own number and every open head again at the next merge rather than from this line.)
+// 464 open pull requests at 2026-11-22T17:45Z found 227 declared by #4065 alone. The merge of main
+// `07c168a1`, which still declares 213, keeps 227 too: no open head but this one declares it
+// (read at refs/pull/<n>/head of all 501 open pull requests, 2026-11-22T20:22:11Z to 20:27:35Z).
+// Read the base's own number and every open head again at the next merge rather than from this
+// line.)
 const DaemonAPIVersion = 227

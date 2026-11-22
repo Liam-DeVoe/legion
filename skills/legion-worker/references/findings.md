@@ -39,7 +39,7 @@ The actions on an agent (stop, retry, suspend, resume the agent, compact, and st
 
 ```bash
 dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-controller' --body-file - <<'EOF'
-Action on an agent from <your role token>
+Action on an agent
 <KEY> <role>: <the action: stop, retry, suspend, resume the agent, compact, or start it in a fresh session>, because <what you observed, with the numbers and when>
 EOF
 ```
