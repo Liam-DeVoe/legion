@@ -40,15 +40,18 @@ one through GitHub's compare.
 
 ## The quarantine check's measured steps and its budget
 
-The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job. Over the
-nightly's quarantine-check jobs of 2026-11-21 and 22 that succeeded, 37 of them, the check step
-took 68 to 104 s on the runner. The longest was job 137021330193 of run 44961580846, 23:28:02Z to
-23:29:46Z on 2026-11-21. On 2026-11-22 at 03:15Z, from this issue's pod, the tool's reads of the
-same 14 days took 22 s: 1,195 runs in 34 REST calls and 13 GraphQL calls costing 132 points. The
-budget takes the longer, 104 x 1.15 = 120 s. The steps without a budget, at their maximum over
-the 12 jobs of this workflow's run 44545596758 that ran them: Set up job 2 s, checkout 12 s,
-setup-bun 4 s, `bun install` 11 s, the contracts build 1 s, and the post and completion steps
-3 s: 33 s, and 300 + 33 = 333 s rounds up to 6 minutes.
+The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job. Since
+`0d9a0258` the tool reads the check runs through GraphQL, and the check step of each of its
+nightly jobs took 24 or 25 s: jobs 137090407550 (04:12:26Z to 04:12:50Z), 137103508525 (05:11:34Z
+to 05:11:59Z) and 137106841419 (05:26:38Z to 05:27:02Z) on 2026-11-22. On 2026-11-22 at 03:15Z,
+from this issue's pod, the tool's reads of the same 14 days took 22 s: 1,195 runs in 34 REST calls
+and 13 GraphQL calls costing 132 points. Before that, the REST reader's 37 steps that succeeded on
+2026-11-21 and 22 took 68 to 104 s, the longest job 137021330193 of run 44961580846, 23:28:02Z to
+23:29:46Z on 2026-11-21. Three steps are no fortnight's maximum, so the budget keeps the REST
+reader's, 104 x 1.15 = 120 s, until a fortnight of GraphQL steps gives one. The steps without a
+budget, at their maximum over the 12 jobs of this workflow's run 44545596758 that ran them: Set up
+job 2 s, checkout 12 s, setup-bun 4 s, `bun install` 11 s, the contracts build 1 s, and the post
+and completion steps 3 s: 33 s, and 300 + 33 = 333 s rounds up to 6 minutes.
 
 The step's 5 minutes are its work and a wait for GitHub's rate limit. The check failed on that
 limit at 02:14Z on 2026-11-22 (job 137061949842 of run 44974726732), refused `API rate limit
