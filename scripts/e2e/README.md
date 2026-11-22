@@ -6721,10 +6721,9 @@ each container is named `<prefix>-<role>-<pid>`, and every process of the run ho
 The check fails, through the caller's `fail`, naming each container and process whose driver is no longer alive and the command that removes it (`docker rm -f -v <name>`, `kill <pid>`).
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
-It reads them from `${proc_root:-/proc}`, the host's `/proc` unless a test points `proc_root` at a proc root of its own:
-the Claude Code backend's prerequisites tests (`lib/claude-backend-app-secrets.test.ts`, `lib/claude-backend-bun-pin.test.ts`) give it an empty one, so neither the host's process count nor a process an earlier run left on the host decides their result.
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
+The Claude Code backend's prerequisites tests (`lib/claude-backend-app-secrets.test.ts`, `lib/claude-backend-bun-pin.test.ts`) point `proc_root` at a root of their own that holds one unreal pid, whose command line only this walk reads (`unrealReader`), so neither the host's process count nor a process an earlier run left on the host decides their result, and a walk of the host's `/proc` fails them.
 A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 

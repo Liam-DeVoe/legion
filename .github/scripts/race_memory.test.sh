@@ -94,8 +94,8 @@ echo "case: a peak over the limit fails the run and names the test that was runn
 # been read by then, and it ends once a later sample has seen it grown: a VmRSS above the 64 MiB
 # it allocates. So the highest sample is one taken with the test known, and there are two
 # samples at least, on a machine of any speed. A grower that slept 6 s instead was gone before
-# the second walk reached it where one walk of /proc takes about a second: 18 runs of 18 took one
-# sample among 26,800 processes at a load average of 320 to 380 (dispatch://INFRA-3904).
+# the second walk reached it when the sampler walked the whole /proc, about a second a walk: 18
+# runs of 18 took one sample among 26,800 processes at a load average of 320 to 380.
 grower='
 import json, sys
 sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
