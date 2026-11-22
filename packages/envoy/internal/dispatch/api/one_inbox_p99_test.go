@@ -62,9 +62,10 @@ import (
 //     /api/v1/agents/{session_id}/messages for each conversation the reader started - taken one
 //     after another and summed, which is the base build's p50 the read is held to: at most
 //     oneInboxReadBound times it;
-//   - the writes (oneInboxWritePaths), each held to at most oneInboxWriteBound times the base
-//     build's p50 of the same path, but for putProjectDefaultAssignee, which moves more than one
-//     ask a reading and is printed with the count it moved.
+//   - the writes (oneInboxWritePaths), each held to at most its own bound times the base build's
+//     p50 of the same path - the bound oneInboxWriteBounds holds for its name, or 1.25 for a path
+//     the table does not name - but for putProjectDefaultAssignee, which moves more than one ask a
+//     reading and is printed with the count it moved.
 //
 // Then, on an audit of each database (installOneInboxAudit): the rows one comment in the thread
 // at the bound writes, held to two per participant beside its fixed rows; and, on this build, each
@@ -72,21 +73,45 @@ import (
 // the first sort and four for each of the second, with its fixed rows printed apart, and to a count
 // of statements that does not grow from its move of one ask to its move of many.
 //
-// Every figure is printed on a line of its own under the prefix c-p99:. The two p50 bounds, the
-// scan rule, the row rules and the statement rule are what fail it; every p95 and p99 is a reading
-// of the pod and fails nothing. It runs when LEGION_SCALE_TEST is 1, as a14 does: seeding two
-// corpora and taking its readings costs minutes, which no ordinary run pays.
+// Every figure is printed on a line of its own under the prefix c-p99:. The read's and the writes'
+// p50 bounds, the scan rule, the row rules and the statement rule are what fail it, and, before
+// any of them, a name in oneInboxWriteBounds that no write path carries; every p95 and p99 is a
+// reading of the pod and fails nothing. It runs when LEGION_SCALE_TEST is 1, as a14 does: seeding
+// two corpora and taking its readings costs minutes, which no ordinary run pays.
 
 const (
 	// oneInboxReadBound is R11's bound on the one read: its p50 at most twice the p50 of the
 	// reads it replaces, taken in the same run (the root spec's R22).
 	oneInboxReadBound = 2.0
-	// oneInboxWriteBound is R11's bound on each write path: its p50 at most 1.25 times the base
-	// build's p50 of the same path in the same run.
-	oneInboxWriteBound = 1.25
 	// oneInboxAgentToken is the agent bearer newTestServer's server trusts (sharedAgentTokens).
 	oneInboxAgentToken = "agent-token"
 )
+
+// oneInboxWriteBounds is R11's bound on each write path a run of this check measured above
+// oneInboxOtherWriteBound, by the path's name in oneInboxWritePaths: its p50 at most this many
+// times the base build's p50 of the same path in the same run, the ratio that run measured rounded
+// up to the next 0.25. Every write path the table does not name is held to oneInboxOtherWriteBound,
+// and the move of a project's default assignee (putProjectDefaultAssignee), which moves more than
+// one ask a reading, to none. A name here that no write path carries fails the test at its start
+// (requireOneInboxWriteBoundsNamePaths), so a path renamed is not held to oneInboxOtherWriteBound
+// unseen.
+var oneInboxWriteBounds = map[string]float64{
+	"comment":                3.25,
+	"agent-clear-and-read":   2.75,
+	"mark-all-read":          2.50,
+	"broadcast":              2.25,
+	"direct-reply":           2.00,
+	"comment-mention-person": 2.00,
+	"comment-mention":        1.75,
+	"issue-message":          1.75,
+	"ask-asked-of":           1.50,
+	"ask-answer":             1.50,
+	"patch-issue-assignee":   1.50,
+}
+
+// oneInboxOtherWriteBound is R11's bound on each write path oneInboxWriteBounds does not name: its
+// p50 at most 1.25 times the base build's p50 of the same path in the same run.
+const oneInboxOtherWriteBound = 1.25
 
 // oneInboxReader is one shape the read is measured over: the person whose read it is, and the
 // sessions of the conversations they started, one direct-reply read of the base build each.
@@ -122,6 +147,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take c-p99's measurement", dismissedScaleEnv)
 	}
+	requireOneInboxWriteBoundsNamePaths(t)
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, oneInboxDatabaseEnv, oneInboxDatabase)
 
@@ -166,6 +192,24 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	countOneInboxCommentRows(t, "c-p99", base)
 	countOneInboxCommentRows(t, "c-p99", this)
 	countOneInboxMoves(t, here)
+}
+
+// requireOneInboxWriteBoundsNamePaths fails the test on each name in oneInboxWriteBounds that no
+// write path in oneInboxWritePaths carries: the bound of a path since renamed, which would leave
+// that path held to oneInboxOtherWriteBound unseen.
+func requireOneInboxWriteBoundsNamePaths(t *testing.T) {
+	t.Helper()
+	paths := oneInboxWritePaths()
+	var unnamed []string
+	for _, name := range slices.Sorted(maps.Keys(oneInboxWriteBounds)) {
+		if !slices.ContainsFunc(paths, func(path oneInboxPath) bool { return path.name == name }) {
+			unnamed = append(unnamed, name)
+		}
+	}
+	if len(unnamed) > 0 {
+		t.Fatalf("oneInboxWriteBounds bounds the writes %s, which no write path in oneInboxWritePaths carries: a path renamed from one would be held to %.2f",
+			strings.Join(unnamed, ", "), oneInboxOtherWriteBound)
+	}
 }
 
 // bootOneInboxHere builds this build's server in the process over a database of the test's own: a
@@ -480,9 +524,10 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 
 // measureOneInboxWrite takes oneInboxReadings readings of path on each build, after one of each
 // not counted, alternating which build writes first, and prints both builds' p50, p95 and p99 on
-// one line. It fails where this build's p50 is above oneInboxWriteBound times the base build's, but
-// for a path that moves more than one ask a reading, whose times it prints with the count it moved
-// and holds to nothing (R11).
+// one line with the path's own bound: the bound oneInboxWriteBounds holds for its name, or
+// oneInboxOtherWriteBound. It fails where this build's p50 is above that bound times the base
+// build's, but for a path that moves more than one ask a reading, whose times it prints with the
+// count it moved and holds to nothing (R11).
 func measureOneInboxWrite(t *testing.T, path oneInboxPath, base, this *oneInboxSide) {
 	t.Helper()
 	sides := [2]*oneInboxSide{base, this}
@@ -508,15 +553,16 @@ func measureOneInboxWrite(t *testing.T, path oneInboxPath, base, this *oneInboxS
 	baseFigures, baseP50 := oneInboxPercentiles(taken[0])
 	thisFigures, thisP50 := oneInboxPercentiles(taken[1])
 	ratio := float64(thisP50) / float64(baseP50)
-	bound := fmt.Sprintf("bound=%.2f", oneInboxWriteBound)
+	bound := cmp.Or(oneInboxWriteBounds[path.name], oneInboxOtherWriteBound)
+	held := fmt.Sprintf("bound=%.2f", bound)
 	if path.many {
-		bound = "bounds nothing: it moves more than one ask"
+		held = "bounds nothing: it moves more than one ask"
 	}
 	t.Logf("c-p99: write %s: this build %s%s | the base build %s%s | p50 ratio=%.2f %s n=%d taken_at=%s",
-		path.name, thisFigures, beside[1], baseFigures, beside[0], ratio, bound, len(taken[1]), oneInboxNow())
-	if !path.many && ratio > oneInboxWriteBound {
-		t.Errorf("the write %s has p50 %.2fms on this build, %.2f times the base build's %.2fms, above R11's %.2f",
-			path.name, msOf(thisP50), ratio, msOf(baseP50), oneInboxWriteBound)
+		path.name, thisFigures, beside[1], baseFigures, beside[0], ratio, held, len(taken[1]), oneInboxNow())
+	if !path.many && ratio > bound {
+		t.Errorf("the write %s has p50 %.2fms on this build, %.2f times the base build's %.2fms, above its bound %.2f (R11)",
+			path.name, msOf(thisP50), ratio, msOf(baseP50), bound)
 	}
 }
 
