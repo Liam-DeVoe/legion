@@ -465,17 +465,30 @@ func (f *rolePushFixture) push(as rolePushIdentity, args ...string) (code int, s
 // pushOn is push with path as the PATH.
 func (f *rolePushFixture) pushOn(path string, as rolePushIdentity, args ...string) (code int, stdout, stderr string) {
 	f.t.Helper()
+	return f.runIn(path, f.repo, as, nil, args...)
+}
+
+// runIn runs `jj <args>` as a role's shell runs it, by name through the first jj on path, as the
+// role whose identity as is, in dir, with extra variables after the role's environment.
+func (f *rolePushFixture) runIn(path, dir string, as rolePushIdentity, extra []string, args ...string) (code int, stdout, stderr string) {
+	f.t.Helper()
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return trailerRun(f.t, f.repo, f.env(path, as), "", sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
+	return trailerRun(f.t, dir, append(f.env(path, as), extra...), "", sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
 }
 
 // alone runs the real jj by itself, with no form of Legion's in front of it.
 func (f *rolePushFixture) alone(as rolePushIdentity, args ...string) (code int, stdout, stderr string) {
 	f.t.Helper()
-	return trailerRun(f.t, f.repo, f.env(f.setupPath, as), "", f.real, args...)
+	return f.aloneIn(f.repo, as, nil, args...)
+}
+
+// aloneIn is alone in dir, with extra variables after the role's environment.
+func (f *rolePushFixture) aloneIn(dir string, as rolePushIdentity, extra []string, args ...string) (code int, stdout, stderr string) {
+	f.t.Helper()
+	return trailerRun(f.t, dir, append(f.env(f.setupPath, as), extra...), "", f.real, args...)
 }
 
 // aloneSends is what the real jj by itself says the push of args would do: its dry run's status,
@@ -2856,10 +2869,10 @@ var rolePushPanesRows = []struct {
 // is a second run of the step: one on the real push takes no snapshot, since the push's words carry
 // the step's --ignore-working-copy, and runs no metaedit, since the commit has its author by then.
 // A push that jj expands from an alias, through that host's jj, runs the step once too. Under the
-// tmux form legion jj reads the aliases once, a `jj config list` that names no key, which the
-// host's jj brings back into the pane's jj, and that jj passes it on with no read of its own.
-// Under the pod's form the pod's wrapper expands the line, with reads that each name a key, and
-// legion jj makes no read.
+// tmux form legion jj reads the aliases once (rolePushCall.isConfigRead), a read which the host's
+// jj brings back into the pane's jj, and that jj passes it on with no read of its own. Under the
+// pod's form the pod's wrapper expands the line, with reads that each name a key, and legion jj
+// makes no read.
 func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -2887,10 +2900,8 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 				var again [][]string
 				for _, call := range calls {
 					switch {
-					case call.pair() == [2]string{"config", "list"}:
-						if !slices.ContainsFunc(call.args, func(arg string) bool { return strings.HasPrefix(arg, "aliases.") || arg == "ui.default-command" }) {
-							read++
-						}
+					case call.isConfigRead():
+						read++
 					case call.has("metaedit"):
 						metaedit++
 					case call.has("--dry-run"):

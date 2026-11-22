@@ -19,8 +19,8 @@ type jjPush struct {
 	args []string
 	// push is whether the command's subcommand pair is `git push`.
 	push bool
-	// leave is whether a push runs no step: one that sends nothing (--dry-run, -h, --help), or
-	// one at an earlier operation (--at-op, --at-operation).
+	// leave is whether a push runs no step: one that sends nothing (--dry-run, or a word of help or
+	// version, jjHelpWord), or one at an earlier operation (--at-op, --at-operation).
 	leave bool
 	// options are the words of the caller's -R/--repository, --config, --config-file and
 	// --config-toml that jj keeps for the push, each with its value, in the order written
@@ -90,9 +90,8 @@ func (p jjPush) revisionWords(i int, words []string) iter.Seq[string] {
 type jjRevision struct{ index, offset int }
 
 // jjGlobalValues are jj's global options whose value may be the next word, which readJJPush skips
-// to find the subcommand pair: those that the pod's wrapper (packages/daemon/docker/jj) and
-// jjCommandWord skip, and --config-toml.
-var jjGlobalValues = []string{"-R", "--repository", "--at-operation", "--at-op", "--color", "--config", "--config-file", "--config-toml"}
+// to find the subcommand pair: those that jjCommandWord skips (jjWordValues), and --config-toml.
+var jjGlobalValues = slices.Concat(jjWordValues, []string{"--config-toml"})
 
 // jjPushValues are jj's global options and `jj git push`'s own whose value may be the next word.
 var jjPushValues = slices.Concat(jjGlobalValues, []string{"--remote", "-b", "--bookmark", "-t", "--tag", "-r", "--revision", "--revisions", "-c", "--change", "--named", "-o", "--option"})
@@ -141,14 +140,14 @@ func readJJPush(args []string) jjPush {
 		}
 		name, offset, option := jjOption(arg, values)
 		if !option {
-			switch arg {
-			case "--dry-run", "-h", "--help":
+			switch {
+			case arg == "--dry-run" || jjHelpWord(arg):
 				p.leave = true
-			case "--debug", "--no-integrate-operation", "--ignore-immutable":
+			case arg == "--debug" || arg == "--no-integrate-operation" || arg == "--ignore-immutable":
 				p.pushOnly[i] = true
-			case "--quiet":
+			case arg == "--quiet":
 				p.pushOnly[i], p.quiet = true, true
-			case "--ignore-working-copy":
+			case arg == "--ignore-working-copy":
 				p.pushOnly[i], p.noSnapshot = true, true
 			default:
 				if !strings.HasPrefix(arg, "-") && len(pair) < 2 {

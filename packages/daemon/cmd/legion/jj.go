@@ -49,20 +49,23 @@ ui.default-command, so a command that jj runs as a jj git push is one too.
 // drops both prefixes, and jj reads JJ_ variables of its own.
 const wrappedJJAt = "WRAPPED_JJ_AT"
 
-// wrappedJJStepped is the variable that marks a push whose step has run: a legion jj that ran the
-// step before a push, or printed the line of a table it cannot use, sets it to the digest of the
-// words it runs that push with (jjStepped), in the environment of that push alone. A legion jj
-// whose push's own words have that digest runs no step: it is the same push, come back through a
-// host's jj wrapper that runs jj by PATH, or through a second Legion bin directory on PATH, as a
-// controller started from a pane has. Every other push runs the step, a push that a jj command
-// starts among them. The step's own commands are no pushes the step runs before (jjPush.steps),
-// so they need no mark. A host's jj wrapper that changes the words makes the step run once more,
-// before the words that wrapper runs; that is harmless, since the step is idempotent: its second
-// run finds nothing to change. Its name starts with neither LEGION_ nor JJ_, as wrappedJJAt's
-// does.
+// wrappedJJStepped is the variable that marks a command legion jj has read already: a legion jj
+// sets it to the digest of the words it runs the command with (jjStepped), in the environment of
+// that command alone, after it ran the step before a push, printed the line of a table it cannot
+// use, or read the command as no push the step runs before, expanded or not. A legion jj whose
+// command's own words have that digest runs it at once, with no read and no step: it is the same
+// command, come back through a host's jj wrapper that runs jj by PATH, or through a second Legion
+// bin directory on PATH, as a controller started from a pane has, so it reads the aliases once
+// and prints a line that it cannot expand the command once. A command that a jj command starts
+// with other words, such as the inner `jj git push` of `jj util exec -- jj git push`, is read
+// afresh, and a push among them runs the step. The step's own commands are no pushes the step
+// runs before (jjPush.steps), so they need no mark. A host's jj wrapper that changes the words of
+// a push makes the step run once more, before the words that wrapper runs; that is harmless,
+// since the step is idempotent: its second run finds nothing to change. Its name starts with
+// neither LEGION_ nor JJ_, as wrappedJJAt's does.
 const wrappedJJStepped = "WRAPPED_JJ_STEPPED"
 
-// jjStepped is the value of wrappedJJStepped for a push of words: the hex of the SHA-256 of the
+// jjStepped is the value of wrappedJJStepped for a command of words: the hex of the SHA-256 of the
 // words joined by NUL, which no word holds.
 func jjStepped(words []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(words, "\x00")))
@@ -78,32 +81,33 @@ func jjStepped(words []string) string {
 // with that jj (execWrapped), so a stop of the process group and its budgets reach jj as before.
 // A process under shell completion (jjCompleting), a process with no table
 // (runtime.RoleIdentitiesVariable unset, as a controller's is), and a command whose
-// wrappedJJStepped is the digest of its own words (jjStepped), the same push come back after its
-// step, run that jj at once, with nothing printed and no other process started. Under --after,
-// every other command is first expanded as jj expands it (expandJJ): a command whose word is a
-// built-in command, `jj git push` among them, with no read, and any other, a bare `jj` included,
-// after one read of jj's aliases and ui.default-command (readJJAliases). A command that is no push
-// the step runs before (readJJPush), as the role wrote it or as jj expands it, runs that jj at once
-// with the role's own words, byte for byte, which jj then expands itself; one that legion jj cannot
-// expand (jjUnexpandable) prints one line first, `legion jj: could not expand <what>: <why>; the
-// command runs as written`. The --real form expands nothing: its line is the pod's wrapper's
-// expansion already. A table that is set but cannot be used (runtime.ReadRoleIdentities) prints
-// one line before a push, which then runs as jj expands it, with no step. A push the step runs
-// before, written or expanded, is the line the step reads and the line the real push runs with
-// the step's words. The push that runs after the step gets each revision argument in the words the
-// step gives it (jjStep.given), the role's own where they still name the commits
-// jjStep.revisionGiven says it names; the line of an argument it gets as the ids of its commits
-// comes after the step's lines of its rewrites (report). The step takes at most one snapshot of the
-// working copy, the one the push would take itself, before it changes a commit or a word of the
-// push, and only where the push takes a snapshot of its own (jjPush.noSnapshot); errJJSnapshot
-// lists what makes it take it. Where the step took its snapshot (jjStep.snapshotted), the real push
-// runs with --ignore-working-copy, on every path, and takes no snapshot of its own: @ resolves
-// against the step's snapshot, a write another process makes after the step's snapshot stays in
-// the working copy for the next jj command, and a warning a snapshot prints is printed once. The
-// role's own --ignore-working-copy keeps the step from taking a snapshot, so the real push never
-// gets that flag twice, which jj 0.38 refuses. After a step that changes nothing more
-// (errJJAsWritten), past a dry run it cannot read, a metaedit that jj refuses because the commit
-// it would make exists already (jjStep.metaedit), or a push whose command would pass jjArgMax bytes
+// wrappedJJStepped is the digest of its own words (jjStepped), the same command come back after
+// legion jj read it, run that jj at once, with nothing printed and no other process started. Under
+// --after, every other command is first expanded as jj expands it (expandJJ): a command whose
+// command word is a built-in command, `jj git push` among them, with no read, and any other, a
+// bare `jj` included, after one read of jj's aliases and ui.default-command (readJJAliases). A
+// command that is no push the step runs before (readJJPush), as the role wrote it or as jj expands
+// it, runs that jj at once with the role's own words, byte for byte, which jj then expands itself,
+// and with wrappedJJStepped set to their digest; one that legion jj cannot expand (jjUnexpandable)
+// prints one line first, `legion jj: could not expand <what>: <why>; the command runs as
+// written`. The --real form expands nothing: its line is the pod's wrapper's expansion already. A
+// table that is set but cannot be used (runtime.ReadRoleIdentities) prints one line before a push,
+// which then runs as jj expands it, with no step. A push the step runs before, written or
+// expanded, is the line the step reads and the line the real push runs with the step's words. The
+// push that runs after the step gets each revision argument in the words the step gives it
+// (jjStep.given), the role's own where they still name the commits jjStep.revisionGiven says it
+// names; the line of an argument it gets as the ids of its commits comes after the step's lines of
+// its rewrites (report). The step takes at most one snapshot of the working copy, the one the push
+// would take itself, before it changes a commit or a word of the push, and only where the push
+// takes a snapshot of its own (jjPush.noSnapshot); errJJSnapshot lists what makes it take it.
+// Where the step took its snapshot (jjStep.snapshotted), the real push runs with
+// --ignore-working-copy, on every path, and takes no snapshot of its own: @ resolves against the
+// step's snapshot, a write another process makes after the step's snapshot stays in the working
+// copy for the next jj command, and a warning a snapshot prints is printed once. The role's own
+// --ignore-working-copy keeps the step from taking a snapshot, so the real push never gets that
+// flag twice, which jj 0.38 refuses. After a step that changes nothing more (errJJAsWritten), past
+// a dry run it cannot read, a metaedit that jj refuses because the commit it would make exists
+// already (jjStep.metaedit), or a push whose command would pass jjArgMax bytes
 // (jjStep.checkArgMax), only a commit that a metaedit of the step moved counts as replaced, and
 // every argument is held to the commits it named before the step only where a metaedit ran. The
 // push that runs after the step, or after the line of a table it cannot use, gets wrappedJJStepped
@@ -141,7 +145,7 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	}
 	push := readJJPush(line)
 	if !push.steps() {
-		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
+		return execWrapped("legion jj", next, jjArgs, withVariable(env, wrappedJJStepped, jjStepped(jjArgs)), nil, stderr)
 	}
 	table, why := runtime.ReadRoleIdentities(value)
 	if why != "" {
@@ -944,12 +948,18 @@ func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
 	return stdout, stderr, nil
 }
 
-// command runs next with args in env and waits for it, as a child in this process's group, with
-// no standard input. It answers what the command printed and its status, a death by a signal
-// being 128 and the signal's number, as a shell reads it. A file the kernel refuses to run runs
-// with /bin/sh, as execWrapped runs it. A command that cannot start is a jjStepFailure whose
-// status is execWrapped's for the same failure.
+// command runs next with args in env and waits for it (runJJCommand).
 func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, err error) {
+	return runJJCommand(s.next, env, args)
+}
+
+// runJJCommand runs next with args in env and waits for it, as a child in this process's group,
+// with no standard input: each command of the step (jjStep.command) and the read of the aliases
+// (readJJAliases). It answers what the command printed and its status, a death by a signal being
+// 128 and the signal's number, as a shell reads it. A file the kernel refuses to run runs with
+// /bin/sh, as execWrapped runs it. A command that cannot start is a jjStepFailure whose status is
+// execWrapped's for the same failure.
+func runJJCommand(next string, env, args []string) (stdout, stderr string, code int, err error) {
 	var out, errOut bytes.Buffer
 	run := func(path string, argv []string) error {
 		out.Reset()
@@ -957,9 +967,9 @@ func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, e
 		cmd := &exec.Cmd{Path: path, Args: argv, Env: env, Stdout: &out, Stderr: &errOut}
 		return cmd.Run()
 	}
-	err = run(s.next, append([]string{s.next}, args...))
+	err = run(next, append([]string{next}, args...))
 	if errors.Is(err, syscall.ENOEXEC) {
-		err = run("/bin/sh", append([]string{"/bin/sh", s.next}, args...))
+		err = run("/bin/sh", append([]string{"/bin/sh", next}, args...))
 	}
 	var exit *exec.ExitError
 	switch {
@@ -974,7 +984,7 @@ func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, e
 		if errors.Is(err, syscall.ENOENT) {
 			code = 127
 		}
-		return "", "", 0, jjStepFailure{code: code, output: fmt.Sprintf("legion jj: run %s: %v\n", s.next, err)}
+		return "", "", 0, jjStepFailure{code: code, output: fmt.Sprintf("legion jj: run %s: %v\n", next, err)}
 	}
 	return out.String(), errOut.String(), 0, nil
 }

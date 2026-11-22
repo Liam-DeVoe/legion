@@ -350,26 +350,36 @@ image's wrapper, `/opt/legion/bin/jj`, which expands each command as jj does and
 that it expands into a `jj git push` to `legion jj` itself. In that case the daemon writes no
 `jj` and removes one that an earlier boot wrote.
 `legion jj` runs the next `jj` on `PATH` after `bin/`, a host's own jj wrapper included.
-It reads a command as jj does (`packages/daemon/cmd/legion/jj_expand.go`): an alias's words in
-place of its command word, an alias of an alias the same way, and `ui.default-command` in front of
-a command that names no command, each read from the configuration of the working directory, as
-jj reads them.
-A command whose command word, its first word that is no option and no option's value, is a
-built-in jj command, `jj git push` among them, needs no read, nor does a `--help` or `--version`
-with no command word.
+It reads a command as jj 0.45 does (`packages/daemon/cmd/legion/jj_expand.go`): an alias's words
+in place of its command word, an alias of an alias the same way, and `ui.default-command` in front
+of a command that names no command, or that an alias of options alone leaves with none, each read
+from the configuration of the working directory, as jj reads them.
+A command word is a command's first word that is no option and no option's value.
+These commands make no read: one whose command word is a built-in jj command, `jj git push` among
+them; `-h`, `--help`, `-V`, `--version` or a cluster of short flags that starts with `-h` or `-V`,
+with no command word; any command while `COMPLETE` is set for shell completion; any command of a
+process with no table, such as the controller; and a command that comes back into `bin/jj` with
+the words `legion jj` ran it with (below).
 Any other command, a bare `jj` included, first costs one `jj config list` process (below).
 Every command that jj does not run as a `jj git push` runs through that `jj` with the role's own
 words, byte for byte.
-Where `legion jj` cannot expand a command (an alias that is no list of strings, a table-form
-alias with `enabled = false`, a cycle of aliases, or a read that fails), it prints one line,
+Where `legion jj` cannot expand a command, it prints one line,
 `legion jj: could not expand <what>: <why>; the command runs as written`, and the command runs
-with the role's own words and no step.
-The expansion has three limits.
+with the role's own words and no step: an alias that is no list of strings, a table-form alias
+with `enabled = false`, a cycle of aliases, a `ui.default-command` that is neither a string nor a
+list of strings, a command word that is no bare name where the configuration names an alias by a
+quoted name, and a read that fails or prints what is no name and JSON value.
+The expansion has four limits.
 An alias that a `[[--scope]]` defines for `jj config` alone is expanded as the worker image's
 wrapper expands it, so its push runs with the step where jj alone refuses it.
 A table-form alias with `enabled = false` runs as written, so jj 0.45 pushes it with no step, in a
 pod as in a pane.
 jj 0.38 refuses a table-form alias, which the pane expands, so its push runs with the step there.
+jj 0.38 refuses an alias of options alone used twice, which the pane expands, so the step runs and
+jj 0.38 then refuses the expanded line for its option given twice or, for an option it takes
+twice, pushes it; and it refuses an alias of options alone that leaves no command word, which the
+pane and the worker image's wrapper expand with `ui.default-command` in front, so where that is a
+push, it runs with the step.
 Before a `jj git push`, and before a command that jj expands into one, `legion jj` runs the push
 step on the push as jj expands it.
 The step decides from reads with `--ignore-working-copy`.
@@ -475,19 +485,21 @@ In any other case, such as a retry after a `jj undo`, the step prints one line, 
 as after a dry run that the step cannot read.
 A process with no table runs no step, such as a controller or a pane of an earlier release.
 Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
-above to choose the `jj` it runs, and the same push, back with the same words, runs no second step.
+above to choose the `jj` it runs, and a command that comes back with the words `legion jj` ran it
+with runs at once, with no second read of the aliases, no second line and no second step.
 A push that a jj command starts, such as `jj util exec -- jj git push`, is a push of its own and
 runs the step.
 Every `jj` command of a pane starts one `legion` process first.
 Measured in a gVisor pod, `jj --version` through `bin/jj` took 408 to 755 ms, and the real `jj`
 took 95 to 161 ms.
-A command whose first word is no built-in jj command, a bare `jj` included, also starts one
+A command whose command word is no built-in jj command, a bare `jj` included, also starts one
 `jj --ignore-working-copy --color=never config list --include-defaults` through the next `jj`, in
 the working directory and with none of the command's own options, which reads every alias and
-`ui.default-command` and loads no repository.
-Measured on a shallow clone of cybermonklabs/legion in an issue's pod, 15 runs each, that read
-took 70 to 197 ms (median 146 ms) under jj 0.45.1-sami and 102 to 236 ms (median 154 ms) under jj
-0.38.0.
+`ui.default-command`, takes no snapshot and reads no commit.
+Measured on a scratch clone of cybermonklabs/legion in an issue's pod, 15 runs each, that read
+took 40 to 88 ms (median 56 ms) under jj 0.45.1-sami and 70 to 187 ms (median 115 ms) under jj
+0.38.0; whole jj commands in that clone took 2.2 to 4.9 s with or without `bin/jj`, so the read is
+inside their spread.
 `legion controller start` writes the same `jj` into the `bin/` of its own state directory, by the
 same rule, for the operator's controller.
 

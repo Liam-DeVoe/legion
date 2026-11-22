@@ -41,27 +41,14 @@ func (f *rolePushFixture) configure(toml string) {
 	}
 }
 
-// runIn runs `jj <args>` as push does, by name through the form's jj first on PATH, as the
-// implementer, in dir, with extra variables after the role's environment.
-func (f *rolePushFixture) runIn(dir string, extra []string, args ...string) (code int, stdout, stderr string) {
-	f.t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	return trailerRun(f.t, dir, append(f.env(f.path, rolePushImplementer), extra...), "", sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
+// isConfigRead is whether the call is legion jj's read of the aliases: a `jj config list` that
+// names no key, where each of the pod's wrapper's reads names one (`aliases.<name>`,
+// `ui.default-command`).
+func (c rolePushCall) isConfigRead() bool {
+	return c.pair() == [2]string{"config", "list"} && !slices.ContainsFunc(c.args, func(arg string) bool {
+		return strings.HasPrefix(arg, "aliases.") || arg == "ui.default-command"
+	})
 }
-
-// aloneIn runs the real jj by itself as the implementer, in dir, with extra variables after the
-// role's environment.
-func (f *rolePushFixture) aloneIn(dir string, extra []string, args ...string) (code int, stdout, stderr string) {
-	f.t.Helper()
-	return trailerRun(f.t, dir, append(f.env(f.setupPath, rolePushImplementer), extra...), "", f.real, args...)
-}
-
-// isConfigRead is whether the call is a `jj config list`: legion jj's read of the aliases, or one
-// of the pod's wrapper's reads of a key.
-func (c rolePushCall) isConfigRead() bool { return c.pair() == [2]string{"config", "list"} }
 
 // workAndB makes C, a commit the other role made and the implementer described with its own
 // trailer, on main, under the new bookmark b.
@@ -156,31 +143,17 @@ func rolePushExpandedRows() []rolePushExpandedRow {
 		}},
 		// An enabled table-form alias, which jj 0.45.1-sami runs and the pod's wrapper expands from
 		// its definition. jj 0.38.0 alone refuses it, and both forms push it with the step there
-		// too (D19's limit).
+		// too, a limit of the expansion (docs/deployment.md).
 		{name: "jj x -b b, [aliases.x] definition = ['git', 'push']", setup: rolePushExpandsTo("[aliases.x]\ndefinition = [\"git\", \"push\"]", []string{"x", "-b", "b"}, pushB)},
-		// An alias of options alone joins no chain, so a second q expands again, as jj 0.45.1-sami
-		// runs it. jj 0.38.0 refuses the line the two expand into, `--quiet --quiet git push -b
-		// b`, after the step, and the remote is unchanged. The pod's wrapper follows a name once,
-		// and refuses the line itself.
-		{name: "jj q q git push -b b, aliases.q = ['--quiet']", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
-			f.configure("[aliases]\nq = [\"--quiet\"]")
-			c := f.workAndB()
-			args := []string{"q", "q", "git", "push", "-b", "b"}
-			if f.form == rolePushPod {
-				want := rolePushBAbsent(c)
-				want.exit, want.noMetaedit = 2, true
-				return args, want
-			}
-			expanded := []string{"--quiet", "--quiet", "git", "push", "-b", "b"}
-			if code, _ := f.aloneSends(expanded); code != 0 {
-				want := rolePushBAbsent(c)
-				want.exit, want.same, want.others, want.metaedits = code, nil, true, 1
-				return args, want
-			}
-			want := rolePushSends("b", c, "implementer", impl)
-			want.pushed = f.pushedAfterSnapshot(expanded)
-			return args, want
-		}},
+		{name: "jj q q git push -b b, aliases.q = ['--quiet']", setup: rolePushQuietTwice("[aliases]\nq = [\"--quiet\"]", []string{"q", "q", "git", "push", "-b", "b"})},
+		// v's words hold a command word, q, whose own words are options alone: the second v comes
+		// from outside the words of the first v and of q, so jj 0.45.1-sami expands it again.
+		{name: "jj v v git push -b b, aliases.v = ['q'] and aliases.q = ['--quiet']", setup: rolePushQuietTwice("[aliases]\nv = [\"q\"]\nq = [\"--quiet\"]", []string{"v", "v", "git", "push", "-b", "b"})},
+		// An alias of options alone leaves no command word, and jj 0.45.1-sami puts the default
+		// command in front of the line, as the pod's wrapper does. jj 0.38.0 alone refuses the
+		// line (`'jj' requires a subcommand`), and both forms push it with the step there too, a
+		// limit of the expansion (docs/deployment.md).
+		{name: "jj q, aliases.q = ['--quiet'] and ui.default-command = ['git', 'push', '-b', 'b']", setup: rolePushExpandsTo("[aliases]\nq = [\"--quiet\"]\n[ui]\ndefault-command = [\"git\", \"push\", \"-b\", \"b\"]", []string{"q"}, []string{"git", "push", "-b", "b", "--quiet"})},
 		// The pod's wrapper follows 32 aliases at most, and refuses the line itself.
 		{name: "a chain of 34 aliases ending in ['git', 'push', '-b', 'b']", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			if f.form == rolePushPod {
@@ -194,16 +167,46 @@ func rolePushExpandedRows() []rolePushExpandedRow {
 	}
 }
 
+// rolePushQuietTwice is a row whose configuration is toml, over C under b (workAndB), whose push
+// of args jj 0.45.1-sami expands to `--quiet --quiet git push -b b` and pushes, and jj 0.38.0
+// refuses as a recursive alias. Under the tmux form the step runs and the real push runs that
+// line, which jj 0.45.1-sami takes and jj 0.38.0 refuses for its --quiet twice (`the argument
+// '--quiet' cannot be used multiple times`), after one metaedit, a limit of the expansion
+// (docs/deployment.md); the remote is then unchanged. The pod's wrapper follows a name once, and
+// refuses the line itself, exit 2, before anything runs.
+func rolePushQuietTwice(toml string, args []string) func(f *rolePushFixture) ([]string, rolePushWant) {
+	return func(f *rolePushFixture) ([]string, rolePushWant) {
+		f.configure(toml)
+		c := f.workAndB()
+		if f.form == rolePushPod {
+			want := rolePushBAbsent(c)
+			want.exit, want.noMetaedit = 2, true
+			return args, want
+		}
+		expanded := []string{"--quiet", "--quiet", "git", "push", "-b", "b"}
+		if code, _ := f.aloneSends(expanded); code != 0 {
+			want := rolePushBAbsent(c)
+			want.exit, want.same, want.others, want.metaedits = code, nil, true, 1
+			return args, want
+		}
+		want := rolePushSends("b", c, "implementer", rolePushImplementer)
+		want.pushed = f.pushedAfterSnapshot(expanded)
+		return args, want
+	}
+}
+
 // A command that jj expands into a push sends each commit as the step left it, on both forms: an
 // alias of an alias; a line with no command word, `-b b` or `--`, which jj puts ui.default-command
 // in front of, as a list or as one string naming an alias; an alias whose own words hold a
 // revision argument that the step's rewrite makes name other commits, which the real push gets as
 // the ids of the commits it named before the step; an enabled table-form alias; an alias of
-// options alone named twice; and a chain of 34 aliases. Each sends the trailer's author, the step
-// prints its rewrite, the recording jj sees the real push run the expanded line with the step's
-// words, and no change is divergent. Where a release or a form refuses the expanded line, the row
-// expects that refusal: jj 0.38.0 refuses `--quiet` twice, after the step, and the pod's wrapper
-// refuses a name it would follow twice and a chain past 32 aliases, before anything runs.
+// options alone named twice, by itself and through another alias; an alias of options alone in
+// front of a push as the default command; and a chain of 34 aliases. Each sends the trailer's
+// author, the step prints its rewrite, the recording jj sees the real push run the expanded line
+// with the step's words, and no change is divergent. Where a release or a form refuses the
+// expanded line, the row expects that refusal: jj 0.38.0 refuses `--quiet` twice, after the step,
+// and the pod's wrapper refuses a name it would follow twice and a chain past 32 aliases, before
+// anything runs.
 func TestAnExpandedPushRunsTheStepOnTheExpandedLine(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushExpandedRows() {
@@ -328,11 +331,11 @@ func TestACommandThatIsNoPushRunsAsTheRoleWroteIt(t *testing.T) {
 			if row.noTable {
 				f.table = nil
 			} else {
-				aloneCode, aloneOut, aloneErr := f.aloneIn(dir, row.extra, row.args...)
+				aloneCode, aloneOut, aloneErr := f.aloneIn(dir, rolePushImplementer, row.extra, row.args...)
 				if aloneCode != 0 {
 					want.exit = aloneCode
 				}
-				code, stdout, stderr := f.runIn(dir, row.extra, row.args...)
+				code, stdout, stderr := f.runIn(f.path, dir, rolePushImplementer, row.extra, row.args...)
 				if code != aloneCode || stdout != aloneOut || stderr != aloneErr {
 					t.Errorf("the command exited %d and printed\n%s\n%s\nwant %d and\n%s\n%s\nas jj alone", code, stdout, stderr, aloneCode, aloneOut, aloneErr)
 				}
@@ -340,7 +343,7 @@ func TestACommandThatIsNoPushRunsAsTheRoleWroteIt(t *testing.T) {
 				f.ranAsWritten(f.calls(), row.reads, row.args)
 				return
 			}
-			code, _, stderr := f.runIn(dir, row.extra, row.args...)
+			code, _, stderr := f.runIn(f.path, dir, rolePushImplementer, row.extra, row.args...)
 			f.check(want, row.args, code, stderr, f.divergence(), 0)
 			f.noStepLine(stderr)
 			f.ranAsWritten(f.calls(), row.reads, row.args)
@@ -371,7 +374,7 @@ var rolePushUnexpandableRows = []struct {
 	{name: "aliases.x = [1, 2]", toml: "[aliases]\nx = [1, 2]", args: []string{"x", "-b", "b"}, podRefuses: true,
 		line: "legion jj: could not expand aliases.x: it is [1,2], which is no list of strings; the command runs as written"},
 	{name: "aliases.a = ['b'] and aliases.b = ['a'] (a cycle)", toml: "[aliases]\na = [\"b\"]\nb = [\"a\"]", args: []string{"a", "-b", "b"}, podRefuses: true,
-		line: "legion jj: could not expand aliases.a: jj would expand it a second time on this command line, a cycle jj refuses; the command runs as written"},
+		line: "legion jj: could not expand aliases.a: jj would expand it again inside its own expansion, a cycle jj refuses; the command runs as written"},
 	{name: "[aliases.x] definition = ['git', 'push', '-b', 'b'] and enabled = false", toml: "[aliases.x]\ndefinition = [\"git\", \"push\", \"-b\", \"b\"]\nenabled = false", args: []string{"x"},
 		line: "legion jj: could not expand aliases.x: its enabled is false, which jj 0.45.1-sami ignores and jj 0.46.0 obeys; the command runs as written"},
 }
@@ -383,7 +386,8 @@ var rolePushUnexpandableRows = []struct {
 // exits as jj alone does with the same words, and the recording jj sees one `jj config list` and
 // then the role's words. Under the pod form the pod's wrapper refuses the first three itself, exit
 // 2, and leaves the fourth to jj. Where jj alone sends the fourth (its dry run exits 0), both forms
-// send b as it was, with the other role's author (D19's limit); else nothing reaches the remote.
+// send b as it was, with the other role's author, a limit of the expansion (docs/deployment.md);
+// else nothing reaches the remote.
 func TestAnAliasThePaneCannotExpandRunsAsWritten(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushUnexpandableRows {
@@ -436,7 +440,7 @@ func TestAnAliasThePaneCannotExpandRunsAsWritten(t *testing.T) {
 // An alias that a [[--scope]] defines for `jj config` alone, which jj runs for no other command, is
 // read as a push on both forms, as the pod's wrapper read it at the base: `jj s`, which jj alone
 // refuses as an unrecognized subcommand, sends C under b as the step left it, the real push
-// running the alias's words with the step's (D19's limit).
+// running the alias's words with the step's, a limit of the expansion (docs/deployment.md).
 func TestAScopedAliasIsReadAsThePodReadsIt(t *testing.T) {
 	t.Parallel()
 	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
@@ -509,4 +513,91 @@ func TestACommandWordJJTakesForBuiltinIsNeverExpanded(t *testing.T) {
 	f.check(rolePushBAsItWas(c), args, code, stderr, f.divergence(), 0)
 	f.noStepLine(stderr)
 	f.ranAsWritten(f.calls(), 1, args)
+}
+
+// rolePushHelpRows are lines that clap reads as help, each run over C under b with a push as the
+// default command: `jj -hV`, which the pane runs as written and the pod's wrapper hands legion jj
+// as `git push -b b -hV` (podPushHelp), and `git push` with a cluster of short flags that starts
+// with -h.
+var rolePushHelpRows = []struct {
+	name        string
+	args        []string
+	podPushHelp bool
+}{
+	{name: "jj -hV, ui.default-command = ['git', 'push', '-b', 'b']", args: []string{"-hV"}, podPushHelp: true},
+	{name: "jj git push -b b -hV", args: []string{"git", "push", "-b", "b", "-hV"}},
+	{name: "jj git push -hb b", args: []string{"git", "push", "-hb", "b"}},
+}
+
+// A word of one dash that starts with -h or -V is help or version to clap wherever it stands, and
+// runs no step: measured with jj 0.45.1-sami and 0.38.0, `jj git push -b b -hV` and `jj git push
+// -hb b` print the push's help and push nothing, and `jj -hV` with a push as the default command
+// prints jj's help and pushes nothing. On both forms each exits as jj alone does, the recording jj
+// sees no metaedit, legion jj prints no line, and the remote holds no b, and each prints what jj
+// alone prints, but for `jj -hV` in a pod: the pod's wrapper puts the default command in front of
+// it, and jj prints the push's help.
+func TestAHelpOrVersionClusterRunsNoStep(t *testing.T) {
+	t.Parallel()
+	for _, row := range rolePushHelpRows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, rolePushRecords)
+				f.configure(rolePushHelpDefault)
+				c := f.workAndB()
+				aloneArgs := row.args
+				if form == rolePushPod && row.podPushHelp {
+					aloneArgs = append([]string{"git", "push", "-b", "b"}, row.args...)
+				}
+				aloneCode, aloneOut, _ := f.alone(rolePushImplementer, aloneArgs...)
+				code, stdout, stderr := f.push(rolePushImplementer, row.args...)
+				if code != aloneCode || stdout != aloneOut {
+					t.Errorf("the command exited %d and printed\n%s\nwant %d and\n%s\nas jj alone prints for %q", code, stdout, aloneCode, aloneOut, aloneArgs)
+				}
+				want := rolePushBAbsent(c)
+				want.exit, want.noMetaedit = aloneCode, true
+				f.check(want, row.args, code, stderr, f.divergence(), 0)
+				f.noStepLine(stderr)
+			})
+		})
+	}
+}
+
+// A command that is no push and comes back into the pane's jj with the same words, through a
+// host's jj script after it that calls jj by PATH, runs there at once: under the tmux form, `jj l`
+// with an alias that is no push prints and exits as jj alone does, and the recording jj sees one
+// read of the aliases and then `l`; `jj x -b b` with aliases.x = "git push" prints its could-not
+// line once, then jj's own refusal as jj alone prints it, and the recording jj sees one read and
+// then the role's words. The pod's wrapper runs its jj by its full path, so a host's jj after it
+// is never reached there.
+func TestACommandThroughAHostJJScriptIsReadOnce(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, toml, line string
+		args             []string
+	}{
+		{name: "jj l, aliases.l = ['log', '-r', '@', '--no-graph']", toml: "[aliases]\nl = [\"log\", \"-r\", \"@\", \"--no-graph\"]", args: []string{"l"}},
+		{name: "jj x -b b, aliases.x = 'git push'", toml: "[aliases]\nx = \"git push\"", args: []string{"x", "-b", "b"},
+			line: `legion jj: could not expand aliases.x: it is "git push", which is no list of strings; the command runs as written`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRolePushFixture(t, rolePushTmux, rolePushRecords)
+			f.configure(row.toml)
+			c := f.workAndB()
+			aloneCode, aloneOut, aloneErr := f.alone(rolePushImplementer, row.args...)
+			code, stdout, stderr := f.pushOn(rolePushHostPath(f), rolePushImplementer, row.args...)
+			wantErr := aloneErr
+			if row.line != "" {
+				wantErr = row.line + "\n" + aloneErr
+			}
+			if code != aloneCode || stdout != aloneOut || stderr != wantErr {
+				t.Errorf("the command exited %d and printed\n%s\n%s\nwant %d and\n%s\n%s", code, stdout, stderr, aloneCode, aloneOut, wantErr)
+			}
+			want := rolePushBAbsent(c)
+			want.exit, want.noMetaedit = aloneCode, true
+			f.check(want, row.args, code, strings.TrimPrefix(stderr, row.line), f.divergence(), 0)
+			f.ranAsWritten(f.calls(), 1, row.args)
+		})
+	}
 }

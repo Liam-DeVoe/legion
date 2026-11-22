@@ -4,7 +4,6 @@ import (
 	"errors"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -200,13 +199,11 @@ func TestTheBuiltinListIsJJs(t *testing.T) {
 	env := append([]string{"PATH=/usr/bin:/bin", "JJ_USER=legion-test", "JJ_EMAIL=legion-test@example.invalid"}, fixtureenv.Home(home)...)
 	run := func(args ...string) (stdout, stderr string) {
 		t.Helper()
-		var out, errOut strings.Builder
-		cmd := exec.Command(real, args...)
-		cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = home, env, &out, &errOut
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("jj %q: %v\n%s", args, err, errOut.String())
+		code, stdout, stderr := trailerRun(t, home, env, "", real, args...)
+		if code != 0 {
+			t.Fatalf("jj %q exited %d:\n%s", args, code, stderr)
 		}
-		return out.String(), errOut.String()
+		return stdout, stderr
 	}
 	version, _ := run("--version")
 	help, _ := run("help")
