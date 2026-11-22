@@ -56,7 +56,8 @@ var blockProjections = []projection{{
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed:    `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
 	name:     "block_ref",
@@ -106,6 +107,7 @@ var blockProjections = []projection{{
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
 	name:     "block_rank",

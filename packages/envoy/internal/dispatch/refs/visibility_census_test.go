@@ -188,6 +188,8 @@ var readsWithoutAViewer = map[string]string{
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
 	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
+	"DecisionIndexing.PlanAuthored": serverWork + " - a write that leaves a version's blocks to the reconciliation reads what the store " +
+		"holds of the requirements, checks and plan tasks it writes at once, and of the blocks above them",
 	"DocumentIsCited":      noNode,
 	"DocumentMentioning":   serverWork + " - rebuild-refs reads the document whose references it reconciles, to sign the mentions it states",
 	"DocumentsOwedWindows": serverWork,
@@ -242,6 +244,7 @@ var readsWithoutAViewer = map[string]string{
 		"(docs.RenderAt) takes: a version renders as one set of bytes for every reader, as its stored markdown does",
 	"TreeNodeRows":    treeWalk + " - the row of each node the walk reaches",
 	"TreePlacedAbove": treeWalk + " - the nodes of the issue that stand under a node of an issue above it",
+	"TreeSubtrees":    treeWalk + " - every level of the children under the walk's frontier, read in one statement",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as

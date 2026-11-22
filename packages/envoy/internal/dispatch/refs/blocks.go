@@ -451,6 +451,11 @@ type BlockIndexing struct {
 	// its blocks again, and the pass keeps each one's row, text, links, room record and node as the
 	// retirement left them rather than dropping them (docs.RetireDocument keeps them).
 	retained []string
+	// outside are the blocks of the indexed issue room whose rows name a document the pass covers
+	// no version of: a room left owed is written one fragment at a time (DecisionIndexing's
+	// PlanAuthored), and an authored node of that fragment may take a block of another fragment,
+	// which stands in the store, as its parent (placeAuthored). Nil for a pass over every fragment.
+	outside map[string]struct{}
 }
 
 // versionOf is the version block blockID records: that of the document whose fragment of an
@@ -1193,9 +1198,34 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 		graphstore.QueueNodes(batch, b.stated)
 		return
 	}
-	artifactID, version := b.artifactID, b.version
 	b.queueStand(batch)
 	graphstore.QueueNodes(batch, b.stated)
+	b.queueRows(batch)
+	b.queueRoomBlocks(batch)
+	b.queueBlockParents(batch)
+	b.queueBlockRefs(batch)
+	// Each version is recorded indexed under its own document, which that table keys by.
+	documents := slices.Sorted(maps.Keys(b.versions))
+	numbers := make([]int32, len(documents))
+	for position, document := range documents {
+		numbers[position] = int32(b.versions[document].Number)
+	}
+	batch.Queue(fmt.Sprintf("record the versions of %s indexed", b.artifactID), `
+		insert into document_indexed_versions (artifact_id, version)
+		select i.artifact_id, i.version from unnest($1::uuid[], $2::int[]) as i (artifact_id, version)
+		on conflict (artifact_id, version) do nothing
+	`, documents, numbers)
+}
+
+// queueRows queues the rows of the blocks the indexing writes, after the node write that states
+// them: the blocks it deletes, which document_blocks loses; the blocks whose text it changed, with
+// their excerpts and their node columns; and the text each of those blocks has at its version,
+// recorded in document_block_texts, a deleted block's as no text. A block index queues them inside
+// its revision fence (Queue), and the typed-node pass of a deferred version queues the rows of the
+// typed blocks it removes and of the requirements, checks and plan tasks it writes
+// (DecisionIndexing.Queue).
+func (b BlockIndexing) queueRows(batch *store.WriteBatch) {
+	artifactID, version := b.artifactID, b.version
 	if len(b.deleted) > 0 {
 		batch.Queue(fmt.Sprintf("delete the blocks version %d of %s no longer holds", version, artifactID), `
 			delete from document_blocks where artifact_id = $1 and block_id = any($2)
@@ -1226,20 +1256,6 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 			on conflict (artifact_id, block_id, version) do update set text = excluded.text
 		`, artifactID, b.textIDs, b.texts, b.textVersions)
 	}
-	b.queueRoomBlocks(batch)
-	b.queueBlockParents(batch)
-	b.queueBlockRefs(batch)
-	// Each version is recorded indexed under its own document, which that table keys by.
-	documents := slices.Sorted(maps.Keys(b.versions))
-	numbers := make([]int32, len(documents))
-	for position, document := range documents {
-		numbers[position] = int32(b.versions[document].Number)
-	}
-	batch.Queue(fmt.Sprintf("record the versions of %s indexed", artifactID), `
-		insert into document_indexed_versions (artifact_id, version)
-		select i.artifact_id, i.version from unnest($1::uuid[], $2::int[]) as i (artifact_id, version)
-		on conflict (artifact_id, version) do nothing
-	`, documents, numbers)
 }
 
 // BlockIndexMarkingRule is the version of the marking rule this build applies: what a block-index
@@ -2045,15 +2061,20 @@ func (p blockPair) key() blockPairKey {
 }
 
 // pairScope is the rows of a document's block_refs one reconcile may delete (planBlockRefs,
-// queueBlockRefs): those of the tuple kinds kinds held by the blocks blocks, which are sorted.
+// queueBlockRefs): those of the tuple kinds kinds held by the blocks blocks, and every row of any
+// kind held by the blocks whole, the typed blocks a deferred version removes (PlanDecisionNodes),
+// each list sorted.
 type pairScope struct {
-	kinds, blocks []string
+	kinds, blocks, whole []string
 }
 
 // reaches says the reconcile may delete pair's row: every row where there is no scope, and where
-// there is one, a row of one of its kinds held by one of its blocks.
+// there is one, a row of one of its kinds held by one of its blocks, or any row of a whole block.
 func (s *pairScope) reaches(pair blockPair) bool {
 	if s == nil {
+		return true
+	}
+	if _, whole := slices.BinarySearch(s.whole, pair.blockID); whole {
 		return true
 	}
 	_, held := slices.BinarySearch(s.blocks, pair.blockID)

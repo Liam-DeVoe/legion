@@ -928,7 +928,7 @@ func (b *BlockIndexing) planBlockParents(
 			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
 		}
 	}
-	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored)
+	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored, b.outside)
 	if err != nil {
 		return blockPlacement{}, nil, nil, fmt.Errorf("place the authored nodes of %s: %w", b.artifactID, err)
 	}
@@ -1336,7 +1336,7 @@ func authoredFarEnds(ctx context.Context, q Queryer, artifactID string, written,
 // (BlockIndex.placed) and its parent value, the target of the parent attribute's link its pairs
 // hold (BlockIndex.links). So a second indexing of the document in one transaction keeps a node
 // where the first placed it, as a later transaction would.
-func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources) ([]bool, error) {
+func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources, outside map[string]struct{}) ([]bool, error) {
 	var authored []int
 	for index, block := range placement.placed {
 		if authoredType(nodes[block].Type) {
@@ -1385,7 +1385,7 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 	if err != nil {
 		return nil, err
 	}
-	places := authoredPlaces{document: document, nodes: nodes, placement: placement, parentIDs: parentIDs}
+	places := authoredPlaces{document: document, nodes: nodes, placement: placement, parentIDs: parentIDs, outside: outside}
 	kept := make([]bool, len(placement.ids))
 	var placing []int
 	// The blocks no version of this pass holds that kept nodes hang under, whose chains the walk
@@ -1585,7 +1585,9 @@ func PartOfChains(ctx context.Context, q Queryer, starts []string) (map[string][
 // authoredPlaces writes where authored nodes stand into a placement and its projection
 // (placeAuthored). index is each block of the placement by its id, with its index among the
 // version's blocks, and placed each of those blocks' index in the placement, both made the first
-// time a far end names a block of the indexed artifact or the cycle walk climbs a block.
+// time a far end names a block of the indexed artifact or the cycle walk climbs a block. outside is
+// each block of the indexed issue room that stands in a fragment of a document the pass covers no
+// version of (BlockIndexing.outside), nil for a pass over every fragment.
 type authoredPlaces struct {
 	document  IndexedVersion
 	nodes     []model.ArtifactBlock
@@ -1593,6 +1595,7 @@ type authoredPlaces struct {
 	parentIDs []*string
 	index     map[string]int
 	placed    map[int]int
+	outside   map[string]struct{}
 }
 
 // set places the block at index under far: under the block of the version far names, with that
@@ -1763,7 +1766,9 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 		issue = item.Issue
 	case target.Kind == BlockNodeKind:
 		if block, held := p.ownBlock(far); block != "" {
-			return far, held >= 0
+			// A block of another fragment of the room stands, though this pass places none of it.
+			_, stands := p.outside[block]
+			return far, held >= 0 || stands
 		}
 		held, found := resolved.blocks[far.id]
 		if !found {
@@ -2797,9 +2802,18 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		version := b.versionOf(pair.blockID)
 		createdVersions[i], createdAts[i] = int32(version.Number), version.At
 	}
+	// A scope's kinds and whole blocks are bound as empty lists where it holds none, never as
+	// null: a null kinds list is no scope at all, and an empty one reaches no row by that arm.
 	var scopeKinds, scopeBlocks []string
+	scopeWhole := []string{}
 	if b.scope != nil {
 		scopeKinds, scopeBlocks = b.scope.kinds, b.scope.blocks
+		if scopeKinds == nil {
+			scopeKinds = []string{}
+		}
+		if b.scope.whole != nil {
+			scopeWhole = b.scope.whole
+		}
 	}
 	// The rows of a block the pass retains stay as they stand (BlockIndexing.retained).
 	batch.Queue(fmt.Sprintf("delete the block mentions version %d of %s dropped", b.version, b.artifactID), `
@@ -2807,9 +2821,9 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		where r.artifact_id = $1 and not exists (
 			select 1 from unnest($2::text[], $3::text[], $4::text[], $5::text[]) as p (block_id, kind, to_kind, to_id)
 			where p.block_id = r.block_id and p.kind = r.kind and p.to_kind = r.to_kind and p.to_id = r.to_id)
-		  and ($6::text[] is null or (r.kind = any($6::text[]) and r.block_id = any($7::text[])))
+		  and ($6::text[] is null or (r.kind = any($6::text[]) and r.block_id = any($7::text[])) or r.block_id = any($9::text[]))
 		  and not (r.block_id = any(coalesce($8::text[], '{}')))
-	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks, b.retained)
+	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks, b.retained, scopeWhole)
 	if len(pairs) == 0 {
 		return
 	}

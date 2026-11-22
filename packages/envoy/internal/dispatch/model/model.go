@@ -1682,13 +1682,31 @@ type CheckCI struct {
 // marks, in document order, and one Gaps line per gap, which `dispatch read --issue` prints
 // after `Coverage: `. HasPlan says whether the issue has a plan document; before it has one, a
 // requirement with no plan task is no gap, since the plan comes after the spec's approval.
-// Nothing is ever refused for a gap.
+// Nothing is ever refused for a gap. OwedDocuments names each document of the issue that owes its
+// block index (OwedDocument), absent where none does: a check or a requirement of such a document
+// may not be counted yet, so the read drops none of them in silence.
 type IssueCoverage struct {
 	Issue          string                `json:"issue"`
 	SpecArtifactID string                `json:"spec_artifact_id"`
 	HasPlan        bool                  `json:"has_plan"`
 	Requirements   []RequirementCoverage `json:"requirements"`
 	Gaps           []string              `json:"gaps"`
+	OwedDocuments  []OwedDocument        `json:"owed_documents,omitempty"`
+}
+
+// OwedDocument is one document of an issue that owes its block index, by either mark the
+// block-index reconciliation lists a document by: its document_block_versions.version null, as
+// every version's insert leaves it until a pass indexes it, or store_owed_at set, this build's own
+// mark. ArtifactID is the document, and Version its newest version, whose blocks wait: a document
+// of an issue room, or the room's tree artifact, waits for the pass over the whole room. The
+// coverage read and the tree read each name every such document of the issue, so a check or a
+// requirement the block index has not reached yet is never dropped in
+// silence: an upload or a create whose written tree does not render as its version's markdown,
+// and a write to an issue room whose own fragment reads otherwise than its version, write no node
+// of them until the reconciliation indexes the document.
+type OwedDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // RequirementCoverage is one `requirement` block of an issue's spec and what serves it: the

@@ -78,6 +78,13 @@ func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 	return typ.Attributes, ok
 }
 
+// TypedBlockNames is the name of every typed block the installed schema declares, sorted: each
+// type of schema/blocks.json until the store's nodes are installed over it. The block index reads
+// it where it marks gone every typed block a version removes (refs' unheldTypedNodes).
+func TypedBlockNames() []string {
+	return typedBlockNames()
+}
+
 func typedBlock(name string) (BlockTypeSchema, bool) {
 	typ, ok := active.Load().types[name]
 	return typ, ok

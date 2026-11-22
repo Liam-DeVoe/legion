@@ -23966,6 +23966,12 @@
           "issue": {
             "type": "string"
           },
+          "owed_documents": {
+            "items": {
+              "$ref": "#/components/schemas/OwedDocument"
+            },
+            "type": "array"
+          },
           "requirements": {
             "items": {
               "$ref": "#/components/schemas/RequirementCoverage"
@@ -25522,6 +25528,12 @@
               "array",
               "null"
             ]
+          },
+          "owed_documents": {
+            "items": {
+              "$ref": "#/components/schemas/OwedDocument"
+            },
+            "type": "array"
           },
           "tree": {
             "type": [
@@ -27746,6 +27758,21 @@
         "required": [
           "kind",
           "to_id"
+        ],
+        "type": "object"
+      },
+      "OwedDocument": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "version"
         ],
         "type": "object"
       },

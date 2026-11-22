@@ -16,18 +16,21 @@ import "time"
 // context. Tuples is every relation the store holds now between two nodes of the answer, of every
 // kind, each end named by the node's store kind and id. Cursor is where the next page starts, the
 // next node of the walk, and null on the last page; a page past the first carries the tuples whose
-// near end is one of its own nodes.
+// near end is one of its own nodes. OwedDocuments names each document of the issue that owes its
+// block index (OwedDocument), absent where none does: a node of such a document the block index
+// has not reached is not in the answer yet, so the read names its document in its place.
 type IssueTreeRead struct {
-	Issue     string              `json:"issue"`
-	View      string              `json:"view"`
-	Version   *int                `json:"version"`
-	Converted bool                `json:"converted"`
-	Tree      *string             `json:"tree"`
-	ViewOf    *string             `json:"view_of"`
-	Documents *IssueTreeDocuments `json:"documents"`
-	Nodes     []IssueTreeNode     `json:"nodes"`
-	Tuples    []IssueTreeTuple    `json:"tuples"`
-	Cursor    *string             `json:"cursor"`
+	Issue         string              `json:"issue"`
+	View          string              `json:"view"`
+	Version       *int                `json:"version"`
+	Converted     bool                `json:"converted"`
+	Tree          *string             `json:"tree"`
+	ViewOf        *string             `json:"view_of"`
+	Documents     *IssueTreeDocuments `json:"documents"`
+	Nodes         []IssueTreeNode     `json:"nodes"`
+	Tuples        []IssueTreeTuple    `json:"tuples"`
+	Cursor        *string             `json:"cursor"`
+	OwedDocuments []OwedDocument      `json:"owed_documents,omitempty"`
 }
 
 // IssueTreeIssue is what each issue of a tree read answers of itself: Converted, whether its

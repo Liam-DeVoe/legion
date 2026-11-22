@@ -133,6 +133,12 @@ var markVersionedDocuments = `
 	)
 	select count(*) from marked`
 
+// MarkVersionedDocumentsStatement is the tick's mark (markVersionedDocuments) for a caller outside
+// this package that runs it as readEventsAfterCursor runs it, binding the documents as $1 and the
+// marking rule as $2: api's TestAnOwedDocumentIsNamedByTheReads, which reads the documents it
+// marks named owed by the coverage and tree reads. It is the one text, not a copy of it.
+var MarkVersionedDocumentsStatement = markVersionedDocuments
+
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
 // that no pass of this build's rule has stated at its version (markVersionedDocuments), gives every

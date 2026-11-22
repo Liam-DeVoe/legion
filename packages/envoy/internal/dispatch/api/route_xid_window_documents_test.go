@@ -3,12 +3,15 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -113,6 +116,22 @@ var documentRouteXidWindows = []routeXidWindowCase{
 	{
 		name: "the document comment route", route: "POST /api/v1/artifacts/{id}/comments (createArtifactComment, createCommentFor)",
 		ready: readyDocumentComment, window: storetest.XidBatchedWindow,
+	},
+	// A Verification past the bound leaves its blocks to the reconciliation and writes its checks,
+	// with their rows, their serves and their ancestors, in its own transaction (docs'
+	// planTypedPasses): every read of that pass runs in the read phase, and its writes join the
+	// write phase's one batch. The table's other uploads hold storetest.XidSpec's 40 KB document,
+	// which cannot pass 2,000 blocks, so these two rows are the ones that run the pass. On an issue
+	// that has not converted the issue is created beside a process of the release before
+	// (holdIssuesUnconverted), which registers this build's owner lock protocol, so the row measures
+	// this build's owner locks.
+	{
+		name: "the Verification upload above the bound on an issue that has not converted", route: "POST /api/v1/issues/{key}/artifacts past the bound, an issue that has not converted (storeArtifact, docs' indexDeferredVersion, planTypedPasses)",
+		ready: readyVerificationUploadAboveTheBound(false), window: storetest.XidBatchedWindow,
+	},
+	{
+		name: "the Verification upload above the bound on a converted issue", route: "POST /api/v1/issues/{key}/artifacts past the bound, a converted issue (storeArtifact, docs' indexDocumentInRoom, indexDeferredVersion, planTypedPasses)",
+		ready: readyVerificationUploadAboveTheBound(true), window: storetest.XidBatchedWindow,
 	},
 }
 
@@ -420,4 +439,50 @@ func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) locked
 			}
 			requireRequestAnsweredByTheCarry(t, fixture, request.ID)
 		})
+}
+
+// readyVerificationUploadAboveTheBound readies POST /api/v1/issues/{key}/artifacts uploading the
+// issue's first Verification document, a list past the bound and 103 checks serving the ten
+// requirements of its spec, on an issue born converted or, where not converted, created beside a
+// process of the release before (holdIssuesUnconverted): the upload leaves its blocks to the
+// block-index reconciliation and writes its checks at once (docs' planTypedPasses).
+func readyVerificationUploadAboveTheBound(converted bool) func(*testing.T, routeFixture) lockedItemWrite {
+	return func(t *testing.T, base routeFixture) lockedItemWrite {
+		t.Helper()
+		handler, database, deps := newTestServer(t, base.options)
+		if !converted {
+			holdIssuesUnconverted(t, database)
+		}
+		requirements := make([]acceptedBlock, 10)
+		for index := range requirements {
+			requirements[index] = acceptedRequirement(fmt.Sprintf("r%d", index+1))
+		}
+		issue := createInteractionIssue(t, handler, "LOCK", "Verification upload above the bound", base.spec+"\n"+typedDocument("", false, requirements...))
+		if tree, err := issueTreeOf(context.Background(), database.Pool, issue.Key); err != nil || (tree != "") != converted {
+			t.Fatalf("issue %s holds the tree %q (%v), want it converted %t", issue.Key, tree, err, converted)
+		}
+		checks := make([]acceptedBlock, 103)
+		for index := range checks {
+			checks[index] = acceptedCheck(fmt.Sprintf("c%d", index+1), fmt.Sprintf("r%d", index%10+1))
+		}
+		content := typedDocument(issue.Key, true, checks...)
+		fixture := itemRowFixture{handler: handler, database: database, deps: deps, issueKey: issue.Key, artifactID: issue.PrimaryArtifactID}
+		return fixture.routeWrite(t, "the Verification's first version and its checks",
+			func(handler http.Handler) *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
+					map[string]any{"name": "verification.md", "content": content}, "alice")
+			},
+			func(t *testing.T, answer *httptest.ResponseRecorder) {
+				if answer.Code != http.StatusCreated {
+					t.Fatalf("upload the Verification: status=%d body=%s", answer.Code, answer.Body.String())
+				}
+				verification := decodeBody[uploadedArtifact](t, answer).Artifact.ID
+				if indexed := blockIndexVersion(t, database, verification); indexed != nil {
+					t.Fatalf("the upload indexed the Verification at %d in its own request, want its blocks left to the reconciliation", *indexed)
+				}
+				if held := readHeldTypedBlock(t, database, blockKeyOf(t, database, verification)+"#c103"); held.state != graphstore.StateLive || held.rows != 1 || held.serves != 1 {
+					t.Fatalf("the upload left its check c103 as %+v, want it written at once with its row and its serves", held)
+				}
+			})
+	}
 }

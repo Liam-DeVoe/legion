@@ -5769,6 +5769,7 @@ export interface components {
       gaps: string[] | null;
       has_plan: boolean;
       issue: string;
+      owed_documents?: components["schemas"]["OwedDocument"][];
       requirements: components["schemas"]["RequirementCoverage"][] | null;
       spec_artifact_id: string;
     };
@@ -6081,6 +6082,7 @@ export interface components {
       documents: components["schemas"]["IssueTreeDocuments"] | null;
       issue: string;
       nodes: components["schemas"]["IssueTreeNode"][] | null;
+      owed_documents?: components["schemas"]["OwedDocument"][];
       tree: null | string;
       tuples: components["schemas"]["IssueTreeTuple"][] | null;
       version: null | number;
@@ -6601,6 +6603,10 @@ export interface components {
       artifact?: components["schemas"]["Artifact"];
       kind: string;
       to_id: string;
+    };
+    OwedDocument: {
+      artifact_id: string;
+      version: number;
     };
     PassCounts: {
       graphql_points: number;
@@ -16557,6 +16563,7 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type OwedDocument = components["schemas"]["OwedDocument"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
