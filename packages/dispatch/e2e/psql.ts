@@ -43,8 +43,10 @@ function psqlCommand(
  *  one stack (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
  *  harness's DATABASE_URL, and nothing falls back to libpq's default database, because
  *  `resetDatabase` empties whatever this names. It is read when the session connects rather than
- *  at import, so a module that only imports `sql` never refuses before the harness has set it. */
-function databaseUrl(): string {
+ *  at import, so a module that only imports `sql` never refuses before the harness has set it.
+ *  The commands `e2e/corpus.ts` runs as children write to the same database, so they read it here
+ *  too, and the rule for which database a run writes to stays in this one place. */
+export function databaseUrl(): string {
   const deployed = process.env.PLAYWRIGHT_BASE_URL
     ? process.env.PLAYWRIGHT_DATABASE_URL
     : undefined;
