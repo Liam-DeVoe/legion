@@ -156,11 +156,13 @@ func TestEveryAddedLineIsReadWholeAsGitWritesIt(t *testing.T) {
 // answer, and the bound only turns that hang into a failure.
 const hangGuard = 2 * time.Minute
 
-// holdUntilEnd is a shell loop that runs while a file the test made is there, and the test removes
-// that file when it ends: a process that outlives the git that started it, for as long as the test
-// runs, and goes once it ends. The loop waits on the file's presence, not on a file's arrival, so
-// either removal ends it: the cleanup's, or the RemoveAll of the test's temporary directory, which
-// a cleanup registered earlier runs after it.
+// holdUntilEnd is a shell loop that runs while a file the test made is there and the test binary
+// is alive, and the test removes that file when it ends: a process that outlives the git that
+// started it, for as long as the test runs, and goes once it ends. The loop waits on the file's
+// presence, not on a file's arrival, so either removal ends it: the cleanup's, or the RemoveAll of
+// the test's temporary directory, which a cleanup registered earlier runs after it. A run that
+// ends with no cleanups at all, a timeout or an interrupt, ends it through the test binary's
+// exit, which `kill -0` of the binary's process id sees.
 func holdUntilEnd(t *testing.T) string {
 	t.Helper()
 	held := filepath.Join(t.TempDir(), "held")
@@ -168,7 +170,7 @@ func holdUntilEnd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Remove(held) })
-	return "while [ -e '" + held + "' ]; do sleep 0.1; done"
+	return "while [ -e '" + held + "' ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.1; done"
 }
 
 // No holder outlives its test: five loops of holdUntilEnd, each started by a subtest, have all

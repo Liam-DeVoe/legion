@@ -426,10 +426,11 @@ func says(t *testing.T, failed *SetupFailure, wants ...string) {
 // counted, once that stop is held to the deadline of ctx, the caller's context. The guard counts
 // from the moment it started program (Guard.run), so the start it counted from is the deadline
 // less the bound, and the moment of the stop is that start plus the run. The start must come no
-// earlier than called, when the test made the call, and the stop no earlier than the deadline,
-// which is what ended program, and no later than now, after the call answered. No comparison of
-// the three rounds to a second, so however long the guard took before it started program, the
-// verdict is the same.
+// earlier than called, when the test made the call, and before the deadline, since the bound is
+// what was left of it; the stop no earlier than the deadline, which is what ended program, and no
+// later than now, after the call answered. So the bound is more than 0 and no more than the
+// caller's, and the run no shorter than the bound. No comparison rounds to a second, so however
+// long the guard took before it started program, the verdict is the same.
 func stopSaid(t *testing.T, ctx context.Context, err error, program string, called time.Time) string {
 	t.Helper()
 	answered := time.Now()
@@ -443,10 +444,12 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 	}
 	began := deadline.Add(-stopped.bound)
 	ended := began.Add(stopped.ran)
-	if stopped.program != program || stopped.cancelled || began.Before(called) || ended.Before(deadline) || ended.After(answered) {
-		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the call, ended %s after the deadline and %s before the call answered; "+
-			"want a stop of %s by the deadline, begun after the call, ended at or after the deadline and before the call answered",
-			err, stopped.program, stopped.cancelled, began.Sub(called), ended.Sub(deadline), answered.Sub(ended), program)
+	if stopped.program != program || stopped.cancelled || began.Before(called) || !began.Before(deadline) ||
+		ended.Before(deadline) || ended.After(answered) {
+		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the call and %s before the deadline, "+
+			"ended %s after the deadline and %s before the call answered; want a stop of %s by the deadline, begun after the "+
+			"call and before the deadline, ended at or after the deadline and before the call answered",
+			err, stopped.program, stopped.cancelled, began.Sub(called), deadline.Sub(began), ended.Sub(deadline), answered.Sub(ended), program)
 	}
 	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s",
 		program, int64(stopped.ran.Round(time.Second)/time.Second), int64(stopped.bound.Round(time.Second)/time.Second))
@@ -457,13 +460,27 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 // from one that hung. The bound is what was left of the caller's 2 s when the check started, and
 // the time it ran is measured, so both are read as stoppedByItsBound reads them: a bound no
 // longer than 2 s and a run no shorter than it, never exact seconds a loaded machine would not
-// keep. A deadline and a cancel end the check through the same stop of its process group, so the
-// cancel test alone sees that stop reach the check's sleep.
+// keep. The bound also has a floor: the check started before its stand-in wrote its sleep's
+// process id, so the bound is no shorter than what was left of the deadline when that file was
+// written, less a second for the rounding and the file's coarser clock. A deadline and a cancel
+// end the check through the same stop of its process group, so the cancel test alone sees that
+// stop reach the check's sleep.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	failed := stoppedPush(t, ctx, filepath.Join(t.TempDir(), "sleep"))
+	sleep := filepath.Join(t.TempDir(), "sleep")
+	failed := stoppedPush(t, ctx, sleep)
 	stoppedByItsBound(t, failed, 2*time.Second)
+	written, err := os.Stat(sleep)
+	if err != nil {
+		t.Fatalf("the stand-in wrote no process id of its sleep before its bound ended, so the bound has no floor to be read against: %v", err)
+	}
+	deadline, _ := ctx.Deadline()
+	floor := wholeSeconds(deadline.Sub(written.ModTime())) - 1
+	if _, bound, _ := sharedStop(t, failed); bound < floor {
+		t.Errorf("the setup failure says %q: a bound of %d s, want one no shorter than the %d s left of the deadline when the check had started, less a second",
+			failed.Error(), bound, floor+1)
+	}
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
 	}
