@@ -2,6 +2,7 @@ package record
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -39,6 +40,97 @@ func TestWorkerClaimIsTheClaimOfTheRolesStep(t *testing.T) {
 				t.Fatalf("WorkerClaim(tester) = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A role that stands at two steps has a row for each, and a reader with no walk reads the row whose
+// entry was raised last: the row of the step the role works now, or worked last. After a return to
+// step 1, that is step 1's row again, though step 3's entry is the higher number. Of two entries
+// raised at one moment the higher one wins, and a row no entry was raised on loses to one that was.
+// The claim of the role's worker is that row's (WorkerClaim).
+func TestARolesRowNowIsTheRowWhoseEntryWasRaisedLast(t *testing.T) {
+	const first, second claim.Token = "legion-legion-infra-12-implementer", "legion-legion-infra-12-reviewer"
+	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		name  string
+		rows  []PhaseRow
+		place int
+	}{
+		{name: "the later step's entry was raised last", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 1, EntryRaisedAt: at(1)},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(3)}}},
+		{name: "a return raised the earlier step's entry last", place: 1, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 2, EntryRaisedAt: at(4)},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(3)}}},
+		{name: "two entries raised at one moment", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 1, EntryRaisedAt: at(1)},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(1)}}},
+		{name: "a row no entry was raised on loses", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(3)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PhaseRowOf(tc.rows, claim.RoleImplementer); got.StepPlace != tc.place {
+				t.Fatalf("PhaseRowOf(implementer) = the row at place %d, want the row at place %d", got.StepPlace, tc.place)
+			}
+			want := map[int]claim.Token{1: first, 3: second}[tc.place]
+			if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleImplementer, tc.rows); err != nil || got != want {
+				t.Fatalf("WorkerClaim(implementer) = %q, %v, want %q", got, err, want)
+			}
+		})
+	}
+}
+
+// The row of a role where a task stands: the row of its step there where that step is the role's;
+// else the row of the role's latest step before it, the retro and the merge standing after every
+// step; else the row of its first step after it, so a read or a write before the role's first step
+// reaches that step's row, as the one row of a role did. A role the task gives no place has its row
+// at place 0. A row that does not stand yet is the zero row stamped with the role, the task and the
+// place it stands at. An issue with no plan rows has one row for each role (PhaseRowOf).
+func TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands(t *testing.T) {
+	steps := []PlanStep{{Task: "t", Position: 1, Role: "implementer"}, {Task: "t", Position: 2, Role: "reviewer"}, {Task: "t", Position: 3, Role: "implementer"}}
+	rows := []PhaseRow{
+		{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Entry: 1},
+		{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 2, Entry: 2},
+		{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Entry: 3},
+		{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 0, Entry: 4},
+		{Role: claim.RoleImplementer, Entry: 9},
+	}
+	step := func(position int) TaskPlace { return TaskPlace{Kind: PlaceStep, Position: position} }
+	retro, merge := TaskPlace{Kind: PlaceRetro}, TaskPlace{Kind: PlaceMerge}
+	for _, tc := range []struct {
+		name string
+		role claim.Role
+		at   TaskPlace
+		rows []PhaseRow
+		want PhaseRow
+	}{
+		{"the implementer at its first step", claim.RoleImplementer, step(1), rows, rows[0]},
+		{"the implementer while the reviewer's step runs", claim.RoleImplementer, step(2), rows, rows[0]},
+		{"the implementer at its second step", claim.RoleImplementer, step(3), rows, rows[2]},
+		{"the implementer's second step before its row stands", claim.RoleImplementer, step(3), rows[:2],
+			PhaseRow{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3}},
+		{"the implementer at the retro", claim.RoleImplementer, retro, rows, rows[3]},
+		{"the implementer at the merge reads the retro's row", claim.RoleImplementer, merge, rows, rows[3]},
+		{"the implementer at no act reads its first step's row", claim.RoleImplementer, TaskPlace{}, rows, rows[0]},
+		{"the reviewer before its step", claim.RoleReviewer, step(1), rows, rows[1]},
+		{"the reviewer after its step", claim.RoleReviewer, step(3), rows, rows[1]},
+		{"the merger before the merge", claim.RoleMerger, step(2), rows, PhaseRow{Role: claim.RoleMerger, StepTask: "t"}},
+		{"a role the task gives no place", claim.RoleTester, step(2), rows, PhaseRow{Role: claim.RoleTester, StepTask: "t"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PhaseRowAt(tc.rows, tc.role, "t", tc.at, steps); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("PhaseRowAt(%s, %+v) = %+v, want %+v", tc.role, tc.at, got, tc.want)
+			}
+		})
+	}
+	if got := PhaseRowAt(rows[4:], claim.RoleImplementer, "", step(2), nil); got.Entry != 9 {
+		t.Fatalf("PhaseRowAt with no plan rows = %+v, want the role's one row", got)
+	}
+	// A row of no step, one a new generation cleared or the release before wrote, is the role's row
+	// until its step's row stands, as it was before the step was written on it.
+	if got := PhaseRowAt([]PhaseRow{rows[1], rows[4]}, claim.RoleImplementer, "t", step(1), steps); got.Entry != 9 || got.StepTask != "" {
+		t.Fatalf("PhaseRowAt with the implementer's row of no step = %+v, want that row", got)
 	}
 }
 

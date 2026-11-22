@@ -319,9 +319,10 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil || !w.Stored {
 		return nil, err
 	}
-	// The report is of the role's own step, so of two steps that run as step, only the one the stop
-	// ended (the task keeps its place at its stop) is late.
-	at, ok := w.placeOfRole(fact.Role)
+	// The report is of the role's own step of the phase it reports, so of two steps that run as
+	// step, or two steps of one role, only the one the stop ended (the task keeps its place at its
+	// stop) is late.
+	at, ok := w.placeRunning(reported, fact.Role)
 	if !ok || at != w.Place || at.Kind != record.PlaceStep {
 		return nil, nil
 	}

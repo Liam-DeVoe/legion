@@ -144,9 +144,11 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
 // a silence only the store can answer: false for a phase its terminating fact has met
 // (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
-// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
-// role's phase row too, an empty row naming the issue and role where the record holds none, so
-// the silence repair reads it once.
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). The row is the
+// role's row now (record.PhaseRowOf), the row of the step whose entry was raised last, since a
+// role that stands at two steps has a row for each and its worker is owed the turn of the one it
+// works. It answers that row too, an empty row naming the issue and role where the record holds
+// none, so the silence repair reads it once.
 func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
 	finished, err := PhaseFinished(ctx, store, tx, issue)
 	if err != nil || finished {
@@ -156,13 +158,8 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, iss
 	if err != nil {
 		return record.PhaseRow{}, false, err
 	}
-	row := record.PhaseRow{Issue: issue.Key, Role: role}
-	for _, r := range rows {
-		if r.Role == role {
-			row = r
-			break
-		}
-	}
+	row := record.PhaseRowOf(rows, role)
+	row.Issue, row.Role = issue.Key, role
 	return row, row.CompletedAt.IsZero(), nil
 }
 
@@ -976,13 +973,19 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
 //
-// For an issue with plan rows, a phase worker's raise also writes the step the entry is a run of
-// (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
-// in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the merge on
-// the merger's, so the row's facts are the facts of that step's run. An issue with no plan rows
-// keeps no task and place 0, as it always did, and the architect's entry is no step of the issue's
-// task. w is the walk of issue's run as the caller read it, which only a phase worker's raise
-// reads; EnterArchitect gives none.
+// For an issue with plan rows, a phase worker's raise is on the row of the step the entry is a run
+// of (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue
+// stands in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the
+// merge on the merger's, so the row's facts are the facts of that step's run. A role can stand at
+// two steps of a task, and each step's run keeps its own row: a run of a step that ran before
+// raises the row its earlier runs wrote, and a step's first run raises a row of its own, which
+// starts as the role's row now (record.PhaseRowOf) with no handoff (phaseHandoff), so it carries
+// what the role's one row carried from one phase to the next — the record it last named, the
+// commit its last review read — and leaves the earlier step's report standing for the task text
+// that names it (reportsBefore). An issue with no plan rows keeps no task and place 0, one row for
+// each role, as it always did, and the architect's entry is no step of the issue's task. w is the
+// walk of issue's run as the caller read it, which only a phase worker's raise reads;
+// EnterArchitect gives none.
 //
 // A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
 // Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
@@ -998,32 +1001,37 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		return 0, "", err
 	}
 	row := record.PhaseRowOf(rows, role)
+	worker := role != claim.RoleArchitect
+	at := record.StandsAt(issue)
+	if worker {
+		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
+			var moves bool
+			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place); moves {
+				if err := e.store.MovePhaseToStep(ctx, tx, issue.Key, role, w.Task, place.Place); err != nil {
+					return 0, "", err
+				}
+			}
+		}
+	}
 	row.Issue, row.Role = issue.Key, role
 	entry := row.Entry + 1
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
-	worker := role != claim.RoleArchitect
 	var agent claim.Token
-	if worker {
-		at := record.StandsAt(issue)
-		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
-			row.StepTask, row.StepPlace = w.Task, place.Place
+	if worker && recordsSteps(issue) {
+		if place, ok := w.placeIn(at); ok {
+			agent, err = e.stepToken(issue, *w, place, role)
+		} else {
+			agent, err = stepClaim(issue, issue.Key, role)
 		}
-		if recordsSteps(issue) {
-			if place, ok := w.PlaceOf(at); ok {
-				agent, err = e.stepToken(issue, *w, place, role)
-			} else {
-				agent, err = stepClaim(issue, issue.Key, role)
-			}
-			if err != nil {
-				return 0, "", err
-			}
-			for _, other := range rows {
-				if other.Claim == agent && other.Entry >= entry {
-					entry = other.Entry + 1
-				}
-			}
-			row.Claim = agent
+		if err != nil {
+			return 0, "", err
 		}
+		for _, other := range rows {
+			if other.Claim == agent && other.Entry >= entry {
+				entry = other.Entry + 1
+			}
+		}
+		row.Claim = agent
 	}
 	row.Entry = entry
 	// The entry's sentence is named only while the row holds the task of that entry, as the row
@@ -1047,6 +1055,35 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		}
 	}
 	return row.Entry, row.EntryTask, nil
+}
+
+// stepRunRow is the row an entry of role's step at place of task raises, among rows, and whether
+// it is the role's row of no step, which the entry moves to the step (record.Store.MovePhaseToStep):
+// the row the step's earlier runs wrote; else the role's row of no step, a row a new generation
+// cleared or the release before wrote, which was the role's one row and so is the step's, as the
+// one row of a role was raised at each step it ran; else, for a later step's first run, now, the
+// role's row now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries
+// what the role's one row carried into its next phase and the row of the role's earlier step keeps
+// its report.
+func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int) (record.PhaseRow, bool) {
+	var noStep *record.PhaseRow
+	for i, row := range rows {
+		switch {
+		case row.Role != role:
+		case row.StepTask == task && row.StepPlace == place:
+			return row, false
+		case row.StepTask == "" && noStep == nil:
+			noStep = &rows[i]
+		}
+	}
+	if noStep != nil {
+		row := *noStep
+		row.StepTask, row.StepPlace = task, place
+		return row, true
+	}
+	row := phaseHandoff{}.onto(now)
+	row.StepTask, row.StepPlace = task, place
+	return row, false
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the

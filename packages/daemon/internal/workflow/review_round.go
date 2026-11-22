@@ -43,9 +43,10 @@ import (
 // A role the deployment defines whose step at step is of the type review gets one sentence, the
 // commit its own step's newest run read, ` Last reviewed commit: <sha>.`, which its row holds
 // (record.PhaseRow.ReviewedHead, written by the workflow's recordStepReview for a review step
-// alone; a role runs at most one step of an issue), and none where its row holds no commit, as in
-// the step's first run of a generation. Such a step reports with its verdict and submits no review
-// of GitHub's, so it gets no entry's sentence.
+// alone; the first run of a second step of the role starts from the row of its step before,
+// stepRunRow), and none where its row holds no commit, as in the step's first run of a generation.
+// Such a step reports with its verdict and submits no review of GitHub's, so it gets no entry's
+// sentence.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer {
 		if at == phase.Step && !claim.IsBuiltin(role) && row.ReviewedHead != "" {

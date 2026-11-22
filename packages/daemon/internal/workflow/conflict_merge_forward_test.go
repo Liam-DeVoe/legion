@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -124,7 +125,15 @@ func TestAMergeForwardMessageNamesTheClaimOfItsRolesStep(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
-			seedPhase(t, pool, tc.row)
+			// The row replaces the tester's row the seed wrote: each step's run keeps a row of its
+			// own (record.PhaseRow.StepPlace), so written beside it the step's row would be a second
+			// row of the tester, not the one the case names.
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(t.Context(), "delete from phases where issue = $1 and role = $2", tc.row.Issue, string(tc.row.Role)); err != nil {
+					return err
+				}
+				return record.NewStore().PutPhase(t.Context(), tx, tc.row)
+			})
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			got := mergeForwardMessages(t, pool)
 			if len(got) != 2 || got[0].Role != claim.RoleImplementer || got[1].Role != claim.RoleTester {
