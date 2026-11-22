@@ -208,6 +208,63 @@ func streamInfoOnce(ctx context.Context, nc *nats.Conn, name string) (*jetstream
 	return &answer.StreamInfo, true, nil
 }
 
+// streamReplies is what every reply to one STREAM.INFO said, within its window.
+type streamReplies struct {
+	// Found are the replies that hold the stream; NotFound the 10059 ones.
+	Found, NotFound int
+	// Other is the first reply that is neither, an error any other code or a body that does not
+	// decode; nil for none.
+	Other error
+}
+
+// streamInfoReplies sends one STREAM.INFO of name on an inbox of its own and reads every reply
+// within jsRequest: with a stream's group leaderless, each member that knows the group answers
+// itself (nats-server jetstream_api.go:2100-2134), a member with the stream answering it and one
+// without a local copy answering 10059 (2165-2178), so the first reply alone says nothing of the
+// others. It waits the whole window.
+func streamInfoReplies(ctx context.Context, nc *nats.Conn, name string) (streamReplies, error) {
+	subject := fmt.Sprintf(natsserver.JSApiStreamInfoT, name)
+	inbox := nc.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		return streamReplies{}, fmt.Errorf("subscribe to the replies of %s: %w", subject, err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	if err := nc.PublishRequest(subject, inbox, nil); err != nil {
+		return streamReplies{}, fmt.Errorf("request %s: %w", subject, err)
+	}
+	window, cancel := context.WithTimeout(ctx, jsRequest)
+	defer cancel()
+	var replies streamReplies
+	for {
+		msg, err := sub.NextMsgWithContext(window)
+		if err != nil {
+			if ctx.Err() != nil {
+				return streamReplies{}, fmt.Errorf("request %s: %w", subject, ctx.Err())
+			}
+			return replies, nil
+		}
+		var answer struct {
+			Error *jetstream.APIError `json:"error,omitempty"`
+			jetstream.StreamInfo
+		}
+		switch err := json.Unmarshal(msg.Data, &answer); {
+		case err != nil:
+			if replies.Other == nil {
+				replies.Other = fmt.Errorf("%s answered a body that does not decode: %w", subject, err)
+			}
+		case answer.Error != nil && answer.Error.ErrorCode == jetstream.JSErrCodeStreamNotFound:
+			replies.NotFound++
+		case answer.Error != nil:
+			if replies.Other == nil {
+				replies.Other = answer.Error
+			}
+		default:
+			replies.Found++
+		}
+	}
+}
+
 // apiRequest sends request, JSON-encoded (an empty body when nil), to subject on nc and decodes the
 // answer into into, within jsRequest.
 func apiRequest(ctx context.Context, nc *nats.Conn, subject string, request, into any) error {

@@ -97,20 +97,27 @@ func takeCensus(ctx context.Context, nc *nats.Conn, step string, present, missin
 }
 
 // absentAssignments accepts missing, the names one STREAM.LIST page answered `missing`, only when
-// each is a stream of accepted that its STREAM.INFO answers absent, in step: a name outside
-// accepted is UNKNOWN as any list that is not whole, and so is one whose STREAM.INFO finds it or
-// does not answer.
+// each is a stream of accepted that no reply to its STREAM.INFO, within the request's window,
+// finds (streamInfoReplies), in step: a name outside accepted is UNKNOWN as any list that is not
+// whole, and so is one that a member answers present (a leaderless group's members each answer,
+// and only the one with a local copy finds it), one with a reply of any other error, and one
+// with no reply. A dead restore's leftover has no stream on any member, so every reply is 10059.
 func absentAssignments(ctx context.Context, nc *nats.Conn, step string, missing, accepted []string) error {
 	for _, name := range missing {
 		if !slices.Contains(accepted, name) {
 			return unknownf(step, nil, "%s answered missing %v: the list is not complete", natsserver.JSApiStreamList, missing)
 		}
-		_, found, err := streamInfoOnce(ctx, nc, name)
-		if err != nil {
+		replies, err := streamInfoReplies(ctx, nc, name)
+		switch {
+		case err != nil:
 			return unknownf(step, err, "%s answered %s missing, and its STREAM.INFO did not answer", natsserver.JSApiStreamList, name)
-		}
-		if found {
-			return unknownf(step, nil, "%s answered %s missing, and its STREAM.INFO answers it present: the list is not complete", natsserver.JSApiStreamList, name)
+		case replies.Found > 0:
+			return unknownf(step, nil, "%s answered %s missing, and %d of the %d replies to its STREAM.INFO answer it present: the list is not complete",
+				natsserver.JSApiStreamList, name, replies.Found, replies.Found+replies.NotFound)
+		case replies.Other != nil:
+			return unknownf(step, replies.Other, "%s answered %s missing, and a reply to its STREAM.INFO is neither the stream nor not found", natsserver.JSApiStreamList, name)
+		case replies.NotFound == 0:
+			return unknownf(step, nil, "%s answered %s missing, and its STREAM.INFO had no reply within %s", natsserver.JSApiStreamList, name, jsRequest)
 		}
 	}
 	return nil
