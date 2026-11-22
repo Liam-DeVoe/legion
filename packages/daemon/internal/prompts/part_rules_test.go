@@ -193,9 +193,8 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		ruleIn(t, "roles/architect.md", accepting, answers...)
 		ruleIn(t, "roles/architect.md", message, r4...)
 		// The moves back from accepting as the architect parts named them before planning joined
-		// them: each left planning out of the phases an architect may send an issue back to. The
-		// skill's own sentence is pinned in pi-legion's skills-guard.test.ts, since no composed
-		// prompt reads the skill.
+		// them: each left planning out of the phases an architect may send an issue back to. No
+		// composed prompt reads the skill, so its own sentence is not pinned here.
 		retired := []string{"(`implementing` or `testing`)", "`to` `implementing` or `testing`", "back to `implementing` or `testing`"}
 		for _, isRoot := range []bool{true, false} {
 			composedSays(t, composer, claim.RoleArchitect, isRoot, slices.Concat(answers, duty, r4)...)

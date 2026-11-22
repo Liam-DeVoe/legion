@@ -312,13 +312,13 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
-	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": repo}, nil)
 	fixture()
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	r.d = startDaemonLogging(t, cfg, o, r.log())
-	r.note("daemon booted under gates.design: %s, project %s mapped to %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
+	r.note("daemon booted under gates.design: %s, project %s with default repository %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
 	// The boot's run of each seeded start is its claim's first launch, so none before it counts.
 	for _, tree := range r.trees {
 		for _, member := range tree.members {
