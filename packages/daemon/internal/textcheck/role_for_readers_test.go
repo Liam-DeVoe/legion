@@ -60,10 +60,12 @@ type roleForReader struct {
 // an implementer), or reads the retro's own
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
-// holds (record.RunningOf), or reads the phase a held issue's retry restores only past the refusal
-// of a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate,
-// for the retry of a named claim), or never reads admitted at all because a check before it
-// refuses that phase, which is what each named test holds it to. The owner walk reads no role:
+// holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which
+// Postgres.AgentWaiter reads too), or reads the role of the step a held issue's retry restores
+// only past the refusal of a plan's own hold, which is the one hold an issue at admitted takes
+// (heldStepRole, which Engine.retryOrEscalate reads for the retry of a named claim and
+// Engine.retryPhase for the role it restarts), or never reads admitted at all because a check
+// before it refuses that phase, which is what each named test holds it to. The owner walk reads no role:
 // where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
@@ -83,21 +85,24 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The role of the issue's running step at its phase, and of the phase where no step runs at it.
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 2, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
-	// The role of each running step's phase, and of the phase of an issue with no plan rows.
-	{file: "internal/record/record.go", fn: "RunningOf"}: {calls: 2, tests: []string{
-		"TestAnIssueReadsEachOfItsRunningSteps", "TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	// The role of the phase of an issue with no plan rows.
+	{file: "internal/record/record.go", fn: "RunningOf"}: {calls: 1, tests: []string{
+		"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	// The role of a row's retro or merge, and of a step whose role runs as a phase of Legion's own.
+	{file: "internal/record/record.go", fn: "stepOfRow"}: {calls: 1, tests: []string{
+		"TestAnIssueReadsEachOfItsRunningSteps", "TestTheStepThatWaitedLongestForItsAgentIsNext"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	// The role of the held step, and of the phase the hold is from where no step stands there.
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 2, tests: []string{
 		"TestACarriedRootResumesFromTheApprovedHeadAndTheHold", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}: {calls: 1, tests: []string{"TestRoleForAnswersEveryPhaseOfPhaseAll"}},
-	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}: {calls: 1, tests: []string{
-		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
-	// The role of the held phase a retry naming a claim restarts, read past the refusal of a
-	// plan's own hold.
-	{file: "internal/workflow/engine.go", fn: "Engine.retryOrEscalate"}: {calls: 1, tests: []string{
-		"TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks"}},
+	// The role of the held step a retry restarts: of a retry naming a claim, read past the refusal
+	// of a plan's own hold, and of the restart of the phase the hold is from.
+	{file: "internal/workflow/engine.go", fn: "heldStepRole"}: {calls: 1, tests: []string{
+		"TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks",
+		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole",
+		"TestAnIssueHeldAtTheReleaseIsRetriedAsBefore"}},
 	// The role the move starts, read by the phase on an issue with no plan rows and by the place on
 	// a task with them.
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}: {calls: 2, tests: []string{
