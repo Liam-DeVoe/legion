@@ -105,7 +105,7 @@ func TestAPrecreatedDurableCandidateIsAdoptedOnlyAsTheListenerCreatesIt(t *testi
 				t.Fatal(err)
 			}
 			name := r.durable + "~PRECREATEDBYAPRINCIPAL"
-			made := listenerDurableConfig(name, bus.StreamSubjects())
+			made := listenerDurableConfig(r.client, name, bus.StreamSubjects())
 			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
 			made.Metadata = map[string]string{consumernames.LogicalMetadataKey: r.durable}
 			tc.made(&made)
@@ -177,7 +177,7 @@ func TestAPrecreatedDurableCandidateThatWouldNotDeliverIsCorrectedOrRefused(t *t
 					t.Fatal(err)
 				}
 				candidate := r.durable + "~PRECREATEDUPDATABLE"
-				made := listenerDurableConfig(candidate, bus.StreamSubjects())
+				made := listenerDurableConfig(r.client, candidate, bus.StreamSubjects())
 				made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
 				made.Metadata = map[string]string{consumernames.LogicalMetadataKey: r.durable}
 				createRawConsumer(t, r.conn, made, tc.setting)
@@ -301,7 +301,7 @@ func TestTheListenersStoredDurableNeedsNoCorrection(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			candidate := r.durable + "~STORED" + c.suffix
-			made := durableCreateConfig(candidate, r.durable, bus.StreamSubjects())
+			made := durableCreateConfig(r.client, candidate, r.durable, bus.StreamSubjects())
 			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
 			createRawConsumer(t, r.conn, made, c.setting)
 			info, err := r.client.ConsumerInfo(ctx, candidate)
