@@ -547,33 +547,32 @@ type PageAnswer =
  *  Playwright's `evaluate` has no deadline of its own: the driver waits PAGE_SCRIPT_MS for the
  *  script at most, and a read the script held past that is `unanswered` too, naming the script. */
 async function pageRead(page: Page, path: string): Promise<PageAnswer> {
-  const read = await within(
-    page.evaluate(
-      async ({ at, ms }) => {
-        let status: number | undefined;
+  // One read is the measurement: the request's own answer, which no later page state changes.
+  const evaluated = page.evaluate(
+    async ({ at, ms }) => {
+      let status: number | undefined;
+      try {
+        const response = await fetch(at, {
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(ms),
+        });
+        status = response.status;
+        const text = await response.text();
+        let body: unknown = text;
         try {
-          const response = await fetch(at, {
-            headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(ms),
-          });
-          status = response.status;
-          const text = await response.text();
-          let body: unknown = text;
-          try {
-            body = JSON.parse(text);
-          } catch {
-            // Not JSON: the text itself is what a refusal says.
-          }
-          return { status, body };
-        } catch (error) {
-          const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-          return status === undefined ? { unanswered: why } : { status, body: undefined, cut: why };
+          body = JSON.parse(text);
+        } catch {
+          // Not JSON: the text itself is what a refusal says.
         }
-      },
-      { at: path, ms: PAGE_MS }
-    ),
-    PAGE_SCRIPT_MS
+        return { status, body };
+      } catch (error) {
+        const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        return status === undefined ? { unanswered: why } : { status, body: undefined, cut: why };
+      }
+    },
+    { at: path, ms: PAGE_MS }
   );
+  const read = await within(evaluated, PAGE_SCRIPT_MS);
   return read === TIME_UP
     ? { unanswered: `the page's script held the read past ${PAGE_SCRIPT_MS / 1000} s` }
     : read;
