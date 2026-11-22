@@ -86,9 +86,9 @@ func withoutFinalLineFeeds(rendering string) string {
 // readsAsRendering reports whether stored, markdown that any build of the store may have written,
 // reads as rendering, each read alone: this build reads stored and renders it again (RenderingOf),
 // and that is one rendering (SameRendering) with rendering as given or, where it is not, with what
-// this build reads rendering as and renders again. The first comparison, the common case, reads
-// stored alone; only stored text that renders otherwise than rendering pays for reading rendering
-// too. A side that reads as no document, or whose tree does not render, reads as nothing. It is
+// this build reads rendering as and renders again. The first comparison reads stored alone; only
+// stored text that renders otherwise than rendering pays for reading rendering too. A side that
+// reads as no document, or whose tree does not render, reads as nothing. It is
 // the rule FragmentReadsAs applies to a fragment that holds no `[^`, which says why both sides
 // are read alone.
 func readsAsRendering(stored, rendering string) bool {

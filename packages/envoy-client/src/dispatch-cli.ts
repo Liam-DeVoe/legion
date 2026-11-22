@@ -79,9 +79,9 @@ export interface DispatchCliIo {
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
  *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
  *  refusal), or text this CLI refuses in Dispatch's own refusal before it asks (a file or stdin
- *  holding a byte that is not UTF-8, a document past the bytes one holds or holding U+0000); any
- *  other argument this CLI refuses before any request is USAGE, whether the argv named a command
- *  or not. */
+ *  holding a byte that is not UTF-8, a document past the bytes one holds, or a Markdown `--path`
+ *  file holding U+0000); any other argument this CLI refuses before any request is USAGE, whether
+ *  the argv named a command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;

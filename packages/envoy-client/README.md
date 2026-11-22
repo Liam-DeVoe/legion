@@ -1220,9 +1220,7 @@ same size: it is read once, as the call reads it (`documentFileBytes`), which re
 1 MiB by its size before it reads it, or, where AskGate's check read it, by the bytes it holds,
 and measures the bytes it read again, so its callers take bytes already checked. It then refuses
 the first U+0000 or byte that is not UTF-8 in those bytes before anything is asked, in the
-upload's words, which name the field `file` (`documentBytesRefusal`, the function that also
-refuses `dispatch artifact`'s content read from a file or stdin whose bytes are not UTF-8, under
-`content`, so the same bytes get the same refusal either way). The call and its
+upload's words, which name the field `file` (`documentBytesRefusal`). The call and its
 dry run then send those bytes to their own round trip (`POST /api/v1/markdown/file-round-trip`,
 `file` in base64, with `new_document` as for inline text), which Dispatch checks as it checks an
 upload's file part, and take only its refusal (`storedFileCheck`), never a spelling, since the call

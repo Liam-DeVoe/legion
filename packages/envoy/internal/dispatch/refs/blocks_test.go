@@ -350,6 +350,42 @@ func insertRenderedVersion(t *testing.T, tx pgx.Tx, artifact string, number int,
 	}
 }
 
+// versionOneAt is when version 1 of a test document is written (indexOtherRendererVersionOne),
+// and version 2 is written an hour later (indexVersionTwo).
+var versionOneAt = time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
+
+// indexOtherRendererVersionOne stores markdown as version 1 of document artifact, written at
+// versionOneAt by a build of the renderer version before this build's, and indexes its blocks as
+// that build handed them to IndexBlocks (respelledVersionBlocks, cut by cuts). It answers the tree
+// markdown reads as and those blocks.
+func indexOtherRendererVersionOne(t *testing.T, tx pgx.Tx, artifact, markdown string, cuts []struct{ nodeType, text string }) (*pmdoc.Node, []model.ArtifactBlock) {
+	t.Helper()
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		t.Fatalf("read %q: %v", markdown, err)
+	}
+	stored := respelledVersionBlocks(t, tree, markdown, cuts)
+	insertRenderedVersion(t, tx, artifact, 1, markdown, pmdoc.RendererVersion-1, versionOneAt)
+	if _, err := IndexBlocks(context.Background(), tx, artifact, 1, versionOneAt, markdown, stored, nil, nil); err != nil {
+		t.Fatalf("index version 1: %v", err)
+	}
+	return tree, stored
+}
+
+// indexVersionTwo stores markdown as version 2 of document artifact, as this build writes it, an
+// hour after versionOneAt, and indexes blocks for it. It answers when version 2 was written and
+// the targets IndexBlocks answers for it.
+func indexVersionTwo(t *testing.T, tx pgx.Tx, artifact, markdown string, blocks []model.ArtifactBlock) (time.Time, []Target) {
+	t.Helper()
+	versionTwoAt := versionOneAt.Add(time.Hour)
+	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
+	moved, err := IndexBlocks(context.Background(), tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
+	if err != nil {
+		t.Fatalf("index version 2: %v", err)
+	}
+	return versionTwoAt, moved
+}
+
 // A version another renderer version stored spells its tree otherwise than this build does, so
 // the next version moves the sum of a block whose tree did not change. That version, which
 // rewords the closing paragraph, keeps the changed version and time of each top-level block whose
@@ -362,21 +398,12 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, refKey := createReferenceArtifact(t, tx, "WIND-1", "WIND", "respelled-md")
-	tree, err := pmdoc.ParseRendering(respelledDocument)
-	if err != nil {
-		t.Fatalf("read %q: %v", respelledDocument, err)
-	}
-	stored := respelledVersionBlocks(t, tree, respelledDocument, respelledDocumentBlocks)
+	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, respelledDocument, respelledDocumentBlocks)
 	recorded := make(map[string]string, len(stored))
 	for _, block := range stored {
 		recorded[block.ID] = respelledDocument[block.From:block.To]
 	}
 	list, quote, quotedList, closing := stored[1].ID, stored[5].ID, stored[6].ID, stored[10].ID
-	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
-	insertRenderedVersion(t, tx, artifact, 1, respelledDocument, pmdoc.RendererVersion-1, versionOneAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, respelledDocument, stored, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
 	citing := createReferenceComment(t, tx, "WIND-1")
 	insertReference(t, tx, "comment", citing, "block", refKey+"#"+list)
 	insertReference(t, tx, "comment", citing, "block", refKey+"#"+quotedList)
@@ -388,12 +415,7 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 		return true
 	})
 	markdown, blocks := renderedBlocks(t, tree)
-	versionTwoAt := versionOneAt.Add(time.Hour)
-	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	moved, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
-	if err != nil {
-		t.Fatalf("index version 2: %v", err)
-	}
+	versionTwoAt, moved := indexVersionTwo(t, tx, artifact, markdown, blocks)
 
 	type indexedBlock struct {
 		changedVersion int
@@ -492,14 +514,9 @@ var otherMarkerDocumentBlocks = []struct{ nodeType, text string }{
 // text read alone renders with `-` or `N.` while its text now keeps the other marker, since its
 // text now read alone renders so too. The reworded paragraph takes version 2.
 func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
-	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "other-marker-md")
-	tree, err := pmdoc.ParseRendering(otherMarkerDocument)
-	if err != nil {
-		t.Fatalf("read %q: %v", otherMarkerDocument, err)
-	}
-	stored := respelledVersionBlocks(t, tree, otherMarkerDocument, otherMarkerDocumentBlocks)
+	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, otherMarkerDocument, otherMarkerDocumentBlocks)
 	recorded := make(map[string]string, len(stored))
 	for _, block := range stored {
 		recorded[block.ID] = otherMarkerDocument[block.From:block.To]
@@ -507,11 +524,6 @@ func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
 	// The second list of each pair, and the marker this build writes it with.
 	otherMarker := map[string]string{stored[3].ID: "* ", stored[9].ID: "1) "}
 	closing := stored[12].ID
-	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
-	insertRenderedVersion(t, tx, artifact, 1, otherMarkerDocument, pmdoc.RendererVersion-1, versionOneAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, otherMarkerDocument, stored, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
 
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if node.Type == "text" && node.Text == "Closing paragraph." {
@@ -529,11 +541,7 @@ func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
 			t.Fatalf("this build writes list %s as %q; the test needs it written with %q", block.ID, body, marker)
 		}
 	}
-	versionTwoAt := versionOneAt.Add(time.Hour)
-	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index version 2: %v", err)
-	}
+	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
 
 	// The reworded paragraph takes version 2, and its text is recorded there. Every other block
 	// keeps version 1 with no text recorded at version 2: the four lists, whose texts recorded at
@@ -574,20 +582,10 @@ var footnotedDocumentBlocks = []struct{ nodeType, text string }{
 // tree, so the paragraph is compared by its text's sum (pmdoc.FragmentReadsAs): it takes version
 // 2, and its text is recorded at version 2.
 func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *testing.T) {
-	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "footnoted-md")
-	tree, err := pmdoc.ParseRendering(footnotedDocument)
-	if err != nil {
-		t.Fatalf("read %q: %v", footnotedDocument, err)
-	}
-	stored := respelledVersionBlocks(t, tree, footnotedDocument, footnotedDocumentBlocks)
+	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, footnotedDocument, footnotedDocumentBlocks)
 	paragraph, recorded := stored[0].ID, footnotedDocument[stored[0].From:stored[0].To]
-	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
-	insertRenderedVersion(t, tx, artifact, 1, footnotedDocument, pmdoc.RendererVersion-1, versionOneAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, footnotedDocument, stored, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
 
 	tree.Children[0].Children = []*pmdoc.Node{
 		{Type: "text", Text: "Opening paragraph, see "},
@@ -601,11 +599,7 @@ func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *tes
 	if blocks[0].ID != paragraph || body != "Opening paragraph, see [^1] here." {
 		t.Fatalf("version 2's first block is %s written %q; the test needs paragraph %s written as a reference", blocks[0].ID, body, paragraph)
 	}
-	versionTwoAt := versionOneAt.Add(time.Hour)
-	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index version 2: %v", err)
-	}
+	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
 
 	changedVersion, changedAt, sum, textsAtTwo := indexedChange(t, tx, artifact, paragraph, 2)
 	if changedVersion != 2 || !changedAt.Equal(versionTwoAt) || sum != BlockTextSum(body) {
@@ -661,15 +655,10 @@ func renderedBlocks(t *testing.T, tree *pmdoc.Node) (string, []model.ArtifactBlo
 // version 2 the prefix of c's line is also the content indent of b's `- ` item. So the inner list,
 // a block inside a list item, takes version 2, and its text is recorded at version 2.
 func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t *testing.T) {
-	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "nested-md")
 	const versionOne, versionTwo = "- a\n  - b\n    - c\n", "- a\n  - b\n  - c\n"
-	tree, err := pmdoc.ParseRendering(versionOne)
-	if err != nil {
-		t.Fatalf("read %q: %v", versionOne, err)
-	}
-	stored := respelledVersionBlocks(t, tree, versionOne, []struct{ nodeType, text string }{
+	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, versionOne, []struct{ nodeType, text string }{
 		{"bullet_list", "- a\n  - b\n    - c"},
 		{"paragraph", "a"},
 		{"bullet_list", "- b\n    - c"},
@@ -678,11 +667,6 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 		{"paragraph", "c"},
 	})
 	inner, recorded := stored[2].ID, versionOne[stored[2].From:stored[2].To]
-	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
-	insertRenderedVersion(t, tx, artifact, 1, versionOne, pmdoc.RendererVersion-1, versionOneAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, versionOne, stored, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
 
 	// c's item leaves the list under b and stands beside b in the inner list.
 	innerList := tree.Children[0].Children[0].Children[1]
@@ -696,11 +680,7 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with list %s written %q", markdown, blocks, versionTwo, inner, "- b\n  - c")
 	}
 	body := markdown[blocks[2].From:blocks[2].To]
-	versionTwoAt := versionOneAt.Add(time.Hour)
-	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index version 2: %v", err)
-	}
+	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
 
 	changedVersion, changedAt, sum, texts := indexedChange(t, tx, artifact, inner, 2)
 	if changedVersion != 2 || !changedAt.Equal(versionTwoAt) || sum != BlockTextSum(body) {
@@ -720,15 +700,10 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 // recorded text did not stand at a line start of version 1, takes version 2, and its text is
 // recorded at version 2.
 func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testing.T) {
-	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "lifted-md")
 	const versionOne, versionTwo = "- a\n  * b\n  * c\n", "- b\n  - c\n"
-	tree, err := pmdoc.ParseRendering(versionOne)
-	if err != nil {
-		t.Fatalf("read %q: %v", versionOne, err)
-	}
-	stored := respelledVersionBlocks(t, tree, versionOne, []struct{ nodeType, text string }{
+	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, versionOne, []struct{ nodeType, text string }{
 		{"bullet_list", "- a\n  * b\n  * c"},
 		{"paragraph", "a"},
 		{"bullet_list", "* b\n  * c"},
@@ -736,11 +711,6 @@ func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testin
 		{"paragraph", "c"},
 	})
 	list, recorded := stored[2].ID, versionOne[stored[2].From:stored[2].To]
-	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
-	insertRenderedVersion(t, tx, artifact, 1, versionOne, pmdoc.RendererVersion-1, versionOneAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, versionOne, stored, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
 
 	// X keeps its id and stands alone at the top level, c's item in a new list under b.
 	x := tree.Children[0].Children[0].Children[1]
@@ -756,11 +726,7 @@ func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testin
 		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with list %s written %q", markdown, blocks, versionTwo, list, "- b\n  - c")
 	}
 	body := markdown[blocks[0].From:blocks[0].To]
-	versionTwoAt := versionOneAt.Add(time.Hour)
-	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index version 2: %v", err)
-	}
+	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
 
 	changedVersion, changedAt, sum, texts := indexedChange(t, tx, artifact, list, 2)
 	if changedVersion != 2 || !changedAt.Equal(versionTwoAt) || sum != BlockTextSum(body) {

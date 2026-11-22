@@ -438,7 +438,8 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 		return refusal
 	}
 
-	for _, name := range []string{"text past the bytes one document holds", "a file past the bytes one document holds holding a byte that is not UTF-8"} {
+	pastBytesRows := []string{"text past the bytes one document holds", "a file past the bytes one document holds holding a byte that is not UTF-8"}
+	for _, name := range pastBytesRows {
 		if pastBytes := rowNamed(name).text; len(pastBytes) <= maxDocumentMarkdownBytes {
 			t.Fatalf("%q is %d bytes, want more than a document's %d", name, len(pastBytes), maxDocumentMarkdownBytes)
 		}
@@ -459,9 +460,9 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 		t.Fatal("the no-break space paragraphs are not blank to strings.TrimSpace")
 	}
 
-	constants := map[string]string{
-		"text past the bytes one document holds":                                    contracts.MarkdownDocumentTooLarge,
-		"a file past the bytes one document holds holding a byte that is not UTF-8": contracts.MarkdownDocumentTooLarge,
+	constants := map[string]string{}
+	for _, name := range pastBytesRows {
+		constants[name] = contracts.MarkdownDocumentTooLarge
 	}
 	for _, rule := range ciCheckBreaks {
 		constants["a check proved by CI with "+rule.name] = ciCheckRefusal("c2", rule.rule)

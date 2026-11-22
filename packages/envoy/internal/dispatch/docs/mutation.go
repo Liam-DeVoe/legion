@@ -1620,8 +1620,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 // the document whose rendering is markdown: this build reads stored and renders it again
 // (renderAgain, which counts the render), and the two are one rendering (pmdoc.SameRendering).
 // It is the one rule a whole document is compared by; a fragment cut from one is compared by
-// pmdoc.FragmentReadsAs, which reads the fragment's slice of the rendering alone as well, since a
-// slice keeps the list marker its place in the document gave it.
+// pmdoc.FragmentReadsAs.
 func readsAs(stored, markdown string) bool {
 	again, rendered := renderAgain(stored)
 	return rendered && pmdoc.SameRendering(again, markdown)

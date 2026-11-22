@@ -10,15 +10,14 @@ body: |-
   upload, and sends Dispatch the bytes of any other, refusing what Dispatch refuses of them but
   never their spelling; that a text read from content-file or stdin whose bytes are not UTF-8 is
   refused as a Markdown file of the same bytes is; and that with force it asks for none of a new
-  document's refusals and checks
-  the spelling Dispatch answers as for any text, so under a name the owner does not hold, which
-  the call uploads as a new document, it passes with no warning a text that upload then refuses
-  for one of them. It also says that the dry run does not read whether the owner holds the name,
-  which the call reads only after it checks the text: a text the check refuses is refused alike
-  under a held name, and a text it passes the call without force still refuses under a held name,
-  though the dry run passes it. The spec's `force` description says that the command checks the
-  text first, so a text it refuses for the text alone gets that refusal, not the refusal of a name
-  the owner holds.
+  document's refusals and checks the spelling Dispatch answers as for any text, so under a name
+  the owner does not hold, which the call uploads as a new document, it passes with no warning a
+  text that upload then refuses for one of them. It also says that the dry run does not read
+  whether the owner holds the name, which the call reads only after it checks the text: a text the
+  check refuses is refused alike under a held name, and a text it passes the call without force
+  still refuses under a held name, though the dry run passes it. The spec's `force` description
+  says that the command checks the text first, so a text it refuses for the text alone gets that
+  refusal, not the refusal of a name the owner holds.
   `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of
   markdown one document may hold and the text of Dispatch's `413 CAP_EXCEEDED` for an upload past
   it, generated into Go for the server. `TEXT_REFUSAL_HEADER` (`Dispatch-Text-Refusal`) is the

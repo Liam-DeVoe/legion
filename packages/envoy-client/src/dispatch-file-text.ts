@@ -7,6 +7,7 @@
 // lenient read kept it. The `dispatch` entry (`bin/dispatch.ts`) reads through `readFileText`, and
 // a test hands it stdin's bytes. Dispatch's refusal of bytes it cannot store (`unstorableBytes`)
 // names the first U+0000 or byte that is not UTF-8, whichever comes first, as Dispatch names it.
+import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -79,7 +80,9 @@ function firstNotUtf8(bytes: Uint8Array): number {
 function firstUnstorable(
   bytes: Uint8Array
 ): { readonly byte: number; readonly character: number } | undefined {
-  const notUtf8 = firstNotUtf8(bytes);
+  // `isUtf8` answers natively what `firstNotUtf8(bytes) === -1` answers, so the byte loop runs
+  // only for bytes that are not UTF-8.
+  const notUtf8 = isUtf8(bytes) ? -1 : firstNotUtf8(bytes);
   const nul = bytes.indexOf(0);
   // A NUL is a whole character of UTF-8. Where it cuts short a sequence that a byte before it
   // opens, that byte comes first, and `firstNotUtf8` names it.
@@ -112,7 +115,7 @@ function utf8Text(bytes: Uint8Array): string {
   try {
     return decoder.decode(bytes);
   } catch (error) {
-    if (firstNotUtf8(bytes) === -1) throw error;
+    if (isUtf8(bytes)) throw error;
     throw new NotUtf8Error(bytes);
   }
 }

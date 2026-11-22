@@ -663,6 +663,26 @@ function ledger(sessionId: string): { tool: string; error?: string }[] {
 
 const omp = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-1" };
 
+/** Runs `argv` as a dry run and then as a call, each reading files and stdin's bytes `stdin` as the
+ *  `dispatch` entry reads them (`readFileText`), and expects the dry run to exit 1 printing
+ *  `stdout` alone, the call to answer as the dry run did, and neither to send anything. `name`
+ *  heads each failure's label. */
+async function refusedAlike(
+  argv: readonly string[],
+  stdin: Uint8Array,
+  stdout: string,
+  name: string
+): Promise<void> {
+  const reader = { readText: (path: string) => readFileText(path, () => stdin) };
+  const named = `${name}: ${argv.join(" ")}`;
+  requests.length = 0;
+  const dry = await run([...argv, "--dry-run"], omp, "", reader);
+  expect(dry, named).toEqual({ code: 1, stdout, stderr: "" });
+  const call = await run(argv, omp, "", reader);
+  expect(call, named).toEqual(dry);
+  expect(requests, named).toEqual([]);
+}
+
 /** An inline upload, its text read from stdin, and the route its stored-text check asks. */
 const UPLOAD = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content-file", "-"];
 const NOTES = "# Notes\n\n* one\n";
@@ -716,6 +736,12 @@ const PAST_DOCUMENT_LIMIT = `# Notes\n\n${"é".repeat(MARKDOWN_DOCUMENT_MAX_BYTE
 /** The refusal of such a text, in Dispatch's own words, as the call and its dry run print it. */
 const DOCUMENT_TOO_LARGE =
   "CAP_EXCEEDED: a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type";
+/** Dispatch's refusals of a byte that is not UTF-8 and of a NUL in `field`, at `character`, as the
+ *  call and its dry run print them. */
+const notUtf8 = (field: string, byte: string, character: number): string =>
+  `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (${byte}) at character ${character}, which Dispatch cannot store\n`;
+const nul = (field: string, character: number): string =>
+  `NUL_CHARACTER: ${field} holds a NUL character (U+0000) at character ${character}, which Dispatch cannot store\n`;
 /** 12,000 list items, 48 KB: more elements than one document may hold. */
 const MANY_ITEMS = "- a\n".repeat(12_000);
 /** Dispatch's 413 for those items, its upload's and its round trip's alike, in the words the
@@ -1481,16 +1507,7 @@ describe("the dispatch CLI", () => {
   // kept as U+FEFF.
   test("a file or stdin holding a byte that is not UTF-8 is refused with Dispatch's INVALID_UTF8 by the dry run as by the call, sending nothing, and UTF-8 reads as before", async () => {
     const file = join(stateDir, "text");
-    const notUtf8 = (field: string, byte: string, character: number) =>
-      `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (${byte}) at character ${character}, which Dispatch cannot store\n`;
     const refused: { argv: string[]; file?: Buffer; stdin?: Buffer; stdout: string }[] = [
-      // The text of the list's row "a file holding a byte that is not UTF-8"
-      // (packages/envoy/internal/dispatch/api/testdata/text-refusals.json).
-      {
-        argv: ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content-file", file],
-        file: Buffer.concat([Buffer.from("# Notes\n\nA"), Buffer.from([0xff]), Buffer.from("B\n")]),
-        stdout: notUtf8("content", "0xFF", 11),
-      },
       // A byte order mark, a two-byte and a four-byte character, and a space before the byte: one,
       // one, two and one UTF-16 units.
       {
@@ -1512,16 +1529,7 @@ describe("the dispatch CLI", () => {
     ];
     for (const row of refused) {
       if (row.file !== undefined) writeFileSync(file, row.file);
-      const reader = {
-        readText: (path: string) => readFileText(path, () => row.stdin ?? Buffer.of()),
-      };
-      const named = row.argv.join(" ");
-      requests.length = 0;
-      const dry = await run([...row.argv, "--dry-run"], omp, "", reader);
-      expect(dry, named).toEqual({ code: 1, stdout: row.stdout, stderr: "" });
-      const call = await run(row.argv, omp, "", reader);
-      expect(call, named).toEqual(dry);
-      expect(requests, named).toEqual([]);
+      await refusedAlike(row.argv, row.stdin ?? Buffer.of(), row.stdout, "not UTF-8");
     }
 
     const text = "\uFEFFCafé 😀 naïve\n";
@@ -1559,8 +1567,6 @@ describe("the dispatch CLI", () => {
   // body here.
   test("an upload's bytes from --content-file, stdin or a markdown --path file are refused alike, the size first, then the first U+0000 or byte that is not UTF-8, by the dry run as by the call, sending nothing", async () => {
     const file = join(stateDir, "text");
-    const nul = (field: string, character: number) =>
-      `NUL_CHARACTER: ${field} holds a NUL character (U+0000) at character ${character}, which Dispatch cannot store\n`;
     const nulFirst = Buffer.from([0x41, 0x00, 0x42, 0xff]);
     const texts = [
       {
@@ -1584,32 +1590,16 @@ describe("the dispatch CLI", () => {
           Buffer.from([0xff]),
           Buffer.from("B\n"),
         ]),
-        stdout: (field: string) =>
-          `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (0xFF) at character 11, which Dispatch cannot store\n`,
+        stdout: (field: string) => notUtf8(field, "0xFF", 11),
       },
     ];
-    const refusedAlike = async (
-      argv: string[],
-      stdin: Uint8Array,
-      stdout: string,
-      name: string
-    ) => {
-      const reader = { readText: (path: string) => readFileText(path, () => stdin) };
-      const named = `${name}: ${argv.join(" ")}`;
-      requests.length = 0;
-      const dry = await run([...argv, "--dry-run"], omp, "", reader);
-      expect(dry, named).toEqual({ code: 1, stdout, stderr: "" });
-      const call = await run(argv, omp, "", reader);
-      expect(call, named).toEqual(dry);
-      expect(requests, named).toEqual([]);
-    };
     const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
     for (const text of texts) {
       writeFileSync(file, text.bytes);
       writeFileSync(join(stateDir, "x.md"), text.bytes);
       const inline = text.stdout("content");
       await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, text.name);
-      await refusedAlike([...upload, "--content-file", "-"], text.bytes, inline, text.name);
+      await refusedAlike(UPLOAD, text.bytes, inline, text.name);
       await refusedAlike(
         [...upload, "--path", "x.md"],
         Buffer.of(),
@@ -1620,9 +1610,13 @@ describe("the dispatch CLI", () => {
 
     // A markdown --path file of UTF-8 holding U+0000 is refused before the round trip too. Inline,
     // such text reaches the round trip, which refuses it in the same words under `content`.
-    const utf8Nul = "UTF-8 holding U+0000";
     writeFileSync(join(stateDir, "x.md"), "# Notes\n\nA\u0000B\n");
-    await refusedAlike([...upload, "--path", "x.md"], Buffer.of(), nul("file", 11), utf8Nul);
+    await refusedAlike(
+      [...upload, "--path", "x.md"],
+      Buffer.of(),
+      nul("file", 11),
+      "UTF-8 holding U+0000"
+    );
 
     writeFileSync(file, nulFirst);
     const comment = ["comment", "--issue", "DSP-1", "--body-file", file];
@@ -1851,6 +1845,7 @@ describe("the dispatch CLI", () => {
         error: `${field} holds a NUL character (U+0000) at character 11, which Dispatch cannot store`,
       };
       roundTrip = () => textRefusal(answer, 400);
+      requests.length = 0;
       const dry = await run([...argv, "--dry-run"], omp, stdin);
       expect(dry, argv.join(" ")).toEqual({
         code: 1,
@@ -1858,6 +1853,7 @@ describe("the dispatch CLI", () => {
         stderr: "",
       });
       expect(await run(argv, omp, stdin), argv.join(" ")).toEqual(dry);
+      if (field === "file") expect(requests, argv.join(" ")).toEqual([]);
     }
   });
 
