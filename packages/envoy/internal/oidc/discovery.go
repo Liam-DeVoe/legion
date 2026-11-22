@@ -30,9 +30,10 @@ const (
 )
 
 // IssuerUnavailableRetryAfter is the Retry-After, in seconds, that the broker's routes, its token
-// exchange and Dispatch's API send beside that pair: the Envoy listener's for the same fault. A
-// key set whose read failed is read again at most once per DefaultKeysFailureSpacing, however
-// many tokens arrive, so a client that tries again this soon costs the issuer nothing.
+// exchange and Dispatch's API send beside that pair, and the Envoy listener beside its own words
+// for the same fault (refuseIdentityToken). A key set whose read failed is read again at most once
+// per DefaultKeysFailureSpacing, however many tokens arrive, so a client that tries again this
+// soon costs the issuer nothing.
 const IssuerUnavailableRetryAfter = 1
 
 // ErrGrantRefused means the issuer's token endpoint refused a refresh token (RFC 6749 section

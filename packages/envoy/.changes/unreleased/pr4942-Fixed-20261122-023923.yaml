@@ -16,7 +16,13 @@ body: |-
   issuer never published is refused as before. The broker logs
   `broker: google key set cannot be read` at WARN once when a read of Google's key set fails,
   naming the issuer, and `broker: google key set can be read again` at INFO once when a key of it
-  is read again.
+  is read again; the GitHub issuer's key set at the token exchange logs
+  `broker: github key set cannot be read` and `broker: github key set can be read again` the same
+  way.
+  Dispatch's `503 BROKER_UNAVAILABLE`, for a broker token the secrets broker gave no answer for,
+  carries `Retry-After: 1`, the Envoy listener's wait for the same fault. That answer and the Envoy
+  listener's 503s for a credential it could not check now end "try again after Retry-After", where
+  they said "try again in a minute" beside a one-second wait.
   `agent-secrets enroll --pod` makes its token login, its enrollment, and the renewal of an
   enrollment it already holds again after a `503`: after the answer's `Retry-After`, or 2 seconds
   doubling to 10 where it names none, printing one line for each wait. It refuses as before once

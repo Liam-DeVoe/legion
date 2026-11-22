@@ -563,9 +563,9 @@ func main() {
 	if cfg.ExchangeGitHubIssuer != "" {
 		// The GitHub issuer has no second reader, so it keeps a key source of its own, read here
 		// rather than at the boot's start: nothing before the bind needs it.
-		keys, err := issuerKeys(serving, cfg.ExchangeGitHubIssuer)
+		github, err := githubExchangeIssuer(serving, cfg, issuerKeys)
 		fatal(err)
-		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
+		exchangeConfig.GitHub = github
 	}
 	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
@@ -1588,8 +1588,8 @@ type verifiers struct {
 	PodRegistration enroll.PodVerifier
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
 	// which registers no Google subject token type. It logs once when its key set cannot be read
-	// and once when it can be read again (googleKeySet), for every reader of it.
-	GoogleKeys *googleKeySet
+	// and once when it can be read again (loggedKeySet, newGoogleKeySet), for every reader of it.
+	GoogleKeys *loggedKeySet
 	// GoogleIdentities verifies a listed caller's own Google identity token, against the same
 	// issuer and audience as those keys, nil where GoogleKeys is. It is how a caller on a VM —
 	// the Envoy listener — authenticates on the routes BROKER_API_ACCOUNTS names it for,
@@ -1622,7 +1622,7 @@ type verifiers struct {
 // Google verifier and the exchange, which resolves a machine's subject token against it; that
 // read logs one line naming the issuer, the audience, the machine services and how many machine
 // entries the exchange holds, and the key set logs each change between read and not read once
-// (googleKeySet). With no Google audience it reads and logs nothing about Google, and answers no
+// (newGoogleKeySet). With no Google audience it reads and logs nothing about Google, and answers no
 // Google keys, so the broker registers no Google subject token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers

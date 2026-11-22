@@ -5,8 +5,43 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/testport"
 )
+
+// TestABrokerTokenNobodyJudgedNamesItsWait: a broker token the secrets broker gave no answer for
+// is answered 503 BROKER_UNAVAILABLE with Retry-After: 1, the Envoy listener's wait for the same
+// fault, and words that name no wait of their own. A token the broker holds as not live is 401
+// BROKER_TOKEN_NOT_ACTIVE with no Retry-After.
+func TestABrokerTokenNobodyJudgedNamesItsWait(t *testing.T) {
+	t.Run("the broker unreachable", func(t *testing.T) {
+		// The verifier asks a broker at a port the test holds and nothing listens on.
+		refused := "http://" + testport.Refused(t)
+		rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) { o.BrokerURL = refused })
+		response := rig.serve(newBrokerCaller(t).presenting(t, http.MethodGet, "/api/v1/whoami", "a-token-nobody-can-be-asked-about", nil))
+		refusal := decodeBody[refusalAnswer](t, response)
+		if response.Code != http.StatusServiceUnavailable || refusal.Code != "BROKER_UNAVAILABLE" ||
+			refusal.Error != "the secrets broker cannot be reached; try again after Retry-After" {
+			t.Fatalf("status=%d refusal=%+v, want 503 BROKER_UNAVAILABLE whose words name no wait", response.Code, refusal)
+		}
+		if got := response.Header().Get("Retry-After"); got != "1" {
+			t.Fatalf("the 503 carries Retry-After %q, want \"1\", the Envoy listener's wait for the same fault", got)
+		}
+	})
+	t.Run("a token the broker holds as not live", func(t *testing.T) {
+		rig := newBrokerTokenRig(t)
+		const token = "a-token-the-broker-revoked"
+		rig.broker.Says(token, ciphertoken.Introspection{Active: false})
+		response := rig.serve(newBrokerCaller(t).presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_ACTIVE" {
+			t.Fatalf("status=%d refusal=%+v, want 401 BROKER_TOKEN_NOT_ACTIVE", response.Code, refusal)
+		}
+		if got := response.Header().Get("Retry-After"); got != "" {
+			t.Fatalf("the 401 carries Retry-After %q, want none", got)
+		}
+	})
+}
 
 // TestAServiceTokenNobodyJudgedNamesItsWait: while the issuer's key set cannot be read, a
 // service-account token is answered 503 OIDC_ISSUER_UNAVAILABLE with the shared sentence and
