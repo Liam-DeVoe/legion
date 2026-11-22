@@ -429,8 +429,8 @@ const (
 	listenerCleanupConnection = "listener-cleanup"
 )
 
-// maxGenerationLen bounds a generation token's length. A NUID, which is what a fresh name's
-// generation is, is 22 characters.
+// maxGenerationLen bounds a generation token's length. A fresh name's generation is 22 characters
+// (consumernames.FreshName).
 const maxGenerationLen = 64
 
 // DispatchIntake is what a Dispatch connection asks of its grant by its own name, beside the fixed
