@@ -363,7 +363,8 @@ task names the version that closed the gate, and tells it to check what its cut 
 
 Under both holds, the daemon wakes a merger whose idle pod it released for the close message, so
 that the merger can take its pull request out of GitHub's merge queue. This wake is the one start
-of a merger that the closed gate lets through. Under `work`, a released worker that is not a merger
+of a merger that the closed gate lets through. The words of a hook to a released merger do not
+wake it: they wait until the gate opens again. Under `work`, a released worker that is not a merger
 is not woken: the daemon records the hold on it, and only the gate's opening starts it.
 
 Dispatch records your approval of a new version in the same write as that version when the version

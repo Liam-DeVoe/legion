@@ -91,9 +91,9 @@ func (s *server) claimApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 // ClaimApprovalOf is what POST /legion/v1/claims/approval answers a claim of role on issue, read in
-// the caller's transaction: the route's own answer, for a caller that must read it at the commit
-// of the transaction that told an architect of an approval. steps are the deployment's gated
-// steps.
+// the caller's transaction: the route's own read, exported for the test of another package that
+// holds this answer to every path that tells an architect of an approval
+// (internal/workflow/approval_route_paths_test.go). steps are the deployment's gated steps.
 func ClaimApprovalOf(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, issue string, role claim.Role) (ClaimApprovalResponse, error) {
 	standing, err := standingApproval(ctx, tx, records, steps, issue, role)
 	if err != nil {

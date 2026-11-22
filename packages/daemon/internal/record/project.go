@@ -781,8 +781,11 @@ func (g TreeGate) Open() bool {
 // the spec step is registered, which is classify.FirstClosedStep's answer, not this one.
 //
 // It is the one rule every reader of the standing gate asks, through classify.StandingGate or
-// HoldsWork: the root's wait and its resume, the gate's messages, the merger's start and the work
-// hold.
+// this method: the root's wait and its resume, the gate's messages, the merger's start and the work
+// hold. The work hold (`gates.hold: work`) holds the tree's work while this gate stands closed,
+// and each of its readers asks it under that word alone (the workflow's and the outbox's
+// holdIsWork), so the close, the opening, the boot and the outbox's fences hold the tree by the
+// same row.
 func (g TreeGate) Standing() (DesignGate, bool) {
 	if len(g.Steps) == 0 {
 		return DesignGate{}, false
@@ -793,21 +796,6 @@ func (g TreeGate) Standing() (DesignGate, bool) {
 		}
 	}
 	return DesignGate{}, false
-}
-
-// HoldsWork is whether the work hold holds the tree's work (`gates.hold: work`): work is whether
-// the deployment's hold is `work` (config.HoldWork; this package may not read internal/config,
-// which reads it), and under it the tree's work is held while its standing gate stands closed
-// (Standing), whose row names the step, the document and the version that closed it. Under
-// `merge` it holds nothing, whatever the gate: that hold is the
-// merger's start and the first phases alone, which their own readers ask Standing and the line
-// of. It is the one predicate the hold's close and opening, the boot's reconcile, the outbox's
-// fence and the state read, so none of them can tell the tree held while another lets it go.
-func (g TreeGate) HoldsWork(work bool) (DesignGate, bool) {
-	if !work {
-		return DesignGate{}, false
-	}
-	return g.Standing()
 }
 
 // EverOpened is whether every required step's gate has stood open at some point

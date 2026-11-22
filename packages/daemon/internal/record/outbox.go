@@ -1412,16 +1412,38 @@ type RoleMessage struct {
 	// unpublished where the gate no longer stands closed (internal/daemon's closeOutrun).
 	Wake bool `json:"wake,omitempty"`
 	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:
-	// work`, workflow's workHoldClose): a suspend of the source hold that names no deadline and no
-	// turn. The outbox posts it once the message reached the claim, naming both from that moment
-	// (SuperviseRequest.Deadline, TurnAfter), and posts nothing where the tree no longer holds
-	// work by then (record.TreeGate.HoldsWork), so a stop not yet made when the gate opens again is
-	// not made. Every other message carries none. The release before decodes strictly, so the way
-	// back of migrations/20261121000254_work_holds.up.sql takes both keys off every role message.
-	Stop *SuperviseRequest `json:"stop,omitempty"`
+	// work`, workflow's workHoldClose). The outbox posts it once the message reached the claim, as
+	// the suspend the stop builds (HoldStop.Suspend) with a deadline and a turn named from that
+	// moment (SuperviseRequest.Deadline, TurnAfter), and posts nothing where the tree's standing
+	// gate no longer stands closed by then (TreeGate.Standing), so a stop not yet made when the
+	// gate opens again is not made. Every other message carries none. The release before decodes
+	// strictly, so the way back of migrations/20261121000254_work_holds.up.sql takes both keys off
+	// every role message.
+	Stop *HoldStop `json:"stop,omitempty"`
 }
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
+
+// HoldStop is the work hold's stop a close message carries (RoleMessage.Stop): the tree and the
+// role it stops, at the issue's generation, the reason the stop logs, and the version of the
+// gated document that closed the gate (SuperviseRequest.HoldVersion). It names no deadline and no
+// turn: the outbox names both once the message reached the claim.
+type HoldStop struct {
+	Tree        string     `json:"tree"`
+	Role        claim.Role `json:"role"`
+	Generation  uint64     `json:"generation"`
+	Reason      string     `json:"reason,omitempty"`
+	HoldVersion int        `json:"holdVersion,omitempty"`
+}
+
+// Suspend is the supervise row of the stop: a suspend of the source hold, with no deadline and no
+// turn. The close writes it as it is for a claim no message reaches (workflow's workHoldClose),
+// and the outbox posts it for a close message, with the deadline and the turn it names
+// (internal/daemon's postHoldStop).
+func (s HoldStop) Suspend() SuperviseRequest {
+	return SuperviseRequest{Op: "suspend", Tree: s.Tree, Role: s.Role, Generation: s.Generation,
+		SuspendedBy: supervise.SuspendedByHold, Reason: s.Reason, HoldVersion: s.HoldVersion}
+}
 
 // GatedStepsPublish is the design-gate steps the deployment gates, written onto the Dispatch
 // project row so a person reading Dispatch sees what holds a tree's work without reading the
@@ -2424,10 +2446,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
 		}
-		if stop := value.Stop; stop != nil && !holdStopToPost(*stop) {
-			return fmt.Errorf("a role message's stop is the work hold's suspend of a role of a tree, of the source %s, naming no deadline and no turn, "+
-				"which the outbox names once the message reached the claim; it is %s %q of %q by %q, deadline %s, turn %s",
-				supervise.SuspendedByHold, stop.Op, stop.Role, stop.Tree, stop.SuspendedBy, stop.Deadline, stop.TurnAfter)
+		if stop := value.Stop; stop != nil && (stop.Tree == "" || !claim.IsRole(stop.Role) || stop.HoldVersion < 0) {
+			return fmt.Errorf("a role message's stop is the work hold's stop of a role of a tree, naming no negative version; it is %q of %q at version %d",
+				stop.Role, stop.Tree, stop.HoldVersion)
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {
@@ -2741,14 +2762,6 @@ func validateWorkHoldRequest(value SuperviseRequest) error {
 		return fmt.Errorf("a start carries the work hold's opening sentences, and its task does not begin with them: the one task the opening gives is those sentences and then the work")
 	}
 	return nil
-}
-
-// holdStopToPost is whether stop is the work hold's stop as a close message carries it
-// (RoleMessage.Stop): a valid suspend of a role of a tree, of the source hold, that names no
-// deadline and no turn, both of which the outbox names once the message reached the claim.
-func holdStopToPost(stop SuperviseRequest) bool {
-	return stop.Op == "suspend" && stop.Tree != "" && claim.IsRole(stop.Role) && stop.SuspendedBy == supervise.SuspendedByHold &&
-		stop.Deadline.IsZero() && stop.TurnAfter.IsZero() && validateOutboxPayload(stop.Tree, stop) == nil
 }
 
 // validWakeKind says whether kind is one of the pods wake kinds a resume records, the one

@@ -1544,8 +1544,9 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 // its resume speaks of (gateInQuestion).
 //
 // It is record.TreeGate.Standing over the same steps and rows, where the rule lives because the
-// record package needs it too (TreeGate.HoldsWork, the work hold's predicate) and may not read
-// this one, and it keeps its name here because every decision in this file is named this way.
+// readers that hold a tree's gate as a record.TreeGate ask it there too (the outbox's fences of
+// both holds, and the workflow's work hold), and it keeps its name here because every decision in
+// this file is named this way.
 func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignGate, bool) {
 	return record.TreeGate{Steps: configured, Rows: gates}.Standing()
 }

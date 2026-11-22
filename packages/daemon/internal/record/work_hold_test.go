@@ -16,9 +16,9 @@ import (
 // The work hold holds a tree's work while the tree's standing design gate stands closed: the first
 // required step, in the configured order, whose row is registered and not approved at its latest
 // version (the work hold's spec, "Under `work`"). It is the one predicate the message, the
-// merger's start and the state read, so it is held here for every step a deployment can gate, for
-// each mode, and for the shapes the standing gate has always passed over: a step nobody has
-// registered, and a deployment that gates no step.
+// merger's start and the hold read (TreeGate.Standing), each under `work` alone, so it is held
+// here for every step a deployment can gate, and for the shapes the standing gate has always
+// passed over: a step nobody has registered, and a deployment that gates no step.
 func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
 	row := func(step DesignStep, latest int, approvedAt *int) DesignGate {
 		return DesignGate{Issue: "LEGION-208", Step: step, ArtifactID: "artifact-" + string(step), LatestVersion: latest, ApprovedVersion: approvedAt}
@@ -41,19 +41,15 @@ func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					gate := TreeGate{Steps: steps, Rows: tc.rows}
-					standing, stands := gate.Standing()
-					if stands != tc.holds {
-						t.Fatalf("Standing() = %v, want %v", stands, tc.holds)
-					}
-					held, holds := gate.HoldsWork(true)
-					if holds != tc.holds || !reflect.DeepEqual(held, standing) {
-						t.Fatalf("HoldsWork(work) = %+v, %v; want %+v, %v, the standing gate", held, holds, standing, tc.holds)
+					held, holds := gate.Standing()
+					if holds != tc.holds {
+						t.Fatalf("Standing() = %+v, %v; want %v", held, holds, tc.holds)
 					}
 					if tc.holds && !reflect.DeepEqual(held, tc.rows[step]) {
 						t.Fatalf("the hold names %+v, want the closed row %+v, whose version the texts name", held, tc.rows[step])
 					}
-					if held, holds := gate.HoldsWork(false); holds || !reflect.DeepEqual(held, DesignGate{}) {
-						t.Fatalf("HoldsWork(merge) = %+v, %v; want nothing: under merge the gate holds no running work", held, holds)
+					if !tc.holds && !reflect.DeepEqual(held, DesignGate{}) {
+						t.Fatalf("an open gate names %+v, want nothing", held)
 					}
 				})
 			}
@@ -64,23 +60,23 @@ func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
 		criteria, spec := row(DesignStepCriteria, 2, new(1)), row(DesignStepSpec, 4, new(3))
 		gate := TreeGate{Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}, Rows: map[DesignStep]DesignGate{
 			DesignStepCriteria: criteria, DesignStepSpec: spec}}
-		if held, holds := gate.HoldsWork(true); !holds || !reflect.DeepEqual(held, criteria) {
-			t.Fatalf("HoldsWork = %+v, %v; want the criteria row, the first closed step", held, holds)
+		if held, holds := gate.Standing(); !holds || !reflect.DeepEqual(held, criteria) {
+			t.Fatalf("Standing() = %+v, %v; want the criteria row, the first closed step", held, holds)
 		}
 		gate.Rows[DesignStepCriteria] = row(DesignStepCriteria, 2, new(2))
-		if held, holds := gate.HoldsWork(true); !holds || !reflect.DeepEqual(held, spec) {
-			t.Fatalf("HoldsWork with the criteria open = %+v, %v; want the spec row", held, holds)
+		if held, holds := gate.Standing(); !holds || !reflect.DeepEqual(held, spec) {
+			t.Fatalf("Standing() with the criteria open = %+v, %v; want the spec row", held, holds)
 		}
 		gate.Rows[DesignStepSpec] = row(DesignStepSpec, 4, new(4))
-		if held, holds := gate.HoldsWork(true); holds {
-			t.Fatalf("HoldsWork with every step open = %+v, want nothing", held)
+		if held, holds := gate.Standing(); holds {
+			t.Fatalf("Standing() with every step open = %+v, want nothing", held)
 		}
 	})
 
 	t.Run("a deployment that gates no step holds nothing", func(t *testing.T) {
 		gate := TreeGate{Steps: []DesignStep{}, Rows: map[DesignStep]DesignGate{DesignStepSpec: row(DesignStepSpec, 4, new(3))}}
-		if held, holds := gate.HoldsWork(true); holds {
-			t.Fatalf("HoldsWork under `gates.design: off` = %+v, want nothing", held)
+		if held, holds := gate.Standing(); holds {
+			t.Fatalf("Standing() under `gates.design: off` = %+v, want nothing", held)
 		}
 	})
 }
@@ -89,7 +85,8 @@ func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
 // release meant it: a suspend that names no source is the daemon's own stop, a start carries no
 // opening sentences, and a role message is neither a wake nor a stop. Each row this release writes
 // without the hold re-encodes to the very bytes the release before wrote, so a rollback reads it
-// too. The hold's own rows round-trip, and a key of the hold on a row it does not belong to is
+// too. The hold's own rows round-trip, a close message's stop builds the hold's stop row, and a
+// key of the hold on a row it does not belong to, or a message's stop of no role of a tree, is
 // refused at the enqueue (validateOutboxPayload), as every other key is.
 func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 	deadline := time.Date(2026, 11, 20, 23, 2, 0, 0, time.UTC)
@@ -143,13 +140,16 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 	versioned.HoldVersion = 4
 	opening := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 4,
 		Task: "The work hold stopped your turn.\n\nThe issue's other roles may ask you questions.", Opening: "The work hold stopped your turn."}
+	messageStop := HoldStop{Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 4, Reason: "the work hold"}
+	versionedStop := messageStop
+	versionedStop.HoldVersion = 4
 	t.Run("the hold's rows round-trip", func(t *testing.T) {
 		for _, payload := range []OutboxPayload{
 			stop, timed, versioned, opening,
-			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &stop},
-			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &versioned},
-			RoleMessage{Role: "legion-LEGION-210-merger", Body: "End your turn now.", Wake: true, Stop: &SuperviseRequest{
-				Op: "suspend", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4, SuspendedBy: supervise.SuspendedByHold, Reason: "the work hold"}},
+			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &messageStop},
+			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &versionedStop},
+			RoleMessage{Role: "legion-LEGION-210-merger", Body: "End your turn now.", Wake: true, Stop: &HoldStop{
+				Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4, Reason: "the work hold"}},
 			RoleMessage{Role: "legion-LEGION-210-merger", Body: "Your phase goes on.", Wake: true},
 		} {
 			row, err := NewOutboxRow("LEGION-209", payload, time.Time{})
@@ -162,6 +162,17 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 			}
 			if !reflect.DeepEqual(decoded, payload) {
 				t.Fatalf("%s decodes to %#v, want %#v", row.Payload, decoded, payload)
+			}
+		}
+	})
+
+	t.Run("a close message's stop builds the hold's stop row", func(t *testing.T) {
+		for _, tc := range []struct {
+			stop HoldStop
+			want SuperviseRequest
+		}{{messageStop, stop}, {versionedStop, versioned}} {
+			if got := tc.stop.Suspend(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the stop %+v builds %#v, want the hold's stop row %#v", tc.stop, got, tc.want)
 			}
 		}
 	})
@@ -188,24 +199,30 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 		versionOnAnotherStop.SuspendedBy, versionOnAnotherStop.HoldVersion = "", 4
 		negativeVersion := versioned
 		negativeVersion.HoldVersion = -4
-		messageStopsTimed := RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &timed}
-		messageStartsIt := RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &opening}
+		stopOf := func(stop HoldStop) RoleMessage {
+			return RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &stop}
+		}
+		noTree, noRole, negativeStop := versionedStop, versionedStop, versionedStop
+		noTree.Tree = ""
+		noRole.Role = claim.RoleController
+		negativeStop.HoldVersion = -4
 		for name, tc := range map[string]struct {
 			payload OutboxPayload
 			says    string
 		}{
-			"a source the hold does not write": {withSource(supervise.SuspendedByDaemon), "hold"},
-			"an operator's source":             {withSource(supervise.SuspendedByOperator), "hold"},
-			"a source on a start":              {started, "suspend"},
-			"a turn with no deadline":          {untimedTurn, "deadline"},
-			"a deadline on another stop":       {ungatedDeadline, "hold"},
-			"opening sentences on a stop":      {openingOnStop, "opening"},
-			"opening sentences the task lacks": {openingWithoutItsTask, "opening"},
-			"a version on a start":             {versionOnAStart, "version"},
-			"a version on another stop":        {versionOnAnotherStop, "version"},
-			"a negative version":               {negativeVersion, "negative"},
-			"a message whose stop is timed":    {messageStopsTimed, "stop"},
-			"a message whose stop is a start":  {messageStartsIt, "stop"},
+			"a source the hold does not write":              {withSource(supervise.SuspendedByDaemon), "hold"},
+			"an operator's source":                          {withSource(supervise.SuspendedByOperator), "hold"},
+			"a source on a start":                           {started, "suspend"},
+			"a turn with no deadline":                       {untimedTurn, "deadline"},
+			"a deadline on another stop":                    {ungatedDeadline, "hold"},
+			"opening sentences on a stop":                   {openingOnStop, "opening"},
+			"opening sentences the task lacks":              {openingWithoutItsTask, "opening"},
+			"a version on a start":                          {versionOnAStart, "version"},
+			"a version on another stop":                     {versionOnAnotherStop, "version"},
+			"a negative version":                            {negativeVersion, "negative"},
+			"a message whose stop names no tree":            {stopOf(noTree), "stop"},
+			"a message whose stop names no role":            {stopOf(noRole), "stop"},
+			"a message whose stop names a negative version": {stopOf(negativeStop), "negative"},
 		} {
 			if _, err := NewOutboxRow("LEGION-209", tc.payload, time.Time{}); err == nil || !strings.Contains(err.Error(), tc.says) {
 				t.Errorf("%s: the enqueue answered %v, want a refusal naming %q", name, err, tc.says)

@@ -116,13 +116,19 @@ func (w holdWords) unrecordedOpening() string {
 		"and the daemon keeps no record of the version that closed its gate. Check what your turn already did: a tool call may not have finished."
 }
 
-// stop is the work hold's stop of role of issue at generation, closed at version: the suspend a
-// message carries for the outbox to post once the message reached the claim, and the row a
-// released worker that is not a merger is given at once, each naming the version that closed the
-// gate. The outbox names its deadline.
+// stop is the row of the work hold's stop of role of issue at generation, closed at version: the
+// suspend the close writes at once for a claim no message reaches, naming the version that closed
+// the gate.
 func (w holdWords) stop(role claim.Role, generation uint64, version int) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "suspend", Tree: w.tree, Role: role, Generation: generation,
 		SuspendedBy: supervise.SuspendedByHold, HoldVersion: version,
+		Reason: fmt.Sprintf("the work hold: version %d of the %s document (%s) of %s closed the design gate", version, w.step, w.document, w.tree)}
+}
+
+// messageStop is the same stop as a close message carries it (record.RoleMessage.Stop), for the
+// outbox to post once the message reached the claim, with the deadline it names then.
+func (w holdWords) messageStop(role claim.Role, generation uint64, version int) *record.HoldStop {
+	return &record.HoldStop{Tree: w.tree, Role: role, Generation: generation, HoldVersion: version,
 		Reason: fmt.Sprintf("the work hold: version %d of the %s document (%s) of %s closed the design gate", version, w.step, w.document, w.tree)}
 }
 
@@ -359,9 +365,8 @@ func otherOpening(issue record.Issue, role claim.Role, opening string) record.Su
 // carries it: every live architect and phase worker of an in-workflow member, and the released
 // merger, woken for it; each worker's carrying its stop.
 func legionCloseMessages(t *testing.T, version int) map[string][]record.RoleMessage {
-	stop := func(role claim.Role) *record.SuperviseRequest {
-		request := legionHold.stop(role, 4, version)
-		return &request
+	stop := func(role claim.Role) *record.HoldStop {
+		return legionHold.messageStop(role, 4, version)
 	}
 	return map[string][]record.RoleMessage{
 		"LEGION-208": {{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.architectClose(version)}},
@@ -535,10 +540,9 @@ func (r carriedRig) token(role claim.Role) string {
 
 func (r carriedRig) wantWorkClose() {
 	r.t.Helper()
-	stop := r.words.stop(claim.RoleImplementer, 1, 45)
 	wantMessages(r.t, r.pool, carriedRoot, []record.RoleMessage{
 		{Role: r.token(claim.RoleArchitect), Body: r.words.architectClose(45)},
-		{Role: r.token(claim.RoleImplementer), Body: r.words.workerClose(45), Stop: &stop},
+		{Role: r.token(claim.RoleImplementer), Body: r.words.workerClose(45), Stop: r.words.messageStop(claim.RoleImplementer, 1, 45)},
 	})
 	want := record.WorkHold{Project: "ACME", Tree: carriedRoot, RootGeneration: 1, Step: r.words.step, ArtifactID: carriedDocument,
 		Version: 45, ClosedAt: holdNow}
@@ -567,10 +571,9 @@ func (r carriedRig) stopped() {
 
 func (r carriedRig) wantWorkOpening() {
 	r.t.Helper()
-	stop := r.words.stop(claim.RoleImplementer, 1, 45)
 	wantMessages(r.t, r.pool, carriedRoot, []record.RoleMessage{
 		{Role: r.token(claim.RoleArchitect), Body: r.words.architectClose(45)},
-		{Role: r.token(claim.RoleImplementer), Body: r.words.workerClose(45), Stop: &stop},
+		{Role: r.token(claim.RoleImplementer), Body: r.words.workerClose(45), Stop: r.words.messageStop(claim.RoleImplementer, 1, 45)},
 		{Role: r.token(claim.RoleArchitect), Body: r.words.opened(46)},
 	})
 	wantSupervise(r.t, r.pool, carriedRoot, "start", []record.SuperviseRequest{
@@ -764,9 +767,9 @@ func TestWorkHoldOverAGatedVerificationDocument(t *testing.T) {
 			applyMirrored(t, rig.pool, engine, "criteria-2", tc.close)
 			wantMessages(t, rig.pool, "LEGION-208", []record.RoleMessage{
 				{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: criteria.architectClose(2)}})
-			stop := criteria.stop(claim.RoleImplementer, 4, 2)
 			if got := roleMessagesOf(t, rig.pool, "LEGION-209"); len(got) != 3 || !reflect.DeepEqual(got[2],
-				record.RoleMessage{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: criteria.workerClose(2), Stop: &stop}) {
+				record.RoleMessage{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: criteria.workerClose(2),
+					Stop: criteria.messageStop(claim.RoleImplementer, 4, 2)}) {
 				t.Fatalf("LEGION-209's messages are %s, want the criteria's close with the implementer's stop last", asJSON(got))
 			}
 			want := record.WorkHold{Project: "LEGION", Tree: "LEGION-208", RootGeneration: 4, Step: record.DesignStepCriteria,
@@ -873,7 +876,7 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 	}
 	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
 		gates, err := record.NewStore().GatesOf(t.Context(), tx, "LEGION-208")
-		if _, holds := (record.TreeGate{Steps: config.DesignGateRootIssues.Steps(), Rows: gates}).HoldsWork(true); err == nil && holds {
+		if _, holds := (record.TreeGate{Steps: config.DesignGateRootIssues.Steps(), Rows: gates}).Standing(); err == nil && holds {
 			t.Fatal("the gate the stops read still holds the tree's work after the opening")
 		}
 		return err

@@ -24,14 +24,15 @@ import (
 // role message), and supervise holds the claim (supervise.SuspendedByHold, Machine.EndHold).
 //
 // The hold is the deployment's word (Config.Hold) over the one predicate the merge hold reads too
-// (record.TreeGate.HoldsWork, over the standing gate). The record keeps the hold of each tree
-// (record.WorkHold): the close writes it, and the boot reads it to tell a tree whose close was
-// never applied from one whose drain is under way (workHoldBooted). The opening deletes the hold
-// that stands and keeps it, with what ended it, as the record of the tree's last opening
-// (record.Store.OpenWorkHold). Every start of a claim the hold stopped builds its task from that
-// record (heldClaimOpening), so a claim the opening did not start gets the task the opening gave,
-// and the outbox builds the task's sentences again from the record when the start runs
-// (HeldClaimOpening), so a start queued at one opening gives the words of the latest.
+// (record.TreeGate.Standing, the standing gate), which the hold asks under `work` alone
+// (holdIsWork). The record keeps the hold of each tree (record.WorkHold): the close writes it,
+// and the boot reads it to tell a tree whose close was never applied from one whose drain is
+// under way (workHoldBooted). The opening deletes the hold that stands and keeps it, with what
+// ended it, as the record of the tree's last opening (record.Store.OpenWorkHold). Every start of a
+// claim the hold stopped builds its task from that record (heldClaimOpening), so a claim the
+// opening did not start gets the task the opening gave, and the outbox builds the task's
+// sentences again from the record when the start runs (HeldClaimOpening), so a start queued at
+// one opening gives the words of the latest.
 
 // HoldStopGrace is how long after the work hold's close message reached a claim a turn still
 // running is cut: long enough for a worker to end its turn at its next step and for a merger to
@@ -281,9 +282,8 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 		return err
 	}
 	reason, workerClose, architectClose := holdReason(hold), workCloseMessage(hold, false), workCloseMessage(hold, true)
-	stopOf := func(c treeClaim) record.SuperviseRequest {
-		return record.SuperviseRequest{Op: "suspend", Tree: c.issue.Tree, Role: c.role, Generation: c.issue.Generation,
-			SuspendedBy: supervise.SuspendedByHold, Reason: reason, HoldVersion: hold.Version}
+	stopOf := func(c treeClaim) record.HoldStop {
+		return record.HoldStop{Tree: c.issue.Tree, Role: c.role, Generation: c.issue.Generation, Reason: reason, HoldVersion: hold.Version}
 	}
 	told, stopped := 0, 0
 	for _, c := range claims {
@@ -315,12 +315,12 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 			told++
 		case c.state().Released():
 			how = "held over its release at once"
-			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c)); err != nil {
+			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend()); err != nil {
 				return err
 			}
 		case underWay:
 			how = "held at the ready of a start under way"
-			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c)); err != nil {
+			if err := e.enqueue(ctx, tx, c.issue.Key, stopOf(c).Suspend()); err != nil {
 				return err
 			}
 		default:
@@ -483,8 +483,9 @@ func (e *Engine) startHeldPhase(ctx context.Context, tx pgx.Tx, c treeClaim, ope
 //     tree's last opening: the hold of a run that ended holds no newer one. A record of an opening
 //     of an older generation with no hold that stands is not dropped here, and no start uses it
 //     (openStoppedClaims);
-//   - a tree that holds work (record.TreeGate.HoldsWork) with no hold that stands is closed now:
-//     the deployment moved from `merge` to `work` while its gate stood closed;
+//   - a tree that holds work (the hold is `work` and the tree's standing gate stands closed,
+//     record.TreeGate.Standing) with no hold that stands is closed now: the deployment moved from
+//     `merge` to `work` while its gate stood closed;
 //   - a tree that holds work with its hold that stands starts nothing: its drain is under way,
 //     and every stop stands as its row stored it;
 //   - a tree that holds no work with its hold that stands has its hold ended: the deployment
@@ -527,7 +528,8 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 				"held", hold.RootGeneration, "generation", root.Generation)
 			held = false
 		}
-		closed, holdsWork := owners.gates[root.Key].HoldsWork(e.holdIsWork())
+		closed, stands := owners.gates[root.Key].Standing()
+		holdsWork := stands && e.holdIsWork()
 		switch {
 		case holdsWork && !held:
 			e.logOnCommit(ctx, "workflow: the boot applies the work hold to a tree whose standing gate stands closed", "tree", root.Key,
@@ -580,7 +582,7 @@ func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.Work
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if closed, holds := (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).HoldsWork(true); holds {
+		if closed, holds := (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).Standing(); holds {
 			e.logOnCommit(ctx, "workflow: the work hold holds the tree again; a claim it stopped waits for the next opening", "tree", root.Key,
 				"step", closed.Step.OrSpec(), "version", closed.LatestVersion)
 			return intake.Result{}, nil
