@@ -3458,6 +3458,15 @@ interface LoggedWrite {
   /** Whether the reader's press of Use my text made it. */
   readonly use: boolean;
   status?: number;
+  /** When the page had the write's answer (`Date.now()`). */
+  answeredAt?: number;
+}
+
+/** One read of the priorities the page sent, `GET /api/v1/priorities`: when it went, and when the
+ *  page had its answer. */
+interface LoggedRead {
+  readonly sentAt: number;
+  answeredAt?: number;
 }
 
 /** A cell's page, field and records: every write of the priority the page sent, the texts other
@@ -3467,6 +3476,8 @@ interface TableCell {
   readonly field: TableField;
   readonly page: Page;
   readonly writes: LoggedWrite[];
+  /** Every read of the priorities the page sent. */
+  readonly reads: LoggedRead[];
   readonly others: string[];
   /** Another person's texts the field took as its own start: drawn in it while nothing of hers
    *  was unwritten or out, so an edit of hers afterwards is made on them. */
@@ -3486,11 +3497,20 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
     id: made.id,
     others: [],
     page,
+    reads: [],
     taken: [],
     using: false,
     writes: [],
   };
   const sent = new Map<object, LoggedWrite>();
+  const read = new Map<object, LoggedRead>();
+  page.on("request", (request) => {
+    if (request.method() !== "GET" || new URL(request.url()).pathname !== "/api/v1/priorities")
+      return;
+    const one: LoggedRead = { sentAt: Date.now() };
+    cell.reads.push(one);
+    read.set(request, one);
+  });
   page.on("request", (request) => {
     if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${made.id}`))
       return;
@@ -3506,7 +3526,12 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
   });
   page.on("response", (response) => {
     const write = sent.get(response.request());
-    if (write !== undefined) write.status = response.status();
+    if (write !== undefined) {
+      write.status = response.status();
+      write.answeredAt = Date.now();
+    }
+    const one = read.get(response.request());
+    if (one !== undefined) one.answeredAt = Date.now();
   });
   await page.goto(`/priorities/${made.id}`);
   await expect(page.getByText("second host").first()).toBeVisible();
@@ -3593,6 +3618,18 @@ async function checkClean(cell: TableCell, suffix: string): Promise<void> {
     cell.writes.filter((write) => write.status === 409).length,
     "no write of hers was refused"
   ).toBe(0);
+  // A notice comes from a read of the priorities the page takes in, so no notice is read only once
+  // a read sent after her last write was answered and that answer drawn.
+  const landed = Math.max(0, ...cell.writes.map((write) => write.answeredAt ?? 0));
+  await expect
+    .poll(() => cell.reads.some((one) => one.sentAt > landed && one.answeredAt !== undefined), {
+      message: "the page read the priorities after her last write's answer",
+      timeout: 15_000,
+    })
+    .toBe(true);
+  await cell.page.evaluate(
+    () => new Promise((drawn) => requestAnimationFrame(() => requestAnimationFrame(drawn)))
+  );
   await soft(tableNotice(cell), "no notice of another person's text").toHaveCount(0);
   checkWrites(cell);
 }
