@@ -83,11 +83,12 @@ function watchLandingRead(client: QueryClient, issue: string, ended: () => void)
  * holding the focus (Enter after `f`) moves it to the row first, since the act takes no press
  * while the write is out, and says so. On a landing the focus goes to the row before the reads, so
  * `j` goes on from there; the reads then draw the row with no mark and no act. Until the tree's
- * read answers, the act goes on saying "Settling…" and takes no press, though the write settled
- * once the coverage's read answered: a press then would settle a node Dispatch holds settled, and
- * be refused (`watchLandingRead`). Where that read draws the node still proposed, the act takes a
- * press again. A refusal reads nothing and leaves the row as drawn, its mark included, and draws
- * one sentence after the act with the role `status`, until the reader's next act.
+ * read answers, the act goes on saying `SETTLE_ANSWERS.settling` and takes no press, though the
+ * write settled once the coverage's read answered: a press then would settle a node Dispatch
+ * holds settled, and be refused (`watchLandingRead`). Where that read draws the node still
+ * proposed, the act takes a press again. A refusal reads nothing and leaves the row as drawn,
+ * its mark included, and draws one sentence after the act with the role `status`, until the
+ * reader's next act.
  */
 export function SettleAct({
   node,
