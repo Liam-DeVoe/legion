@@ -291,8 +291,8 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
-    // deployment (contract 221) in the map's order.
+    // Each worker of the issue's map: Legion's six in their workflow order, then each other role,
+    // of the deployment (contract 221) or of the issue's plan, in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
@@ -402,7 +402,8 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 221): the role
+    // A claim's role, one of Legion's six, a role of the deployment (contract 221) or a role of the
+    // issue's plan: the role
     // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
     // controller, whose claim holds no issue.
     role: z
@@ -514,11 +515,13 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+        "steps its task runs, with `implementer` among them and the tester, the reviewer and `acceptance:owner` after it: Legion's " +
+        "`planner implementer tester reviewer acceptance:owner`, a role of the deployment, or a role a `plan_role` block of the document " +
+        "defines, whose id is the role's name, whose `type` and `model` are its type and its model and whose text is its prompt; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task or a role its steps name: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
@@ -681,7 +684,7 @@ export function createLegionTool(deps: {
             const role = parameters.role;
             if (typeof role !== "string" || !isStepRole(role)) {
               throw new Error(
-                `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
+                `${operation} requires role ${LEGION_ROLES.join(", ")}, a role of the deployment or a role of the issue's plan`
               );
             }
             const { grantId } = await controllerGrant(active.sessionID);
