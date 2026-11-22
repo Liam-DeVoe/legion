@@ -1440,6 +1440,7 @@ dispatch_ui:
   - 'packages/contracts/src/dispatch-tools.ts'
   - 'packages/contracts/src/envelope.ts'
   - 'packages/contracts/src/envoy-session.ts'
+  - 'packages/contracts/src/go-blank.ts'
   - 'packages/contracts/src/going.ts'
   - 'packages/contracts/src/held-secrets.ts'
   - 'packages/contracts/src/index.ts'
