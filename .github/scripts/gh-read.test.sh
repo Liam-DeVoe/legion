@@ -367,6 +367,42 @@ check "and fails nothing" "$(is "$(errors)" 0)"
 check "gh's own words for the refusal stay in the log, once: the answered call printed none" \
   "$(is "$(grep -c 'API rate limit exceeded for installation ID 1' <<<"$err")" 1)"
 
+# The rows above read the wait's line only when one was logged, since a slow host may have no wait
+# left to sleep. These two hold a wait the helper sleeps to its line: the wait is an hour off under a
+# two-hour limit, so the helper sleeps on any host, and a stand-in sleep first on PATH records the
+# seconds and returns at once.
+# sleep_stand_in: a sleep for the next drive that records its arguments in $work/sleepbin/slept.
+sleep_stand_in() {
+  rm -rf "$work/sleepbin"
+  mkdir -p "$work/sleepbin"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$(dirname "$0")/slept"' > "$work/sleepbin/sleep"
+  chmod +x "$work/sleepbin/sleep"
+}
+slept() { cat "$work/sleepbin/slept" 2>/dev/null; }
+
+echo "case: a wait the helper sleeps is logged, naming the reset and the seconds it sleeps"
+github 3600
+sleep_stand_in
+drive JOB_TIMEOUT_MINUTES=120 PATH="$work/sleepbin:$PATH" -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "the helper slept once, for the hour to the reset" \
+  "$([[ $(slept) =~ ^[0-9]+$ ]] && [ "$(slept)" -ge 3590 ] && echo true || echo false)"
+check "and logged that wait, once, naming the reset, the seconds and the job's limit" \
+  "$(is "$(grep -c "^::warning::the API budget is spent until $(utc "$(spent_until)"); waiting $(slept) s for it, within this job's limit at " <<<"$err")|$(warnings)" '1|1')"
+check "then failed by name, the budget still spent after the wait" \
+  "$(is "$status|$(contains "$err" '^::error::the API budget is still spent after the wait')" '75|true')"
+
+echo "case: a secondary wait the helper sleeps is logged, naming the retry-after and the seconds it sleeps"
+github never
+echo "403 3600" > "$work/state/secondary"
+sleep_stand_in
+drive JOB_TIMEOUT_MINUTES=120 PATH="$work/sleepbin:$PATH" -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "the helper slept once, for the hour GitHub asked for" \
+  "$([[ $(slept) =~ ^[0-9]+$ ]] && [ "$(slept)" -ge 3600 ] && echo true || echo false)"
+check "and logged that wait, once, naming the retry-after, the seconds and the job's limit" \
+  "$(is "$(grep -c "^::warning::GitHub's secondary rate limit asks this call to wait 3600 s (its retry-after), until .*; waiting $(slept) s for it, within this job's limit at " <<<"$err")|$(warnings)" '1|1')"
+check "then answered the call after it" "$(is "$status|$out" '0|{"title":"t"}')"
+rm -rf "$work/sleepbin"
+
 # A case that must not wait spends the budget for a minute or more, so a wait would take that
 # long, and holds the case to under 30 s, which leaves gh room to start on a loaded machine.
 echo "case: a spent budget whose reset falls past the job's limit fails by name at once"
