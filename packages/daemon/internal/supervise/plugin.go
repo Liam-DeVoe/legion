@@ -448,9 +448,10 @@ func (m *Machine) refreshOverturned() bool {
 //
 // A read of whether the claim's launch installs a plugin that fails decides nothing here: the
 // registration stands, accepted and charged nothing, and one Warn line names the read's error,
-// never a cause it did not establish. The stale-plugin lane reads the claim again at its next
-// sweep, and relaunches it then where an install moves it and this daemon can relaunch at all
-// (internal/daemon's refreshStalePlugins).
+// never a cause it did not establish. A read that fails because ctx ended, the daemon stopping,
+// says nothing of the store, and no line is written for it. The stale-plugin lane reads the claim
+// again at its next sweep, and relaunches it then where an install moves it and this daemon can
+// relaunch at all (internal/daemon's refreshStalePlugins).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
@@ -487,8 +488,10 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	if m.deps.NoPluginInstall != nil {
 		none, err := m.deps.NoPluginInstall(ctx, m.claim)
 		if err != nil {
-			m.log.Warn("supervise: a registration on another plugin contract stands unjudged: the read of whether this claim's launch installs a plugin failed; the stale-plugin lane reads it again at its next sweep",
-				"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "error", err)
+			if ctx.Err() == nil {
+				m.log.Warn("supervise: a registration on another plugin contract stands unjudged: the read of whether this claim's launch installs a plugin failed; the stale-plugin lane reads it again at its next sweep",
+					"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "error", err)
+			}
 			return nil
 		}
 		if none {
@@ -584,12 +587,15 @@ func StaleRefusesCalls(ctx context.Context, c Claim, daemonContract int, pluginR
 //
 // A read the rule makes that fails holds nothing back: one Warn line names its error, and the
 // task goes on to the rest of sendPending's terms, as it does for a claim the API serves. Each
-// `legion` call of the claim is judged again when it comes (internal/api's staleClaim).
+// `legion` call of the claim is judged again when it comes (internal/api's staleClaim). A read
+// that fails because ctx ended, the daemon stopping, writes no line.
 func (m *Machine) staleRefusesClaim(ctx context.Context) bool {
 	refused, err := StaleRefusesCalls(ctx, m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
 	if err != nil {
-		m.log.Warn("supervise: the read of whether this claim's launch installs a plugin failed, so its task is not held back for a stale plugin",
-			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "error", err)
+		if ctx.Err() == nil {
+			m.log.Warn("supervise: the read of whether this claim's launch installs a plugin failed, so its task is not held back for a stale plugin",
+				"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "error", err)
+		}
 		return false
 	}
 	return refused

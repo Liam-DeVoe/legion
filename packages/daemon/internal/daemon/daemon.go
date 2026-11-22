@@ -2307,7 +2307,9 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // A claim whose read of whether its launch installs a plugin fails is decided nothing by this
 // pass: no relaunch is posted and no line says it is stale, since nothing established either.
 // One Warn line names the claim and the read's error, and the next sweep reads it again. Each
-// read is bounded on its own (stalePluginReadBound), whatever the pass's context allows.
+// read is bounded on its own (stalePluginReadBound), whatever the pass's context allows. A read
+// that fails because ctx ended, the daemon stopping, says nothing of the store: the pass writes
+// no line for it and ends there, since no sweep follows a stop.
 //
 // The project controller's claim is posted whatever the gate holds, and takes no credit: its
 // relaunch is exempt from the pacing altogether (supervise's reserveWake, claim.IsController), so
@@ -2324,8 +2326,14 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
+		if ctx.Err() != nil {
+			break
+		}
 		stale, err := staleForTheLane(ctx, c, noInstall)
 		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
 			s.log.Warn("supervise: the stale-plugin pass could not read whether this claim's launch installs a plugin, so it decides nothing for the claim; the next sweep reads it again",
 				"claim", c.Token, "trigger", trigger, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion, "error", err)
 			continue

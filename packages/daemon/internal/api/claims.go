@@ -743,16 +743,19 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // context: that answer reads the plan of the claim's issue from the daemon's store under
 // Kubernetes, and every `legion` call of a claim reaches this. A read of it that fails refuses
 // nothing: the refusal's sentence says a relaunch is under way, which nothing established, so the
-// call is served, and one Warn line names the claim and the read's error. The next call is
-// judged again.
+// call is served, and one Warn line names the claim and the read's error. A read that fails
+// because the caller hung up says nothing of the store, and no line is written for it. The next
+// call is judged again.
 func (s *server) staleClaim(ctx context.Context, c supervise.Claim) (int, bool) {
 	if c.State == supervise.StateWorking {
 		return c.PluginContract, false
 	}
 	stale, err := supervise.StaleRefusesCalls(ctx, c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall)
 	if err != nil {
-		s.log.Warn("api: the read of whether this claim's launch installs a plugin failed, so the call is not refused as one from a stale plugin",
-			"claim", c.Token, "pluginContract", c.PluginContract, "daemonApiVersion", DaemonAPIVersion, "error", err)
+		if ctx.Err() == nil {
+			s.log.Warn("api: the read of whether this claim's launch installs a plugin failed, so the call is not refused as one from a stale plugin",
+				"claim", c.Token, "pluginContract", c.PluginContract, "daemonApiVersion", DaemonAPIVersion, "error", err)
+		}
 		return c.PluginContract, false
 	}
 	return c.PluginContract, stale
