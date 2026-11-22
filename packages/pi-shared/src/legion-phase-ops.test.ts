@@ -654,9 +654,9 @@ test("request_backward_move sends return_to as returnTo", async () => {
 
 // Contract 221: the daemon takes a verdict from a role of the deployment too, and the one
 // description every role reads says so.
-test("the description gives a verdict to the tester or a role of the deployment", () => {
+test("the description gives a verdict to the tester, a role of the deployment or a role of the issue's plan", () => {
   expect(legionToolDescription({ envoyPublish: "envoy_publish" })).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment on a phase completion"
+    "`verdict` pass|fail from the tester, a role of the deployment or a role of the issue's plan on a phase completion"
   );
 });
 

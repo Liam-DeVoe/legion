@@ -192,7 +192,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-  "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
+  "architect), `verdict` pass|fail from the tester, a role of the deployment or a role of the issue's plan on a phase completion (the daemon refuses a verdict from " +
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
   "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
@@ -961,10 +961,10 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester and from a
-// role of the deployment alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
+// Every role reads one description, and the daemon accepts a verdict from the tester, a role of
+// the deployment and a role of the issue's plan alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
 // from its own instructions that it reports one.
-test("the legion tool's description gives a verdict to the tester or a role of the deployment", () => {
+test("the legion tool's description gives a verdict to the tester, a role of the deployment or a role of the issue's plan", () => {
   const tool = createLegionTool({
     pi,
     daemon: recordingDaemon({}).daemon,
@@ -977,7 +977,7 @@ test("the legion tool's description gives a verdict to the tester or a role of t
     session: () => claimSession("reviewer"),
   });
   expect(tool.description).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment"
+    "`verdict` pass|fail from the tester, a role of the deployment or a role of the issue's plan"
   );
   expect(tool.description).not.toContain("when your role's instructions require one");
 });
