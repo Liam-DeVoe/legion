@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testClock is a clock a test moves by hand, for the spacing between failed discovery attempts.
@@ -55,7 +56,7 @@ func TestCodeFlowFailsUnavailableUntilDiscoveredAndWorksAfter(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	clock := newTestClock()
 	flow.discovery.now = clock.Now
 
@@ -110,7 +111,7 @@ func TestDiscoverSpacesFailedAttemptsFiveSecondsApart(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	clock := newTestClock()
 	flow.discovery.now = clock.Now
 	ctx := context.Background()
@@ -150,7 +151,7 @@ func TestDiscoverIsOneReadForConcurrentCallers(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	issuer.DelayDiscovery(300 * time.Millisecond)
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	var wg sync.WaitGroup
 	errs := make(chan error, 16)
 	for range 16 {
@@ -174,7 +175,7 @@ func TestDiscoverOutlivesACallerThatGoesAway(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	issuer.DelayDiscovery(300 * time.Millisecond)
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	impatient, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if err := flow.Discover(impatient); !errors.Is(err, ErrIssuerUnavailable) || !errors.Is(err, context.DeadlineExceeded) {

@@ -49,10 +49,7 @@ type discovery[T any] struct {
 	now    func() time.Time
 	flight singleflight.Group
 	// armAttempt, when set, arms the bound of one read of the discovery document (attemptContext)
-	// in place of discoveryAttemptTimeout. Only a test sets it, to the bound end of
-	// discoveryAttemptTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): the
-	// product's bound is for an issuer that accepts a read and never answers, and on a loaded
-	// machine the time a test's read of its own issuer takes is the machine's.
+	// in place of discoveryAttemptTimeout (the code flow's WithWaitArm).
 	armAttempt func(context.Context) (context.Context, context.CancelFunc)
 
 	mu         sync.Mutex
@@ -65,6 +62,14 @@ type discovery[T any] struct {
 
 func newDiscovery[T any](issuer string, read func(ctx context.Context) (T, error)) *discovery[T] {
 	return &discovery[T]{issuer: issuer, read: read, now: time.Now}
+}
+
+// armWith arms each read of the discovery document with arm, given discoveryAttemptTimeout
+// (WithWaitArm).
+func (d *discovery[T]) armWith(arm WaitArm) {
+	d.armAttempt = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		return arm(ctx, discoveryAttemptTimeout)
+	}
 }
 
 // done reports whether an attempt has succeeded.
@@ -180,11 +185,16 @@ type LazyVerifier struct {
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
-// discovery document is read by Discover, by Run, or by the first Verify.
-func NewLazyVerifier(issuer, audience string) *LazyVerifier {
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+// discovery document is read by Discover, by Run, or by the first Verify. Of opts, WithWaitArm
+// arms each read of the discovery document.
+func NewLazyVerifier(issuer, audience string, opts ...Option) *LazyVerifier {
+	verifier := &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		return New(ctx, issuer, audience)
 	})}
+	if arm := collectOptions(opts).waitArm; arm != nil {
+		verifier.discovery.armWith(arm)
+	}
+	return verifier
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
