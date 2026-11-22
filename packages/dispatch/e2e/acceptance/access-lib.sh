@@ -461,17 +461,19 @@ answered() { [[ "$1" =~ ^[0-9]{3}$ || "$1" == socket ]]; }
 # name more answers that differ than it judged.
 compared=0
 differed=0
-# same_answers WHAT LEFT RIGHT [LEFT_LINE RIGHT_LINE]: the answers kept as LEFT and RIGHT
+# same_answers WHAT LEFT RIGHT [LEFT_LINE RIGHT_LINE [REQUEST]]: the answers kept as LEFT and RIGHT
 # (keep_answer) are answers (answered), the same status, the same bytes and the same headers. A
 # status that is no answer differs from every status, its own included. Bytes the two requests were
 # sent alike are the same answer before any mask: a caller cannot tell them apart, and a mask
 # could only part them (a refusal that names the caller's own list, which a fill also names). Other
 # bytes are compared masked, each with its own fill. LEFT_LINE and RIGHT_LINE, each a header line
 # or empty, are the lines the two servers are declared to answer apart: LEFT's headers must hold
-# LEFT_LINE and RIGHT's RIGHT_LINE, and each line is dropped from both before they are compared. A
-# pair that differs, however many of these it breaks, counts once, and is written to
-# $work/differences under WHAT, with both answers around the first byte that differs or both
-# headers that differ; no_difference reads that file.
+# LEFT_LINE and RIGHT's RIGHT_LINE, and each line is dropped from both before they are compared.
+# REQUEST, "METHOD PATH", is the request the blob driver sent the base (LEFT) and this build
+# (RIGHT): bodies that differ only by the members main_additions names for its route are the same
+# answer (main_addition_admits). A pair that differs, however many of these it breaks, counts once,
+# and is written to $work/differences under WHAT, with both answers around the first byte that
+# differs or both headers that differ; no_difference reads that file.
 same_answers() {
   local what=$1 left=$work/answers/$2 right=$work/answers/$3 at differs=0 side line
   local -a drop=()
@@ -487,7 +489,8 @@ same_answers() {
       "$3" "$(<"$right.status")" "$2" "$(head -c 400 "$left.body")" "$3" "$(head -c 400 "$right.body")" >>"$work/differences"
   elif cmp -s "$left.raw" "$right.raw"; then
     :
-  elif at=$(first_difference "$left.body" "$right.body"); then
+  elif at=$(first_difference "$left.body" "$right.body") &&
+    ! main_addition_admits "${6:-}" "$left.body" "$right.body" "$what"; then
     differs=1
     printf '%s (HTTP %s): the answers differ at byte %s\n   %s: %s\n   %s: %s\n' "$what" "$(<"$right.status")" "$at" \
       "$2" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$left.body" | head -c 240)" \
@@ -516,6 +519,149 @@ same_answers() {
       sed -nE "s/^< /   $2: /p; s/^> /   $3: /p")" >>"$work/differences"
   fi
   [ "$differs" = 0 ] || differed=$((differed + 1))
+}
+
+# Main's changes after the pin. The blob driver holds this build to a base it is given, and a base
+# pinned to one commit (the private-projects stack is held to the head of the branch it merges,
+# which holds main as that head took it) answers as main answered then: a change main made since,
+# which reached this build when the change merged main, can change an answer the change never
+# touched. The blob driver names each such change in main_additions, one entry for each member
+# main added, its four fields joined by tabs:
+#   COMMIT  main's commit that made the change, as its 40 hexadecimal digits
+#   ROUTE   METHOD and path pattern, as this build's route index writes the route (served_route)
+#   PATH    the member, as jq writes a path, with `[]` for each element of a list
+#           (`.design_gates[].holds`), its last step the member's name
+#   VALUE   the member's value at this build, as JSON and as the server writes it (`null`)
+# An entry says that at ROUTE the base's answer holds no member at PATH and this build's holds it,
+# with VALUE. It is in force while this build holds COMMIT and the base does not
+# (main_additions_in_force). A build that does not hold COMMIT fails the run, since the entry would
+# name a change this build does not make; a base that holds COMMIT answers the member too, so there
+# the entry admits nothing, and the run says so. An entry in force that admits no answer fails the
+# run once every read is compared (main_additions_report): the change it names is gone, or no read
+# reaches it, and no entry may stand that admits nothing it was checked against.
+main_additions=()
+main_additions_live=()
+main_additions_unused=''
+declare -A main_addition_uses=() main_addition_answers=()
+
+# The text of a member as a server writes it (jq's --arg text, `"NAME":VALUE`), taken out of an
+# answer wherever it stands as a member: after a comma, or first or alone in its object. A member
+# ends at a comma or at the close of its object, so `"n":1` is never taken out of `"n":12`.
+# shellcheck disable=SC2016 # a jq program: jq, not the shell, reads its $text and $m
+readonly strip_member='def literal: gsub("(?<c>[.*+?^$|(){}\\[\\]\\\\/])"; "\\\(.c)");
+  ($text | literal) as $m
+  | gsub("," + $m + "(?=[,}])"; "") | gsub("\\{" + $m + ","; "{") | gsub("\\{" + $m + "\\}"; "{}")'
+
+# main_additions_in_force ROOT BASE reads each entry of main_additions against this build's commit
+# (HEAD of the checkout at ROOT) and the base commit BASE, notes whether it is in force, and keeps
+# the index of each one that is in main_additions_live. An entry not written as the table above
+# says, or one naming a commit this build does not hold or git cannot read, fails the run.
+main_additions_in_force() {
+  local root=$1 base=$2 i commit at path value said rc subject
+  local -r commit_shape='^[0-9a-f]{40}$' route_shape='^[A-Z]+ /[^[:space:]]*$'
+  local -r path_shape='^(\.[A-Za-z_][A-Za-z0-9_]*(\[\])*)*\.[A-Za-z_][A-Za-z0-9_]*$'
+  for i in "${!main_additions[@]}"; do
+    IFS=$'\t' read -r commit at path value <<<"${main_additions[$i]}"
+    if ! [[ "$commit" =~ $commit_shape && "$at" =~ $route_shape && "$path" =~ $path_shape ]] ||
+      ! jq -n --argjson v "$value" true >/dev/null 2>&1; then
+      fail "main_additions entry $((i + 1)) is not COMMIT, METHOD PATTERN, PATH and VALUE joined by tabs: ${main_additions[$i]}"
+    fi
+    rc=0
+    said=$(git -C "$root" merge-base --is-ancestor "$commit" HEAD 2>&1) || rc=$?
+    case $rc in
+      0) ;;
+      1) fail "main_additions names main's $commit for $at $path, and this build's commit $(git -C "$root" rev-parse HEAD) does not hold it: an entry admits only a change this build makes" ;;
+      *) fail "main_additions names $commit, which git cannot read in this clone: $said" ;;
+    esac
+    subject=$(git -C "$root" log -1 --format=%s "$commit")
+    rc=0
+    said=$(git -C "$root" merge-base --is-ancestor "$commit" "$base" 2>&1) || rc=$?
+    case $rc in
+      0) note "main addition not in force: the base $base holds $commit ($subject), so both builds answer $at's $path alike and the entry admits nothing" ;;
+      1)
+        main_additions_live+=("$i")
+        note "main addition in force: $commit ($subject), which this build holds and the base $base does not: $at answers $path as $value at this build, where the base answers none"
+        ;;
+      *) fail "could not tell whether the base $base holds $commit: $said" ;;
+    esac
+  done
+}
+
+# main_addition_admits REQUEST BASE HEAD WHAT holds when BASE and HEAD, the masked answers of the
+# base and of this build to REQUEST ("METHOD PATH"), differ by the members the entries in force for
+# REQUEST's route name and by nothing else. Each such member is taken out of HEAD where it stands
+# with its VALUE. Then the two answers must be one JSON value (jq's ==), which holds the member to
+# its PATH and the base to having none there, and, with the member's text taken out of both as it
+# is written (strip_member), the same bytes, which holds every byte a JSON value does not show: the
+# order of members, an escape, a space. An answer that is no JSON is never admitted. Each entry that
+# took a member out of an admitted answer counts it in main_addition_uses and names WHAT under it
+# in main_addition_answers.
+main_addition_admits() {
+  local request=$1 base=$2 head=$3 what=$4 route i commit at path value parent member taken text side
+  local -a used=()
+  [ -n "$request" ] && [ ${#main_additions_live[@]} -gt 0 ] || return 1
+  route=$(served_route head "${request%% *}" "${request#* }") || return 1
+  route="${request%% *} $route"
+  cp "$head" "$work/admitted-head.json"
+  cp "$base" "$work/admitted-base.text"
+  cp "$head" "$work/admitted-head.text"
+  for i in "${main_additions_live[@]}"; do
+    IFS=$'\t' read -r commit at path value <<<"${main_additions[$i]}"
+    [ "$at" = "$route" ] || continue
+    # PATH's steps, each made optional (`.name?`, `[]?`), so an answer that holds no such list, or
+    # whose root is no object, has no member there rather than failing the read.
+    parent=$(sed -E 's/\.([A-Za-z_][A-Za-z0-9_]*)/.\1?/g; s/\[\]/[]?/g' <<<"${path%.*}")
+    member=${path##*.}
+    taken=$(jq --arg m "$member" --argjson v "$value" \
+      "[${parent:-.} | objects | select(has(\$m) and .[\$m] == \$v)] | length" "$work/admitted-head.json" 2>/dev/null) || return 1
+    [[ "$taken" =~ ^[0-9]+$ ]] || return 1
+    [ "$taken" -gt 0 ] || continue
+    jq -c --arg m "$member" --argjson v "$value" \
+      "del(${parent:-.} | objects | select(has(\$m) and .[\$m] == \$v) | .[\$m])" \
+      "$work/admitted-head.json" >"$work/admitted-head.next" 2>/dev/null || return 1
+    mv "$work/admitted-head.next" "$work/admitted-head.json"
+    text=$(jq -rn --arg m "$member" --argjson v "$value" '"\($m | tojson):\($v | tojson)"')
+    for side in base head; do
+      jq -Rrj --slurp --arg text "$text" "$strip_member" "$work/admitted-$side.text" >"$work/admitted-$side.next" || return 1
+      mv "$work/admitted-$side.next" "$work/admitted-$side.text"
+    done
+    used+=("$i")
+  done
+  [ ${#used[@]} -gt 0 ] || return 1
+  [ "$(jq -n --slurpfile b "$base" --slurpfile h "$work/admitted-head.json" '$b == $h' 2>/dev/null)" = true ] || return 1
+  cmp -s "$work/admitted-base.text" "$work/admitted-head.text" || return 1
+  for i in "${used[@]}"; do
+    main_addition_uses[$i]=$((${main_addition_uses[$i]:-0} + 1))
+    main_addition_answers[$i]+="$what"$'\n'
+  done
+}
+
+# main_additions_report names, for each entry in force, every answer it admitted, and each entry in
+# force that admitted none, which it keeps in main_additions_unused for main_additions_used to fail
+# on once the differences, if any, are printed.
+main_additions_report() {
+  local i commit at path value what
+  main_additions_unused=''
+  for i in "${main_additions_live[@]}"; do
+    IFS=$'\t' read -r commit at path value <<<"${main_additions[$i]}"
+    if [ "${main_addition_uses[$i]:-0}" -eq 0 ]; then
+      main_additions_unused+="   $commit $at $path"$'\n'
+      note "main addition admitted no answer: $commit $at $path"
+      continue
+    fi
+    note "main addition admitted ${main_addition_uses[$i]} answers: $commit $at $path, absent at the base and $value at this build:"
+    while IFS= read -r what; do
+      [ -z "$what" ] || note "  $what"
+    done <<<"${main_addition_answers[$i]}"
+  done
+}
+
+# main_additions_used fails the run when main_additions_report found an entry in force that
+# admitted no answer: the change it names is gone or no read reaches it, so the entry goes.
+main_additions_used() {
+  [ -z "$main_additions_unused" ] ||
+    fail "main additions in force admitted no answer, so each names a change no read met: remove it from main_additions
+$main_additions_unused"
 }
 
 # judge STATUS PROBLEM counts one answer held to a rule of its own rather than beside another (a
@@ -651,8 +797,9 @@ record_lists() {
 
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
 # made as CALLER, are the same status, the same headers but the declared addition (the blob
-# driver's declared_header, empty for none) and, masked, the same bytes (same_answers). A route
-# only this build serves is read at neither build (new_route).
+# driver's declared_header, empty for none) and, masked, the same bytes but the members of main's
+# changes after the pin that main_additions names (same_answers). A route only this build serves is
+# read at neither build (new_route).
 compare() {
   local caller=$1 method=$2 path=$3 body=${4:-} build target
   if new_route "$method" "$path"; then
@@ -663,6 +810,6 @@ compare() {
     send "$build" "$caller" "$method" "$target" "$body"
     keep_answer "$build" "$build"
   done
-  same_answers "$caller $method $path" base head '' "${declared_header:-}"
+  same_answers "$caller $method $path" base head '' "${declared_header:-}" "$method $path"
   [ "$method" != GET ] || record_lists "$path"
 }
