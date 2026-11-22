@@ -74,3 +74,58 @@ func TestAnIssueWithNoPlanRowsNamesNoTaskInItsCapNoticeOrHookPrompt(t *testing.T
 		}
 	}
 }
+
+// Two tasks of one issue keep their own counts of returns: of tasks a and b, each `implementer
+// reviewer` with agents of their own, both at their review, b's review requests changes once and
+// a's three times. a counts 3 rounds and 3 passes, b 1 and 1; the owner is told review_round_cap
+// once, in a notice that names task a, and nothing of b. With the hook a deployment runs that
+// names none (config.DefaultHooks), a's fifth return prompts the implementer and the reviewer of
+// a alone, each prompt naming task a.
+//
+// The fault it catches is counts that one task shares with another (its control: the counts read
+// and written for the plan's first task whatever the task, which raises a's rounds to 4 with b's
+// one return).
+func TestTwoTasksOfOneIssueKeepTheirOwnCounts(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Reviewing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a", "reviewer:ar"}, agents: []claim.Agent{"impl-a", "rev-a"}, state: record.TaskRunning, place: atStep(2)},
+		planTask{id: "b", steps: []string{"implementer:b", "reviewer:br"}, agents: []claim.Agent{"impl-b", "rev-b"}, state: record.TaskRunning, place: atStep(2)},
+		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
+
+	taskMoves(t, pool, engine, root.Key, "b", TriggerReviewRejected, changesBody)
+	taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)
+	for range 2 {
+		taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+		taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)
+	}
+
+	tasks := tasksOf(t, pool, engine, root.Key)
+	if a := tasks["a"].Counts; a.Rounds != 3 || a.Pass != 3 {
+		t.Fatalf("task a counts %d rounds and %d passes, want 3 and 3: its own three returns", a.Rounds, a.Pass)
+	}
+	if b := tasks["b"].Counts; b.Rounds != 1 || b.Pass != 1 {
+		t.Fatalf("task b counts %d rounds and %d passes, want 1 and 1: its own one return", b.Rounds, b.Pass)
+	}
+	notices := noticesOf(t, pool, root.Key, "pr-blocked")
+	if len(notices) != 1 || !strings.HasPrefix(notices[0].Reason, "task a: Issue reached review_round_cap=3") {
+		t.Fatalf("the pr-blocked notices of %s = %+v, want the one of review_round_cap naming task a", root.Key, notices)
+	}
+
+	for range 2 {
+		taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+		taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)
+	}
+	prompts := hookPrompts(t, pool)
+	claims := map[claim.Role]claim.Token{}
+	for _, prompt := range prompts {
+		if !strings.HasPrefix(prompt.Prompt, "task a: ") {
+			t.Fatalf("the hook prompt %+v names no task a: want each prompt of a's fifth return to name task a", prompt)
+		}
+		claims[prompt.Role] = prompt.Claim
+	}
+	if len(prompts) != 3 || claims[claim.RoleImplementer] != agentClaim(t, root.Key, "impl-a") || claims[claim.RoleReviewer] != agentClaim(t, root.Key, "rev-a") {
+		t.Fatalf("the hook prompts of %s = %+v, want one firing whose implementer and reviewer are a's agents impl-a and rev-a", root.Key, prompts)
+	}
+}
