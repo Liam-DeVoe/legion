@@ -12230,6 +12230,19 @@ describe("executeDispatchTool", () => {
     await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
       "already holds plan.md"
     );
+    // Dispatch stores a name trimmed with Go's strings.TrimSpace, which cuts U+0085 and `trim`
+    // keeps (goTrimSpace), so this upload writes plan.md's next version and is refused alike.
+    const nextLine = await upload({
+      issue: "DSP-42",
+      name: "plan.md\u0085",
+      path: "cases.txt",
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(nextLine).toBeInstanceOf(ToolInputError);
+    if (!(nextLine instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(nextLine.problems).toEqual(failure.problems);
     // Nothing was uploaded, and the round trip was never asked for: the name decided it.
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });

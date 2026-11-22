@@ -49,6 +49,7 @@ import {
   sessionMode,
 } from "./askgate-core";
 import * as fx from "./askgate-fixtures";
+import { callKeys } from "./breaker";
 import { createDecisionRecorder, RECORD_CUT_DELAY_MS, type RecordClient } from "./decision-record";
 import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
@@ -1118,6 +1119,15 @@ describe("breaker (test 7)", () => {
     await g.device("b", "dispatch_message", { in_reply_to: "m-1", body: "two" });
     await g.device("c", "dispatch_message", { in_reply_to: "m-2", body: "other" });
     expect(g.entries.map((e) => e.outcome)).toEqual(["verdict", "verdict", "verdict"]);
+  });
+  test("an upload's key reads its name as Dispatch stores it, trimmed by Go's strings.TrimSpace", () => {
+    // goTrimSpace cuts U+0085, which `trim` keeps, so both names are the one document plan.md and
+    // the same text sent under either is the same upload; U+FEFF, which `trim` cuts, Go keeps.
+    const key = (name: string) =>
+      callKeys("dispatch_artifact", { issue: "X-1", name, content: "# Plan\n" });
+    expect(key("plan.md\u0085")).toEqual(key("plan.md"));
+    expect(key(" plan.md\u0085 ")).toEqual(key("plan.md"));
+    expect(key("plan.md\uFEFF")).not.toEqual(key("plan.md"));
   });
 });
 

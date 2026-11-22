@@ -17,9 +17,12 @@
  * `dispatch artifact` (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the
  * Dispatch server's blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion`
  * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's;
- * the Envoy plugin's `listenerRoleName` (`packages/pi-envoy/extensions/envoy.ts`), which
- * trims a role's name as the Envoy listener trims a claim's; and `goTrimSpace` below, which
- * trims an upload's name as Dispatch trims it (`uploadExtensionOf`, `./dispatch-tools.ts`).
+ * and `goTrimSpace` below, which trims a role's name as the Envoy listener trims a claim's (the
+ * Envoy plugin's `listenerRoleName`, `packages/pi-envoy/extensions/envoy.ts`) and an upload's
+ * name as Dispatch trims it: for its extension (`uploadExtensionOf`, `./dispatch-tools.ts`), for
+ * the held-name check (`artifactUnderName`,
+ * `packages/envoy-client/src/dispatch-commands/upload-checks.ts`), and for AskGate's rules check
+ * and breaker (`uploadName` and `callKeys`, `packages/pi-envoy/extensions/askgate/`).
  *
  * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
@@ -44,10 +47,9 @@ export const GO_TRIM_SPLIT = ["\u0085", "\uFEFF"] as const;
 /**
  * `text` with the characters `goBlankPattern` holds cut from both ends, as Go's
  * `strings.TrimSpace` cuts them, which is not what `trim` cuts (`GO_TRIM_SPLIT`). Each end is
- * walked one UTF-16 unit at a time and each unit tested alone, as the Envoy plugin's
- * `listenerRoleName` tests a character, so the pattern never sees more than one character and
- * the time is linear in the blanks cut. Every character of the set is a single unit, and half a
- * surrogate pair is none of them.
+ * walked one UTF-16 unit at a time and each unit tested alone, so the pattern never sees more
+ * than one character and the time is linear in the blanks cut. Every character of the set is a
+ * single unit, and half a surrogate pair is none of them.
  */
 export function goTrimSpace(text: string): string {
   let start = 0;

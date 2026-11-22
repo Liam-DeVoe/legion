@@ -14,7 +14,9 @@ body: |-
   AskGate's marker by the same reading. The
   declared type is the deciding extension's (`notes.txt.1` goes up as `text/plain`), a name of 4,096
   characters reaches Dispatch's own refusal, and a name-only upload, the empty-document create, is
-  not held for an AskGate marker. Its
+  not held for an AskGate marker. The check that refuses an upload under a name the owner already
+  holds, unless `--force` is given, reads the name as Dispatch trims it, so `plan.md` followed by
+  U+0085 is refused over a held `plan.md`, as `plan.md` is. Its
   answer names the kind Dispatch stored: `a document
   (kind doc; …)`, `a file (kind file; …)` or `a picture (kind image; …)`. `dispatch doc-read
   --version` reads a document's version stored as bytes as a file.
