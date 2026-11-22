@@ -170,6 +170,13 @@ func (h *stack) mixedBuildFixedSessions(n int) []*mixedBuildSession {
 		started, err := sc.Ensure(ctx, s.id, []string{s.subject}, 0)
 		require.NoError(h.t, err, "the fixed consumer of %s", s.id)
 		require.Equal(h.t, sessionFixedPrefix+s.id, started.Name)
+		// The first pull right after the create can meet no responder on the three-server hub
+		// while the consumer's group elects its leader, which the pull reads as no consumer (a
+		// step 2 run met it once in 300 sessions): the pull waits for the consumer's leader.
+		require.Eventually(h.t, func() bool {
+			info, err := consumerInfo(ctx, nc, notifications, started.Name)
+			return err == nil && info != nil && info.Cluster != nil && info.Cluster.Leader != ""
+		}, 30*time.Second, 50*time.Millisecond, "the fixed consumer %s never named its leader", started.Name)
 		for m := range 2 {
 			ack, err := js.Publish(ctx, s.subject, fmt.Appendf(nil, "%s before the window, %d", s.id, m))
 			require.NoError(h.t, err)
