@@ -2065,7 +2065,7 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
   await page.goto(
     `/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&section=needs-you&agent=${encodeURIComponent(THREAD_SESSION.session_id)}&q=rule&sort=priority&group=type&show=dismissed`
   );
-  await expect(controlRow(main).getByRole("link", { name: "Clear agent filter" })).toBeVisible();
+  await expect(controlRow(main).getByRole("button", { name: "Clear agent filter" })).toBeVisible();
   await controlRow(main).getByRole("button", { exact: true, name: "Clear filters" }).click();
   const address = new URL(page.url());
   for (const gone of ["assignee", "type", "priority", "urgency", "project", "section", "agent"]) {

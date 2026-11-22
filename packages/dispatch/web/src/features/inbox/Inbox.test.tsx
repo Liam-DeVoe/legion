@@ -404,7 +404,7 @@ test("Inbox keeps rows waiting on agents below Waiting on you without duplicatin
     expect(headings).toEqual(["Waiting on you (1)", "Waiting on agents (1)"]);
     expect(screen.getByText(wholeText("Waiting on session:session-…"))).toBeTruthy();
     // No `?agent=`, so no agent filter to clear.
-    expect(screen.queryByRole("link", { name: "Clear agent filter" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear agent filter" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -814,6 +814,7 @@ test("Blocked on you draws no number after the credential list's first read fail
 });
 
 test("Inbox narrows to one agent's asks from ?agent and clears back to the whole inbox", async () => {
+  const user = userEvent.setup();
   const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
   const plannerWaits = issueAsk({
     id: "ask-planner-waits",
@@ -860,6 +861,7 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
   const view = render(
     <MemoryRouter initialEntries={["/?agent=session-1&group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
+        <RouteProbe />
         <Inbox />
       </QueryClientProvider>
     </MemoryRouter>
@@ -872,10 +874,9 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)
     ).toEqual(["Waiting on you (1)", "Waiting on agents (1)"]);
-    const chip = await screen.findByRole("link", { name: "Clear agent filter" });
-    expect(chip.textContent).toBe("Asks from Planner · clear");
-    expect(chip).toHaveAttribute("href", "/");
-    // The agent's live link sits beside the clear-filter link, never inside it.
+    const chip = await screen.findByRole("button", { name: "Clear agent filter" });
+    expect(chip.textContent).toBe("Asks from Planner×");
+    // The agent's live link sits beside the clear-filter chip, never inside it.
     const chipAgent = chip.closest<HTMLElement>("[data-agent-name]");
     if (chipAgent === null) throw new Error("the agent filter chip is not drawn by AgentName");
     const live = await within(chipAgent).findByRole("link", {
@@ -887,6 +888,9 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
     // list, so it is absent beside an agent filter. It is found by its role and its name, which
     // is `Blocked on you` alone or with its count after a colon; its text is `Blocked on you · N`.
     expect(screen.queryByRole("button", { name: /^Blocked on you\b/ })).not.toBeInTheDocument();
+
+    await user.click(chip);
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
   } finally {
     view.unmount();
     listAgents.mockRestore();
@@ -935,8 +939,8 @@ test("Inbox ?section=needs-you keeps only the agent's asks waiting on the viewer
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)
     ).toEqual(["Waiting on you (1)"]);
     // No live agent carries the title, so the chip falls back to the asks' author label.
-    expect(screen.getByRole("link", { name: "Clear agent filter" }).textContent).toBe(
-      "Asks from session:session-… waiting on you · clear"
+    expect(screen.getByRole("button", { name: "Clear agent filter" }).textContent).toBe(
+      "Asks from session:session-… waiting on you×"
     );
   } finally {
     view.unmount();
@@ -947,6 +951,7 @@ test("Inbox ?section=needs-you keeps only the agent's asks waiting on the viewer
 });
 
 test("Inbox filtered to an agent with no open asks says so and still offers to clear", async () => {
+  const user = userEvent.setup();
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
   const getAsk = spyOn(api, "getAsk").mockResolvedValue({
     ask: issueAsk(),
@@ -966,6 +971,7 @@ test("Inbox filtered to an agent with no open asks says so and still offers to c
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
+        <RouteProbe />
         <Inbox />
       </QueryClientProvider>
     </MemoryRouter>
@@ -975,8 +981,98 @@ test("Inbox filtered to an agent with no open asks says so and still offers to c
     const emptyState = await screen.findByRole("region", { name: "Inbox empty state" });
     // A session the registry does not list and no listed ask names reads by its short id.
     expect(within(emptyState).getByText("No open asks from session:idle-ses…")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Clear agent filter" })).toHaveAttribute("href", "/");
     expect(screen.queryByText("Which approach?")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear agent filter" }));
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+/** The agent `?agent=session-1` names, as the registry lists it. */
+function plannerAgents() {
+  return spyOn(api, "listAgents").mockResolvedValue([
+    {
+      capabilities: [],
+      dir: "/w",
+      host: "m",
+      last_activity: null,
+      last_seen: Date.now(),
+      machine_id: "m",
+      open_asks: 1,
+      roles: [],
+      session_id: "session-1",
+      state: "live",
+      title: "Planner",
+    },
+  ]);
+}
+
+test("the agent narrowing is the row's shared chip, and its press leaves for the Inbox it narrowed as a link does", async () => {
+  const user = userEvent.setup();
+  const rows = [issueAsk({ id: "ask-planner", question: "Planner question" })];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listAgents = plannerAgents();
+  const narrowed = "/?agent=session-1&q=Planner&assignee=everyone&group=waiting-on&type=question";
+  const { unmount } = renderInbox(["/agents", narrowed]);
+  try {
+    // Found by its name alone, so a chip drawn as anything but the shared one is read, not missed.
+    const chip = await screen.findByLabelText("Clear agent filter");
+    const type = screen.getByRole("button", { name: "Remove Type: Question filter" });
+    expect([chip.tagName, chip.getAttribute("data-control"), chip.className]).toEqual([
+      "BUTTON",
+      "chip",
+      type.className,
+    ]);
+    expect(chip.textContent).toBe("Asks from Planner×");
+
+    await user.click(chip);
+    // The agent, the Type narrowing and the banding go; who the list is for and the text stay.
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/?q=Planner&assignee=everyone")
+    );
+    expect(screen.queryByLabelText("Clear agent filter")).not.toBeInTheDocument();
+    // The press pushed an entry, as following a link does: Back gives the agent's asks back.
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(narrowed));
+  } finally {
+    unmount();
+    listAgents.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("under a host that owns the filter, the agent chip's press tells the host and leaves the address", async () => {
+  const user = userEvent.setup();
+  const rows = [issueAsk({ id: "ask-planner", question: "Planner question" })];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listAgents = plannerAgents();
+  const changes: InboxRoute[] = [];
+  const view = render(
+    <MemoryRouter initialEntries={["/agents"]}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <RouteProbe />
+        <Inbox
+          filter={{ agent: "session-1", assignees: [], group: "waiting-on", q: "Planner" }}
+          keymapScope={DIALOG_SCOPE}
+          onFilterChange={(next) => changes.push(next)}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await user.click(await screen.findByLabelText("Clear agent filter"));
+    // The host is told what every other chip's removal tells it, and the page under it stays.
+    expect(changes).toEqual([{ assignees: [], item: undefined, q: "Planner" }]);
+    expect(screen.getByTestId("location").textContent).toBe("/agents");
   } finally {
     view.unmount();
     listAgents.mockRestore();

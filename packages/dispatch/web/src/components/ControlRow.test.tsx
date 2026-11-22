@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { afterRescue, RescuedMain } from "../__tests__/focus-rescue";
+import { Chip } from "./Chip";
 import { ControlRow, type ControlRowProps } from "./ControlRow";
 
 /**
@@ -450,21 +451,15 @@ test("Delete on a link a page drew inside its chip beside the chip's own control
   const user = userEvent.setup();
   const cleared = mock(() => {});
   const followed = mock(() => {});
-  // The Inbox's agent chip: a box holding the link that clears the filter and, after it, the
-  // link to the agent's live view.
+  // The Inbox's agent chip: a box holding the shared chip that clears the filter and, after it,
+  // the link to the agent's live view.
   const view = render(
     <ControlRow
       chips={
         <span>
-          <a
-            href="/"
-            onClick={(event) => {
-              event.preventDefault();
-              cleared();
-            }}
-          >
-            Clear agent filter
-          </a>
+          <Chip aria-label="Clear agent filter" onClick={cleared} removable selected>
+            Asks from Planner
+          </Chip>
           <a
             href="/agents/planner/live"
             onClick={(event) => {

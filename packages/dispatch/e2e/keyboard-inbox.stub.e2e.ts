@@ -346,8 +346,7 @@ test.describe("inbox selection", () => {
   );
 
   // The `?agent=` chip narrows the list the same way the assignee filter does, and the Inbox
-  // stays mounted across it: the chip's clear link and the browser's own Back are client-side
-  // moves.
+  // stays mounted across it: the chip's press and the browser's own Back are client-side moves.
   agentFilterTest(
     "a mark made outside the agent filter does not count inside it @pr",
     async ({ page, scene }) => {
@@ -357,7 +356,7 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", scene.fromOtherAskId);
 
-      await page.getByRole("link", { name: "Clear agent filter" }).click();
+      await page.getByRole("button", { name: "Clear agent filter" }).click();
       await expect(rows).toHaveCount(2);
       await page
         .locator(`[data-inbox-row="${scene.fromSessionAskId}"]`)

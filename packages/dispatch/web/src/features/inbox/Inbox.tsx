@@ -10,10 +10,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link } from "react-router-dom";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
+import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
@@ -29,7 +29,7 @@ import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
-import { capSearchQuery } from "../../lib/page-address";
+import { capSearchQuery, useAddressNavigate } from "../../lib/page-address";
 import {
   badgeLow,
   borderDefault,
@@ -961,6 +961,7 @@ function InboxBody({
   scroller,
 }: InboxProps): ReactNode {
   const [addressRoute, goToRoute] = useInboxRoute();
+  const navigate = useAddressNavigate();
   const filter = filterOverride ?? addressRoute;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
   // in the drawer, the Inbox is the list of cards it has always been.
@@ -1927,24 +1928,37 @@ function InboxBody({
         ? { sessionId: agent, storedTitle: undefined }
         : { actor: agentAuthor };
   const agentTitle = agentSubject === undefined ? undefined : agentText.part(agentSubject);
-  // The clear-filter link keeps its own text and name; the agent's live link sits beside it.
-  // `whitespace-pre` keeps the space before an attribution suffix, which a flex item would drop.
+  // Taking the agent narrowing off leaves for the Inbox of the same assignees, selection and
+  // search text, with every other narrowing, the order, the banding and the view at their
+  // defaults. On the page the move pushes a history entry, as following a link does, so Back
+  // gives the agent's asks back. A host that owns the filter (the drawer) is told of the move
+  // instead, as it is of every other chip's removal.
+  const clearAgent = () => {
+    const next: InboxRoute = { assignees: filter.assignees, item: filter.item, q: filter.q };
+    if (onFilterChange) onFilterChange(next);
+    else navigate(buildInboxPath(next), { replace: false });
+  };
+  const waitingOnYou = filter.section === "needs-you" ? " waiting on you" : "";
+  // The agent narrowing's chip is the row's shared removable chip, drawn as `filterChips` draws
+  // the other narrowings' chips, and named for what its press does. The agent's live link sits
+  // beside it, outside it. `whitespace-pre` keeps the space before an attribution suffix, which
+  // a flex item would drop.
   const agentChip =
     agentSubject === undefined ? undefined : (
       <AgentName
         {...agentSubject}
         className="flex items-center whitespace-pre"
         control={(name) => (
-          <Link
+          <Chip
             aria-label="Clear agent filter"
-            className="inline-flex min-h-11 items-center rounded-full"
-            to={buildInboxPath({ assignees: filter.assignees, item: filter.item, q: filter.q })}
+            onClick={clearAgent}
+            removable
+            selected
+            title={`Asks from ${agentText.part(agentSubject)}${waitingOnYou}`}
           >
-            <LabelPill selected>
-              Asks from {name}
-              {filter.section === "needs-you" ? " waiting on you" : ""} · clear
-            </LabelPill>
-          </Link>
+            Asks from {name}
+            {waitingOnYou}
+          </Chip>
         )}
         kind="control"
       />

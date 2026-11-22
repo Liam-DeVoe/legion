@@ -142,7 +142,8 @@ interface HandOff {
 }
 
 /** What takes the focus in a chip: a chip is a button or a link itself, and a page's own chip
- *  may be a box holding one (the Inbox's agent chip holds its links). */
+ *  may sit in a box with other controls (the Inbox's agent chip, with the agent's live link
+ *  after it). */
 const FOCUSABLE = "a[href], button";
 
 /** The hand-off a click at `target` starts: the strip's child that holds it - a chip, or the box
@@ -246,12 +247,12 @@ export interface ControlRowProps {
  * it to the chip now at its place, else to the chip before it, else to the row's filter trigger
  * (`data-control="panel-trigger"`, or the search box in a row with no trigger), and **Clear
  * filters** hands it to the trigger. Delete presses a chip's own control alone - the strip's child
- * itself, or a `Chip` - and never another link a page drew inside its chip, such as the Inbox
- * agent chip's link to the live view. A chip that takes the focus is scrolled whole into view
- * as any focused chip is, and the trigger is in the first line. The hand-off waits for the removal
- * to commit, whatever holds the focus meanwhile (a pointer's click in Safari focuses no button,
- * so the focus stays on the body), and then moves the focus only if it is on the page's body, so
- * a reader who moved it elsewhere while the chip was going keeps it there.
+ * itself, or a `Chip` - and never another control a page drew in its chip's box, such as the
+ * agent's live link beside the Inbox's agent chip. A chip that takes the focus is scrolled whole
+ * into view as any focused chip is, and the trigger is in the first line. The hand-off waits for
+ * the removal to commit, whatever holds the focus meanwhile (a pointer's click in Safari focuses
+ * no button, so the focus stays on the body), and then moves the focus only if it is on the
+ * page's body, so a reader who moved it elsewhere while the chip was going keeps it there.
  *
  * Any other focused control a commit takes out of a slot of the first line while the row stays -
  * a page's own control that removes itself, as the Inbox's **Mark all read** does once nothing
@@ -364,12 +365,12 @@ export function ControlRow({
         <div className="flex min-w-0 flex-nowrap items-center gap-2">
           <div className="relative flex min-w-0 flex-1">
             {leading ? <ScrollButton className={controls.scroll} side="left" strip={node} /> : null}
-            {/* `[&>*]:shrink-0`: a strip that scrolls never squeezes a chip. A page's own chip
-                that could shrink (the Inbox's agent chip is a link, not a `Chip`) would
-                otherwise be drawn narrower than its text, and the next chip would sit over its
-                end and take its clicks. `scroll-px-12` keeps a chip brought into view 48 px
-                from either end: past the 44 px button laid over that end, and the 48 px fade
-                under it. */}
+            {/* `[&>*]:shrink-0`: a strip that scrolls never squeezes a chip. A box a page draws
+                its chip in (the Inbox's agent chip and the agent's live link beside it) could
+                otherwise shrink narrower than its text, and the next chip would sit over its end
+                and take its clicks. `scroll-px-12` keeps a chip brought into view 48 px from
+                either end: past the 44 px button laid over that end, and the 48 px fade under
+                it. */}
             {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the strip, which is a button or a link of its own: they scroll to where the focus has already gone, note which chip a click takes off, and press the focused chip on Delete, so the strip needs no role of its own. */}
             <div
               className={`-mx-0.5 -my-0.5 flex min-w-0 flex-1 scroll-px-12 flex-nowrap items-center gap-2 overflow-x-auto px-0.5 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 ${fade}`}
