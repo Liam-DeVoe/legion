@@ -33,7 +33,9 @@ import (
 )
 
 // Workspace is one remote, the pod that works on Issue and the workspace it works in: real git
-// and real jj throughout, every command naming the directory it runs in (docs/testing.md).
+// and real jj throughout, every command naming the directory it runs in (docs/testing.md). Each
+// of its commands runs under Ctx: a command still running when Ctx ends is killed, and its failure
+// names Ctx's cause (fixturegit.Runner).
 type Workspace struct {
 	// Issue is the issue the workspace belongs to. The remote holds its branch `legion/<Issue>`
 	// beside main, and the shim builds its bundle against both (Bundle).
@@ -51,6 +53,9 @@ type Workspace struct {
 	// Commits is the commit ids the fixture and its caller named, by name: "one", the remote's
 	// first commit, and each commit Work made.
 	Commits map[string]string
+	// Ctx is the context every git and jj command of the fixture runs under (NewWithin). A caller
+	// may set it again, to bound the commands it runs next by another context.
+	Ctx context.Context
 
 	tb testing.TB
 }
@@ -58,6 +63,12 @@ type Workspace struct {
 // New is a remote whose main and `legion/<issue>` both hold two commits, and one pod's clone of it
 // with the issue's workspace in it (Pod). It skips the test where jj or git is not on PATH.
 func New(tb testing.TB, issue string) *Workspace {
+	tb.Helper()
+	return NewWithin(tb, issue, context.Background())
+}
+
+// NewWithin is New whose commands run under ctx (Workspace.Ctx).
+func NewWithin(tb testing.TB, issue string, ctx context.Context) *Workspace {
 	tb.Helper()
 	for _, tool := range []string{"jj", "git"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -78,7 +89,7 @@ func New(tb testing.TB, issue string) *Workspace {
 			"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
 			"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
 			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test"),
-		tb: tb,
+		Ctx: ctx, tb: tb,
 	}
 	seed := filepath.Join(root, "seed")
 	for _, dir := range []string{w.Remote, seed, home} {
@@ -284,5 +295,5 @@ func (w *Workspace) Write(path, content string) {
 // would open the workspace the test process stands in (docs/testing.md).
 func (w *Workspace) Run(dir string, args ...string) string {
 	w.tb.Helper()
-	return fixturegit.Runner{TB: w.tb, Env: w.Env}.Run(dir, args...)
+	return fixturegit.Runner{TB: w.tb, Env: w.Env, Ctx: w.Ctx}.Run(dir, args...)
 }
