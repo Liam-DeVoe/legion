@@ -44,9 +44,9 @@
 # in the Dispatch dashboard — is not one this driver can make, since every write it sends
 # production Dispatch names a session as its author (lib/workflow.sh), the daemon sets a live
 # root's status back when the session writing it holds no claim in the tree, and the operator's
-# `legion issue status` writes only todo, backlog or icebox, none of them the done a hand-over
-# needs. A finished root's hand-over of a child keeps its cover in the daemon's own tests
-# (packages/daemon/internal/admit/finished_root_test.go).
+# `legion issue status` writes only todo, backlog or icebox, none of them done. No tree lingers and
+# no issue is handed over (R20 of dispatch://INFRA-3320): each issue's own close stops its own
+# claims and takes its own pod.
 # Between the operator's controller and tree 4, the daemon runs under `controller: daemon` and back
 # (daemon-controller-liveness). Each checkpoint prints `== <name>`, what it observed with the source
 # revision, the image digest and the two plugins' versions recorded once in `run.json`, and
@@ -679,10 +679,13 @@ on_subject() {
   capacity_subject=$previous
   return "$status"
 }
+# on_tree ROOT runs its command with the capacity subject of ROOT's own pod, selected by its issue
+# label: a pod keeps the tree label of its creation (R17 of dispatch://INFRA-3320), so the tree
+# label of a moved issue's pod names the tree it left.
 on_tree() {
   local tree=$1
   shift
-  on_subject "legion.dev/tree=$tree" "$@"
+  on_subject "legion.dev/issue=$tree" "$@"
 }
 on_issue() {
   local issue=$1
@@ -843,7 +846,7 @@ take_out() {
     fail "legion issue status $issue backlog from the operator shell: $out"
   until_true 120 "Dispatch to show $issue in backlog" dispatch_status_is "$issue" backlog
   until_true 600 "$issue's pods to be gone" sh -c \
-    "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$issue' -o name) && [ -z \"\$out\" ]"
+    "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/issue=$issue' -o name) && [ -z \"\$out\" ]"
 }
 # status_set_back ISSUE WRITTEN: Dispatch no longer shows the status WRITTEN on ISSUE, and shows the
 # status the daemon records for it: the daemon set its own status back over the write.
@@ -1471,11 +1474,6 @@ admission_cap: $admission_cap
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 # restart_daemon writes this file afresh, so every daemon of the run reads it.
 worker_wakes_per_minute: 0
-# The close of tree 1 — the merge of its pull request, with nothing of its tree left in the
-# workflow — begins its linger: done's first
-# production-check look and its suspension and the smoke main's cleanup all run in it, as does
-# production-check-bound's 15 minutes, so 30 minutes; close then waits for the expiry.
-linger_hours: 0.5
 # The production check's bound (14 days by default) must come due inside the run, since its wake,
 # the check's last look, is production-check-bound's proof; and after the first look's report,
 # since a look open at the bound defers the bound by the look's own two-hour bound: 15 minutes,
@@ -4020,7 +4018,7 @@ begin child-release
 # internal/runtime/sandbox/issue_suspend.go), logging the release; its pod goes with that Sandbox
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
-# Child 2 set backlog: a park reaches SuspendIssue exactly as a close does (linger.go enqueues an
+# Child 2 set backlog: a park reaches SuspendIssue exactly as a close does (leave.go enqueues an
 # IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the six
 # role Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
 # parked child is left to keep, and its next todo (child-reentered) makes the Sandbox afresh.
@@ -6128,7 +6126,7 @@ out=$("$work/legion" issue status "$tree3" backlog --operator-token-file "$work/
 until_true 120 "Dispatch to show $tree3 in backlog" dispatch_status_is "$tree3" backlog
 note "legion issue status $tree3 backlog from the operator shell, with the operator bearer: Dispatch moved $tree3 from $before_status to $(dispatch_get "issues/$tree3" | jq -r .status)"
 until_true 600 "$tree3's pods to be gone" sh -c \
-  "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$tree3' -o name) && [ -z \"\$out\" ]"
+  "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/issue=$tree3' -o name) && [ -z \"\$out\" ]"
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
 # (1) The controller was launched with the daemon's own design gate steps, none here (the run's
 # `gates.design` is `off`, the empty list): the Oh My Pi the run's `legion controller start`
@@ -6533,12 +6531,11 @@ on_tree "$tree1" wait_for_worker "$tree1" merger
 # at children-first-acceptance, before the sign-off the daemon held for them, and no issue has
 # entered the tree since, which beneath an accepted root the daemon refuses — so the merge's own
 # close runs (closeMerged, internal/workflow/pullrequest.go): the status done, the slots its
-# issues held already freed, the tree lingered (linger_hours 0.5) with every member's claims
-# suspended except child 1's, which its done retired, and the production check opened on the
-# merge commit, whose first look the daemon hands the tester — the role a project that names no
-# `production_check` gets — in the still-live pod: its claim alone comes back, resumed on its kept
-# session, while the other five stay suspended, and the root's Sandbox stays Running for the look
-# (the look's start supersedes the linger's suspension of the issue).
+# issues held already freed, each claim of the root closed with its session kept (issue_close; no
+# tree lingers, R20 of dispatch://INFRA-3320) but the tester's, and the production check opened on
+# the merge commit, whose first look the daemon hands the tester — the role a project that names no
+# `production_check` gets — in the still-live pod: its claim alone stays live, on its kept session,
+# while the other five are retired, and the root's Sandbox stays Running for the look.
 # The merger merges the pull request itself, at the head it read, so what must be in place at the
 # merge is in place before the merger is released. The smoke main is held from here until
 # the cleanup below has emptied it (hold_smoke_main), on an open descriptor: start no background
@@ -6599,12 +6596,12 @@ check_opened_on "$tree1" "$merge_when_clean_commit" ||
   fail "$tree1's production check reads $(daemon_state | jq -c --arg issue "$tree1" '.issues[$issue].check'), want it open on merge commit $merge_when_clean_commit at its first look, woken by the merge"
 state_file check-opened
 # The tester — the role a project that names no `production_check` gets, this run's own among them
-# — is live at its first look, the five other claims suspended (the close's; the architect's,
+# — is live at its first look, the five other claims retired (the close's; the architect's,
 # planner's, implementer's, reviewer's and merger's turns are over, so each lands at once);
-# a tester that reported the look before this read is suspended again already, which the
-# wait after the prompt judges.
-first_look_handed() { claim_states_are "$tree1" tester "ready working idle" suspended || check_look_reported "$tree1" 1; }
-until_true 300 "the close to leave the tester live at its first look, the five other claims of $tree1 suspended" first_look_handed
+# a tester that reported the look before this read is suspended already, which the wait after the
+# prompt judges.
+first_look_handed() { claim_states_are "$tree1" tester "ready working idle" retired || check_look_reported "$tree1" 1; }
+until_true 300 "the close to leave the tester live at its first look, the five other claims of $tree1 retired" first_look_handed
 first_look_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
 # The first look. The task the daemon handed the tester is the whole instruction: the proof
 # sends it nothing, and the fixture's instructions say a check task waits for no targeted message. The
@@ -6618,7 +6615,7 @@ first_look_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
 # The smoke main's cleanup is the fixture's teardown, not the workflow under test. It stays inside
 # this checkpoint, so a STAGE4B_UNTIL=done run still cleans the smoke main, and smoke_main_cleaning
 # tells the EXIT trap's verdict that a failure here is the cleanup's. It runs while the tester
-# works its look, inside the linger either way.
+# works its look.
 smoke_main_cleaning=1
 clean_smoke_main
 release_smoke_main
@@ -6644,7 +6641,7 @@ root_running() {
     pods=$(op get pods -l "legion.dev/project=$run_label,legion.dev/issue=$tree1" -o name) && [ -n "$pods" ]
 }
 until_true 600 "the pending report to delete the root's Sandbox $root_pod and take its pod and disk" root_parked
-until_true 300 "the pending report to suspend the tester's claim beside the five suspended claims of $tree1" claim_states_are "$tree1" tester suspended suspended
+until_true 300 "the pending report to suspend the tester's claim beside the five retired claims of $tree1" claim_states_are "$tree1" tester suspended retired
 [ -n "$(issue_worker_session "$tree1" tester)" ] || fail "the tester's claim lost its session at its suspension between looks"
 state_file check-look-1
 # The wake_at that report carried falls at or past the check's bound, so the daemon names no row
@@ -6686,10 +6683,8 @@ begin production-check-bound
 # and a bound deferred by a look still open when it came due (by the look's own two-hour bound)
 # fails here by name rather than hanging. The last look's pending closes the check as not_run: the
 # tester's claim is retired, its session kept (issue_close), the state omits the check, and the
-# root's Sandbox is deleted again with the pod it ran in and the disk that pod owned, leaving the
-# close at linger expiry nothing of it to take. It runs before node-release, which needs tree 1's
-# pods gone for good, and the tree's close at its linger expiry (close) waits for no open check
-# once it has closed.
+# root's Sandbox is deleted again with the pod it ran in and the disk that pod owned. It runs before
+# node-release, which needs tree 1's pods gone for good.
 until_true 900 "the bound to start the last look of $tree1's production check" last_look_started "$tree1"
 state_file check-look-2
 # The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
@@ -6705,18 +6700,18 @@ last_look_logged "$tree1" ||
   fail "the daemon log records no last look of $tree1's production check woken by the bound: $(log_lines "workflow: production check look started" | tail -3 | tr '\n' ' ')"
 check_closed_as "$tree1" not_run ||
   fail "the daemon log records no close of $tree1's production check as not_run: $(log_lines "workflow: production check closed" | tail -1)"
-until_true 120 "the check's close to retire the tester's claim beside the five suspended claims of $tree1" claim_states_are "$tree1" tester retired suspended
+until_true 120 "the check's close to retire the tester's claim beside the five retired claims of $tree1" claim_states_are "$tree1" tester retired retired
 until_true 600 "the check's close to delete the root's Sandbox $root_pod again and take its pod and disk" root_parked
 state_file check-closed
-note "the bound started the last look of $tree1's production check, the only wake left after the first look asked for one past the bound (the state at the wake: $(jq -c --arg issue "$tree1" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last), Sandbox $root_pod Running with its pod back; its pending closed the check as not_run, the state omits it, the tester's claim is retired while the five others stay suspended ($(issue_claim_states "$tree1" | paste -sd ',' -)), and the Sandbox is gone again with the pod and the disk it owned"
+note "the bound started the last look of $tree1's production check, the only wake left after the first look asked for one past the bound (the state at the wake: $(jq -c --arg issue "$tree1" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last), Sandbox $root_pod Running with its pod back; its pending closed the check as not_run, the state omits it, the tester's claim is retired beside the five others ($(issue_claim_states "$tree1" | paste -sd ',' -)), and the Sandbox is gone again with the pod and the disk it owned"
 pass
 
 begin node-release
-# Tree 1 lingers (linger_hours 0.5, from the close its merge brought on): no issue of it
-# keeps a Sandbox or a pod — the linger suspends every member and queues an IssueSuspend for each
-# (linger.go beginLinger), which deletes that member's Sandbox, with the six role Secrets it owned,
-# once its pod is gone, and the disk went with the pod; children 2, 3 and 4 had already lost theirs
-# to their parks — and no pod of tree 1 is left on any node a pod of tree 1 ran on. No pod asks for
+# No issue of tree 1 keeps a Sandbox or a pod: each issue's own stop queued the IssueSuspend that
+# deletes its Sandbox, with the six role Secrets it owned, once its pod is gone, and the disk went
+# with the pod — the root's at its close and its production check's, children 2, 3 and 4 at their
+# parks (R20 of dispatch://INFRA-3320; no tree lingers) — and no pod of tree 1 is left on any node a
+# pod of tree 1 ran on. No pod asks for
 # or keeps off a node (LEGION-632): a node empties when the pods on it stop, and the pool
 # consolidates an empty node after consolidateAfter. So each such node is gone, unless another pod
 # keeps it, placed there because the pool had room: another project's (a production daemon running
@@ -6727,18 +6722,10 @@ begin node-release
 # says which it saw where. Every node any pod of tree 1 — the root's, its children's, the
 # replacements the fence and the stream move made, the pod the check's last look brought back — was
 # on is read from the pod watch.
-# The checkpoint's own reads of tree 1's Sandboxes and disks come first, since the nodes take up to
-# consolidateAfter and their drain each, and tree 1's linger (read from the daemon's own line) may
-# expire while they wait: at the expiry the close sweeps whatever of tree 1 is still named, so the
-# reads are made again after the waits only while the linger still runs, and otherwise left to
-# close, which judges that state.
+# The checkpoint's own reads of tree 1's Sandboxes and disks come first, and are made again after
+# the waits, since the nodes take up to consolidateAfter and their drain each.
 tree1_nodes=$(jq -r 'select(.object.kind == "Pod") | .object | select(.metadata.labels["legion.dev/tree"] == "'"$tree1"'") | .spec.nodeName // empty' "$evidence/pod-watch.json" | sort -u | grep .) ||
   fail "the pod watch saw no pod of tree 1 on a node, so there is no node whose release to wait for"
-tree1_until=$(log_lines "workflow: tree lingers" | jq -r -s --arg tree "$tree1" '[.[] | select(.tree == $tree)] | last | .until // empty')
-[ -n "$tree1_until" ] || fail "the daemon logged no linger for $tree1"
-# tree1_lingers: at least a minute of the linger the daemon logged for tree 1 is left, by the
-# driver's clock, so the reads that follow it end before the close starts deleting.
-tree1_lingers() { [ "$(date -u +%s)" -lt "$(($(date -u -d "$tree1_until" +%s) - 60))" ]; }
 # tree1_parked WHEN: tree 1's root and its parked children 2, 3 and 4 each have no Sandbox and no
 # disk, so none of them has a pod either: a pod declares the disk in its own template, so a disk
 # that is gone is a pod that is gone. The children's Sandboxes went with their parks, the root's
@@ -6813,45 +6800,40 @@ for node in $tree1_nodes; do
   releases+="${releases:+; }$node_release"
 done
 at=$(date -u +%FT%TZ)
-if tree1_lingers; then
-  tree1_parked "after tree 1's nodes were released ($releases)"
-  parked_note="$tree1 and its parked children $child2, $child3 and $child4 each have no Sandbox, no pod and no disk, as before the waits"
-else
-  parked_note="tree 1's linger expired at $tree1_until while its nodes were waited for, so what is left of tree 1 is now the close's (close) to judge; before the waits $tree1 and its parked children $child2, $child3 and $child4 each had no Sandbox, no pod and no disk"
-fi
-note "at $at: $releases; $parked_note ($(grep -c . <<<"$tree1_nodes") nodes carried a pod of tree 1)"
+tree1_parked "after tree 1's nodes were released ($releases)"
+note "at $at: $releases; $tree1 and its parked children $child2, $child3 and $child4 each have no Sandbox, no pod and no disk, as before the waits ($(grep -c . <<<"$tree1_nodes") nodes carried a pod of tree 1)"
 pass
 
 begin close
-# At linger expiry (30 minutes from the close that followed tree 1's merge, the daemon's `until`
-# for its linger, which node-release read; the expiry may already have passed while node-release
-# waited, and the reads below hold either way; the close waits while a member's production check is
-# open, which production-check-bound saw closed) the tree's cleanup foreground-deletes every Sandbox
-# still carrying tree 1's label, and the linger leaves it little: a member's own stop took its
-# Sandbox and the six role Secrets it owned once that member's pod was gone — child 1's at its done,
-# child 2's at child-release, those of children 3 and 4 at the parks that let the sign-off land, the
-# root's at the linger's IssueSuspend row and again when its production check closed — and each
-# disk went with the pod that owned it. Every member of the tree is out of the workflow, so nothing
-# is handed over and nothing is left behind.
-# The Sandboxes are read by the tree label, which the cleanup selects them by; the disks by their
-# pods' names, since a pod's own ephemeral claim carries no label at all.
-# tree_gone TREE POD...: TREE has no Sandbox or pod, and no POD of it a disk. Each read is held
-# to its exit status (see child1_released).
+# No tree lingers (R20 of dispatch://INFRA-3320): each issue of tree 1 took its own Sandbox and the
+# six role Secrets it owned at its own stop, once its pod was gone — child 1's at its done, child
+# 2's at child-release, those of children 3 and 4 at the parks that let the sign-off land, the root's
+# at its close and again when its production check closed — and each disk went with the pod that
+# owned it. Every issue of the tree is out of Legion's work, so nothing is left behind.
+# The Sandboxes are read by each issue's label, since a pod keeps the tree label of its creation;
+# the disks by their pods' names, since a pod's own ephemeral claim carries no label at all.
+# tree_gone ISSUE POD...: ISSUE has no Sandbox or pod, and no POD a disk; issues_gone holds it of
+# the root, with the pods of the root and its parked children, and of each parked child. Each read
+# is held to its exit status (see child1_released).
 tree_gone() {
-  local tree=$1 out pod
+  local issue=$1 out pod
   shift
-  out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/tree=$tree" -o name) && [ -z "$out" ] || return 1
+  out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$issue" -o name) && [ -z "$out" ] || return 1
   for pod in "$@"; do
     out=$(pod_disk "$pod") && [ -z "$out" ] || return 1
   done
 }
-until_true 1500 "tree 1 to close at linger expiry" tree_gone "$tree1" "$root_pod" "$child2_pod" "$child3_pod" "$child4_pod"
+issues_gone() {
+  tree_gone "$tree1" "$root_pod" "$child2_pod" "$child3_pod" "$child4_pod" &&
+    tree_gone "$child2" && tree_gone "$child3" && tree_gone "$child4"
+}
+until_true 600 "tree 1's issues to keep no Sandbox, pod or disk" issues_gone
 note "tree 1 has no Sandbox or pod left: the Sandboxes of the root, $child2, $child3 and $child4 are deleted, and the disks their pods owned went with those pods"
 pass
 
 begin re-admission
-# The re-admitted tree's root starts on a pod and a disk of its own: tree 1's close took both at
-# its linger expiry, and nothing of them is recovered. There is no lost-volume verdict and no
+# The re-admitted tree's root starts on a pod and a disk of its own: its own stops took both, and
+# nothing of them is recovered. There is no lost-volume verdict and no
 # recovery marker left to read (INFRA-80 deleted both): the architect comes back on the session
 # the session database kept for it, in a workspace provisioned afresh from the branch, and its
 # Legion plugin tells it so from the launcher's own LEGION_WORKSPACE_RECREATED rather than from a
@@ -6884,7 +6866,7 @@ begin operator-close
 # pod's name (pod_disk's doc has why). A read that fails fails the function.
 tree_objects() {
   local tree=$1 objects pod disk
-  objects=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/tree=$tree" -o json) || return 1
+  objects=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$tree" -o json) || return 1
   for pod in $(jq -r '.items[] | select(.kind == "Pod") | .metadata.name' <<<"$objects"); do
     disk=$(op get pvc "$pod-issue" --ignore-not-found -o json) || return 1
     [ -z "$disk" ] || objects+=$(jq -c '{items: [.]}' <<<"$disk")

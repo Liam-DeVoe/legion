@@ -35,7 +35,7 @@
 // script starts and names in LEGION_E2E_NATS_URL. Dispatch is liveDispatch, the board the
 // package's whole-daemon live proofs share (dispatch_board_test.go), fronted by linkedDispatch,
 // which adds to each read of an issue the blocked_by links the driver gave it, and Envoy's
-// listener is the package's noticeListener. GitHub is childAdoptionGitHub (below), which knows
+// listener is the package's noticeListener. GitHub is subArchitectGitHub (below), which knows
 // each repository's default branch and takes each issue branch
 // the workflow creates. No agent runs: every claim is launched by the package's fake runtime
 // (subArchitectRuntime, which refuses the relaunches the failure step names), and the driver plays
@@ -152,7 +152,7 @@ func newSubArchitectLive(t *testing.T) *subArchitectLive {
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = childAdoptionGitHub(t)
+	o.githubAPI = subArchitectGitHub(t)
 	r.logged = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.logged), 60*time.Second)
 	r.root = r.register(r.tree, claim.RoleArchitect, "ses_root_architect", 0)
@@ -1109,11 +1109,11 @@ func (r *subArchitectRuntime) refused(token claim.Token) int {
 	return 0
 }
 
-// childAdoptionGitHub is GitHub as this proof's daemon reads it: every repository has default
+// subArchitectGitHub is GitHub as this proof's daemon reads it: every repository has default
 // branch main at one commit, each issue branch the workflow creates there is taken, and its GraphQL
 // root knows no pull request, so each disarm finishes with nothing armed. Nothing reaches
 // github.com.
-func childAdoptionGitHub(t *testing.T) string {
+func subArchitectGitHub(t *testing.T) string {
 	t.Helper()
 	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")

@@ -297,6 +297,13 @@ type overrides struct {
 	// next boot starts at the step after it. nil, in production, tells no one. It is the seam the
 	// live proof of the cut-over stops the daemon at after each step in turn.
 	afterConversionStep func(step int) error
+	// wrapDispatch, when set, wraps the one Dispatch client the workflow builds (openWorkflow), so
+	// the tick's listing and its re-reads, the boot's reconcile, the API and the outbox all read and
+	// write through what it answers. nil, in production, wraps nothing. It is the seam the live
+	// proof of the rollback keeps one issue's Dispatch chain unknown through: its wrapper answers a
+	// read of the issue's parent with a 503 and leaves the parent out of every listing
+	// (tree_rollback_live_test.go).
+	wrapDispatch func(dispatch.Client) dispatch.Client
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -473,7 +480,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, o.wrapDispatch, reserveWake, plan.clock.Now)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {

@@ -272,15 +272,18 @@ Each item below names a script, then what it proves.
   It keeps every other value of a text flag byte for byte.
   Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), it is the change's negative control
 
-- `child-adoption.sh`
+- `tree-cutover.sh`
 
-  a labelled root still queued in admission, which a person then makes a child of a live tree, joins that tree and runs there, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own:
-  Dispatch's re-parent event takes it out of `admission.waiting` and into the tree, where it waits for a slot of its own and then plans with its own architect, which its first phase start starts;
-  `release_children` adopts one the daemon saw no re-parent of before it answers, from todo, from backlog (writing todo, whose event runs it) and from the state INFRA-214 reached (backlog, label off, todo), and the old linger's close stops none of it;
-  a todo root under an unreleased child of the live tree is recorded but waits in no line, even with a slot free and a root of its own parked between it and the tree, until its release, and its own todo child waits with it, is refused 409 `CHILD_IN_OTHER_TREE` naming it and the held root when released alone, and joins the tree with it;
-  such a root takes the free slot once a person moves an ancestor out from under the tree, unrecorded or recorded;
-  a root that ran as a tree of its own is never held so, and takes the free slot;
-  and a child recorded in another live tree is refused 409 `CHILD_IN_OTHER_TREE` naming it and that tree, with nothing changed or written
+  the first boot of the release that stores no tree converts what the release before left (dispatch://INFRA-4730's k31), driven through both releases' whole daemons on one PostgreSQL the caller names, a `nats-server` of the run's own and a scratch Dispatch whose parent-status rule is off, as it is while production's cut-over runs:
+  the release before (the merge base with `origin/main`, its driver built from that tree) leaves live phases, a held issue, a lingering tree with its cleanup reserved and two hand-overs, one landed, an operator's hold, an open production check, a kept decision and a root under a parent at work, and stops;
+  this release, stopped after each step of its conversion and booted again, keeps every run, claim, session, session-name reservation, slot and production check, makes the linger deadline each covered issue's retention deadline, finishes the landed hand-over and reads its later event as its own write, places each issue in Legion's work in one list, tells the root under a parent at work once, names the kept decision in the next catch-up, answers each operation of the oldest plugin contract in the fleet, shows each issue on Dispatch's Legion board under its gate root, and changes nothing at a last boot.
+  It first runs `member-becomes-root.sh`
+
+- `tree-rollback.sh`
+
+  the release before runs again after the rollback step `docs/kubernetes.md` gives for the release that stores no tree (dispatch://INFRA-4730's k44), driven through both releases' whole daemons on one PostgreSQL the caller names, a `nats-server` of the run's own and a scratch Dispatch:
+  this release converts what the release before left, changes an issue's parent and starts claims after it, records and unlinks issues, takes the oldest contract's `register_gate`, closes and reopens a root, holds a session's write on an issue whose chain its copy does not hold, and stops with one queued effect of each kind the release before runs and a row of each shape it does not;
+  after the step's SQL block and its relabel loop, the release before refuses no row, acts on each claim, writes the held write's reassert, starts a new root, runs each queued effect, holds each moved issue in its old tree or by its own ancestry hold, and cleans up no pod of an issue at work
 
 - `sub-architect.sh`
 
@@ -527,7 +530,7 @@ Every other script needs a devbox, a throwaway kind cluster, a real cluster or a
 A person or a role starts a proof two ways, and takes no devbox for either:
 
 ```sh
-gh workflow run e2e.yaml -f script=child-adoption   # one proof, with or without the .sh
+gh workflow run e2e.yaml -f script=sub-architect    # one proof, with or without the .sh
 gh pr edit <number> --add-label e2e                    # every hosted proof, on that pull request
 ```
 
@@ -544,7 +547,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `TREE_CUTOVER_EVIDENCE_DIR`, `TREE_ROLLBACK_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable and keep a work directory of their own, whose path that output names.
 
@@ -3442,7 +3445,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
   It sets no key of its own, and prints only each key's length.
   A key is needed only for a model of its provider.
 
-- **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`child-adoption.sh`](#child-adoptionsh).
+- **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`sub-architect.sh`](#sub-architectsh).
   The script creates a database of its own in it with `psql` and force-drops it with `psql` on any exit.
   It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url`, which it calls in `setup`, before it builds or starts anything.
   Dispatch's `DATABASE_URL` is the connection string `run_database_url` rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so no client of the run is handed the DSN's own text, and `setup` refuses a DSN the rebuild cannot carry.
@@ -3451,7 +3454,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 
 - **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.15.1, which the rig installs once with `go install`.
   In an issue pod it installs into `/legion/scratch/bin`, on the issue's volume, and otherwise into the run's own directory.
-  The server starts with JetStream on a port the kernel picks, as `child-adoption.sh` starts it.
+  The server starts with JetStream on a port the kernel picks, as `sub-architect.sh` starts it.
 
 - **No variable of the caller's shell named `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` reaches any process of the run.**
   A Legion pane's own Dispatch, Envoy and profile stay out of it, and the three `PG` variables stay out of every psql and every client the run starts.
@@ -4328,63 +4331,79 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 ```
 
-## child-adoption.sh
+## tree-cutover.sh
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/child-adoption.sh     # → "child adoption e2e: PASS in <n>s", exit 0
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/tree-cutover.sh     # → "tree cutover: PASS", then "tree cutover e2e: PASS in <n>s", exit 0
 ```
 
-Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster.
-`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
-the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
-The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+dispatch://INFRA-4730's k31: the release that stores no tree boots on a database the release before left, and its first boot's conversion keeps what that release left, as R21 and R22 of dispatch://INFRA-3320 say.
+Runs on any Linux host with `go`, `git`, `tar`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `bun` (after `bun install` at the checkout's root), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL both daemons migrate and run on;
+the driver also creates Dispatch's database and the daemon's there, so its role must be allowed to create and drop databases on a server that offers `pgvector`.
+The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh).
+It first runs `member-becomes-root.sh`, whose two drivers have this proof's CI lane as their home, and fails when it fails;
+that run's evidence stays in `member-becomes-root/` under this one's.
+Then [`lib/tree-proof.sh`](#libtree-proofsh) finds the release before, makes the oldest plugin contract's root and builds the release before's driver, and the four checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) build and run `TestTheTreeCutoverLive` (`internal/daemon/tree_cutover_live_test.go`, `-tags e2e`).
 
-| check | what it holds |
+The driver starts the real Dispatch server this checkout builds, on a database of its own, with its events on the run's broker and its parent-status rule off, since production's cut-over runs before `DISPATCH_PARENT_STATUS_RULE` is turned on (k33) and the release before's lingering trees hand over children of a closed root, which the rule refuses.
+It makes the daemon's one database and the project, and runs the release before's driver as a child process (`TestTreeCutoverReleaseBefore`, `internal/daemon/tree_release_before_live_test.go`), which boots that release's daemon over the same rig and leaves:
+
+- a root at work with its gate open and three children: one in planning whose planner the oldest contract's plugin registered and on which a person's decision is kept, one in planning whose parent the person took off, and one the person closed, whose claims retired with their session names kept and whose production check is open;
+
+- a root at work the person set under that root, a root waiting on an issue nobody hands to Legion, and a root whose tree the operator holds;
+
+- a root the person closed whose tree lingers with its deadline two days ahead and its cleanup reserved, one child of it closed and two handed over, the hand-over write of one landed in Dispatch and of the other not.
+
+What that release cannot leave in a run's minutes, the linger, its cleanup and hand-overs, the operator's hold, the production check and the kept decision, its driver writes with the daemon stopped, as that release's own code writes it, on records and claims it made itself.
+Then this release boots in the driver's own process, on a fake runtime of its own, and the driver prints each step between `== <step>` and `ok <step> (<s>s)`:
+
+| step | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAQueuedRootUnderALiveTreeJoinsItLive` (`internal/daemon/child_adoption_live_test.go`, `-tags e2e`) |
-| `proof` | the eleven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `the release before` | that release's driver passed, and the world file names what it left |
+| `a boot stopped after each step of the conversion, and booted again` | each of the ten boots stops after its step, which `tree_conversions` records, and the tenth records when the conversion ended |
+| `this release booted once more` | `daemon.convertedAt` is that end |
+| `every run, claim, session, session-name reservation, slot and production check kept` | each claim's issue, role, session and session file, each `claim_sessions` row, each slot and run (the landed hand-over's aside) and the production check read as the release before left them, and the state shows the check |
+| `the linger deadline is the retention deadline of each issue it covered` | the closed root and its closed child are retained until that deadline, each with its `retention_end` row due then, and the children at work are not |
+| `the reserved cleanup is the reservation of each issue of its tree` | the root's own lifecycle holds the reservation |
+| `the operator's hold of a tree is a hold of each issue of it` | the held root's own lifecycle is the operator's |
+| `the landed hand-over is a root of its own and its later event the daemon's own write` | the child carries its run into a new generation, holds its own gate, reads taken back and `todo`, no hand-over row is left, and the echo of the write, applied, queued no person's handover |
+| `each issue in Legion's work has one place, and the root under a parent at work is told once` | each is in `admission.active`, `admission.waiting` or `admission.held`, the state's `tree` of each names its gate root, and two `reparented` notices of the root under a parent at work are queued, to its own architect and to the one above it |
+| `the undelivered decision is named by the next catch-up` | after the root's architect's ready, the kept decision is claimed by an outbox row whose payload names it |
+| `the oldest contract's plugin is answered` | that contract's own client (`packages/pi-legion/test/daemon-client-driver.ts` under `bun` in its root) gets ready, activity, a grant, the planner's handoff record and phase completion, the next role's registration and its exit answered, and the issue moves to implementing |
+| `Dispatch's Legion board groups each issue by its gate root` | once Dispatch names the daemon (`PUT /api/v1/projects/<key>/legion/daemon`) and its sampler reads it, each card's tree is the state's gate root |
+| `the last boot changes nothing` | every table the conversion writes, read before and after one more boot, is equal, and the conversion's end is unchanged |
 
-The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, with an admission cap of 3 and a linger of eight seconds, and seeds three trees that hold every slot:
-T, the live tree, in planning with its design gate approved and its architect's launch unfinished, which the boot relaunches and the driver registers over the daemon's own worker stream and routes;
-X, a second root, until step 5 moves it to backlog;
-and Y, a third root, until step 1 moves it to backlog.
-The cap counts every issue the daemon has started, a child's first phase among them, so each queued root waits in `admission.waiting` while every slot is held, and each child that joins T waits there for a slot of its own.
-Step 1 frees Y's slot for C; in each of steps 2 to 4, T's architect moves the child the step before started to backlog once its own child has joined T, and that child takes the slot; step 4 then moves its own child to backlog, and step 5 frees X's slot, so steps 5 to 7 start their children on free slots and move each to backlog at the step's end; each of steps 9 to 11 first frees again the slot the root the step before slotted holds, by moving it to backlog.
-Every issue the change acts on is recorded by the daemon from its own Dispatch envelopes on the `ENVOY_NOTIFICATIONS` stream;
-each release is T's architect's own call, with a grant its registered session bought, and each move of a child to backlog is that architect's own status write, which the driver delivers as the write's Dispatch event with that session as its actor.
-A step reads `GET /legion/v1/state` for `admission.waiting` and each issue's phase, generation, slot, architect and planner claim;
-`POST /legion/v1/children/rerun` answering 409 `CHILD_RUNNING`, not 403 `ISSUE_OUTSIDE_TREE`, as the route-visible proof that a running issue is in T;
-what the daemon wrote to the Dispatch stand-in; and, for tree membership, which no route shows, the daemon's own record of the issue in its PostgreSQL.
-Step 4 also reads the outbox table, for the rows the old linger queued.
-Each child a step reads back as running in T is in `planning` with its planner's claim, on a slot of its own and out of `admission.waiting`, and holds its own architect's claim, which the fake runtime was asked to launch: a child's first phase start starts its own architect beside its planner.
-A child read back as waiting for a slot is `admitted` in `admission.waiting`, with no slot, no architect and no launch of one.
-Each move of a child to backlog first drives T's architect's `POST /legion/v1/children/rerun` of it, which answers 409 `CHILD_RUNNING` with no write taken by the stand-in, then the event of that architect's own write of `backlog` (actor its registered session, the next sequence), and reads the child back at `done` with its slot freed.
+Dispatch's metrics have no route: they place an issue in a tree by the board's one rule (`internal/dispatch/legion`'s `TreeRoot`), so the board's cards stand for both.
+`TREE_CUTOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, both daemons' logs in `daemon.log`, Dispatch's in `dispatch.log`, the build of the release before's driver, the driver's output and `member-becomes-root.sh`'s evidence.
 
-| step | driven by | read back as |
-| :--- | :--- | :--- |
-| `queued-root-leaves-the-line` | C labelled todo with no parent, then its re-parent under T, each as a `notifications.dispatch.issue.…` envelope; then Y moved to backlog by envelope, which frees its slot | C in `admission.waiting`; after its re-parent, recorded in T's tree and waiting for a slot; once Y's slot is free, C running in T; over three seconds C keeping its slot and its architect's claim, out of the line and still recorded in T's tree; and a `child-status` notice on T's architect topic saying C joined T's tree from the admission queue |
-| `release-adopts-from-todo` | D labelled todo; the stand-in alone shows it todo under T; T's architect's `POST /legion/v1/waves/release` of D; then T's architect's backlog of C | 200, and as it answers, before any further envelope, D recorded in T's tree and waiting for a slot; no status write taken by the Dispatch stand-in; once C is in backlog, D running in T on C's slot |
-| `release-adopts-from-backlog` | F labelled todo, then moved to backlog by envelope (it lingers); the stand-in alone shows it in backlog under T; the release of F; then the echo of the release's write (actor `legion-daemon:<project>`, status todo, the next sequence); then T's architect's backlog of D | 200, and as it answers F recorded in T's tree, at `done` in backlog with no linger, and the stand-in took the release's PATCH to `todo`; after the echo, F waiting for a slot in T; once D is in backlog, F running in T on D's slot |
-| `release-adopts-infra-214-state` | E labelled todo, moved to backlog (it lingers), its label taken off and moved back to todo, each by envelope; the stand-in alone shows it todo under T; the release of E inside its linger; then T's architect's backlog of F; at the step's end, its backlog of E | E todo at `done` and out of the line before the release (INFRA-214's state); 200, E recorded in T's tree and waiting for a slot; once F is in backlog, E running in T on F's slot; past its old linger's deadline plus an outbox poll, the old `linger_close` row run and gone, E still in `planning` with its planner's claim at the generation the release gave it, no `tree_close` supervise row and no `workspace_remove` row of E queued after the release, and no suspension, release or tree cleanup of E asked of the fake runtime |
-| `held-under-an-unreleased-child` | P on the stand-in alone, backlog under T, never recorded; H labelled todo under P, by envelope; then X moved to backlog by envelope, which frees its slot; then the release of H; then T's architect's backlog of H | H recorded as a root of its own but not in `admission.waiting`, with no slot and no architect; once X's slot is free, over three seconds, `admission.active` T's alone of cap 3, nothing waiting, and H still with no slot and no architect; then 200, H recorded in T's tree under P, running in T; then H at `done` with no slot |
-| `child-of-an-ancestry-held-root-waits-with-it` | P3 on the stand-in alone, backlog under T, never recorded; H3 labelled todo under P3, then K3 labelled todo under H3, each by envelope; then the release of K3 alone; then the release of H3; then T's architect's backlog of K3; then its backlog of H3 | H3 recorded as a root of its own, T on the Dispatch chain it records; K3 recorded in H3's tree under H3; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), H3 and K3 each out of `admission.waiting`, with no slot, no architect and no launch of one; the release of K3 409 `CHILD_IN_OTHER_TREE` whose message names K3 and H3, K3's record as it was (H3's tree, parent, phase, status, generation, sequence) and no status write taken by the Dispatch stand-in; then the release of H3 200, and as it answers H3 and K3 both recorded in T's tree, H3 under P3 and K3 under H3; K3 running in T on a free slot while H3, waiting for its open child, stands `admitted` out of `admission.waiting` with no slot and no architect; once K3 is in backlog, H3 running in T on a slot of its own |
-| `ancestry-held-past-a-parked-root-on-its-chain` | Q6 seeded as a root of its own in backlog (phase `done`, no parent recorded), shown on the stand-in backlog under T; P6 on the stand-in alone, backlog under Q6, never recorded; R6 labelled todo under P6, by envelope; then the release of R6; then T's architect's backlog of R6 | Q6 recorded in its own tree; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), R6 not in `admission.waiting`, with no slot, no architect and no launch of one; R6 recorded as a root of its own, T on the Dispatch chain it records, past Q6; then 200, and as it answers R6 recorded in T's tree under P6, then running in T; then R6 at `done` with no slot |
-| `ancestry-held-root-queues-once-its-parent-leaves` | P2 on the stand-in alone, backlog under T, never recorded; H2 labelled todo under P2, by envelope; then P2 moved to no parent, on the stand-in and by P2's own envelope (status backlog, no parent, unlabelled) | H2 recorded as a root of its own, T on the Dispatch chain it records; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), H2 not in `admission.waiting`, with no slot, no architect and no launch of one; after P2's envelope, within the bounded wait, H2 holding one of those slots with its architect's claim, the fake runtime asked to launch H2's architect, H2 in `admission.active` and out of `admission.waiting`, recorded in its own tree with T on no chain it records, and P2 still unrecorded |
-| `a-root-that-ran-keeps-queueing` | H2 moved to backlog by envelope, which frees its slot; a tree lifecycle seeded under R's key, as R's own run would have left it, R never recorded; P4 on the stand-in alone, backlog under T, never recorded; R labelled todo under P4, by envelope | H2 with no slot; within the bounded wait, R holding a free slot with its architect's claim, the fake runtime asked to launch R's architect, R in `admission.active` and out of `admission.waiting`, recorded in its own tree with T on no chain it records: not held under T, whose release would refuse it |
-| `ancestry-held-root-queues-once-a-recorded-ancestor-leaves` | R moved to backlog by envelope, which frees its slot; Q seeded as T's child in backlog (phase `done`), shown on the stand-in backlog under T; P5 on the stand-in alone, backlog under Q, never recorded; H5 labelled todo under P5, by envelope; then Q moved to no parent, on the stand-in and by Q's own envelope (status backlog, no parent, unlabelled) | R with no slot; Q recorded in T's tree; H5 recorded as a root of its own, T on the Dispatch chain it records, through Q; over three seconds, with two slots free, H5 not in `admission.waiting`, with no slot, no architect and no launch of one; after Q's envelope, within the bounded wait, H5 holding one of those slots with its architect's claim, the fake runtime asked to launch H5's architect, H5 in `admission.active` and out of `admission.waiting`, recorded in its own tree with T on no chain it records, and P5 still unrecorded |
-| `release-refuses` | H5 moved to backlog by envelope, which frees its slot; U seeded as a second live tree in a free slot, with G recorded as its child in backlog; the stand-in shows G in backlog under T; the release of G | H5 with no slot; 409 `CHILD_IN_OTHER_TREE` whose message names G and U; G's record as it was (U's tree, parent, phase, status, generation, sequence); no status write taken by the Dispatch stand-in |
+## tree-rollback.sh
 
-What the proof stands in for lies outside the change:
-the broker is a native `nats-server`, Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), which holds each issue's status, parent and labels, answers the issue reads the release and the event preparation make, 404s an issue it does not hold, lists no issues at boot and records every write the daemon makes, Envoy's listener is the package's `noticeListener`, GitHub knows each repository's default branch, takes each issue branch the workflow creates and knows no pull request, the two Apps' tokens are placeholders, and no agent runs:
-each claim is launched by the package's fake runtime, which provisions each claim's workspace in its own pod, so no host clone is made.
-T, X, Y, step 7's Q6, step 9's tree lifecycle under R, step 10's Q and step 11's U and G are seeded through the store, as every daemon test seeds its fixture, and each seed is printed as one.
-The configuration load, the store and its migrations, the HTTP API, the claim supervision, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
-`CHILD_ADOPTION_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/tree-rollback.sh     # → "tree rollback: PASS", then "tree rollback e2e: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-4730's k44: after the release that stores no tree has run, the step `docs/kubernetes.md` gives for its rollback leaves a database the release before runs on, as R22 of dispatch://INFRA-3320 says.
+It runs where [`tree-cutover.sh`](#tree-cutoversh) runs, with `psql` beside it, which runs the step's two blocks, and through the same [`lib/tree-proof.sh`](#libtree-proofsh), whose driver here is `TestTheTreeRollbackLive` (`internal/daemon/tree_rollback_live_test.go`, `-tags e2e`).
+
+Its Dispatch's parent-status rule is off, as for the cut-over, and its `DISPATCH_LEGION_STATUS_SCOPE` is unset, so a session's status write of a Legion issue lands.
+The release before's driver (`TestTreeRollbackReleaseBefore`) leaves live phases, a held issue, a lingering tree with a hand-over whose write landed and one whose write did not, an open production check, and K, a labelled child of Q, an issue nobody hands to Legion at `in_progress`, whose row is in its copy of Dispatch's issues when it stops.
+This release boots, converts, and reads Dispatch through a wrapper (`overrides.wrapDispatch`) that, once its consumer has caught up and the driver has deleted Q's row from the copy, answers each read of Q 503 and lists Q nowhere, so K's chain stays unknown, and that answers one status write of a root it records 403 `LEGION_STATUS_SCOPE_REQUIRED`, the refusal behind the `status-scope` notice.
+Then the driver prints each step between `== <step>` and `ok <step> (<s>s)`:
+
+| step | what it holds |
+| :--- | :--- |
+| `the release before` | that release's driver passed, and the world file names what it left |
+| `this release boots and converts` | `daemon.convertedAt` is set, and Q's row is deleted from the copy |
+| `work of this release's own` | an issue the release before held, moved under another root with its wait taken off, starts there with claims that store its first tree; a waiting issue recorded after the conversion is set under a child nobody released and held there; a child is unlinked; a new root is admitted, its first status write refused once with the `status-scope` notice queued, and the oldest contract's legion tool's `register_gate` of it is taken; a root is closed and reopened; a session's `backlog` on K is held; and `reparented` notices are queued |
+| `this release stops, with one effect of each kind the release before runs and one row of each shape it does not` | the driver queues, in this release's shape and due long after the run, one effect of each kind the release before's own `outbox_kind_check` admits, read from the database that release migrated, a status write with an option and a reparent seed of R18's shape, and the database holds a `retention_end`, a `reparented` and a `status-scope` notice, and a held session write |
+| `the rollback step of docs/kubernetes.md` | the section's SQL block runs through `psql` and prints K's write `set back to in_progress`, and its relabel loop runs with a `kubectl` of the driver's own first on `PATH`, which records each label the loop sets on the fake runtime's pods; where the release before does not carry INFRA-4728 (no `20261114232555_awaiting_children` among its migrations), the rollback crosses that release too, so each SQL block of its section ("Rolling back the release that holds a parent's start while a child of it is open") runs right after, as an operator runs two releases' steps in the guide's order, the clear of the given columns only where the release before does not carry `20261111225552_phase_entry`; afterwards the conversion's record, every held write and every row of a kind or notice the release before refuses are gone, and K's reassert is queued |
+| `the release before after the step` | that release's driver (`TestTreeRollbackReleaseBeforeAfterTheStep`) finds no row its own decoder refuses, boots, acts on each claim and registers the gate of the root this release recorded, writes K's reassert so Dispatch shows K `in_progress` again while K works on, starts a new root, runs each queued effect, holds the moved issue and the unlinked one in their old tree and the issue set under an unreleased child by its own ancestry hold, keeps the landed hand-over a root of its own, and, at a root's close, cleans up no tree that labels the pod of an issue at work |
+
+What it cannot show is the `kubectl` relabel itself, which needs a cluster.
+`TREE_ROLLBACK_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, both daemons' logs in `daemon.log`, Dispatch's in `dispatch.log`, the build of the release before's driver and the driver's output.
 
 ## sub-architect.sh
 
@@ -4400,7 +4419,7 @@ the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A run took 60 s in a Legion worker pod, 53 s of it building the driver and 7 s the proof's seven steps.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` makes too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4463,7 +4482,7 @@ the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 The proof waits out the minute the daemon waits between a first conflicting read and its second (`internal/workflow`'s `conflictConfirmWait`), which no setting shortens, so a run takes more than a minute.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `sub-architect.sh` makes too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4518,7 +4537,7 @@ the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A measured run of the eight steps took 73 s, 2 s of it the proof itself and the rest building the driver.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `sub-architect.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4570,7 +4589,7 @@ the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
 A run takes about half a minute.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `sub-architect.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4625,7 +4644,7 @@ the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 The proof itself waits out one paced launch, one outbox retry backoff and one entry sweep.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `sub-architect.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4679,7 +4698,7 @@ The DSN's host must be loopback: `prerequisites` refuses one that is not with ex
 The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
 A whole run took 317 s measured in a Legion worker pod (omp/18.16.0), the driver 300 s of it:
 the ladder's first three gaps are waited out where they are real, 30 s, 60 s and 120 s of wall clock between the daemon's sends, while its fourth and fifth are driven on the daemon's own clock (`ladderClock`, which shortens those two durations and no others), since waiting them out would add twelve minutes and measure the same ladder twice.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `sub-architect.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -5024,7 +5043,7 @@ It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boo
 the driver also creates Dispatch's own database on the same server and drops it on exit, so the DSN's role must be allowed to create and drop databases, and the server must offer the `pgvector` extension Dispatch's migrations create.
 That server must be this machine's: the DSN's host must be loopback, and `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The script starts no database.
-The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
+The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh).
 A run takes two to four minutes, most of it building Dispatch and the driver.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
@@ -5081,7 +5100,7 @@ It runs on any Linux host with `go`, `awk`, `bun` (after `bun install` at the ch
 the driver also creates Dispatch's own database on the same server and drops it on exit, so the DSN's role must be allowed to create and drop databases, and the server must offer the `pgvector` extension Dispatch's migrations create.
 That server must be this machine's: the DSN's host must be loopback, and `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The script starts no database.
-The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh);
+The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh);
 a `LEGION_TEST_NATS_URL` in the caller's environment is not read.
 A run takes one to five minutes, most of it building the driver and Dispatch.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
@@ -5139,9 +5158,9 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
+The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh).
 A measured run in a pod took 64 s, 48 s of it building the driver and 9 s the proof itself.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `sub-architect.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -5350,7 +5369,7 @@ The live proof that a later review round is told the commit the review before it
 the task the daemon prompts the reviewer with in its second round holds ` Last reviewed commit: <sha>.`, the head the reviewer's own deciding review of the first round named in its Legion footer, a review whose footer names the entry of that round, which the daemon keeps on the reviewer's phases row (`phases.reviewed_head`).
 It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inputs and refusals:
 `go`, `git`, `jj` 0.38 or later, `awk`, `bun` (after `bun install` at the checkout's root) and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
-The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
+The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh).
 A run took 51 s on a shared devbox under load with a warm Go build cache: 3 s for the prerequisites, 0 s for the broker, 20 s building the driver and 28 s for the proof, whose first 4 s build Dispatch.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, and the `driver` check builds a test binary of `TestReviewRangeLive` (`internal/daemon/review_range_live_test.go`, `-tags e2e`).
 
@@ -7384,10 +7403,10 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `tree cutover`, `tree rollback` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `TREE_CUTOVER_EVIDENCE_DIR`, `TREE_ROLLBACK_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);
@@ -7400,6 +7419,29 @@ and the envelope, `processed_events` and notice reads and writes a step makes, t
 The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `conflict-no-takeover.sh`'s, `phase-entry-converge.sh`'s and `parent-waits.sh`'s) share more of it (`liveIssueProof`), in `internal/daemon/live_issue_proof_test.go`, which carries `//go:build e2e` because no untagged test calls it: that issue's seed and the daemon's boot over the fake runtime, each role's registered session and the turns a step plays on its connection (`liveSession`, `liveClaimant`), GitHub's stand-in for the pull request at the head last pushed (`liveGitHub`), and the envelopes of the implementer's push, GitHub's synchronize and a push onto the base.
 `review-range.sh`'s driver embeds `handoff-records.sh`'s rig, in `internal/daemon/handoff_records_live_test.go`: Dispatch started and its project made (`startOnDispatch`), the issues created and seeded (`createIssue`, `seedIssues`), the daemon booted (`boot`), and each claim brought to ready and driven over the worker stream (`handoffClaimant`).
 `merge-wait-readable.sh`'s and `review-range.sh`'s drivers publish the review App's review, the implementer's push and GitHub's synchronize through one copy of each envelope (`publishReviewAs`, `publishPushOf`, `publishSynchronizeOf`), in `internal/daemon/github_envelopes_live_test.go`, which carries `//go:build e2e` because no untagged test calls it.
+The drivers of `tree-cutover.sh` and `tree-rollback.sh` share theirs in `internal/daemon/tree_release_before_live_test.go`, which [`lib/tree-proof.sh`](#libtree-proofsh) lays over the release before's tree and so names only what both releases carry: the world file the two drivers hand each other (`treeWorld`), each release's daemon over it (`treeDaemon`), and the seeds of what the release before cannot leave in a run's minutes;
+`internal/daemon/tree_cutover_live_test.go` holds the rest both use (`treeRig`, which starts the scratch Dispatch and runs the release before's driver as a child process, and each step's helpers).
+
+## lib/tree-proof.sh
+
+The run [`tree-cutover.sh`](#tree-cutoversh) and [`tree-rollback.sh`](#tree-rollbacksh) make around their drivers, both of which boot the release before and this release on one database.
+
+```sh
+. "$root/scripts/e2e/lib/tree-proof.sh"            # sourced, never run; it sources lib/live-daemon-proof.sh
+tree_proof LABEL SLUG TEST EVIDENCE                # the script's last command
+```
+
+Before [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run of `TEST`, with `EVIDENCE` as its evidence directory (empty: a fresh one), it makes two checks of its own, each printing `== <check>`, what it observed and `ok <check> (<s>s)`:
+
+- `the release before` finds the release before, `git merge-base HEAD origin/main`, read at run time, so a branch that merged `main` forward compares itself with that `main`.
+  A shallow checkout fetches its history and `origin/main` from its own remote first.
+  A merge base that already carries this release's conversion (`20261120095128_issue_facts.up.sql`) is no release before to convert from, and the run is refused with exit 2.
+  It takes that tree with `git archive` into a directory of the run's own under `TMPDIR`, removed on any exit, lays this checkout's `internal/daemon/tree_release_before_live_test.go` over it, as `busy-relaunch-delivery.sh --base-commit` lays its driver, builds that tree's daemon package's `-tags e2e` test binary, and prints its sha256 and this checkout's source ([`lib/built-from.sh`](#libbuilt-fromsh));
+
+- `the oldest contract` makes the root of the oldest plugin contract in the fleet (`lib/old-plugin-root.sh`, `TREE_PROOF_CONTRACT`, default 144), with this checkout's `packages/pi-legion/test/daemon-client-driver.ts` and `gate-holder-driver.ts` copied in.
+
+It exports `LEGION_E2E_REPO_ROOT` (the checkout, which the driver builds Dispatch from and reads `docs/kubernetes.md` from), `LEGION_E2E_OLD_TOOL_ROOT` and `LEGION_E2E_BEFORE_DRIVER` (the release before's binary, which the driver runs as a child process), and makes the live run in a subshell, so that run's exit trap is the subshell's and this file's still removes the release before's tree.
+The run's last line is `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or its FAIL line.
 
 ## lib/secret-leaks.ts
 
