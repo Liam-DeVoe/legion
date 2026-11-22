@@ -31,8 +31,6 @@ import {
 } from "./outside-edge-refusals-fixtures";
 import { bash, closedPort, curl, verdict } from "./outside-path-reach-fixtures";
 
-const { check, directoryOf, listFile, planLists } = edgeFixtures(import.meta.url);
-
 /** `/proc/<pid>/stat`, which `signallingCurl`'s curl reads to find the script's own bash. The two
  *  rows that use that curl skip where it is missing (ENOENT), and this says so once; any other
  *  failure of the lookup fails them, naming the error. */
@@ -40,6 +38,8 @@ const procStat = hostFile(
   "/proc/self/stat",
   "the two rows whose curl signals the script's own bash, found through /proc/<pid>/stat,"
 );
+
+const { check, directoryOf, listFile, planLists } = edgeFixtures(import.meta.url);
 
 // The rows run one after another, not concurrently, for the reason `outside-edge-refusals.test.ts`
 // gives: the end of each bounded child reads the whole process table and holds this process's
