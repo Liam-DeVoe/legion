@@ -44,9 +44,10 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 //
 //   - GH_NO_UPDATE_NOTIFIER and GH_PROMPT_DISABLED, so gh asks no question and checks for no
 //     update, which a TTY would otherwise reach, and GH_STACK_NO_UPDATE_NOTIFIER, so the image's
-//     gh-stack makes no update check either, which reads github/gh-stack's latest release with
-//     the token of the call's directory on every command but help (gh-stack v0.3.0
-//     internal/update/update.go, Enabled and Check), and the image pins it anyway;
+//     gh-stack makes no update check either, which would read github/gh-stack's latest release
+//     with the token of the call's directory on every command but help (gh-stack v0.3.0
+//     internal/update/update.go, Enabled and Check); it reads the release it runs from a
+//     manifest.yml beside it, which the image installs none of, so this is a second stop;
 //   - GH_EDITOR, ghNoEditor, so an editor gh starts fails before it writes anything;
 //   - GH_TELEMETRY=0, which gh reads ahead of DO_NOT_TRACK and its config and takes as off
 //     (cli/cli v2.104.0 internal/telemetry/telemetry.go:90,104-129);
