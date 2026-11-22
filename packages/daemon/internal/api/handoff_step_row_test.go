@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,5 +66,103 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 	prefix := "handoff:" + key + ":1:1:1:tester:testing:a:0:" + written + ":pass"
 	if got, want := completionKeys(t, h, key), []string{prefix + ":p2", prefix + ":p4"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("the completion keys of %s = %q, want %q", key, got, want)
+	}
+}
+
+// seedTesterAt gives key, at generation 1, the owner's plan of task a whose steps are roles, each
+// with the type plan.BuiltinRoles gives it and the key a on every tester's step, with the task
+// running at place, and the tester's row of each place in entries at that entry, under token, raised
+// by a forward move in place order.
+func seedTesterAt(t *testing.T, h *harness, key string, roles []string, place int, token claim.Token, entries map[int]int64) {
+	t.Helper()
+	ctx, records := context.Background(), record.NewStore()
+	builtin := plan.BuiltinRoles()
+	raised := time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)
+	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
+			GivenBy: "owner", GivenAt: raised}
+		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting}
+		steps := make([]record.PlanStep, 0, len(roles))
+		for i, role := range roles {
+			step := record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: builtin[role].Type}
+			if role == string(claim.RoleTester) {
+				step.AgentKey = "a"
+			}
+			steps = append(steps, step)
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+			return err
+		}
+		if err := records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning); err != nil {
+			return err
+		}
+		for at := range len(roles) + 1 {
+			entry, ok := entries[at]
+			if !ok {
+				continue
+			}
+			if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: token, Entry: entry,
+				EntryRaisedAt: raised.Add(time.Duration(at) * time.Minute), StepTask: "a", StepPlace: at}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the tester's steps of %s at step %d: %v", key, place, err)
+	}
+}
+
+// The route holds a completion to the step its turn was given, as the workflow does. In
+// `implementer tester:a reviewer tester:a`, a forward move entered step 4 at the head step 2 left,
+// and the agent's turn of step 2, still open on step 2's entry, completes at the pull request's head
+// with a record of its own: its entry is at or below step 2's row, another step of the role, so the
+// route refuses it HANDOFF_STALE_ENTRY, saying so, and applies no fact. The control is a role at one
+// step, `implementer tester reviewer`, whose step a forward move handed again at the same head: the
+// same completion is taken, as it was before a role stood at two steps. Without the route's read of
+// the other step (record.OtherStepsEntry) the first completion was applied, and only the
+// workflow's own fence, behind this route, refused it.
+func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
+	const key = "LEGION-208"
+	for _, tc := range []struct {
+		name    string
+		roles   []string
+		place   int
+		entries map[int]int64
+		refused bool
+	}{
+		{"the turn of step 2 completing while step 4 runs", []string{"implementer", "tester", "reviewer", "tester"}, 4, map[int]int64{2: 1, 4: 3}, true},
+		{"the control: a role at one step handed again at the same head", []string{"implementer", "tester", "reviewer"}, 2, map[int]int64{2: 3}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, key, phase.Testing)
+			seedPullRequest(t, h, key, headSHA)
+			tester := newLiveClaim(t, h, key, claim.RoleTester)
+			seedTesterAt(t, h, key, tc.roles, tc.place, tester.token, tc.entries)
+			takeTask(t, h, tester.token, "outbox:77", "test "+key, 1, 1)
+
+			answer := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
+			if !tc.refused {
+				completion(t, answer)
+				if got := facts.recorded(); len(got) != 1 {
+					t.Fatalf("facts after the completion = %#v, want the one completion applied", got)
+				}
+				return
+			}
+			message := refused(t, answer, http.StatusConflict, "HANDOFF_STALE_ENTRY")
+			for _, want := range []string{
+				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
+				"the entry this completion serves is of another step of this role",
+				"nothing was recorded",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, want)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied: the route refuses before the fact", got)
+			}
+		})
 	}
 }
