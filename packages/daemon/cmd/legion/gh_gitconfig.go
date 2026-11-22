@@ -69,13 +69,16 @@ var ghGitReadBound = 30 * time.Second
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
 //
-// The read runs in a process group of its own that its bound stops whole (procgroup.Configure):
-// a git, or a wrapper of it, whose child holds the output pipe would otherwise keep the call
-// waiting past the bound for as long as that child lives, since a stop of git alone leaves the
-// pipe open. A git that exits on its own while a child still holds the pipe is waited for no
-// longer than procgroup's WaitDelay, and its own exit is its answer.
-func ghRepoGitConfigRefusal(env []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&ghGitReadBound))
+// The read runs under ctx, runGh's beforeGh, in a process group of its own that its bound or the
+// end of ctx stops whole (procgroup.Configure): a git, or a wrapper of it, whose child holds the
+// output pipe would otherwise keep the call waiting past the bound for as long as that child lives,
+// since a stop of git alone leaves the pipe open. The terminal's signals do not reach that group,
+// so a SIGINT, a SIGTERM or a SIGHUP reaches it through ctx (runGh's rule); runGh reads such a
+// stop as the signal's, not as this refusal. A git that exits while a child still holds the pipe
+// is waited for no longer than procgroup's WaitDelay, and its read is then refused, since what was
+// copied may be cut short and a setting it misses would let gh's git send the token.
+func ghRepoGitConfigRefusal(ctx context.Context, env []string) error {
+	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&ghGitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^include\.path$|^includeif\..*\.path$|^extensions\.worktreeconfig$`)
 	procgroup.Configure(cmd)
@@ -84,7 +87,7 @@ func ghRepoGitConfigRefusal(env []string) error {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	if errors.Is(err, exec.ErrWaitDelay) {
-		err = nil
+		return fmt.Errorf("cannot read the repository's git configuration: git exited, but something it started still held its output %s later, so what was read may be cut short, and gh's git would read it whole, so it sends nothing", procgroup.WaitDelayNow())
 	}
 	var exit *exec.ExitError
 	switch {

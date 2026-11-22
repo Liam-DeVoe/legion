@@ -115,10 +115,11 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // gh under the variable again, so a real gh that leads back is still refused one start later, with
 // or without a caller's GH_TOKEN.
 //
-// Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
-// children, the shared check and the visibility reads, which the guard starts under the context
-// it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
-// terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
+// Everything this command starts before gh — the git reads of the repository's configuration and
+// remotes (ghRepoGitConfigRefusal, readGitRemotes), the help reads (readGhHelp), and the leak
+// guard's children, the shared check and the visibility reads, which the guard starts under the
+// context it is given (leakguard's Guard.run) — runs in a process group of its own, which none of
+// the terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
 // cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
 // hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
 // 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
@@ -186,7 +187,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// The two exact reads run `gh api` on an endpoint with no placeholder, which starts no git at
 	// all, so they read none: each stays the one gh process the guard counts on.
 	if !rateLimitRead && !isVisibilityRead {
-		if err := ghRepoGitConfigRefusal(helpEnv); err != nil {
+		err := ghRepoGitConfigRefusal(beforeGh, helpEnv)
+		if status, ok := signalled(beforeGh); ok {
+			return status
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
@@ -231,7 +236,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// reads anything of it. gh's help of each command on the way is read once per gh binary
 		// and kept for the calls after (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, readGitRemotes,
+		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, func() ([]ghRemote, error) { return readGitRemotes(beforeGh) },
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
 			return status

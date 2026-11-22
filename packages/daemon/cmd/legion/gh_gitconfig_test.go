@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -20,16 +22,18 @@ import (
 // A git read of `legion gh` that outlives its bound is stopped with everything it started: a git,
 // or a wrapper of it, whose child holds the output pipe once git itself is stopped would keep the
 // read waiting past its bound for as long as that child lives. The stand-in git starts a child
-// that holds its standard output and records the child's pid, then never answers; the read's bound
-// is a second here (ghGitReadBound, which this row sets itself). The read must end, refused, with
-// the test binary's deadline as the only bound on the wait, and the child must be gone with it.
+// that holds its standard output and records the child's pid, then never answers. The read's
+// deadline passes by hand once that pid is recorded (passedDeadline): a fixed bound of a second
+// could stop the stand-in's shell before a loaded machine had let it record anything. The read
+// must end, refused, with the test binary's deadline as the only bound on the wait, and the child
+// must be gone with it.
 func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 	for _, tc := range []struct {
 		name, refused string
-		read          func() error
+		read          func(context.Context) error
 	}{
-		{"the configuration read", "cannot read the repository's git configuration", func() error { return ghRepoGitConfigRefusal(os.Environ()) }},
-		{"the remotes read", "git remote -v", func() error { _, err := gitLines("remote", "-v"); return err }},
+		{"the configuration read", "cannot read the repository's git configuration", func(ctx context.Context) error { return ghRepoGitConfigRefusal(ctx, os.Environ()) }},
+		{"the remotes read", "git remote -v", func(ctx context.Context) error { _, err := gitLines(ctx, "remote", "-v"); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
@@ -40,22 +44,54 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			killRecordedHelper(t, child, childSeconds)
-			bound := ghGitReadBound
-			ghGitReadBound = time.Second
-			t.Cleanup(func() { ghGitReadBound = bound })
+			deadline := newPassedDeadline()
+			t.Cleanup(deadline.pass)
 			answered := make(chan error, 1)
-			go func() { answered <- tc.read() }()
-			err := testwait.Receive(t, tc.name+" whose git never answers and whose child holds its output to end at its bound of 1s", answered)
+			go func() { answered <- tc.read(deadline) }()
+			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the stand-in git to record its child",
+				func() bool { _, err := os.Stat(child); return err == nil })
+			deadline.pass()
+			err := testwait.Receive(t, tc.name+" whose git never answers and whose child holds its output to end once its deadline passed", answered)
 			if err == nil || !strings.Contains(err.Error(), tc.refused) {
 				t.Fatalf("%s = %v, want a refusal naming %q", tc.name, err, tc.refused)
 			}
-			pid, recorded := recordedHelper(child, childSeconds)
-			if pid == 0 && !recorded {
-				t.Fatalf("the stand-in git recorded no child in %s", child)
-			}
+			pid, _ := recordedHelper(child, childSeconds)
 			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
 				fmt.Sprintf("git's child (pid %d) to end with the read's stop: want the stop to reach git's whole process group", pid),
 				func() bool { return !helperRunning(pid, childSeconds) })
+		})
+	}
+}
+
+// A git read of `legion gh` whose git exited while something it started still held the output is
+// refused: the copy of what git printed stopped at exec's WaitDelay, so what was read may be cut
+// short, and the configuration read would then pass a setting it never read, while gh's own git
+// reads the configuration whole. The stand-in git starts a child that holds its standard output,
+// records it and exits 0 at once; the row gives WaitDelay a value of its own (procgroup.
+// WaitDelayBound), since it reads that delay's end, and the child holds the output past any delay.
+func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
+	previous := procgroup.WaitDelayBound
+	procgroup.WaitDelayBound = 100 * time.Millisecond
+	t.Cleanup(func() { procgroup.WaitDelayBound = previous })
+	for _, tc := range []struct {
+		name, refused string
+		read          func() error
+	}{
+		{"the configuration read", "cannot read the repository's git configuration: git exited, but something it started still held its output", func() error { return ghRepoGitConfigRefusal(context.Background(), os.Environ()) }},
+		{"the remotes read", "git remote -v exited, but something it started still held its output", func() error { _, err := gitLines(context.Background(), "remote", "-v"); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
+			const childSeconds = "86398"
+			script := "#!/bin/sh\nsleep " + childSeconds + " &\necho $! >'" + child + ".new'\nmv '" + child + ".new' '" + child + "'\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			killRecordedHelper(t, child, childSeconds)
+			if err := tc.read(); err == nil || !strings.Contains(err.Error(), tc.refused) {
+				t.Fatalf("%s = %v, want a refusal naming %q", tc.name, err, tc.refused)
+			}
 		})
 	}
 }
@@ -298,7 +334,7 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Chdir(tc.dir)
 			caller := append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}, tc.caller...)
-			err := ghRepoGitConfigRefusal(ghChildEnviron(caller, nil))
+			err := ghRepoGitConfigRefusal(context.Background(), ghChildEnviron(caller, nil))
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("ghRepoGitConfigRefusal = %v, want none", err)
@@ -339,7 +375,7 @@ func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("PATH", tc.path)
 			t.Chdir(tc.dir)
-			err := ghRepoGitConfigRefusal(ghChildEnviron([]string{"PATH=" + tc.path, "HOME=" + t.TempDir()}, nil))
+			err := ghRepoGitConfigRefusal(context.Background(), ghChildEnviron([]string{"PATH=" + tc.path, "HOME=" + t.TempDir()}, nil))
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("ghRepoGitConfigRefusal = %v, want none", err)
@@ -693,7 +729,7 @@ func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
 			}
 			dir, _ := tc.build(t.TempDir())
 			t.Chdir(dir)
-			err := ghRepoGitConfigRefusal(ghChildEnviron(caller, nil))
+			err := ghRepoGitConfigRefusal(context.Background(), ghChildEnviron(caller, nil))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ghRepoGitConfigRefusal in %s = %v, want a refusal containing %q, so gh's git never runs the route", dir, err, tc.want)
 			}
