@@ -739,13 +739,14 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 	case errors.Is(err, errRoomBudgetFull), RefusedBusy(err):
 		// The room was gone and the budget had no opening for it - ygo's idle sweep can retire a
 		// room no peer is in between this settlement's take of it and this sweep - or a busy
-		// refusal met the sweep: a load of the room another holder's transaction began, refused
-		// under that transaction's grant. The marks stay expired, and nothing else may run this
-		// sweep again: a document no browser holds and nobody writes arms no settlement of its
-		// own. So the sweep arms the document's next settlement itself, a settle delay from now,
-		// which takes the room - booking the budget's opening where no room is resident
-		// (awaitServerRoom) - and sweeps the marks with the room held. While the refusal lasts
-		// each such settlement arms the next one, one a settle delay, each logged here.
+		// refusal met the sweep: a load of the room that a caller which may load no room began - a
+		// transaction holding its grant, or the awareness relay's Inject - refused to it. The marks
+		// stay expired, and nothing else may run this sweep again: a document no browser holds
+		// and nobody writes arms no settlement of its own. So the sweep arms the document's next
+		// settlement itself, a settle delay from now, which takes the room - booking the budget's
+		// opening where no room is resident (awaitServerRoom) - and sweeps the marks with the room
+		// held. While the refusal lasts each such settlement arms the next one, one a settle
+		// delay, each logged here.
 		slog.Warn("dispatch: sweep unrecorded marks", "room", room, "retry", "the settlement this arms sweeps them", "error", err)
 		s.scheduleSettle(room)
 	case err != nil:

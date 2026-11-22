@@ -1463,8 +1463,9 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 // and is listed by ygo from before its read of the store, so it is found here and published into:
 // Server.Apply waits for its load. A room that retires between this check and the publish's
 // Apply is loaded again by that Apply, from a store that holds the write, and idles out like any
-// room a write loads. A load under way that refuses itself, because a transaction holding its
-// grant began it (errRoomLoadUnderGrant, servicePersistenceAdapter.LoadDocContext), leaves no room
+// room a write loads. A load under way that refuses itself, because a caller that may load no
+// room began it - a transaction holding its grant, or the awareness relay's Inject
+// (errRoomLoadUnderGrant, servicePersistenceAdapter.LoadDocContext) - leaves no room
 // to publish into, and hands the publish waiting on it that refusal: the publish ends as one that
 // found no room does (publishedWithoutARoom), which is no failure of any room's.
 //
@@ -1515,8 +1516,8 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 
 // publishedWithoutARoom ends a publish that reached no room: this process holds none of the
 // document, resident or loading (roomHeld), so the publish loads none, which would hold the
-// document in memory with no reader in it; or the load it found under way refused itself under
-// another transaction's grant (errRoomLoadUnderGrant), which left no room under the name. Nothing
+// document in memory with no reader in it; or the load it found under way refused itself to a
+// caller that may load no room (errRoomLoadUnderGrant), which left no room under the name. Nothing
 // of the write is lost by it, and nothing of it is left half-made.
 //
 // Every update it would have applied is durable - the transaction appended and committed all of

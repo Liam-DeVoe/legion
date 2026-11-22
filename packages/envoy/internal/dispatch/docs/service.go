@@ -2051,12 +2051,13 @@ const (
 	// one of two causes neither of which is wrong with the room or the document: the room budget
 	// had no opening to load one through (roomBudget.awaitServerRoom) - the rooms already open
 	// fill the budget and none of them became closable while it waited - or its load waited on a
-	// load a transaction holding its grant began, which refused itself busy and handed that
-	// refusal to every caller waiting on it (errRoomLoadUnderGrant,
-	// servicePersistenceAdapter.LoadDocContext). It is armed again a settle delay later and
-	// counted no failure - the openings fall free as the rooms the budget charges are closed, and
-	// the refused load was that transaction's, not this settlement's - and the pending-settlement
-	// row stands meanwhile, so a process that ends here leaves the settlement to resume.
+	// load that a caller which may load no room began - a transaction holding its grant, or the
+	// awareness relay's Inject - which refused itself busy and handed that refusal to every caller
+	// waiting on it (errRoomLoadUnderGrant, servicePersistenceAdapter.LoadDocContext). It is armed
+	// again a settle delay later and counted no failure - the openings fall free as the rooms the
+	// budget charges are closed, and the refused load was that caller's, not this settlement's -
+	// and the pending-settlement row stands meanwhile, so a process that ends here leaves the
+	// settlement to resume.
 	settleNoRoom
 	// settleRefusedInShutdown is a settlement that had to write into a room Shutdown has begun
 	// closing, which refused the write (allowInject, ErrServiceUnavailable). The pending-settlement
@@ -2101,8 +2102,8 @@ func (s *Service) followUpSettlement(room string, outcome settleOutcome) {
 		s.retrySettle(room, outcome.generation, outcome.err)
 	case settleNoRoom:
 		// Armed again rather than retried: the budget's openings fall free as the rooms it
-		// charges are closed, a refused load was a grant-holding transaction's and not this
-		// room's, and neither is a fault to count against the room (retrySettleLocked,
+		// charges are closed, a refused load was the load of a caller that may load no room and
+		// not this room's, and neither is a fault to count against the room (retrySettleLocked,
 		// maxSettleFailures).
 		s.scheduleSettle(room)
 	case settleOutOfBudget:

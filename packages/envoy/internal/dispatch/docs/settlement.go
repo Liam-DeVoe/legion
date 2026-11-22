@@ -197,15 +197,16 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless parent has ended, the document has been removed,
-	// Shutdown refused the write, or err is a room load refused under a transaction's held grant.
+	// Shutdown refused the write, or err is a room load refused to a caller that may load no room.
 	// The generation it counts that retry's failure against is the one the settlement stands at
 	// now, which its take reads again once the room is warm. An err that is the append gate's
 	// refusal of an update the room took after its issue closed is no fault to retry: it ends the
-	// settlement (endOnRefusedUpdate). A room load refused under a held grant
+	// settlement (endOnRefusedUpdate). A room load refused to a caller that may load no room
 	// (errRoomLoadUnderGrant) is no fault of the room's or the document's either: the settlement
-	// met it waiting on a load a transaction holding its grant began, which refused itself and
-	// handed the refusal to every caller waiting on it (servicePersistenceAdapter.LoadDocContext),
-	// so the settlement is armed again and counted no failure (settleNoRoom).
+	// met it waiting on a load that such a caller began - a transaction holding its grant, or the
+	// awareness relay's Inject - which refused itself and handed the refusal to every caller
+	// waiting on it (servicePersistenceAdapter.LoadDocContext), so the settlement is armed again
+	// and counted no failure (settleNoRoom).
 	settle.stoppedShort = func(err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
