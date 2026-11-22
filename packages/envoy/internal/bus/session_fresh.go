@@ -23,8 +23,9 @@ import (
 const SessionConsumerNamePrefix = consumernames.SessionPrefix
 
 // SessionIDMetadataKey is the metadata every session consumer of the fresh mode carries, naming
-// its session, beside consumernames.LogicalMetadataKey.
-const SessionIDMetadataKey = "envoy.session_id"
+// its session, beside consumernames.LogicalMetadataKey: the family table's
+// (consumernames.SessionIDMetadataKey).
+const SessionIDMetadataKey = consumernames.SessionIDMetadataKey
 
 // freshSessions is the selection record of every session, and what reads it.
 type freshSessions struct {
@@ -78,8 +79,9 @@ func (v sessionNamesServer) Delete(ctx context.Context, name string) error {
 func newFreshSessions(s *SessionConsumers) *freshSessions {
 	fresh := &freshSessions{store: s.client.SelectionStore()}
 	host, _ := os.Hostname()
-	// The naming is the session family's own (consumernames.SessionNaming), the one an operator's
-	// reader judges a record by (consumernames.CheckFamily).
+	// The naming and the metadata are the session family's own (consumernames.SessionNaming), the
+	// ones an operator's reader judges a record and a consumer by (consumernames.CheckFamily,
+	// consumernames.OwnsFamily).
 	naming := consumernames.SessionNaming()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:  fresh.store,
@@ -98,7 +100,7 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 				(*observe)(op, outcome)
 			}
 		},
-		Metadata: sessionConsumerMetadata,
+		Metadata: naming.Metadata,
 		// The candidate as the server answers it, against the whole configuration a session
 		// consumer's create gives (freshConfig, ConsumerAdoptable): one that differs in a setting no
 		// update changes is refused. Its start Names checks, and every setting an update changes is
@@ -111,11 +113,9 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 }
 
 // sessionConsumerMetadata is the metadata every fresh-mode consumer of sessionID carries, which its
-// create writes (freshCreate) and the owner check requires (consumernames.Config.Metadata): both
-// read it here, so a key added to one is in the other.
-func sessionConsumerMetadata(sessionID string) map[string]string {
-	return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
-}
+// create writes (freshCreate): the family table's (consumernames.SessionNaming), the one the owner
+// check requires, so a key added to one is in the other.
+var sessionConsumerMetadata = consumernames.SessionNaming().Metadata
 
 // SelectionStore is the session family's selection bucket (consumernames.SessionBucket) through c's
 // confirmed requests, so a read or write c's user may not make answers ErrPublishDenied at once.

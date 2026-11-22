@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/sjawhar/envoy/consumernames"
 )
 
@@ -40,6 +42,26 @@ func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 	} {
 		if err := consumernames.CheckFamily(consumernames.SessionFamily, "ses-A", c.record); (err == nil) != c.served {
 			t.Errorf("%s: CheckFamily for the session family = %v; want served %t", c.name, err, c.served)
+		}
+	}
+	// Its owner check is OwnsFamily's for the session family: one implementation, alike on its own
+	// consumer, its fixed one, another session's and an unmarked one.
+	consumer := func(name string, metadata map[string]string) *jetstream.ConsumerInfo {
+		return &jetstream.ConsumerInfo{Name: name, Config: jetstream.ConsumerConfig{Durable: name, Metadata: metadata}}
+	}
+	for _, c := range []struct {
+		name  string
+		info  *jetstream.ConsumerInfo
+		owned bool
+	}{
+		{"its own consumer", consumer("session~A", sessionConsumerMetadata("ses-A")), true},
+		{"its fixed consumer, unmarked", consumer("s-ses-A", nil), true},
+		{"another session's consumer", consumer("session~A", sessionConsumerMetadata("ses-B")), false},
+		{"an unmarked consumer", consumer("session~A", nil), false},
+	} {
+		own, family := names.Owns("ses-A", c.info), consumernames.OwnsFamily(consumernames.SessionFamily, "ses-A", c.info)
+		if (own == nil) != c.owned || (family == nil) != c.owned {
+			t.Errorf("%s: the session creator's Owns = %v, OwnsFamily = %v; want both owned %t", c.name, own, family, c.owned)
 		}
 	}
 }

@@ -95,22 +95,26 @@ revision:
   fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`, naming the field.
   Every creator applies the fence to every record it reads.
 
-  The prefix and the fixed name come from one table in this package (`Naming`, `FamilyNaming`):
-  `SessionNaming()` (`session~<nuid>`, fixed `s-<session id>`), `DurableNaming()` for a key
-  `DurableKey` made (`<durable>~<nuid>`, fixed the durable's name), and `LogicalNaming()` for
-  Dispatch's and a daemon's durables (`<logical>~<nuid>`, fixed the logical name). Every creator
-  builds its `Config.Prefix` and `Config.Fixed` from it. `CheckFamily(family, logical, record)` is
-  the fence by that table, the one a reader of the store uses (an operator's status, census or
-  cleanup, in a module that cannot import the creators'), and it answers what the family's creator
-  answers. Its nil says only that the record's names are of its key's family. The record must come
-  from a store read or `DecodeKVValue`, which check its key and fields, and a name it gives must
-  pass the owner check before anything reads, binds, updates or deletes it: every session's prefix
-  is `session`, so a record of one session can name another session's consumer and pass the
-  fence.
+  The prefix, the fixed name and the metadata come from one table in this package (`Naming`,
+  `FamilyNaming`): `SessionNaming()` (`session~<nuid>`, fixed `s-<session id>`, metadata
+  `envoy.logical` and `envoy.session_id` both the session id), `DurableNaming()` for a key
+  `DurableKey` made (`<durable>~<nuid>`, fixed and `envoy.logical` the durable's name), and
+  `LogicalNaming()` for Dispatch's and a daemon's durables (`<logical>~<nuid>`, fixed and
+  `envoy.logical` the logical name). Every creator builds its `Config.Prefix`, `Config.Fixed` and
+  `Config.Metadata` from it. `CheckFamily(family, logical, record)` is the fence by that table,
+  the one a reader of the store uses (an operator's status, census or cleanup, in a module that
+  cannot import the creators'), and it answers what the family's creator answers. Its nil says
+  only that the record's names are of its key's family. The record must come from a store read or
+  `DecodeKVValue`, which check its key and fields, and a name it gives must pass the owner check
+  (`OwnsFamily`) before anything reads, binds, updates or deletes it: every session's prefix is
+  `session`, so a record of one session can name another session's consumer and pass the fence.
 - **The owner check.** A consumer a record names is used only when the consumer's own metadata
-  names the key (`Names.Owns`, `Config.Metadata`). It is checked before every read, adoption and
-  delete of such a name, so a record that names another key's consumer is malformed, and nothing
-  reads, binds, updates, adopts or deletes that consumer for it.
+  names the key (`Config.Metadata`), or it is the key's fixed name. Every creator checks it before
+  every read, adoption and delete of such a name, so a record that names another key's consumer is
+  malformed, and nothing reads, binds, updates, adopts or deletes that consumer for it.
+  `OwnsFamily(family, logical, info)` is the same check by the table, the one a reader that is no
+  creator asks before it deletes a consumer a record names; it and each creator's own check are
+  one implementation over one table.
 
 ## The protocol (`Names`)
 

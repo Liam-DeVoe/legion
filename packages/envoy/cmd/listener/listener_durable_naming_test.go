@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/sjawhar/envoy/consumernames"
 )
 
@@ -36,6 +38,26 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	} {
 		if err := consumernames.CheckFamily(consumernames.SessionFamily, key, c.record); (err == nil) != c.served {
 			t.Errorf("%s: CheckFamily for the durable's key = %v; want served %t", c.name, err, c.served)
+		}
+	}
+	// Its owner check is OwnsFamily's for its key: one implementation, alike on its own consumer, its
+	// fixed one, another durable's and an unmarked one.
+	consumer := func(name string, metadata map[string]string) *jetstream.ConsumerInfo {
+		return &jetstream.ConsumerInfo{Name: name, Config: jetstream.ConsumerConfig{Durable: name, Metadata: metadata}}
+	}
+	for _, c := range []struct {
+		name  string
+		info  *jetstream.ConsumerInfo
+		owned bool
+	}{
+		{"its own consumer", consumer(r.durable+"~A", durableMetadata(r.durable)), true},
+		{"its fixed consumer, unmarked", consumer(r.durable, nil), true},
+		{"another durable's consumer", consumer(r.durable+"~A", durableMetadata("listener-other")), false},
+		{"an unmarked consumer", consumer(r.durable+"~A", nil), false},
+	} {
+		own, family := names.Owns(key, c.info), consumernames.OwnsFamily(consumernames.SessionFamily, key, c.info)
+		if (own == nil) != c.owned || (family == nil) != c.owned {
+			t.Errorf("%s: the durable creator's Owns = %v, OwnsFamily = %v; want both owned %t", c.name, own, family, c.owned)
 		}
 	}
 }
