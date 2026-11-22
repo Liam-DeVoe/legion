@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -23,7 +21,11 @@ type Scope struct {
 	// refuses it.
 	Projects []string
 	// Identity is the account the token names: its sub, or a Google token's email. It names the
-	// reply prefix (InboxPrefix).
+	// reply prefix (InboxPrefix), which depends on the identity alone. So one identity must have
+	// one scope: two connections of one identity with different project lists would subscribe the
+	// same prefix, and the narrower would receive the wider one's pull deliveries. The auth
+	// service keeps this by taking one BROKER_NATS_SERVICES entry per account, so each account
+	// gets one project list.
 	Identity string
 	// Connection is the name the connection asked to be authorized under, which the auth service
 	// reads from the authorization request (natscallout's Request.Name). A daemon connection
@@ -35,23 +37,32 @@ type Scope struct {
 	Connection string
 }
 
-// inboxPrefixBase begins every reply prefix InboxPrefix makes: nats.go's own prefix, "_INBOX.",
-// with its dot written "_", so the token differs from nats.go's "_INBOX" and no prefix reaches
-// another's.
-var inboxPrefixBase = strings.TrimSuffix(nats.InboxPrefix, ".") + "_"
+// ReplyRoot is the first token of every reply prefix InboxPrefix makes, which is the prefix the
+// auth service grants a Legion daemon, held to its projects or whole. It is not the root of every
+// reply subject the service grants: Dispatch, a listener and a whole daemon also subscribe nats.go's
+// own _INBOX.>, and the measurement job's grant subscribes _INBOX_envoy_measure.>, a first token of
+// its own, until that grant moves under this root. So ReplyRoot+".>" carries a daemon's push and
+// ordered consumer deliveries (a KV watch's among them), which go to its custom prefix and are
+// published inside the account the JetStream API runs in, and no other kind's. It is not nats.go's
+// own "_INBOX", so no prefix under it reaches another client's replies under _INBOX.>.
+const ReplyRoot = "_INBOX_envoy"
 
-// InboxPrefix is the reply prefix of the client whose credential names identity: "_INBOX_" and
-// identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two lowercase
-// hex digits. It is one subject token and distinct identities have distinct prefixes. The client
-// sets it with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in
-// place of _INBOX.>; both ends call this function with the identity their credential names.
+// InboxPrefix is the reply prefix of the client whose credential names identity: ReplyRoot, ".",
+// and identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two
+// lowercase hex digits. That last part is one subject token, and distinct identities have
+// distinct prefixes. Every '_' in it opens an escape that two hex digits close, so no identity's
+// token is a name the broker may later give one of its own clients under ReplyRoot, such as
+// _operator or _measure, whose '_' is followed by a letter that is no hex digit. The client sets it
+// with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in place of
+// _INBOX.>; both ends call this function with the identity their credential names.
 func InboxPrefix(identity string) string {
-	return token(inboxPrefixBase, identity)
+	return token(ReplyRoot+".", identity)
 }
 
 // token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
 // and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
-// tokens, and the result holds no '.', wildcard, whitespace or control character.
+// tokens, and the part written after prefix holds no '.', wildcard, whitespace or control
+// character, so it is one subject token.
 func token(prefix, s string) string {
 	const digits = "0123456789abcdef"
 	var out strings.Builder
@@ -124,6 +135,16 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 //     token, so it could name a consumer per repository only from a list of the repositories,
 //     which no scope holds, and a wildcard in place of the consumer's name would reach every
 //     consumer of the stream, other projects' included.
+//     The create alone names a filter: the info, the pull and the acknowledgements name the
+//     consumer only, so the grant holds a daemon to its consumers by name, not by what they
+//     filter. A durable of one of those names that already exists with a wider filter is read
+//     whole through this grant: today's daemon opens legion-go-<P>-dispatch on every project's
+//     issue events (notifications.dispatch.issue.>) and legion-go-<P>-wake on the shared wake
+//     lane, so a held PUB daemon pulls PRIV's issue events through its own dispatch consumer
+//     (TestWithinProjectsReadsAWideConsumerWhole). The grant holds a daemon to its projects only
+//     once each of its consumers filters on the project's own lane, which the daemon that opens
+//     its consumers per project does in place at boot, and only while it stays so: a user holding
+//     today's daemon grant, or a listener, may widen it again.
 //     The shared wake lane is a project's own only once the listener publishes its role and agent
 //     wake reports on each project's lane (contracts.LegionWakeSubject) and keeps only
 //     listener_ready there: until then it carries every project's role names and session ids, and

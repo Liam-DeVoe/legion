@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -107,12 +108,21 @@ func serviceRequest(raw string) Request {
 	return Request{UserNkey: "UUSER", ServerID: "NSERVER", Nonce: "nonce", User: natscred.ServiceUser, Password: raw, Host: "10.0.0.7"}
 }
 
-var exampleServices = []ServiceEntry{
-	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
-	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+// The platform accounts this package's tests list in BROKER_NATS_SERVICES.
+const (
+	listenerAccount = "system:serviceaccount:example-ns:example-listener"
+	daemonAccount   = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount  = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
+)
+
+var exampleServices = []config.NATSService{
+	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
+	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
+	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -132,9 +142,8 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, Dispatch's and a listener's with the private-projects bucket beside it and
-// a daemon's with its account's own reply prefix (scopeGrant), named <kind>/<machine id or
-// account>, expiring with the token.
+// grant from natsgrant, a daemon's with its account's own reply prefix beside it (serviceGrant),
+// named <kind>/<machine id or account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -145,8 +154,8 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: dispatchCalloutGrant("example-dispatch"), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: listenerCalloutGrant("example-hub"), Expires: now.Add(time.Hour)},
+		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
 		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: daemonCalloutGrant(daemonAccount), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
@@ -187,6 +196,7 @@ func TestRefusals(t *testing.T) {
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
@@ -230,6 +240,9 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
+		// An edge listener's entry parses, so that the broker's API reads its projects, and this
+		// build has no grant to answer its connection with.
+		{"an edge listener, whose grant this broker does not have", deps, nil, serviceRequest("edge-token"), labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx

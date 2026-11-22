@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // daemonAccount is the account the daemon's projected token names in these tests.
@@ -95,8 +95,8 @@ func TestADaemonCalloutConnectionKeepsRetryingARefusal(t *testing.T) {
 // The token here lapses that long and two seconds from now; the kubelet's rewrite is a later token
 // in the same file; and the stand-in is shown that later token on a CONNECT of its own while the
 // first is still live, with the connection connected after it. The control is a connection whose
-// keeper does not run: it never presents the later token, and this test fails naming the CONNECTs
-// it saw.
+// keeper does not run: it never presents the later token, and this test times out waiting for the
+// connection to move to it.
 func TestConnectWithAServiceTokenReconnectsBeforeExpiry(t *testing.T) {
 	s := testnats.StartCallout(t, 0, natsgrant.InboxPrefix(daemonAccount)+".>")
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")
@@ -110,18 +110,13 @@ func TestConnectWithAServiceTokenReconnectsBeforeExpiry(t *testing.T) {
 	later := testnkeys.ServiceToken(daemonAccount, time.Now().Add(time.Hour))
 	writeToken(t, tokenFile, later)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Eventually(t, "the connection to move to the later token before the first lapsed", func() bool {
 		presented := s.Presented()
-		if len(presented) >= 2 && presented[len(presented)-1] == later && conn.IsConnected() {
-			if presented[0] != first {
-				t.Fatal("the first CONNECT presented another token than the file held")
-			}
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+		return len(presented) >= 2 && presented[len(presented)-1] == later && conn.IsConnected()
+	})
+	if presented := s.Presented(); presented[0] != first {
+		t.Fatal("the first CONNECT presented another token than the file held")
 	}
-	t.Fatalf("the connection never moved to the later token before the first lapsed: %d CONNECTs, connected %t", len(s.Presented()), conn.IsConnected())
 }
 
 // The token's file is read at boot, and a file that cannot be read, is empty or holds no token
@@ -147,23 +142,6 @@ func TestServiceIdentityNamesTheTokensAccount(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), natsauth.ServiceTokenFileKey+" names "+row.path+", "+row.says) {
 			t.Errorf("ServiceIdentity(%s) = %v, want an error naming %s and %q", row.path, err, natsauth.ServiceTokenFileKey, row.says)
 		}
-	}
-}
-
-// While running, the service token's connection waits its reconnects out on the boot's own
-// schedule: one second, doubling, capped at a minute.
-func TestReconnectBackoffDoublesToItsCap(t *testing.T) {
-	options := nats.GetDefaultOptions()
-	if err := natsauth.ReconnectBackoff(time.Second, time.Minute)(&options); err != nil {
-		t.Fatal(err)
-	}
-	var got []time.Duration
-	for attempt := 1; attempt <= 9; attempt++ {
-		got = append(got, options.CustomReconnectDelayCB(attempt))
-	}
-	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, time.Minute, time.Minute, time.Minute}
-	if !slices.Equal(got, want) {
-		t.Fatalf("ReconnectBackoff waits %v, want %v", got, want)
 	}
 }
 

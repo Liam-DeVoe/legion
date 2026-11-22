@@ -63,21 +63,10 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		"empty-publish": {Subscribe: []string{natsgrant.InboxPrefix("empty-publish") + ".>"}},
 	}
 
-	keys := testnats.NewCalloutKeys(t)
-	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
-	adminSeed, adminPublic := testnats.User(t)
-	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	answers := serveCallout(t, url, keys, staticGrants(grants))
-
-	admin, err := testnats.ConnectSeed(t, url, adminSeed)
-	require.NoError(t, err)
-	t.Cleanup(admin.Close)
-	adminJS, err := jetstream.New(admin)
-	require.NoError(t, err)
+	hub := startLiveHub(t, grants)
+	url, admin, adminJS, answers := hub.url, hub.admin, hub.js, hub.answers
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	_, err = adminJS.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
-	require.NoError(t, err)
 	publish := func(subject string, bodies ...string) {
 		t.Helper()
 		for _, body := range bodies {
@@ -302,6 +291,93 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	stream, err := emptyJS.Stream(ctx, bus.Stream)
 	require.NoError(t, err, "a grant with no publish entry was refused the stream's info; the server now restricts it")
 	t.Logf("a user JWT with no publish allow list read the stream's info: %d messages stored", stream.CachedInfo().State.Msgs)
+}
+
+// The boundary of WithinProjects, which its doc names: the grant holds a daemon to its consumers
+// by name, not by what they filter. A legion-go-PUB-dispatch durable that already exists on every
+// project's issue events, as today's daemon opens it (packages/daemon/internal/intake/consume.go),
+// is read whole through PUB's held grant: the held PUB daemon reads the consumer's info and pulls
+// PRIV's issue event through its own consumer, whose info, pull and acknowledgements name the
+// consumer only. Once the held daemon updates that durable in place to PUB's own lane, as the
+// daemon that opens its consumers per project does at boot, it pulls PUB's events alone. This row
+// pins the boundary rather than a protection: a read that refuses to hold a daemon while any of
+// its consumers is wider than its own lane belongs to the step that lists daemon entries held to
+// projects.
+func TestWithinProjectsReadsAWideConsumerWhole(t *testing.T) {
+	const identity = "legion-daemon-PUB-wide"
+	consumer := "legion-go-PUB-dispatch"
+	hub := startLiveHub(t, map[string]natsgrant.Permissions{"held-pub": within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	// Today's daemon's dispatch consumer, on every project's issue events.
+	_, err := hub.js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{
+		Durable: consumer, FilterSubjects: []string{"notifications.dispatch.issue.>"}, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+	publish := func(subject, body string) {
+		t.Helper()
+		_, err := hub.js.Publish(ctx, subject, []byte(body))
+		require.NoError(t, err, "publish %s", subject)
+	}
+	publish("notifications.dispatch.issue.PUB.PUB-1.created", "PUB-1")
+	publish("notifications.dispatch.issue.PRIV.PRIV-1.created", "PRIV-1")
+
+	held := connectAs(t, hub.url, "held-pub", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(identity)))
+	js, err := jetstream.New(held.conn)
+	require.NoError(t, err)
+	pull := func() []string {
+		t.Helper()
+		wide, err := js.Consumer(ctx, bus.Stream, consumer)
+		require.NoError(t, err, "the held PUB daemon's info of %s; the server reported %v", consumer, held.reported())
+		batch, err := wide.Fetch(2, jetstream.FetchMaxWait(liveRefusalWait))
+		require.NoError(t, err)
+		var bodies []string
+		for msg := range batch.Messages() {
+			bodies = append(bodies, string(msg.Data()))
+			require.NoError(t, msg.DoubleAck(ctx))
+		}
+		require.NoError(t, batch.Error())
+		return bodies
+	}
+	require.ElementsMatch(t, []string{"PUB-1", "PRIV-1"}, pull(),
+		"the held PUB daemon did not read the wide %s whole: the grant now holds the consumer's filter, and its doc must say so", consumer)
+	t.Logf("the held PUB daemon pulled PRIV-1 through the wide %s", consumer)
+
+	narrowed := openConsumer(ctx, t, js, consumer, "notifications.dispatch.issue.PUB.>")
+	require.Equal(t, "notifications.dispatch.issue.PUB.>", narrowed.CachedInfo().Config.FilterSubject,
+		"the held PUB daemon could not update %s in place to PUB's lane", consumer)
+	publish("notifications.dispatch.issue.PUB.PUB-2.created", "PUB-2")
+	publish("notifications.dispatch.issue.PRIV.PRIV-2.created", "PRIV-2")
+	require.Equal(t, []string{"PUB-2"}, pull(), "the held PUB daemon's %s, narrowed in place to PUB's lane", consumer)
+}
+
+// liveHub is a hub on the image the hub runs behind a stand-in auth callout (serveCallout), with a
+// static admin user that may publish and subscribe anything, and the notification stream made.
+type liveHub struct {
+	url     string
+	admin   *natsgo.Conn
+	js      jetstream.JetStream
+	answers *calloutAnswers
+}
+
+// startLiveHub starts a liveHub whose auth callout admits each user of grants with its grant.
+func startLiveHub(t *testing.T, grants map[string]natsgrant.Permissions) liveHub {
+	t.Helper()
+	keys := testnats.NewCalloutKeys(t)
+	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
+	adminSeed, adminPublic := testnats.User(t)
+	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
+	answers := serveCallout(t, url, keys, staticGrants(grants))
+	admin, err := testnats.ConnectSeed(t, url, adminSeed)
+	require.NoError(t, err)
+	t.Cleanup(admin.Close)
+	js, err := jetstream.New(admin)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
+	require.NoError(t, err)
+	return liveHub{url: url, admin: admin, js: js, answers: answers}
 }
 
 // within is WithinProjects(Daemon(), scope), which must not refuse.
