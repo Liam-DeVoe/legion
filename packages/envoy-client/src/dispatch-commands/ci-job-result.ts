@@ -32,11 +32,14 @@ const CI_JOB_RESULT_FIELDS: Readonly<Record<string, true>> = {
 /** The three of them the record cannot do without. */
 const CI_JOB_RESULT_REQUIRED = ["check", "verdict", "commit"] as const;
 
-/** What the job's form takes, written once: each refusal of a call that breaks it gives it. */
+/** What the job's form takes, written once: each refusal of a call that breaks it gives it. The
+ *  call is the job's under `agent-secrets result-grant`, with the CI job's DISPATCH_RESULTS_TOKEN
+ *  (`AIRLOCK_RESULTS_VAR`), which holds the airlock's placeholder of its run and which only
+ *  `result-grant` gives (`isJobResult` in dispatch-cli.ts). */
 const CI_JOB_RESULT_RULE =
-  "Under agent-secrets result-grant, a CI job's dispatch result --issue records the job's " +
-  "result of the check that its ci_check names, and takes --issue, --check, --verdict, " +
-  "--commit and --observed alone.";
+  "Under agent-secrets result-grant, with the CI job's DISPATCH_RESULTS_TOKEN, the airlock's " +
+  "placeholder of its run, dispatch result --issue records the job's result of the check that " +
+  "its ci_check names, and takes --issue, --check, --verdict, --commit and --observed alone.";
 
 /** Every rule a CI job's result call breaks, each naming its flags, or none. */
 function ciJobResultProblems(args: Readonly<Record<string, unknown>>): string[] {

@@ -267,12 +267,14 @@ async function ownIdentityResult(
 /**
  * Whether `argv` is a CI job's `dispatch result` (`ownIdentityResult`): the command `result` with
  * a `--project` flag, as `--project <KEY>` or `--project=<KEY>`, or any `result` call whose
- * environment holds the airlock's placeholder (`AIRLOCK_RESULTS_VAR`), which only `agent-secrets
- * result-grant` gives, and so only a CI job's step: its `--issue` form records the job's result
- * of the check its ci_check names. A session never holds that variable, so its `dispatch result
- * --issue` stays a role's record. The parser reads a word that starts with `--` as a flag and
- * never as a value, so this is the call the parser reads, and it is known before the parse, for
- * an argv the parser refuses too.
+ * environment holds the airlock's placeholder in DISPATCH_RESULTS_TOKEN (`AIRLOCK_RESULTS_VAR`),
+ * set and not empty, which only `agent-secrets result-grant` gives, and so only a CI job's step:
+ * its `--issue` form records the job's result of the check its ci_check names. `env` is the
+ * environment `runDispatchCli` reads, which holds no empty variable, so an empty placeholder is
+ * no placeholder here. A session never holds that variable, so its `dispatch result --issue`
+ * stays a role's record, AGENT_SECRETS_MACHINE_IDENTITY=github-actions or not. The parser reads a
+ * word that starts with `--` as a flag and never as a value, so this is the call the parser
+ * reads, and it is known before the parse, for an argv the parser refuses too.
  */
 function isJobResult(argv: readonly string[], env: Readonly<Record<string, string>>): boolean {
   const [command, ...words] = argv;

@@ -393,7 +393,9 @@ describe("dispatch results: the state at each head", () => {
       )
     );
     const block = checkBlock(lines, "c1");
-    expect(block).toContain(`  - #703 at ${h703}: not known, as Dispatch could not read CI run docs there.`);
+    expect(block).toContain(
+      `  - #703 at ${h703}: not known, as Dispatch could not read CI run docs there.`
+    );
     expect(block).toContain(
       `  - #702 at ${h702}: not known, as Dispatch could not read the repository of its issue, which says whether the CI job's result there takes the place of CI run docs.`
     );
