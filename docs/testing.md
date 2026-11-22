@@ -256,7 +256,8 @@ and each command runs there.
   (` --seed=<n>`): `bun run test:web web/src/<file> --seed=<n>`,
   `bun run test:web:cold web/src/<file> --seed=<n>` for a row of the web-cold lane, or
   `bun run test:harness e2e/__tests__/<file> --seed=<n>`. Add `--rerun-each=<k>` for a row that
-  first failed on run k, which the report of `bun run test:repeat` names. The order of the tests in
+  first failed on run k, which the report of `bun run test:repeat` names; where the lane ran in
+  chunks, k is the run in its chunk, since each chunk starts the file afresh. The order of the tests in
   a file depends only on the seed and on that file, so this repeats the order the row failed in. A
   row that failed from the lane's load, such as one that times a real process, or from another file
   that ran beside it, can pass alone: run it with the files that ran beside it, or under the same
@@ -271,7 +272,7 @@ and each command runs there.
 - Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
   from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
 
-- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
+- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--runs-per-chunk <m>] [--seed <n>] --out <dir>` runs
   one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
   a report of every row that failed, with how many of its runs failed, its seed and the command
   that runs it again, and of every failure that belongs to no row. A SIGTERM or a SIGINT stops it:
@@ -281,7 +282,10 @@ and each command runs there.
   as the out-of-memory killer kills one, is named the same way: each file it was in, with the run
   and the row. `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three
   seeds, under a deadline that sends it that SIGTERM; the step `exec`s `timeout`, so the SIGINT
-  that GitHub's runner sends a cancelled step, or one at its budget, reaches it too.
+  that GitHub's runner sends a cancelled step, or one at its budget, reaches it too. With
+  `--runs-per-chunk <m>` it runs each file's k runs as k/m chunks of m, which Bun runs at once in
+  its workers, each with fresh modules, so a row that keeps a module's state between runs still
+  fails from run 2 of a chunk; the weekly run uses chunks of 5.
 
 - A rerun of a file keeps every module the run before loaded, so a module-level store or cache
   keeps what that run left in it. Where a row needs such state empty, the module exports a reset and

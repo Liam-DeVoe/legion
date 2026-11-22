@@ -194,6 +194,37 @@ window, and set the matrix's measurements and budgets from the new reading by th
 leg that ends by itself above a lane's `slowest_seconds` is read the same way: it moves the
 slowest, and the budgets follow it, so a budget never rests on a margin its own window breaks.
 
+## Chunks
+
+Bun runs all of one file's `--rerun-each` runs one after another in one worker. After #4659 the
+harness lane's slowest file, `e2e/__tests__/outside-agent-acceptance.test.ts`, took about 2,500 s
+of rows over its 20 runs, so a harness leg ended about 2,500 s after that file started, whatever
+its other three workers had left to do. The web lane's `useIssueDrafts.test.ts` took 1,168 s the
+same way. So each web and harness leg runs each file's 20 runs as 4 chunks of 5
+(`--runs-per-chunk 5`): the tool lists the lane's test files itself and names each one 4 times
+with `--rerun-each=5`, and Bun runs each named copy as a unit of its own, in whichever of the
+runner's 4 workers is free.
+
+What was measured on Bun 1.4.4, on 2026-11-22, before the change:
+
+- A file named four times on `bun test --parallel=4` ran as four units in four worker processes:
+  four copies of a row of 1 s took 2.0 s in all, where `--rerun-each=4` took 4.1 s.
+- Each named copy starts with fresh modules. Under `--rerun-each=4`, a counter in a module the file
+  imports read 1, 2, 3, 4; over the file named four times it read 1, 1, 1, 1. So a row that keeps
+  a module's state from one run to the next, as #4603's two `row-references.test.ts` rows did,
+  still fails from run 2 of each chunk of 5, and would pass every run in chunks of 1.
+  `unit-repeat.test.ts` holds both.
+- A directory named twice is not split; only a file named twice is. So the tool lists the
+  lane's files itself, as Bun finds them (`unit-repeat.test.ts` holds its list to the files Bun
+  ran from a directory of every kind of name), and names each with `./` before it, so that Bun
+  reads it as that one file.
+- Each named copy has its own top-level suite in the junit file. The reader numbers a file's
+  suites 1, 2, … as its chunks, and the progress reader numbers a file's loads the same way.
+
+A row is then named by its run in its chunk: "first on run 2 of chunk 3", "in row 4 of run 2 of 5
+in chunk 3 of 4". Its command runs the file alone with `--rerun-each=<run>`, since a chunk starts
+the file afresh. A web-cold leg's one run is one chunk, and runs as before.
+
 ## A leg's deadline, and what a stopped leg names
 
 GitHub's runner ends a step that reaches its `timeout-minutes`, or that a cancel of the run
