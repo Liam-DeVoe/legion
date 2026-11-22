@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -1876,6 +1877,63 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("router", func(t *testing.T) {
 				if got := brokerReceived(t, " account-token\n"); !strings.HasSuffix(got, " Bearer account-token") {
 					t.Errorf("the broker received %q, want Authorization Bearer account-token", got)
+				}
+			})
+		},
+		"DISPATCH_AGENT_SECRETS_APPROVER_FIELDS": func(t *testing.T) {
+			for value, on := range map[string]bool{"": false, "off": false, "on": true} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_APPROVER_FIELDS": value}); boot.AgentSecretsApproverFields != on {
+					t.Errorf("DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=%q: AgentSecretsApproverFields = %v, want %v", value, boot.AgentSecretsApproverFields, on)
+				}
+			}
+			if boot := resolveWith(t, nil); boot.AgentSecretsApproverFields {
+				t.Error("unset: AgentSecretsApproverFields = true, want off")
+			}
+			for _, value := range []string{"ON", "On", " on", "1", "true", "yes", "0", "false", "no"} {
+				refusedWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_APPROVER_FIELDS": value}, `DISPATCH_AGENT_SECRETS_APPROVER_FIELDS="`+value+`" (expected on or off)`)
+			}
+			// The body the broker DISPATCH_AGENT_SECRETS_URL names receives when alice, signed in at
+			// her browser, approves a machine login: the session generation her check read only with
+			// the setting on. The boot's sign-in pool records no account, so no approve here names one.
+			approveReceived := func(t *testing.T, value string) string {
+				t.Helper()
+				received := make(chan string, 1)
+				broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, _ := io.ReadAll(r.Body)
+					received <- r.Method + " " + r.URL.Path + " " + string(body)
+					_, _ = w.Write([]byte(`{"state":"approved"}`))
+				}))
+				defer broker.Close()
+				boot := resolveWith(t, map[string]string{
+					"DISPATCH_AGENT_SECRETS_URL":                broker.URL,
+					"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": writeFile(t, "account-token", "account-token"),
+					"DISPATCH_AGENT_SECRETS_APPROVER_FIELDS":    value,
+				})
+				request := signedIn(t, httptest.NewRequest(http.MethodPost, "/api/v1/credential-requests/rec1/approve", strings.NewReader(`{"code":"ABCD-1234"}`)), "alice")
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Sec-Fetch-Site", "same-origin")
+				response := httptest.NewRecorder()
+				routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
+				if response.Code != http.StatusOK {
+					t.Fatalf("DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=%q: POST /api/v1/credential-requests/rec1/approve: %d %s", value, response.Code, response.Body.String())
+				}
+				select {
+				case got := <-received:
+					return got
+				default:
+					t.Fatalf("DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=%q: the approve answered without calling the broker", value)
+					return ""
+				}
+			}
+			t.Run("router", func(t *testing.T) {
+				for value, want := range map[string]string{
+					"":    `POST /v1/credential-requests/rec1/approve {"approver":"alice","code":"ABCD-1234"}`,
+					"off": `POST /v1/credential-requests/rec1/approve {"approver":"alice","code":"ABCD-1234"}`,
+					"on":  `POST /v1/credential-requests/rec1/approve {"approver":"alice","code":"ABCD-1234","approver_session_generation":0}`,
+				} {
+					if got := approveReceived(t, value); got != want {
+						t.Errorf("DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=%q: the broker received %s, want %s", value, got, want)
+					}
 				}
 			})
 		},

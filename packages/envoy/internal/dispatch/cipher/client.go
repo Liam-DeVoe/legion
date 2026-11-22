@@ -178,7 +178,9 @@ func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage,
 // recording of an account moves that generation in its own transaction, and each revocation the
 // broker is told of carries the generation its replacement left, so the broker refuses an approve
 // carrying a lower one (403 APPROVER_REPLACED), which was checked before that replacement, whatever
-// account it names. Every other decision leaves it out.
+// account it names. Every other decision leaves it out. The api fills the three only while
+// api.Deps.BrokerApproverFields is on, since a broker from before them refuses an approve that
+// carries any of them (400 INVALID_DECISION).
 type Decision struct {
 	Approver                  string  `json:"approver"`
 	Code                      *string `json:"code,omitempty"`

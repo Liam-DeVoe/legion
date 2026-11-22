@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  Dispatch reads `DISPATCH_AGENT_SECRETS_APPROVER_FIELDS` once at boot. `on` makes each
+  machine-login approve it relays to the secrets broker name the approving Google account
+  (`approver_issuer`, `approver_subject`) and carry the session generation its check read
+  (`approver_session_generation`). `off`, the default, sends the approver and the code alone, the
+  body a broker from before those fields takes, so this Dispatch can roll out before the broker:
+  such a broker refuses an approve carrying any of the fields `400 INVALID_DECISION`. While it is
+  off, the broker neither refuses an approval by a replaced account (`403 APPROVER_REPLACED`) nor
+  records the approving account on the login it mints; Dispatch's own check of the approver runs
+  either way, and its owed revocations stay owed, retried every 30 seconds, until the broker
+  serves `POST /v1/person-subjects/revoke`. The process logs the value at boot when a broker is
+  configured; any other value refuses the boot. The setting is temporary: turn it on once the
+  broker takes the fields, and remove it once every deployment's broker does.
+time: 2026-11-22T18:11:09.757938010Z
+custom:
+    Issue: pr4674

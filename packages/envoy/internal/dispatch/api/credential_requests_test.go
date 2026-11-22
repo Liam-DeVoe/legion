@@ -86,6 +86,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	if brokerURL != "" {
 		depsInput.AgentSecretsURL = brokerURL
 		depsInput.AgentSecretsTokenFile = tokenFile
+		depsInput.BrokerApproverFields = true
 	}
 	deps, err := NewDeps(depsInput)
 	if err != nil {
@@ -328,7 +329,7 @@ func TestAnApproveCarriesTheSessionGenerationItsCheckRead(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Events: events.NewBroker(),
-		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken), BrokerApproverFields: true,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

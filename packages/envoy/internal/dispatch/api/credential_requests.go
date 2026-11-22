@@ -291,7 +291,11 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // carries the address's session generation the same re-read saw (approver_session_generation), so
 // the broker refuses it once a revocation of a replacement after that read reaches it first,
 // whatever account it names: a sign-in that commits between this check and the relay records its
-// revocation at a greater generation. A deny mints nothing and names no account.
+// revocation at a greater generation. A deny mints nothing and names no account. The account and
+// the generation are sent only while Deps.BrokerApproverFields is on
+// (DISPATCH_AGENT_SECRETS_APPROVER_FIELDS=on): off, the approve carries the approver and the code
+// alone, the body a broker from before those fields takes, and the re-read still refuses a caller
+// who lost the address before the broker is called.
 //
 // A restricted member's approve is relayed holding their approval lock (relayMachineLoginApproval).
 func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request) {
@@ -320,13 +324,15 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	if account.subject != "" && s.deps.SignInIssuer != "" {
-		decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
-		if account.issuer != "" {
-			decision.ApproverIssuer = account.issuer
+	if s.deps.BrokerApproverFields {
+		if account.subject != "" && s.deps.SignInIssuer != "" {
+			decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
+			if account.issuer != "" {
+				decision.ApproverIssuer = account.issuer
+			}
 		}
+		decision.ApproverSessionGeneration = &generation
 	}
-	decision.ApproverSessionGeneration = &generation
 	if restricted {
 		s.relayMachineLoginApproval(w, r, client, model.CanonicalLogin(actor.ID), decision)
 		return

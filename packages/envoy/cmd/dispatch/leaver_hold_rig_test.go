@@ -323,6 +323,8 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 		"DISPATCH_ACCESS_ACCOUNTS":                  leaverBrokerAccount,
 		"DISPATCH_AGENT_SECRETS_URL":                brokerProxy.URL,
 		"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": accountFile,
+		// The rig's broker takes the approving account and the session generation.
+		"DISPATCH_AGENT_SECRETS_APPROVER_FIELDS": "on",
 	}
 	var boot bootConfig
 	if config.iap {

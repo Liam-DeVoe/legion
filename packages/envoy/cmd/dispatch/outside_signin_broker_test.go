@@ -270,6 +270,7 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 	boot := s.boot
 	boot.AgentSecretsURL = broker.server.URL
 	boot.AgentSecretsTokenFile = accountFile
+	boot.AgentSecretsApproverFields = true
 	verifier, err := brokerTokenVerifier(boot, s.database, brokerOrigin)
 	if err != nil {
 		t.Fatalf("build the broker-token check: %v", err)
