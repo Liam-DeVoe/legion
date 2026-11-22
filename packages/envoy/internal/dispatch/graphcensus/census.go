@@ -388,7 +388,7 @@ var projections = []projection{{
 	nodeKind: graphstore.KindPerson,
 	table:    "comments.author, asks.author, asks.answer, block_refs.decided_by, graph_tuples.kept_by, events.actor, events.payload",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
-		" the owner of each session the server proved that wrote one, the same of every comment the erase took," +
+		" the owner of each session the server proved that wrote one, the same of every comment whose row is gone," +
 		" as the actor of the event that stored it names them, the person each ask's answer names and each" +
 		" answer the store took ever named, who wrote each decision and reading and their proved owners, and" +
 		" each person a decision's Keep ever named",
@@ -406,7 +406,7 @@ var projections = []projection{{
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
 		" as askers, as followers and as who wrote a decision or a reading, every session an ask.opened event" +
 		" named as the asker, an ask.follower_added event named or a comment.delivery receipt says the listener" +
-		" took an attempt to, and the author of every comment the erase took, as the actor of the event that" +
+		" took an attempt to, and the author of every comment whose row is gone, as the actor of the event that" +
 		" stored it names it",
 	names:    `select s.id from (` + recordedSessions(censusAuthors) + `) s`,
 	authored: true,
@@ -973,25 +973,6 @@ var commentWriters = `
 	where e.type in ('comment.created', 'comment.answered') and coalesce(e.payload->>'id', '') <> ''
 	  and not exists (select 1 from comments c where c.id::text = e.payload->>'id')`
 
-// erasedSince is the one rule by which the census holds no erased person to a record the erase
-// left behind, a predicate over three SQL expressions: kind and id the node the record names, and
-// at the time the record was written. It holds where an erase of that node ran at or after at
-// (graph_erasures.ran_at). Two records outlive what they record and still name who wrote it: the
-// events of a comment the erase took, which keep the actor that wrote it (commentWriters), and an
-// erase's own record of who wrote or answered the ask, decision or reading it took
-// (erasedWriters). The erase takes a person once nothing of the store names them, and both records
-// name them after it, so counting them would hold the store to the node the operator removed, for
-// good. A person who writes again after it is held by what they wrote then, which is newer. The
-// erase dates itself by the clock of the host it ran on and an event is dated by the database's,
-// but every record this leaves out was written no later than the erase of the node it records,
-// which committed before the erase of its writer could begin: that erase refuses while anything
-// of the store still names the person. No erase takes a session, so every record of one stands.
-func erasedSince(kind, id, at string) string {
-	return `exists (
-		select 1 from graph_erasures erased
-		where erased.node_kind = ` + kind + ` and erased.node_id = ` + id + ` and erased.ran_at >= ` + at + `)`
-}
-
 // commentWriterPeople is each person a comment the store holds or held names as its writer
 // (commentWriters), one row for each such comment and person, with the time the comment was
 // written and the event that stored it (null for a row). It reads an actor as graphstore.AuthorOf
@@ -1012,7 +993,7 @@ func erasedSince(kind, id, at string) string {
 // (commentPeople) and the sizing's people (sizingWritesWith), so the sizing counts the people
 // the census holds to a node for a comment. It reads no table of the store, so the sizing can
 // read it on a database the store does not exist in yet. Its proved-session arm
-// (provedSessionOwner) is read by the erase as well (ProvedSessionComments).
+// (provedSessionOwner) is read by ProvedSessionComments as well.
 var commentWriterPeople = `
 	select user_threads_login(author.login) as login, written.at, written.event
 	from (` + commentWriters + `) written
@@ -1056,8 +1037,13 @@ var ProvedSessionComments = `
 // the store holds or held (commentWriterPeople), and the people an ask, a decision or a reading of
 // the store names, below.
 //
-// A person the erase took is held to no event that came before that erase (erasedSince): the
-// events of their erased comments name them as the author after it.
+// A person the erase took is held to no event that came before that erase. The erase takes a
+// person once nothing of the store names them, and the events of their erased comments name them
+// as the author after it, so counting those events would hold the store to the node the operator
+// removed, for good. A person who writes again after it is held by what they wrote then. The erase
+// dates itself by the clock of the host it ran on (graph_erasures.ran_at) and an event is dated by
+// the database's, but every event this leaves out is older than the erase of its comment, which
+// committed before the erase of its author could begin.
 //
 // The backfill gives the people comments name their nodes in its comment pass (writeCommentBatch,
 // graphstore.AuthorFacts) and needs no pass of its own for them: a row names its author to that
@@ -1074,9 +1060,7 @@ var ProvedSessionComments = `
 // and an answer a build before the store wrote and took off again names nobody, since the
 // backfill states a row's answer as it stands (graphcensus' asks pass). The log is read from the
 // person's node through graph_tuples_as_of_in, whose partial predicate the arm states beside its
-// join, so the planner keys the index rather than reading the table whole. An erase of the ask
-// takes those tuples with it and records the people they named (erasedWriters), which holds them
-// still, until an erase of their own runs.
+// join, so the planner keys the index rather than reading the table whole.
 //
 // Who wrote each decision, reading and ask the store holds an authored_by or decided_by of names
 // people too, and so does every person an ask's answer ever named (storedAuthors, read as the
@@ -1089,8 +1073,10 @@ func commentPeople(authors string) string {
 	from (
 		select named.login
 		from (` + commentWriterPeople + `) named
-		where named.event is null
-		   or not ` + erasedSince(`'`+graphstore.KindPerson+`'`, `named.login`, `named.at`) + `
+		where named.event is null or not exists (
+			select 1 from graph_erasures erased
+			where erased.node_kind = '` + graphstore.KindPerson + `'
+			  and erased.node_id = named.login and erased.ran_at >= named.at)
 		union all
 		select case
 			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
@@ -1138,9 +1124,7 @@ func commentPeople(authors string) string {
 // decision) writes the keeper's node beside it, and a person whose only act is a Keep is held to
 // that node by it alone. So is every person an ask's answered_by or decided_by ever named
 // (answeredHistory): a person whose answer a reopen took off the row is still the person that
-// answer named. An erase of the decision, the reading or the ask takes the tuples that name its
-// writers and keepers and records them (erasedWriters), which are read too, so a session no erase
-// removes and the person it belongs to are still held to their nodes.
+// answer named.
 //
 // The census reads it once for its run (readStoredAuthors) and binds what it read into the names
 // of the person and session kinds (censusAuthors), so its two reads of the log cost one statement
@@ -1158,9 +1142,7 @@ var storedAuthors = `
 	union all
 	` + writtenHistory + `
 	union all
-	` + answeredHistory + `
-	union all
-	select erased.kind, erased.id, erased.at from (` + erasedWriters + `) erased`
+	` + answeredHistory
 
 // censusAuthors is storedAuthors as the census binds it into the names of the person and session
 // kinds, the kinds, ids and times readStoredAuthors read as $1, $2 and $3 (projection.authored),
@@ -1196,23 +1178,6 @@ var writtenHistory = `select writer.kind, writer.id, writer.made_at
 		  and t.kind in ('` + graphstore.TupleDecidedBy + `', '` + graphstore.TupleAuthoredBy + `', '` + refs.TupleKeptBy + `')
 		  and t.from_kind = '` + refs.BlockNodeKind + `')`
 
-// erasedWriters are the people and sessions an erase of an ask, a decision or a reading took the
-// authored_by, decided_by, answered_by or kept_by of, as (kind, id, at): the writers
-// `envoy-dispatch erase` records in its graph_erasures row (grapherase's Erasure.Writers), each
-// dated by that erase. The erase deletes the node's tuples in both directions, and nothing else
-// names who wrote, answered or kept it once its rows are gone, while that writer's node stands: a
-// session's always, since no erase removes one, and a person's until an erase of that person. So a
-// writer is read here unless an erase of that same node ran after the one that recorded it
-// (erasedSince): an erased person is held by no record an erase before theirs wrote.
-var erasedWriters = `
-	select written->>'kind' as kind, written->>'id' as id, erasure.ran_at as at
-	from graph_erasures erasure
-	cross join lateral jsonb_array_elements(case when jsonb_typeof(erasure.removed->'writers') = 'array'
-	                                             then erasure.removed->'writers' else '[]'::jsonb end) written
-	where written->>'kind' in ('` + graphstore.KindPerson + `', '` + graphstore.KindSession + `')
-	  and coalesce(written->>'id', '') <> ''
-	  and not ` + erasedSince(`written->>'kind'`, `written->>'id'`, `erasure.ran_at`)
-
 // currentAuthors is the author every node held of graph_nodes that holders selects states now:
 // the far end of its current authored_by into a person or a session, as (kind, id, at), read
 // through graph_tuples_current, one probe per node.
@@ -1228,12 +1193,11 @@ func currentAuthors(holders string) string {
 }
 
 // storedOwners are the people the server proved own a session that wrote a decision, a reading or
-// an ask (storedAuthors), an erased one's too: the write that names such a session ties it to its
-// owner with an alias_of tuple and makes the owner's node with it (graphstore.AuthorFacts).
-// Neither block_refs nor any other table records the actor a decision's author was proved by, so
-// the owner is read as the store holds that tie now, the far end of each alias_of the session
-// states, which an erase of that person deletes with the person's node. authors is the relation
-// storedAuthors is read as (censusAuthors or inlineAuthors).
+// an ask (storedAuthors): the write that names such a session ties it to its owner with an
+// alias_of tuple and makes the owner's node with it (graphstore.AuthorFacts). Neither block_refs
+// nor any other table records the actor a decision's author was proved by, so the owner is read as
+// the store holds that tie now, the far end of each alias_of the session states. authors is the
+// relation storedAuthors is read as (censusAuthors or inlineAuthors).
 //
 // The probe is keyed by the session and names no far end: an alias_of points at a person and at
 // nothing else, since graphstore's aliases is its one writer, so it states graph_tuples_current's
@@ -1264,13 +1228,9 @@ func storedOwners(authors string) string {
 // ask.follower_added event ever named (asks.Follow), so a follower added and removed before the
 // store existed is held to a node as well. A node is history and never goes, so a session that
 // once followed still owes it. The same holds of a session that asked: every session an
-// ask.opened event named as the ask's author is read too, so a session whose ask an erase took
-// away, asks row, follower rows and node with it, still owes its node, which no erase removes
-// (grapherase refuses a session) and the log keeps addressing; the erase redacts no ask event. An
-// ask.opened names a session here and never a person, and no erase removes a session, so no
-// erase can run after that event that leaves it naming a node the store no longer holds. And
-// every session that wrote a decision, a reading or an ask the store names an author of, or that
-// an erase of one recorded as its writer (storedAuthors).
+// ask.opened event named as the ask's author is read too, so a session that asked still owes its
+// node whatever becomes of the ask's row, and the log keeps addressing it. And every session that
+// wrote a decision, a reading or an ask the store names an author of (storedAuthors).
 //
 // A comment mention's attempt is read twice for the same reason: as its row, and as the
 // comment.delivery receipt its settle appends in the transaction that records the session
@@ -2038,7 +1998,7 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	case r.ProjectFindings() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or node(s) no row stands behind;"+
 			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones but those naming a party the store"+
-			" refuses, run the erase each orphaned line names, and compare each differs row with its node)\n",
+			" refuses, and compare each differs row with its node; an orphaned node has no in-band cure)\n",
 			pgmigrate.Thousands(r.ProjectFindings()))
 	case r.Unresolved() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s far end(s) of a kind no table projects do not resolve)\n",

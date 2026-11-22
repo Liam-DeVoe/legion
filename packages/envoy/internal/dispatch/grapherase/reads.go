@@ -1,7 +1,6 @@
 package grapherase
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -359,9 +358,7 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 }
 
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
-// the node. A value tuple is listed without its value, which can be text. Of an ask's node or a
-// block's, it also keeps the writers its authored_by, decided_by, answered_by, removed_by and
-// kept_by tuples name (Erasure.Writers), which the record of the run holds once those tuples go.
+// the node. A value tuple is listed without its value, which can be text.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
@@ -372,7 +369,6 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	defer rows.Close()
-	writers := map[ErasedWriter]struct{}{}
 	for rows.Next() {
 		var seq int64
 		var fromKind, fromID, kind, toKind, toID string
@@ -385,9 +381,6 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		} else {
 			e.Inbound++
 		}
-		if out && writesTheNode(e.Kind, kind, toKind) {
-			writers[ErasedWriter{Kind: toKind, ID: toID}] = struct{}{}
-		}
 		far := toKind + ":" + toID
 		if toKind == graphstore.KindValue {
 			far = "a value"
@@ -399,34 +392,12 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	e.Writers = slices.SortedFunc(maps.Keys(writers), func(a, b ErasedWriter) int {
-		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.ID, b.ID))
-	})
 	return nil
-}
-
-// writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
-// toKind, names who wrote, answered, removed or kept that node: an ask's authored_by, answered_by,
-// decided_by or removed_by, or a decision's decided_by or kept_by (a person's Keep, which writes
-// the keeper's node) or a reading's authored_by, into a person or a session. A comment's
-// authored_by is not one: no record of an erase holds a comment's author.
-func writesTheNode(nodeKind, kind, toKind string) bool {
-	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
-		return false
-	}
-	switch nodeKind {
-	case graphstore.KindAsk:
-		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy ||
-			kind == graphstore.TupleRemovedBy
-	case refs.BlockNodeKind:
-		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy || kind == refs.TupleKeptBy
-	}
-	return false
 }
 
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without
 // them (every required single-column reference into a projected table), and the whole text of
-// its block at every version and its block's Keep (decision_keeps).
+// its block at every version.
 func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", e.Kind, e.ID))
 	for _, held := range graphstore.ProjectedTables {
@@ -462,18 +433,13 @@ func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		}
 	}
 	if read.document != nil {
-		var texts, keeps int64
-		if err := tx.QueryRow(ctx, `
-			select (select count(*) from document_block_texts where artifact_id = $1::uuid and block_id = $2),
-			       (select count(*) from decision_keeps where artifact_id = $1::uuid and block_id = $2)`,
-			read.document.artifact, read.blockID).Scan(&texts, &keeps); err != nil {
-			return fmt.Errorf("count the texts and the Keep of %s:%s: %w", e.Kind, e.ID, err)
+		var count int64
+		if err := tx.QueryRow(ctx, `select count(*) from document_block_texts where artifact_id = $1::uuid and block_id = $2`,
+			read.document.artifact, read.blockID).Scan(&count); err != nil {
+			return fmt.Errorf("count the texts of %s:%s: %w", e.Kind, e.ID, err)
 		}
-		if texts > 0 {
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete document_block_texts: %d row(s) of %s", texts, e.ID))
-		}
-		if keeps > 0 {
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete decision_keeps: %d row(s) of %s", keeps, e.ID))
+		if count > 0 {
+			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete document_block_texts: %d row(s) of %s", count, e.ID))
 		}
 	}
 	return nil
@@ -951,17 +917,14 @@ func projectionRows(reference referencingColumn, table string) string {
 // handed back through it is the ask's own history, so the erase neither deletes one nor rewrites
 // the other. A projection row of another live node whose node states a tuple into this one now: a
 // block inside an erased block (its part_of and its parent_block_id), a block that cites it (its
-// mentions or pointer tuple and its block_refs row), a comment or an ask its author is (its
-// authored_by and its author). An ask's row is read here beside graphstore.ProjectedTables: it is
-// the projection of the ask's node (migration 20261116094058), which the erase never deletes,
-// since it refuses an ask while that row stands (Erasure.read). The erase deletes the tuples into
-// the node, so such a row would go on stating a tuple the store no longer holds, which is a
-// difference `census --store` reads. And, for a person, a comments row that names them as the
-// owner of the session the server proved that wrote it (graphcensus.ProvedSessionComments, the
-// census's own reading of that row): its authored_by names the session and only the session's
-// alias_of names the person, and a session has no projection row, so the read before finds no such
-// row, but the census names the person from the comment's row and would read her node gone while
-// that row stands.
+// mentions or pointer tuple and its block_refs row), a comment its author is (its authored_by and
+// its author). The erase deletes the tuples into the node, so such a row would go on stating a
+// tuple the store no longer holds, which is a difference `census --store` reads. And, for a
+// person, a comments row that names them as the owner of the session the server proved that wrote
+// it (graphcensus.ProvedSessionComments, the census's own reading of that row): its authored_by
+// names the session and only the session's alias_of names the person, and a session has no
+// projection row, so the read before finds no such row, but the census names the person from the
+// comment's row and would read her node gone while that row stands.
 //
 // Each node stating a tuple into this one probes its own row through graph_nodes' primary key,
 // in a subquery behind an offset 0 the planner cannot flatten, so no plan reads graph_nodes
@@ -990,11 +953,10 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			}
 		}
 	}
-	projected := make([]string, 0, len(graphstore.ProjectedTables)+1)
-	for _, held := range graphstore.ProjectedTables {
-		projected = append(projected, `exists (select 1 from `+held.Table+` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
+	projected := make([]string, len(graphstore.ProjectedTables))
+	for index, held := range graphstore.ProjectedTables {
+		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
 	}
-	projected = append(projected, `exists (select 1 from asks p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
 	rows, err := tx.Query(ctx, `
 		select t.from_kind, t.from_id, t.kind from (
 			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,

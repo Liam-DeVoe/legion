@@ -259,10 +259,7 @@ type ProjectedTable struct{ Table, Issue, Key string }
 // columns of each that the store states, and graphcensus's
 // TestTheProjectedColumnsListEveryTableTheStoreProjects holds its tables to these. asks and
 // ask_followers, which migration 20261116094058 gave the same pair, project only an ask's node,
-// and the erase deletes, locks and lists neither: it refuses an ask's node while its asks row
-// stands (graphcensus.ObjectRowStands), and a follower row goes with its asks row. An asks row
-// still says what its ask's node states, which the erase's blockers read (grapherase's
-// readBlockers).
+// and this list holds neither.
 var ProjectedTables = []ProjectedTable{
 	{Table: "comments", Issue: "issue_key", Key: "id"},
 	{Table: "document_blocks", Key: "artifact_id, block_id"},

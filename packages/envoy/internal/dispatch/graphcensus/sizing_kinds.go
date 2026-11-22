@@ -495,11 +495,10 @@ func storeKinds() []StoreKind {
 // sizingAuthors is the relation recordedSessions reads storedAuthors as when the sizing reads it:
 // a FROM item named stored, of (kind, id, at), that holds no row. Every writer storedAuthors adds
 // is read off the store itself - a decision's or a reading's decided_by or authored_by, an ask
-// node's authored_by, an erase's record of its writers - and the sizing reads no table of the
-// store, so it runs on a database the store does not exist in yet. A session that asked is
-// counted all the same, by the asks rows and the ask.opened events recordedSessions reads beside
-// it, and a decision or a reading is a kind production writes none of yet, whose rate the sizing
-// assumes.
+// node's authored_by - and the sizing reads no table of the store, so it runs on a database the
+// store does not exist in yet. A session that asked is counted all the same, by the asks rows and
+// the ask.opened events recordedSessions reads beside it, and a decision or a reading is a kind
+// production writes none of yet, whose rate the sizing assumes.
 const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
 
 // reachesANode is true of a topic the outbox reads as a node of the store (outbox's

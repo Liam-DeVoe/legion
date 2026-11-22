@@ -68,8 +68,8 @@ const scopedNode = `(n.project_key is not null or n.parties is not null)`
 // not gone naming a project or parties at the row a's address that is that row's own - any such
 // node, for a row no removal takes, and for one a removal can take, one whose live statement was
 // made for it (ownLiveStatement). A node whose live statement is not the row's is a document a
-// build before this one removed and then made again at the address before the node was erased,
-// and that row is owed its own live statement as much as a row with none (classGone).
+// build before this one removed and then made again at the address, and that row is owed its own
+// live statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not ` + retiredDocument(a) + ` and not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
 		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
