@@ -341,8 +341,9 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 }
 
 // A confirmed conflict that needs a merge keeps the issue in its phase (dispatch://INFRA-4374 R1):
-// the implementer is asked to merge the base forward on its own role topic, the worker of the phase
-// - the tester, the reviewer or the merger - is told to hold while the merge runs, and the
+// the implementer is asked to merge the base forward on the topic of the claim that works its step
+// (here its own), the worker of the phase - the tester, the reviewer or the merger - is told to
+// hold while the merge runs, and the
 // architect gets one checks-red notice naming the phase the issue stays in. No worker starts, no
 // status is written and no phase ends. In testing and reviewing the need is a check the base
 // requires that is not green; past the review it is the merge that comes next. The same read again

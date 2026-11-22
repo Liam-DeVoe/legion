@@ -50,10 +50,10 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own: in this package one test (checks_red_test.go) and
-// the phase worker of an open phase (OpenPhaseRole), since every other reader of the engine reads
-// the role with the issue's running steps (record.Issue.RunningAt) or with the walk (Walk.RoleAt);
-// and outside it test code. Each reads the same table as a caller of phase.RoleFor, since that is
+// Until then this name has callers of its own: in this package one test (checks_red_test.go),
+// since every other reader of the engine reads the role with the issue's running steps
+// (record.Issue.RunningAt, OpenStepsOf) or with the walk (Walk.RoleAt); and outside it test code.
+// Each reads the same table as a caller of phase.RoleFor, since that is
 // the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
@@ -951,9 +951,11 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
-// The number counts the entries this role has been handed on this issue, which is why it is raised
-// here: this is the one place a role is handed work it was not on. It needs to be unique among
-// those entries and no more, since it is only ever compared with a value the daemon itself wrote,
+// The number counts the entries handed on this role's row of the issue, numbered across the rows
+// that name the step's claim (the higher of the row's own entry plus one and one above the highest
+// entry of each row of the issue that names that claim), which is why it is raised here: this is
+// the one place a claim is handed work it was not on. It needs to be unique among the entries of
+// that claim and no more, since it is only ever compared with a value the daemon itself wrote,
 // never read from a request — a completion carries no identity at all
 // (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
 // run's whole life, and the round counts only returns to implementing.

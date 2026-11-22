@@ -47,8 +47,8 @@ type roleForReader struct {
 // not work; and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
 // no role works, the words it wrote before RoleFor named the architect there. Every other site
 // reaches its answer through a guard that starts, resumes or reports no architect as a phase
-// worker (OpenStepsOf and OpenPhaseRole answer none for the architect's steps, so the paths that
-// read OpenStepsOf are no readers here), or names the role an admitted root's entry numbers are
+// worker (OpenStepsOf answers none for the architect's steps, so the paths that read it, OpenWorkers
+// among them, are no readers here), or names the role an admitted root's entry numbers are
 // of, or names the architect in the notice of a task its owner stopped in the architect's phase,
 // where the stop ends no process (Engine.taskStopped, at admitted as at accepting), or answers the
 // issue's own phase for the architect's completion there, as its reader took the issue's phase
@@ -135,10 +135,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}: {calls: 2, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestATaskMovesToItsRowsPlaceAndCountsItsReturn"}},
-	// The worker of an open phase, read by the phase alone: a release's backstop and the phase
-	// reminder of a pod's live claim.
-	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}: {calls: 1, tests: []string{
-		"TestAnArchitectGetsNoBackstop", "TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns"}},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

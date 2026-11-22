@@ -62,7 +62,7 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 			want = 0
 		}
 		if closed["LEGION-209/"+string(role)] != want {
-			t.Fatalf("issue_close rows = %v, want one for every role but the tester, the implementer's among them", closed)
+			t.Fatalf("issue_close rows = %v, want one for each stored claim, one of each role here, but the tester's, the implementer's among them", closed)
 		}
 	}
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
@@ -306,7 +306,7 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 	closed := superviseRequests(t, pool, "issue_close")
 	for _, role := range claim.Roles {
 		if closed["LEGION-209/"+string(role)] != 1 {
-			t.Fatalf("issue_close rows = %v, want one for every role", closed)
+			t.Fatalf("issue_close rows = %v, want one for each stored claim, one of each role here", closed)
 		}
 	}
 	if got := issueSuspensions(t, pool, "LEGION-209"); len(got) != 1 {

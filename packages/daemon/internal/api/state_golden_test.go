@@ -942,10 +942,10 @@ func populatedState(t *testing.T) State {
 		// passes over every claim of both. The `why` of LEGION-211 and LEGION-212 is the
 		// projection's reading of this list.
 		StrandedClaims: []StrandedClaim{
-			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
-			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
-			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
-			{Issue: "LEGION-241", Role: "checker", State: "failed"},
+			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed", Token: "legion-legion-legion-210-implementer"},
+			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended", Token: "legion-legion-legion-211-implementer"},
+			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired", Token: "legion-legion-legion-212-tester"},
+			{Issue: "LEGION-241", Role: "checker", State: "failed", Token: "legion-legion-legion-241-checker"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
 		// LEGION-207's implementer, working its production check in the pod the daemon keeps,

@@ -347,6 +347,31 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		}
 	})
 
+	// The operator's retry of a claim (api's retryClaim) names that claim, and the claim it names is
+	// fenced against the claim on the step of the role the hold is from: the step's role, which the
+	// held issue still records, and not the role of the phase step, which is none.
+	t.Run("the operator's retry of a hold from step names the step's claim", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := deploymentEngine()
+		root := checkerAtStep2(t, pool)
+		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
+		project, err := claim.ProjectToken(root.Project)
+		if err != nil {
+			t.Fatalf("the project token: %v", err)
+		}
+		checker, err := claim.NewToken(project, root.Key, "checker")
+		if err != nil {
+			t.Fatalf("the checker's token: %v", err)
+		}
+
+		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: checker})
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
+		if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
+			t.Fatalf("the checker's starts after the operator's retry = %+v, want one, of step", starts)
+		}
+	})
+
 	t.Run("the operator's restart", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := deploymentEngine()
@@ -382,7 +407,8 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 	})
 }
 
-// The start of a step of a role the deployment defines names that role's claim as its agent.
+// The start of a step of a role the deployment defines names the claim of its agent, here the agent
+// named for that role, as its agent.
 func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
@@ -555,10 +581,12 @@ func wantEachRole(t *testing.T, rows map[string]int, key string, skip claim.Role
 	}
 }
 
-// A close reaches every claim its issue may hold, the claim of a role the deployment defines
-// among them, read from the roles the issue's phases rows name: a merged child's close retires the
-// checker's claim with the six (and leaves out the tester that works a production check); a child
-// moved to backlog suspends it; and a root's close suspends it as its tree lingers.
+// A close reaches every claim its issue may hold, the claim of a role the deployment defines among
+// them: one row for each stored claim of the issue, and one by role for each role the issue can
+// hold, the roles its phases rows name among them, whose worker claim is none of those
+// (claimTargets). A merged child's close retires the checker's claim with the six (and leaves out
+// the tester that works a production check); a child moved to backlog suspends it; and a root's
+// close suspends it as its tree lingers.
 func TestAClosedIssueReachesItsDeploymentRolesClaim(t *testing.T) {
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}
 	t.Run("a merged child", func(t *testing.T) {

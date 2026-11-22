@@ -217,17 +217,18 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // secretFiles are the files a spec's secrets are written to, under `<state_dir>/secrets`: the
-// boot token as `<claim>`, each other secret as `<claim>-<lowercased name>`, so one claim token
-// names every file its pane holds (TmuxRuntime.paneEnvPairs, runtime-tmux.ts; extraSecretName,
-// secrets.ts). The boot token's pointer is LEGION_BOOT_TOKEN_FILE and comes first; the rest follow
-// sorted by name.
+// boot token as `<claim>`, each other secret as `<claim>-<lowercased name>`
+// (runtime.SecretFileName), so one claim token names every file its pane holds
+// (TmuxRuntime.paneEnvPairs, runtime-tmux.ts; extraSecretName, secrets.ts), and the daemon's prune
+// reads them back by the same names. The boot token's pointer is LEGION_BOOT_TOKEN_FILE and comes
+// first; the rest follow sorted by name.
 func secretFiles(stateDir string, spec runtime.SpawnSpec) []runtime.SecretFile {
 	dir := runtime.SecretsDir(stateDir)
 	files := []runtime.SecretFile{{Variable: "LEGION_BOOT_TOKEN", Path: filepath.Join(dir, string(spec.Claim)), Value: spec.BootToken}}
 	for _, name := range sortedKeys(spec.Secrets) {
 		files = append(files, runtime.SecretFile{
 			Variable: name,
-			Path:     filepath.Join(dir, string(spec.Claim)+"-"+strings.ToLower(name)),
+			Path:     filepath.Join(dir, runtime.SecretFileName(spec.Claim, name)),
 			Value:    spec.Secrets[name],
 		})
 	}

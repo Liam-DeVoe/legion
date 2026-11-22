@@ -32,13 +32,19 @@ func servingReleasedClaim(t *testing.T, st *Store, role claim.Role) {
 	}
 }
 
-// implementingWorker is the open phase's worker as workflow.OpenPhaseRole names it for the phases
-// these tests use: the implementer while the issue implements, and nobody otherwise.
-func implementingWorker(p phase.Phase) claim.Role {
-	if p == phase.Implementing {
-		return claim.RoleImplementer
+// implementingWorker is the worker of each step that takes work as workflow.OpenWorkers names it
+// for the phases these tests use, read from the issue in tx: the implementer's own claim while the
+// issue implements, and nobody otherwise.
+func implementingWorker(ctx context.Context, tx pgx.Tx, issue string) ([]claim.Token, error) {
+	var stands string
+	if err := tx.QueryRow(ctx, `select phase from issues where key = $1`, issue).Scan(&stands); err != nil {
+		return nil, err
 	}
-	return ""
+	if phase.Phase(stands) != phase.Implementing {
+		return nil, nil
+	}
+	token, err := claim.NewToken("legion", issue, claim.RoleImplementer)
+	return []claim.Token{token}, err
 }
 
 // endPause ends pause at at as the operator, as the resume's transaction writes the end.
@@ -206,7 +212,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			at := pausedAt.Add(time.Minute)
 
 			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenWorkers: implementingWorker})
 			if err != nil {
 				t.Fatalf("cancel the release while paused: %v", err)
 			}
@@ -285,7 +291,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 	}
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,
-		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenWorkers: implementingWorker})
 	if err != nil {
 		t.Fatalf("cancel the release of %s while LEGION is paused: %v", otherIssue, err)
 	}
@@ -314,7 +320,7 @@ func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
 	pauseLegion(t, st, pausedAt)
 
 	_, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-		ReleaseCancelPause{Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+		ReleaseCancelPause{Backstop: time.Hour, OpenWorkers: implementingWorker})
 	if err == nil || !strings.Contains(err.Error(), "ReleaseCancelPause.At") {
 		t.Fatalf("a cancel with no moment = %v, want it refused naming ReleaseCancelPause.At", err)
 	}

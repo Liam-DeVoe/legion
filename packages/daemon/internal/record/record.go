@@ -787,12 +787,13 @@ type PhaseRow struct {
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it by one and
-	// write the three fields below beside it, in their own transaction (workflow's start,
-	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
-	// two numbers a completion is held to: the issue's generation is the same for every entry of
-	// one run, where the entry is new at each one, which is what tells one testing phase from the
-	// testing phase after a move back (api/handoff.go). A start that hands
+	// tree brings back, and a root architect's start of work it was not on raise it, to the higher
+	// of the row's own entry plus one and one above the highest entry of each row of the issue that
+	// names the step's claim, and write the three fields below beside it, in their own transaction
+	// (workflow's start, StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the
+	// finer of the two numbers a completion is held to: the issue's generation is the same for
+	// every entry of one run, where the entry is new at each one, which is what tells one testing
+	// phase from the testing phase after a move back (api/handoff.go). A start that hands
 	// the role no work it was not already on leaves it where it stands — the send of this entry's
 	// own work to a claim behind it, the held phase's retry, and every start of no entry
 	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
@@ -1137,11 +1138,11 @@ type PullRequest struct {
 	ConflictRead *ConflictRead
 	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
 	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
-	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
-	// than a phase start: it names the head and the base branch of the conflict, the phase the
-	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new head
-	// arrives, that head (MergeForward.Landed). It also keeps every merge forward that landed
-	// before it in the same stretch of work (MergeForward.Earlier).
+	// The issue keeps its phase, and the ask is a message on the topic of the claim that works the
+	// implementer's step rather than a phase start: it names the head and the base branch of the
+	// conflict, the phase the issue stood in and stays in, why the act was needed, when it was
+	// asked, and, once a new head arrives, that head (MergeForward.Landed). It also keeps every
+	// merge forward that landed before it in the same stretch of work (MergeForward.Earlier).
 	//
 	// Who writes it: Engine.mergeForward, in the transaction that queues the merge_forward rows,
 	// and pullRequestSynchronized, which sets Landed on the first head that moves off
@@ -2617,9 +2618,10 @@ type RoleRunKey struct {
 	Generation uint64
 }
 
-// RoleRun is what the store holds of one role's run of an issue generation: the role's supervise
-// rows for the generation still queued, oldest first (finishing deletes a row, so each is one the
-// outbox has not run), and this daemon's claim on the role, nil when it has none.
+// RoleRun is what the store holds of one claim's run of a role of an issue generation: the role's
+// supervise rows for the generation still queued that reach that claim, each a row that names its
+// token or names no claim, oldest first (finishing deletes a row, so each is one the outbox has
+// not run), and this daemon's claim of that token, nil when it has none.
 type RoleRun struct {
 	Queued []QueuedSupervise
 	Claim  *RoleClaim

@@ -1360,8 +1360,10 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	orphan := carry && !claim.IsTreeRoot(stored.Key, stored.Tree)
 	oldTree, oldGeneration := stored.Tree, stored.Generation
-	// A member leaving another tree gets that tree's suspend for every role before the member's new
-	// generation is written. The outbox decides whether each claim still stands in the old tree.
+	// A member leaving another tree gets that tree's suspend of each of its claims before the
+	// member's new generation is written (StopLeftTree: one row for each stored claim, and one by
+	// role for each role no stored claim works). The outbox decides whether each claim still stands
+	// in the old tree.
 	if oldTree != stored.Key {
 		if err := a.engine.StopLeftTree(ctx, tx, stored); err != nil {
 			return err

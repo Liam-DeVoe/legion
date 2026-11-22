@@ -212,7 +212,7 @@ func TestEachResumePathReachesEachRunningStep(t *testing.T) {
 // the reviewer and the implementer, and not to the tester.
 //
 // The fault it catches is a reader of the issue's phase alone, which takes no step of another
-// phase for its own (its controls: idlePhaseOpen on OpenPhaseRole(view.Phase), which releases the
+// phase for its own (its controls: idlePhaseOpen on RoleFor(view.Phase), which releases the
 // reviewer's claim under its due reminder, and the checks' reader on RunningAt of the issue's
 // phase, which tells the held tester and not the reviewer).
 func TestTheIdleReleaseTakesNoClaimOfARunningStep(t *testing.T) {

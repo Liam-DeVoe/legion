@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -129,8 +130,9 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // the pod's hold — always while its pause is still open, whatever the pod's other roles do, since
 // an update round past its bound or an idle rule would otherwise take a pod that holds the stopped
 // role's unpushed work; and, for a stop that ends after its pause ended, only where no role of the
-// pod is live then (store.IssueHasLiveRoleTx, decision 6) — and its role's open resume closed
-// (store.CloseRoleOpenResumeTx); and either the launch it is owed — a held wake of the pause
+// pod is live then (store.IssueHasLiveRoleTx, decision 6) — and the stopped claim's own open
+// resume closed, one that names that claim or names none (store.CloseRoleOpenResumeTx, given the
+// claim's token); and either the launch it is owed — a held wake of the pause
 // (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A start owed once the pause has ended, with no
@@ -160,8 +162,8 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // It is safe to make again: the machine owes a stop whose commit's answer was lost and makes it
 // again with its next claim write. store.RecordPauseStopTx answers false for a stop already
 // recorded, and then nothing of the first run is written twice: no second hold, no second
-// backstop, and the role's open resume — the first run's held wake — is left open, so the held
-// wake taken again conflicts with it (one open resume per role) and queues no second start. A
+// backstop, and the claim's open resume — the first run's held wake — is left open, so the held
+// wake taken again conflicts with it (one open resume per claim) and queues no second start. A
 // second resume by rule of a claim the first already launched finds it running and does nothing.
 // It writes no log line of the stop itself: the machine writes supervise.PauseRoleStoppedMessage
 // once it lands.
@@ -247,8 +249,16 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
 			return made, err
 		}
-		if issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
-			rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+		if issue != nil && p.backstop > 0 && c.ServingGeneration == issue.Generation {
+			// The worker of each step that takes work is a claim, not a role: at step a keyed
+			// agent's claim can work the step beside the role's own claim (workflow.OpenWorkers).
+			workers, err := workflow.OpenWorkers(ctx, p.records, tx, p.token, *issue)
+			if err != nil {
+				return made, err
+			}
+			if slices.Contains(workers, c.Token) {
+				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Claim: c.Token, Role: c.Role, DueAt: at.Add(p.backstop)}
+			}
 		}
 	}
 	first, err := store.RecordPauseStopTx(ctx, tx, rec)

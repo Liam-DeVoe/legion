@@ -2410,13 +2410,18 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	// The claims as the operator routes serve them, which is the one surface that names a
-	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended.
+	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended,
+	// and two claims of LEGION-212 that hold the role tester, the tester's own, which an operator
+	// suspended, and key a's, named implementer, on its tester step, which the release suspended.
+	// The command reads each suspender by the claim's token.
 	operatorClaims := `{"claims":[` +
 		`{"token":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","state":"suspended","suspendedBy":"released","pluginContract":48},` +
-		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48}]}`
-	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
-		`{"issue":"LEGION-209","role":"tester","state":"suspended"},` +
-		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
+		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48},` +
+		`{"token":"legion-legion-legion-212-tester","issue":"LEGION-212","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48},` +
+		`{"token":"legion-legion-legion-212-implementer","issue":"LEGION-212","role":"tester","state":"suspended","suspendedBy":"released","pluginContract":48}]}`
+	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended","token":"legion-legion-legion-208-implementer"},` +
+		`{"issue":"LEGION-209","role":"tester","state":"suspended","token":"legion-legion-legion-209-tester"},` +
+		`{"issue":"LEGION-210","role":"reviewer","state":"failed","token":"legion-legion-legion-210-reviewer"}]`
 	// The phrase `legion state` puts before the claims a workflow start brings back
 	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts
 	// that queue such a start (INFRA-1480).
@@ -2452,6 +2457,24 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			name: "no bearer to read the suspensions with", stranded: released,
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
 				workflowStart + " LEGION-210 reviewer\n",
+		},
+		// Two claims of one role on one issue: each takes the move its own suspender calls for,
+		// read by its token, and neither takes the other's. The role's own claim is named by its
+		// issue and role, and key a's agent, named for another role, by its token beside them.
+		{
+			name: "two claims of one role on one issue", bearer: true,
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-212 tester; " +
+				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
+		},
+		// Without a bearer both read as suspended workers, one move, and the two are named apart.
+		{
+			name: "two claims of one role on one issue in one move",
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) " +
+				"LEGION-212 tester, LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
 		},
 		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it

@@ -223,7 +223,7 @@ type outboxTrees interface {
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
 	TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error)
 	OpenPodResume(ctx context.Context, project, issue string, role claim.Role, token claim.Token) (id, pause int64, found bool, err error)
-	CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error
+	CancelPodBackstopsOf(ctx context.Context, project, issue string, token claim.Token, role claim.Role) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
 	ClaimStatesIn(ctx context.Context, project, issue string) (store.ClaimStates, error)
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
@@ -2959,10 +2959,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A linger, a park, a hand-over, a close and a stopped task all stop a claim through this
 		// one body, and each takes a released claim over: the machine re-stamps the suspension's
-		// source and this drops the backstop the release left that role, so no later backstop acts
-		// on a claim this suspension now owns. Another role's backstop stays: a worker waiting on a
-		// deploy has nothing else to bring it back. The bundle stays: the issue comes back.
-		r.takeOverRelease(ctx, row.Issue, payload.Role)
+		// source and this drops the backstop the release left that claim, so no later backstop acts
+		// on a claim this suspension now owns. Another claim's backstop stays, of its role or of
+		// another: a worker waiting on a deploy has nothing else to bring it back. The bundle stays:
+		// the issue comes back.
+		r.takeOverRelease(ctx, row.Issue, token, machine.Claim().Role)
 		return nil
 	case "release":
 		// One role stop of an idle pod's release. Its fence is the release's own mark and nothing
@@ -3786,13 +3787,13 @@ func (r *outbox) issueSandboxName(issue string) string {
 // in between.
 //
 // A cancel while the project is paused queues no resume: the store records each role the release
-// had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
-// as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
-// idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
-// (workflow.OpenPhaseRole).
+// had stopped as stopped by the pause, holds the pod, and arms the backstop of the worker of each
+// step that takes work as the stop transaction arms one (decision 12 of dispatch://INFRA-3759).
+// The backstop is the idle release's own (outbox.backstop), and each such worker is the claim the
+// record gives that step (workflow.OpenWorkers, openWorkers), read in the cancel's transaction.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenWorkers: r.openWorkers})
 	if err != nil {
 		return err
 	}
@@ -3813,6 +3814,17 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil
+}
+
+// openWorkers is the claim of the worker of each of key's steps that take work
+// (workflow.OpenWorkers), read in tx, and none for an issue the record does not hold:
+// store.ReleaseCancelPause.OpenWorkers.
+func (r *outbox) openWorkers(ctx context.Context, tx pgx.Tx, key string) ([]claim.Token, error) {
+	issue, err := r.records.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return nil, err
+	}
+	return workflow.OpenWorkers(ctx, r.records, tx, r.project, *issue)
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the

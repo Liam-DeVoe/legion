@@ -21,8 +21,10 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
+- To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`.
+  Legion runs the steps of one key as one agent, in one claim and one session, whatever role each step is on; a step with no key is an agent of its own.
+  A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
+  Each agent is named for the role of its first step, so a later version that needs a fresh agent of a role whose name another agent of the plan holds is refused (`PLAN_REFUSED`).
 
 ## The roles and their order
 
